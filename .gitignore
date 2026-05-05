@@ -1,0 +1,34 @@
+# Embedded Python runtime (downloaded by setup-python-env.sh)
+src-tauri/pyembed/
+
+# Rust build artifacts
+src-tauri/target/
+
+# Frontend
+ui/node_modules/
+ui/.env
+ui/.env.local
+
+# Build output (Tauri serves this from static/)
+static/
+
+# Tauri generated files
+src-tauri/gen/
+
+# Local runtime data
+src-tauri/data/
+
+# AI-generated repo wiki (Qoder)
+.qoder/
+
+# Root package-lock (not a package.json project)
+package-lock.json
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Editor
+.idea/
+.vscode/settings.json
+*.swp

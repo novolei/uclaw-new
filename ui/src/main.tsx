@@ -1,0 +1,120 @@
+/**
+ * 渲染进程入口
+ *
+ * 挂载 React 应用，初始化主题系统。
+ *
+ * [Migration] 从 Proma main.tsx 迁移：
+ * - 移除 Electron quick-task 窗口检测
+ * - 移除 Electron IPC 初始化器（Agent、Chat、Feishu、DingTalk 等）
+ * - 保留 ThemeInitializer 核心逻辑
+ * - 其余初始化器改为占位，待后续任务逐步接入 Tauri 后端
+ */
+
+import React, { useEffect, useMemo } from 'react'
+import ReactDOM from 'react-dom/client'
+import { useSetAtom, useAtomValue } from 'jotai'
+import App from './App'
+import {
+  themeModeAtom,
+  themeStyleAtom,
+  systemIsDarkAtom,
+  resolvedThemeAtom,
+  applyThemeToDOM,
+  initializeTheme,
+} from './atoms/theme'
+import { Toaster } from './components/ui/sonner'
+import './styles/globals.css'
+
+// 导入 tauri-bridge 以注册 IPC 适配层
+import './lib/tauri-bridge'
+
+/**
+ * 主题初始化组件
+ *
+ * 负责从后端加载主题设置、监听系统主题变化、
+ * 并将最终主题同步到 DOM。
+ */
+function ThemeInitializer(): null {
+  const setThemeMode = useSetAtom(themeModeAtom)
+  const setThemeStyle = useSetAtom(themeStyleAtom)
+  const setSystemIsDark = useSetAtom(systemIsDarkAtom)
+  const themeMode = useAtomValue(themeModeAtom)
+  const themeStyle = useAtomValue(themeStyleAtom)
+  const systemIsDark = useAtomValue(systemIsDarkAtom)
+
+  // 初始化：从后端加载设置 + 订阅系统主题变化
+  useEffect(() => {
+    let isMounted = true
+    let cleanup: (() => void) | undefined
+
+    initializeTheme(setThemeMode, setSystemIsDark, setThemeStyle).then((fn) => {
+      if (isMounted) {
+        cleanup = fn
+      } else {
+        fn()
+      }
+    }).catch((err) => {
+      console.warn('[ThemeInitializer] 主题初始化失败（Tauri API 可能不可用）:', err)
+    })
+
+    return () => {
+      isMounted = false
+      cleanup?.()
+    }
+  }, [setThemeMode, setSystemIsDark, setThemeStyle])
+
+  // 响应式应用主题到 DOM
+  const themeSignature = useMemo(() => {
+    if (themeMode === 'special') return `special:${themeStyle}`
+    if (themeMode === 'system') return `system:${systemIsDark ? 'dark' : 'light'}`
+    return themeMode
+  }, [themeMode, themeStyle, systemIsDark])
+
+  useEffect(() => {
+    applyThemeToDOM(themeMode, themeStyle, systemIsDark)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [themeSignature])
+
+  return null
+}
+
+// ===== ErrorBoundary =====
+class RootErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error }
+  }
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error('[RootErrorBoundary] 渲染错误:', error, info.componentStack)
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 32, fontFamily: 'system-ui', color: '#e5e5e5', background: '#121212', minHeight: '100vh' }}>
+          <h2 style={{ color: '#f87171' }}>uClaw 渲染错误</h2>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13, marginTop: 16, padding: 16, background: '#1e1e1e', borderRadius: 8 }}>
+            {this.state.error?.message}\n{this.state.error?.stack}
+          </pre>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+// ===== 主窗口：完整渲染 =====
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <RootErrorBoundary>
+      <ThemeInitializer />
+      <App />
+      <Toaster position="top-right" />
+    </RootErrorBoundary>
+  </React.StrictMode>
+)

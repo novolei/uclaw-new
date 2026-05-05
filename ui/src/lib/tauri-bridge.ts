@@ -1,0 +1,828 @@
+/**
+ * Tauri Bridge — 统一 IPC 适配层
+ *
+ * 提供与 Proma 的 window.electronAPI 相同的接口签名，
+ * 内部使用 Tauri invoke / listen 实现。
+ * 供 Jotai atoms 和业务层调用。
+ *
+ * 覆盖所有 uClaw 后端 #[tauri::command] 命令与事件。
+ */
+
+import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import type {
+  Settings,
+  PatchSettingsInput,
+  PlatformInfo,
+  VersionInfo,
+  BootstrapStatus,
+  ConversationResponse,
+  CreateConversationInput,
+  SendMessageInput,
+  SendMessageResponse,
+  GetMessagesInput,
+  Message,
+  SpaceSummary,
+  CreateSpaceInput,
+  LlmConfigInput,
+  LlmConfigResponse,
+  ArtifactNode,
+  ArtifactContentResponse,
+  ArtifactTreeNodeResponse,
+  ListArtifactTreeInput,
+  LoadArtifactChildrenInput,
+  CreateArtifactInput,
+  RenameArtifactInput,
+  MoveArtifactInput,
+  DetectFileTypeResponse,
+  ToggleStarResponse,
+  SearchInput,
+  SearchResult,
+  ProviderInfo,
+  ProviderConfigInput,
+  ProviderConfigResponse,
+  ProviderConfigureInput,
+  ModelInfo,
+  ModelSelectionInfo,
+  TestResultInfo,
+  ListModelsInput,
+  TestConnectionInput,
+  ApproveToolCallInput,
+  LearnedSkill,
+  StreamTextDelta,
+  StreamToolStart,
+  StreamToolResult,
+  StreamThinking,
+  StreamThinkingDone,
+  StreamDone,
+  StreamError,
+  TurnCost,
+  ContextStats,
+  ApprovalRequest,
+  // Notifications
+  NotificationItem,
+  // Background Tasks
+  BackgroundTask,
+  // Memory KV
+  MemorySetInput,
+  MemoryGetInput,
+  MemorySearchInput,
+  MemoryListInput,
+  MemoryClearInput,
+  MemoryBulkImportInput,
+  MemoryEntryResponse,
+  MemoryBulkImportResponse,
+  MemoryClearResponse,
+  // MCP
+  McpServerInfo,
+  McpServerInput,
+  // Built-in Skills
+  SkillInfo,
+  SkillToggleInput,
+  SkillMatchInput,
+  SkillMatchResult,
+  SkillDetailResponse,
+  // Channels
+  ChannelInput,
+  // Safety
+  SafetyPolicyResponse,
+  SetSafetyModeInput,
+  SetToolOverrideInput,
+  ToolNameInput,
+  AssessCommandInput,
+  CommandRiskResponse,
+  // Memory Graph CRUD
+  MemoryGraphSearchInput,
+  MemoryGraphGetNodeInput,
+  MemoryGraphListBootInput,
+  MemoryGraphManageBootInput,
+  MemoryGraphTimelineInput,
+  MemoryGraphExplainRecallInput,
+  MemoryGraphCreateNodeInput,
+  MemoryGraphUpdateNodeInput,
+  MemoryGraphDeleteNodeInput,
+} from './types';
+import type { Channel } from './proma-types';
+
+// ─────────────────────────────────────────────────────────
+// Bootstrap / Settings
+// ─────────────────────────────────────────────────────────
+
+export const getSettings = (): Promise<Settings> =>
+  invoke('get_settings');
+
+export const patchSettings = (input: PatchSettingsInput): Promise<Settings> =>
+  invoke('patch_settings', { input });
+
+export const getPlatform = (): Promise<PlatformInfo> =>
+  invoke('get_platform');
+
+export const getVersion = (): Promise<VersionInfo> =>
+  invoke('get_version');
+
+export const getBootstrapStatus = (): Promise<BootstrapStatus> =>
+  invoke('get_bootstrap_status');
+
+// ─────────────────────────────────────────────────────────
+// Conversations
+// ─────────────────────────────────────────────────────────
+
+export const listConversations = (): Promise<ConversationResponse[]> =>
+  invoke('list_conversations');
+
+export const createConversation = (input: CreateConversationInput): Promise<ConversationResponse> =>
+  invoke('create_conversation', { input });
+
+export const deleteConversation = (id: string): Promise<boolean> =>
+  invoke('delete_conversation', { id });
+
+export const getMessages = (input: GetMessagesInput): Promise<Message[]> =>
+  invoke('get_messages', { input });
+
+export const sendMessage = (input: SendMessageInput): Promise<SendMessageResponse> =>
+  invoke('send_message', { input });
+
+export const approveToolCall = (input: ApproveToolCallInput): Promise<{ success: boolean }> =>
+  invoke('approve_tool_call', { input });
+
+export const toggleStarConversation = (conversationId: string): Promise<ToggleStarResponse> =>
+  invoke('toggle_star_conversation', { input: { conversationId } });
+
+// ─────────────────────────────────────────────────────────
+// Spaces
+// ─────────────────────────────────────────────────────────
+
+export const listSpaces = (): Promise<SpaceSummary[]> =>
+  invoke('list_spaces');
+
+export const createSpace = (input: CreateSpaceInput): Promise<SpaceSummary> =>
+  invoke('create_space', { input });
+
+export const deleteSpace = (id: string): Promise<boolean> =>
+  invoke('delete_space', { id });
+
+// ─────────────────────────────────────────────────────────
+// LLM Config
+// ─────────────────────────────────────────────────────────
+
+export const getLlmConfig = (): Promise<LlmConfigResponse> =>
+  invoke('get_llm_config');
+
+export const updateLlmConfig = (input: LlmConfigInput): Promise<LlmConfigResponse> =>
+  invoke('update_llm_config', { input });
+
+// ─────────────────────────────────────────────────────────
+// Artifacts
+// ─────────────────────────────────────────────────────────
+
+export const listArtifacts = (): Promise<ArtifactNode[]> =>
+  invoke('list_artifacts');
+
+export const readArtifact = (path: string): Promise<ArtifactContentResponse> =>
+  invoke('read_artifact', { input: { path } });
+
+export const writeArtifact = (path: string, content: string): Promise<ArtifactContentResponse> =>
+  invoke('write_artifact', { input: { path, content } });
+
+export const deleteArtifact = (path: string): Promise<boolean> =>
+  invoke('delete_artifact', { path });
+
+export const listArtifactsTree = (input: ListArtifactTreeInput): Promise<ArtifactTreeNodeResponse[]> =>
+  invoke('list_artifacts_tree', { input });
+
+export const loadArtifactChildren = (input: LoadArtifactChildrenInput): Promise<ArtifactTreeNodeResponse[]> =>
+  invoke('load_artifact_children', { input });
+
+export const createArtifact = (input: CreateArtifactInput): Promise<ArtifactTreeNodeResponse> =>
+  invoke('create_artifact', { input });
+
+export const renameArtifact = (input: RenameArtifactInput): Promise<boolean> =>
+  invoke('rename_artifact', { input });
+
+export const moveArtifact = (input: MoveArtifactInput): Promise<boolean> =>
+  invoke('move_artifact', { input });
+
+export const deleteArtifactRecursive = (spaceId: string, path: string): Promise<boolean> =>
+  invoke('delete_artifact_recursive', { spaceId, path });
+
+export const detectFileType = (path: string): Promise<DetectFileTypeResponse> =>
+  invoke('detect_file_type', { path });
+
+// ─────────────────────────────────────────────────────────
+// Search
+// ─────────────────────────────────────────────────────────
+
+export const searchWorkspace = (input: SearchInput): Promise<SearchResult[]> =>
+  invoke('search_workspace', { input });
+
+export const searchConversations = (input: SearchInput): Promise<SearchResult[]> =>
+  invoke('search_conversations', { input });
+
+export const searchAll = (input: SearchInput): Promise<SearchResult[]> =>
+  invoke('search_all', { input });
+
+// ─────────────────────────────────────────────────────────
+// Providers
+// ─────────────────────────────────────────────────────────
+
+export const listProviders = (): Promise<ProviderInfo[]> =>
+  invoke('list_providers');
+
+export const listConfiguredProviders = (): Promise<string[]> =>
+  invoke('list_configured_providers');
+
+export const getProviderConfig = (providerId: string): Promise<ProviderConfigResponse | null> =>
+  invoke('get_provider_config', { providerId });
+
+export const configureProvider = (input: ProviderConfigInput): Promise<void> =>
+  invoke('configure_provider', { input });
+
+export const configureProviderWithModels = (input: ProviderConfigureInput): Promise<void> => {
+  const { modelIds, ...config } = input;
+  return invoke('configure_provider_with_models', { providerConfig: config, modelIds });
+};
+
+export const removeProviderConfig = (providerId: string): Promise<void> =>
+  invoke('remove_provider_config', { providerId });
+
+export const testProviderConnection = (input: TestConnectionInput): Promise<TestResultInfo> =>
+  invoke('test_provider_connection', { input });
+
+export const listProviderModels = (input: ListModelsInput): Promise<ModelInfo[]> =>
+  invoke('list_provider_models', { input });
+
+export const getConfiguredModels = (providerId: string): Promise<string[]> =>
+  invoke('get_configured_models', { providerId });
+
+export const getAllConfiguredModels = (): Promise<[string, string[]][]> =>
+  invoke('get_all_configured_models');
+
+export const getActiveModel = (): Promise<ModelSelectionInfo | null> =>
+  invoke('get_active_model');
+
+export const setActiveModel = (providerId: string, modelId: string): Promise<void> =>
+  invoke('set_active_model', { providerId, modelId });
+
+// ─────────────────────────────────────────────────────────
+// Learned Skills
+// ─────────────────────────────────────────────────────────
+
+export const listLearnedSkills = (spaceId: string = 'default'): Promise<LearnedSkill[]> =>
+  invoke('list_learned_skills', { spaceId });
+
+export const getLearnedSkill = (skillId: string): Promise<LearnedSkill> =>
+  invoke('get_learned_skill', { skillId });
+
+export const toggleLearnedSkill = (skillId: string, enabled: boolean): Promise<void> =>
+  invoke('toggle_learned_skill', { skillId, enabled });
+
+export const deleteLearnedSkill = (skillId: string): Promise<void> =>
+  invoke('delete_learned_skill', { skillId });
+
+// ─────────────────────────────────────────────────────────
+// Memory Graph
+// ─────────────────────────────────────────────────────────
+
+export const memoryGraphListBoot = (input: MemoryGraphListBootInput): Promise<unknown> =>
+  invoke('memory_graph_list_boot', { input });
+
+export const memoryGraphGetNode = (input: MemoryGraphGetNodeInput): Promise<unknown> =>
+  invoke('memory_graph_get_node', { input });
+
+export const memoryGraphSearch = (input: MemoryGraphSearchInput): Promise<unknown> =>
+  invoke('memory_graph_search', { input });
+
+export const memoryGraphGetFullGraph = (): Promise<unknown> =>
+  invoke('memory_graph_get_full_graph');
+
+export const memoryGraphManageBoot = (input: MemoryGraphManageBootInput): Promise<unknown> =>
+  invoke('memory_graph_manage_boot', { input });
+
+export const memoryGraphListTimeline = (input: MemoryGraphTimelineInput): Promise<unknown> =>
+  invoke('memory_graph_list_timeline', { input });
+
+export const memoryGraphExplainRecall = (input: MemoryGraphExplainRecallInput): Promise<unknown> =>
+  invoke('memory_graph_explain_recall', { input });
+
+export const memoryGraphCreateNode = (input: MemoryGraphCreateNodeInput): Promise<unknown> =>
+  invoke('memory_graph_create_node', { input });
+
+export const memoryGraphUpdateNode = (input: MemoryGraphUpdateNodeInput): Promise<unknown> =>
+  invoke('memory_graph_update_node', { input });
+
+export const memoryGraphDeleteNode = (input: MemoryGraphDeleteNodeInput): Promise<unknown> =>
+  invoke('memory_graph_delete_node', { input });
+
+// ─────────────────────────────────────────────────────────
+// Notifications
+// ─────────────────────────────────────────────────────────
+
+export const getNotifications = (): Promise<NotificationItem[]> =>
+  invoke('get_notifications');
+
+export const clearNotifications = (): Promise<boolean> =>
+  invoke('clear_notifications');
+
+// ─────────────────────────────────────────────────────────
+// Background Tasks
+// ─────────────────────────────────────────────────────────
+
+export const getBackgroundTasks = (): Promise<BackgroundTask[]> =>
+  invoke('get_background_tasks');
+
+// ─────────────────────────────────────────────────────────
+// Memory KV Store
+// ─────────────────────────────────────────────────────────
+
+export const memorySet = (input: MemorySetInput): Promise<MemoryEntryResponse> =>
+  invoke('memory_set', { input });
+
+export const memoryGet = (input: MemoryGetInput): Promise<MemoryEntryResponse | null> =>
+  invoke('memory_get', { input });
+
+export const memoryDelete = (input: MemoryGetInput): Promise<boolean> =>
+  invoke('memory_delete', { input });
+
+export const memorySearch = (input: MemorySearchInput): Promise<MemoryEntryResponse[]> =>
+  invoke('memory_search', { input });
+
+export const memoryList = (input: MemoryListInput): Promise<MemoryEntryResponse[]> =>
+  invoke('memory_list', { input });
+
+export const memoryClearNamespace = (input: MemoryClearInput): Promise<MemoryClearResponse> =>
+  invoke('memory_clear_namespace', { input });
+
+export const memoryPruneExpired = (): Promise<MemoryClearResponse> =>
+  invoke('memory_prune_expired');
+
+export const memoryBulkImport = (input: MemoryBulkImportInput): Promise<MemoryBulkImportResponse> =>
+  invoke('memory_bulk_import', { input });
+
+export const memoryExport = (input: MemoryListInput): Promise<MemoryEntryResponse[]> =>
+  invoke('memory_export', { input });
+
+export const memoryListNamespaces = (spaceId?: string): Promise<string[]> =>
+  invoke('memory_list_namespaces', { spaceId: spaceId ?? null });
+
+// ─────────────────────────────────────────────────────────
+// MCP Servers
+// ─────────────────────────────────────────────────────────
+
+export const listMcpServers = (): Promise<McpServerInfo[]> =>
+  invoke('list_mcp_servers');
+
+export const addMcpServer = (input: McpServerInput): Promise<McpServerInfo> =>
+  invoke('add_mcp_server', { input });
+
+export const removeMcpServer = (id: string): Promise<boolean> =>
+  invoke('remove_mcp_server', { id });
+
+export const toggleMcpServer = (id: string, enabled: boolean): Promise<boolean> =>
+  invoke('toggle_mcp_server', { id, enabled });
+
+export const connectMcpServer = (id: string): Promise<boolean> =>
+  invoke('connect_mcp_server', { id });
+
+export const disconnectMcpServer = (id: string): Promise<boolean> =>
+  invoke('disconnect_mcp_server', { id });
+
+export const restartMcpServer = (id: string): Promise<boolean> =>
+  invoke('restart_mcp_server', { id });
+
+export const listMcpTools = (): Promise<unknown[]> =>
+  invoke('list_mcp_tools');
+
+// ─────────────────────────────────────────────────────────
+// Built-in Skills
+// ─────────────────────────────────────────────────────────
+
+export const listSkills = (): Promise<SkillInfo[]> =>
+  invoke('list_skills');
+
+export const toggleSkill = (input: SkillToggleInput): Promise<boolean> =>
+  invoke('toggle_skill', { input });
+
+export const discoverSkills = (): Promise<SkillInfo[]> =>
+  invoke('discover_skills');
+
+export const reloadSkills = (): Promise<SkillInfo[]> =>
+  invoke('reload_skills');
+
+export const getSkillDetail = (name: string): Promise<SkillDetailResponse> =>
+  invoke('get_skill_detail', { name });
+
+export const matchSkills = (input: SkillMatchInput): Promise<SkillMatchResult[]> =>
+  invoke('match_skills', { input });
+
+// ─────────────────────────────────────────────────────────
+// Channels
+// ─────────────────────────────────────────────────────────
+
+export const listChannels = (): Promise<Channel[]> =>
+  invoke('list_channels');
+
+export const addChannel = (input: ChannelInput): Promise<Channel> =>
+  invoke('add_channel', { input });
+
+export const removeChannel = (id: string): Promise<boolean> =>
+  invoke('remove_channel', { id });
+
+export const toggleChannel = (id: string, enabled: boolean): Promise<boolean> =>
+  invoke('toggle_channel', { id, enabled });
+
+// ─────────────────────────────────────────────────────────
+// Safety Policy
+// ─────────────────────────────────────────────────────────
+
+export const getSafetyPolicy = (): Promise<SafetyPolicyResponse> =>
+  invoke('get_safety_policy');
+
+export const setSafetyMode = (input: SetSafetyModeInput): Promise<SafetyPolicyResponse> =>
+  invoke('set_safety_mode', { input });
+
+export const setToolSafetyOverride = (input: SetToolOverrideInput): Promise<SafetyPolicyResponse> =>
+  invoke('set_tool_safety_override', { input });
+
+export const removeToolSafetyOverride = (input: ToolNameInput): Promise<SafetyPolicyResponse> =>
+  invoke('remove_tool_safety_override', { input });
+
+export const addAutoApprovedTool = (input: ToolNameInput): Promise<SafetyPolicyResponse> =>
+  invoke('add_auto_approved_tool', { input });
+
+export const removeAutoApprovedTool = (input: ToolNameInput): Promise<SafetyPolicyResponse> =>
+  invoke('remove_auto_approved_tool', { input });
+
+export const blockTool = (input: ToolNameInput): Promise<SafetyPolicyResponse> =>
+  invoke('block_tool', { input });
+
+export const unblockTool = (input: ToolNameInput): Promise<SafetyPolicyResponse> =>
+  invoke('unblock_tool', { input });
+
+export const assessCommandRisk = (input: AssessCommandInput): Promise<CommandRiskResponse> =>
+  invoke('assess_command_risk', { input });
+
+// ─────────────────────────────────────────────────────────
+// Services / Memubot
+// ─────────────────────────────────────────────────────────
+
+export const servicesHealth = (): Promise<unknown> =>
+  invoke('services_health');
+
+export const memorizationStatus = (): Promise<unknown> =>
+  invoke('memorization_status');
+
+export const proactiveStatus = (): Promise<unknown> =>
+  invoke('proactive_status');
+
+export const proactiveStart = (): Promise<void> =>
+  invoke('proactive_start');
+
+export const proactiveStop = (): Promise<void> =>
+  invoke('proactive_stop');
+
+export const metricsSummary = (): Promise<unknown> =>
+  invoke('metrics_summary');
+
+export const memubotConfigGet = (): Promise<unknown> =>
+  invoke('memubot_config_get');
+
+// ─────────────────────────────────────────────────────────
+// Dev / Testing
+// ─────────────────────────────────────────────────────────
+
+export const triggerProactiveScenario = (scenarioName: string): Promise<unknown> =>
+  invoke('trigger_proactive_scenario', { scenarioName });
+
+// ─────────────────────────────────────────────────────────
+// Event Listeners (Tauri global events)
+// ─────────────────────────────────────────────────────────
+
+// — Streaming events —
+
+export const onTextDelta = (cb: (payload: StreamTextDelta) => void): Promise<UnlistenFn> =>
+  listen('agent:text-delta', (e) => cb(e.payload as StreamTextDelta));
+
+export const onToolStart = (cb: (payload: StreamToolStart) => void): Promise<UnlistenFn> =>
+  listen('agent:tool-start', (e) => cb(e.payload as StreamToolStart));
+
+export const onToolResult = (cb: (payload: StreamToolResult) => void): Promise<UnlistenFn> =>
+  listen('agent:tool-result', (e) => cb(e.payload as StreamToolResult));
+
+export const onDone = (cb: (payload: StreamDone) => void): Promise<UnlistenFn> =>
+  listen('agent:done', (e) => cb(e.payload as StreamDone));
+
+export const onError = (cb: (payload: StreamError) => void): Promise<UnlistenFn> =>
+  listen('agent:error', (e) => cb(e.payload as StreamError));
+
+export const onThinking = (cb: (payload: StreamThinking) => void): Promise<UnlistenFn> =>
+  listen('agent:thinking', (e) => cb(e.payload as StreamThinking));
+
+export const onThinkingDone = (cb: (payload: StreamThinkingDone) => void): Promise<UnlistenFn> =>
+  listen('agent:thinking-done', (e) => cb(e.payload as StreamThinkingDone));
+
+export const onTurnCost = (cb: (payload: TurnCost) => void): Promise<UnlistenFn> =>
+  listen('agent:turn_cost', (e) => cb(e.payload as TurnCost));
+
+export const onContextStats = (cb: (payload: ContextStats) => void): Promise<UnlistenFn> =>
+  listen('agent:context_stats', (e) => cb(e.payload as ContextStats));
+
+// — System events —
+
+export const onNeedApproval = (cb: (payload: ApprovalRequest) => void): Promise<UnlistenFn> =>
+  listen('agent:need_approval', (e) => cb(e.payload as ApprovalRequest));
+
+export const onArtifactTreeUpdate = (cb: (payload: unknown) => void): Promise<UnlistenFn> =>
+  listen('artifact:tree_update', (e) => cb(e.payload));
+
+// — Reflection events —
+
+export const onReflectionUpdate = (cb: (payload: unknown) => void): Promise<UnlistenFn> =>
+  listen('agent:reflection-update', (e) => cb(e.payload));
+
+export const onProactiveLearning = (cb: (payload: unknown) => void): Promise<UnlistenFn> =>
+  listen('agent:proactive-learning', (e) => cb(e.payload));
+
+// ─────────────────────────────────────────────────────────
+// Proma 兼容桩函数
+// ─────────────────────────────────────────────────────────
+// 以下函数为 Proma 迁移组件提供兼容性 API。
+// 对于尚未在 Tauri 后端实现的命令，返回合理的桩数据。
+// 随着后端逐步补全，桩函数将被替换为真实的 invoke 调用。
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+// --- Settings compat ---
+export const updateSettings = (_patch: any): Promise<void> =>
+  patchSettings(_patch).then(() => {})
+
+// --- Conversation compat ---
+export const updateConversationTitle = (id: string, title: string): Promise<any> =>
+  invoke('update_conversation_title', { id, title }).catch(() => ({ id, title, updatedAt: Date.now() }))
+
+export const togglePinConversation = (id: string): Promise<any> =>
+  invoke('toggle_pin_conversation', { id }).catch(() => ({ id, pinned: true, updatedAt: Date.now() }))
+
+export const updateConversationModel = (conversationId: string, modelId: string, channelId: string): Promise<any> =>
+  invoke('update_conversation_model', { conversationId, modelId, channelId }).catch(() => ({ id: conversationId, modelId, channelId, updatedAt: Date.now() }))
+
+export const getConversationMessages = (conversationId: string): Promise<any[]> =>
+  getMessages({ conversationId }).then((msgs) => msgs as any[])
+
+export const getRecentMessages = (conversationId: string, limit: number): Promise<{ messages: any[]; hasMore: boolean }> =>
+  invoke<{ messages: any[]; hasMore: boolean }>('get_recent_messages', { conversationId, limit }).catch(() => getMessages({ conversationId }).then((msgs) => ({ messages: msgs as any[], hasMore: false })))
+
+export const updateContextDividers = (conversationId: string, dividers: string[]): Promise<void> =>
+  invoke<void>('update_context_dividers', { conversationId, dividers }).catch(() => {})
+
+export const stopGeneration = (conversationId: string): Promise<void> =>
+  invoke<void>('stop_generation', { conversationId }).catch(() => {})
+
+export const truncateMessagesFrom = (conversationId: string, messageId: string, preserveFirstMessageAttachments?: boolean): Promise<any[]> =>
+  invoke<any[]>('truncate_messages_from', { conversationId, messageId, preserveFirstMessageAttachments: preserveFirstMessageAttachments ?? false }).catch(() => [])
+
+export const deleteMessage = (conversationId: string, messageId: string): Promise<any[]> =>
+  invoke<any[]>('delete_message', { conversationId, messageId }).catch(() => [])
+
+export const deleteAttachment = (localPath: string): Promise<void> =>
+  invoke<void>('delete_attachment', { localPath }).catch(() => {})
+
+export const saveAttachment = (input: any): Promise<any> =>
+  invoke('save_attachment', { input })
+
+export const readAttachment = (localPath: string): Promise<string> =>
+  invoke<string>('read_attachment', { localPath })
+
+export const getSystemPromptConfig = (): Promise<any> =>
+  invoke('get_system_prompt_config').catch(() => ({ prompts: [] }))
+
+export const generateTitle = (input: any): Promise<string> =>
+  invoke<string>('generate_title', { input }).catch(() => '')
+
+// --- File dialogs ---
+export const openFileDialog = (): Promise<{ files: any[] }> =>
+  invoke<{ files: any[] }>('open_file_dialog').catch(() => ({ files: [] }))
+
+export const openFolderDialog = (): Promise<{ path: string; name: string } | null> =>
+  invoke<{ path: string; name: string } | null>('open_folder_dialog').catch(() => null)
+
+// --- Agent session compat ---
+export const listAgentSessions = (): Promise<any[]> =>
+  invoke<any[]>('list_agent_sessions').catch(() => [])
+
+export const createAgentSession = (title?: string, channelId?: string, workspaceId?: string): Promise<any> =>
+  invoke('create_agent_session', { title: title ?? null, channelId: channelId ?? null, workspaceId: workspaceId ?? null })
+    .catch(() => ({ id: crypto.randomUUID(), title: title || '新会话', createdAt: Date.now(), updatedAt: Date.now() }))
+
+export const getAgentSessionMessages = (sessionId: string): Promise<any[]> =>
+  invoke<any[]>('get_agent_session_messages', { sessionId }).catch(() => [])
+
+export const getAgentSessionSDKMessages = (sessionId: string): Promise<any[]> =>
+  invoke<any[]>('get_agent_session_sdk_messages', { sessionId }).catch(() => [])
+
+export const sendAgentMessage = (input: any): Promise<void> =>
+  invoke<void>('send_agent_message', { input })
+
+export const stopAgent = (sessionId: string): Promise<void> =>
+  invoke<void>('stop_agent', { sessionId }).catch(() => {})
+
+export const queueAgentMessage = (input: any): Promise<void> =>
+  invoke<void>('queue_agent_message', { input })
+
+export const migrateChatToAgent = (conversationId: string, sessionId: string): Promise<void> =>
+  invoke<void>('migrate_chat_to_agent', { conversationId, sessionId }).catch(() => {})
+
+export const forkAgentSession = (input: { sessionId: string; upToMessageUuid: string }): Promise<any> =>
+  invoke('fork_agent_session', { input })
+
+export const rewindSession = (input: { sessionId: string; assistantMessageUuid: string }): Promise<any> =>
+  invoke('rewind_session', { input })
+
+export const getAgentSessionPath = (workspaceId: string, sessionId: string): Promise<string> =>
+  invoke<string>('get_agent_session_path', { workspaceId, sessionId }).catch(() => '')
+
+export const saveFilesToAgentSession = (input: any): Promise<any[]> =>
+  invoke<any[]>('save_files_to_agent_session', { input }).catch(() => [])
+
+// --- Workspace / directory compat ---
+export const getWorkspaceCapabilities = (slug: string): Promise<{ mcpServers: any[]; skills: any[] }> =>
+  invoke<{ mcpServers: any[]; skills: any[] }>('get_workspace_capabilities', { slug }).catch(() => ({ mcpServers: [], skills: [] }))
+
+export const getWorkspaceDirectories = (workspaceSlug: string): Promise<string[]> =>
+  invoke<string[]>('get_workspace_directories', { workspaceSlug }).catch(() => [])
+
+export const getWorkspaceFilesPath = (workspaceSlug: string): Promise<string> =>
+  invoke<string>('get_workspace_files_path', { workspaceSlug }).catch(() => '')
+
+export const attachDirectory = (input: { sessionId: string; directoryPath: string }): Promise<string[]> =>
+  invoke<string[]>('attach_directory', { input })
+
+export const detachDirectory = (input: { sessionId: string; directoryPath: string }): Promise<string[]> =>
+  invoke<string[]>('detach_directory', { input })
+
+export const attachWorkspaceDirectory = (input: { workspaceSlug: string; directoryPath: string }): Promise<string[]> =>
+  invoke<string[]>('attach_workspace_directory', { input })
+
+export const detachWorkspaceDirectory = (input: { workspaceSlug: string; directoryPath: string }): Promise<string[]> =>
+  invoke<string[]>('detach_workspace_directory', { input })
+
+export const listAttachedDirectory = (dirPath: string): Promise<any[]> =>
+  invoke<any[]>('list_attached_directory', { dirPath }).catch(() => [])
+
+export const readAttachedFile = (path: string, sessionId: string, workspaceSlug?: string): Promise<string> =>
+  invoke('read_attached_file', { path, sessionId, workspaceSlug: workspaceSlug ?? null })
+
+// --- File operations ---
+export const openFile = (path: string): Promise<void> =>
+  invoke<void>('open_file', { path }).catch(() => {})
+
+export const openAttachedFile = (path: string): Promise<void> =>
+  invoke<void>('open_attached_file', { path }).catch(() => {})
+
+export const showAttachedInFolder = (path: string): Promise<void> =>
+  invoke<void>('show_attached_in_folder', { path }).catch(() => {})
+
+export const renameAttachedFile = (path: string, newName: string): Promise<void> =>
+  invoke<void>('rename_attached_file', { path, newName }).catch(() => {})
+
+export const moveAttachedFile = (path: string, destDir: string): Promise<void> =>
+  invoke<void>('move_attached_file', { path, destDir }).catch(() => {})
+
+export const saveImageAs = (path: string, filename: string): Promise<void> =>
+  invoke<void>('save_image_as', { path, filename }).catch(() => {})
+
+export const openExternal = (url: string): Promise<void> =>
+  invoke<void>('open_external', { url }).catch(() => {})
+
+export const getPathForFile = (_file: File): string | null => {
+  // Electron 的 webUtils.getPathForFile 无法在 Tauri 中使用
+  // 返回 null 使调用方走 fallback 路径
+  return null
+}
+
+export const checkPathsType = (paths: string[]): Promise<{ directories: string[]; files: string[] }> =>
+  invoke<{ directories: string[]; files: string[] }>('check_paths_type', { paths }).catch(() => ({ directories: [], files: paths }))
+
+// --- Permission mode ---
+export const getPermissionMode = (workspaceSlug: string): Promise<string> =>
+  invoke<string>('get_permission_mode', { workspaceSlug }).catch(() => 'auto')
+
+export const setPermissionMode = (workspaceSlug: string, mode: string): Promise<void> =>
+  invoke<void>('set_permission_mode', { workspaceSlug, mode }).catch(() => {})
+
+// --- System prompt compat ---
+export const createSystemPrompt = (input: any): Promise<any> =>
+  invoke('create_system_prompt', { input }).catch(() => ({ id: crypto.randomUUID(), name: input?.name ?? '', content: input?.content ?? '', isBuiltin: false }))
+
+export const deleteSystemPrompt = (id: string): Promise<void> =>
+  invoke<void>('delete_system_prompt', { id }).catch(() => {})
+
+export const setDefaultPrompt = (id: string): Promise<void> =>
+  invoke<void>('set_default_prompt', { id }).catch(() => {})
+
+export const updateSystemPrompt = (id: string, input: any): Promise<any> =>
+  invoke('update_system_prompt', { id, input }).catch(() => ({ id, ...input }))
+
+export const updateAppendSetting = (enabled: boolean): Promise<void> =>
+  invoke<void>('update_append_setting', { enabled }).catch(() => {})
+
+// --- Chat tools compat ---
+export const updateChatToolState = (toolId: string, patch: any): Promise<void> =>
+  invoke<void>('update_chat_tool_state', { toolId, patch }).catch(() => {})
+
+export const getChatTools = (): Promise<any[]> =>
+  invoke<any[]>('get_chat_tools').catch(() => [])
+
+// --- Feishu compat ---
+export const setFeishuSessionNotify = (sessionId: string, mode: string): Promise<void> =>
+  invoke<void>('set_feishu_session_notify', { sessionId, mode }).catch(() => {})
+
+// --- Agent workspace compat ---
+export const createAgentWorkspace = (name: string): Promise<any> =>
+  invoke('create_agent_workspace', { name }).catch(() => ({ id: crypto.randomUUID(), name, slug: name.toLowerCase(), createdAt: Date.now(), updatedAt: Date.now() }))
+
+export const updateAgentWorkspace = (id: string, patch: any): Promise<any> =>
+  invoke('update_agent_workspace', { id, patch }).catch(() => ({ id, ...patch, updatedAt: Date.now() }))
+
+export const deleteAgentWorkspace = (id: string): Promise<void> =>
+  invoke<void>('delete_agent_workspace', { id }).catch(() => {})
+
+export const reorderAgentWorkspaces = (ids: string[]): Promise<void> =>
+  invoke<void>('reorder_agent_workspaces', { ids }).catch(() => {})
+
+// --- Agent permission / ask-user / exit-plan compat ---
+export const respondPermission = (input: any): Promise<void> =>
+  invoke<void>('respond_permission', { input }).catch(() => {})
+
+export const respondAskUser = (input: any): Promise<void> =>
+  invoke<void>('respond_ask_user', { input }).catch(() => {})
+
+export const respondExitPlanMode = (input: any): Promise<void> =>
+  invoke<void>('respond_exit_plan_mode', { input }).catch(() => {})
+
+// --- Agent session management compat ---
+export const moveAgentSessionToWorkspace = (input: any): Promise<any> =>
+  invoke('move_agent_session_to_workspace', { input })
+
+export const deleteAgentSession = (id: string): Promise<void> =>
+  invoke<void>('delete_agent_session', { id }).catch(() => {})
+
+export const updateAgentSessionTitle = (id: string, title: string): Promise<any> =>
+  invoke('update_agent_session_title', { id, title }).catch(() => ({ id, title, updatedAt: Date.now() }))
+
+export const togglePinAgentSession = (id: string): Promise<any> =>
+  invoke('toggle_pin_agent_session', { id }).catch(() => ({ id, pinned: true, updatedAt: Date.now() }))
+
+export const toggleManualWorkingAgentSession = (id: string): Promise<any> =>
+  invoke('toggle_manual_working_agent_session', { id }).catch(() => ({ id, manualWorking: true, updatedAt: Date.now() }))
+
+export const toggleArchiveAgentSession = (id: string): Promise<any> =>
+  invoke('toggle_archive_agent_session', { id }).catch(() => ({ id, archived: true, updatedAt: Date.now() }))
+
+export const toggleArchiveConversation = (id: string): Promise<any> =>
+  invoke('toggle_archive_conversation', { id }).catch(() => ({ id, archived: true, updatedAt: Date.now() }))
+
+// --- User profile compat ---
+export const getUserProfile = (): Promise<any> =>
+  invoke('get_user_profile').catch(() => ({ userName: 'User', avatar: '' }))
+
+// --- Search compat ---
+export const searchConversationMessages = (query: string): Promise<any[]> =>
+  invoke<any[]>('search_conversation_messages', { query }).catch(() => [])
+
+export const searchAgentSessionMessages = (query: string): Promise<any[]> =>
+  invoke<any[]>('search_agent_session_messages', { query }).catch(() => [])
+
+// --- Chat stream event listeners (Proma-style synchronous unlisten) ---
+type CleanupFn = () => void
+
+export const onStreamChunk = (cb: (event: any) => void): CleanupFn => {
+  let unlisten: (() => void) | null = null
+  listen('chat:stream-chunk', (e) => cb(e.payload as any)).then((fn) => { unlisten = fn })
+  return () => { unlisten?.() }
+}
+
+export const onStreamReasoning = (cb: (event: any) => void): CleanupFn => {
+  let unlisten: (() => void) | null = null
+  listen('chat:stream-reasoning', (e) => cb(e.payload as any)).then((fn) => { unlisten = fn })
+  return () => { unlisten?.() }
+}
+
+export const onStreamComplete = (cb: (event: any) => void): CleanupFn => {
+  let unlisten: (() => void) | null = null
+  listen('chat:stream-complete', (e) => cb(e.payload as any)).then((fn) => { unlisten = fn })
+  return () => { unlisten?.() }
+}
+
+export const onStreamError = (cb: (event: any) => void): CleanupFn => {
+  let unlisten: (() => void) | null = null
+  listen('chat:stream-error', (e) => cb(e.payload as any)).then((fn) => { unlisten = fn })
+  return () => { unlisten?.() }
+}
+
+export const onStreamToolActivity = (cb: (event: any) => void): CleanupFn => {
+  let unlisten: (() => void) | null = null
+  listen('chat:stream-tool-activity', (e) => cb(e.payload as any)).then((fn) => { unlisten = fn })
+  return () => { unlisten?.() }
+}
+
+/* eslint-enable @typescript-eslint/no-explicit-any */

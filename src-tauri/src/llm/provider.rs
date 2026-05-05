@@ -1,0 +1,38 @@
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use crate::agent::types::{ChatMessage, RespondOutput, StreamDelta, ToolDefinition};
+use crate::error::Error;
+
+/// Completion configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionConfig {
+    pub model: String,
+    pub max_tokens: u32,
+    pub temperature: f32,
+    pub system_prompt: Option<String>,
+}
+
+impl Default for CompletionConfig {
+    fn default() -> Self {
+        Self { model: "claude-sonnet-4-20250514".into(), max_tokens: 8192, temperature: 0.7, system_prompt: None }
+    }
+}
+
+/// LLM Provider trait
+#[async_trait]
+pub trait LlmProvider: Send + Sync {
+    async fn complete(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Vec<ToolDefinition>,
+        config: &CompletionConfig,
+    ) -> Result<RespondOutput, Error>;
+
+    async fn stream(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Vec<ToolDefinition>,
+        config: &CompletionConfig,
+    ) -> Result<Box<dyn futures::Stream<Item = Result<StreamDelta, Error>> + Send + Unpin>, Error>;
+}

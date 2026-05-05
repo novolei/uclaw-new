@@ -1,0 +1,436 @@
+//! ProviderService — listing, model discovery, and connection testing.
+//!
+//! Provides the service layer for the provider settings page:
+//! - `list_providers()`: Returns all built-in providers
+//! - `list_models()`: Fetches available models from provider API
+//!   - Ollama: GET {base_url}/api/tags
+//!   - Anthropic: Hardcoded registry
+//!   - OpenAI-compatible: GET {base_url}/models
+//! - `test_connection()`: Validates API connectivity with latency measurement
+//! - `configure_provider()`: Saves provider config to disk
+//! - `remove_provider()`: Removes a provider configuration
+
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::RwLock;
+
+use crate::error::Error;
+
+use super::registry;
+use super::store::{load_provider_configs, save_provider_configs};
+use super::types::{
+    KnownProvider, Model, ModelModality, ProviderConfig, ProviderConfigs, TestResult,
+};
+
+/// Service for provider management operations.
+pub struct ProviderService {
+    configs: Arc<RwLock<ProviderConfigs>>,
+    configs_path: std::path::PathBuf,
+}
+
+impl ProviderService {
+    /// Create a new ProviderService backed by the given configs path.
+    pub fn new(data_dir: &std::path::Path) -> Result<Self, Error> {
+        let configs_path = super::store::default_providers_path(data_dir);
+        let configs = load_provider_configs(&configs_path)
+            .map_err(|e| Error::Internal(format!("Failed to load provider configs: {e}")))?;
+        Ok(Self {
+            configs: Arc::new(RwLock::new(configs)),
+            configs_path,
+        })
+    }
+
+    // ── Provider listing ────────────────────────────────────────────────────
+
+    /// List all built-in providers.
+    #[must_use]
+    pub fn list_builtin_providers() -> Vec<KnownProvider> {
+        registry::all()
+    }
+
+    /// List all configured provider IDs.
+    pub async fn list_configured_ids(&self) -> Vec<String> {
+        self.configs.read().await.configured_ids()
+    }
+
+    /// Get a provider config (built-in info + saved settings).
+    pub async fn get_provider_config(&self, provider_id: &str) -> Option<ProviderConfig> {
+        self.configs
+            .read()
+            .await
+            .find_provider(provider_id)
+            .cloned()
+    }
+
+    /// Get all configured models grouped by provider.
+    pub async fn get_all_configured_models(&self) -> Vec<(String, Vec<String>)> {
+        let configs = self.configs.read().await;
+        let mut groups: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for m in &configs.selected_models {
+            groups
+                .entry(m.provider_id.clone())
+                .or_default()
+                .push(m.model_id.clone());
+        }
+        groups.into_iter().collect()
+    }
+
+    /// Get configured model IDs for a specific provider.
+    pub async fn get_configured_models(&self, provider_id: &str) -> Vec<String> {
+        self.configs.read().await.models_for_provider(provider_id)
+    }
+
+    /// Get the current active model.
+    pub async fn get_active_model(&self) -> Option<super::types::ModelSelection> {
+        self.configs.read().await.active_model.clone()
+    }
+
+    /// Resolve the active model into full LLM connection parameters.
+    /// Returns (provider_id, model, api_key, base_url).
+    /// Used by the chat system to create the LLM provider for sending messages.
+    pub async fn get_active_llm_config(&self) -> Option<(String, String, String, String)> {
+        let configs = self.configs.read().await;
+        let active = configs.active_model.as_ref()?;
+        let provider = configs.find_provider(&active.provider_id)?;
+        Some((
+            active.provider_id.clone(),
+            active.model_id.clone(),
+            provider.api_key.clone().unwrap_or_default(),
+            provider.base_url.clone().unwrap_or_default(),
+        ))
+    }
+
+    // ── Provider configuration ──────────────────────────────────────────────
+
+    /// Save a provider configuration.
+    pub async fn configure_provider(&self, config: ProviderConfig) -> Result<(), Error> {
+        let mut configs = self.configs.write().await;
+        configs.upsert_provider(config);
+        save_provider_configs(&configs, &self.configs_path)
+            .map_err(|e| Error::Internal(format!("Failed to save provider configs: {e}")))
+    }
+
+    /// Configure a provider with multiple model selections.
+    /// The first model becomes the default (active_model).
+    pub async fn configure_provider_with_models(
+        &self,
+        provider_config: ProviderConfig,
+        model_ids: &[String],
+    ) -> Result<(), Error> {
+        let mut configs = self.configs.write().await;
+
+        configs.upsert_provider(provider_config.clone());
+
+        // Remove existing models for this provider, then add new ones
+        configs
+            .selected_models
+            .retain(|m| m.provider_id != provider_config.provider_id);
+
+        let mut seen = std::collections::HashSet::new();
+        for model_id in model_ids {
+            let key = format!("{}::{}", provider_config.provider_id, model_id);
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.insert(key);
+            configs.selected_models.push(super::types::ModelSelection {
+                provider_id: provider_config.provider_id.clone(),
+                model_id: model_id.clone(),
+            });
+        }
+
+        // First model becomes the default
+        if let Some(first) = model_ids.first() {
+            configs.active_model = Some(super::types::ModelSelection {
+                provider_id: provider_config.provider_id.clone(),
+                model_id: first.clone(),
+            });
+        }
+
+        save_provider_configs(&configs, &self.configs_path)
+            .map_err(|e| Error::Internal(format!("Failed to save provider configs: {e}")))
+    }
+
+    /// Remove a provider configuration.
+    pub async fn remove_provider(&self, provider_id: &str) -> Result<(), Error> {
+        let mut configs = self.configs.write().await;
+        configs.remove_provider(provider_id);
+        save_provider_configs(&configs, &self.configs_path)
+            .map_err(|e| Error::Internal(format!("Failed to save after removal: {e}")))
+    }
+
+    /// Select the active model.
+    pub async fn select_model(&self, provider_id: &str, model_id: &str) -> Result<(), Error> {
+        let mut configs = self.configs.write().await;
+        configs.active_model = Some(super::types::ModelSelection {
+            provider_id: provider_id.to_string(),
+            model_id: model_id.to_string(),
+        });
+        save_provider_configs(&configs, &self.configs_path)
+            .map_err(|e| Error::Internal(format!("Failed to save model selection: {e}")))
+    }
+
+    // ── Model listing ───────────────────────────────────────────────────────
+
+    /// List available models for a given provider.
+    ///
+    /// Uses three different protocols:
+    /// - **Ollama**: GET {base_url}/api/tags
+    /// - **Anthropic**: Returns known Claude models from built-in registry
+    /// - **OpenAI-compatible**: GET {base_url}/models
+    pub async fn list_models(
+        &self,
+        provider_id: &str,
+        base_url: &str,
+        api_key: Option<&str>,
+    ) -> Result<Vec<Model>, String> {
+        match provider_id {
+            "ollama" => list_ollama_models(base_url).await,
+            "anthropic" => Ok(list_anthropic_models()),
+            _ => list_openai_compat_models(base_url, api_key).await,
+        }
+    }
+
+    // ── Connection testing ──────────────────────────────────────────────────
+
+    /// Test connection to a provider.
+    pub async fn test_connection(
+        &self,
+        provider_id: &str,
+        base_url: &str,
+        api_key: Option<&str>,
+    ) -> TestResult {
+        let start = Instant::now();
+        match test_provider_endpoint(provider_id, base_url, api_key).await {
+            Ok(message) => TestResult {
+                success: true,
+                message,
+                latency_ms: Some(start.elapsed().as_millis() as u64),
+                details: None,
+            },
+            Err(error) => TestResult {
+                success: false,
+                message: error,
+                latency_ms: Some(start.elapsed().as_millis() as u64),
+                details: None,
+            },
+        }
+    }
+}
+
+// ── Model listing implementations ───────────────────────────────────────────
+
+/// Fetch models from a local Ollama instance via `/api/tags`.
+async fn list_ollama_models(base_url: &str) -> Result<Vec<Model>, String> {
+    // Ollama's /api/tags is on the native API root, not under /v1
+    let base = base_url.trim_end_matches('/').trim_end_matches("/v1");
+    let url = format!("{base}/api/tags");
+
+    let response = reqwest::get(&url)
+        .await
+        .map_err(|e| format!("Failed to connect to Ollama: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Ollama returned {}", response.status()));
+    }
+
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Ollama response: {e}"))?;
+
+    let models = body
+        .get("models")
+        .and_then(|m| m.as_array())
+        .ok_or_else(|| "Ollama response missing 'models' field".to_string())?;
+
+    Ok(models
+        .iter()
+        .filter_map(|m| {
+            let name = m.get("name").and_then(|v| v.as_str())?;
+            Some(Model {
+                id: name.to_string(),
+                name: name.to_string(),
+                context_window: None,
+                max_tokens: None,
+                modality: ModelModality::Text,
+                reasoning: false,
+                reasoning_required_in_tool_calls: false,
+                supports_reasoning_effort: false,
+            })
+        })
+        .collect())
+}
+
+/// Return known Anthropic/Claude models from built-in registry.
+fn list_anthropic_models() -> Vec<Model> {
+    [
+        (
+            "claude-opus-4-6",
+            "Claude Opus 4.6",
+            200_000u64,
+            32_000u64,
+        ),
+        (
+            "claude-sonnet-4-6",
+            "Claude Sonnet 4.6",
+            200_000,
+            64_000,
+        ),
+        (
+            "claude-sonnet-4-5-20250514",
+            "Claude Sonnet 4.5",
+            200_000,
+            64_000,
+        ),
+        (
+            "claude-haiku-4-5-20251213",
+            "Claude Haiku 4.5",
+            200_000,
+            8_000,
+        ),
+    ]
+    .into_iter()
+    .map(|(id, name, ctx, max)| Model {
+        id: id.to_string(),
+        name: name.to_string(),
+        context_window: Some(ctx),
+        max_tokens: Some(max),
+        modality: ModelModality::Text,
+        reasoning: false,
+        reasoning_required_in_tool_calls: false,
+        supports_reasoning_effort: false,
+    })
+    .collect()
+}
+
+/// Fetch models from an OpenAI-compatible provider via `/models`.
+async fn list_openai_compat_models(
+    base_url: &str,
+    api_key: Option<&str>,
+) -> Result<Vec<Model>, String> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let mut request = client.get(&url);
+
+    if let Some(key) = api_key {
+        request = request.bearer_auth(key);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to provider: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Provider returned {}", response.status()));
+    }
+
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse provider response: {e}"))?;
+
+    let models = body
+        .get("data")
+        .and_then(|m| m.as_array())
+        .ok_or_else(|| "Provider response missing 'data' field".to_string())?;
+
+    Ok(models
+        .iter()
+        .filter_map(|m| {
+            let id = m.get("id").and_then(|v| v.as_str())?;
+            Some(Model {
+                id: id.to_string(),
+                name: id.to_string(),
+                context_window: None,
+                max_tokens: None,
+                modality: ModelModality::Text,
+                reasoning: false,
+                reasoning_required_in_tool_calls: false,
+                supports_reasoning_effort: false,
+            })
+        })
+        .collect())
+}
+
+// ── Connection testing ──────────────────────────────────────────────────────
+
+/// Test connectivity to a provider endpoint.
+async fn test_provider_endpoint(
+    provider_id: &str,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> Result<String, String> {
+    match provider_id {
+        "ollama" => {
+            let url = format!("{}/api/tags", base_url.trim_end_matches('/').trim_end_matches("/v1"));
+            let response = reqwest::get(&url)
+                .await
+                .map_err(|e| format!("Failed to reach Ollama: {e}"))?;
+            if response.status().is_success() {
+                Ok("Ollama connection successful".to_string())
+            } else {
+                Err(format!("Ollama returned HTTP {}", response.status()))
+            }
+        }
+        _ => {
+            let url = format!("{}/models", base_url.trim_end_matches('/'));
+            let client = reqwest::Client::new();
+            let mut request = client.get(&url);
+            if let Some(key) = api_key {
+                request = request.bearer_auth(key);
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|e| format!("Connection failed: {e}"))?;
+            let status = response.status();
+            if status.is_success() {
+                Ok(format!("Connection successful (HTTP {})", status.as_u16()))
+            } else if status.as_u16() == 401 || status.as_u16() == 403 {
+                Err("Authentication failed — check your API key".to_string())
+            } else if status.as_u16() == 404 {
+                Ok(format!(
+                    "Endpoint exists but returned 404 (HTTP {})",
+                    status.as_u16()
+                ))
+            } else {
+                Err(format!("Server returned HTTP {}", status.as_u16()))
+            }
+        }
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_list_builtin_providers_returns_all() {
+        let providers = ProviderService::list_builtin_providers();
+        assert!(!providers.is_empty());
+        assert!(providers.iter().any(|p| p.id == "openai"));
+        assert!(providers.iter().any(|p| p.id == "ollama"));
+    }
+
+    #[test]
+    fn test_list_anthropic_models_returns_models() {
+        let models = list_anthropic_models();
+        assert!(!models.is_empty());
+        assert!(models.iter().any(|m| m.id.contains("sonnet")));
+        assert!(models.iter().any(|m| m.id.contains("opus")));
+    }
+
+    #[test]
+    fn test_anthropic_models_have_context_windows() {
+        let models = list_anthropic_models();
+        for model in &models {
+            assert!(model.context_window.is_some(), "{} missing context window", model.id);
+            assert!(model.max_tokens.is_some(), "{} missing max tokens", model.id);
+        }
+    }
+}

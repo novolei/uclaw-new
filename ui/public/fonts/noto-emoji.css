@@ -1,0 +1,8 @@
+/* Noto Emoji — monochrome emoji font */
+@font-face {
+  font-family: "Noto Emoji";
+  src: url("https://cdn.jsdelivr.net/npm/@fontsource/noto-emoji@5.2.11/files/noto-emoji-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
