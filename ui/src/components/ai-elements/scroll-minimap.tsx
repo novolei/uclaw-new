@@ -99,6 +99,7 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
   const fadeTimerRef = React.useRef<ReturnType<typeof setTimeout>>()
   const searchInputRef = React.useRef<HTMLInputElement>(null)
   const trackRef = React.useRef<HTMLDivElement>(null)
+  const listRef = React.useRef<HTMLDivElement>(null)
 
   React.useEffect(() => {
     return () => {
@@ -154,6 +155,26 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
   React.useEffect(() => {
     if (!hovered) setSearchQuery('')
   }, [hovered])
+
+  // 面板打开后（且无搜索时），滚动消息列表到当前主区可见消息处
+  React.useEffect(() => {
+    if (!hovered) return
+    if (searchQuery.trim()) return
+    if (visibleIds.size === 0) return
+
+    // 等 DOM 完成 mount 动画再 scroll，避免初始 transform 干扰
+    const raf = requestAnimationFrame(() => {
+      const list = listRef.current
+      if (!list) return
+      const firstVisible = list.querySelector<HTMLElement>('[data-visible="true"]')
+      if (!firstVisible) return
+      const listRect = list.getBoundingClientRect()
+      const itemRect = firstVisible.getBoundingClientRect()
+      const target = list.scrollTop + (itemRect.top - listRect.top) - listRect.height * 0.3
+      list.scrollTo({ top: Math.max(0, target), behavior: 'auto' })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [hovered, searchQuery, visibleIds])
 
   const handleMouseEnter = (): void => {
     if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
@@ -303,7 +324,7 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
             </div>
 
             {/* 消息列表 */}
-            <div className="overflow-y-auto flex-1 px-1.5 pb-1.5 space-y-px scrollbar-thin">
+            <div ref={listRef} className="overflow-y-auto flex-1 px-1.5 pb-1.5 space-y-px scrollbar-thin">
               {filteredItems.length === 0 ? (
                 <div className="py-8 text-center text-xs text-muted-foreground/70">
                   未找到匹配消息
@@ -315,6 +336,7 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
                     <button
                       key={item.id}
                       type="button"
+                      data-visible={isVisible || undefined}
                       className={cn(
                         'group relative flex items-start gap-2.5 w-full rounded-lg px-2 py-1.5 text-left',
                         'transition-all duration-100',
