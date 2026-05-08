@@ -142,3 +142,120 @@ export function CodeBlock({
 }
 
 export default CodeBlock
+
+// ===== MarkdownCodeBlock — react-markdown 的 <pre> 渲染器 =====
+
+/**
+ * 不规则语言显示名称映射（无法通过首字母大写自动生成）
+ */
+const DISPLAY_NAMES: Record<string, string> = {
+  js: 'JavaScript', javascript: 'JavaScript',
+  ts: 'TypeScript', typescript: 'TypeScript',
+  tsx: 'TSX', jsx: 'JSX',
+  py: 'Python', rb: 'Ruby',
+  cpp: 'C++', 'c++': 'C++',
+  cs: 'C#', csharp: 'C#',
+  kt: 'Kotlin', rs: 'Rust',
+  sh: 'Shell', zsh: 'Shell', bash: 'Bash',
+  yml: 'YAML', yaml: 'YAML', md: 'Markdown',
+  html: 'HTML', css: 'CSS', scss: 'SCSS',
+  json: 'JSON', xml: 'XML', sql: 'SQL',
+  graphql: 'GraphQL', php: 'PHP',
+  plaintext: 'Text', text: 'Text',
+  dockerfile: 'Dockerfile', toml: 'TOML',
+  rust: 'Rust', go: 'Go', swift: 'Swift', kotlin: 'Kotlin',
+}
+
+function getDisplayName(lang: string): string {
+  if (!lang) return 'Code'
+  const key = lang.toLowerCase()
+  return DISPLAY_NAMES[key] ?? key.charAt(0).toUpperCase() + key.slice(1)
+}
+
+/** 递归提取 ReactNode 中的纯文本 */
+function extractText(node: React.ReactNode): string {
+  if (typeof node === 'string') return node
+  if (typeof node === 'number') return String(node)
+  if (!node) return ''
+  if (Array.isArray(node)) return node.map(extractText).join('')
+  if (React.isValidElement(node)) {
+    return extractText((node.props as { children?: React.ReactNode }).children)
+  }
+  return ''
+}
+
+interface MarkdownCodeBlockProps {
+  /** react-markdown 传入的 <pre> 子元素（内含 <code className="language-xxx">） */
+  children?: React.ReactNode
+}
+
+/**
+ * 供 react-markdown 的 `pre` 组件覆盖使用。
+ * 从 children 中提取语言和代码文本，使用 Shiki 渲染语法高亮。
+ */
+export function MarkdownCodeBlock({ children }: MarkdownCodeBlockProps): React.ReactElement {
+  // 从 react-markdown 传入的 children 中提取 <code> 元素
+  const codeElement = React.Children.toArray(children).find(
+    (child): child is React.ReactElement =>
+      React.isValidElement(child) && (child as React.ReactElement).type === 'code'
+  ) as React.ReactElement | undefined
+
+  const codeProps = codeElement?.props as { className?: string; children?: React.ReactNode } | undefined
+  const langMatch = codeProps?.className?.match(/language-(\S+)/)
+  const language = langMatch?.[1] ?? 'text'
+  const code = extractText(codeProps?.children ?? children).replace(/\n$/, '')
+
+  const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout>>()
+
+  // 检测当前主题
+  const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
+  const resolvedTheme: 'light' | 'dark' = isDark ? 'dark' : 'light'
+
+  useEffect(() => {
+    let cancelled = false
+    highlightCode(code, language, resolvedTheme).then((html) => {
+      if (!cancelled) setHighlightedHtml(html)
+    })
+    return () => { cancelled = true }
+  }, [code, language, resolvedTheme])
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current)
+      copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000)
+    } catch (err) {
+      console.error('[MarkdownCodeBlock] 复制失败:', err)
+    }
+  }, [code])
+
+  const fallbackHtml = useMemo(
+    () => `<pre class="shiki"><code>${escapeHtml(code)}</code></pre>`,
+    [code],
+  )
+
+  return (
+    <div className="code-block-wrapper group/code my-3 rounded-lg border border-border/50 overflow-hidden">
+      {/* 头部栏：语言标签 + 复制按钮 */}
+      <div className="flex items-center justify-between h-[34px] px-3 border-b border-border/50 bg-muted/60 text-xs text-muted-foreground">
+        <span className="font-mono font-medium select-none">{getDisplayName(language)}</span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="flex items-center gap-1.5 px-1.5 py-0.5 rounded hover:bg-foreground/10 transition-colors hover:text-foreground"
+        >
+          {copied ? '已复制 ✓' : '复制'}
+        </button>
+      </div>
+
+      {/* 代码区域 */}
+      <div
+        className="overflow-x-auto text-[13px] leading-relaxed [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:p-4 [&_code]:!text-[13px] [&_code]:!leading-relaxed"
+        dangerouslySetInnerHTML={{ __html: highlightedHtml ?? fallbackHtml }}
+      />
+    </div>
+  )
+}

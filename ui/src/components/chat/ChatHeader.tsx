@@ -11,6 +11,7 @@ import { conversationsAtom } from '@/atoms/chat-atoms'
 import { useConversationParallelMode } from '@/hooks/useConversationSettings'
 import type { ConversationMeta } from '@/lib/proma-types'
 import { SystemPromptSelector } from './SystemPromptSelector'
+import { ChatAppearancePopover } from './ChatAppearancePopover'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
@@ -111,6 +112,7 @@ export function ChatHeader({ conversation }: ChatHeaderProps): React.ReactElemen
 
       <div className="flex items-center gap-1 titlebar-no-drag ml-auto">
         <SystemPromptSelector />
+        <ChatAppearancePopover />
         <Tooltip>
           <TooltipTrigger asChild>
             <Button

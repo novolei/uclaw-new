@@ -1431,3 +1431,43 @@ html.theme-the-finals body::after {
 .file-browser-row-flash {
   animation: file-browser-flash 1.2s ease-out;
 }
+
+
+/* ===== 聊天外观调整：字体大小 + 衬线切换（由 ChatAppearancePopover 控制） ===== */
+/*
+ * 在 <html> 上设置 data-chat-font-size="sm|md|lg" 和 data-chat-serif="true|false"
+ * 通过 .chat-content 类应用到具体的消息内容容器。
+ */
+.chat-content {
+  font-size: 15px;
+  line-height: 1.6;
+}
+html[data-chat-font-size="sm"] .chat-content {
+  font-size: 13px;
+  line-height: 1.55;
+}
+html[data-chat-font-size="md"] .chat-content {
+  font-size: 15px;
+  line-height: 1.6;
+}
+html[data-chat-font-size="lg"] .chat-content {
+  font-size: 17px;
+  line-height: 1.7;
+}
+/* 衬线模式：切换到 serif 字体族（保留 emoji/CJK fallback） */
+html[data-chat-serif="true"] .chat-content {
+  font-family: var(--font-serif), Georgia, 'Songti SC', 'STSong', serif;
+}
+/* prose 内的 p / li / td 等也跟随容器字号（避免 prose-sm 强制覆盖） */
+html[data-chat-font-size="sm"] .chat-content.prose p,
+html[data-chat-font-size="sm"] .chat-content.prose li,
+html[data-chat-font-size="sm"] .chat-content.prose td { font-size: 13px; }
+html[data-chat-font-size="lg"] .chat-content.prose p,
+html[data-chat-font-size="lg"] .chat-content.prose li,
+html[data-chat-font-size="lg"] .chat-content.prose td { font-size: 17px; }
+/* 代码块永远保持等宽字体，不受衬线切换影响 */
+html[data-chat-serif="true"] .chat-content code,
+html[data-chat-serif="true"] .chat-content pre {
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+

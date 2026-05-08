@@ -24,6 +24,20 @@ import {
 } from './atoms/theme'
 import { Toaster } from './components/ui/sonner'
 import './styles/globals.css'
+import 'katex/dist/katex.min.css'
+
+// 开机即应用聊天外观（避免首次渲染时闪烁）
+import { applyChatAppearanceToDOM } from './atoms/chat-appearance'
+try {
+  const fontSize = (localStorage.getItem('uclaw-chat-font-size') as 'sm' | 'md' | 'lg' | null) ?? 'md'
+  const serif = localStorage.getItem('uclaw-chat-serif') === 'true'
+  applyChatAppearanceToDOM(
+    fontSize === 'sm' || fontSize === 'md' || fontSize === 'lg' ? fontSize : 'md',
+    serif,
+  )
+} catch {
+  /* ignore */
+}
 
 // 导入 tauri-bridge 以注册 IPC 适配层
 import './lib/tauri-bridge'
