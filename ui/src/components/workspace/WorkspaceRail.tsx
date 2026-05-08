@@ -1,20 +1,16 @@
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { Plus, Settings } from 'lucide-react'
-import { listen } from '@tauri-apps/api/event'
 import {
   workspacesAtom,
   activeWorkspaceIdAtom,
   workspaceSessionsAtom,
   refreshWorkspacesAtom,
   selectWorkspaceAtom,
-  updateSessionTitleAtom,
-  markSessionTitlePendingAtom,
 } from '@/atoms/workspace'
 import { WorkspaceGroup } from './WorkspaceGroup'
 import { WorkspaceCreateDialog } from './WorkspaceCreateDialog'
 import { cn } from '@/lib/utils'
-import type { SessionTitleUpdate } from '@/lib/tauri-bridge'
 
 interface WorkspaceRailProps {
   activeSessionId: string | null
@@ -34,26 +30,11 @@ export function WorkspaceRail({
   const workspaceSessions = useAtomValue(workspaceSessionsAtom)
   const refreshWorkspaces = useSetAtom(refreshWorkspacesAtom)
   const selectWorkspace = useSetAtom(selectWorkspaceAtom)
-  const updateSessionTitle = useSetAtom(updateSessionTitleAtom)
-  const markSessionTitlePending = useSetAtom(markSessionTitlePendingAtom)
   const [createOpen, setCreateOpen] = React.useState(false)
 
   React.useEffect(() => {
     refreshWorkspaces()
   }, [refreshWorkspaces])
-
-  // Direct fast-path: update workspaceSessionsAtom immediately when title events arrive,
-  // without waiting for the agentSessionsAtom → syncWorkspaceSessions → workspaceSessionsAtom chain.
-  React.useEffect(() => {
-    const cleanups: Array<() => void> = []
-    listen<string>('session:title-pending', ({ payload: sessionId }) => {
-      markSessionTitlePending(sessionId)
-    }).then((fn) => cleanups.push(fn))
-    listen<SessionTitleUpdate>('session:title-updated', ({ payload }) => {
-      updateSessionTitle({ sessionId: payload.sessionId, title: payload.title, emoji: payload.emoji })
-    }).then((fn) => cleanups.push(fn))
-    return () => { cleanups.forEach((fn) => fn()) }
-  }, [updateSessionTitle, markSessionTitlePending])
 
   const handleCreated = async (ws: { id: string; name: string; icon: string }) => {
     await refreshWorkspaces()

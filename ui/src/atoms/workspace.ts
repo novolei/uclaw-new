@@ -74,22 +74,6 @@ export const updateSessionTitleAtom = atom(
   }
 )
 
-// Mark a session as title-pending (skeleton animation while LLM generates)
-export const markSessionTitlePendingAtom = atom(
-  null,
-  (_get, set, sessionId: string) => {
-    set(workspaceSessionsAtom, (prev) => {
-      const next = { ...prev }
-      for (const spaceId of Object.keys(next)) {
-        next[spaceId] = next[spaceId].map((s) =>
-          s.id === sessionId ? { ...s, titlePending: true } : s
-        )
-      }
-      return next
-    })
-  }
-)
-
 // Action: sync agent sessions into workspace session map
 export const syncWorkspaceSessionsAtom = atom(
   null,

@@ -2441,7 +2441,6 @@ pub async fn send_agent_message(
     app_handle: tauri::AppHandle,
     input: SendAgentMessageInput,
 ) -> Result<(), Error> {
-    tracing::info!(session_id = %input.session_id, "[send_agent_message] invoked");
     // Resolve LLM config
     let legacy_config = state.llm_config.read().await;
     let max_tokens = legacy_config.max_tokens.unwrap_or(8192);
@@ -2490,12 +2489,9 @@ pub async fn send_agent_message(
         let no_real_title = emoji_in_meta.is_empty()
             || (emoji_in_meta == "💬" && (title_in_meta.is_empty() || title_in_meta == "New session"));
         should_generate_title = !title_pending && no_real_title;
-        tracing::info!(
+        tracing::debug!(
             session_id = %input.session_id,
             message_count,
-            emoji = %emoji_in_meta,
-            title = %title_in_meta,
-            title_pending,
             no_real_title,
             should_generate_title,
             "[title] trigger decision"
@@ -2512,7 +2508,7 @@ pub async fn send_agent_message(
 
     // Fire-and-forget title generation when needed
     if should_generate_title {
-        tracing::info!(session_id = %input.session_id, "[title] spawning title generation");
+        tracing::debug!(session_id = %input.session_id, "[title] spawning title generation");
         let llm_config_for_title = state.llm_config.read().await.clone();
         spawn_agent_session_title_summary(
             input.session_id.clone(),
@@ -3123,7 +3119,7 @@ fn spawn_agent_session_title_summary(
             merge_agent_session_meta(&conn, &session_id, &updates);
         }
     }
-    tracing::info!(session_id = %session_id, "[title] emitting session:title-pending");
+    tracing::debug!(session_id = %session_id, "[title] emitting session:title-pending");
     let _ = app_handle.emit("session:title-pending", &session_id);
 
     tokio::spawn(async move {
