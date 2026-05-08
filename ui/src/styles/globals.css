@@ -260,6 +260,111 @@
     --dashed-border-hover: 18 20% 50% / 0.55;
   }
 
+  /* ===== 新暖纸色系 ===== */
+
+  /* 新暖纸（浅色）- 纸感白天，温暖沙米色调 */
+  .theme-warm-paper {
+    --background: 44 44% 95%;               /* #f8f5ed 温暖米色背景 */
+    --foreground: 210 3% 24%;               /* #3b3d3f 近黑前景 */
+    --content-area: 44 48% 97%;             /* #fcfaf5 内容区域（更亮米白） */
+    --muted: 44 30% 91%;                    /* #f1ede3 次要背景 */
+    --muted-foreground: 210 4% 44%;         /* #6b6f73 次要文字 */
+    --border: 205 22% 85%;                  /* 蓝灰色边框 */
+    --input: 205 22% 88%;                   /* 输入框背景 */
+    --ring: 205 28% 46%;                    /* #537d96 聚焦环 */
+    --primary: 205 28% 46%;                 /* #537d96 蓝灰主色 */
+    --primary-foreground: 0 0% 100%;        /* 白色主色前景 */
+    --secondary: 44 31% 93%;                /* #f4f2ea 二级背景 */
+    --secondary-foreground: 210 3% 42%;     /* 二级前景 */
+    --accent: 194 35% 95%;                  /* #eef4f6 强调背景 */
+    --accent-foreground: 214 30% 24%;       /* #2b3a4e 强调文字 */
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --stop-hover-bg: hsla(0, 70%, 50%, 0.12);
+    --card: 44 50% 97%;                     /* #fcfaf5 卡片背景 */
+    --card-foreground: 210 3% 24%;
+    --popover: 44 50% 97%;
+    --popover-foreground: 210 3% 24%;
+    --dialog: 44 48% 97%;
+    --dialog-foreground: 210 3% 24%;
+    --tooltip: 214 45% 18%;
+    --tooltip-foreground: 0 0% 98%;
+    --tooltip-muted: 205 20% 70%;
+    --code-bg: 210 35% 14%;
+    --dashed-border: 205 28% 46% / 0.30;
+    --dashed-border-hover: 205 28% 46% / 0.45;
+  }
+
+  /* ===== 青夜色系 ===== */
+
+  /* 青夜（深色）- 柔和夜间，雾蓝青调 */
+  .theme-qingye {
+    --background: 205 17% 28%;              /* #3b4a54 深雾蓝背景 */
+    --foreground: 207 14% 81%;              /* #c8d1d8 蓝灰前景 */
+    --content-area: 205 20% 22%;            /* 更深内容区域 */
+    --muted: 205 17% 25%;                   /* #34424b 次要背景 */
+    --muted-foreground: 205 15% 60%;        /* #8a9ba8 次要文字 */
+    --border: 340 16% 36%;                  /* 玫红调边框 */
+    --input: 205 15% 33%;                   /* 输入框背景 */
+    --ring: 340 25% 57%;                    /* #aa798d 玫红聚焦环 */
+    --primary: 340 25% 57%;                 /* #aa798d 玫红主色 */
+    --primary-foreground: 205 30% 18%;      /* #20313a 深色前景 */
+    --secondary: 205 14% 34%;              /* #4b5a63 二级背景 */
+    --secondary-foreground: 207 14% 81%;
+    --accent: 340 16% 32%;                  /* 玫红调强调背景 */
+    --accent-foreground: 12 60% 77%;        /* #eab2a0 桃色强调文字 */
+    --destructive: 0 55% 45%;
+    --destructive-foreground: 0 0% 98%;
+    --stop-hover-bg: hsl(0, 25%, 20%);
+    --card: 205 16% 32%;                    /* #445560 卡片背景 */
+    --card-foreground: 207 14% 81%;
+    --popover: 205 16% 32%;
+    --popover-foreground: 207 14% 81%;
+    --dialog: 205 17% 28%;
+    --dialog-foreground: 207 14% 81%;
+    --tooltip: 205 24% 20%;
+    --tooltip-foreground: 0 0% 98%;
+    --tooltip-muted: 205 14% 65%;
+    --code-bg: 205 30% 10%;
+    --dashed-border: 340 25% 57% / 0.35;
+    --dashed-border-hover: 340 25% 57% / 0.50;
+  }
+
+  /* ===== 黑色色系 ===== */
+
+  /* 黑色（深色）- 深色专注，纯粹黑金调 */
+  .theme-black {
+    --background: 230 8% 11%;               /* #18191d 近黑背景 */
+    --foreground: 240 4% 87%;               /* #dedee3 近白前景 */
+    --content-area: 230 10% 10%;            /* 更深内容区域 */
+    --muted: 270 4% 17%;                    /* #2b292d 次要背景 */
+    --muted-foreground: 235 5% 57%;         /* #8f9099 次要文字 */
+    --border: 235 7% 22%;                   /* #34353d 边框 */
+    --input: 240 6% 19%;                    /* #2d2e35 输入框 */
+    --ring: 43 53% 49%;                     /* #c19a3b 金色聚焦环 */
+    --primary: 43 53% 49%;                  /* #c19a3b 金色主色 */
+    --primary-foreground: 230 8% 10%;       /* #17181c 深背景前景 */
+    --secondary: 240 5% 18%;                /* #2a2b31 二级背景 */
+    --secondary-foreground: 240 5% 81%;     /* #c9c9d0 */
+    --accent: 258 5% 20%;                   /* #2f2e35 强调背景 */
+    --accent-foreground: 240 4% 87%;        /* #dedee3 */
+    --destructive: 0 55% 45%;
+    --destructive-foreground: 0 0% 98%;
+    --stop-hover-bg: hsl(0, 15%, 14%);
+    --card: 240 6% 15%;                     /* #24252b 卡片背景 */
+    --card-foreground: 240 4% 87%;
+    --popover: 240 5% 16%;                  /* #25262c */
+    --popover-foreground: 240 4% 87%;
+    --dialog: 240 5% 18%;
+    --dialog-foreground: 240 4% 87%;
+    --tooltip: 240 10% 22%;
+    --tooltip-foreground: 0 0% 98%;
+    --tooltip-muted: 235 5% 65%;
+    --code-bg: 230 15% 9%;
+    --dashed-border: 43 53% 49% / 0.30;
+    --dashed-border-hover: 43 53% 49% / 0.45;
+  }
+
   /* 莫兰迪夜（深色） */
   .theme-slate-dark {
     /* 基础色 - 侧边栏与内容区对调 */
@@ -319,7 +424,9 @@
 /* 深色特殊主题 dialog 光晕效果 */
 .theme-ocean-dark [data-radix-dialog-content],
 .theme-forest-dark [data-radix-dialog-content],
-.theme-slate-dark [data-radix-dialog-content] {
+.theme-slate-dark [data-radix-dialog-content],
+.theme-qingye [data-radix-dialog-content],
+.theme-black [data-radix-dialog-content] {
   box-shadow:
     0 0 40px 8px rgba(255, 255, 255, 0.06),
     0 25px 50px -12px rgba(0, 0, 0, 0.5);
@@ -332,6 +439,9 @@
 .theme-forest-dark .shell-bg { background: linear-gradient(135deg, hsl(150 20% 5%) 0%, hsl(150 18% 7%) 100%); }
 .theme-slate-light .shell-bg { background: linear-gradient(135deg, hsl(40 6% 84%) 0%, hsl(40 6% 86%) 100%); }
 .theme-slate-dark .shell-bg  { background: linear-gradient(135deg, hsl(270 10% 7%) 0%, hsl(260 8% 9%) 100%); }
+.theme-warm-paper .shell-bg  { background: linear-gradient(135deg, hsl(44 31% 91%) 0%, hsl(44 38% 93%) 100%); }
+.theme-qingye .shell-bg      { background: linear-gradient(135deg, hsl(205 20% 18%) 0%, hsl(205 17% 22%) 100%); }
+.theme-black .shell-bg       { background: linear-gradient(135deg, hsl(230 10% 7%) 0%, hsl(230 8% 9%) 100%); }
 
 /* ===== 特殊主题：模式切换器选中状态 ===== */
 /* 晴空碧海：蓝色背景滑块 + 白色文字 */
@@ -458,6 +568,66 @@
   color: inherit !important;
 }
 
+/* ===== 新暖纸主题：模式切换器 ===== */
+.theme-warm-paper .mode-slider {
+  background: hsl(205 28% 46%) !important;  /* #537d96 蓝灰主色 */
+  box-shadow: 0 2px 4px rgba(83, 125, 150, 0.3);
+}
+.theme-warm-paper .mode-btn-selected {
+  color: #ffffff !important;
+}
+
+/* ===== 青夜主题：模式切换器 ===== */
+.theme-qingye .mode-slider {
+  background: hsl(340 25% 57%) !important;  /* #aa798d 玫红主色 */
+  box-shadow: 0 2px 4px rgba(170, 121, 141, 0.35);
+}
+.theme-qingye .mode-btn-selected {
+  color: hsl(205 30% 18%) !important;
+}
+
+/* ===== 黑色主题：模式切换器 ===== */
+.theme-black .mode-slider {
+  background: hsl(43 53% 49%) !important;   /* #c19a3b 金色主色 */
+  box-shadow: 0 2px 4px rgba(193, 154, 59, 0.35);
+}
+.theme-black .mode-btn-selected {
+  color: hsl(230 8% 10%) !important;
+}
+
+/* ===== 新暖纸主题：会话/工作区选中状态 ===== */
+.theme-warm-paper .session-item-selected,
+.theme-warm-paper .workspace-item-selected {
+  background: hsl(205 22% 86%) !important;  /* 浅蓝灰背景 */
+  color: hsl(205 28% 30%) !important;       /* 深蓝灰文字 */
+}
+.theme-warm-paper .session-item-selected *,
+.theme-warm-paper .workspace-item-selected * {
+  color: inherit !important;
+}
+
+/* ===== 青夜主题：会话/工作区选中状态 ===== */
+.theme-qingye .session-item-selected.session-item-selected,
+.theme-qingye .workspace-item-selected.workspace-item-selected {
+  background-color: hsl(205 18% 22%) !important;  /* 深雾蓝背景 */
+  color: hsl(12 60% 77%) !important;              /* 桃色文字 */
+}
+.theme-qingye .session-item-selected *,
+.theme-qingye .workspace-item-selected * {
+  color: inherit !important;
+}
+
+/* ===== 黑色主题：会话/工作区选中状态 ===== */
+.theme-black .session-item-selected.session-item-selected,
+.theme-black .workspace-item-selected.workspace-item-selected {
+  background-color: hsl(240 8% 19%) !important;   /* 深灰背景 */
+  color: hsl(43 53% 65%) !important;              /* 金色文字 */
+}
+.theme-black .session-item-selected *,
+.theme-black .workspace-item-selected * {
+  color: inherit !important;
+}
+
 /* ===== TabBar 背景 ===== */
 /* 默认背景 */
 .tabbar-bg {
@@ -479,6 +649,16 @@
   box-shadow: inset 0 -1px 0 0 hsl(260 10% 18% / 0.6);
 }
 
+/* 青夜：底部玫红调阴影 */
+.theme-qingye .tabbar-bg {
+  box-shadow: inset 0 -1px 0 0 hsl(340 16% 24% / 0.6);
+}
+
+/* 黑色：底部金色调阴影 */
+.theme-black .tabbar-bg {
+  box-shadow: inset 0 -1px 0 0 hsl(235 10% 16% / 0.7);
+}
+
 /* ===== 输入框段落紧凑行距（仅作用于输入框内的 tiptap 编辑器） ===== */
 .rich-text-input .tiptap p {
   margin: 0;
@@ -496,7 +676,9 @@
 /* 深色主题：使用 muted bg + 正常前景色 */
 .dark .tiptap pre,
 .theme-ocean-dark .tiptap pre,
-.theme-slate-dark .tiptap pre {
+.theme-slate-dark .tiptap pre,
+.theme-qingye .tiptap pre,
+.theme-black .tiptap pre {
   background-color: hsl(var(--muted));
   color: hsl(var(--foreground));
 }

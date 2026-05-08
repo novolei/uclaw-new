@@ -1,76 +1,254 @@
-import { useState, useEffect } from 'react'
-import { SettingsSection } from './primitives/SettingsSection'
-import { SettingsRow } from './primitives/SettingsRow'
-import { SettingsSegmentedControl } from './primitives/SettingsSegmentedControl'
-import { getSettings, patchSettings } from '@/lib/tauri-bridge'
+import { useAtom, useAtomValue } from 'jotai'
+import { Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { themeModeAtom, themeStyleAtom, applyThemeToDOM, updateThemeMode, updateThemeStyle, systemIsDarkAtom } from '@/atoms/theme'
+import type { ThemeStyle } from '@/lib/proma-types'
 
-const THEMES = [
-  { value: 'system', label: '跟随系统', color: 'bg-gradient-to-br from-white to-zinc-900' },
-  { value: 'light', label: '浅色', color: 'bg-white' },
-  { value: 'dark', label: '深色', color: 'bg-zinc-900' },
-  { value: 'midnight', label: '午夜蓝', color: 'bg-slate-950' },
-  { value: 'forest', label: '森林绿', color: 'bg-emerald-950' },
-  { value: 'sunset', label: '日落橙', color: 'bg-orange-950' },
-  { value: 'ocean', label: '海洋蓝', color: 'bg-sky-950' },
-  { value: 'rose', label: '玫瑰粉', color: 'bg-rose-950' },
+// ─────────────────────────────────────────────────────────
+// Theme card definitions
+// ─────────────────────────────────────────────────────────
+
+type ThemeEntry =
+  | { kind: 'basic'; id: 'light' | 'dark'; title: string; subtitle: string; className: string; preview: [string, string, string] }
+  | { kind: 'special'; id: ThemeStyle; title: string; subtitle: string; className: string; preview: [string, string, string] }
+
+const THEME_ENTRIES: ThemeEntry[] = [
+  {
+    kind: 'basic',
+    id: 'light',
+    title: '浅色',
+    subtitle: '明亮干净',
+    className: 'bg-[#ffffff] text-[#111111]',
+    preview: ['#f0f0f0', '#e0e0e0', '#111111'],
+  },
+  {
+    kind: 'basic',
+    id: 'dark',
+    title: '深色',
+    subtitle: '经典暗黑',
+    className: 'bg-[#121212] text-[#f0f0f0]',
+    preview: ['#2a2a2a', '#1e1e1e', '#f0f0f0'],
+  },
+  {
+    kind: 'special',
+    id: 'ocean-light',
+    title: '晴空碧海',
+    subtitle: '蓝调日光',
+    className: 'bg-[#ecf2f7] text-[#1b2632]',
+    preview: ['#c3d5e5', '#d7e4ef', '#408abf'],
+  },
+  {
+    kind: 'special',
+    id: 'ocean-dark',
+    title: '苍穹暮色',
+    subtitle: '深海夜境',
+    className: 'bg-[#182434] text-[#e7ebef]',
+    preview: ['#202e3c', '#19242e', '#084672'],
+  },
+  {
+    kind: 'special',
+    id: 'forest-light',
+    title: '森息晨光',
+    subtitle: '自然清绿',
+    className: 'bg-[#eff5f1] text-[#1d3026]',
+    preview: ['#cad8cf', '#dae7df', '#3f8361'],
+  },
+  {
+    kind: 'special',
+    id: 'forest-dark',
+    title: '森息夜语',
+    subtitle: '幽林深绿',
+    className: 'bg-[#212c26] text-[#e3e8e5]',
+    preview: ['#24332b', '#1b2721', '#185337'],
+  },
+  {
+    kind: 'special',
+    id: 'slate-light',
+    title: '云朵舞者',
+    subtitle: '温暖灰调',
+    className: 'bg-[#f0efec] text-[#312f2a]',
+    preview: ['#d0cdc6', '#dddad4', '#bda59b'],
+  },
+  {
+    kind: 'special',
+    id: 'slate-dark',
+    title: '莫兰迪夜',
+    subtitle: '淡紫雾境',
+    className: 'bg-[#1d1b20] text-[#e9e6e3]',
+    preview: ['#322e36', '#272429', '#c9a89e'],
+  },
+  {
+    kind: 'special',
+    id: 'warm-paper',
+    title: '新暖纸',
+    subtitle: '纸感白天',
+    className: 'bg-[#f8f5ed] text-[#3b3d3f]',
+    preview: ['#e2ddd2', '#f4f2ea', '#537d96'],
+  },
+  {
+    kind: 'special',
+    id: 'qingye',
+    title: '青夜',
+    subtitle: '柔和夜间',
+    className: 'bg-[#3b4a54] text-[#c8d1d8]',
+    preview: ['#34424b', '#445560', '#aa798d'],
+  },
+  {
+    kind: 'special',
+    id: 'black',
+    title: '黑色',
+    subtitle: '深色专注',
+    className: 'bg-[#18191d] text-[#dedee3]',
+    preview: ['#24252b', '#2f2e35', '#c19a3b'],
+  },
 ]
 
-const FONT_SIZE_OPTIONS = [
-  { value: 'small', label: '小' },
-  { value: 'medium', label: '中' },
-  { value: 'large', label: '大' },
-]
+// ─────────────────────────────────────────────────────────
+// ThemeCard component
+// ─────────────────────────────────────────────────────────
+
+function ThemeCard({
+  selected,
+  onSelect,
+  title,
+  subtitle,
+  className,
+  preview,
+}: {
+  selected: boolean
+  onSelect: () => void
+  title: string
+  subtitle: string
+  className: string
+  preview: [string, string, string]
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={selected}
+      className={cn(
+        'group relative flex h-[96px] flex-col justify-between overflow-hidden rounded-[10px] border px-3.5 py-2.5 text-left transition-all duration-200',
+        'hover:-translate-y-0.5 hover:shadow-[0_12px_28px_rgba(0,0,0,0.10)]',
+        selected
+          ? 'border-foreground/80 ring-2 ring-foreground/60 shadow-[0_8px_20px_rgba(0,0,0,0.08)]'
+          : 'border-white/20 shadow-[0_4px_12px_rgba(0,0,0,0.06)]',
+        className,
+      )}
+    >
+      {/* Color swatches — top right */}
+      <div className="flex justify-end gap-1">
+        {preview.map((color, i) => (
+          <span
+            key={i}
+            className="h-2 w-6 rounded-full opacity-90"
+            style={{ backgroundColor: color }}
+          />
+        ))}
+      </div>
+
+      {/* Title & subtitle — bottom left */}
+      <div>
+        <div className="text-[15px] font-semibold leading-tight tracking-tight">{title}</div>
+        <div className="mt-0.5 text-[11.5px] opacity-65">{subtitle}</div>
+      </div>
+
+      {/* Selected checkmark */}
+      {selected && (
+        <span className="absolute right-2 top-2 flex size-[18px] items-center justify-center rounded-full bg-white/90 shadow-sm">
+          <Check className="size-3 text-zinc-900" strokeWidth={2.5} />
+        </span>
+      )}
+    </button>
+  )
+}
+
+// ─────────────────────────────────────────────────────────
+// AppearanceSettings
+// ─────────────────────────────────────────────────────────
 
 export function AppearanceSettings() {
-  const [theme, setTheme] = useState('system')
-  const [fontSize, setFontSize] = useState('medium')
+  const [themeMode, setThemeModeAtom] = useAtom(themeModeAtom)
+  const [themeStyle, setThemeStyleAtom] = useAtom(themeStyleAtom)
+  const systemIsDark = useAtomValue(systemIsDarkAtom)
 
-  useEffect(() => {
-    getSettings().then((s) => {
-      if (s.theme) setTheme(s.theme)
-    })
-  }, [])
-
-  const handleThemeChange = async (value: string) => {
-    setTheme(value)
-    await patchSettings({ theme: value })
+  function isSelected(entry: ThemeEntry): boolean {
+    if (entry.kind === 'basic') {
+      return themeMode === entry.id
+    }
+    return themeMode === 'special' && themeStyle === entry.id
   }
+
+  async function selectEntry(entry: ThemeEntry) {
+    if (entry.kind === 'basic') {
+      setThemeModeAtom(entry.id)
+      setThemeStyleAtom('default')
+      applyThemeToDOM(entry.id, 'default', systemIsDark)
+      await updateThemeMode(entry.id)
+      await updateThemeStyle('default')
+    } else {
+      setThemeModeAtom('special')
+      setThemeStyleAtom(entry.id)
+      applyThemeToDOM('special', entry.id, systemIsDark)
+      await updateThemeMode('special')
+      await updateThemeStyle(entry.id)
+    }
+  }
+
+  async function selectSystem() {
+    setThemeModeAtom('system')
+    setThemeStyleAtom('default')
+    applyThemeToDOM('system', 'default', systemIsDark)
+    await updateThemeMode('system')
+    await updateThemeStyle('default')
+  }
+
+  const isSystem = themeMode === 'system'
 
   return (
     <div className="space-y-6">
       <h2 className="text-lg font-semibold">外观设置</h2>
 
-      <SettingsSection title="主题" description="选择你喜欢的界面主题">
-        <div className="grid grid-cols-4 gap-3">
-          {THEMES.map((t) => (
-            <button
-              key={t.value}
-              type="button"
-              onClick={() => handleThemeChange(t.value)}
-              className={cn(
-                'flex flex-col items-center gap-2 p-3 rounded-lg border-2 transition-colors',
-                theme === t.value
-                  ? 'border-primary bg-accent'
-                  : 'border-transparent hover:border-border'
-              )}
-            >
-              <div className={cn('w-10 h-10 rounded-full border border-border', t.color)} />
-              <span className="text-xs text-muted-foreground">{t.label}</span>
-            </button>
+      <div className="space-y-3">
+        {/* Section header with "Follow system" button */}
+        <div className="flex items-end justify-between gap-2">
+          <div>
+            <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/70 mb-0.5">
+              主题
+            </div>
+            <div className="text-[12px] text-muted-foreground">
+              选择后立即应用，并会保存到下次启动。
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={selectSystem}
+            className={cn(
+              'shrink-0 h-7 rounded-xl border px-3 text-[11px] font-medium transition-colors',
+              isSystem
+                ? 'border-primary/40 bg-primary/10 text-primary'
+                : 'border-border bg-muted/30 text-muted-foreground hover:bg-muted/60',
+            )}
+          >
+            跟随系统
+          </button>
+        </div>
+
+        {/* Theme cards grid */}
+        <div className="grid grid-cols-3 gap-2.5">
+          {THEME_ENTRIES.map((entry) => (
+            <ThemeCard
+              key={entry.id}
+              selected={isSelected(entry)}
+              onSelect={() => selectEntry(entry)}
+              title={entry.title}
+              subtitle={entry.subtitle}
+              className={entry.className}
+              preview={entry.preview}
+            />
           ))}
         </div>
-      </SettingsSection>
-
-      <SettingsSection title="字体大小">
-        <SettingsRow label="界面字体大小">
-          <SettingsSegmentedControl
-            value={fontSize}
-            onValueChange={setFontSize}
-            options={FONT_SIZE_OPTIONS}
-          />
-        </SettingsRow>
-      </SettingsSection>
+      </div>
     </div>
   )
 }

@@ -25,11 +25,16 @@ function getCachedThemeMode(): ThemeMode {
   return 'dark'
 }
 
+const VALID_THEME_STYLES: ThemeStyle[] = [
+  'default', 'ocean-light', 'ocean-dark', 'forest-light', 'forest-dark',
+  'slate-light', 'slate-dark', 'warm-paper', 'qingye', 'black',
+]
+
 function getCachedThemeStyle(): ThemeStyle {
   try {
     const cached = localStorage.getItem(THEME_STYLE_CACHE_KEY)
-    if (cached === 'default' || cached === 'ocean-light' || cached === 'ocean-dark' || cached === 'forest-light' || cached === 'forest-dark' || cached === 'slate-light' || cached === 'slate-dark') {
-      return cached
+    if (cached && VALID_THEME_STYLES.includes(cached as ThemeStyle)) {
+      return cached as ThemeStyle
     }
   } catch {
     // localStorage 不可用时忽略
@@ -70,7 +75,7 @@ export const resolvedThemeAtom = atom<'light' | 'dark'>((get) => {
   }
   if (mode === 'special') {
     const style = get(themeStyleAtom)
-    return style.endsWith('-light') ? 'light' : 'dark'
+    return DARK_THEME_STYLES.includes(style) ? 'dark' : 'light'
   }
   return mode
 })
@@ -82,7 +87,15 @@ const ALL_THEME_STYLE_CLASSES = [
   'theme-forest-dark',
   'theme-slate-light',
   'theme-slate-dark',
+  'theme-warm-paper',
+  'theme-qingye',
+  'theme-black',
 ] as const
+
+/** 这些特殊风格是深色主题 */
+const DARK_THEME_STYLES: ThemeStyle[] = [
+  'ocean-dark', 'forest-dark', 'slate-dark', 'qingye', 'black',
+]
 
 /**
  * 应用主题到 DOM
@@ -94,7 +107,7 @@ export function applyThemeToDOM(themeMode: ThemeMode, themeStyle: ThemeStyle = '
 
   if (themeMode === 'special' && themeStyle !== 'default') {
     targetStyleClass = `theme-${themeStyle}`
-    targetIsDark = themeStyle.endsWith('-dark')
+    targetIsDark = DARK_THEME_STYLES.includes(themeStyle)
   } else if (themeMode === 'system') {
     targetIsDark = systemIsDark
   } else {
