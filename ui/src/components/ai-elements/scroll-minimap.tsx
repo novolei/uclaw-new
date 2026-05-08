@@ -357,19 +357,23 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
 
         {/* 迷你地图横杠（紧凑排列）—— 只有这里触发面板展开 */}
         <div
-          className="relative mt-3 flex-shrink-0 pointer-events-auto flex flex-col items-center"
-          style={{ width: 24 }}
+          className={cn(
+            'relative mt-3 flex-shrink-0 pointer-events-auto flex flex-col items-center',
+            'rounded-lg border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm',
+            'px-1.5 py-2 hover:border-border hover:bg-background/90 transition-colors',
+          )}
+          style={{ minWidth: 32 }}
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
-          title="消息导航"
+          title="消息导航 — 悬停查看"
         >
           {/* 顶部图标：始终可见，作为导航入口的视觉提示 */}
-          <ListTree className="size-3.5 text-muted-foreground/60 mb-1.5" />
+          <ListTree className="size-4 text-foreground/70 mb-2" />
 
           {/* 横杠容器（带可见的垂直引导线） */}
-          <div className="relative" style={{ width: 24, height: barCount * 6 }}>
+          <div className="relative" style={{ width: 20, height: Math.max(barCount * 6, 20) }}>
             {/* 垂直引导线：让导航位置一眼可见 */}
-            <div className="absolute left-[11px] top-0 bottom-0 w-px bg-foreground/15 rounded-full" />
+            <div className="absolute left-[9px] top-0 bottom-0 w-px bg-foreground/20 rounded-full" />
             {Array.from({ length: barCount }, (_, i) => {
             const start = Math.floor((i * items.length) / barCount)
             const end = Math.floor(((i + 1) * items.length) / barCount)
@@ -383,12 +387,12 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
                 className={cn(
                   // 用 foreground 而非 primary：foreground 在 shadcn 主题中
                   // 必然与 background 形成可读对比，确保在所有 uclaw 主题下可见
-                  'absolute left-1 h-[2px] w-[20px] rounded-full transition-colors',
+                                  'absolute left-0 h-[2.5px] w-[18px] rounded-full transition-colors',
                   isVisible
                     ? 'bg-primary minimap-visible-indicator'
                     : hasUser
-                      ? 'bg-foreground/35'
-                      : 'bg-foreground/55',
+                      ? 'bg-foreground/55'
+                      : 'bg-foreground/75',
                 )}
                 style={{ top: `${top}%` }}
               />
