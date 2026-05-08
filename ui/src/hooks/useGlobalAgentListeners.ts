@@ -12,7 +12,9 @@ import {
   type AgentStreamState,
 } from '@/atoms/agent-atoms'
 import { workspaceSessionsAtom, updateSessionTitleAtom, type WorkspaceSession } from '@/atoms/workspace'
+import { tabsAtom } from '@/atoms/tab-atoms'
 import type { AgentSessionMeta } from '@/lib/proma-types'
+import type { TabItem } from '@/atoms/tab-atoms'
 
 function createInitialStreamState(): AgentStreamState {
   return {
@@ -241,6 +243,13 @@ function startAgentListeners(store: Store): void {
         )
         // Update workspaceSessionsAtom via the dedicated write-atom
         store.set(updateSessionTitleAtom, { sessionId, title, emoji })
+        // Update tab bar: show emoji + title so the open tab reflects the new name
+        const tabTitle = emoji ? `${emoji} ${title}` : title
+        store.set(tabsAtom, (prev: TabItem[]) =>
+          prev.map((t: TabItem) =>
+            t.sessionId === sessionId ? { ...t, title: tabTitle } : t
+          )
+        )
       }
     )
   )

@@ -30,7 +30,16 @@ export function useOpenSession(): OpenSessionFn {
 
   return React.useCallback(
     (type: TabType, sessionId: string, title: string): void => {
-      const result = openTab(tabs, { type, sessionId, title })
+      // For agent tabs, prepend the session emoji (if any) to the tab title
+      let displayTitle = title
+      if (type === 'agent') {
+        const session = agentSessions.find((s) => s.id === sessionId)
+        const emoji = session?.titleEmoji
+        if (emoji && emoji !== '💬') {
+          displayTitle = `${emoji} ${title}`
+        }
+      }
+      const result = openTab(tabs, { type, sessionId, title: displayTitle })
       setTabs(result.tabs)
       setActiveTabId(result.activeTabId)
 
