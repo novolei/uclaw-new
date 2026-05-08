@@ -28,7 +28,7 @@ import {
 } from '@/components/ai-elements/conversation'
 import { ScrollMinimap } from '@/components/ai-elements/scroll-minimap'
 import type { MinimapItem } from '@/components/ai-elements/scroll-minimap'
-import { useStickToBottomContext } from 'use-stick-to-bottom'
+import { useConversationContext } from '@/components/ai-elements/conversation'
 import { ContextDivider } from '@/components/ai-elements/context-divider'
 import {
   Reasoning,
@@ -52,7 +52,8 @@ interface ScrollTopLoaderProps {
 }
 
 function ScrollTopLoader({ hasMore, loading, onLoadMore }: ScrollTopLoaderProps): React.ReactElement | null {
-  const { scrollRef } = useStickToBottomContext()
+  const ctx = useConversationContext()
+  const scrollRef = ctx?.scrollRef ?? { current: null }
   const triggeredRef = React.useRef(false)
 
   React.useEffect(() => {
