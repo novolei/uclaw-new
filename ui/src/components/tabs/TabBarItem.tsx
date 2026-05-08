@@ -120,8 +120,10 @@ export function TabBarItem({
         onMouseDown={handleMouseDown}
         onPointerDown={onDragStart}
       >
-        {/* 类型图标 */}
-        <Icon className={cn('shrink-0', isNarrow ? 'size-3.5' : 'size-3')} />
+        {/* 类型图标（agent tab 用 emoji 标题作为视觉标识，不需要额外图标） */}
+        {type !== 'agent' && (
+          <Icon className={cn('shrink-0', isNarrow ? 'size-3.5' : 'size-3')} />
+        )}
 
         {/* 标题（窄状态下隐藏，用 spacer 撑开让关闭按钮靠右） */}
         {isNarrow ? (
