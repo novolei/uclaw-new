@@ -74,23 +74,42 @@ export const updateSessionTitleAtom = atom(
   }
 )
 
+// Mark a session as title-pending (skeleton animation while LLM generates)
+export const markSessionTitlePendingAtom = atom(
+  null,
+  (_get, set, sessionId: string) => {
+    set(workspaceSessionsAtom, (prev) => {
+      const next = { ...prev }
+      for (const spaceId of Object.keys(next)) {
+        next[spaceId] = next[spaceId].map((s) =>
+          s.id === sessionId ? { ...s, titlePending: true } : s
+        )
+      }
+      return next
+    })
+  }
+)
+
 // Action: sync agent sessions into workspace session map
 export const syncWorkspaceSessionsAtom = atom(
   null,
-  (_get, set, sessions: Array<{ id: string; workspaceId?: string; spaceId?: string; title?: string; updatedAt?: string; [key: string]: unknown }>) => {
+  (_get, set, sessions: Array<{ id: string; workspaceId?: string; spaceId?: string; title?: string; titleEmoji?: string; titlePending?: boolean; updatedAt?: string; [key: string]: unknown }>) => {
     const grouped: Record<string, WorkspaceSession[]> = {}
     for (const s of sessions) {
       const spaceId = s.workspaceId ?? s.spaceId ?? 'default'
       if (!grouped[spaceId]) grouped[spaceId] = []
+      // Parse metadataJson as fallback — but prefer direct fields which are kept up-to-date
+      // by event listeners (session:title-updated, session:title-pending) via agentSessionsAtom.
       let meta: { title?: string; emoji?: string; title_pending?: boolean } = {}
       if (typeof s.metadataJson === 'string') {
         try { meta = JSON.parse(s.metadataJson) } catch { /* ignore */ }
       }
       grouped[spaceId].push({
         id: s.id,
-        title: meta.title ?? s.title ?? 'New session',
-        titleEmoji: meta.emoji ?? '💬',
-        titlePending: meta.title_pending ?? false,
+        // Prefer direct fields (live-updated by atoms) over metadataJson (stale string)
+        title: s.title ?? meta.title ?? 'New session',
+        titleEmoji: s.titleEmoji ?? meta.emoji ?? '💬',
+        titlePending: s.titlePending ?? meta.title_pending ?? false,
         spaceId,
         updatedAt: s.updatedAt ?? '',
       })
