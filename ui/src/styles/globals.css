@@ -793,10 +793,43 @@
   box-shadow: inset 0 -1px 0 0 hsl(235 10% 16% / 0.7);
 }
 
-/* THE FINALS：主内容面板透明（让 main-panel-bg 的 keyart 透出）*/
+/* ===== THE FINALS 硬核直角布局 ===== */
+
+/* 1. 去掉所有 wrapper 的 padding — 面板贴满窗口四边 */
+.theme-the-finals .sidebar-wrapper,
+.theme-the-finals .main-panel,
+.theme-the-finals .right-panel-wrapper {
+  padding: 0 !important;
+}
+
+/* 2. 左侧 sidebar 面板：去圆角 + 去阴影 + 加右边分割线 */
+.theme-the-finals .sidebar-wrapper > div > div {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+/* LeftSidebar 直接子 div（rail + full sidebar）*/
+.theme-the-finals .sidebar-wrapper > div > div:first-child,
+.theme-the-finals .sidebar-wrapper > div > div:last-child {
+  border-radius: 0 !important;
+}
+
+/* 3. 右侧面板：去圆角 + 去阴影 + 加左边分割线 */
+.theme-the-finals .right-panel-wrapper > div {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  border-left: 1px solid rgb(255 244 223 / 0.10);
+}
+
+/* 4. 主内容面板（Panel with bg-content-area）：去圆角 + 透明 */
 .theme-the-finals .bg-content-area {
   background-color: transparent !important;
   box-shadow: none !important;
+  border-radius: 0 !important;
+}
+
+/* 5. Tab bar：顶部直角（无圆角） */
+.theme-the-finals .tabbar-bg {
+  border-radius: 0 !important;
 }
 
 /* THE FINALS：TabBar 半透明玻璃层 */

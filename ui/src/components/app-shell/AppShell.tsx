@@ -31,7 +31,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
     <AppShellProvider value={contextValue}>
       <div className="shell-bg h-screen w-screen flex overflow-hidden bg-gradient-to-br from-zinc-50 to-zinc-100 dark:from-zinc-950 dark:to-zinc-900">
         {/* 左侧边栏：可折叠，带圆角和内边距 */}
-        <div className="p-2 pr-0 relative">
+        <div className="sidebar-wrapper p-2 pr-0 relative">
           <LeftSidebar />
         </div>
 
@@ -47,7 +47,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
 
         {/* 右侧边栏：Agent 文件面板，带圆角和内边距 */}
         {showRightPanel && (
-          <div className={cn('relative transition-[padding] duration-300 ease-in-out', isPanelOpen ? 'p-2 pl-0' : 'p-0')}>
+          <div className={cn('right-panel-wrapper relative transition-[padding] duration-300 ease-in-out', isPanelOpen ? 'p-2 pl-0' : 'p-0')}>
             <RightSidePanel />
           </div>
         )}
