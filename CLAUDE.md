@@ -22,7 +22,7 @@ From `ui/` (only when iterating on the frontend in isolation):
 - There is no lint or test script wired up in the UI.
 
 Bootstrap of the embedded Python (required before first run if `src-tauri/pyembed/` is empty — the directory is gitignored):
-- `./scripts/setup-python-env.sh` — downloads python-build-standalone matching the host arch into `src-tauri/pyembed/python/` and pip-installs `memu` (preferring a local checkout at `~/Documents/memU` if present) plus `fastembed`.
+- `./scripts/setup-python-env.sh` — downloads python-build-standalone (Python 3.13) matching the host arch into `src-tauri/pyembed/python/` and pip-installs `memu` (preferring a local checkout at `~/Documents/memU` if present) plus `fastembed`.
 - `./scripts/setup-python-env.sh --optimize` — same, then strips `__pycache__`, tests, idle/turtle to shrink the bundle.
 - `./scripts/setup-python-env.sh --clean` — wipes `pyembed/`.
 
@@ -41,18 +41,24 @@ A local HTTP API listens on `127.0.0.1:27270` (Axum, with WebSocket support). It
 `AppState` (`app.rs`) is the central DI container managed via `tauri::Manager`. It owns the SQLite connection, settings, `SessionManager`, `ProviderService`, `SafetyManager`, `MemoryStore`, `MemoryGraphStore`, `SkillsRegistry`, `SharedMcpManager`, `ChannelManager`, the optional `MemUClient`, the `InfraService` message bus, the `ServiceManager`, and a `PendingApprovals` map (oneshot channels that gate tool execution on user approval).
 
 Module roles:
-- `agent/` — agentic loop (`agentic_loop.rs`), tool dispatcher, sessions, and built-in tools (`tools/builtin/`: file, edit, search, shell, web) plus MCP and memU tool adapters.
-- `llm/` and `providers/` — two layers: `llm/` provides the lower-level provider trait + `anthropic`/`openai` clients; `providers/` is the higher-level configuration/registry/service wrapping multiple providers with credential storage. `rig-core` is also a dependency. Allowed connect-src origins are pinned in `tauri.conf.json`'s CSP.
+- `agent/` — agentic loop (`agentic_loop.rs`), tool dispatcher, sessions, teams (`agent/teams/`), and built-in tools (`tools/builtin/`: file, edit, search, shell, web, plan, self_eval) plus MCP and memU tool adapters. The loop follows: `check_signals → compress_context → before_llm → call_llm → handle_response → after_iteration`.
+- `llm/` and `providers/` — two layers: `llm/` provides the lower-level provider trait + `anthropic`/`openai` clients; `providers/` is the higher-level configuration/registry/service wrapping multiple providers with credential storage. `rig-core` is also a dependency. Allowed connect-src origins are pinned in `tauri.conf.json`'s CSP (Anthropic, OpenAI, DeepSeek, Gemini, Groq, OpenRouter).
+- `api/` — HTTP/WebSocket layer (`router.rs`, `handlers/`, `auth.rs`, `ws.rs`) serving the local API on port 27270. JWT secret is generated at startup, not persisted. Handler modules cover: agent, artifacts, auth, chat, config, spaces.
+- `local_api/` — separate HTTP API server module (`mod.rs`, `routes.rs`, `server.rs`); distinct from `api/`.
 - `mcp.rs` — Model Context Protocol server management (add/remove/connect/restart, tool listing).
-- `skills.rs` + `proactive/scenarios/skill_extraction.rs` — Skills are both **static** (declared in registry) and **learned** (extracted by the skill-extraction proactive scenario).
+- `skills.rs` + `proactive/scenarios/skill_extraction.rs` — Skills are both **static** (declared in registry) and **learned** (extracted by the skill-extraction proactive scenario). Top-level `skills/` directory holds skill definition files.
 - `memory.rs` (key-value memory store), `memory_graph/` (Steward-style graph memory exposed via `memory_graph_*` Tauri commands), and `memu/` (Python bridge — `client.rs` is the Rust side, `bridge.rs` manages the subprocess, `memu_bridge.py` is the Python entrypoint bundled as a Tauri resource).
-- `proactive/` — background scenario runner. Three scenarios are registered conditionally based on `MemubotConfig`: `conversation_learning`, `skill_extraction`, `multimodal_context`. Each implements the `Scenario` trait registered into a `ScenarioManager`.
+- `proactive/` — background scenario runner with four scenarios: `conversation_learning`, `skill_extraction`, `multimodal_context`, `types`. Each implements the `Scenario` trait registered into a `ScenarioManager` and gated on `MemubotConfig` flags.
+- `automation/` — automation runtime, specs, and service (Phase 3 browser automation via `chromiumoxide`). Also see `browser/`.
+- `observability/` — metrics and tracing infrastructure.
+- `workspace/` — workspace management for `~/Documents/workground/`.
+- `harness/` — evaluation harness for agent testing.
 - `services/` + `infra/` — `ServiceManager` is a generic lifecycle manager (`register`, `start_all`, `stop_all`) and `InfraService` is the in-process message bus that services subscribe to. `PowerService`, `MemorizationService`, `ProactiveService`, `LocalApiService` all plug in here.
 - `safety/` — `SafetyManager` enforces tool policies; risky tool calls go through `pending_approvals` and require a `approve_tool_call` Tauri command response.
 - `tauri_commands.rs` — single flat module exposing every IPC command. Adding a new command requires both defining it here **and** listing it in the `invoke_handler!` macro in `main.rs`.
-- `api/` — HTTP/WebSocket layer (`router.rs`, `handlers/`, `auth.rs`, `ws.rs`). JWT secret is generated at startup, not persisted.
 - `db/migrations.rs` — embedded migrations run on every startup against the opened connection. The top-level `migrations/` directory is empty/unused.
 - `memubot_config.rs` — config struct controlling which proactive scenarios and services are enabled. Boot is data-driven from this config.
+- `secrets/` — credential management for provider API keys.
 
 ## Frontend Architecture (`ui/src/`)
 
@@ -60,8 +66,9 @@ Module roles:
 - `@/*` path alias maps to `ui/src/*` (see `vite.config.ts` and `tsconfig.json`).
 - Build output goes to `../static`, which Tauri serves as `frontendDist`.
 - Manual chunk splitting in `vite.config.ts`: `react`, `tauri`, `vendor` (jotai/clsx/tailwind-merge).
-- Components are organized by feature (`agent/`, `chat/`, `artifacts/`, `memory/`, `mcp` lives under `config/`, `settings/`, etc.); UI primitives live in `components/ui/`.
-- All backend interaction is via `@tauri-apps/api` `invoke()` against the commands listed in `tauri_commands.rs`.
+- Components are organized by feature (`agent/`, `chat/`, `artifacts/`, `automation/`, `memory/`, `mcp` lives under `config/`, `settings/`, etc.); UI primitives live in `components/ui/`.
+- State is managed via Jotai atoms (`atoms/` — 27+ atom files organized by feature).
+- All backend interaction is via `@tauri-apps/api` `invoke()` against the commands listed in `tauri_commands.rs`. Lower-level IPC types are in `lib/tauri-bridge.ts`.
 
 ## Working in This Repo
 
