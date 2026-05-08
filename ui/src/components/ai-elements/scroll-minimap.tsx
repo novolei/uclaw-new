@@ -14,6 +14,19 @@ import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { AlertTriangle, Search } from 'lucide-react'
 import { useStickToBottomContext } from 'use-stick-to-bottom'
+
+/**
+ * 容错版的 useStickToBottomContext：当 ScrollMinimap 由于某种原因
+ * 被渲染在 <StickToBottom> 之外（HMR、错误边界等），不抛错而返回 null。
+ * 注意：useContext 永远会被调用，这里只捕获它内部的非空断言抛错。
+ */
+function useSafeStickToBottomContext(): ReturnType<typeof useStickToBottomContext> | null {
+  try {
+    return useStickToBottomContext()
+  } catch {
+    return null
+  }
+}
 import { Input } from '@/components/ui/input'
 import { UserAvatar } from '@/components/chat/UserAvatar'
 import { getModelLogo } from '@/lib/model-logo'
@@ -73,7 +86,19 @@ function escapeRegExp(str: string): string {
 // ── 主组件 ──
 
 export function ScrollMinimap({ items }: ScrollMinimapProps): React.ReactElement | null {
-  const { scrollRef, stopScroll, state: stickyState } = useStickToBottomContext()
+  const ctx = useSafeStickToBottomContext()
+  // 没有 StickToBottom context 时静默隐藏（避免页面整体崩溃）
+  if (!ctx) return null
+  return <ScrollMinimapInner items={items} ctx={ctx} />
+}
+
+interface InnerProps {
+  items: MinimapItem[]
+  ctx: NonNullable<ReturnType<typeof useSafeStickToBottomContext>>
+}
+
+function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | null {
+  const { scrollRef, stopScroll, state: stickyState } = ctx
   const [hovered, setHovered] = React.useState(false)
   const [isLeaving, setIsLeaving] = React.useState(false)
   const [visibleIds, setVisibleIds] = React.useState<Set<string>>(new Set())

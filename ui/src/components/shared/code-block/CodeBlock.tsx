@@ -184,6 +184,26 @@ function extractText(node: React.ReactNode): string {
   return ''
 }
 
+/**
+ * 递归查找带有 `language-xxx` 类名的 React 元素，返回语言标识和该元素的 children。
+ * 兼容 react-markdown 用户自定义 `code` 组件覆盖的场景（此时 <code> 的 type
+ * 不再是字符串 'code'，而是用户的组件函数）。
+ */
+function findLangChild(children: React.ReactNode): { language: string; node: React.ReactNode } | null {
+  const arr = React.Children.toArray(children)
+  for (const child of arr) {
+    if (!React.isValidElement(child)) continue
+    const props = child.props as { className?: string; children?: React.ReactNode }
+    const m = props.className?.match(/language-([\w+-]+)/)
+    if (m) return { language: m[1], node: props.children }
+    if (props.children) {
+      const nested = findLangChild(props.children)
+      if (nested) return nested
+    }
+  }
+  return null
+}
+
 interface MarkdownCodeBlockProps {
   /** react-markdown 传入的 <pre> 子元素（内含 <code className="language-xxx">） */
   children?: React.ReactNode
@@ -194,16 +214,10 @@ interface MarkdownCodeBlockProps {
  * 从 children 中提取语言和代码文本，使用 Shiki 渲染语法高亮。
  */
 export function MarkdownCodeBlock({ children }: MarkdownCodeBlockProps): React.ReactElement {
-  // 从 react-markdown 传入的 children 中提取 <code> 元素
-  const codeElement = React.Children.toArray(children).find(
-    (child): child is React.ReactElement =>
-      React.isValidElement(child) && (child as React.ReactElement).type === 'code'
-  ) as React.ReactElement | undefined
-
-  const codeProps = codeElement?.props as { className?: string; children?: React.ReactNode } | undefined
-  const langMatch = codeProps?.className?.match(/language-(\S+)/)
-  const language = langMatch?.[1] ?? 'text'
-  const code = extractText(codeProps?.children ?? children).replace(/\n$/, '')
+  // 在 children 树中查找带 language- 类名的元素（兼容 code 组件被覆盖的情况）
+  const found = findLangChild(children)
+  const language = found?.language ?? 'text'
+  const code = extractText(found?.node ?? children).replace(/\n$/, '')
 
   const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
@@ -238,22 +252,28 @@ export function MarkdownCodeBlock({ children }: MarkdownCodeBlockProps): React.R
   )
 
   return (
-    <div className="code-block-wrapper group/code my-3 rounded-lg border border-border/50 overflow-hidden">
+    <div className="code-block-wrapper not-prose group/code my-3 rounded-lg border border-border/50 overflow-hidden bg-[#0d1117] dark:bg-[#0d1117]">
       {/* 头部栏：语言标签 + 复制按钮 */}
-      <div className="flex items-center justify-between h-[34px] px-3 border-b border-border/50 bg-muted/60 text-xs text-muted-foreground">
+      <div className="flex items-center justify-between h-[34px] px-3 border-b border-white/10 bg-black/30 text-xs text-zinc-400">
         <span className="font-mono font-medium select-none">{getDisplayName(language)}</span>
         <button
           type="button"
           onClick={handleCopy}
-          className="flex items-center gap-1.5 px-1.5 py-0.5 rounded hover:bg-foreground/10 transition-colors hover:text-foreground"
+          className="flex items-center gap-1.5 px-1.5 py-0.5 rounded hover:bg-white/10 transition-colors hover:text-zinc-100"
         >
           {copied ? '已复制 ✓' : '复制'}
         </button>
       </div>
 
-      {/* 代码区域 */}
+      {/* 代码区域 — 强制覆盖 prose 默认颜色，让 Shiki 的内联色彩生效 */}
       <div
-        className="overflow-x-auto text-[13px] leading-relaxed [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:p-4 [&_code]:!text-[13px] [&_code]:!leading-relaxed"
+        className={cn(
+          'overflow-x-auto text-[13px] leading-relaxed text-zinc-100',
+          // 重置 Shiki 输出的 <pre>：透明背景 + 无边距 + 标准 padding
+          '[&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-4 [&_pre]:!text-zinc-100',
+          // 重置 <code>：无背景、字号锁定（前后反引号伪元素由 not-prose 自动屏蔽）
+          '[&_code]:!bg-transparent [&_code]:!p-0 [&_code]:!text-[13px] [&_code]:!leading-relaxed [&_code]:!font-mono',
+        )}
         dangerouslySetInnerHTML={{ __html: highlightedHtml ?? fallbackHtml }}
       />
     </div>
