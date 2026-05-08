@@ -346,11 +346,30 @@ pub async fn send_message(
         }
     }
 
+    // ── Extract process metadata (thinking + tool activities) from the loop's messages ──
+    // Walk only messages added by this turn (everything after the user message we just pushed).
+    let process_meta = {
+        let session_mgr = state.session_manager.read().await;
+        let pre_loop_msg_count = session_mgr
+            .get(&input.conversation_id)
+            .map(|s| s.messages.len())
+            .unwrap_or(0);
+        drop(session_mgr);
+        extract_process_meta_from_messages(
+            &reason_ctx.messages[pre_loop_msg_count..],
+            llm_config.model.clone(),
+        )
+    };
+
     // Save assistant response and cumulative token counts
     let message_id = uuid::Uuid::new_v4().to_string();
     {
         let mut session_mgr = state.session_manager.write().await;
-        session_mgr.add_message(&input.conversation_id, ChatMessage::assistant(&response_text));
+        session_mgr.add_message_with_meta(
+            &input.conversation_id,
+            ChatMessage::assistant(&response_text),
+            process_meta,
+        );
         // Persist cumulative token counts back to session
         if let Some(session) = session_mgr.get_mut(&input.conversation_id) {
             session.cumulative_input_tokens = reason_ctx.total_input_tokens;
@@ -461,31 +480,135 @@ pub async fn list_conversations(state: State<'_, AppState>) -> Result<Vec<Conver
     }).collect())
 }
 
+/// Walk a slice of `ChatMessage` (typically the messages added during one
+/// agent loop) and extract:
+///   - `reasoning`: concatenated text from all `Thinking` content blocks
+///   - `tool_activities_json`: a JSON array of `{ tool, status, input, output }`
+///     entries, pairing each `ToolUse` with its matching `ToolResult` by id.
+///
+/// The shape matches the frontend's `ChatToolActivity` so historical
+/// messages can re-render the same tool-call cards as the live stream.
+fn extract_process_meta_from_messages(
+    messages: &[ChatMessage],
+    model: String,
+) -> crate::agent::session::MessageMeta {
+    use std::collections::HashMap;
+
+    let mut thinking_buf = String::new();
+    let mut tool_uses: Vec<(String, String, serde_json::Value)> = Vec::new();
+    let mut tool_results: HashMap<String, (String, bool)> = HashMap::new();
+
+    for msg in messages {
+        for block in &msg.content {
+            match block {
+                ContentBlock::Thinking { thinking } => {
+                    if !thinking_buf.is_empty() {
+                        thinking_buf.push_str("\n\n");
+                    }
+                    thinking_buf.push_str(thinking);
+                }
+                ContentBlock::ToolUse { id, name, input } => {
+                    tool_uses.push((id.clone(), name.clone(), input.clone()));
+                }
+                ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                    tool_results.insert(tool_use_id.clone(), (content.clone(), is_error.unwrap_or(false)));
+                }
+                ContentBlock::Text { .. } => {}
+            }
+        }
+    }
+
+    // Emit two entries per tool (start + result) to match the live-stream
+    // `ChatToolActivity` shape that ChatToolActivityIndicator expects.
+    let mut activities: Vec<serde_json::Value> = Vec::with_capacity(tool_uses.len() * 2);
+    for (id, name, input) in tool_uses {
+        let (output, is_error) = tool_results.remove(&id).unzip();
+        let is_error = is_error.unwrap_or(false);
+        activities.push(serde_json::json!({
+            "toolCallId": id,
+            "type": "start",
+            "toolName": name,
+            "input": input,
+        }));
+        activities.push(serde_json::json!({
+            "toolCallId": id,
+            "type": "result",
+            "toolName": name,
+            "input": input,
+            "result": output,
+            "status": if is_error { "failed" } else { "completed" },
+            "isError": is_error,
+        }));
+    }
+
+    crate::agent::session::MessageMeta {
+        reasoning: if thinking_buf.is_empty() { None } else { Some(thinking_buf) },
+        tool_activities_json: if activities.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&activities).ok()
+        },
+        model: Some(model),
+        attachments_json: None,
+    }
+}
+
 #[tauri::command]
 pub async fn get_messages(state: State<'_, AppState>, input: GetMessagesInput) -> Result<Vec<MessageResponse>, Error> {
-    let session_mgr = state.session_manager.read().await;
-    if let Some(session) = session_mgr.get(&input.conversation_id) {
-        Ok(session.messages.iter().enumerate().map(|(i, msg)| {
-            let role = match msg.role {
-                MessageRole::System => "system",
-                MessageRole::User => "user",
-                MessageRole::Assistant => "assistant",
-            };
-            let content = msg.content.iter()
-                .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.clone()) } else { None })
-                .collect::<Vec<_>>()
-                .join("\n");
-            MessageResponse {
-                id: format!("msg-{}", i),
-                conversation_id: input.conversation_id.clone(),
-                role: role.into(),
-                content,
-                created_at: chrono::Utc::now().to_rfc3339(),
-            }
-        }).collect())
-    } else {
-        Ok(Vec::new())
+    // Always read from SQLite as the source of truth so messages survive
+    // across app restarts and include reasoning + tool activities.
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let mut stmt = conn.prepare(
+        "SELECT id, role, content, reasoning, tool_activities_json, model, created_at \
+         FROM messages WHERE conversation_id = ?1 ORDER BY created_at ASC",
+    ).map_err(|e| Error::Internal(format!("prepare get_messages: {}", e)))?;
+
+    let rows = stmt.query_map(rusqlite::params![input.conversation_id], |row| {
+        let id: String = row.get(0)?;
+        let role: String = row.get(1)?;
+        let raw_content: String = row.get(2)?;
+        let reasoning: Option<String> = row.get(3)?;
+        let tool_activities_json: Option<String> = row.get(4)?;
+        let model: Option<String> = row.get(5)?;
+        let created_at: String = row.get(6)?;
+        Ok((id, role, raw_content, reasoning, tool_activities_json, model, created_at))
+    }).map_err(|e| Error::Internal(format!("query get_messages: {}", e)))?;
+
+    let mut out: Vec<MessageResponse> = Vec::new();
+    for row in rows.flatten() {
+        let (id, role, raw_content, reasoning, tool_activities_json, model, created_at) = row;
+
+        // content was stored as JSON of `Option<&Vec<ContentBlock>>`. Filter
+        // to text blocks for backward-compat with the in-memory join logic.
+        // Fall back to treating content as plain text if JSON parse fails.
+        let content_text: String = serde_json::from_str::<Option<Vec<ContentBlock>>>(&raw_content)
+            .ok()
+            .flatten()
+            .or_else(|| serde_json::from_str::<Vec<ContentBlock>>(&raw_content).ok())
+            .map(|blocks| {
+                blocks.iter()
+                    .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.clone()) } else { None })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or(raw_content);
+
+        let tool_activities = tool_activities_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+
+        out.push(MessageResponse {
+            id,
+            conversation_id: input.conversation_id.clone(),
+            role,
+            content: content_text,
+            created_at,
+            reasoning,
+            tool_activities,
+            model,
+        });
     }
+    Ok(out)
 }
 
 #[tauri::command]
@@ -2668,10 +2791,30 @@ pub async fn send_agent_message(
         if !response_text.is_empty() {
             let asst_msg_id = uuid::Uuid::new_v4().to_string();
             let now2 = chrono::Utc::now().timestamp_millis();
+            // Pull thinking + tool activities from the loop's freshly-added messages.
+            // pre_loop_count = number of messages BEFORE we started this turn (history + the
+            // just-pushed user message); ctx.messages now also has the assistant turn(s).
+            let pre_loop_count = history.len() + 1;
+            let process_meta = if ctx.messages.len() > pre_loop_count {
+                extract_process_meta_from_messages(
+                    &ctx.messages[pre_loop_count..],
+                    String::new(),
+                )
+            } else {
+                crate::agent::session::MessageMeta::default()
+            };
             if let Ok(conn) = db.lock() {
                 let _ = conn.execute(
-                    "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'assistant',?3,?4)",
-                    rusqlite::params![asst_msg_id, session_id, response_text, now2],
+                    "INSERT INTO agent_messages (id, session_id, role, content, created_at, reasoning, tool_activities_json) \
+                     VALUES (?1,?2,'assistant',?3,?4,?5,?6)",
+                    rusqlite::params![
+                        asst_msg_id,
+                        session_id,
+                        response_text,
+                        now2,
+                        process_meta.reasoning,
+                        process_meta.tool_activities_json,
+                    ],
                 );
                 let _ = conn.execute(
                     "UPDATE agent_sessions SET message_count = message_count + 1, updated_at = ?1 WHERE id = ?2",
@@ -2705,14 +2848,30 @@ pub async fn get_agent_session_messages(
 ) -> Result<Vec<serde_json::Value>, Error> {
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
     let mut stmt = conn.prepare(
-        "SELECT id, role, content, created_at FROM agent_messages WHERE session_id = ?1 ORDER BY created_at ASC"
+        "SELECT id, role, content, created_at, reasoning, tool_activities_json, model \
+         FROM agent_messages WHERE session_id = ?1 ORDER BY created_at ASC"
     ).map_err(|e| Error::Database(e))?;
     let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+        let id: String = row.get(0)?;
+        let role: String = row.get(1)?;
+        let content: String = row.get(2)?;
+        let created_at: i64 = row.get(3)?;
+        let reasoning: Option<String> = row.get(4)?;
+        let tool_activities_json: Option<String> = row.get(5)?;
+        let model: Option<String> = row.get(6)?;
+
+        let tool_activities = tool_activities_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+
         Ok(serde_json::json!({
-            "id": row.get::<_,String>(0)?,
-            "role": row.get::<_,String>(1)?,
-            "content": row.get::<_,String>(2)?,
-            "createdAt": row.get::<_,i64>(3)?,
+            "id": id,
+            "role": role,
+            "content": content,
+            "createdAt": created_at,
+            "reasoning": reasoning,
+            "toolActivities": tool_activities,
+            "model": model,
         }))
     }).map_err(|e| Error::Database(e))?;
     Ok(rows.filter_map(|r| r.ok()).collect())

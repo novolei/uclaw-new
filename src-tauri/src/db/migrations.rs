@@ -350,6 +350,22 @@ CREATE INDEX IF NOT EXISTS idx_agent_sessions_updated ON agent_sessions(updated_
 CREATE INDEX IF NOT EXISTS idx_agent_messages_session ON agent_messages(session_id);
 ";
 
+/// V9: persist reasoning + tool activities + model on chat / agent messages
+/// so historical messages can re-render thinking blocks and tool call cards.
+/// Each ALTER is wrapped because rusqlite reports an error on duplicate
+/// columns; the surrounding `let _ = conn.execute(...)` is what makes
+/// re-running idempotent (same pattern V5_ALTER uses).
+pub const V9_MESSAGE_PROCESS: &str = "
+ALTER TABLE messages ADD COLUMN reasoning TEXT;
+ALTER TABLE messages ADD COLUMN tool_activities_json TEXT;
+ALTER TABLE messages ADD COLUMN model TEXT;
+ALTER TABLE messages ADD COLUMN attachments_json TEXT;
+ALTER TABLE agent_messages ADD COLUMN reasoning TEXT;
+ALTER TABLE agent_messages ADD COLUMN tool_activities_json TEXT;
+ALTER TABLE agent_messages ADD COLUMN events_json TEXT;
+ALTER TABLE agent_messages ADD COLUMN model TEXT;
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -380,6 +396,12 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     // V8: agent sessions tables
     tracing::debug!("Running migration V8: agent sessions tables");
     let _ = conn.execute_batch(V8_AGENT_SESSIONS);
+    // V9: per-message process columns (reasoning, tool_activities, model, attachments).
+    // Each ALTER is run individually so an existing column doesn't abort the rest.
+    tracing::debug!("Running migration V9: message process columns");
+    for stmt in V9_MESSAGE_PROCESS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let _ = conn.execute(stmt, []);
+    }
     tracing::info!("Database migrations complete");
     Ok(())
 }
