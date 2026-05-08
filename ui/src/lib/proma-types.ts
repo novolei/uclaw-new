@@ -485,7 +485,7 @@ export interface AgentGenerateTitleInput {
 export type ThemeMode = 'light' | 'dark' | 'system' | 'special'
 
 /** 特殊风格主题 */
-export type ThemeStyle = 'default' | 'ocean-light' | 'ocean-dark' | 'forest-light' | 'forest-dark' | 'slate-light' | 'slate-dark' | 'warm-paper' | 'qingye' | 'black'
+export type ThemeStyle = 'default' | 'ocean-light' | 'ocean-dark' | 'forest-light' | 'forest-dark' | 'slate-light' | 'slate-dark' | 'warm-paper' | 'qingye' | 'black' | 'the-finals'
 
 /** 通知音场景类型 */
 export type NotificationSoundType = 'taskComplete' | 'permissionRequest' | 'exitPlanMode'

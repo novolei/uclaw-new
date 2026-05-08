@@ -9,8 +9,8 @@ import type { ThemeStyle } from '@/lib/proma-types'
 // ─────────────────────────────────────────────────────────
 
 type ThemeEntry =
-  | { kind: 'basic'; id: 'light' | 'dark'; title: string; subtitle: string; className: string; preview: [string, string, string] }
-  | { kind: 'special'; id: ThemeStyle; title: string; subtitle: string; className: string; preview: [string, string, string] }
+  | { kind: 'basic'; id: 'light' | 'dark'; title: string; subtitle: string; className: string; preview: [string, string, string]; specialBg?: false }
+  | { kind: 'special'; id: ThemeStyle; title: string; subtitle: string; className: string; preview: [string, string, string]; specialBg?: boolean }
 
 const THEME_ENTRIES: ThemeEntry[] = [
   {
@@ -101,6 +101,15 @@ const THEME_ENTRIES: ThemeEntry[] = [
     className: 'bg-[#18191d] text-[#dedee3]',
     preview: ['#24252b', '#2f2e35', '#c19a3b'],
   },
+  {
+    kind: 'special',
+    id: 'the-finals',
+    title: 'THE FINALS',
+    subtitle: '竞技赛场',
+    className: 'text-[#fff4df]',
+    preview: ['#fff4df', '#ffd23f', '#d91f3c'],
+    specialBg: true,
+  },
 ]
 
 // ─────────────────────────────────────────────────────────
@@ -114,6 +123,7 @@ function ThemeCard({
   subtitle,
   className,
   preview,
+  specialBg,
 }: {
   selected: boolean
   onSelect: () => void
@@ -121,12 +131,20 @@ function ThemeCard({
   subtitle: string
   className: string
   preview: [string, string, string]
+  specialBg?: boolean
 }) {
+  const finalsStyle = specialBg ? {
+    backgroundImage: `linear-gradient(90deg, rgba(10,10,12,0.72) 0%, rgba(217,31,60,0.55) 100%), url('/themes/the-finals/s10-keyart-bkg.png')`,
+    backgroundSize: 'cover',
+    backgroundPosition: 'center',
+  } : undefined
+
   return (
     <button
       type="button"
       onClick={onSelect}
       aria-pressed={selected}
+      style={finalsStyle}
       className={cn(
         'group relative flex h-[96px] flex-col justify-between overflow-hidden rounded-[10px] border px-3.5 py-2.5 text-left transition-all duration-200',
         'hover:-translate-y-0.5 hover:shadow-[0_12px_28px_rgba(0,0,0,0.10)]',
@@ -245,6 +263,7 @@ export function AppearanceSettings() {
               subtitle={entry.subtitle}
               className={entry.className}
               preview={entry.preview}
+              specialBg={entry.specialBg}
             />
           ))}
         </div>
