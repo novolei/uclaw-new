@@ -261,7 +261,7 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
   return (
     <div
       data-scroll-minimap
-      className="absolute right-1 top-0 bottom-0 z-50 flex pointer-events-none"
+      className="absolute right-5 top-0 bottom-0 z-50 flex pointer-events-none"
     >
       {/* 迷你地图悬停区域（面板 + 横杠） */}
       <div className="flex items-start h-full">
