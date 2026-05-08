@@ -2441,6 +2441,7 @@ pub async fn send_agent_message(
     app_handle: tauri::AppHandle,
     input: SendAgentMessageInput,
 ) -> Result<(), Error> {
+    tracing::info!(session_id = %input.session_id, "[send_agent_message] invoked");
     // Resolve LLM config
     let legacy_config = state.llm_config.read().await;
     let max_tokens = legacy_config.max_tokens.unwrap_or(8192);
