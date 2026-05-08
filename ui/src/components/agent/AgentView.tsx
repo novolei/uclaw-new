@@ -1302,7 +1302,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     <>
     <AgentSessionProvider sessionId={sessionId}>
       {/* 主内容区域 */}
-      <div className="flex flex-col h-full flex-1 min-w-0 max-w-[min(72rem,100%)] mx-auto">
+      <div className="flex flex-col h-full flex-1 min-w-0">
         {/* Agent Header */}
         <AgentHeader sessionId={sessionId} />
 
