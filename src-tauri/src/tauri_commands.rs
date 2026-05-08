@@ -2463,15 +2463,43 @@ pub async fn send_agent_message(
     // Persist user message
     let user_msg_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
-    let is_first_message: bool;
+    let should_generate_title: bool;
     {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
-        // Check if this is the very first message (message_count == 0)
-        is_first_message = conn.query_row(
-            "SELECT message_count FROM agent_sessions WHERE id = ?1",
+        // Trigger title generation if:
+        // 1. First message (message_count == 0), OR
+        // 2. No emoji has been set yet in metadata_json (previous attempt failed)
+        //    AND title_pending is not already true (no ongoing generation)
+        //    AND message_count is small (retry window: up to 5 messages)
+        let (message_count, metadata_json_opt): (i64, Option<String>) = conn.query_row(
+            "SELECT message_count, metadata_json FROM agent_sessions WHERE id = ?1",
             rusqlite::params![input.session_id],
-            |row| row.get::<_, i64>(0),
-        ).unwrap_or(1) == 0;
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+        ).unwrap_or((1, None));
+        let no_emoji_yet = {
+            let meta: serde_json::Value = metadata_json_opt
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(serde_json::Value::Null);
+            meta.get("emoji").is_none()
+        };
+        let title_pending = {
+            let meta: serde_json::Value = metadata_json_opt
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(serde_json::Value::Null);
+            meta.get("title_pending").and_then(|v| v.as_bool()).unwrap_or(false)
+        };
+        should_generate_title = message_count == 0
+            || (no_emoji_yet && !title_pending && message_count <= 5);
+        tracing::info!(
+            session_id = %input.session_id,
+            message_count,
+            no_emoji_yet,
+            title_pending,
+            should_generate_title,
+            "[title] trigger decision"
+        );
         let _ = conn.execute(
             "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'user',?3,?4)",
             rusqlite::params![user_msg_id, input.session_id, input.user_message, now],
@@ -2482,8 +2510,9 @@ pub async fn send_agent_message(
         );
     }
 
-    // Fire-and-forget title generation on first user message
-    if is_first_message {
+    // Fire-and-forget title generation when needed
+    if should_generate_title {
+        tracing::info!(session_id = %input.session_id, "[title] spawning title generation");
         let llm_config_for_title = state.llm_config.read().await.clone();
         spawn_agent_session_title_summary(
             input.session_id.clone(),
@@ -3094,6 +3123,7 @@ fn spawn_agent_session_title_summary(
             merge_agent_session_meta(&conn, &session_id, &updates);
         }
     }
+    tracing::info!(session_id = %session_id, "[title] emitting session:title-pending");
     let _ = app_handle.emit("session:title-pending", &session_id);
 
     tokio::spawn(async move {
@@ -3225,10 +3255,8 @@ fn spawn_agent_session_title_summary(
             }
         }
 
-        let (title, emoji) = result.unwrap_or_else(|| ("New session".to_string(), "💬".to_string()));
-
-        // Persist to DB (merge into existing metadata)
-        {
+        if let Some((title, emoji)) = result {
+            // SUCCESS: persist emoji + title so future trigger checks see no_emoji_yet = false
             if let Ok(conn) = db.lock() {
                 let mut updates = serde_json::Map::new();
                 updates.insert("title".to_string(), serde_json::json!(title));
@@ -3240,16 +3268,32 @@ fn spawn_agent_session_title_summary(
                     rusqlite::params![title, session_id],
                 );
             }
+            let _ = app_handle.emit(
+                "session:title-updated",
+                SessionTitleUpdatePayload {
+                    session_id: session_id.clone(),
+                    title,
+                    emoji,
+                },
+            );
+        } else {
+            // FAILURE: clear title_pending but do NOT write emoji — so the next
+            // message will see no_emoji_yet = true and trigger a retry.
+            if let Ok(conn) = db.lock() {
+                let mut updates = serde_json::Map::new();
+                updates.insert("title_pending".to_string(), serde_json::json!(false));
+                merge_agent_session_meta(&conn, &session_id, &updates);
+            }
+            // Emit a "New session" fallback so the UI stops the skeleton animation
+            let _ = app_handle.emit(
+                "session:title-updated",
+                SessionTitleUpdatePayload {
+                    session_id: session_id.clone(),
+                    title: "New session".to_string(),
+                    emoji: "💬".to_string(),
+                },
+            );
         }
-
-        let _ = app_handle.emit(
-            "session:title-updated",
-            SessionTitleUpdatePayload {
-                session_id: session_id.clone(),
-                title: title.clone(),
-                emoji: emoji.clone(),
-            },
-        );
     });
 }
 
