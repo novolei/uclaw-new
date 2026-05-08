@@ -1,5 +1,8 @@
 import { useEffect } from 'react'
-import { useStore, type Store } from 'jotai'
+import { useStore } from 'jotai'
+
+/** Jotai 没有公开导出 Store 类型，这里通过 useStore 的返回类型推导 */
+type Store = ReturnType<typeof useStore>
 import { listen } from '@tauri-apps/api/event'
 import {
   agentStreamingStatesAtom,

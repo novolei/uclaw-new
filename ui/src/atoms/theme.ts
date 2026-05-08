@@ -27,7 +27,7 @@ function getCachedThemeMode(): ThemeMode {
 
 const VALID_THEME_STYLES: ThemeStyle[] = [
   'default', 'ocean-light', 'ocean-dark', 'forest-light', 'forest-dark',
-  'slate-light', 'slate-dark', 'warm-paper', 'qingye', 'black',
+  'slate-light', 'slate-dark', 'warm-paper', 'qingye', 'black', 'the-finals',
 ]
 
 function getCachedThemeStyle(): ThemeStyle {
@@ -90,11 +90,12 @@ const ALL_THEME_STYLE_CLASSES = [
   'theme-warm-paper',
   'theme-qingye',
   'theme-black',
+  'theme-the-finals',
 ] as const
 
 /** 这些特殊风格是深色主题 */
 const DARK_THEME_STYLES: ThemeStyle[] = [
-  'ocean-dark', 'forest-dark', 'slate-dark', 'qingye', 'black',
+  'ocean-dark', 'forest-dark', 'slate-dark', 'qingye', 'black', 'the-finals',
 ]
 
 /**

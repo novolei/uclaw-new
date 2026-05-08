@@ -2,9 +2,57 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ===== THE FINALS 主题字体 ===== */
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 500;
+  src: url("/themes/the-finals/fonts/poppins-500.ttf") format("truetype");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Saira Condensed";
+  font-style: normal;
+  font-weight: 300;
+  src: url("/themes/the-finals/fonts/saira-condensed-300.ttf") format("truetype");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Saira Condensed";
+  font-style: normal;
+  font-weight: 500;
+  src: url("/themes/the-finals/fonts/saira-condensed-500.ttf") format("truetype");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Saira Condensed";
+  font-style: normal;
+  font-weight: 700;
+  src: url("/themes/the-finals/fonts/saira-condensed-700.ttf") format("truetype");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Saira Extra Condensed";
+  font-style: normal;
+  font-weight: 400;
+  src: url("/themes/the-finals/fonts/saira-extra-condensed-400.ttf") format("truetype");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Saira Extra Condensed";
+  font-style: normal;
+  font-weight: 700;
+  src: url("/themes/the-finals/fonts/saira-extra-condensed-700.ttf") format("truetype");
+  font-display: swap;
+}
+
 @layer base {
   :root {
     --radius: 0.5rem;
+    /* 字体族 CSS 变量（各主题可覆盖） */
+    --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+    --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+    --font-mono: 'Fira Code', 'Cascadia Code', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     --background: 0 0% 100%;
     --foreground: 0 0% 3.9%;
     --muted: 0 0% 96.1%;
@@ -365,6 +413,43 @@
     --dashed-border-hover: 43 53% 49% / 0.45;
   }
 
+  /* ===== THE FINALS 竞技赛场（深色）===== */
+  .theme-the-finals {
+    --background: 240 5% 9%;               /* #161618 近黑背景 */
+    --foreground: 44 100% 94%;             /* #fff4df 暖奶白前景 */
+    --content-area: 240 5% 10%;            /* 深色内容区域 */
+    --muted: 270 4% 17%;                   /* #2b292d 次要背景 */
+    --muted-foreground: 35 14% 70%;        /* #bcb3a7 温暖灰文字 */
+    --border: 30 4% 23%;                   /* 暖白描边（rgb 255 244 223 / 0.17 等效） */
+    --input: 30 3% 20%;                    /* 输入框背景 */
+    --ring: 44 100% 62%;                   /* #ffd23f 金色聚焦环 */
+    --primary: 350 75% 48%;                /* #d91f3c 战斗红主色 */
+    --primary-foreground: 44 100% 94%;     /* #fff4df */
+    --secondary: 270 4% 18%;               /* #2f2d31 */
+    --secondary-foreground: 44 100% 94%;
+    --accent: 44 100% 62%;                 /* #ffd23f 金色强调 */
+    --accent-foreground: 240 5% 9%;        /* #171719 */
+    --destructive: 348 100% 60%;           /* #ff3358 */
+    --destructive-foreground: 44 100% 94%;
+    --stop-hover-bg: hsl(348, 60%, 15%);
+    --card: 270 5% 14%;                    /* #252326 */
+    --card-foreground: 44 100% 94%;
+    --popover: 270 5% 9%;                  /* #181719 暗色 popover（配合 THE FINALS 深色菜单） */
+    --popover-foreground: 44 100% 94%;     /* #fff4df 暖奶白 */
+    --dialog: 270 5% 16%;
+    --dialog-foreground: 44 100% 94%;
+    --tooltip: 270 5% 14%;
+    --tooltip-foreground: 44 100% 94%;
+    --tooltip-muted: 35 14% 65%;
+    --code-bg: 240 10% 7%;
+    --dashed-border: 44 100% 62% / 0.30;
+    --dashed-border-hover: 44 100% 62% / 0.48;
+    /* 切换字体为竞技风格 */
+    --font-sans:  "Saira Condensed", "Poppins", "PingFang SC", "Helvetica Neue", sans-serif;
+    --font-serif: "Saira Extra Condensed", "Saira Condensed", "PingFang SC", sans-serif;
+    --font-mono:  "SF Mono", "Cascadia Code", "Fira Code", Consolas, "Courier New", monospace;
+  }
+
   /* 莫兰迪夜（深色） */
   .theme-slate-dark {
     /* 基础色 - 侧边栏与内容区对调 */
@@ -442,6 +527,35 @@
 .theme-warm-paper .shell-bg  { background: linear-gradient(135deg, hsl(44 31% 91%) 0%, hsl(44 38% 93%) 100%); }
 .theme-qingye .shell-bg      { background: linear-gradient(135deg, hsl(205 20% 18%) 0%, hsl(205 17% 22%) 100%); }
 .theme-black .shell-bg       { background: linear-gradient(135deg, hsl(230 10% 7%) 0%, hsl(230 8% 9%) 100%); }
+.theme-the-finals .shell-bg  { background: hsl(240 5% 9%); }
+
+/* THE FINALS：主面板背景图（keyart + 渐变叠层） */
+.theme-the-finals .main-panel-bg {
+  background-color: hsl(240 5% 10%);
+  background-image:
+    /* 层 3：扫描线纹理 */
+    repeating-linear-gradient(0deg, rgb(255 244 223 / 0.030) 0 1px, transparent 1px 9px),
+    repeating-linear-gradient(90deg, rgb(255 244 223 / 0.022) 0 1px, transparent 1px 72px),
+    /* 层 2：径向红金光晕 */
+    radial-gradient(circle at 15% 16%, rgb(217 31 60 / 0.42) 0%, transparent 28%),
+    radial-gradient(circle at 84% 12%, rgb(255 210 63 / 0.22) 0%, transparent 24%),
+    linear-gradient(118deg, transparent 0 52%, rgb(217 31 60 / 0.26) 52% 56%, transparent 56%),
+    /* 层 1：keyart + 主叠层 */
+    linear-gradient(90deg, rgb(10 10 12 / 0.84), rgb(10 10 12 / 0.58) 38%, rgb(10 10 12 / 0.74)),
+    url('/themes/the-finals/s10-keyart-bkg.png');
+  background-size:
+    auto, auto,
+    100% 100%, 100% 100%, 100% 100%,
+    100% 100%, cover;
+  background-position:
+    0 0, 0 0,
+    center center, center center, center center,
+    center center, center center;
+  background-repeat:
+    repeat, repeat,
+    no-repeat, no-repeat, no-repeat,
+    no-repeat, no-repeat;
+}
 
 /* ===== 特殊主题：模式切换器选中状态 ===== */
 /* 晴空碧海：蓝色背景滑块 + 白色文字 */
@@ -568,6 +682,26 @@
   color: inherit !important;
 }
 
+/* ===== THE FINALS 主题：模式切换器 ===== */
+.theme-the-finals .mode-slider {
+  background: hsl(350 75% 48%) !important;   /* #d91f3c 战斗红主色 */
+  box-shadow: 0 2px 8px rgba(217, 31, 60, 0.5);
+}
+.theme-the-finals .mode-btn-selected {
+  color: hsl(44 100% 94%) !important;        /* 暖奶白文字 */
+}
+
+/* ===== THE FINALS 主题：会话/工作区选中状态 ===== */
+.theme-the-finals .session-item-selected.session-item-selected,
+.theme-the-finals .workspace-item-selected.workspace-item-selected {
+  background-color: hsl(350 40% 18%) !important;   /* 深红选中背景 */
+  color: hsl(44 100% 80%) !important;              /* 金黄文字 */
+}
+.theme-the-finals .session-item-selected *,
+.theme-the-finals .workspace-item-selected * {
+  color: inherit !important;
+}
+
 /* ===== 新暖纸主题：模式切换器 ===== */
 .theme-warm-paper .mode-slider {
   background: hsl(205 28% 46%) !important;  /* #537d96 蓝灰主色 */
@@ -659,6 +793,329 @@
   box-shadow: inset 0 -1px 0 0 hsl(235 10% 16% / 0.7);
 }
 
+/* ===== THE FINALS 硬核直角布局 ===== */
+
+/* 1. 去掉所有 wrapper 的 padding — 面板贴满窗口四边 */
+.theme-the-finals .sidebar-wrapper,
+.theme-the-finals .main-panel,
+.theme-the-finals .right-panel-wrapper {
+  padding: 0 !important;
+}
+
+/* 2. 左侧 sidebar 面板：去圆角 + 去阴影 + 加右边分割线 */
+.theme-the-finals .sidebar-wrapper > div > div {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+/* LeftSidebar 直接子 div（rail + full sidebar）*/
+.theme-the-finals .sidebar-wrapper > div > div:first-child,
+.theme-the-finals .sidebar-wrapper > div > div:last-child {
+  border-radius: 0 !important;
+}
+
+/* 3. 右侧面板：去圆角 + 去阴影 + 加左边分割线 */
+.theme-the-finals .right-panel-wrapper > div {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  border-left: 1px solid rgb(255 244 223 / 0.10);
+}
+
+/* 4. 主内容面板（Panel with bg-content-area）：去圆角 + 透明 */
+.theme-the-finals .bg-content-area {
+  background-color: transparent !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+
+/* 5. Tab bar：顶部直角（无圆角） */
+.theme-the-finals .tabbar-bg {
+  border-radius: 0 !important;
+}
+
+/* THE FINALS：TabBar 半透明玻璃层 */
+.theme-the-finals .tabbar-bg {
+  background-color: rgb(8 8 10 / 0.80) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: inset 0 -1px 0 0 rgb(217 31 60 / 0.25);
+}
+
+/* ===== THE FINALS 标签页重设计 ===== */
+
+/* 1. 重置所有 tab 按钮：扁平 + 无圆角 + 无三边框 + 大写紧缩字体 */
+.theme-the-finals .tabbar-bg button {
+  border-radius: 0 !important;
+  border-top-color: transparent !important;
+  border-left-color: transparent !important;
+  border-right-color: transparent !important;
+  border-bottom: 2px solid transparent !important;
+  height: 34px !important;
+  font-family: var(--font-sans);
+  font-size: 11.5px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease !important;
+}
+
+/* 2. 激活标签：金色底线 + 暖光背景 + 金色文字 */
+.theme-the-finals .tabbar-bg button.text-foreground {
+  background-color: rgb(255 244 223 / 0.07) !important;
+  border-bottom-color: #ffd23f !important;
+  color: #ffd23f !important;
+  box-shadow: 0 -1px 0 0 rgb(255 210 63 / 0.12) inset;
+}
+
+/* 3. 非激活标签：低调奶白 */
+.theme-the-finals .tabbar-bg button.text-muted-foreground {
+  background-color: transparent !important;
+  color: rgb(255 244 223 / 0.38) !important;
+}
+
+/* 4. 非激活 Hover：战斗红背景 + 红色底线 */
+.theme-the-finals .tabbar-bg button.text-muted-foreground:hover {
+  background-color: rgb(217 31 60 / 0.12) !important;
+  color: rgb(255 244 223 / 0.82) !important;
+  border-bottom-color: rgb(217 31 60 / 0.55) !important;
+}
+
+/* 5. 关闭按钮 × ：hover 变红 */
+.theme-the-finals .tabbar-bg button .hover\:bg-muted-foreground\/20:hover {
+  background-color: rgb(217 31 60 / 0.32) !important;
+  color: #fff4df !important;
+}
+
+/* ===== THE FINALS 主题：全局装饰层 ===== */
+
+/* body 字体 + 字间距 */
+html.theme-the-finals body {
+  font-family: var(--font-sans);
+  letter-spacing: 0.01em;
+}
+
+/* 标题竞技风格：斜体 + 大写 + 粗重 */
+html.theme-the-finals h1,
+html.theme-the-finals h1 *,
+html.theme-the-finals h2,
+html.theme-the-finals h2 *,
+html.theme-the-finals h3,
+html.theme-the-finals h3 *,
+html.theme-the-finals h4,
+html.theme-the-finals h4 * {
+  font-style: italic;
+  font-weight: 800;
+  letter-spacing: 0.015em;
+  text-transform: uppercase;
+}
+
+/* 全局光效叠层（斜线 + 径向金光）*/
+html.theme-the-finals body::before {
+  content: "";
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 9990;
+  background:
+    linear-gradient(100deg, transparent 0 10%, rgb(255 244 223 / 0.032) 10% 10.5%, transparent 10.5% 100%),
+    linear-gradient(100deg, transparent 0 78%, rgb(217 31 60 / 0.14) 78% 81%, transparent 81% 100%),
+    radial-gradient(circle at 20% 15%, rgb(255 210 63 / 0.10), transparent 18%);
+  mix-blend-mode: screen;
+  opacity: 0.72;
+}
+
+/* "THE FINALS" 大字水印（右下角）*/
+html.theme-the-finals body::after {
+  content: "THE FINALS";
+  pointer-events: none;
+  position: fixed;
+  right: clamp(18px, 4vw, 72px);
+  bottom: clamp(18px, 3vw, 52px);
+  z-index: 1;
+  max-width: 44vw;
+  color: rgb(255 244 223 / 0.055);
+  font-family: "Saira Extra Condensed", "Saira Condensed", var(--font-sans);
+  font-size: clamp(58px, 13vw, 188px);
+  font-style: italic;
+  font-weight: 700;
+  line-height: 0.78;
+  letter-spacing: 0.02em;
+  text-align: right;
+  text-transform: uppercase;
+  transform: skewX(-10deg);
+}
+
+/* ===== THE FINALS 主题：Popover / 下拉菜单 / Modal ===== */
+
+/* ── 1. 所有 Radix Popper 内容：统一暗色底 + 金边 + 深阴影 ── */
+.theme-the-finals [data-radix-popper-content-wrapper] > * {
+  position: relative;
+  overflow: hidden;
+  border-color: rgb(255 244 223 / 0.18) !important;
+  background-color: #181719 !important;
+  background-image:
+    linear-gradient(112deg, rgb(24 23 26 / 0.98) 0 60%, rgb(217 31 60 / 0.07) 60% 78%, rgb(24 23 26 / 0.98) 78%) !important;
+  color: #fff4df !important;
+  box-shadow:
+    0 0 0 1px rgb(255 244 223 / 0.06),
+    0 24px 70px rgb(0 0 0 / 0.62),
+    inset 0 1px 0 rgb(255 244 223 / 0.08) !important;
+}
+
+/* 扫描线 + 金色径向光 纹理叠层 */
+.theme-the-finals [data-radix-popper-content-wrapper] > *::before {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    repeating-linear-gradient(0deg, rgb(255 244 223 / 0.012) 0 1px, transparent 1px 8px),
+    linear-gradient(100deg, transparent 0 72%, rgb(217 31 60 / 0.045) 72% 78%, transparent 78%),
+    radial-gradient(circle at 16% 0%, rgb(255 210 63 / 0.035), transparent 28%);
+  opacity: 0.42;
+}
+
+/* 内容层浮于纹理之上 */
+.theme-the-finals [data-radix-popper-content-wrapper] > * > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── 2. 菜单项文字颜色 ── */
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitem"],
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitemcheckbox"],
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitemradio"],
+.theme-the-finals [data-radix-popper-content-wrapper] [role="option"] {
+  color: rgb(255 244 223 / 0.90) !important;
+}
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitem"] *,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitemcheckbox"] *,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitemradio"] *,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="option"] * {
+  color: inherit !important;
+}
+
+/* ── 3. Hover / Focus / Highlighted 状态：金-红渐变 ── */
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitem"]:hover,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitem"]:focus,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitem"][data-highlighted],
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitemcheckbox"]:hover,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitemcheckbox"][data-highlighted],
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitemradio"]:hover,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitemradio"][data-highlighted],
+.theme-the-finals [data-radix-popper-content-wrapper] [role="option"]:hover,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="option"]:focus,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="option"][data-highlighted] {
+  background:
+    linear-gradient(90deg, rgb(255 210 63 / 0.18), rgb(217 31 60 / 0.14)),
+    rgb(47 45 49 / 0.92) !important;
+  color: #fff4df !important;
+}
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitem"]:hover *,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitem"][data-highlighted] *,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="option"]:hover *,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="option"][data-highlighted] * {
+  color: #fff4df !important;
+}
+
+/* ── 4. 选中态：战斗红 ── */
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitem"][data-state="open"],
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitemcheckbox"][data-state="checked"],
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitemradio"][data-state="checked"],
+.theme-the-finals [data-radix-popper-content-wrapper] [role="option"][data-state="checked"],
+.theme-the-finals [data-radix-popper-content-wrapper] [role="option"][aria-selected="true"],
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitem"].bg-accent,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitem"]:has(.text-primary) {
+  background: #e42343 !important;
+  color: #fff4df !important;
+}
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitem"][data-state="open"] *,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitemcheckbox"][data-state="checked"] *,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitemradio"][data-state="checked"] *,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="option"][data-state="checked"] *,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="option"][aria-selected="true"] *,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitem"].bg-accent *,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitem"]:has(.text-primary) * {
+  color: #fff4df !important;
+}
+
+/* ── 5. 分隔线 ── */
+.theme-the-finals [data-radix-popper-content-wrapper] [role="separator"],
+.theme-the-finals [data-radix-popper-content-wrapper] .border-t,
+.theme-the-finals [data-radix-popper-content-wrapper] .border-b {
+  border-color: rgb(255 244 223 / 0.15) !important;
+  background-color: rgb(255 244 223 / 0.08) !important;
+}
+
+/* ── 6. 搜索输入框 placeholder ── */
+.theme-the-finals [data-radix-popper-content-wrapper] input::placeholder,
+.theme-the-finals [data-radix-popper-content-wrapper] textarea::placeholder {
+  color: rgb(255 244 223 / 0.48) !important;
+}
+
+/* ── 7. 主色 svg / 金色 checkmark ── */
+.theme-the-finals [data-radix-popper-content-wrapper] .text-primary,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="option"][data-state="checked"] svg,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitemcheckbox"][data-state="checked"] svg,
+.theme-the-finals [data-radix-popper-content-wrapper] [role="menuitemradio"][data-state="checked"] svg {
+  color: #ffd23f !important;
+}
+
+/* ── 8. 次要文字颜色保持温暖灰 ── */
+.theme-the-finals [data-radix-popper-content-wrapper] .text-muted-foreground,
+.theme-the-finals [data-radix-popper-content-wrapper] .opacity-50,
+.theme-the-finals [data-radix-popper-content-wrapper] .opacity-70 {
+  color: rgb(255 244 223 / 0.55) !important;
+}
+
+/* ===== THE FINALS 主题：Dialog / Modal 增强 ===== */
+.theme-the-finals [data-radix-dialog-content] {
+  position: relative;
+  overflow: hidden;
+  background-color: hsl(270 5% 11%) !important;
+  background-image:
+    linear-gradient(112deg, rgb(24 23 26 / 0.98) 0 62%, rgb(217 31 60 / 0.055) 62% 76%, rgb(24 23 26 / 0.98) 76%) !important;
+  border-color: rgb(255 244 223 / 0.18) !important;
+  color: #fff4df !important;
+  box-shadow:
+    0 0 0 1px rgb(255 244 223 / 0.05),
+    0 0 48px 12px rgb(217 31 60 / 0.06),
+    0 30px 90px rgb(0 0 0 / 0.56) !important;
+}
+
+/* dialog 内的扫描线纹理 */
+.theme-the-finals [data-radix-dialog-content]::before {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    repeating-linear-gradient(0deg, rgb(255 244 223 / 0.008) 0 1px, transparent 1px 8px),
+    radial-gradient(circle at 18% 12%, rgb(228 35 67 / 0.12), transparent 32%),
+    radial-gradient(circle at 82% 88%, rgb(255 210 63 / 0.06), transparent 28%);
+}
+
+.theme-the-finals [data-radix-dialog-content] > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* dialog 内的文字颜色继承 */
+.theme-the-finals [data-radix-dialog-content] .text-foreground,
+.theme-the-finals [data-radix-dialog-content] .text-card-foreground {
+  color: #fff4df !important;
+}
+.theme-the-finals [data-radix-dialog-content] .text-muted-foreground {
+  color: rgb(188 179 167 / 0.85) !important;
+}
+
+/* ===== THE FINALS 主题：代码块标题栏 ===== */
+.theme-the-finals .code-block-wrapper > div:first-child {
+  background: rgb(37 35 38 / 0.96) !important;
+  border-bottom: 1px solid rgb(255 244 223 / 0.10);
+}
+
 /* ===== 输入框段落紧凑行距（仅作用于输入框内的 tiptap 编辑器） ===== */
 .rich-text-input .tiptap p {
   margin: 0;
@@ -678,7 +1135,8 @@
 .theme-ocean-dark .tiptap pre,
 .theme-slate-dark .tiptap pre,
 .theme-qingye .tiptap pre,
-.theme-black .tiptap pre {
+.theme-black .tiptap pre,
+.theme-the-finals .tiptap pre {
   background-color: hsl(var(--muted));
   color: hsl(var(--foreground));
 }
@@ -795,7 +1253,7 @@
 }
 
 .code-block-wrapper pre.shiki {
-  font-family: 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  font-family: var(--font-mono);
   background-color: hsl(var(--code-bg)) !important;
 }
 
@@ -972,4 +1430,130 @@
 }
 .file-browser-row-flash {
   animation: file-browser-flash 1.2s ease-out;
+}
+
+
+/* ===== 聊天外观调整：字体大小 + 衬线切换（由 ChatAppearancePopover 控制） ===== */
+/*
+ * 在 <html> 上设置 data-chat-font-size="sm|md|lg" 和 data-chat-serif="true|false"
+ * 通过 .chat-content 类应用到具体的消息内容容器。
+ */
+.chat-content {
+  font-size: 15px;
+  line-height: 1.6;
+}
+html[data-chat-font-size="sm"] .chat-content {
+  font-size: 13px;
+  line-height: 1.55;
+}
+html[data-chat-font-size="md"] .chat-content {
+  font-size: 15px;
+  line-height: 1.6;
+}
+html[data-chat-font-size="lg"] .chat-content {
+  font-size: 17px;
+  line-height: 1.7;
+}
+/* 衬线模式：切换到 serif 字体族（保留 emoji/CJK fallback） */
+html[data-chat-serif="true"] .chat-content {
+  font-family: var(--font-serif), Georgia, 'Songti SC', 'STSong', serif;
+}
+/* prose 内的 p / li / td 等也跟随容器字号（避免 prose-sm 强制覆盖） */
+html[data-chat-font-size="sm"] .chat-content.prose p,
+html[data-chat-font-size="sm"] .chat-content.prose li,
+html[data-chat-font-size="sm"] .chat-content.prose td { font-size: 13px; }
+html[data-chat-font-size="lg"] .chat-content.prose p,
+html[data-chat-font-size="lg"] .chat-content.prose li,
+html[data-chat-font-size="lg"] .chat-content.prose td { font-size: 17px; }
+/* 代码块永远保持等宽字体，不受衬线切换影响 */
+html[data-chat-serif="true"] .chat-content code,
+html[data-chat-serif="true"] .chat-content pre {
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   Code Block 主题变量 — 每个主题独立配色，跟随当前主题切换
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* 默认（light） — github-light */
+:root {
+  --code-bg: #f6f8fa;
+  --code-fg: #24292f;
+  --code-border: rgb(0 0 0 / 0.08);
+  --code-header-bg: #eaeef2;
+  --code-header-fg: #57606a;
+  --code-header-hover: rgb(0 0 0 / 0.06);
+  --code-scrollbar: rgb(0 0 0 / 0.18);
+}
+
+/* 默认 dark — one-dark-pro */
+.dark:not([class*="theme-"]) {
+  --code-bg: #282c34;
+  --code-fg: #abb2bf;
+  --code-border: rgb(255 255 255 / 0.06);
+  --code-header-bg: #21252b;
+  --code-header-fg: #9da5b4;
+  --code-header-hover: rgb(255 255 255 / 0.06);
+  --code-scrollbar: rgb(255 255 255 / 0.14);
+}
+
+/* warm-paper — vitesse-light（暖色） */
+.theme-warm-paper {
+  --code-bg: #f1ede2;
+  --code-fg: #393a34;
+  --code-border: rgb(120 100 60 / 0.18);
+  --code-header-bg: #e7e0cd;
+  --code-header-fg: #6b6450;
+  --code-header-hover: rgb(120 100 60 / 0.10);
+  --code-scrollbar: rgb(120 100 60 / 0.25);
+}
+
+/* ocean-light / forest-light / slate-light — solarized-light */
+.theme-ocean-light,
+.theme-forest-light,
+.theme-slate-light {
+  --code-bg: #fdf6e3;
+  --code-fg: #586e75;
+  --code-border: rgb(80 90 95 / 0.18);
+  --code-header-bg: #eee8d5;
+  --code-header-fg: #657b83;
+  --code-header-hover: rgb(80 90 95 / 0.10);
+  --code-scrollbar: rgb(80 90 95 / 0.28);
+}
+
+/* ocean-dark / forest-dark / slate-dark / qingye — vitesse-dark */
+.theme-ocean-dark,
+.theme-forest-dark,
+.theme-slate-dark,
+.theme-qingye {
+  --code-bg: #121212;
+  --code-fg: #dbd7caee;
+  --code-border: rgb(255 255 255 / 0.06);
+  --code-header-bg: #0a0a0a;
+  --code-header-fg: #888880;
+  --code-header-hover: rgb(255 255 255 / 0.07);
+  --code-scrollbar: rgb(255 255 255 / 0.12);
+}
+
+/* black — min-dark（极简纯黑） */
+.theme-black {
+  --code-bg: #000000;
+  --code-fg: #e4e4e4;
+  --code-border: rgb(255 255 255 / 0.08);
+  --code-header-bg: #0a0a0a;
+  --code-header-fg: #888888;
+  --code-header-hover: rgb(255 255 255 / 0.08);
+  --code-scrollbar: rgb(255 255 255 / 0.14);
+}
+
+/* the-finals — dracula（红紫戏剧化） */
+.theme-the-finals {
+  --code-bg: #1a0f12;
+  --code-fg: #f8f8f2;
+  --code-border: rgb(217 31 60 / 0.30);
+  --code-header-bg: #100a0c;
+  --code-header-fg: #ffd23f;
+  --code-header-hover: rgb(255 210 63 / 0.10);
+  --code-scrollbar: rgb(255 210 63 / 0.20);
 }

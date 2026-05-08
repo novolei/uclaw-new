@@ -10,6 +10,7 @@ import { useAtomValue, useSetAtom } from 'jotai'
 import { Pencil, Check, X, PanelRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { ChatAppearancePopover } from '@/components/chat/ChatAppearancePopover'
 import { agentSessionsAtom, agentSidePanelOpenMapAtom, workspaceFilesVersionAtom } from '@/atoms/agent-atoms'
 import { updateAgentSessionTitle, listAgentSessions } from '@/lib/tauri-bridge'
 
@@ -124,6 +125,10 @@ export function AgentHeader({ sessionId }: AgentHeaderProps): React.ReactElement
             >
               <Pencil className="size-3.5" />
             </button>
+          </div>
+          {/* 聊天外观（字号 / 衬线） */}
+          <div className="titlebar-no-drag">
+            <ChatAppearancePopover />
           </div>
           {/* 文件面板打开按钮（仅面板关闭时显示） */}
           {!isPanelOpen && (

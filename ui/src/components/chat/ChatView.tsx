@@ -553,7 +553,7 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
       <div className="flex flex-col h-full flex-1 min-w-0">
         {/* Header 在 max-w 外，按钮可到达最右侧 */}
         <ChatHeader conversation={conversation} />
-        <div className="flex flex-col flex-1 w-full max-w-[min(72rem,100%)] mx-auto overflow-hidden min-h-0">
+        <div className="flex flex-col flex-1 w-full overflow-hidden min-h-0">
           {/* 中间：消息区域 */}
           <ChatMessages
             conversationId={conversationId}
