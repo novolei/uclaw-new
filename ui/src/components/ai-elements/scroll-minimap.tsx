@@ -272,7 +272,8 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
     el.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' })
   }, [scrollRef, stopScroll, stickyState])
 
-  if (items.length < MIN_ITEMS || !canScroll) return null
+  // 仅当无消息时隐藏；不再要求容器可滚动 — 即便消息很少也保留导航入口
+  if (items.length < MIN_ITEMS) return null
 
   const barCount = Math.min(items.length, MAX_BARS)
 
@@ -372,12 +373,14 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
               <div
                 key={i}
                 className={cn(
+                  // 用 foreground 而非 primary：foreground 在 shadcn 主题中
+                  // 必然与 background 形成可读对比，确保在所有 uclaw 主题下可见
                   'absolute left-1 h-[2px] w-[20px] rounded-full transition-colors',
                   isVisible
-                    ? 'bg-primary dark:bg-primary/70 minimap-visible-indicator'
+                    ? 'bg-primary minimap-visible-indicator'
                     : hasUser
-                      ? 'bg-primary/25 dark:bg-primary/15'
-                      : 'bg-primary/40 dark:bg-primary/25',
+                      ? 'bg-foreground/35'
+                      : 'bg-foreground/55',
                 )}
                 style={{ top: `${top}%` }}
               />
@@ -386,7 +389,8 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
         </div>
       </div>
 
-      {/* 滚动进度条 */}
+      {/* 滚动进度条（仅在容器可滚动时显示） */}
+      {canScroll && (
       <div className="relative ml-[4px] py-4 flex-shrink-0 pointer-events-auto" style={{ width: 7 }}>
         <div
           ref={trackRef}
@@ -408,6 +412,7 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
           />
         </div>
       </div>
+      )}
     </div>
   )
 }
