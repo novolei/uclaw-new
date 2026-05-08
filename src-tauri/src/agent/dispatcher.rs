@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use async_trait::async_trait;
 use tauri::Emitter;
 use crate::agent::types::*;
@@ -37,6 +37,18 @@ pub struct ChatDelegate {
     memory_context: Option<String>,
     /// InfraService for publishing tool execution events
     infra_service: Option<Arc<InfraService>>,
+    /// Optional trajectory store for recording tool turns
+    trajectory_store: Option<Arc<crate::harness::TrajectoryStore>>,
+    /// Optional tool budget manager for truncating large results
+    tool_budget: Option<Arc<crate::harness::ToolBudgetManager>>,
+    /// Monotonic turn counter across all tool calls in this session
+    turn_index: Arc<AtomicU32>,
+    /// Whether extended thinking/reasoning is enabled for this session
+    thinking_enabled: bool,
+    /// Per-session monotonic sequence counter for chat:stream-reasoning events.
+    /// Lets the frontend deduplicate events that arrive more than once (e.g. due
+    /// to HMR or React Strict Mode registering multiple listeners).
+    thinking_seq: Arc<AtomicU64>,
 }
 
 impl ChatDelegate {
@@ -60,12 +72,32 @@ impl ChatDelegate {
             conversation_id,
             memory_context: None,
             infra_service: None,
+            trajectory_store: None,
+            tool_budget: None,
+            turn_index: Arc::new(AtomicU32::new(0)),
+            thinking_enabled: false,
+            thinking_seq: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Enable or disable extended thinking for this session.
+    pub fn set_thinking_enabled(&mut self, enabled: bool) {
+        self.thinking_enabled = enabled;
     }
 
     /// Set the InfraService for publishing tool execution events.
     pub fn set_infra_service(&mut self, infra: Arc<InfraService>) {
         self.infra_service = Some(infra);
+    }
+
+    /// Set the TrajectoryStore for recording tool execution turns.
+    pub fn set_trajectory_store(&mut self, store: Arc<crate::harness::TrajectoryStore>) {
+        self.trajectory_store = Some(store);
+    }
+
+    /// Set the ToolBudgetManager for truncating large tool results.
+    pub fn set_tool_budget(&mut self, budget: Arc<crate::harness::ToolBudgetManager>) {
+        self.tool_budget = Some(budget);
     }
 
     /// Set the memory context obtained from the recall engine.
@@ -91,62 +123,69 @@ impl ChatDelegate {
 
     /// Emit a text delta to the frontend
     fn emit_text_delta(&self, chunk: &str) {
-        let _ = self.app_handle.emit("agent:text-delta", serde_json::json!({
-            "chunk": chunk,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
+        let _ = self.app_handle.emit("chat:stream-chunk", serde_json::json!({
+            "conversationId": self.conversation_id,
+            "delta": chunk,
         }));
     }
 
     /// Emit a tool call start to the frontend
     fn emit_tool_start(&self, name: &str, id: &str, input: &serde_json::Value) {
-        let _ = self.app_handle.emit("agent:tool-start", serde_json::json!({
-            "toolName": name,
-            "toolCallId": id,
-            "input": input,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
+        let _ = self.app_handle.emit("chat:stream-tool-activity", serde_json::json!({
+            "conversationId": self.conversation_id,
+            "activity": {
+                "type": "tool_start",
+                "toolName": name,
+                "toolCallId": id,
+                "input": input,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }
         }));
     }
 
     /// Emit a tool result to the frontend
     fn emit_tool_result(&self, name: &str, id: &str, output: &ToolOutput) {
-        let _ = self.app_handle.emit("agent:tool-result", serde_json::json!({
-            "toolName": name,
-            "toolCallId": id,
-            "result": output.result,
-            "durationMs": output.duration_ms,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
+        let _ = self.app_handle.emit("chat:stream-tool-activity", serde_json::json!({
+            "conversationId": self.conversation_id,
+            "activity": {
+                "type": "tool_result",
+                "toolName": name,
+                "toolCallId": id,
+                "result": output.result,
+                "durationMs": output.duration_ms,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }
         }));
     }
 
     /// Emit a completion event to the frontend
     fn emit_done(&self, text: &str) {
-        let _ = self.app_handle.emit("agent:done", serde_json::json!({
+        let _ = self.app_handle.emit("chat:stream-complete", serde_json::json!({
+            "conversationId": self.conversation_id,
             "text": text,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
         }));
     }
 
     /// Emit thinking block to the frontend
     fn emit_thinking(&self, text: &str) {
-        let _ = self.app_handle.emit("agent:thinking", serde_json::json!({
-            "text": text,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
+        let seq = self.thinking_seq.fetch_add(1, Ordering::Relaxed);
+        let _ = self.app_handle.emit("chat:stream-reasoning", serde_json::json!({
+            "conversationId": self.conversation_id,
+            "delta": text,
+            "seq": seq,
         }));
     }
 
     /// Emit thinking-done event to the frontend
-    fn emit_thinking_done(&self, duration_ms: u64) {
-        let _ = self.app_handle.emit("agent:thinking-done", serde_json::json!({
-            "durationMs": duration_ms,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-        }));
+    fn emit_thinking_done(&self, _duration_ms: u64) {
+        // Absorbed into the reasoning stream; no separate frontend event needed
     }
 
     /// Emit error to the frontend
     fn emit_error(&self, error: &str) {
-        let _ = self.app_handle.emit("agent:error", serde_json::json!({
+        let _ = self.app_handle.emit("chat:stream-error", serde_json::json!({
+            "conversationId": self.conversation_id,
             "error": error,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
         }));
     }
 
@@ -296,6 +335,7 @@ impl LoopDelegate for ChatDelegate {
             max_tokens: 8192,
             temperature: 0.7,
             system_prompt: Some(effective_prompt),
+            thinking_enabled: self.thinking_enabled,
         };
 
         tracing::info!(
@@ -561,7 +601,39 @@ impl LoopDelegate for ChatDelegate {
                             );
                             self.emit_tool_result(&tc.name, &tc.id, &output);
 
-                            let result_str = serde_json::to_string(&output.result).unwrap_or_else(|_| "{}".into());
+                            let raw_result_str = serde_json::to_string(&output.result).unwrap_or_else(|_| "{}".into());
+
+                            // Apply budget truncation (must happen before trajectory recording
+                            // so the stored result matches what the LLM actually sees)
+                            let turn_idx = self.turn_index.fetch_add(1, Ordering::Relaxed);
+                            let result_str = if let Some(ref budget) = self.tool_budget {
+                                budget.apply(&tc.name, raw_result_str, &self.conversation_id, turn_idx)
+                            } else {
+                                raw_result_str
+                            };
+
+                            // Record trajectory turn
+                            if let Some(ref store) = self.trajectory_store {
+                                use crate::harness::trajectory::TurnRecord;
+                                let tool_args_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
+                                let record = TurnRecord {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    session_id: self.conversation_id.clone(),
+                                    turn_index: turn_idx,
+                                    role: "tool".into(),
+                                    content: None,
+                                    tool_name: Some(tc.name.clone()),
+                                    tool_args: Some(tool_args_json),
+                                    tool_result: Some(result_str.clone()),
+                                    reasoning: None,
+                                    is_error: false,
+                                    duration_ms,
+                                    created_at: chrono::Utc::now().timestamp_millis(),
+                                };
+                                if let Err(e) = store.record_turn(&record) {
+                                    tracing::warn!("Failed to record trajectory turn: {e}");
+                                }
+                            }
 
                             // Publish ToolExecuted event to InfraService
                             if let Some(ref infra) = self.infra_service {
@@ -591,6 +663,32 @@ impl LoopDelegate for ChatDelegate {
                             tracing::error!("Tool {} execution failed: {}", tc.name, e);
                             self.emit_error(&e.to_string());
 
+                            let error_result_str = format!("Error: {}", e);
+
+                            // Record error trajectory turn
+                            let turn_idx = self.turn_index.fetch_add(1, Ordering::Relaxed);
+                            if let Some(ref store) = self.trajectory_store {
+                                use crate::harness::trajectory::TurnRecord;
+                                let tool_args_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
+                                let record = TurnRecord {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    session_id: self.conversation_id.clone(),
+                                    turn_index: turn_idx,
+                                    role: "tool".into(),
+                                    content: None,
+                                    tool_name: Some(tc.name.clone()),
+                                    tool_args: Some(tool_args_json),
+                                    tool_result: Some(error_result_str.clone()),
+                                    reasoning: None,
+                                    is_error: true,
+                                    duration_ms,
+                                    created_at: chrono::Utc::now().timestamp_millis(),
+                                };
+                                if let Err(re) = store.record_turn(&record) {
+                                    tracing::warn!("Failed to record error trajectory turn: {re}");
+                                }
+                            }
+
                             // Publish ToolExecuted event (failure) to InfraService
                             if let Some(ref infra) = self.infra_service {
                                 let input_summary = truncate_utf8(&serde_json::to_string(&tc.arguments).unwrap_or_default(), 500);
@@ -610,7 +708,7 @@ impl LoopDelegate for ChatDelegate {
 
                             reason_ctx.messages.push(ChatMessage::user_tool_result(
                                 &tc.id,
-                                &format!("Error: {}", e),
+                                &error_result_str,
                                 true,
                             ));
                         }

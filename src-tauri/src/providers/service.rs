@@ -101,6 +101,57 @@ impl ProviderService {
         ))
     }
 
+    /// Resolve a specific provider+model into LLM connection parameters.
+    /// Returns None if the provider is not configured.
+    pub async fn get_provider_llm_config(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+    ) -> Option<(String, String, String, String)> {
+        let configs = self.configs.read().await;
+        let provider = configs.find_provider(provider_id)?;
+        Some((
+            provider_id.to_string(),
+            model_id.to_string(),
+            provider.api_key.clone().unwrap_or_default(),
+            provider.base_url.clone().unwrap_or_default(),
+        ))
+    }
+
+    /// Resolve the chat-role model → active_model fallback chain.
+    /// Priority: role_models['chat'] → active_model.
+    pub async fn get_chat_llm_config(&self) -> Option<(String, String, String, String)> {
+        let configs = self.configs.read().await;
+
+        // Check role_models for 'chat' role first
+        if let Some(role_cfg) = configs.role_models.iter().find(|r| r.role == "chat") {
+            if let Some(model_ref) = &role_cfg.model_ref {
+                let parts: Vec<&str> = model_ref.splitn(2, '/').collect();
+                if parts.len() == 2 {
+                    let (pid, mid) = (parts[0], parts[1]);
+                    if let Some(provider) = configs.find_provider(pid) {
+                        return Some((
+                            pid.to_string(),
+                            mid.to_string(),
+                            provider.api_key.clone().unwrap_or_default(),
+                            provider.base_url.clone().unwrap_or_default(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Fall back to active_model
+        let active = configs.active_model.as_ref()?;
+        let provider = configs.find_provider(&active.provider_id)?;
+        Some((
+            active.provider_id.clone(),
+            active.model_id.clone(),
+            provider.api_key.clone().unwrap_or_default(),
+            provider.base_url.clone().unwrap_or_default(),
+        ))
+    }
+
     // ── Provider configuration ──────────────────────────────────────────────
 
     /// Save a provider configuration.
@@ -158,6 +209,26 @@ impl ProviderService {
         configs.remove_provider(provider_id);
         save_provider_configs(&configs, &self.configs_path)
             .map_err(|e| Error::Internal(format!("Failed to save after removal: {e}")))
+    }
+
+    /// Get all per-role model assignments.
+    pub async fn get_role_models(&self) -> Vec<super::types::ModelRoleConfig> {
+        self.configs.read().await.role_models.clone()
+    }
+
+    /// Set (or clear) the model assigned to a specific role.
+    pub async fn set_role_model(&self, role: &str, model_ref: Option<String>) -> Result<(), Error> {
+        let mut configs = self.configs.write().await;
+        if let Some(entry) = configs.role_models.iter_mut().find(|r| r.role == role) {
+            entry.model_ref = model_ref;
+        } else {
+            configs.role_models.push(super::types::ModelRoleConfig {
+                role: role.to_string(),
+                model_ref,
+            });
+        }
+        save_provider_configs(&configs, &self.configs_path)
+            .map_err(|e| Error::Internal(format!("Failed to save role model: {e}")))
     }
 
     /// Select the active model.

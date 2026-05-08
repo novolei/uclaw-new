@@ -11,11 +11,12 @@ pub struct CompletionConfig {
     pub max_tokens: u32,
     pub temperature: f32,
     pub system_prompt: Option<String>,
+    pub thinking_enabled: bool,
 }
 
 impl Default for CompletionConfig {
     fn default() -> Self {
-        Self { model: "claude-sonnet-4-20250514".into(), max_tokens: 8192, temperature: 0.7, system_prompt: None }
+        Self { model: "claude-sonnet-4-20250514".into(), max_tokens: 8192, temperature: 0.7, system_prompt: None, thinking_enabled: false }
     }
 }
 

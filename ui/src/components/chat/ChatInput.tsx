@@ -15,7 +15,7 @@
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { CornerDownLeft, Square, Brain, Paperclip } from 'lucide-react'
-import { ModelSelector } from './ModelSelector'
+import { ProviderModelSelector } from './ProviderModelSelector'
 import { ClearContextButton } from './ClearContextButton'
 import { ContextSettingsPopover } from './ContextSettingsPopover'
 import { ToolSelectorPopover } from './ToolSelectorPopover'
@@ -34,9 +34,9 @@ import {
 } from '@/atoms/chat-atoms'
 import type { PendingAttachment } from '@/atoms/chat-atoms'
 import {
-  useConversationModel,
   useConversationThinkingEnabled,
 } from '@/hooks/useConversationSettings'
+import { activeProviderModelAtom } from '@/atoms/active-model'
 import { FeishuNotifyToggle } from './FeishuNotifyToggle'
 import { cn } from '@/lib/utils'
 import { fileToBase64 } from '@/lib/file-utils'
@@ -78,13 +78,13 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
     })
   }, [conversationId, setDraftsMap])
 
-  const [selectedModel] = useConversationModel()
+  const activeProviderModel = useAtomValue(activeProviderModelAtom)
   const [thinkingEnabled, setThinkingEnabled] = useConversationThinkingEnabled()
   const setPendingAttachments = onSetPendingAttachments
   const [isDragOver, setIsDragOver] = React.useState(false)
 
   const canSend = (content.trim().length > 0 || pendingAttachments.length > 0)
-    && selectedModel !== null
+    && activeProviderModel !== null
     && !streaming
 
   /**
@@ -294,7 +294,7 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
                 </TooltipContent>
               </Tooltip>
 
-              <ModelSelector />
+              <ProviderModelSelector />
 
               {/* 思考模式切换 */}
               <Tooltip>

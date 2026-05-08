@@ -119,6 +119,13 @@ pub struct AppState {
 
     /// Browser service for headless Chrome automation
     pub browser_service: Arc<crate::browser::BrowserService>,
+
+    /// Automation scheduling service
+    pub automation_service: Arc<crate::automation::AutomationService>,
+
+    // Evaluation harness
+    pub trajectory_store: Arc<crate::harness::TrajectoryStore>,
+    pub tool_budget: Arc<crate::harness::ToolBudgetManager>,
 }
 
 impl AppState {
@@ -243,6 +250,11 @@ impl AppState {
             memubot_config.power.prevent_sleep,
         );
 
+        // Evaluation harness
+        let trajectory_store = Arc::new(crate::harness::TrajectoryStore::new(db.clone()));
+        let tool_budget = Arc::new(crate::harness::ToolBudgetManager::new(&data_dir));
+        let automation_service = Arc::new(crate::automation::AutomationService::new(db.clone()));
+
         // ─── Stage 2：核心服务 ─────────────────────────────────────────
         let infra_service = Arc::new(InfraService::new());
         tracing::info!("InfraService created");
@@ -287,6 +299,9 @@ impl AppState {
             memubot_config,
             running_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             browser_service: Arc::new(crate::browser::BrowserService::new()),
+            automation_service,
+            trajectory_store,
+            tool_budget,
         })
     }
 

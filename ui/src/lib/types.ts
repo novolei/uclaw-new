@@ -77,6 +77,11 @@ export interface SendMessageInput {
   content: string;
   attachments?: string[];
   safetyMode?: SafetyMode;
+  /** Override the active model for this message. */
+  providerId?: string;
+  modelId?: string;
+  /** Enable extended thinking/reasoning for this message. */
+  thinkingEnabled?: boolean;
 }
 
 export interface SendMessageResponse {

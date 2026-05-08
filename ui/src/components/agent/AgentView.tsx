@@ -25,7 +25,7 @@ import { PermissionModeSelector } from './PermissionModeSelector'
 import { AskUserBanner } from './AskUserBanner'
 import { ExitPlanModeBanner } from './ExitPlanModeBanner'
 import { PlanModeDashedBorder } from './PlanModeDashedBorder'
-import { ModelSelector } from '@/components/chat/ModelSelector'
+import { ProviderModelSelector } from '@/components/chat/ProviderModelSelector'
 import { AttachmentPreviewItem } from '@/components/chat/AttachmentPreviewItem'
 import { RichTextInput } from '@/components/ai-elements/rich-text-input'
 import { Button } from '@/components/ui/button'
@@ -49,7 +49,6 @@ import {
   agentStreamingStatesAtom,
   agentChannelIdAtom,
   agentModelIdAtom,
-  agentChannelIdsAtom,
   agentSessionChannelMapAtom,
   agentSessionModelMapAtom,
   currentAgentWorkspaceIdAtom,
@@ -76,13 +75,13 @@ import {
   finalizeStreamingActivities,
 } from '@/atoms/agent-atoms'
 import type { AgentContextStatus } from '@/atoms/agent-atoms'
-import { settingsOpenAtom } from '@/atoms/settings-tab'
+import { activeProviderModelAtom } from '@/atoms/active-model'
 import { channelsAtom, thinkingExpandedAtom } from '@/atoms/chat-atoms'
 import { useOpenSession } from '@/hooks/useOpenSession'
 import { AgentSessionProvider } from '@/contexts/session-context'
 import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { sendWithCmdEnterAtom } from '@/atoms/shortcut-atoms'
-import type { AgentSendInput, AgentMessage, AgentPendingFile, ModelOption, SDKMessage } from '@/lib/proma-types'
+import type { AgentSendInput, AgentMessage, AgentPendingFile, SDKMessage } from '@/lib/proma-types'
 import { fileToBase64 } from '@/lib/file-utils'
 import {
   updateSettings,
@@ -213,13 +212,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const sessionModelMap = useAtomValue(agentSessionModelMapAtom)
   const setSessionChannelMap = useSetAtom(agentSessionChannelMapAtom)
   const setSessionModelMap = useSetAtom(agentSessionModelMapAtom)
-  const [defaultChannelId, setDefaultChannelId] = useAtom(agentChannelIdAtom)
+  const defaultChannelId = useAtomValue(agentChannelIdAtom)
   const [defaultModelId, setDefaultModelId] = useAtom(agentModelIdAtom)
   const agentChannelId = sessionChannelMap.get(sessionId) ?? defaultChannelId
   const agentModelId = sessionModelMap.get(sessionId) ?? defaultModelId
-  const agentChannelIds = useAtomValue(agentChannelIdsAtom)
+  const [activeProviderModel] = useAtom(activeProviderModelAtom)
   const [agentThinking, setAgentThinking] = useAtom(agentThinkingAtom)
-  const setSettingsOpen = useSetAtom(settingsOpenAtom)
   const setDraftSessionIds = useSetAtom(draftSessionIdsAtom)
   const globalWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
   const sessions = useAtomValue(agentSessionsAtom)
@@ -328,17 +326,8 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   // 渠道已选但模型未选时，自动选择第一个可用模型
   const globalChannels = useAtomValue(channelsAtom)
 
-  // 检查 Agent 渠道列表中是否存在可用的模型（渠道 enabled + 模型 enabled）
-  const hasAvailableModel = React.useMemo(() => {
-    // Proma 官方渠道（商业版）：只要 enabled 且有可用模型，直接视为可用
-    const promaOfficial = globalChannels.find((c) => c.id === 'proma-official')
-    if (promaOfficial?.enabled && promaOfficial.models.some((m) => m.enabled)) return true
-    // 其他渠道：需在 agentChannelIds 白名单中
-    if (!agentChannelIds || agentChannelIds.length === 0) return false
-    return globalChannels.some(
-      (c) => c.enabled && agentChannelIds.includes(c.id) && c.models.some((m) => m.enabled),
-    )
-  }, [globalChannels, agentChannelIds])
+  // 是否有可用模型：使用新的 Provider 体系（activeProviderModelAtom）
+  const hasAvailableModel = activeProviderModel !== null
   React.useEffect(() => {
     if (!agentChannelId || agentModelId) return
 
@@ -510,13 +499,13 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     if (!messagesLoaded) return
     if (!pendingPrompt) return
     if (pendingPrompt.sessionId !== sessionId) return
-    if (!agentChannelId || streaming) return
+    if (!activeProviderModel || streaming) return
 
     // 快照当前上下文
     const snapshot = {
       message: pendingPrompt.message,
-      channelId: agentChannelId,
-      modelId: agentModelId || undefined,
+      channelId: agentChannelId ?? activeProviderModel.providerId,
+      modelId: activeProviderModel.modelId || agentModelId || undefined,
       workspaceId: currentWorkspaceId || undefined,
     }
     setPendingPrompt(null)
@@ -775,42 +764,13 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   }, [sessionId, addFilesAsAttachments, setAttachedDirsMap])
 
   /** ModelSelector 选择回调 */
-  const handleModelSelect = React.useCallback((option: ModelOption): void => {
-    // 更新当前会话的 per-session 配置
-    setSessionChannelMap((prev) => {
-      const map = new Map(prev)
-      map.set(sessionId, option.channelId)
-      return map
-    })
-    setSessionModelMap((prev) => {
-      const map = new Map(prev)
-      map.set(sessionId, option.modelId)
-      return map
-    })
-
-    // 同时更新全局默认值（新会话继承）
-    setDefaultChannelId(option.channelId)
-    setDefaultModelId(option.modelId)
-
-    // 持久化到设置
-    updateSettings({
-      agentChannelId: option.channelId,
-      agentModelId: option.modelId,
-    }).catch(console.error)
-  }, [sessionId, setSessionChannelMap, setSessionModelMap, setDefaultChannelId, setDefaultModelId])
-
-  /** 构建 externalSelectedModel 给 ModelSelector */
-  const externalSelectedModel = React.useMemo(() => {
-    if (!agentChannelId || !agentModelId) return null
-    return { channelId: agentChannelId, modelId: agentModelId }
-  }, [agentChannelId, agentModelId])
 
   /** 发送消息 */
   const handleSend = React.useCallback(async (): Promise<void> => {
     const text = inputContent.trim()
     // 如果输入为空但有建议，使用建议内容
     const effectiveText = text || suggestion || ''
-    if ((!effectiveText && pendingFiles.length === 0) || !agentChannelId || !hasAvailableModel) return
+    if ((!effectiveText && pendingFiles.length === 0) || !activeProviderModel) return
 
     // 上一条消息仍在处理中，直接追加发送
     if (streaming) {
@@ -1016,8 +976,8 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     const input: AgentSendInput = {
       sessionId,
       userMessage: finalMessage,
-      channelId: agentChannelId,
-      modelId: agentModelId || undefined,
+      channelId: agentChannelId ?? activeProviderModel?.providerId ?? '',
+      modelId: activeProviderModel?.modelId || agentModelId || undefined,
       workspaceId: currentWorkspaceId || undefined,
       startedAt: streamStartedAt,
       ...(attachedDirs.length > 0 && { additionalDirectories: attachedDirs }),
@@ -1035,17 +995,34 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     setInputContent('')
     setInputHtmlContent('')
 
-    sendAgentMessage(input).catch((error: unknown) => {
-      console.error('[AgentView] 发送消息失败:', error)
-      setStreamingStates((prev) => {
-        const current = prev.get(sessionId)
-        if (!current) return prev
-        const map = new Map(prev)
-        map.set(sessionId, { ...current, running: false })
-        return map
+    sendAgentMessage(input)
+      .then(() => {
+        // Reload messages from DB so the persisted assistant reply appears.
+        // Note: streaming state is managed entirely by chat:stream-complete / chat:stream-error events.
+        // Setting running=false here would race with those events and kill the streaming display.
+        getAgentSessionMessages(sessionId)
+          .then((msgs: any[]) => {
+            if (msgs.length === 0) return
+            setMessages(msgs.map((m: any) => ({
+              id: m.id,
+              role: m.role,
+              content: m.content,
+              createdAt: new Date(m.createdAt).getTime(),
+            })))
+          })
+          .catch(console.error)
       })
-    })
-  }, [inputContent, pendingFiles, attachedDirs, sessionId, agentChannelId, agentModelId, currentWorkspaceId, workspaces, streaming, suggestion, hasAvailableModel, store, setStreamingStates, setPendingFiles, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap])
+      .catch((error: unknown) => {
+        console.error('[AgentView] 发送消息失败:', error)
+        setStreamingStates((prev) => {
+          const current = prev.get(sessionId)
+          if (!current) return prev
+          const map = new Map(prev)
+          map.set(sessionId, { ...current, running: false })
+          return map
+        })
+      })
+  }, [inputContent, pendingFiles, attachedDirs, sessionId, activeProviderModel, agentChannelId, agentModelId, currentWorkspaceId, workspaces, streaming, suggestion, store, setStreamingStates, setPendingFiles, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, setMessages])
 
   /** 停止生成 */
   const handleStop = React.useCallback((): void => {
@@ -1325,7 +1302,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     (allExitPlanRequests.get(sessionId)?.length ?? 0) > 0
 
   const hasTextInput = inputContent.trim().length > 0
-  const canSend = (hasTextInput || pendingFiles.length > 0 || !!suggestion) && agentChannelId !== null && hasAvailableModel && (!streaming || hasTextInput)
+  const canSend = (hasTextInput || pendingFiles.length > 0 || !!suggestion) && activeProviderModel !== null && (!streaming || hasTextInput)
 
   return (
     <>
@@ -1387,18 +1364,11 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             onDrop={handleDrop}
           >
             {(isPlanMode || isPermissionPlanMode) && !isDragOver && <PlanModeDashedBorder />}
-            {/* 无 Agent 渠道或无可用模型提示 */}
-            {(!agentChannelId || !hasAvailableModel) && (
+            {/* 未配置模型提示 */}
+            {!activeProviderModel && (
               <div className="flex items-center gap-2 px-4 py-2 text-sm text-amber-600 dark:text-amber-400">
                 <Settings size={14} />
-                <span>{!agentChannelId ? '请在设置中选择 Agent 供应商' : '暂无可用模型，请在设置中启用 Agent 渠道并配置模型'}</span>
-                <button
-                  type="button"
-                  className="text-xs underline underline-offset-2 hover:text-foreground transition-colors"
-                  onClick={() => setSettingsOpen(true)}
-                >
-                  前往设置
-                </button>
+                <span>请在下方工具栏选择模型</span>
               </div>
             )}
 
@@ -1449,15 +1419,13 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
               onSubmit={handleSend}
               onPasteFiles={handlePasteFiles}
               placeholder={
-                agentChannelId && hasAvailableModel
+                activeProviderModel
                   ? sendWithCmdEnter
                     ? '输入消息... (⌘/Ctrl+Enter 发送，Enter 换行，@ 引用文件，/ 调用 Skill，# 调用 MCP)'
                     : '输入消息... (Enter 发送，Shift+Enter 换行，@ 引用文件，/ 调用 Skill，# 调用 MCP)'
-                  : !agentChannelId
-                    ? '请先在设置中选择 Agent 供应商'
-                    : '暂无可用模型，请先在设置中启用渠道'
+                  : '请先在下方工具栏选择模型...'
               }
-              disabled={!agentChannelId || !hasAvailableModel}
+              disabled={!activeProviderModel}
               autoFocusTrigger={sessionId}
               collapsible
               workspacePath={sessionPath}
@@ -1471,11 +1439,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             {/* Footer 工具栏 */}
             <div className="flex items-center justify-between px-2 py-1 h-[48px] gap-4">
               <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                <ModelSelector
-                  filterChannelIds={agentChannelIds}
-                  externalSelectedModel={externalSelectedModel}
-                  onModelSelect={handleModelSelect}
-                />
+                <ProviderModelSelector />
                 <PermissionModeSelector sessionId={sessionId} />
                 {/* 思考模式切换 + 展开偏好 */}
                 <AgentThinkingPopover

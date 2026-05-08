@@ -1,15 +1,20 @@
-/**
- * Settings UI Constants — 设置面板 UI 常量
- */
+/** 行标签 */
+export const LABEL_CLASS = 'text-sm font-medium text-foreground'
 
-export const SETTINGS_SIDEBAR_WIDTH = 200;
-export const SETTINGS_CONTENT_MAX_WIDTH = 640;
-export const SETTINGS_CONTENT_PADDING = 24;
+/** 描述文字 */
+export const DESCRIPTION_CLASS = 'text-sm text-muted-foreground'
 
-export const SETTINGS_SECTION_GAP = 24;
-export const SETTINGS_ROW_GAP = 16;
+/** 区块标题 */
+export const SECTION_TITLE_CLASS = 'text-base font-semibold text-foreground'
 
-export const SETTINGS_CARD_RADIUS = 12;
-export const SETTINGS_INPUT_HEIGHT = 36;
+/** 区块描述 */
+export const SECTION_DESCRIPTION_CLASS = 'text-sm text-muted-foreground mt-1'
 
-export const SETTINGS_LABEL_WIDTH = 120;
+/** 卡片容器 */
+export const CARD_CLASS = 'rounded-xl overflow-hidden bg-card border border-border/50'
+
+/** 卡片内行 */
+export const ROW_CLASS = 'flex items-center justify-between px-4 py-3'
+
+/** 分隔线 */
+export const DIVIDER_CLASS = 'border-border/50'

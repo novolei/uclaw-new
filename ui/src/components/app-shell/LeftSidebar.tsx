@@ -13,7 +13,7 @@
 import * as React from 'react'
 import { useAtom, useSetAtom, useAtomValue } from 'jotai'
 import { toast } from 'sonner'
-import { Pin, PinOff, Settings, Plus, Trash2, Pencil, ChevronDown, ChevronRight, Plug, Zap, PanelLeftClose, PanelLeftOpen, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, Hammer } from 'lucide-react'
+import { Pin, PinOff, Settings, Plus, Trash2, Pencil, ChevronDown, ChevronRight, Plug, Zap, PanelLeftClose, PanelLeftOpen, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, Hammer, CalendarClock } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { ModeSwitcher } from './ModeSwitcher'
@@ -66,6 +66,9 @@ import { promptConfigAtom, selectedPromptIdAtom, conversationPromptIdAtom } from
 import { useOpenSession } from '@/hooks/useOpenSession'
 import { useSyncActiveTabSideEffects } from '@/hooks/useSyncActiveTabSideEffects'
 import { WorkspaceSelector } from '@/components/agent/WorkspaceSelector'
+import { WorkspaceRail } from '@/components/workspace/WorkspaceRail'
+import { AutomationHub as AutomationHubComponent } from '@/components/automation/AutomationHub'
+import { syncWorkspaceSessionsAtom, refreshWorkspacesAtom, activeWorkspaceIdAtom } from '@/atoms/workspace'
 import { MoveSessionDialog } from '@/components/agent/MoveSessionDialog'
 import {
   AlertDialog,
@@ -161,6 +164,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   const [activeView, setActiveView] = useAtom(activeViewAtom)
   const setSettingsTab = useSetAtom(settingsTabAtom)
   const setSettingsOpen = useSetAtom(settingsOpenAtom)
+  const [automationPanelOpen, setAutomationPanelOpen] = React.useState(false)
   const [activeItem, setActiveItem] = React.useState<SidebarItemId>('all-chats')
   const [conversations, setConversations] = useAtom(conversationsAtom)
   const [currentConversationId, setCurrentConversationId] = useAtom(currentConversationIdAtom)
@@ -236,6 +240,10 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   const setConvPromptId = useSetAtom(conversationPromptIdAtom)
   const setAgentSidePanelOpen = useSetAtom(agentSidePanelOpenMapAtom)
   const setWorkingDone = useSetAtom(workingDoneSessionIdsAtom)
+  const syncWorkspaceSessions = useSetAtom(syncWorkspaceSessionsAtom)
+  const refreshWorkspaces = useSetAtom(refreshWorkspacesAtom)
+  const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
+  const setCurrentAgentWorkspaceId = useSetAtom(currentAgentWorkspaceIdAtom)
 
   const cleanupMapAtoms = React.useCallback((id: string) => {
     const deleteKey = <T,>(prev: Map<string, T>): Map<string, T> => {
@@ -253,6 +261,10 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
     setSessionChannelMap(deleteKey)
     setSessionModelMap(deleteKey)
   }, [setConvModels, setConvContextLength, setConvThinking, setConvParallel, setConvPromptId, setAgentSidePanelOpen, setSessionChannelMap, setSessionModelMap])
+
+  React.useEffect(() => {
+    syncWorkspaceSessions(agentSessions as any)
+  }, [agentSessions, syncWorkspaceSessions])
 
   const currentWorkspaceSlug = React.useMemo(() => {
     if (!currentWorkspaceId) return null
@@ -305,6 +317,16 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
     () => agentSessions.filter((s) => s.archived && (!currentWorkspaceId || s.workspaceId === currentWorkspaceId)).length,
     [agentSessions, currentWorkspaceId]
   )
+
+  // 初始加载 workspaces + active workspace ID
+  React.useEffect(() => {
+    refreshWorkspaces()
+  }, [refreshWorkspaces])
+
+  // 同步 activeWorkspaceIdAtom → currentAgentWorkspaceIdAtom（两个原子统一）
+  React.useEffect(() => {
+    setCurrentAgentWorkspaceId(activeWorkspaceId)
+  }, [activeWorkspaceId, setCurrentAgentWorkspaceId])
 
   // 初始加载对话列表 + 用户档案 + Agent 会话
   React.useEffect(() => {
@@ -674,9 +696,21 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
       )}
 
       {/* 主内容区：对话/会话列表 */}
-      <div className="flex-1 overflow-y-auto px-3 pt-2 pb-3 scrollbar-none">
-        {mode === 'chat' ? (
-          conversationGroups.map((group) => (
+      {mode === 'agent' ? (
+        <div className="flex-1 overflow-hidden">
+          <WorkspaceRail
+            activeSessionId={activeTabId ?? null}
+            onSelectSession={(id) => {
+              const session = agentSessions.find((s) => s.id === id)
+              handleSelectAgentSession(id, session?.title ?? '')
+            }}
+            onDeleteSession={(id) => handleRequestDelete(id)}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto px-3 pt-2 pb-3 scrollbar-none">
+          {conversationGroups.map((group) => (
             <div key={group.label} className="mb-1">
               <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-foreground/40 select-none">{group.label}</div>
               <div className="flex flex-col gap-0.5">
@@ -687,24 +721,9 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
                 ))}
               </div>
             </div>
-          ))
-        ) : (
-          agentSessionGroups.map((group) => (
-            <div key={group.label} className="mb-1">
-              <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-foreground/40 select-none">{group.label}</div>
-              <div className="flex flex-col gap-0.5">
-                {group.items.map((session) => (
-                  <AgentSessionItem key={session.id} session={session} active={session.id === activeTabId} hovered={session.id === hoveredId}
-                    indicatorStatus={agentIndicatorMap.get(session.id) ?? 'idle'} isInWorkingSection={workingSessionIds.has(session.id)} showPinIcon={!!session.pinned}
-                    onSelect={() => handleSelectAgentSession(session.id, session.title)} onRequestDelete={() => handleRequestDelete(session.id)} onRequestMove={() => setMoveTargetId(session.id)}
-                    onRename={handleAgentRename} onTogglePin={handleTogglePinAgent} onToggleManualWorking={handleToggleManualWorkingAgent} onToggleArchive={handleToggleArchiveAgent}
-                    onMouseEnter={() => setHoveredId(session.id)} onMouseLeave={() => setHoveredId(null)} />
-                ))}
-              </div>
-            </div>
-          ))
-        )}
-      </div>
+          ))}
+        </div>
+      )}
 
       {/* 归档入口 */}
       <div className="px-3 pb-1">
@@ -746,6 +765,19 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
         </div>
       )}
 
+      {/* Agent 模式：Automation 入口 */}
+      {mode === 'agent' && (
+        <div className="px-3 pb-1">
+          <button
+            onClick={() => setAutomationPanelOpen(true)}
+            className="w-full flex items-center gap-3 px-3 py-2 rounded-[10px] text-[12px] text-foreground/50 hover:bg-foreground/[0.04] hover:text-foreground/70 transition-colors titlebar-no-drag"
+          >
+            <CalendarClock size={13} className="text-foreground/40 flex-shrink-0" />
+            <span>Automations</span>
+          </button>
+        </div>
+      )}
+
       {/* 底部：用户资料 + 设置入口 */}
       <div className="px-3 pb-3">
         <button onClick={() => setSettingsOpen(true)} className="w-full flex items-center gap-3 px-3 py-2 rounded-[10px] transition-colors titlebar-no-drag text-foreground/70 hover:bg-foreground/[0.04] hover:text-foreground">
@@ -761,6 +793,28 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
       {deleteDialog}
       {moveDialog}
       <SearchDialog />
+
+      {/* Automation Hub slide-over */}
+      {automationPanelOpen && (
+        <AutomationSlideOver onClose={() => setAutomationPanelOpen(false)} />
+      )}
+    </div>
+  )
+}
+
+function AutomationSlideOver({ onClose }: { onClose: () => void }): React.ReactElement {
+  return (
+    <div className="fixed inset-0 z-50 flex">
+      <div className="flex-1" onClick={onClose} />
+      <div className="w-[360px] h-full bg-background border-l border-border shadow-2xl flex flex-col">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
+          <span className="text-[14px] font-semibold">Automations</span>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-[18px] leading-none">&times;</button>
+        </div>
+        <div className="flex-1 overflow-hidden">
+          <AutomationHubComponent />
+        </div>
+      </div>
     </div>
   )
 }

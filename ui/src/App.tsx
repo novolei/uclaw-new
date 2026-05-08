@@ -13,6 +13,9 @@ import { TooltipProvider } from './components/ui/tooltip'
 import type { AppShellContextType } from './contexts/AppShellContext'
 import * as bridge from './lib/tauri-bridge'
 import { stickyUserMessageEnabledAtom, initializeUiPreferences } from './atoms/ui-preferences'
+import { activeProviderModelAtom } from './atoms/active-model'
+import { useGlobalChatListeners } from './hooks/useGlobalChatListeners'
+import { useGlobalAgentListeners } from './hooks/useGlobalAgentListeners'
 
 /** localStorage 键：语言偏好 */
 const LANGUAGE_CACHE_KEY = 'uclaw:language'
@@ -20,6 +23,10 @@ const LANGUAGE_CACHE_KEY = 'uclaw:language'
 export default function App(): React.ReactElement {
   const [isLoading, setIsLoading] = React.useState(true)
   const setStickyUserMessageEnabled = useSetAtom(stickyUserMessageEnabledAtom)
+  const setActiveProviderModel = useSetAtom(activeProviderModelAtom)
+
+  useGlobalChatListeners()
+  useGlobalAgentListeners()
 
   // 从 Tauri 后端加载初始设置
   React.useEffect(() => {
@@ -39,6 +46,16 @@ export default function App(): React.ReactElement {
 
         // 初始化 UI 偏好（stickyUserMessage 等）
         await initializeUiPreferences(setStickyUserMessageEnabled)
+
+        // 从 providers.json 同步活跃模型（权威来源）
+        try {
+          const activeModel = await bridge.getActiveModel()
+          if (activeModel) {
+            setActiveProviderModel({ providerId: activeModel.providerId, modelId: activeModel.modelId })
+          }
+        } catch {
+          // getActiveModel 失败时保持 localStorage 缓存值
+        }
       } catch (error) {
         console.error('[App] 初始化失败:', error)
       } finally {
@@ -46,7 +63,7 @@ export default function App(): React.ReactElement {
       }
     }
     initialize()
-  }, [setStickyUserMessageEnabled])
+  }, [setStickyUserMessageEnabled, setActiveProviderModel])
 
   // 加载中状态
   if (isLoading) {

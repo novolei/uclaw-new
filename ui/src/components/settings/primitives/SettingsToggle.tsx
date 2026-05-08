@@ -1,31 +1,33 @@
+import * as React from 'react'
 import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
+import { LABEL_CLASS, DESCRIPTION_CLASS, ROW_CLASS } from './SettingsUIConstants'
 
 interface SettingsToggleProps {
+  label: string
+  description?: string
   checked: boolean
   onCheckedChange: (checked: boolean) => void
-  label?: string
-  description?: string
   disabled?: boolean
   className?: string
 }
 
 export function SettingsToggle({
-  checked,
-  onCheckedChange,
   label,
   description,
+  checked,
+  onCheckedChange,
   disabled = false,
   className,
 }: SettingsToggleProps) {
   return (
-    <div className={cn('flex items-center justify-between gap-4 py-2', className)}>
-      {(label || description) && (
-        <div className="flex-1 min-w-0">
-          {label && <div className="text-sm font-medium text-foreground">{label}</div>}
-          {description && <div className="text-xs text-muted-foreground mt-0.5">{description}</div>}
-        </div>
-      )}
+    <div className={cn(ROW_CLASS, className)}>
+      <div className="flex-1 min-w-0 mr-4">
+        <div className={LABEL_CLASS}>{label}</div>
+        {description && (
+          <div className={cn(DESCRIPTION_CLASS, 'mt-0.5')}>{description}</div>
+        )}
+      </div>
       <Switch checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} />
     </div>
   )

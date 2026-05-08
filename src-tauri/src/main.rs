@@ -18,6 +18,23 @@ fn main() {
         .setup(|app| {
             let app_state = AppState::new(app.handle())?;
 
+            // System tray icon
+            let tray = tauri::tray::TrayIconBuilder::new()
+                .tooltip("uClaw — AI Coworker")
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left, ..
+                    } = event {
+                        if let Some(window) = tray.app_handle().get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+            let _ = tray; // keep alive — owned by the app
+
             // Spawn HTTP server for remote access
             let session_mgr = app_state.session_manager.clone();
             let data_dir = app_state.data_dir.clone();
@@ -63,6 +80,11 @@ fn main() {
                 let provider_service = state.provider_service.clone();
                 let memory_graph_store = state.memory_graph_store.clone();
                 let app_handle = app.handle().clone();
+                let automation_service = state.automation_service.clone();
+                let workspace_root = state.workspace_root.clone();
+                let llm_config = state.llm_config.clone();
+                let safety_manager = state.safety_manager.clone();
+                let pending_approvals = state.pending_approvals.clone();
 
                 // 在后台异步执行服务注册和启动
                 tauri::async_runtime::spawn(async move {
@@ -190,6 +212,65 @@ fn main() {
                         }
                     }
                     tracing::info!("[Stage 4] All services started ({} total)", results.len());
+
+                    // Stage 4b: Wire AutomationService delegate factory so cron automations can run.
+                    if let Some((provider_id, model, api_key, base_url)) =
+                        provider_service.get_active_llm_config().await
+                    {
+                        let llm_cfg = {
+                            let legacy = llm_config.read().await;
+                            uclaw_core::llm::llm_config_from_provider(
+                                &provider_id, &model, &api_key, &base_url,
+                                legacy.max_tokens.unwrap_or(8192),
+                                legacy.temperature.unwrap_or(0.7),
+                            )
+                        };
+                        match uclaw_core::llm::create_provider(&llm_cfg) {
+                            Ok(llm) => {
+                                let llm = std::sync::Arc::new(llm);
+                                let model = model.clone();
+                                let workspace = workspace_root.clone();
+                                let app_h = app_handle.clone();
+                                let safety = safety_manager.clone();
+                                let approvals = pending_approvals.clone();
+
+                                let factory: std::sync::Arc<
+                                    dyn Fn(String) -> Box<dyn uclaw_core::agent::types::LoopDelegate + Send>
+                                        + Send + Sync,
+                                > = std::sync::Arc::new(move |system_prompt: String| {
+                                    use uclaw_core::agent::tools::{tool::ToolRegistry, builtin};
+                                    let mut reg = ToolRegistry::new();
+                                    reg.register(builtin::file::ReadFileTool::new(workspace.clone()));
+                                    reg.register(builtin::file::WriteFileTool::new(workspace.clone()));
+                                    reg.register(builtin::search::GrepTool::new(workspace.clone()));
+                                    reg.register(builtin::search::GlobTool::new(workspace.clone()));
+                                    reg.register(builtin::web::WebFetchTool::new());
+                                    reg.register(builtin::edit::EditTool::new(workspace.clone()));
+                                    reg.register(builtin::shell::BashTool::new(workspace.clone()));
+                                    let tools = std::sync::Arc::new(reg);
+                                    Box::new(uclaw_core::agent::dispatcher::ChatDelegate::new(
+                                        std::sync::Arc::clone(&llm),
+                                        tools,
+                                        app_h.clone(),
+                                        model.clone(),
+                                        system_prompt,
+                                        std::sync::Arc::clone(&safety),
+                                        None,
+                                        std::sync::Arc::clone(&approvals),
+                                        uuid::Uuid::new_v4().to_string(),
+                                    ))
+                                });
+
+                                automation_service.set_delegate_factory(factory).await;
+                                tracing::info!("[Stage 4b] AutomationService delegate factory wired");
+                            }
+                            Err(e) => {
+                                tracing::warn!("[Stage 4b] AutomationService: failed to build LLM provider: {}", e);
+                            }
+                        }
+                    } else {
+                        tracing::info!("[Stage 4b] AutomationService: no active LLM provider yet — cron will wait for factory");
+                    }
                 });
             }
 
@@ -316,6 +397,8 @@ fn main() {
             uclaw_core::tauri_commands::get_all_configured_models,
             uclaw_core::tauri_commands::get_active_model,
             uclaw_core::tauri_commands::set_active_model,
+            uclaw_core::tauri_commands::get_role_models,
+            uclaw_core::tauri_commands::set_role_model,
             // Safety
             uclaw_core::tauri_commands::get_safety_policy,
             uclaw_core::tauri_commands::set_safety_mode,
@@ -356,10 +439,40 @@ fn main() {
             uclaw_core::tauri_commands::trigger_proactive_scenario,
             // Agent Session Control
             uclaw_core::tauri_commands::stop_agent_session,
+            uclaw_core::tauri_commands::create_agent_session,
+            uclaw_core::tauri_commands::list_agent_sessions,
+            uclaw_core::tauri_commands::get_agent_session_messages,
+            uclaw_core::tauri_commands::send_agent_message,
+            uclaw_core::tauri_commands::move_agent_session_to_workspace,
+            uclaw_core::tauri_commands::stop_agent,
+            uclaw_core::tauri_commands::queue_agent_message,
+            uclaw_core::tauri_commands::fork_agent_session,
+            uclaw_core::tauri_commands::rewind_session,
             // Browser Commands (Phase 3)
             uclaw_core::tauri_commands::browser_get_state,
             uclaw_core::tauri_commands::browser_launch,
             uclaw_core::tauri_commands::browser_shutdown,
+            // System Tray / Badge Commands (Phase 3)
+            uclaw_core::tauri_commands::update_badge_count,
+            // Automation Commands (Phase 3)
+            uclaw_core::tauri_commands::install_automation,
+            uclaw_core::tauri_commands::list_automations,
+            uclaw_core::tauri_commands::trigger_automation_manual,
+            uclaw_core::tauri_commands::get_automation_activity,
+            // Workspace Commands
+            uclaw_core::tauri_commands::get_active_workspace_id,
+            uclaw_core::tauri_commands::set_active_workspace_id,
+            uclaw_core::tauri_commands::create_workspace,
+            uclaw_core::tauri_commands::delete_workspace,
+            // Trajectory
+            uclaw_core::tauri_commands::get_session_trajectory,
+            uclaw_core::tauri_commands::search_trajectories,
+            // Session Title
+            uclaw_core::tauri_commands::generate_session_title,
+            // Agent Teams
+            uclaw_core::tauri_commands::start_agent_teams,
+            uclaw_core::tauri_commands::get_team_channel,
+            uclaw_core::tauri_commands::stop_agent_teams,
         ])
         .run(tauri::generate_context!())
         .expect("error while running uClaw");

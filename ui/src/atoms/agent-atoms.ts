@@ -106,6 +106,7 @@ export function finalizeStreamingActivities(
 export interface AgentStreamState {
   running: boolean
   content: string
+  reasoning?: string
   toolActivities: ToolActivity[]
   model?: string
   inputTokens?: number

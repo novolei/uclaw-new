@@ -1,45 +1,173 @@
 pub mod tools;
 pub mod types;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use futures::StreamExt;
+use chromiumoxide::{Browser, Page};
+use chromiumoxide::browser::BrowserConfig;
 use crate::error::Error;
-use self::types::BrowserState;
+use self::types::{BrowserState, BrowserTab, ScreenshotResult};
 
-/// BrowserService manages the lifecycle of a headless Chromium instance via CDP.
-/// Phase 3 implementation — currently provides state management skeleton only.
-/// Full implementation requires the `ai-browser` feature flag with chromiumoxide.
+struct BrowserInner {
+    browser: Browser,
+    pages: HashMap<String, Page>,
+}
+
 pub struct BrowserService {
-    state: Arc<RwLock<BrowserState>>,
+    inner: Arc<RwLock<Option<BrowserInner>>>,
 }
 
 impl BrowserService {
     pub fn new() -> Self {
         Self {
-            state: Arc::new(RwLock::new(BrowserState {
-                running: false,
-                tabs: vec![],
-                active_tab_id: None,
-            })),
+            inner: Arc::new(RwLock::new(None)),
         }
     }
 
     pub async fn get_state(&self) -> BrowserState {
-        self.state.read().await.clone()
+        let guard = self.inner.read().await;
+        match guard.as_ref() {
+            None => BrowserState { running: false, tabs: vec![], active_tab_id: None },
+            Some(inner) => {
+                let tabs: Vec<BrowserTab> = inner.pages.iter().map(|(id, _)| BrowserTab {
+                    tab_id: id.clone(),
+                    url: String::new(),
+                    title: String::new(),
+                }).collect();
+                let active_tab_id = tabs.first().map(|t| t.tab_id.clone());
+                BrowserState { running: true, tabs, active_tab_id }
+            }
+        }
     }
 
-    /// Launch headless Chromium and establish CDP connection.
-    /// Requires the `ai-browser` feature flag (chromiumoxide).
     pub async fn launch(&self) -> Result<(), Error> {
-        Err(Error::Internal("AI Browser not yet implemented — enable feature 'ai-browser' and implement Phase 3".into()))
+        let mut guard = self.inner.write().await;
+        if guard.is_some() {
+            return Ok(());
+        }
+
+        let config = BrowserConfig::builder()
+            .no_sandbox()
+            .build()
+            .map_err(|e| Error::Internal(format!("Browser config error: {}", e)))?;
+
+        let (browser, mut handler) = Browser::launch(config).await
+            .map_err(|e| Error::Internal(format!("Failed to launch browser: {}", e)))?;
+
+        // Drive the CDP event loop in the background
+        tokio::spawn(async move {
+            while let Some(_event) = handler.next().await {}
+        });
+
+        *guard = Some(BrowserInner {
+            browser,
+            pages: HashMap::new(),
+        });
+        Ok(())
     }
 
-    /// Stop Chromium and clean up CDP connections.
     pub async fn shutdown(&self) -> Result<(), Error> {
-        let mut state = self.state.write().await;
-        state.running = false;
-        state.tabs.clear();
-        state.active_tab_id = None;
+        let mut guard = self.inner.write().await;
+        *guard = None;
+        Ok(())
+    }
+
+    /// Navigate to a URL, creating a new tab if tab_id is "new" or not found.
+    /// Returns the resolved tab_id.
+    pub async fn navigate(&self, tab_id: &str, url: &str) -> Result<String, Error> {
+        let mut guard = self.inner.write().await;
+        let inner = guard.as_mut().ok_or_else(|| Error::Internal("Browser not launched".into()))?;
+
+        if tab_id == "new" || !inner.pages.contains_key(tab_id) {
+            let page = inner.browser.new_page(url).await
+                .map_err(|e| Error::Internal(format!("Failed to open page: {}", e)))?;
+            let new_id = uuid::Uuid::new_v4().to_string();
+            inner.pages.insert(new_id.clone(), page);
+            Ok(new_id)
+        } else {
+            let page = inner.pages.get(tab_id).unwrap();
+            page.goto(url).await
+                .map_err(|e| Error::Internal(format!("Navigation failed: {}", e)))?;
+            Ok(tab_id.to_string())
+        }
+    }
+
+    /// Capture a PNG screenshot of the given tab and return it as base64.
+    pub async fn screenshot(&self, tab_id: &str) -> Result<ScreenshotResult, Error> {
+        use chromiumoxide::page::ScreenshotParams;
+        use base64::{Engine, engine::general_purpose::STANDARD};
+
+        let guard = self.inner.read().await;
+        let inner = guard.as_ref().ok_or_else(|| Error::Internal("Browser not launched".into()))?;
+        let page = inner.pages.get(tab_id)
+            .ok_or_else(|| Error::Internal(format!("Tab '{}' not found", tab_id)))?;
+
+        let png_bytes = page.screenshot(ScreenshotParams::default()).await
+            .map_err(|e| Error::Internal(format!("Screenshot failed: {}", e)))?;
+
+        Ok(ScreenshotResult {
+            data: STANDARD.encode(&png_bytes),
+            width: 1280,
+            height: 800,
+        })
+    }
+
+    /// Extract text content from the page body.
+    pub async fn extract_text(&self, tab_id: &str) -> Result<String, Error> {
+        let guard = self.inner.read().await;
+        let inner = guard.as_ref().ok_or_else(|| Error::Internal("Browser not launched".into()))?;
+        let page = inner.pages.get(tab_id)
+            .ok_or_else(|| Error::Internal(format!("Tab '{}' not found", tab_id)))?;
+
+        let text = page.evaluate("document.body.innerText").await
+            .map_err(|e| Error::Internal(format!("Extract failed: {}", e)))?
+            .into_value::<String>()
+            .unwrap_or_default();
+
+        Ok(text)
+    }
+
+    /// Click an element by CSS selector.
+    pub async fn click(&self, tab_id: &str, selector: &str) -> Result<(), Error> {
+        let guard = self.inner.read().await;
+        let inner = guard.as_ref().ok_or_else(|| Error::Internal("Browser not launched".into()))?;
+        let page = inner.pages.get(tab_id)
+            .ok_or_else(|| Error::Internal(format!("Tab '{}' not found", tab_id)))?;
+
+        page.find_element(selector).await
+            .map_err(|e| Error::Internal(format!("Element '{}' not found: {}", selector, e)))?
+            .click().await
+            .map_err(|e| Error::Internal(format!("Click failed: {}", e)))?;
+        Ok(())
+    }
+
+    /// Type text into an element (focus then type).
+    pub async fn type_text(&self, tab_id: &str, selector: &str, text: &str) -> Result<(), Error> {
+        let guard = self.inner.read().await;
+        let inner = guard.as_ref().ok_or_else(|| Error::Internal("Browser not launched".into()))?;
+        let page = inner.pages.get(tab_id)
+            .ok_or_else(|| Error::Internal(format!("Tab '{}' not found", tab_id)))?;
+
+        page.find_element(selector).await
+            .map_err(|e| Error::Internal(format!("Element '{}' not found: {}", selector, e)))?
+            .type_str(text).await
+            .map_err(|e| Error::Internal(format!("Type failed: {}", e)))?;
+        Ok(())
+    }
+
+    /// Wait for an element to appear (up to timeout_ms).
+    pub async fn wait_for_selector(&self, tab_id: &str, selector: &str, timeout_ms: u64) -> Result<(), Error> {
+        use tokio::time::{timeout, Duration};
+        let guard = self.inner.read().await;
+        let inner = guard.as_ref().ok_or_else(|| Error::Internal("Browser not launched".into()))?;
+        let page = inner.pages.get(tab_id)
+            .ok_or_else(|| Error::Internal(format!("Tab '{}' not found", tab_id)))?;
+
+        timeout(Duration::from_millis(timeout_ms), page.find_element(selector)).await
+            .map_err(|_| Error::Internal(format!("Timeout waiting for '{}'", selector)))?
+            .map_err(|e| Error::Internal(format!("Wait failed: {}", e)))?;
         Ok(())
     }
 }

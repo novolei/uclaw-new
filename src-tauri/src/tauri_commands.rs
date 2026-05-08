@@ -9,6 +9,28 @@ use crate::llm;
 use std::sync::Arc;
 use tauri::Emitter;
 
+const TITLE_GEN_SYSTEM_PROMPT: &str = "You are a title generator. Given a user's first message, return ONLY a JSON object with two fields: \"title\" (max 5 words, imperative or noun phrase) and \"emoji\" (single relevant emoji). No explanation.";
+
+// ─── Agent Teams Abort Handle Registry ────────────────────────────────────────
+
+static TEAM_ABORT_HANDLES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, tokio::task::AbortHandle>>> = std::sync::OnceLock::new();
+
+fn team_abort_handles() -> &'static std::sync::Mutex<std::collections::HashMap<String, tokio::task::AbortHandle>> {
+    TEAM_ABORT_HANDLES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+// ─── Private Helpers ───────────────────────────────────────────────────
+
+fn get_active_space_id(db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>) -> String {
+    db.lock().ok()
+        .and_then(|conn| conn.query_row(
+            "SELECT value FROM settings WHERE key = 'active_workspace_id'",
+            [],
+            |row| row.get::<_, String>(0),
+        ).ok())
+        .unwrap_or_else(|| "default".to_string())
+}
+
 // ─── Bootstrap Commands ────────────────────────────────────────────────
 
 #[tauri::command]
@@ -80,9 +102,18 @@ pub async fn send_message(
     let max_tokens = legacy_config.max_tokens.unwrap_or(8192);
     let temperature = legacy_config.temperature.unwrap_or(0.7);
 
-    let llm_config = if let Some((provider_id, model, api_key, base_url)) =
-        state.provider_service.get_active_llm_config().await
-    {
+    // Model resolution priority:
+    // 1. Explicit provider_id + model_id in this request (per-message override)
+    // 2. role_models['chat'] if configured
+    // 3. active_model from providers.json
+    // 4. Legacy LlmConfig fallback
+    let resolved = if let (Some(pid), Some(mid)) = (&input.provider_id, &input.model_id) {
+        state.provider_service.get_provider_llm_config(pid, mid).await
+    } else {
+        state.provider_service.get_chat_llm_config().await
+    };
+
+    let llm_config = if let Some((provider_id, model, api_key, base_url)) = resolved {
         llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, max_tokens, temperature)
     } else {
         if legacy_config.api_key.is_empty() {
@@ -110,10 +141,37 @@ pub async fn send_message(
     tools.register(builtin::web::HttpRequestTool::new());
     tools.register(builtin::edit::EditTool::new(workspace.clone()));
     tools.register(builtin::shell::BashTool::new(workspace.clone()));
+    tools.register(builtin::plan::PlanWriteTool::new(workspace.clone(), app_handle.clone()));
+    tools.register(builtin::plan::PlanUpdateTool::new(workspace.clone(), app_handle.clone()));
+    tools.register(
+        builtin::self_eval::SelfEvalTool::new(
+            input.conversation_id.clone(),
+            Arc::clone(&state.db),
+            app_handle.clone(),
+        ).with_infra(Arc::clone(&state.infra_service))
+    );
+    // Browser tools
+    {
+        use crate::browser::tools::*;
+        let b = Arc::clone(&state.browser_service);
+        tools.register(BrowserNavigateTool::new(Arc::clone(&b)));
+        tools.register(BrowserScreenshotTool::new(Arc::clone(&b)));
+        tools.register(BrowserExtractTool::new(Arc::clone(&b)));
+        tools.register(BrowserClickTool::new(Arc::clone(&b)));
+        tools.register(BrowserTypeTool::new(Arc::clone(&b)));
+        tools.register(BrowserWaitTool::new(Arc::clone(&b)));
+    }
     let tools = Arc::new(tools);
 
     // Create LLM provider
     let llm = llm::create_provider(&llm_config)?;
+
+    let is_first_message = {
+        let session_mgr = state.session_manager.read().await;
+        session_mgr.get(&input.conversation_id)
+            .map(|s| s.messages.is_empty())
+            .unwrap_or(true)
+    };
 
     // Add user message to session
     {
@@ -121,10 +179,55 @@ pub async fn send_message(
         session_mgr.add_message(&input.conversation_id, ChatMessage::user(&input.content));
     }
 
+    // Fire-and-forget title generation on the first user message
+    if is_first_message {
+        let title_provider = Arc::clone(&state.provider_service);
+        let title_llm_config = state.llm_config.read().await.clone();
+        let title_db = Arc::clone(&state.db);
+        let title_app = app_handle.clone();
+        let title_conv_id = input.conversation_id.clone();
+        let title_content = input.content.clone();
+        // Mark title as pending in DB
+        if let Ok(conn) = title_db.lock() {
+            let meta = serde_json::json!({ "title_pending": true }).to_string();
+            let _ = conn.execute(
+                "UPDATE conversations SET metadata_json = ?1 WHERE id = ?2",
+                rusqlite::params![meta, title_conv_id],
+            );
+        }
+        let _ = title_app.emit("session:title-pending", &title_conv_id);
+        tokio::spawn(async move {
+            let truncated_msg = title_content.chars().take(500).collect::<String>();
+            let user_content = format!("First message: {}", truncated_msg);
+            let (title, emoji) = match try_generate_title(&title_provider, &title_llm_config, TITLE_GEN_SYSTEM_PROMPT, &user_content).await {
+                Ok((t, e)) => (t, e),
+                Err(_) => ("New session".to_string(), "💬".to_string()),
+            };
+            // Persist to DB
+            if let Ok(conn) = title_db.lock() {
+                let meta = serde_json::json!({
+                    "title": title,
+                    "emoji": emoji,
+                    "title_pending": false,
+                }).to_string();
+                let _ = conn.execute(
+                    "UPDATE conversations SET metadata_json = ?1, title = ?2 WHERE id = ?3",
+                    rusqlite::params![meta, title, title_conv_id],
+                );
+            }
+            let _ = title_app.emit("session:title-updated", SessionTitleUpdatePayload {
+                session_id: title_conv_id.clone(),
+                title: title.clone(),
+                emoji: emoji.clone(),
+            });
+            tracing::info!(conversation_id = %title_conv_id, title = %title, "Auto-generated session title");
+        });
+    }
+
     // ── InfraService: publish incoming message event ────────────────
     state.infra_service.publish_incoming("local", &input.content, serde_json::json!({
         "conversation_id": input.conversation_id,
-        "space_id": "default",
+        "space_id": get_active_space_id(&state.db),
     })).await;
 
     // Build reasoning context
@@ -164,6 +267,13 @@ pub async fn send_message(
 
     // Inject InfraService so dispatcher publishes ToolExecuted events
     delegate.set_infra_service(state.infra_service.clone());
+
+    // Inject harness components for trajectory recording and budget management
+    delegate.set_trajectory_store(std::sync::Arc::clone(&state.trajectory_store));
+    delegate.set_tool_budget(std::sync::Arc::clone(&state.tool_budget));
+
+    // Wire thinking_enabled from the request
+    delegate.set_thinking_enabled(input.thinking_enabled.unwrap_or(false));
 
     // ── Memory Recall Integration ────────────────────────────────────
     // Build a recall plan and inject memory context into the system prompt.
@@ -254,10 +364,10 @@ pub async fn send_message(
         }
     }
 
-    // Emit completion
-    let _ = app_handle.emit("agent:done", serde_json::json!({
+    // Emit completion (already emitted by dispatcher; this is a fallback for non-streaming outcomes)
+    let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
+        "conversationId": input.conversation_id,
         "text": response_text,
-        "timestamp": chrono::Utc::now().to_rfc3339(),
     }));
 
     // ── InfraService: publish outgoing + processed events ──────────
@@ -1484,6 +1594,28 @@ pub async fn set_active_model(
         .await
 }
 
+/// Get all per-role model assignments.
+#[tauri::command]
+pub async fn get_role_models(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::providers::types::ModelRoleConfig>, Error> {
+    Ok(state.provider_service.get_role_models().await)
+}
+
+/// Set (or clear) the model assigned to a specific role.
+/// Pass `model_ref` as `None` to clear the assignment.
+#[tauri::command]
+pub async fn set_role_model(
+    state: State<'_, AppState>,
+    role: String,
+    model_ref: Option<String>,
+) -> Result<(), Error> {
+    state
+        .provider_service
+        .set_role_model(&role, model_ref)
+        .await
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 fn parse_api_type(s: &str) -> Option<crate::providers::types::ApiType> {
@@ -2216,6 +2348,332 @@ pub async fn stop_agent_session(
     }
 }
 
+// ─── Agent Session Commands ───────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn list_agent_sessions(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    let mut stmt = conn.prepare(
+        "SELECT id, space_id, title, metadata_json, message_count, pinned, archived, created_at, updated_at
+         FROM agent_sessions ORDER BY updated_at DESC"
+    ).map_err(|e| Error::Database(e))?;
+    let rows = stmt.query_map([], |row| {
+        let meta_str: String = row.get(3)?;
+        Ok(serde_json::json!({
+            "id": row.get::<_,String>(0)?,
+            "workspaceId": row.get::<_,String>(1)?,
+            "title": row.get::<_,String>(2)?,
+            "metadataJson": meta_str,
+            "messageCount": row.get::<_,i64>(4)?,
+            "pinned": row.get::<_,i64>(5)? != 0,
+            "archived": row.get::<_,i64>(6)? != 0,
+            "createdAt": row.get::<_,i64>(7)?,
+            "updatedAt": row.get::<_,i64>(8)?,
+        }))
+    }).map_err(|e| Error::Database(e))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn create_agent_session(
+    state: State<'_, AppState>,
+    title: Option<String>,
+    channel_id: Option<String>,
+    workspace_id: Option<String>,
+) -> Result<serde_json::Value, Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let title = title.unwrap_or_else(|| "New session".into());
+    let space_id = workspace_id.unwrap_or_else(|| "default".into());
+    let now = chrono::Utc::now().timestamp_millis();
+    let meta = serde_json::json!({ "channelId": channel_id });
+    {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        conn.execute(
+            "INSERT INTO agent_sessions (id, space_id, title, metadata_json, message_count, pinned, archived, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,0,0,0,?5,?5)",
+            rusqlite::params![id, space_id, title, meta.to_string(), now],
+        ).map_err(|e| Error::Database(e))?;
+    }
+    Ok(serde_json::json!({
+        "id": id,
+        "workspaceId": space_id,
+        "title": title,
+        "messageCount": 0,
+        "pinned": false,
+        "archived": false,
+        "createdAt": now,
+        "updatedAt": now,
+    }))
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendAgentMessageInput {
+    pub session_id: String,
+    pub user_message: String,
+    pub channel_id: Option<String>,
+    pub model_id: Option<String>,
+    pub workspace_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn send_agent_message(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    input: SendAgentMessageInput,
+) -> Result<(), Error> {
+    // Resolve LLM config
+    let legacy_config = state.llm_config.read().await;
+    let max_tokens = legacy_config.max_tokens.unwrap_or(8192);
+    let temperature = legacy_config.temperature.unwrap_or(0.7);
+    let llm_config = if let Some((provider_id, model, api_key, base_url)) =
+        state.provider_service.get_active_llm_config().await
+    {
+        llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, max_tokens, temperature)
+    } else {
+        if legacy_config.api_key.is_empty() {
+            return Err(Error::InvalidInput("No API key configured".into()));
+        }
+        legacy_config.clone()
+    };
+    drop(legacy_config);
+
+    let model = llm_config.model.clone();
+    let llm = Arc::new(llm::create_provider(&llm_config)?);
+
+    // Persist user message
+    let user_msg_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp_millis();
+    {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let _ = conn.execute(
+            "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'user',?3,?4)",
+            rusqlite::params![user_msg_id, input.session_id, input.user_message, now],
+        );
+        let _ = conn.execute(
+            "UPDATE agent_sessions SET message_count = message_count + 1, updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![now, input.session_id],
+        );
+    }
+
+    // Load conversation history for context
+    let history: Vec<(String, String)> = {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let mut stmt = conn.prepare(
+            "SELECT role, content FROM agent_messages WHERE session_id = ?1 ORDER BY created_at ASC"
+        ).map_err(|e| Error::Database(e))?;
+        let rows = stmt.query_map(rusqlite::params![input.session_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }).map_err(|e| Error::Database(e))?;
+        let result: Vec<(String, String)> = rows.filter_map(|r| r.ok()).collect();
+        result
+    };
+
+    // Build tool registry
+    let workspace = state.workspace_root.clone();
+    let mut tools = ToolRegistry::new();
+    tools.register(builtin::file::ReadFileTool::new(workspace.clone()));
+    tools.register(builtin::file::WriteFileTool::new(workspace.clone()));
+    tools.register(builtin::search::GrepTool::new(workspace.clone()));
+    tools.register(builtin::search::GlobTool::new(workspace.clone()));
+    tools.register(builtin::web::WebFetchTool::new());
+    tools.register(builtin::web::HttpRequestTool::new());
+    tools.register(builtin::edit::EditTool::new(workspace.clone()));
+    tools.register(builtin::shell::BashTool::new(workspace.clone()));
+    tools.register(builtin::plan::PlanWriteTool::new(workspace.clone(), app_handle.clone()));
+    tools.register(builtin::plan::PlanUpdateTool::new(workspace.clone(), app_handle.clone()));
+    tools.register(
+        builtin::self_eval::SelfEvalTool::new(
+            input.session_id.clone(),
+            Arc::clone(&state.db),
+            app_handle.clone(),
+        ).with_infra(Arc::clone(&state.infra_service))
+    );
+    {
+        use crate::browser::tools::*;
+        let b = Arc::clone(&state.browser_service);
+        tools.register(BrowserNavigateTool::new(Arc::clone(&b)));
+        tools.register(BrowserScreenshotTool::new(Arc::clone(&b)));
+        tools.register(BrowserExtractTool::new(Arc::clone(&b)));
+        tools.register(BrowserClickTool::new(Arc::clone(&b)));
+        tools.register(BrowserTypeTool::new(Arc::clone(&b)));
+        tools.register(BrowserWaitTool::new(Arc::clone(&b)));
+    }
+    let tools = Arc::new(tools);
+
+    // Setup stop token
+    let token = tokio_util::sync::CancellationToken::new();
+    {
+        let mut sessions = state.running_sessions.lock().await;
+        sessions.insert(input.session_id.clone(), token.clone());
+    }
+
+    // Clone for spawn
+    let session_id = input.session_id.clone();
+    let db = Arc::clone(&state.db);
+    let safety_manager = Arc::clone(&state.safety_manager);
+    let pending_approvals = Arc::clone(&state.pending_approvals);
+    let infra_service = Arc::clone(&state.infra_service);
+    let trajectory_store = Arc::clone(&state.trajectory_store);
+    let tool_budget = Arc::clone(&state.tool_budget);
+    let running_sessions = Arc::clone(&state.running_sessions);
+
+    const AGENT_SYSTEM_PROMPT: &str = "You are uClaw, a helpful AI desktop coworker. You help users with tasks using the available tools.";
+
+    tokio::spawn(async move {
+        // Build reasoning context from history
+        let mut ctx = ReasoningContext::new(AGENT_SYSTEM_PROMPT.to_string());
+        for (role, content) in &history {
+            match role.as_str() {
+                "user" => ctx.messages.push(ChatMessage::user(content)),
+                "assistant" => ctx.messages.push(ChatMessage::assistant(content)),
+                _ => {}
+            }
+        }
+
+        // Build delegate
+        let mut delegate = crate::agent::dispatcher::ChatDelegate::new(
+            Arc::clone(&llm),
+            Arc::clone(&tools),
+            app_handle.clone(),
+            model.clone(),
+            AGENT_SYSTEM_PROMPT.to_string(),
+            Arc::clone(&safety_manager),
+            None,
+            Arc::clone(&pending_approvals),
+            session_id.clone(),
+        );
+        delegate.set_infra_service(Arc::clone(&infra_service));
+        delegate.set_trajectory_store(Arc::clone(&trajectory_store));
+        delegate.set_tool_budget(Arc::clone(&tool_budget));
+
+        let config = AgenticLoopConfig::default();
+
+        let outcome = tokio::select! {
+            result = crate::agent::agentic_loop::run_agentic_loop(&delegate, &mut ctx, &config) => result,
+            _ = token.cancelled() => {
+                let _ = app_handle.emit("agent:done", serde_json::json!({ "text": "", "cancelled": true }));
+                running_sessions.lock().await.remove(&session_id);
+                return;
+            }
+        };
+
+        // Persist assistant response
+        let response_text = match &outcome {
+            LoopOutcome::Response { text, .. } => text.clone(),
+            _ => String::new(),
+        };
+
+        if !response_text.is_empty() {
+            let asst_msg_id = uuid::Uuid::new_v4().to_string();
+            let now2 = chrono::Utc::now().timestamp_millis();
+            if let Ok(conn) = db.lock() {
+                let _ = conn.execute(
+                    "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'assistant',?3,?4)",
+                    rusqlite::params![asst_msg_id, session_id, response_text, now2],
+                );
+                let _ = conn.execute(
+                    "UPDATE agent_sessions SET message_count = message_count + 1, updated_at = ?1 WHERE id = ?2",
+                    rusqlite::params![now2, session_id],
+                );
+            }
+        }
+
+        let _ = app_handle.emit("agent:done", serde_json::json!({
+            "text": response_text,
+            "sessionId": session_id,
+        }));
+
+        // Remove from running sessions
+        running_sessions.lock().await.remove(&session_id);
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_agent_session_messages(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<serde_json::Value>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    let mut stmt = conn.prepare(
+        "SELECT id, role, content, created_at FROM agent_messages WHERE session_id = ?1 ORDER BY created_at ASC"
+    ).map_err(|e| Error::Database(e))?;
+    let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_,String>(0)?,
+            "role": row.get::<_,String>(1)?,
+            "content": row.get::<_,String>(2)?,
+            "createdAt": row.get::<_,i64>(3)?,
+        }))
+    }).map_err(|e| Error::Database(e))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveSessionInput {
+    pub session_id: String,
+    pub target_workspace_id: String,
+}
+
+#[tauri::command]
+pub async fn move_agent_session_to_workspace(
+    state: State<'_, AppState>,
+    input: MoveSessionInput,
+) -> Result<(), Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    conn.execute(
+        "UPDATE agent_sessions SET space_id = ?1, updated_at = ?2 WHERE id = ?3",
+        rusqlite::params![
+            input.target_workspace_id,
+            chrono::Utc::now().timestamp_millis(),
+            input.session_id,
+        ],
+    ).map_err(|e| Error::Database(e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn stop_agent(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<bool, Error> {
+    let mut sessions = state.running_sessions.lock().await;
+    if let Some(token) = sessions.remove(&session_id) {
+        token.cancel();
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+pub async fn queue_agent_message(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    input: SendAgentMessageInput,
+) -> Result<(), Error> {
+    send_agent_message(state, app_handle, input).await
+}
+
+#[tauri::command]
+pub async fn fork_agent_session(
+    _state: State<'_, AppState>,
+    _input: serde_json::Value,
+) -> Result<serde_json::Value, Error> {
+    Err(Error::InvalidInput("fork_agent_session not yet implemented".into()))
+}
+
+#[tauri::command]
+pub async fn rewind_session(
+    _state: State<'_, AppState>,
+    _input: serde_json::Value,
+) -> Result<serde_json::Value, Error> {
+    Err(Error::InvalidInput("rewind_session not yet implemented".into()))
+}
+
 // ─── Browser Commands (Phase 3) ─────────────────────────────────────────────
 
 #[tauri::command]
@@ -2239,4 +2697,446 @@ pub async fn browser_shutdown(
 ) -> Result<bool, Error> {
     state.browser_service.shutdown().await?;
     Ok(true)
+}
+
+// ─── System Tray / Badge Commands (Phase 3) ─────────────────────────────────
+
+#[tauri::command]
+pub async fn update_badge_count(
+    app_handle: tauri::AppHandle,
+    count: u32,
+) -> Result<bool, Error> {
+    // Emit badge update event to frontend (UI handles display)
+    let _ = app_handle.emit("badge:updated", serde_json::json!({ "count": count }));
+    Ok(true)
+}
+
+// ─── Automation Commands (Phase 3) ──────────────────────────────────────────
+
+#[tauri::command]
+pub async fn install_automation(
+    state: State<'_, AppState>,
+    toml_content: String,
+) -> Result<crate::automation::spec::AutomationSpecRow, Error> {
+    state.automation_service.install(&toml_content).await
+        .map_err(|e| Error::Internal(e))
+}
+
+#[tauri::command]
+pub async fn list_automations(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::automation::spec::AutomationSpecRow>, Error> {
+    state.automation_service.list()
+        .map_err(|e| Error::Internal(e))
+}
+
+#[tauri::command]
+pub async fn trigger_automation_manual(
+    state: State<'_, AppState>,
+    spec_id: String,
+) -> Result<bool, Error> {
+    state.automation_service.trigger_manual(&spec_id).await
+        .map_err(|e| Error::Internal(e))?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn get_automation_activity(
+    state: State<'_, AppState>,
+    spec_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<crate::automation::activity::AutomationActivity>, Error> {
+    state.automation_service.get_activity(&spec_id, limit.unwrap_or(20))
+        .map_err(|e| Error::Internal(e))
+}
+
+// ─── Workspace Commands ─────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn get_active_workspace_id(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    Ok(conn.query_row(
+        "SELECT value FROM settings WHERE key = 'active_workspace_id'",
+        [],
+        |row| row.get::<_, String>(0),
+    ).ok())
+}
+
+#[tauri::command]
+pub async fn set_active_workspace_id(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let exists: bool = conn.query_row(
+        "SELECT COUNT(*) FROM spaces WHERE id = ?1",
+        rusqlite::params![id],
+        |row| row.get::<_, i64>(0),
+    ).unwrap_or(0) > 0;
+    if !exists {
+        return Err(Error::Internal(format!("Workspace '{}' not found", id)));
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('active_workspace_id', ?1)",
+        rusqlite::params![id],
+    ).map_err(Error::Database)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn create_workspace(
+    state: State<'_, AppState>,
+    name: String,
+    path: Option<String>,
+    icon: Option<String>,
+) -> Result<serde_json::Value, Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let icon = icon.unwrap_or_else(|| "📁".to_string());
+    let now = chrono::Utc::now().to_rfc3339();
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    conn.execute(
+        "INSERT INTO spaces (id, name, icon, path, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6)",
+        rusqlite::params![id, name, icon, path, now, now],
+    ).map_err(Error::Database)?;
+    Ok(serde_json::json!({ "id": id, "name": name, "icon": icon, "path": path, "createdAt": now }))
+}
+
+#[tauri::command]
+pub async fn delete_workspace(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let active: Option<String> = conn.query_row(
+        "SELECT value FROM settings WHERE key = 'active_workspace_id'",
+        [],
+        |row| row.get::<_, String>(0),
+    ).ok();
+    if active.as_deref() == Some(&id) {
+        let _ = conn.execute("DELETE FROM settings WHERE key = 'active_workspace_id'", []);
+    }
+    conn.execute("DELETE FROM spaces WHERE id = ?1", rusqlite::params![id])
+        .map_err(Error::Database)?;
+    Ok(())
+}
+
+// ─── Trajectory Commands ────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn get_session_trajectory(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<crate::harness::trajectory::TurnRecord>, Error> {
+    Ok(state.trajectory_store.get_session_turns(&session_id))
+}
+
+#[tauri::command]
+pub async fn search_trajectories(
+    state: State<'_, AppState>,
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<crate::harness::trajectory::TrajectorySearchHit>, Error> {
+    Ok(state.trajectory_store.search(&query, limit.unwrap_or(20)))
+}
+
+// ─── Session Title Generation ───────────────────────────────────────────────
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TitleGenerated {
+    title: String,
+    emoji: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTitleUpdatePayload {
+    pub session_id: String,
+    pub title: String,
+    pub emoji: String,
+}
+
+/// Try to generate a title using the active LLM provider.
+/// Returns (title, emoji) on success, or propagates an error.
+async fn try_generate_title(
+    provider_service: &crate::providers::service::ProviderService,
+    llm_config_legacy: &crate::config::LlmConfig,
+    system: &str,
+    user_content: &str,
+) -> Result<(String, String), Error> {
+    // Build LLM config from the active provider, falling back to legacy config
+    let llm_cfg = if let Some((provider_id, model, api_key, base_url)) =
+        provider_service.get_active_llm_config().await
+    {
+        crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 256, 0.3)
+    } else {
+        if llm_config_legacy.api_key.is_empty() && llm_config_legacy.provider != "ollama" {
+            return Err(Error::InvalidInput("No LLM provider configured".into()));
+        }
+        let mut cfg = llm_config_legacy.clone();
+        cfg.max_tokens = Some(256);
+        cfg.temperature = Some(0.3);
+        cfg
+    };
+
+    let provider = crate::llm::create_provider(&llm_cfg)?;
+
+    let messages = vec![
+        ChatMessage::user(user_content),
+    ];
+
+    let config = crate::llm::CompletionConfig {
+        model: llm_cfg.model.clone(),
+        max_tokens: 256,
+        temperature: 0.3,
+        system_prompt: Some(system.to_string()),
+        thinking_enabled: false,
+    };
+
+    let output = provider.complete(messages, vec![], &config).await?;
+
+    let text = match output {
+        crate::agent::types::RespondOutput::Text { text, .. } => text,
+        crate::agent::types::RespondOutput::ToolCalls { text, .. } => {
+            text.unwrap_or_default()
+        }
+    };
+
+    // Parse JSON response: {"title": "...", "emoji": "..."}
+    let parsed: serde_json::Value = serde_json::from_str(text.trim())
+        .map_err(|_| Error::Internal(format!("LLM returned non-JSON: {}", text)))?;
+
+    let title = parsed.get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("New session")
+        .to_string();
+    let emoji = parsed.get("emoji")
+        .and_then(|v| v.as_str())
+        .unwrap_or("💬")
+        .to_string();
+
+    Ok((title, emoji))
+}
+
+#[tauri::command]
+pub async fn generate_session_title(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    session_id: String,
+    first_message: String,
+) -> Result<(), Error> {
+    let db = Arc::clone(&state.db);
+
+    // Mark title as pending in DB
+    {
+        let conn = db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+        let meta = serde_json::json!({ "title_pending": true }).to_string();
+        let _ = conn.execute(
+            "UPDATE conversations SET metadata_json = ?1 WHERE id = ?2",
+            rusqlite::params![meta, session_id],
+        );
+    }
+    let _ = app_handle.emit("session:title-pending", &session_id);
+
+    let provider = Arc::clone(&state.provider_service);
+    let llm_config = state.llm_config.read().await.clone();
+    let session_id_clone = session_id.clone();
+    let app_clone = app_handle.clone();
+
+    tokio::spawn(async move {
+        let truncated_msg = first_message.chars().take(500).collect::<String>();
+        let user_content = format!("First message: {}", truncated_msg);
+
+        let (title, emoji) = match try_generate_title(&provider, &llm_config, TITLE_GEN_SYSTEM_PROMPT, &user_content).await {
+            Ok((t, e)) => (t, e),
+            Err(e) => {
+                tracing::warn!("Session title generation failed: {}, using fallback", e);
+                ("New session".to_string(), "💬".to_string())
+            }
+        };
+
+        // Persist to DB
+        if let Ok(conn) = db.lock() {
+            let meta = serde_json::json!({
+                "title": title,
+                "emoji": emoji,
+                "title_pending": false,
+            }).to_string();
+            let _ = conn.execute(
+                "UPDATE conversations SET metadata_json = ?1, title = ?2 WHERE id = ?3",
+                rusqlite::params![meta, title, session_id_clone],
+            );
+        }
+
+        // Emit IPC event to frontend
+        let _ = app_clone.emit("session:title-updated", SessionTitleUpdatePayload {
+            session_id: session_id_clone,
+            title,
+            emoji,
+        });
+    });
+
+    Ok(())
+}
+
+// ─── Agent Teams Commands ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartTeamsInput {
+    pub session_id: String,
+    pub task: String,
+    pub max_review_cycles: Option<u32>,
+}
+
+#[tauri::command]
+pub async fn start_agent_teams(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    input: StartTeamsInput,
+) -> Result<String, Error> {
+    let team_id = uuid::Uuid::new_v4().to_string();
+
+    // Persist team run to DB
+    {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+        conn.execute(
+            "INSERT INTO team_runs (id, session_id, task, status, created_at) VALUES (?1,?2,?3,'running',?4)",
+            rusqlite::params![team_id, input.session_id, input.task, chrono::Utc::now().timestamp_millis()],
+        ).map_err(|e| Error::Internal(format!("Failed to create team run: {}", e)))?;
+    }
+
+    // Get LLM provider config
+    let (provider_id, model, api_key, base_url) = state.provider_service
+        .get_active_llm_config().await
+        .ok_or_else(|| Error::InvalidInput("No active LLM provider configured".into()))?;
+    let llm_cfg = {
+        let legacy = state.llm_config.read().await;
+        llm::llm_config_from_provider(
+            &provider_id, &model, &api_key, &base_url,
+            legacy.max_tokens.unwrap_or(8192),
+            legacy.temperature.unwrap_or(0.7),
+        )
+    };
+    let llm: Arc<dyn crate::llm::LlmProvider> = llm::create_provider(&llm_cfg)?;
+
+    // Build tool registry for workers
+    let mut tool_reg = ToolRegistry::new();
+    let workspace = state.workspace_root.clone();
+    tool_reg.register(builtin::file::ReadFileTool::new(workspace.clone()));
+    tool_reg.register(builtin::file::WriteFileTool::new(workspace.clone()));
+    tool_reg.register(builtin::search::GrepTool::new(workspace.clone()));
+    tool_reg.register(builtin::search::GlobTool::new(workspace.clone()));
+    tool_reg.register(builtin::web::WebFetchTool::new());
+    tool_reg.register(builtin::edit::EditTool::new(workspace.clone()));
+    tool_reg.register(builtin::shell::BashTool::new(workspace.clone()));
+    let tools = Arc::new(tool_reg);
+
+    // Clone everything that needs to move into the spawn
+    let db = Arc::clone(&state.db);
+    let team_id_clone = team_id.clone();
+    let session_id = input.session_id.clone();
+    let task = input.task.clone();
+    let max_cycles = input.max_review_cycles.unwrap_or(2);
+    let safety_manager = Arc::clone(&state.safety_manager);
+    let pending_approvals = Arc::clone(&state.pending_approvals);
+
+    // Explicit clones for orchestrator vs delegate_factory
+    let llm_for_orchestrator = Arc::clone(&llm);
+    let model_for_orchestrator = model.clone();
+    let llm_for_factory = Arc::clone(&llm);
+    let model_for_factory = model.clone();
+    let tools_for_factory = Arc::clone(&tools);
+    let app_for_factory = app_handle.clone();
+    let safety_for_factory = Arc::clone(&safety_manager);
+    let approvals_for_factory = Arc::clone(&pending_approvals);
+
+    // Spawn orchestration in background
+    let handle = tokio::spawn(async move {
+        let orchestrator = crate::agent::teams::AgentTeamOrchestrator::new(
+            llm_for_orchestrator,
+            model_for_orchestrator,
+            app_handle.clone(),
+            Arc::clone(&db),
+            move |system_prompt: String| -> Box<dyn crate::agent::types::LoopDelegate + Send> {
+                let delegate = crate::agent::dispatcher::ChatDelegate::new(
+                    Arc::clone(&llm_for_factory),
+                    Arc::clone(&tools_for_factory),
+                    app_for_factory.clone(),
+                    model_for_factory.clone(),
+                    system_prompt,
+                    Arc::clone(&safety_for_factory),
+                    None,
+                    Arc::clone(&approvals_for_factory),
+                    uuid::Uuid::new_v4().to_string(),
+                );
+                Box::new(delegate)
+            },
+        );
+
+        let result = orchestrator.run(crate::agent::teams::orchestrator::TeamRunConfig {
+            team_id: team_id_clone.clone(),
+            session_id,
+            task,
+            max_review_cycles: max_cycles,
+        }).await;
+
+        if let Ok(conn) = db.lock() {
+            let _ = conn.execute(
+                "UPDATE team_runs SET status = 'done', result = ?1, completed_at = ?2 WHERE id = ?3",
+                rusqlite::params![result, chrono::Utc::now().timestamp_millis(), team_id_clone],
+            );
+        }
+    });
+
+    // Store abort handle so stop_agent_teams can cancel the task
+    if let Ok(mut map) = team_abort_handles().lock() {
+        map.insert(team_id.clone(), handle.abort_handle());
+    }
+
+    Ok(team_id)
+}
+
+#[tauri::command]
+pub async fn get_team_channel(
+    state: State<'_, AppState>,
+    team_id: String,
+) -> Result<Vec<serde_json::Value>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let mut stmt = conn.prepare(
+        "SELECT id, from_role, to_role, message, created_at FROM team_channel_messages WHERE team_id = ?1 ORDER BY created_at ASC LIMIT 500"
+    ).map_err(|e| Error::Internal(format!("DB prepare: {}", e)))?;
+    let messages: Vec<serde_json::Value> = stmt.query_map(rusqlite::params![team_id], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, String>(0)?,
+            "fromRole": row.get::<_, String>(1)?,
+            "toRole": row.get::<_, Option<String>>(2)?,
+            "message": row.get::<_, String>(3)?,
+            "createdAt": row.get::<_, i64>(4)?,
+        }))
+    }).map_err(|e| Error::Internal(format!("DB query: {}", e)))?
+    .filter_map(|r| r.ok())
+    .collect();
+    Ok(messages)
+}
+
+#[tauri::command]
+pub async fn stop_agent_teams(
+    state: State<'_, AppState>,
+    team_id: String,
+) -> Result<(), Error> {
+    // Abort the spawned task if still running
+    if let Ok(mut map) = team_abort_handles().lock() {
+        if let Some(handle) = map.remove(&team_id) {
+            handle.abort();
+        }
+    }
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let _ = conn.execute(
+        "UPDATE team_runs SET status = 'cancelled' WHERE id = ?1",
+        rusqlite::params![team_id],
+    );
+    Ok(())
 }

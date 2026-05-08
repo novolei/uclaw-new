@@ -193,6 +193,163 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 );
 ";
 
+pub const V5_AGENT_SESSIONS: &str = "
+ALTER TABLE conversations ADD COLUMN is_agent INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE conversations ADD COLUMN workspace_id TEXT;
+";
+
+// First batch: ALTER TABLE only (safe to fail on repeat runs — column already exists)
+pub const V5_ALTER: &str = "
+ALTER TABLE conversations ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
+";
+
+// Second batch: all CREATE TABLE IF NOT EXISTS (idempotent, safe to run every time)
+pub const V5_TABLES: &str = "
+-- Track active workspace in settings table (key = 'active_workspace_id')
+-- No schema change needed — settings table already supports arbitrary keys.
+
+-- Per-turn trajectory records for agent sessions
+CREATE TABLE IF NOT EXISTS agent_turns (
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    turn_index  INTEGER NOT NULL,
+    role        TEXT NOT NULL,
+    content     TEXT,
+    tool_name   TEXT,
+    tool_args   TEXT,
+    tool_result TEXT,
+    reasoning   TEXT,
+    is_error    INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_turns_session ON agent_turns(session_id);
+CREATE INDEX IF NOT EXISTS idx_agent_turns_tool ON agent_turns(tool_name);
+
+-- FTS5 for full-text search over trajectory content
+CREATE VIRTUAL TABLE IF NOT EXISTS agent_turns_fts USING fts5(
+    session_id UNINDEXED,
+    content,
+    tool_result,
+    reasoning,
+    content='agent_turns',
+    content_rowid='rowid',
+    tokenize='unicode61'
+);
+
+-- Sync triggers for external content FTS table
+CREATE TRIGGER IF NOT EXISTS agent_turns_fts_insert
+AFTER INSERT ON agent_turns BEGIN
+  INSERT INTO agent_turns_fts(rowid, session_id, content, tool_result, reasoning)
+  VALUES (new.rowid, new.session_id, new.content, new.tool_result, new.reasoning);
+END;
+
+CREATE TRIGGER IF NOT EXISTS agent_turns_fts_update
+AFTER UPDATE ON agent_turns BEGIN
+  INSERT INTO agent_turns_fts(agent_turns_fts, rowid, session_id, content, tool_result, reasoning)
+  VALUES ('delete', old.rowid, old.session_id, old.content, old.tool_result, old.reasoning);
+  INSERT INTO agent_turns_fts(rowid, session_id, content, tool_result, reasoning)
+  VALUES (new.rowid, new.session_id, new.content, new.tool_result, new.reasoning);
+END;
+
+CREATE TRIGGER IF NOT EXISTS agent_turns_fts_delete
+AFTER DELETE ON agent_turns BEGIN
+  INSERT INTO agent_turns_fts(agent_turns_fts, rowid, session_id, content, tool_result, reasoning)
+  VALUES ('delete', old.rowid, old.session_id, old.content, old.tool_result, old.reasoning);
+END;
+
+-- Self-evaluation records
+CREATE TABLE IF NOT EXISTS session_evals (
+    id           TEXT PRIMARY KEY,
+    session_id   TEXT NOT NULL,
+    score        REAL NOT NULL,
+    reasoning    TEXT,
+    learnings    TEXT,
+    created_at   INTEGER NOT NULL
+);
+";
+
+pub const V6_AGENT_TEAMS: &str = "
+CREATE TABLE IF NOT EXISTS team_runs (
+    id           TEXT PRIMARY KEY,
+    session_id   TEXT NOT NULL,
+    task         TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'running',
+    result       TEXT,
+    created_at   INTEGER NOT NULL,
+    completed_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS team_channel_messages (
+    id         TEXT PRIMARY KEY,
+    team_id    TEXT NOT NULL,
+    from_role  TEXT NOT NULL,
+    to_role    TEXT,
+    message    TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_channel_team ON team_channel_messages(team_id);
+CREATE INDEX IF NOT EXISTS idx_team_runs_session ON team_runs(session_id);
+";
+
+pub const V7_AUTOMATIONS: &str = "
+CREATE TABLE IF NOT EXISTS automation_specs (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    description  TEXT NOT NULL DEFAULT '',
+    toml_content TEXT NOT NULL,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS automation_activities (
+    id           TEXT PRIMARY KEY,
+    spec_id      TEXT NOT NULL,
+    run_id       TEXT NOT NULL,
+    trigger      TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'running',
+    result       TEXT,
+    error        TEXT,
+    duration_ms  INTEGER NOT NULL DEFAULT 0,
+    created_at   INTEGER NOT NULL,
+    completed_at INTEGER,
+    FOREIGN KEY (spec_id) REFERENCES automation_specs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_automation_activities_spec ON automation_activities(spec_id);
+CREATE INDEX IF NOT EXISTS idx_automation_activities_status ON automation_activities(status);
+";
+
+pub const V8_AGENT_SESSIONS: &str = "
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id           TEXT PRIMARY KEY,
+    space_id     TEXT NOT NULL DEFAULT 'default',
+    title        TEXT NOT NULL DEFAULT 'New session',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    message_count INTEGER NOT NULL DEFAULT 0,
+    pinned       INTEGER NOT NULL DEFAULT 0,
+    archived     INTEGER NOT NULL DEFAULT 0,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id           TEXT PRIMARY KEY,
+    session_id   TEXT NOT NULL,
+    role         TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_space ON agent_sessions(space_id);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_updated ON agent_sessions(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_session ON agent_messages(session_id);
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -205,6 +362,24 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     // Run V4 migration – memory graph tables
     tracing::debug!("Running migration V4: memory graph");
     let _ = conn.execute_batch(V4_MEMORY_GRAPH);
+    // Run V5 migration – agent session columns (is_agent, workspace_id)
+    tracing::debug!("Running migration V5: agent sessions");
+    let _ = conn.execute_batch(V5_AGENT_SESSIONS);
+    // V5 additional: ALTER TABLE for metadata column (idempotent failure OK)
+    tracing::debug!("Running migration V5a: metadata column");
+    let _ = conn.execute_batch(V5_ALTER);
+    // V5 additional: CREATE TABLE IF NOT EXISTS for harness tables (always safe)
+    tracing::debug!("Running migration V5b: harness tables");
+    let _ = conn.execute_batch(V5_TABLES);
+    // V6: agent teams tables
+    tracing::debug!("Running migration V6: agent teams tables");
+    let _ = conn.execute_batch(V6_AGENT_TEAMS);
+    // V7: automation tables
+    tracing::debug!("Running migration V7: automation tables");
+    let _ = conn.execute_batch(V7_AUTOMATIONS);
+    // V8: agent sessions tables
+    tracing::debug!("Running migration V8: agent sessions tables");
+    let _ = conn.execute_batch(V8_AGENT_SESSIONS);
     tracing::info!("Database migrations complete");
     Ok(())
 }

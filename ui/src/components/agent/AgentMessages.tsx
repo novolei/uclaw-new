@@ -34,6 +34,7 @@ import { formatMessageTime } from '@/components/chat/ChatMessageItem'
 import { Button } from '@/components/ui/button'
 import { getModelLogo, resolveModelDisplayName } from '@/lib/model-logo'
 import { ToolActivityList } from './ToolActivityItem'
+import { ThinkingBlock } from './ContentBlock'
 import { userProfileAtom } from '@/atoms/user-profile'
 import { tabMinimapCacheAtom } from '@/atoms/tab-atoms'
 import { channelsAtom } from '@/atoms/chat-atoms'
@@ -859,8 +860,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
             )}
 
             {/* 无实时助手内容时：显示完整气泡（含头像/名称/时间） */}
-            {/* 注意：工具活动已通过 SDK 渲染路径（liveGroups）展示，此处不再使用 ToolActivityList */}
-            {!hasLiveAssistantContent && !suppressAgentRunning && (streaming || smoothContent || retrying) && (
+            {!hasLiveAssistantContent && !suppressAgentRunning && (streaming || smoothContent || retrying || (streamState?.toolActivities?.length ?? 0) > 0 || streamState?.reasoning) && (
               <Message from="assistant">
                 <MessageHeader
                   model={agentStreamingModel}
@@ -869,6 +869,16 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
                 />
                 <MessageContent>
                   {retrying && <RetryingNotice retrying={retrying} />}
+                  {(streamState?.reasoning) && (
+                    <div className="mb-3">
+                      <ThinkingBlock block={{ type: 'thinking', thinking: streamState.reasoning } as any} dimmed={!!smoothContent} />
+                    </div>
+                  )}
+                  {(streamState?.toolActivities?.length ?? 0) > 0 && (
+                    <div className="mb-3">
+                      <ToolActivityList activities={streamState!.toolActivities} animate={streaming} />
+                    </div>
+                  )}
                   {smoothContent ? (
                     <>
                       <MessageResponse basePath={sessionPath || undefined} basePaths={attachedDirs}>{smoothContent}</MessageResponse>

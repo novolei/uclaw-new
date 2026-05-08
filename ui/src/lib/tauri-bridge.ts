@@ -149,6 +149,48 @@ export const toggleStarConversation = (conversationId: string): Promise<ToggleSt
   invoke('toggle_star_conversation', { input: { conversationId } });
 
 // ─────────────────────────────────────────────────────────
+// Shared workspace types
+// ─────────────────────────────────────────────────────────
+
+export interface WorkspaceInfo {
+  id: string
+  name: string
+  icon: string
+  path: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface TurnRecord {
+  id: string
+  sessionId: string
+  turnIndex: number
+  role: string
+  content?: string
+  toolName?: string
+  toolArgs?: string
+  toolResult?: string
+  reasoning?: string
+  isError: boolean
+  durationMs: number
+  createdAt: number
+}
+
+export interface TrajectorySearchHit {
+  sessionId: string
+  turnIndex: number
+  toolName?: string
+  snippet: string
+  createdAt: number
+}
+
+export interface SessionTitleUpdate {
+  sessionId: string
+  title: string
+  emoji: string
+}
+
+// ─────────────────────────────────────────────────────────
 // Spaces
 // ─────────────────────────────────────────────────────────
 
@@ -160,6 +202,35 @@ export const createSpace = (input: CreateSpaceInput): Promise<SpaceSummary> =>
 
 export const deleteSpace = (id: string): Promise<boolean> =>
   invoke('delete_space', { id });
+
+// ─── Workspace (active space management) ─────────────────────────────
+
+export const getActiveWorkspaceId = (): Promise<string | null> =>
+  invoke<string | null>('get_active_workspace_id')
+
+export const setActiveWorkspaceId = (id: string): Promise<void> =>
+  invoke('set_active_workspace_id', { id })
+
+export const createWorkspace = (name: string, path?: string, icon?: string): Promise<{
+  id: string; name: string; icon: string; path: string | null; createdAt: string
+}> =>
+  invoke('create_workspace', { name, path: path ?? null, icon: icon ?? null })
+
+export const deleteWorkspace = (id: string): Promise<void> =>
+  invoke('delete_workspace', { id })
+
+// ─── Session title ────────────────────────────────────────────────────
+
+export const generateSessionTitle = (sessionId: string, firstMessage: string): Promise<void> =>
+  invoke('generate_session_title', { sessionId, firstMessage })
+
+// ─── Trajectory ───────────────────────────────────────────────────────
+
+export const getSessionTrajectory = (sessionId: string): Promise<TurnRecord[]> =>
+  invoke('get_session_trajectory', { sessionId })
+
+export const searchTrajectories = (query: string, limit?: number): Promise<TrajectorySearchHit[]> =>
+  invoke('search_trajectories', { query, limit: limit ?? 20 })
 
 // ─────────────────────────────────────────────────────────
 // LLM Config
@@ -262,6 +333,17 @@ export const getActiveModel = (): Promise<ModelSelectionInfo | null> =>
 
 export const setActiveModel = (providerId: string, modelId: string): Promise<void> =>
   invoke('set_active_model', { providerId, modelId });
+
+export interface ModelRoleConfig {
+  role: string
+  model_ref: string | null
+}
+
+export const getRoleModels = (): Promise<ModelRoleConfig[]> =>
+  invoke('get_role_models');
+
+export const setRoleModel = (role: string, modelRef: string | null): Promise<void> =>
+  invoke('set_role_model', { role, modelRef });
 
 // ─────────────────────────────────────────────────────────
 // Learned Skills
@@ -619,8 +701,16 @@ export const getAgentSessionMessages = (sessionId: string): Promise<any[]> =>
 export const getAgentSessionSDKMessages = (sessionId: string): Promise<any[]> =>
   invoke<any[]>('get_agent_session_sdk_messages', { sessionId }).catch(() => [])
 
-export const sendAgentMessage = (input: any): Promise<void> =>
-  invoke<void>('send_agent_message', { input })
+export const sendAgentMessage = (input: any): Promise<void> => {
+  // Translate Proma-style AgentSendInput to SendMessageInput
+  const mapped = {
+    conversationId: input.sessionId ?? input.conversationId,
+    content: input.userMessage ?? input.content ?? '',
+    providerId: input.providerId ?? null,
+    modelId: input.modelId ?? null,
+  }
+  return invoke<void>('send_agent_message', { input: mapped })
+}
 
 export const stopAgent = (sessionId: string): Promise<void> =>
   invoke<void>('stop_agent', { sessionId }).catch(() => {})
@@ -795,34 +885,114 @@ export const searchAgentSessionMessages = (query: string): Promise<any[]> =>
 // --- Chat stream event listeners (Proma-style synchronous unlisten) ---
 type CleanupFn = () => void
 
-export const onStreamChunk = (cb: (event: any) => void): CleanupFn => {
+// Helper: register a Tauri event listener and return a synchronous cleanup.
+// React StrictMode fires effects twice: cleanup runs *before* the listen() Promise
+// resolves, so a plain `let unlisten = null` guard leaves the first listener alive.
+// The `cancelled` flag closes this gap — if cleanup runs first, the unlisten fn is
+// called immediately when the Promise eventually settles.
+function makeListener(event: string, cb: (payload: any) => void): CleanupFn {
+  let cancelled = false
   let unlisten: (() => void) | null = null
-  listen('chat:stream-chunk', (e) => cb(e.payload as any)).then((fn) => { unlisten = fn })
-  return () => { unlisten?.() }
+  listen(event, (e) => cb(e.payload)).then((fn) => {
+    if (cancelled) {
+      fn() // cleanup already ran — unlisten immediately
+    } else {
+      unlisten = fn
+    }
+  }).catch(console.error)
+  return () => {
+    cancelled = true
+    unlisten?.()
+  }
 }
 
-export const onStreamReasoning = (cb: (event: any) => void): CleanupFn => {
-  let unlisten: (() => void) | null = null
-  listen('chat:stream-reasoning', (e) => cb(e.payload as any)).then((fn) => { unlisten = fn })
-  return () => { unlisten?.() }
-}
+export const onStreamChunk = (cb: (event: any) => void): CleanupFn =>
+  makeListener('chat:stream-chunk', cb)
 
-export const onStreamComplete = (cb: (event: any) => void): CleanupFn => {
-  let unlisten: (() => void) | null = null
-  listen('chat:stream-complete', (e) => cb(e.payload as any)).then((fn) => { unlisten = fn })
-  return () => { unlisten?.() }
-}
+export const onStreamReasoning = (cb: (event: any) => void): CleanupFn =>
+  makeListener('chat:stream-reasoning', cb)
 
-export const onStreamError = (cb: (event: any) => void): CleanupFn => {
-  let unlisten: (() => void) | null = null
-  listen('chat:stream-error', (e) => cb(e.payload as any)).then((fn) => { unlisten = fn })
-  return () => { unlisten?.() }
-}
+export const onStreamComplete = (cb: (event: any) => void): CleanupFn =>
+  makeListener('chat:stream-complete', cb)
 
-export const onStreamToolActivity = (cb: (event: any) => void): CleanupFn => {
-  let unlisten: (() => void) | null = null
-  listen('chat:stream-tool-activity', (e) => cb(e.payload as any)).then((fn) => { unlisten = fn })
-  return () => { unlisten?.() }
-}
+export const onStreamError = (cb: (event: any) => void): CleanupFn =>
+  makeListener('chat:stream-error', cb)
+
+export const onStreamToolActivity = (cb: (event: any) => void): CleanupFn =>
+  makeListener('chat:stream-tool-activity', cb)
 
 /* eslint-enable @typescript-eslint/no-explicit-any */
+
+// ─── Agent Teams ──────────────────────────────────────────────────────
+export interface TeamChannelMessage {
+  id: string
+  fromRole: string
+  toRole: string | null
+  message: string
+  createdAt: number
+}
+
+export const startAgentTeams = (sessionId: string, task: string, maxReviewCycles?: number): Promise<string> =>
+  invoke<string>('start_agent_teams', { input: { sessionId, task, maxReviewCycles } })
+
+export const getTeamChannel = (teamId: string): Promise<TeamChannelMessage[]> =>
+  invoke<TeamChannelMessage[]>('get_team_channel', { teamId })
+
+export const stopAgentTeams = (teamId: string): Promise<void> =>
+  invoke('stop_agent_teams', { teamId })
+
+// ─── Browser (Phase 3) ────────────────────────────────────────────────
+export interface BrowserStateResponse {
+  running: boolean
+  tabs: { tabId: string; url: string; title: string }[]
+  activeTabId: string | null
+}
+
+export const browserGetState = (): Promise<BrowserStateResponse> =>
+  invoke<BrowserStateResponse>('browser_get_state')
+
+export const browserLaunch = (): Promise<boolean> =>
+  invoke<boolean>('browser_launch')
+
+export const browserShutdown = (): Promise<boolean> =>
+  invoke<boolean>('browser_shutdown')
+
+// ─── Automation (Phase 3) ─────────────────────────────────────────────
+export interface AutomationSpecRow {
+  id: string
+  name: string
+  description: string
+  tomlContent: string
+  enabled: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface AutomationActivity {
+  id: string
+  specId: string
+  runId: string
+  trigger: string
+  status: 'running' | 'completed' | 'failed' | 'cancelled'
+  result: string | null
+  error: string | null
+  durationMs: number
+  createdAt: number
+  completedAt: number | null
+}
+
+export const installAutomation = (tomlContent: string): Promise<AutomationSpecRow> =>
+  invoke<AutomationSpecRow>('install_automation', { tomlContent })
+
+export const listAutomations = (): Promise<AutomationSpecRow[]> =>
+  invoke<AutomationSpecRow[]>('list_automations')
+
+export const triggerAutomationManual = (specId: string): Promise<boolean> =>
+  invoke<boolean>('trigger_automation_manual', { specId })
+
+export const getAutomationActivity = (specId: string, limit?: number): Promise<AutomationActivity[]> =>
+  invoke<AutomationActivity[]>('get_automation_activity', { specId, limit })
+
+// ─── Badge ────────────────────────────────────────────────────────────
+export const updateBadgeCount = (count: number): Promise<boolean> =>
+  invoke<boolean>('update_badge_count', { count })

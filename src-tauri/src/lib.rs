@@ -38,3 +38,9 @@ pub mod observability;
 
 // Phase 3: AI Browser
 pub mod browser;
+
+// Phase 3: Automation
+pub mod automation;
+
+// Evaluation harness
+pub mod harness;

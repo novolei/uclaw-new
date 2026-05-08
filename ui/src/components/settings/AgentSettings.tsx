@@ -1,85 +1,48 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { SettingsSection } from './primitives/SettingsSection'
-import { SettingsRow } from './primitives/SettingsRow'
-import { SettingsSelect } from './primitives/SettingsSelect'
 import { SettingsToggle } from './primitives/SettingsToggle'
 import { SettingsCard } from './primitives/SettingsCard'
-import { getActiveModel, listProviders, setActiveModel } from '@/lib/tauri-bridge'
-import type { ProviderInfo } from '@/lib/types'
+import { SettingsRow } from './primitives/SettingsRow'
+import { useAtomValue } from 'jotai'
+import { activeProviderModelAtom } from '@/atoms/active-model'
+import { Cpu } from 'lucide-react'
 
 export function AgentSettings() {
-  const [providers, setProviders] = useState<ProviderInfo[]>([])
-  const [activeProvider, setActiveProvider] = useState('')
-  const [activeModelId, setActiveModelId] = useState('')
+  const activeModel = useAtomValue(activeProviderModelAtom)
   const [streamResponse, setStreamResponse] = useState(true)
   const [autoTitle, setAutoTitle] = useState(true)
 
-  useEffect(() => {
-    listProviders().then(setProviders)
-    getActiveModel().then((m) => {
-      if (m) {
-        setActiveProvider(m.providerId)
-        setActiveModelId(m.modelId)
-      }
-    })
-  }, [])
-
-  const handleProviderChange = async (providerId: string) => {
-    setActiveProvider(providerId)
-    // Reset model when provider changes
-    setActiveModelId('')
-  }
-
-  const handleModelChange = async (modelId: string) => {
-    setActiveModelId(modelId)
-    if (activeProvider && modelId) {
-      await setActiveModel(activeProvider, modelId)
-    }
-  }
-
-  const providerOptions = providers.map((p) => ({
-    value: p.id,
-    label: p.displayName,
-  }))
-
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold">Agent 配置</h2>
-
-      <SettingsSection title="默认模型">
+      <SettingsSection title="当前模型">
         <SettingsCard>
-          <SettingsRow label="Provider" description="选择 AI 模型供应商">
-            <SettingsSelect
-              value={activeProvider}
-              onValueChange={handleProviderChange}
-              options={providerOptions}
-              placeholder="选择 Provider..."
-            />
-          </SettingsRow>
-          <SettingsRow label="模型" description="选择具体模型">
-            <SettingsSelect
-              value={activeModelId}
-              onValueChange={handleModelChange}
-              options={[]}
-              placeholder="选择模型..."
-            />
+          <SettingsRow
+            label="活跃模型"
+            description="在会话输入框底部工具栏的模型选择器中切换"
+            icon={<Cpu size={15} className="text-muted-foreground" />}
+          >
+            <span className="text-sm text-muted-foreground">
+              {activeModel ? `${activeModel.providerId} / ${activeModel.modelId}` : '未选择'}
+            </span>
           </SettingsRow>
         </SettingsCard>
       </SettingsSection>
 
       <SettingsSection title="行为设置">
-        <SettingsToggle
-          label="流式响应"
-          description="实时显示 AI 生成内容"
-          checked={streamResponse}
-          onCheckedChange={setStreamResponse}
-        />
-        <SettingsToggle
-          label="自动生成标题"
-          description="根据对话内容自动命名会话"
-          checked={autoTitle}
-          onCheckedChange={setAutoTitle}
-        />
+        <SettingsCard>
+          <SettingsToggle
+            label="流式响应"
+            description="实时显示 AI 生成内容"
+            checked={streamResponse}
+            onCheckedChange={setStreamResponse}
+          />
+          <SettingsToggle
+            label="自动生成标题"
+            description="根据对话内容自动命名会话"
+            checked={autoTitle}
+            onCheckedChange={setAutoTitle}
+          />
+        </SettingsCard>
       </SettingsSection>
     </div>
   )

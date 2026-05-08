@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { SettingsSection } from './primitives/SettingsSection'
+import { SettingsCard } from './primitives/SettingsCard'
 import { SettingsRow } from './primitives/SettingsRow'
 import { SettingsSelect } from './primitives/SettingsSelect'
 import { SettingsToggle } from './primitives/SettingsToggle'
@@ -29,30 +30,32 @@ export function GeneralSettings() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold">通用设置</h2>
-
       <SettingsSection title="语言与地区">
-        <SettingsRow label="界面语言" description="切换后需要重新加载">
-          <SettingsSelect
-            value={language}
-            onValueChange={handleLanguageChange}
-            options={LANGUAGE_OPTIONS}
-          />
-        </SettingsRow>
+        <SettingsCard>
+          <SettingsRow label="界面语言" description="切换后需要重新加载">
+            <SettingsSelect
+              value={language}
+              onValueChange={handleLanguageChange}
+              options={LANGUAGE_OPTIONS}
+            />
+          </SettingsRow>
+        </SettingsCard>
       </SettingsSection>
 
       <SettingsSection title="消息">
-        <SettingsToggle
-          label="按 Enter 发送消息"
-          description="关闭后使用 Ctrl+Enter 发送"
-          checked={sendOnEnter}
-          onCheckedChange={setSendOnEnter}
-        />
-        <SettingsToggle
-          label="显示消息时间戳"
-          checked={showTimestamp}
-          onCheckedChange={setShowTimestamp}
-        />
+        <SettingsCard>
+          <SettingsToggle
+            label="按 Enter 发送消息"
+            description="关闭后使用 Ctrl+Enter 发送"
+            checked={sendOnEnter}
+            onCheckedChange={setSendOnEnter}
+          />
+          <SettingsToggle
+            label="显示消息时间戳"
+            checked={showTimestamp}
+            onCheckedChange={setShowTimestamp}
+          />
+        </SettingsCard>
       </SettingsSection>
     </div>
   )

@@ -128,6 +128,16 @@ impl AnthropicProvider {
         if stream {
             body["stream"] = serde_json::json!(true);
         }
+        if config.thinking_enabled {
+            body["thinking"] = serde_json::json!({
+                "type": "enabled",
+                "budget_tokens": 8000
+            });
+            // Extended thinking requires temperature=1
+            body["temperature"] = serde_json::json!(1.0);
+            // Signal to send_with_retry to add the beta header
+            body["_betas"] = serde_json::json!(["interleaved-thinking-2025-05-14"]);
+        }
         body
     }
 
@@ -138,6 +148,19 @@ impl AnthropicProvider {
     ) -> Result<reqwest::Response, Error> {
         let mut last_error = None;
 
+        // Extract and remove _betas sentinel field before sending
+        let mut body = body.clone();
+        let betas = body["_betas"].take();
+        let beta_header: Option<String> = if betas.is_array() {
+            let beta_str = betas.as_array().unwrap().iter()
+                .filter_map(|b| b.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            if beta_str.is_empty() { None } else { Some(beta_str) }
+        } else {
+            None
+        };
+
         for attempt in 0..MAX_RETRIES {
             if attempt > 0 {
                 let delay = Duration::from_millis(500 * 2u64.pow(attempt - 1));
@@ -145,16 +168,19 @@ impl AnthropicProvider {
                 tokio::time::sleep(delay).await;
             }
 
-            let result = self
+            let mut request = self
                 .client
                 .post(format!("{}/v1/messages", self.base_url))
                 .header("x-api-key", &self.api_key)
                 .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json")
-                .timeout(self.timeout)
-                .json(body)
-                .send()
-                .await;
+                .timeout(self.timeout);
+
+            if let Some(ref beta_str) = beta_header {
+                request = request.header("anthropic-beta", beta_str);
+            }
+
+            let result = request.json(&body).send().await;
 
             match result {
                 Ok(resp) => {

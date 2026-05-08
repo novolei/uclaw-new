@@ -774,6 +774,7 @@ impl ProactiveService {
             max_tokens: 4096,
             temperature: 0.7,
             system_prompt: None, // system prompt 已包含在 messages 中
+            thinking_enabled: false,
         };
 
         // 调用 LLM（不使用工具）

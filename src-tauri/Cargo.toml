@@ -91,8 +91,14 @@ fs4 = "0.6"
 # File watching
 notify = { version = "7", features = ["macos_kqueue"] }
 
-# Browser automation (Phase 3 — optional, enable with --features ai-browser)
-chromiumoxide = { version = "0.7", features = ["tokio-runtime"], optional = true }
+# Browser automation (Phase 3)
+chromiumoxide = { version = "0.7", features = ["tokio-runtime"] }
+
+# Cron scheduling
+cron = "0.12"
+
+# Base64 encoding
+base64 = "0.22"
 
 # macOS keychain
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -109,8 +115,6 @@ tauri = { version = "2.0.0", features = ["test"] }
 
 [features]
 default = []
-# Browser automation (Phase 3 — enable with --features ai-browser)
-ai-browser = ["chromiumoxide"]
 
 # Updater plugin — desktop only (not Android/iOS)
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

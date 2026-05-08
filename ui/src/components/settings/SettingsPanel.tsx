@@ -1,6 +1,23 @@
+import * as React from 'react'
 import { useAtom } from 'jotai'
-import { settingsTabAtom, type SettingsTab } from '@/atoms/settings-tab'
+import { settingsTabAtom, settingsOpenAtom, type SettingsTab } from '@/atoms/settings-tab'
+import { hasUpdateAtom } from '@/atoms/updater'
 import { cn } from '@/lib/utils'
+import {
+  Settings,
+  Radio,
+  Palette,
+  Info,
+  Plug,
+  Globe,
+  BookOpen,
+  Wrench,
+  Bot,
+  Keyboard,
+  X,
+  Cpu,
+} from 'lucide-react'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { GeneralSettings } from './GeneralSettings'
 import { AppearanceSettings } from './AppearanceSettings'
 import { AgentSettings } from './AgentSettings'
@@ -8,22 +25,29 @@ import { ToolSettings } from './ToolSettings'
 import { PromptSettings } from './PromptSettings'
 import { ShortcutSettings } from './ShortcutSettings'
 import { ChannelSettings } from './ChannelSettings'
+import { ModelSettings } from './ModelSettings'
 import { BotDefaultSettings } from './BotDefaultSettings'
 import { ProxySetting } from './ProxySetting'
 import { AboutSettings } from './AboutSettings'
-import { ScrollArea } from '@/components/ui/scroll-area'
 
-const TABS: { id: SettingsTab; label: string }[] = [
-  { id: 'channels', label: '渠道' },
-  { id: 'general', label: '通用' },
-  { id: 'appearance', label: '外观' },
-  { id: 'agent', label: 'Agent' },
-  { id: 'tools', label: '工具' },
-  { id: 'prompts', label: '提示词' },
-  { id: 'bots', label: 'Bot' },
-  { id: 'shortcuts', label: '快捷键' },
-  { id: 'proxy', label: '代理' },
-  { id: 'about', label: '关于' },
+interface TabItem {
+  id: SettingsTab
+  label: string
+  icon: React.ReactNode
+}
+
+const TABS: TabItem[] = [
+  { id: 'channels', label: '服务商', icon: <Radio size={15} /> },
+  { id: 'models', label: '模型配置', icon: <Cpu size={15} /> },
+  { id: 'general', label: '通用', icon: <Settings size={15} /> },
+  { id: 'appearance', label: '外观', icon: <Palette size={15} /> },
+  { id: 'agent', label: 'Agent', icon: <Plug size={15} /> },
+  { id: 'tools', label: '工具', icon: <Wrench size={15} /> },
+  { id: 'prompts', label: '提示词', icon: <BookOpen size={15} /> },
+  { id: 'bots', label: 'Bot', icon: <Bot size={15} /> },
+  { id: 'shortcuts', label: '快捷键', icon: <Keyboard size={15} /> },
+  { id: 'proxy', label: '代理', icon: <Globe size={15} /> },
+  { id: 'about', label: '关于', icon: <Info size={15} /> },
 ]
 
 function SettingsContent({ tab }: { tab: SettingsTab }) {
@@ -32,6 +56,8 @@ function SettingsContent({ tab }: { tab: SettingsTab }) {
       return <GeneralSettings />
     case 'channels':
       return <ChannelSettings />
+    case 'models':
+      return <ModelSettings />
     case 'appearance':
       return <AppearanceSettings />
     case 'agent':
@@ -55,33 +81,63 @@ function SettingsContent({ tab }: { tab: SettingsTab }) {
 
 export default function SettingsPanel() {
   const [activeTab, setActiveTab] = useAtom(settingsTabAtom)
+  const [, setOpen] = useAtom(settingsOpenAtom)
+  const [hasUpdate] = useAtom(hasUpdateAtom)
+
+  const activeLabel = TABS.find((t) => t.id === activeTab)?.label ?? '设置'
 
   return (
-    <div className="flex h-full">
-      {/* Sidebar */}
-      <div className="w-[200px] border-r border-border p-3 flex flex-col gap-0.5">
-        {TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            className={cn(
-              'w-full text-left px-3 py-1.5 rounded-md text-sm transition-colors',
-              activeTab === tab.id
-                ? 'bg-accent text-accent-foreground font-medium'
-                : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
-            )}
-            onClick={() => setActiveTab(tab.id)}
-          >
-            {tab.label}
-          </button>
-        ))}
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="h-12 flex items-center justify-between px-5 border-b border-border/50 flex-shrink-0">
+        <h2 className="text-sm font-medium text-foreground">{activeLabel}</h2>
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          className="rounded-md p-1.5 text-muted-foreground/60 hover:text-foreground hover:bg-muted transition-colors"
+        >
+          <X size={16} />
+        </button>
       </div>
-      {/* Content */}
-      <ScrollArea className="flex-1">
-        <div className="max-w-[640px] mx-auto p-6">
-          <SettingsContent tab={activeTab} />
+
+      {/* Body: left nav + right content */}
+      <div className="flex flex-1 min-h-0">
+        {/* Left nav */}
+        <div className="w-[160px] border-r border-border/50 pt-3 px-2 flex-shrink-0">
+          <nav className="flex flex-col gap-0.5">
+            {TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={cn(
+                  'flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors',
+                  activeTab === tab.id
+                    ? 'bg-muted text-foreground font-medium'
+                    : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground',
+                )}
+              >
+                {tab.icon}
+                <span>{tab.label}</span>
+                {tab.id === 'about' && hasUpdate && (
+                  <span className="w-2 h-2 rounded-full bg-red-500 ml-auto" />
+                )}
+              </button>
+            ))}
+          </nav>
         </div>
-      </ScrollArea>
+
+        {/* Right content */}
+        {activeTab === 'channels' ? (
+          <ChannelSettings />
+        ) : (
+          <ScrollArea className="flex-1">
+            <div className="max-w-[640px] mx-auto px-6 py-5">
+              <SettingsContent tab={activeTab} />
+            </div>
+          </ScrollArea>
+        )}
+      </div>
     </div>
   )
 }

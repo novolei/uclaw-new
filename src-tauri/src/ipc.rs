@@ -55,6 +55,12 @@ pub struct SendMessageInput {
     pub attachments: Option<Vec<String>>,
     /// Safety mode for this message: "ask", "supervised", or "yolo"
     pub safety_mode: Option<String>,
+    /// Explicit provider to use for this message (overrides active_model).
+    pub provider_id: Option<String>,
+    /// Explicit model to use for this message (overrides active_model).
+    pub model_id: Option<String>,
+    /// Enable extended thinking/reasoning for this message.
+    pub thinking_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

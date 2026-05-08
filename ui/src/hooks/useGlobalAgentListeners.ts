@@ -1,38 +1,16 @@
-/**
- * useGlobalAgentListeners — Agent 全局 IPC 监听
- *
- * 在 App 顶层挂载，监听 Agent 相关的 Tauri 事件流，
- * 将事件分发到对应的 Jotai atom 中。
- *
- * 从 Proma 迁移，IPC 由 tauri-bridge 提供。
- */
-
-import { useEffect, useRef } from 'react'
-import { useSetAtom, useAtomValue } from 'jotai'
+import { useEffect } from 'react'
+import { useStore, type Store } from 'jotai'
+import { listen } from '@tauri-apps/api/event'
 import {
   agentStreamingStatesAtom,
-  applyAgentEvent,
   unviewedCompletedSessionIdsAtom,
   workingDoneSessionIdsAtom,
   agentStreamErrorsAtom,
-  allPendingPermissionRequestsAtom,
-  allPendingAskUserRequestsAtom,
-  allPendingExitPlanRequestsAtom,
-  agentPlanModeSessionsAtom,
-  currentAgentSessionIdAtom,
-  agentPromptSuggestionsAtom,
   stoppedByUserSessionsAtom,
+  currentAgentSessionIdAtom,
   type AgentStreamState,
 } from '@/atoms/agent-atoms'
-import type {
-  AgentStreamEvent,
-  AgentStreamCompletePayload,
-  PermissionRequest,
-  AskUserRequest,
-  ExitPlanModeRequest,
-} from '@/lib/proma-types'
 
-/** 创建一个空的初始流式状态 */
 function createInitialStreamState(): AgentStreamState {
   return {
     running: true,
@@ -43,162 +21,211 @@ function createInitialStreamState(): AgentStreamState {
   }
 }
 
-export function useGlobalAgentListeners(): void {
-  const setStreamStates = useSetAtom(agentStreamingStatesAtom)
-  const setUnviewedCompleted = useSetAtom(unviewedCompletedSessionIdsAtom)
-  const setWorkingDone = useSetAtom(workingDoneSessionIdsAtom)
-  const setStreamErrors = useSetAtom(agentStreamErrorsAtom)
-  const setAllPendingPerms = useSetAtom(allPendingPermissionRequestsAtom)
-  const setAllPendingAskUser = useSetAtom(allPendingAskUserRequestsAtom)
-  const setAllPendingExitPlan = useSetAtom(allPendingExitPlanRequestsAtom)
-  const setPlanModeSessions = useSetAtom(agentPlanModeSessionsAtom)
-  const setPromptSuggestions = useSetAtom(agentPromptSuggestionsAtom)
-  const setStoppedByUser = useSetAtom(stoppedByUserSessionsAtom)
-  const currentSessionId = useAtomValue(currentAgentSessionIdAtom)
+// ─── Module-level singleton ───────────────────────────────────────────────────
+// Listeners are global for the app's lifetime. Using a singleton prevents
+// React StrictMode (which double-fires effects) and Vite HMR module reloads
+// from stacking up duplicate Tauri event listeners.
 
-  useEffect(() => {
-    const api = (window as any).electronAPI
-    if (!api) return
+let cleanupFns: Array<() => void> = []
+let initialized = false
 
-    const unsubscribers: Array<() => void> = []
+// Per-session last-processed seq numbers for chat:stream-reasoning deduplication.
+// The backend includes a monotonically increasing `seq` with each delta; we skip
+// any event whose seq is not strictly greater than the last one we processed.
+// This defends against double-delivery that would otherwise cause word-by-word
+// duplication in the streaming thinking block.
+const lastReasoningSeq = new Map<string, number>()
 
-    // Agent 流式事件
-    const handleStreamEvent = (payload: AgentStreamEvent) => {
-      const { sessionId, event } = payload
-      setStreamStates((prev) => {
-        const existing = prev.get(sessionId) ?? createInitialStreamState()
-        const updated = applyAgentEvent(existing, event)
+function startAgentListeners(store: Store): void {
+  if (initialized) return
+  initialized = true
+
+  // Helper: register a Tauri listener and collect its unlisten fn.
+  // listen() is async, so we always store the unlisten fn once the Promise
+  // settles — if dispose() already ran we call it immediately.
+  let disposed = false
+  function reg(p: Promise<() => void>): void {
+    p.then((fn) => {
+      if (disposed) fn()
+      else cleanupFns.push(fn)
+    }).catch(console.error)
+  }
+
+  // chat:stream-chunk → append streaming content
+  reg(
+    listen<{ conversationId: string; delta: string }>('chat:stream-chunk', ({ payload }) => {
+      const sid = payload.conversationId
+      store.set(agentStreamingStatesAtom, (prev) => {
+        const existing = prev.get(sid) ?? createInitialStreamState()
         const next = new Map(prev)
-        next.set(sessionId, updated)
+        next.set(sid, { ...existing, content: existing.content + payload.delta })
         return next
       })
-    }
-
-    // Agent 流式开始
-    const handleStreamStart = (payload: { sessionId: string }) => {
-      const { sessionId } = payload
-      setStreamStates((prev) => {
+      store.set(agentStreamErrorsAtom, (prev) => {
+        if (!prev.has(sid)) return prev
         const next = new Map(prev)
-        next.set(sessionId, createInitialStreamState())
+        next.delete(sid)
         return next
       })
-      // 清除之前的错误
-      setStreamErrors((prev) => {
-        const next = new Map(prev)
-        next.delete(sessionId)
-        return next
-      })
-      // 清除停止标记
-      setStoppedByUser((prev) => {
-        if (!prev.has(sessionId)) return prev
+      store.set(stoppedByUserSessionsAtom, (prev) => {
+        if (!prev.has(sid)) return prev
         const next = new Set(prev)
-        next.delete(sessionId)
+        next.delete(sid)
         return next
       })
-    }
+    })
+  )
 
-    // Agent 流式完成
-    const handleStreamComplete = (payload: AgentStreamCompletePayload) => {
-      const { sessionId } = payload
-      setStreamStates((prev) => {
-        const existing = prev.get(sessionId)
+  // chat:stream-complete → mark session done, finalize stuck activities
+  reg(
+    listen<{ conversationId: string; text: string }>('chat:stream-complete', ({ payload }) => {
+      const sid = payload.conversationId
+      store.set(agentStreamingStatesAtom, (prev) => {
+        const existing = prev.get(sid)
         if (!existing) return prev
         const next = new Map(prev)
-        next.set(sessionId, { ...existing, running: false })
+        const finalActivities = existing.toolActivities.map((a) =>
+          a.done ? a : { ...a, done: true }
+        )
+        next.set(sid, {
+          ...existing,
+          running: false,
+          content: payload.text || existing.content,
+          toolActivities: finalActivities,
+        })
         return next
       })
-      // 如果不是当前查看的会话，标记为未查看完成
-      if (sessionId !== currentSessionId) {
-        setUnviewedCompleted((prev) => {
+      const currentSid = store.get(currentAgentSessionIdAtom)
+      if (sid !== currentSid) {
+        store.set(unviewedCompletedSessionIdsAtom, (prev) => {
           const next = new Set(prev)
-          next.add(sessionId)
+          next.add(sid)
           return next
         })
       }
-      // 标记为 working done
-      setWorkingDone((prev) => {
+      store.set(workingDoneSessionIdsAtom, (prev) => {
         const next = new Set(prev)
-        next.add(sessionId)
+        next.add(sid)
         return next
       })
-    }
+    })
+  )
 
-    // Agent 流式错误
-    const handleStreamError = (payload: { sessionId: string; error: string }) => {
-      const { sessionId, error } = payload
-      setStreamErrors((prev) => {
+  // chat:stream-error → record error and stop
+  reg(
+    listen<{ conversationId: string; error: string }>('chat:stream-error', ({ payload }) => {
+      const sid = payload.conversationId
+      store.set(agentStreamErrorsAtom, (prev) => {
         const next = new Map(prev)
-        next.set(sessionId, error)
+        next.set(sid, payload.error)
         return next
       })
-      setStreamStates((prev) => {
-        const existing = prev.get(sessionId)
+      store.set(agentStreamingStatesAtom, (prev) => {
+        const existing = prev.get(sid)
         if (!existing) return prev
         const next = new Map(prev)
-        next.set(sessionId, { ...existing, running: false })
+        next.set(sid, { ...existing, running: false })
         return next
       })
-    }
+    })
+  )
 
-    // 权限请求
-    const handlePermissionRequest = (payload: { sessionId: string; request: PermissionRequest }) => {
-      setAllPendingPerms((prev) => {
-        const next = new Map(prev)
-        const existing = next.get(payload.sessionId) ?? []
-        next.set(payload.sessionId, [...existing, payload.request])
-        return next
-      })
-    }
+  // chat:stream-reasoning → append thinking content
+  reg(
+    listen<{ conversationId: string; delta: string; seq?: number }>('chat:stream-reasoning', ({ payload }) => {
+      const sid = payload.conversationId
 
-    // 权限已解决
-    const handlePermissionResolved = (payload: { sessionId: string; requestId: string }) => {
-      setAllPendingPerms((prev) => {
-        const next = new Map(prev)
-        const existing = next.get(payload.sessionId)
-        if (!existing) return prev
-        const filtered = existing.filter((r) => (r as any).id !== payload.requestId)
-        if (filtered.length === 0) next.delete(payload.sessionId)
-        else next.set(payload.sessionId, filtered)
-        return next
-      })
-    }
-
-    // 监听 electronAPI 兼容层事件
-    if (api.onAgentStreamEvent) {
-      unsubscribers.push(api.onAgentStreamEvent(handleStreamEvent))
-    }
-    if (api.onAgentStreamStart) {
-      unsubscribers.push(api.onAgentStreamStart(handleStreamStart))
-    }
-    if (api.onAgentStreamComplete) {
-      unsubscribers.push(api.onAgentStreamComplete(handleStreamComplete))
-    }
-    if (api.onAgentStreamError) {
-      unsubscribers.push(api.onAgentStreamError(handleStreamError))
-    }
-    if (api.onAgentPermissionRequest) {
-      unsubscribers.push(api.onAgentPermissionRequest(handlePermissionRequest))
-    }
-    if (api.onAgentPermissionResolved) {
-      unsubscribers.push(api.onAgentPermissionResolved(handlePermissionResolved))
-    }
-
-    return () => {
-      for (const unsub of unsubscribers) {
-        if (typeof unsub === 'function') unsub()
+      // Deduplicate: if the backend includes a seq number, skip events we've already processed.
+      // Reset the tracked seq when a new stream starts (reasoning is undefined = fresh state).
+      if (payload.seq !== undefined) {
+        const currentReasoning = store.get(agentStreamingStatesAtom).get(sid)?.reasoning
+        if (currentReasoning === undefined) {
+          // New stream started — clear old seq so seq=0 is accepted again.
+          lastReasoningSeq.delete(sid)
+        }
+        const last = lastReasoningSeq.get(sid)
+        if (last !== undefined && payload.seq <= last) return
+        lastReasoningSeq.set(sid, payload.seq)
       }
-    }
-  }, [
-    setStreamStates,
-    setUnviewedCompleted,
-    setWorkingDone,
-    setStreamErrors,
-    setAllPendingPerms,
-    setAllPendingAskUser,
-    setAllPendingExitPlan,
-    setPlanModeSessions,
-    setPromptSuggestions,
-    setStoppedByUser,
-    currentSessionId,
-  ])
+
+      store.set(agentStreamingStatesAtom, (prev) => {
+        const existing = prev.get(sid) ?? createInitialStreamState()
+        const next = new Map(prev)
+        next.set(sid, { ...existing, reasoning: (existing.reasoning ?? '') + payload.delta })
+        return next
+      })
+    })
+  )
+
+  // chat:stream-tool-activity → record tool activity
+  reg(
+    listen<{ conversationId: string; activity: any }>('chat:stream-tool-activity', ({ payload }) => {
+      const sid = payload.conversationId
+      const ev = payload.activity
+      store.set(agentStreamingStatesAtom, (prev) => {
+        const existing = prev.get(sid) ?? createInitialStreamState()
+        const activities = [...existing.toolActivities]
+
+        if (ev.type === 'tool_start') {
+          const newId = ev.toolCallId ?? ''
+          if (!activities.some((a) => a.toolUseId === newId)) {
+            activities.push({
+              toolUseId: newId,
+              toolName: ev.toolName ?? '',
+              input: ev.input ?? {},
+              done: false,
+            })
+          }
+        } else if (ev.type === 'tool_result') {
+          const idx = activities.findIndex((a) => a.toolUseId === ev.toolCallId)
+          if (idx >= 0) {
+            const raw = ev.result
+            const resultStr: string =
+              typeof raw === 'string'
+                ? raw
+                : (raw?.output ?? raw?.content ?? raw?.error ?? JSON.stringify(raw ?? ''))
+            activities[idx] = {
+              ...activities[idx]!,
+              result: resultStr,
+              isError: ev.isError ?? (raw?.ok === false),
+              done: true,
+            }
+          }
+        }
+
+        const next = new Map(prev)
+        next.set(sid, { ...existing, toolActivities: activities })
+        return next
+      })
+    })
+  )
+
+  // Dispose function: unlisten everything and reset for next HMR cycle
+  const dispose = () => {
+    disposed = true
+    initialized = false
+    for (const fn of cleanupFns) fn()
+    cleanupFns = []
+    lastReasoningSeq.clear()
+  }
+
+  // Vite HMR: tear down listeners before this module is hot-replaced so the
+  // next module evaluation starts with a clean slate.
+  if (import.meta.hot) {
+    import.meta.hot.dispose(dispose)
+  }
+}
+
+// ─── React hook ──────────────────────────────────────────────────────────────
+// Just a mount trigger; the real work happens in startAgentListeners().
+// StrictMode's double-run is harmless because startAgentListeners() guards
+// against re-entry with the `initialized` flag.
+
+export function useGlobalAgentListeners(): void {
+  const store = useStore()
+
+  useEffect(() => {
+    startAgentListeners(store)
+    // No cleanup returned — listeners are intentionally global for the app lifetime.
+  }, [store])
 }

@@ -30,7 +30,8 @@ function truncate(text: string, max: number): string {
  *
  * 返回的 label 应读起来像一个完整动宾短语，无冗余信息。
  */
-export function getToolPhrase(toolName: string, input: Record<string, unknown>): ToolPhrase {
+export function getToolPhrase(toolName: string, input: Record<string, unknown> | undefined | null): ToolPhrase {
+  input = input ?? {}
   switch (toolName) {
     case 'Read': {
       const fp = input.file_path ?? input.filePath

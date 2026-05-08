@@ -14,7 +14,7 @@
  */
 
 import * as React from 'react'
-import { useAtomValue, useSetAtom } from 'jotai'
+import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { AlertCircle, X } from 'lucide-react'
 import { ChatHeader } from './ChatHeader'
 import { ChatMessages } from './ChatMessages'
@@ -45,6 +45,7 @@ import {
 } from '@/hooks/useConversationSettings'
 import { registerPendingTitle } from '@/hooks/useGlobalChatListeners'
 import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
+import { activeProviderModelAtom } from '@/atoms/active-model'
 import { cn } from '@/lib/utils'
 import {
   getRecentMessages,
@@ -59,7 +60,6 @@ import {
 } from '@/lib/tauri-bridge'
 import type {
   ChatMessage,
-  ChatSendInput,
   FileAttachment,
   AttachmentSaveInput,
 } from '@/lib/proma-types'
@@ -84,6 +84,9 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
   const [hasMoreMessages, setHasMoreMessages] = React.useState(false)
   const [messagesLoaded, setMessagesLoaded] = React.useState(false)
   const [inlineEditingMessageId, setInlineEditingMessageId] = React.useState<string | null>(null)
+
+  // ===== Provider model (new system, global) =====
+  const [activeProviderModel] = useAtom(activeProviderModelAtom)
 
   // ===== Per-conversation hooks（分屏独立） =====
   const [selectedModel, setSelectedModel] = useConversationModel()
@@ -223,7 +226,7 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
       contextDividersOverride?: string[]
     },
   ): Promise<void> => {
-    if (!selectedModel) return
+    if (!activeProviderModel && !selectedModel) return
 
     const consumePending = options?.consumePendingAttachments ?? true
 
@@ -243,8 +246,8 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
       console.log('[ChatView] 设置待生成标题:', { conversationId, userMessage: content.slice(0, 50) })
       registerPendingTitle(conversationId, {
         userMessage: content,
-        channelId: selectedModel.channelId,
-        modelId: selectedModel.modelId,
+        channelId: selectedModel?.channelId ?? '',
+        modelId: activeProviderModel?.modelId ?? selectedModel?.modelId ?? '',
       })
       // 取消 draft 标记，让会话出现在侧边栏
       setDraftSessionIds((prev: Set<string>) => {
@@ -298,25 +301,19 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
         streaming: true,
         content: '',
         reasoning: '',
-        model: selectedModel.modelId,
+        model: activeProviderModel?.modelId ?? selectedModel?.modelId ?? '',
         toolActivities: [],
         startedAt: Date.now(),
       })
       return map
     })
 
-    const input: ChatSendInput = {
+    const sendInput = {
       conversationId,
-      userMessage: content,
-      messageHistory: [], // 后端已改为从磁盘读取完整历史，无需前端传入
-      channelId: selectedModel.channelId,
-      modelId: selectedModel.modelId,
-      contextLength,
-      contextDividers: options?.contextDividersOverride ?? contextDividers,
-      attachments: savedAttachments.length > 0 ? savedAttachments : undefined,
-      thinkingEnabled: thinkingEnabled || undefined,
-      systemMessage: resolveSystemMessage(conversationPromptId, promptConfig, userProfile.userName),
-      enabledToolIds: activeToolIds.length > 0 ? activeToolIds : undefined,
+      content,
+      providerId: activeProviderModel?.providerId,
+      modelId: activeProviderModel?.modelId,
+      thinkingEnabled,
     }
 
     // 乐观更新：立即在 UI 中显示用户消息
@@ -331,7 +328,7 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
       },
     ])
 
-    sendMessageIPC(input as any).catch((error: any) => {
+    sendMessageIPC(sendInput as any).catch((error: any) => {
       console.error('[ChatView] 发送消息失败:', error)
       setStreamingStates((prev) => {
         if (!prev.has(conversationId)) return prev
@@ -342,16 +339,10 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
     })
   }, [
     conversationId,
+    activeProviderModel,
     selectedModel,
     messages.length,
     pendingAttachments,
-    contextLength,
-    contextDividers,
-    thinkingEnabled,
-    conversationPromptId,
-    promptConfig,
-    userProfile.userName,
-    activeToolIds,
     setChatStreamErrors,
     setStreamingStates,
   ])
@@ -360,7 +351,7 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
   React.useEffect(() => {
     if (!chatPendingMessage) return
     if (chatPendingMessage.conversationId !== conversationId) return
-    if (!selectedModel || isStreaming) return
+    if ((!activeProviderModel && !selectedModel) || isStreaming) return
 
     const pending = chatPendingMessage
     setChatPendingMessage(null)
@@ -372,7 +363,7 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
         attachments: pending.attachments,
       })
     })
-  }, [chatPendingMessage, conversationId, selectedModel, isStreaming, handleSend])
+  }, [chatPendingMessage, conversationId, activeProviderModel, selectedModel, isStreaming, handleSend])
 
   /** 从某条消息起截断（包含该条） */
   const truncateFromMessage = React.useCallback(async (

@@ -1,24 +1,27 @@
-import { cn } from '@/lib/utils'
+import * as React from 'react'
+import { SECTION_TITLE_CLASS, SECTION_DESCRIPTION_CLASS } from './SettingsUIConstants'
 
 interface SettingsSectionProps {
-  title?: string
+  title?: React.ReactNode
   description?: string
+  action?: React.ReactNode
   children: React.ReactNode
   className?: string
 }
 
-export function SettingsSection({ title, description, children, className }: SettingsSectionProps) {
+export function SettingsSection({ title, description, action, children, className }: SettingsSectionProps) {
   return (
-    <div className={cn('space-y-4', className)}>
+    <div className={`space-y-3 ${className ?? ''}`}>
       {(title || description) && (
-        <div className="space-y-1">
-          {title && <h3 className="text-sm font-medium text-foreground">{title}</h3>}
-          {description && <p className="text-xs text-muted-foreground">{description}</p>}
+        <div className="flex items-start justify-between">
+          <div>
+            {title && <h4 className={SECTION_TITLE_CLASS}>{title}</h4>}
+            {description && <p className={SECTION_DESCRIPTION_CLASS}>{description}</p>}
+          </div>
+          {action && <div className="flex-shrink-0 ml-4">{action}</div>}
         </div>
       )}
-      <div className="space-y-3">
-        {children}
-      </div>
+      {children}
     </div>
   )
 }

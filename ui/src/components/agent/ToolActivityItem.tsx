@@ -37,12 +37,12 @@ import { readAttachment, saveImageAs } from '@/lib/tauri-bridge'
 // ===== 尺寸配置 =====
 
 const SIZE = {
-  icon: 'size-2.5',
-  spinner: 'size-2',
-  row: 'py-[2px]',
+  icon: 'size-3',
+  spinner: 'size-2.5',
+  row: 'py-1',
   staggerLimit: 10,
   autoScrollThreshold: 6,
-  rowHeight: 22,
+  rowHeight: 26,
 } as const
 
 // ===== 状态图标 =====
@@ -52,16 +52,17 @@ function StatusIcon({ status, toolName }: { status: ActivityStatus; toolName?: s
 
   if (status === 'running' || status === 'backgrounded') {
     return (
-      <span key={key} className={cn(SIZE.icon, 'flex items-center justify-center animate-in fade-in zoom-in-75 duration-200')}>
-        <Loader2 className={cn(SIZE.spinner, 'animate-spin', status === 'backgrounded' ? 'text-primary' : 'text-blue-500')} />
+      <span key={key} className="relative flex size-3 items-center justify-center animate-in fade-in duration-200 shrink-0">
+        <span className="absolute inset-0 rounded-full bg-blue-400/20 animate-ping" style={{ animationDuration: '1.5s' }} />
+        <Loader2 className={cn(SIZE.spinner, status === 'backgrounded' ? 'text-primary' : 'text-blue-500 animate-spin')} />
       </span>
     )
   }
 
   if (status === 'error') {
     return (
-      <span key={key} className={cn(SIZE.icon, 'flex items-center justify-center animate-in fade-in zoom-in-75 duration-200')}>
-        <XCircle className={cn(SIZE.icon, 'text-destructive')} />
+      <span key={key} className={cn(SIZE.icon, 'flex items-center justify-center shrink-0 animate-in fade-in zoom-in-75 duration-200')}>
+        <XCircle className={cn(SIZE.icon, 'text-destructive/80')} />
       </span>
     )
   }
@@ -70,21 +71,21 @@ function StatusIcon({ status, toolName }: { status: ActivityStatus; toolName?: s
     const ToolIcon = toolName ? getToolIcon(toolName) : null
     if (ToolIcon && (toolName === 'Edit' || toolName === 'Write')) {
       return (
-        <span key={key} className={cn(SIZE.icon, 'flex items-center justify-center animate-in fade-in zoom-in-75 duration-200')}>
-          <ToolIcon className={cn(SIZE.icon, 'text-primary')} />
+        <span key={key} className={cn(SIZE.icon, 'flex items-center justify-center shrink-0 animate-in fade-in zoom-in-75 duration-200')}>
+          <ToolIcon className={cn(SIZE.icon, 'text-primary/70')} />
         </span>
       )
     }
     return (
-      <span key={key} className={cn(SIZE.icon, 'flex items-center justify-center animate-in fade-in zoom-in-75 duration-200')}>
-        <CheckCircle2 className={cn(SIZE.icon, 'text-green-500')} />
+      <span key={key} className={cn(SIZE.icon, 'flex items-center justify-center shrink-0 animate-in fade-in zoom-in-75 duration-200')}>
+        <CheckCircle2 className={cn(SIZE.icon, 'text-emerald-500/80')} />
       </span>
     )
   }
 
   return (
-    <span key={key} className={cn(SIZE.icon, 'flex items-center justify-center')}>
-      <Circle className={cn(SIZE.icon, 'text-muted-foreground/50')} />
+    <span key={key} className={cn(SIZE.icon, 'flex items-center justify-center shrink-0')}>
+      <Circle className={cn(SIZE.icon, 'text-muted-foreground/30')} />
     </span>
   )
 }
@@ -184,11 +185,31 @@ export function ActivityRow({ activity, index = 0, animate = false, onOpenDetail
 
   const canExpand = !!onOpenDetails && activity.done && !!(activity.result || Object.keys(activity.input).length > 0)
 
+  const rowContent = (
+    <>
+      <StatusIcon status={status} toolName={activity.toolName} />
+      <span className={cn(
+        'truncate min-w-0 flex-1 text-[12px] transition-colors duration-150',
+        isRunning ? 'text-foreground/55' : 'text-foreground/70',
+        canExpand && 'group-hover/row:text-foreground/90',
+      )}>
+        {renderLabelWithDiff(displayLabel, activity.toolName)}
+      </span>
+      {activity.isError && <ErrorBadge />}
+      {activity.elapsedSeconds !== undefined && activity.elapsedSeconds > 0 && (
+        <span className="shrink-0 text-[10.5px] text-muted-foreground/45 tabular-nums font-mono">
+          {formatElapsed(activity.elapsedSeconds)}
+        </span>
+      )}
+      {canExpand && (
+        <ChevronRight className="size-2.5 shrink-0 text-muted-foreground/30 group-hover/row:text-muted-foreground/70 transition-all duration-150" />
+      )}
+    </>
+  )
+
   return (
     <div
       className={cn(
-        'group/row flex items-center gap-1.5 text-[12px] rounded-md',
-        SIZE.row,
         animate && 'animate-in fade-in slide-in-from-left-2 duration-200 fill-mode-both',
       )}
       style={animate ? { animationDelay: delay } : undefined}
@@ -196,30 +217,18 @@ export function ActivityRow({ activity, index = 0, animate = false, onOpenDetail
       {canExpand ? (
         <button
           type="button"
-          className="group/expand shrink-0 flex items-center gap-1.5 cursor-pointer min-w-0 flex-1"
+          className={cn(
+            'group/row w-full flex items-center gap-2 px-2.5 rounded-lg cursor-pointer transition-colors duration-100 hover:bg-muted/50',
+            SIZE.row,
+          )}
           onClick={(e) => { e.stopPropagation(); onOpenDetails(activity) }}
         >
-          <StatusIcon status={status} toolName={activity.toolName} />
-          <span className="truncate text-foreground/80 group-hover/expand:text-foreground transition-colors duration-150 flex-1">{renderLabelWithDiff(displayLabel, activity.toolName)}</span>
-          {activity.isError && <ErrorBadge />}
-          {activity.elapsedSeconds !== undefined && activity.elapsedSeconds > 0 && (
-            <span className="shrink-0 text-[11px] text-muted-foreground/60 tabular-nums">
-              {formatElapsed(activity.elapsedSeconds)}
-            </span>
-          )}
-          <ChevronRight className={cn(SIZE.icon, 'shrink-0 text-muted-foreground/40 group-hover/expand:text-foreground/60 transition-colors duration-150')} />
+          {rowContent}
         </button>
       ) : (
-        <>
-          <StatusIcon status={status} toolName={activity.toolName} />
-          <span className="truncate text-foreground/80">{renderLabelWithDiff(displayLabel, activity.toolName)}</span>
-          {activity.isError && <ErrorBadge />}
-          {activity.elapsedSeconds !== undefined && activity.elapsedSeconds > 0 && (
-            <span className="shrink-0 text-[11px] text-muted-foreground/60 tabular-nums">
-              {formatElapsed(activity.elapsedSeconds)}
-            </span>
-          )}
-        </>
+        <div className={cn('group/row flex items-center gap-2 px-2.5 rounded-lg', SIZE.row)}>
+          {rowContent}
+        </div>
       )}
     </div>
   )
@@ -273,7 +282,7 @@ function ActivityGroupRow({ group, index = 0, animate = false, onOpenDetails, de
         type="button"
         onClick={() => setExpanded(!expanded)}
         className={cn(
-          'w-full flex items-center gap-1.5 pl-1 text-left text-[12px] rounded-md hover:text-foreground transition-colors cursor-pointer',
+          'w-full flex items-center gap-2 px-2.5 text-left text-[12px] rounded-lg hover:bg-muted/50 transition-colors duration-100 cursor-pointer',
           SIZE.row,
         )}
       >
@@ -392,19 +401,19 @@ function ActivityDetails({ activity, onClose }: { activity: ToolActivity; onClos
   }
 
   return (
-    <div className="mt-1 rounded-md border border-border/40 bg-muted/20 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-300 ease-out">
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/30">
-        <span className="text-[11px] font-medium text-foreground/50">{getToolPhrase(activity.toolName, activity.input).label}</span>
+    <div className="rounded-lg border border-border/40 bg-muted/20 overflow-hidden animate-in fade-in slide-in-from-top-1 duration-200 ease-out">
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/25">
+        <span className="text-[10.5px] font-medium text-foreground/45 uppercase tracking-wide">{getToolPhrase(activity.toolName, activity.input).label}</span>
         <button
           type="button"
           onClick={handleCopy}
-          className="text-[11px] text-foreground/40 hover:text-foreground transition-colors"
+          className="text-[10.5px] text-muted-foreground/40 hover:text-foreground/70 transition-colors"
         >
           {copied ? '已复制' : '复制'}
         </button>
       </div>
 
-      <div className="px-3 py-2 space-y-2 max-h-[400px] overflow-y-auto">
+      <div className="px-3 py-2 space-y-2 max-h-[320px] overflow-y-auto">
         {activity.result && (
           <ToolResultRenderer
             toolName={activity.toolName}
@@ -507,17 +516,39 @@ export function ToolActivityList({ activities, animate = false }: ToolActivityLi
     setDetailsId((prev) => (prev === activity.toolUseId ? null : activity.toolUseId))
   }
 
-  // 流式：固定高度 + 自动滚动
-  // 已完成未展开：固定高度 + overflow-hidden（无滚动条）
-  // 已完成已展开：无高度限制
   const isCollapsed = !animate && needsCollapse && !expanded
 
+  // Count running vs done for header badge
+  const doneCount = activities.filter((a) => a.done).length
+  const totalCount = activities.length
+  const allDone = doneCount === totalCount
+
   return (
-    <div className="w-full">
+    <div className="w-full rounded-xl border border-border/40 bg-card/40 overflow-hidden shadow-sm">
+      {/* Card header */}
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/30 bg-muted/20">
+        <div className="flex items-center gap-1.5">
+          {!allDone && (
+            <span className="relative flex size-2 shrink-0">
+              <span className="absolute inset-0 rounded-full bg-blue-400/40 animate-ping" style={{ animationDuration: '1.5s' }} />
+              <span className="size-2 rounded-full bg-blue-400/70" />
+            </span>
+          )}
+          {allDone && <CheckCircle2 className="size-3 text-emerald-500/70 shrink-0" />}
+          <span className="text-[11px] font-medium text-muted-foreground/60 uppercase tracking-wide select-none">
+            Tools
+          </span>
+        </div>
+        <span className="text-[10.5px] text-muted-foreground/40 tabular-nums font-mono">
+          {doneCount}/{totalCount}
+        </span>
+      </div>
+
+      {/* Activity rows */}
       <div
         ref={listRef}
         className={cn(
-          'space-y-0',
+          'py-1',
           animate && needsCollapse && 'overflow-y-auto',
           isCollapsed && 'overflow-hidden',
         )}
@@ -529,63 +560,63 @@ export function ToolActivityList({ activities, animate = false }: ToolActivityLi
               : undefined
         }
       >
-      {grouped.map((item, i) => {
-        if (isActivityGroup(item)) {
-          return (
-            <ActivityGroupRow
-              key={item.parent.toolUseId}
-              group={item}
-              index={i}
-              animate={animate}
-              onOpenDetails={handleOpenDetails}
-              detailsId={detailsId}
-              onCloseDetails={() => setDetailsId(null)}
-            />
-          )
-        }
-
-        const activity = item as ToolActivity
-
-        // Task 相关工具：聚合为一个 TaskProgressCard
-        if (TASK_TOOL_NAMES.has(activity.toolName)) {
-          // 在第一个 task 工具位置插入卡片，后续的跳过
-          if (activity.toolUseId === firstTaskToolUseId) {
+        {grouped.map((item, i) => {
+          if (isActivityGroup(item)) {
             return (
-              <TaskProgressCard
-                key="task-progress-card"
-                activities={taskActivities}
+              <ActivityGroupRow
+                key={item.parent.toolUseId}
+                group={item}
+                index={i}
                 animate={animate}
-                streamEnded={!animate}
+                onOpenDetails={handleOpenDetails}
+                detailsId={detailsId}
+                onCloseDetails={() => setDetailsId(null)}
               />
             )
           }
-          return null
-        }
 
-        return (
-          <React.Fragment key={activity.toolUseId}>
-            <ActivityRow
-              activity={activity}
-              index={i}
-              animate={animate}
-              onOpenDetails={handleOpenDetails}
-            />
-            {detailsId === activity.toolUseId && detailActivity && (
-              <ActivityDetails activity={detailActivity} onClose={() => setDetailsId(null)} />
-            )}
-          </React.Fragment>
-        )
-      })}
+          const activity = item as ToolActivity
+
+          if (TASK_TOOL_NAMES.has(activity.toolName)) {
+            if (activity.toolUseId === firstTaskToolUseId) {
+              return (
+                <TaskProgressCard
+                  key="task-progress-card"
+                  activities={taskActivities}
+                  animate={animate}
+                  streamEnded={!animate}
+                />
+              )
+            }
+            return null
+          }
+
+          return (
+            <React.Fragment key={activity.toolUseId}>
+              <ActivityRow
+                activity={activity}
+                index={i}
+                animate={animate}
+                onOpenDetails={handleOpenDetails}
+              />
+              {detailsId === activity.toolUseId && detailActivity && (
+                <div className="mx-2 mb-1">
+                  <ActivityDetails activity={detailActivity} onClose={() => setDetailsId(null)} />
+                </div>
+              )}
+            </React.Fragment>
+          )
+        })}
       </div>
 
-      {/* 已完成消息：折叠/展开按钮 */}
+      {/* Expand/collapse footer */}
       {!animate && needsCollapse && (
         <button
           type="button"
           onClick={() => setExpanded(!expanded)}
-          className="mt-1 text-[11px] text-muted-foreground/60 hover:text-foreground/80 transition-colors"
+          className="w-full px-3 py-1 text-[11px] text-muted-foreground/50 hover:text-foreground/70 hover:bg-muted/20 transition-colors border-t border-border/30 text-left"
         >
-          {expanded ? '收起工具活动' : `展开全部 ${visibleRows} 项工具活动`}
+          {expanded ? '收起' : `展开全部 ${visibleRows} 项`}
         </button>
       )}
     </div>
