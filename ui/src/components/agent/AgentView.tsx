@@ -538,16 +538,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       }
       setMessages((prev) => [...prev, tempUserMsg])
 
-      // 乐观更新：SDKMessage 格式（Phase 4）
-      const tempUserSDKMsg: SDKMessage = {
-        type: 'user',
-        message: {
-          content: [{ type: 'text', text: snapshot.message }],
-        },
-        parent_tool_use_id: null,
-        _createdAt: Date.now(),
-      } as unknown as SDKMessage
-      setPersistedSDKMessages((prev) => [...prev, tempUserSDKMsg])
+      // Note: do NOT add to persistedSDKMessages — see handleSendMessage for explanation.
 
       // 发送消息
       const input: AgentSendInput = {
@@ -962,16 +953,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     }
     setMessages((prev) => [...prev, tempUserMsg])
 
-    // 乐观更新：SDKMessage 格式的用户消息（Phase 4）
-    const tempUserSDKMsg: SDKMessage = {
-      type: 'user',
-      message: {
-        content: [{ type: 'text', text: finalMessage }],
-      },
-      parent_tool_use_id: null,
-      _createdAt: Date.now(),
-    } as unknown as SDKMessage
-    setPersistedSDKMessages((prev) => [...prev, tempUserSDKMsg])
+    // Note: do NOT add to persistedSDKMessages here — send_agent_message uses the
+    // old chat:stream-chunk/complete path, not the Phase 4 SDK event pipeline.
+    // Adding a synthetic user message would flip useSDKRenderer=true which causes
+    // the old-format messages renderer to be skipped, hiding all assistant history.
 
     const input: AgentSendInput = {
       sessionId,

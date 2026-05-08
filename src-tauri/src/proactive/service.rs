@@ -28,6 +28,32 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+
+/// Extract the content of the first `<summary>…</summary>` XML tag from a string.
+/// Falls back to the first 200 characters if no tag is found.
+fn extract_summary_text(response: &str) -> String {
+    if let Some(start) = response.find("<summary>") {
+        let after = &response[start + "<summary>".len()..];
+        if let Some(end) = after.find("</summary>") {
+            return after[..end].trim().to_string();
+        }
+    }
+    // No <summary> tag — return first 200 chars stripped of XML tags
+    let stripped: String = {
+        let mut out = String::new();
+        let mut in_tag = false;
+        for ch in response.chars().take(400) {
+            match ch {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                c if !in_tag => out.push(c),
+                _ => {}
+            }
+        }
+        out.trim().chars().take(200).collect()
+    };
+    stripped
+}
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
@@ -618,7 +644,7 @@ impl ProactiveService {
                                     ).await;
 
                                     // Tauri IPC 发射到前端
-                                    let summary: String = llm_response.chars().take(200).collect();
+                                    let summary = extract_summary_text(&llm_response);
                                     if let Some(ref handle) = refs.app_handle {
                                         let _ = handle.emit("agent:proactive-learning", serde_json::json!({
                                             "scenario": "skill_extraction",
@@ -671,7 +697,7 @@ impl ProactiveService {
                                                 ).await;
 
                                                 // Tauri IPC 发射到前端
-                                                let summary: String = llm_response.chars().take(200).collect();
+                                                let summary = extract_summary_text(&llm_response);
                                                 let scenario_key = match scenario.name() {
                                                     "conversation_learning" => "conversation_learning",
                                                     "multimodal_context" => "multimodal_context",
