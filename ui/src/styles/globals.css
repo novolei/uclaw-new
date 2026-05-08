@@ -1471,3 +1471,89 @@ html[data-chat-serif="true"] .chat-content pre {
   font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
+
+/* ═══════════════════════════════════════════════════════════════════
+   Code Block 主题变量 — 每个主题独立配色，跟随当前主题切换
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* 默认（light） — github-light */
+:root {
+  --code-bg: #f6f8fa;
+  --code-fg: #24292f;
+  --code-border: rgb(0 0 0 / 0.08);
+  --code-header-bg: #eaeef2;
+  --code-header-fg: #57606a;
+  --code-header-hover: rgb(0 0 0 / 0.06);
+  --code-scrollbar: rgb(0 0 0 / 0.18);
+}
+
+/* 默认 dark — one-dark-pro */
+.dark:not([class*="theme-"]) {
+  --code-bg: #282c34;
+  --code-fg: #abb2bf;
+  --code-border: rgb(255 255 255 / 0.06);
+  --code-header-bg: #21252b;
+  --code-header-fg: #9da5b4;
+  --code-header-hover: rgb(255 255 255 / 0.06);
+  --code-scrollbar: rgb(255 255 255 / 0.14);
+}
+
+/* warm-paper — vitesse-light（暖色） */
+.theme-warm-paper {
+  --code-bg: #f1ede2;
+  --code-fg: #393a34;
+  --code-border: rgb(120 100 60 / 0.18);
+  --code-header-bg: #e7e0cd;
+  --code-header-fg: #6b6450;
+  --code-header-hover: rgb(120 100 60 / 0.10);
+  --code-scrollbar: rgb(120 100 60 / 0.25);
+}
+
+/* ocean-light / forest-light / slate-light — solarized-light */
+.theme-ocean-light,
+.theme-forest-light,
+.theme-slate-light {
+  --code-bg: #fdf6e3;
+  --code-fg: #586e75;
+  --code-border: rgb(80 90 95 / 0.18);
+  --code-header-bg: #eee8d5;
+  --code-header-fg: #657b83;
+  --code-header-hover: rgb(80 90 95 / 0.10);
+  --code-scrollbar: rgb(80 90 95 / 0.28);
+}
+
+/* ocean-dark / forest-dark / slate-dark / qingye — vitesse-dark */
+.theme-ocean-dark,
+.theme-forest-dark,
+.theme-slate-dark,
+.theme-qingye {
+  --code-bg: #121212;
+  --code-fg: #dbd7caee;
+  --code-border: rgb(255 255 255 / 0.06);
+  --code-header-bg: #0a0a0a;
+  --code-header-fg: #888880;
+  --code-header-hover: rgb(255 255 255 / 0.07);
+  --code-scrollbar: rgb(255 255 255 / 0.12);
+}
+
+/* black — min-dark（极简纯黑） */
+.theme-black {
+  --code-bg: #000000;
+  --code-fg: #e4e4e4;
+  --code-border: rgb(255 255 255 / 0.08);
+  --code-header-bg: #0a0a0a;
+  --code-header-fg: #888888;
+  --code-header-hover: rgb(255 255 255 / 0.08);
+  --code-scrollbar: rgb(255 255 255 / 0.14);
+}
+
+/* the-finals — dracula（红紫戏剧化） */
+.theme-the-finals {
+  --code-bg: #1a0f12;
+  --code-fg: #f8f8f2;
+  --code-border: rgb(217 31 60 / 0.30);
+  --code-header-bg: #100a0c;
+  --code-header-fg: #ffd23f;
+  --code-header-hover: rgb(255 210 63 / 0.10);
+  --code-scrollbar: rgb(255 210 63 / 0.20);
+}

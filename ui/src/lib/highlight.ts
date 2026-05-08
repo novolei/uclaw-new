@@ -38,9 +38,49 @@ const COMMON_LANGUAGES: BundledLanguage[] = [
   'diff',
 ]
 
-/** 高亮主题 — 选择高对比度且色彩鲜明的主题，避免标识符颜色过暗 */
+/** 高亮主题 — 预加载多套，由 getShikiThemeForCurrentApp() 按当前 app 主题选择 */
 const LIGHT_THEME: BundledTheme = 'github-light'
 const DARK_THEME: BundledTheme = 'one-dark-pro'
+/** 额外预加载主题，覆盖 uclaw 自定义主题风格 */
+const EXTRA_THEMES: BundledTheme[] = [
+  'vitesse-light',     // 暖色 light（warm-paper）
+  'vitesse-dark',      // 海洋/森林 dark
+  'min-dark',          // 极简纯黑（black）
+  'dracula',           // 戏剧化深紫（the-finals）
+  'solarized-light',   // ocean-light / forest-light / slate-light
+]
+
+/**
+ * 根据当前应用主题（document.documentElement 的 class）选择 Shiki 主题
+ *
+ * 映射关系：
+ * - 默认 light → github-light
+ * - 默认 dark → one-dark-pro
+ * - warm-paper → vitesse-light（暖色调）
+ * - ocean-light / forest-light / slate-light → solarized-light
+ * - ocean-dark / forest-dark → vitesse-dark
+ * - slate-dark / qingye → vitesse-dark
+ * - black → min-dark
+ * - the-finals → dracula
+ */
+export function getShikiThemeForCurrentApp(): BundledTheme {
+  if (typeof document === 'undefined') return DARK_THEME
+  const html = document.documentElement
+  const isDark = html.classList.contains('dark')
+
+  if (html.classList.contains('theme-the-finals')) return 'dracula'
+  if (html.classList.contains('theme-black')) return 'min-dark'
+  if (html.classList.contains('theme-warm-paper')) return 'vitesse-light'
+  if (html.classList.contains('theme-qingye')) return 'vitesse-dark'
+  if (html.classList.contains('theme-ocean-dark')) return 'vitesse-dark'
+  if (html.classList.contains('theme-forest-dark')) return 'vitesse-dark'
+  if (html.classList.contains('theme-slate-dark')) return 'vitesse-dark'
+  if (html.classList.contains('theme-ocean-light')) return 'solarized-light'
+  if (html.classList.contains('theme-forest-light')) return 'solarized-light'
+  if (html.classList.contains('theme-slate-light')) return 'solarized-light'
+
+  return isDark ? DARK_THEME : LIGHT_THEME
+}
 
 /** 全局 highlighter 单例（懒初始化） */
 let highlighterPromise: Promise<Highlighter> | null = null
@@ -51,7 +91,7 @@ let highlighterPromise: Promise<Highlighter> | null = null
 export function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
     highlighterPromise = createHighlighter({
-      themes: [LIGHT_THEME, DARK_THEME],
+      themes: [LIGHT_THEME, DARK_THEME, ...EXTRA_THEMES],
       langs: COMMON_LANGUAGES,
     })
   }
@@ -81,7 +121,12 @@ export async function highlightCode(
       }
     }
 
-    const shikiTheme = theme === 'light' ? LIGHT_THEME : DARK_THEME
+    // theme 显式指定时优先；否则按当前 app 主题自动选择 Shiki 主题
+    const shikiTheme: BundledTheme = theme === 'light'
+      ? LIGHT_THEME
+      : theme === 'dark'
+        ? DARK_THEME
+        : getShikiThemeForCurrentApp()
 
     return highlighter.codeToHtml(code, {
       lang,

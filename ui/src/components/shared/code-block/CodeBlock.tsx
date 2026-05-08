@@ -223,17 +223,26 @@ export function MarkdownCodeBlock({ children }: MarkdownCodeBlockProps): React.R
   const [copied, setCopied] = useState(false)
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout>>()
 
-  // 检测当前主题
-  const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
-  const resolvedTheme: 'light' | 'dark' = isDark ? 'dark' : 'light'
+  // 跟随 <html> 上的主题类变化重新高亮（不传 theme 参数 → highlightCode 内部
+  // 调用 getShikiThemeForCurrentApp 按当前 app 主题自动选择 Shiki 主题）
+  const [themeSignature, setThemeSignature] = useState(0)
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const observer = new MutationObserver(() => setThemeSignature((n) => n + 1))
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class'],
+    })
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     let cancelled = false
-    highlightCode(code, language, resolvedTheme).then((html) => {
+    highlightCode(code, language).then((html) => {
       if (!cancelled) setHighlightedHtml(html)
     })
     return () => { cancelled = true }
-  }, [code, language, resolvedTheme])
+  }, [code, language, themeSignature])
 
   const handleCopy = useCallback(async () => {
     try {
@@ -255,18 +264,24 @@ export function MarkdownCodeBlock({ children }: MarkdownCodeBlockProps): React.R
     <div
       className={cn(
         'code-block-wrapper not-prose group/code my-3 overflow-hidden rounded-lg shadow-sm',
-        'bg-[#282c34] ring-1 ring-white/5',
+        // 颜色由 CSS 变量驱动 → 各主题在 globals.css 中独立定义
+        'bg-[var(--code-bg)] ring-1 ring-[var(--code-border)]',
       )}
     >
       {/* 头部栏：左侧 macOS 风格圆点 + 语言名，右侧复制按钮 */}
-      <div className="flex items-center justify-between h-9 pl-3 pr-2 border-b border-white/[0.06] bg-[#21252b] text-[11px]">
+      <div
+        className={cn(
+          'flex items-center justify-between h-9 pl-3 pr-2 text-[11px]',
+          'bg-[var(--code-header-bg)] border-b border-[var(--code-border)] text-[var(--code-header-fg)]',
+        )}
+      >
         <div className="flex items-center gap-2.5">
           <div className="flex items-center gap-1.5">
             <span className="size-2.5 rounded-full bg-[#ff5f56]/80" />
             <span className="size-2.5 rounded-full bg-[#ffbd2e]/80" />
             <span className="size-2.5 rounded-full bg-[#27c93f]/80" />
           </div>
-          <span className="font-mono font-medium tracking-wide text-zinc-400 select-none">
+          <span className="font-mono font-medium tracking-wide select-none">
             {getDisplayName(language)}
           </span>
         </div>
@@ -276,8 +291,8 @@ export function MarkdownCodeBlock({ children }: MarkdownCodeBlockProps): React.R
           className={cn(
             'flex items-center gap-1 px-2 py-1 rounded text-[11px] transition-colors',
             copied
-              ? 'text-emerald-400'
-              : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.06]',
+              ? 'text-emerald-500'
+              : 'opacity-70 hover:opacity-100 hover:bg-[var(--code-header-hover)]',
           )}
         >
           {copied ? '已复制' : '复制'}
@@ -287,16 +302,15 @@ export function MarkdownCodeBlock({ children }: MarkdownCodeBlockProps): React.R
       {/* 代码区域 — 强制覆盖 prose 默认颜色，让 Shiki 的内联色彩生效 */}
       <div
         className={cn(
-          'overflow-x-auto text-[13.5px] leading-[1.65] text-zinc-100',
+          'overflow-x-auto text-[13.5px] leading-[1.65] text-[var(--code-fg)]',
           // 重置 Shiki 输出的 <pre>：透明背景 + 无边距 + 标准 padding
-          '[&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!px-5 [&_pre]:!py-4 [&_pre]:!text-zinc-100',
+          '[&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!px-5 [&_pre]:!py-4',
           // 重置 <code>：无背景、字号锁定（前后反引号伪元素由 not-prose 自动屏蔽）
           '[&_code]:!bg-transparent [&_code]:!p-0 [&_code]:!text-[13.5px] [&_code]:!leading-[1.65]',
           '[&_code]:!font-mono [&_code]:![text-shadow:none]',
           // 自定义滚动条
           '[&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent',
-          '[&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full',
-          '[&::-webkit-scrollbar-thumb:hover]:bg-white/20',
+          '[&::-webkit-scrollbar-thumb]:bg-[var(--code-scrollbar)] [&::-webkit-scrollbar-thumb]:rounded-full',
         )}
         dangerouslySetInnerHTML={{ __html: highlightedHtml ?? fallbackHtml }}
       />
