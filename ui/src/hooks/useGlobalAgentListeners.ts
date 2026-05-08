@@ -8,8 +8,11 @@ import {
   agentStreamErrorsAtom,
   stoppedByUserSessionsAtom,
   currentAgentSessionIdAtom,
+  agentSessionsAtom,
   type AgentStreamState,
 } from '@/atoms/agent-atoms'
+import { workspaceSessionsAtom, updateSessionTitleAtom, type WorkspaceSession } from '@/atoms/workspace'
+import type { AgentSessionMeta } from '@/lib/proma-types'
 
 function createInitialStreamState(): AgentStreamState {
   return {
@@ -198,6 +201,48 @@ function startAgentListeners(store: Store): void {
         return next
       })
     })
+  )
+
+  // session:title-pending → mark session title as generating (skeleton UI)
+  reg(
+    listen<string>('session:title-pending', ({ payload: sessionId }) => {
+      // Update agentSessionsAtom
+      store.set(agentSessionsAtom, (prev: AgentSessionMeta[]) =>
+        prev.map((s: AgentSessionMeta) =>
+          s.id === sessionId ? { ...s, titlePending: true } : s
+        )
+      )
+      // Update workspaceSessionsAtom
+      store.set(workspaceSessionsAtom, (prev: Record<string, WorkspaceSession[]>) => {
+        const next = { ...prev }
+        for (const spaceId of Object.keys(next)) {
+          next[spaceId] = next[spaceId].map((s: WorkspaceSession) =>
+            s.id === sessionId ? { ...s, titlePending: true } : s
+          )
+        }
+        return next
+      })
+    })
+  )
+
+  // session:title-updated → apply generated title + emoji
+  reg(
+    listen<{ sessionId: string; title: string; emoji: string }>(
+      'session:title-updated',
+      ({ payload }) => {
+        const { sessionId, title, emoji } = payload
+        // Update agentSessionsAtom
+        store.set(agentSessionsAtom, (prev: AgentSessionMeta[]) =>
+          prev.map((s: AgentSessionMeta) =>
+            s.id === sessionId
+              ? { ...s, title, titleEmoji: emoji, titlePending: false }
+              : s
+          )
+        )
+        // Update workspaceSessionsAtom via the dedicated write-atom
+        store.set(updateSessionTitleAtom, { sessionId, title, emoji })
+      }
+    )
   )
 
   // Dispose function: unlisten everything and reset for next HMR cycle

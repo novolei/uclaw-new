@@ -14,6 +14,10 @@
 export interface AgentSessionMeta {
   id: string
   title: string
+  /** 会话标题 emoji（自动生成） */
+  titleEmoji?: string
+  /** 标题生成中（占位动画） */
+  titlePending?: boolean
   workspaceId?: string
   channelId?: string
   modelId?: string

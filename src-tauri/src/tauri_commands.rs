@@ -2359,19 +2359,38 @@ pub async fn list_agent_sessions(state: State<'_, AppState>) -> Result<Vec<serde
     ).map_err(|e| Error::Database(e))?;
     let rows = stmt.query_map([], |row| {
         let meta_str: String = row.get(3)?;
-        Ok(serde_json::json!({
-            "id": row.get::<_,String>(0)?,
-            "workspaceId": row.get::<_,String>(1)?,
-            "title": row.get::<_,String>(2)?,
-            "metadataJson": meta_str,
-            "messageCount": row.get::<_,i64>(4)?,
-            "pinned": row.get::<_,i64>(5)? != 0,
-            "archived": row.get::<_,i64>(6)? != 0,
-            "createdAt": row.get::<_,i64>(7)?,
-            "updatedAt": row.get::<_,i64>(8)?,
-        }))
+        Ok((
+            row.get::<_,String>(0)?,
+            row.get::<_,String>(1)?,
+            row.get::<_,String>(2)?,
+            meta_str,
+            row.get::<_,i64>(4)?,
+            row.get::<_,i64>(5)?,
+            row.get::<_,i64>(6)?,
+            row.get::<_,i64>(7)?,
+            row.get::<_,i64>(8)?,
+        ))
     }).map_err(|e| Error::Database(e))?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    let sessions: Vec<serde_json::Value> = rows.filter_map(|r| r.ok()).map(|(id, space_id, title, meta_str, msg_count, pinned, archived, created_at, updated_at)| {
+        let meta: serde_json::Value = serde_json::from_str(&meta_str).unwrap_or(serde_json::Value::Object(Default::default()));
+        let title_from_meta = meta.get("title").and_then(|v| v.as_str()).unwrap_or(&title).to_string();
+        let title_emoji = meta.get("emoji").and_then(|v| v.as_str()).unwrap_or("💬").to_string();
+        let title_pending = meta.get("title_pending").and_then(|v| v.as_bool()).unwrap_or(false);
+        serde_json::json!({
+            "id": id,
+            "workspaceId": space_id,
+            "title": title_from_meta,
+            "titleEmoji": title_emoji,
+            "titlePending": title_pending,
+            "metadataJson": meta_str,
+            "messageCount": msg_count,
+            "pinned": pinned != 0,
+            "archived": archived != 0,
+            "createdAt": created_at,
+            "updatedAt": updated_at,
+        })
+    }).collect();
+    Ok(sessions)
 }
 
 #[tauri::command]
@@ -2444,8 +2463,15 @@ pub async fn send_agent_message(
     // Persist user message
     let user_msg_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
+    let is_first_message: bool;
     {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        // Check if this is the very first message (message_count == 0)
+        is_first_message = conn.query_row(
+            "SELECT message_count FROM agent_sessions WHERE id = ?1",
+            rusqlite::params![input.session_id],
+            |row| row.get::<_, i64>(0),
+        ).unwrap_or(1) == 0;
         let _ = conn.execute(
             "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'user',?3,?4)",
             rusqlite::params![user_msg_id, input.session_id, input.user_message, now],
@@ -2453,6 +2479,19 @@ pub async fn send_agent_message(
         let _ = conn.execute(
             "UPDATE agent_sessions SET message_count = message_count + 1, updated_at = ?1 WHERE id = ?2",
             rusqlite::params![now, input.session_id],
+        );
+    }
+
+    // Fire-and-forget title generation on first user message
+    if is_first_message {
+        let llm_config_for_title = state.llm_config.read().await.clone();
+        spawn_agent_session_title_summary(
+            input.session_id.clone(),
+            input.user_message.clone(),
+            Arc::clone(&state.db),
+            Arc::clone(&state.provider_service),
+            llm_config_for_title,
+            app_handle.clone(),
         );
     }
 
@@ -2955,6 +2994,80 @@ async fn try_generate_title(
         .to_string();
 
     Ok((title, emoji))
+}
+
+/// Fire-and-forget: generate emoji + title for an agent_sessions row.
+/// Call right after the first user message is inserted.
+/// Emits `session:title-pending` immediately and `session:title-updated` when done.
+fn spawn_agent_session_title_summary(
+    session_id: String,
+    first_message: String,
+    db: std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
+    provider_service: std::sync::Arc<crate::providers::service::ProviderService>,
+    llm_config_legacy: crate::config::LlmConfig,
+    app_handle: tauri::AppHandle,
+) {
+    // Mark pending in DB immediately
+    {
+        let pending_meta = serde_json::json!({ "title_pending": true }).to_string();
+        if let Ok(conn) = db.lock() {
+            let _ = conn.execute(
+                "UPDATE agent_sessions SET metadata_json = ?1 WHERE id = ?2",
+                rusqlite::params![pending_meta, session_id],
+            );
+        }
+    }
+    let _ = app_handle.emit("session:title-pending", &session_id);
+
+    tokio::spawn(async move {
+        const AGENT_TITLE_SYSTEM: &str = "\
+You are a session-title generator. Given the user's first message, return ONLY a JSON object with two fields: \
+\"emoji\" (one relevant emoji) and \"title\" (2-5 words, imperative or noun phrase, in the same language as the user message). \
+No explanation, no markdown, no extra keys.";
+
+        let truncated = first_message.chars().take(320).collect::<String>();
+
+        let (title, emoji) = match try_generate_title(
+            &provider_service,
+            &llm_config_legacy,
+            AGENT_TITLE_SYSTEM,
+            &truncated,
+        )
+        .await
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!(session_id = %session_id, error = %e, "Agent session title generation failed, using default");
+                ("New session".to_string(), "💬".to_string())
+            }
+        };
+
+        // Persist to DB
+        {
+            let final_meta = serde_json::json!({
+                "title": title,
+                "emoji": emoji,
+                "title_pending": false,
+            })
+            .to_string();
+            if let Ok(conn) = db.lock() {
+                let _ = conn.execute(
+                    "UPDATE agent_sessions SET title = ?1, metadata_json = ?2 WHERE id = ?3",
+                    rusqlite::params![title, final_meta, session_id],
+                );
+            }
+        }
+
+        let _ = app_handle.emit(
+            "session:title-updated",
+            SessionTitleUpdatePayload {
+                session_id: session_id.clone(),
+                title: title.clone(),
+                emoji: emoji.clone(),
+            },
+        );
+        tracing::info!(session_id = %session_id, title = %title, emoji = %emoji, "Agent session title generated");
+    });
 }
 
 #[tauri::command]

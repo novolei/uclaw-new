@@ -930,8 +930,17 @@ function AgentSessionItem({ session, active, hovered, indicatorStatus, showPinIc
         ) : (
           <div className={cn('truncate text-[13px] leading-5 flex items-center gap-1.5', active ? 'text-foreground' : 'text-foreground/80')}>
             {showPinIcon && <Pin size={11} className="flex-shrink-0 text-primary/60" />}
-            <span className="truncate">{session.title}</span>
-            {workspaceName && <span className="flex-shrink-0 px-1.5 py-0 rounded-full bg-foreground/[0.06] text-[10px] leading-4 text-foreground/40 font-medium truncate max-w-[80px]">{workspaceName}</span>}
+            {session.titleEmoji && !session.titlePending && (
+              <span className="flex-shrink-0 text-[13px] leading-none">{session.titleEmoji}</span>
+            )}
+            {session.titlePending ? (
+              <span className="flex-1 h-3 rounded bg-foreground/10 animate-pulse" />
+            ) : (
+              <span className="truncate">{session.title}</span>
+            )}
+            {workspaceName && !session.titlePending && (
+              <span className="flex-shrink-0 px-1.5 py-0 rounded-full bg-foreground/[0.06] text-[10px] leading-4 text-foreground/40 font-medium truncate max-w-[80px]">{workspaceName}</span>
+            )}
           </div>
         )}
       </div>
