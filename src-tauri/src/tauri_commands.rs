@@ -2477,27 +2477,26 @@ pub async fn send_agent_message(
             rusqlite::params![input.session_id],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
         ).unwrap_or((1, None));
-        let no_emoji_yet = {
-            let meta: serde_json::Value = metadata_json_opt
-                .as_deref()
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or(serde_json::Value::Null);
-            meta.get("emoji").is_none()
-        };
-        let title_pending = {
-            let meta: serde_json::Value = metadata_json_opt
-                .as_deref()
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or(serde_json::Value::Null);
-            meta.get("title_pending").and_then(|v| v.as_bool()).unwrap_or(false)
-        };
-        should_generate_title = message_count == 0
-            || (no_emoji_yet && !title_pending && message_count <= 5);
+        // Parse metadata once
+        let meta: serde_json::Value = metadata_json_opt
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let emoji_in_meta = meta.get("emoji").and_then(|v| v.as_str()).unwrap_or("");
+        let title_in_meta = meta.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let title_pending = meta.get("title_pending").and_then(|v| v.as_bool()).unwrap_or(false);
+        // "No real title" means: no emoji, OR emoji is still the default placeholder
+        // ("💬") with title still "New session" — i.e. a previous attempt failed/used fallback.
+        let no_real_title = emoji_in_meta.is_empty()
+            || (emoji_in_meta == "💬" && (title_in_meta.is_empty() || title_in_meta == "New session"));
+        should_generate_title = !title_pending && no_real_title;
         tracing::info!(
             session_id = %input.session_id,
             message_count,
-            no_emoji_yet,
+            emoji = %emoji_in_meta,
+            title = %title_in_meta,
             title_pending,
+            no_real_title,
             should_generate_title,
             "[title] trigger decision"
         );
