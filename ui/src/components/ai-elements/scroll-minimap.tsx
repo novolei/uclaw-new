@@ -12,7 +12,7 @@
 import * as React from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { AlertTriangle, Search } from 'lucide-react'
+import { AlertTriangle, ListTree, Search } from 'lucide-react'
 import { useStickToBottomContext } from 'use-stick-to-bottom'
 import { Input } from '@/components/ui/input'
 import { UserAvatar } from '@/components/chat/UserAvatar'
@@ -357,12 +357,20 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
 
         {/* 迷你地图横杠（紧凑排列）—— 只有这里触发面板展开 */}
         <div
-          className="relative mt-3 flex-shrink-0 pointer-events-auto"
-          style={{ width: 24, height: barCount * 6 }}
+          className="relative mt-3 flex-shrink-0 pointer-events-auto flex flex-col items-center"
+          style={{ width: 24 }}
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
+          title="消息导航"
         >
-          {Array.from({ length: barCount }, (_, i) => {
+          {/* 顶部图标：始终可见，作为导航入口的视觉提示 */}
+          <ListTree className="size-3.5 text-muted-foreground/60 mb-1.5" />
+
+          {/* 横杠容器（带可见的垂直引导线） */}
+          <div className="relative" style={{ width: 24, height: barCount * 6 }}>
+            {/* 垂直引导线：让导航位置一眼可见 */}
+            <div className="absolute left-[11px] top-0 bottom-0 w-px bg-foreground/15 rounded-full" />
+            {Array.from({ length: barCount }, (_, i) => {
             const start = Math.floor((i * items.length) / barCount)
             const end = Math.floor(((i + 1) * items.length) / barCount)
             const group = items.slice(start, end)
@@ -386,6 +394,7 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
               />
             )
           })}
+          </div>
         </div>
       </div>
 
