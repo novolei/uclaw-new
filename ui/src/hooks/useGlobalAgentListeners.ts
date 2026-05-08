@@ -9,7 +9,9 @@ import {
   stoppedByUserSessionsAtom,
   currentAgentSessionIdAtom,
   agentSessionsAtom,
+  proactiveLearningEventsAtom,
   type AgentStreamState,
+  type ProactiveLearningEvent,
 } from '@/atoms/agent-atoms'
 import { workspaceSessionsAtom, updateSessionTitleAtom, type WorkspaceSession } from '@/atoms/workspace'
 import { tabsAtom } from '@/atoms/tab-atoms'
@@ -252,6 +254,15 @@ function startAgentListeners(store: Store): void {
         )
       }
     )
+  )
+
+  // agent:proactive-learning → prepend to events list (cap at 10)
+  reg(
+    listen<ProactiveLearningEvent>('agent:proactive-learning', ({ payload }) => {
+      store.set(proactiveLearningEventsAtom, (prev) =>
+        [payload, ...prev].slice(0, 10)
+      )
+    })
   )
 
   // Dispose function: unlisten everything and reset for next HMR cycle

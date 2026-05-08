@@ -32,3 +32,4 @@ package-lock.json
 .idea/
 .vscode/settings.json
 *.swp
+.claire/

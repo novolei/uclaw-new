@@ -38,6 +38,8 @@ import { ThinkingBlock } from './ContentBlock'
 import { userProfileAtom } from '@/atoms/user-profile'
 import { tabMinimapCacheAtom } from '@/atoms/tab-atoms'
 import { channelsAtom } from '@/atoms/chat-atoms'
+import { proactiveLearningEventsAtom } from '@/atoms/agent-atoms'
+import { ProactiveLearningChip } from '@/components/chat/ProactiveLearningChip'
 import { ScrollPositionManager } from '@/hooks/useScrollPositionMemory'
 import { cn } from '@/lib/utils'
 import { Spinner } from '@/components/ui/spinner'
@@ -608,6 +610,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
   const userProfile = useAtomValue(userProfileAtom)
   const setMinimapCache = useSetAtom(tabMinimapCacheAtom)
   const channels = useAtomValue(channelsAtom)
+  const proactiveLearningEvents = useAtomValue(proactiveLearningEventsAtom)
   /** 淡入控制：切换会话时先隐藏，等布局完成后再显示。 */
   const [ready, setReady] = React.useState(false)
   const prevSessionIdRef = React.useRef<string | null>(null)
@@ -898,6 +901,14 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
           </>
         )}
       </ConversationContent>
+      {/* 记忆捕捉 chip 列表 — 显示最近的 3 条 */}
+      {proactiveLearningEvents.length > 0 && (
+        <div className="flex flex-wrap gap-2 px-4 pb-2">
+          {proactiveLearningEvents.slice(0, 3).map((ev) => (
+            <ProactiveLearningChip key={ev.timestamp} event={ev} />
+          ))}
+        </div>
+      )}
       <ScrollMinimap items={minimapItems} />
       <ConversationScrollButton />
       {allUserMessagesData.length > 0 && (

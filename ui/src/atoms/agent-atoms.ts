@@ -766,6 +766,19 @@ export const backgroundTasksAtomFamily = atomFamily((sessionId: string) =>
 
 export const stoppedByUserSessionsAtom = atom<Set<string>>(new Set<string>())
 
+// ===== 记忆捕捉事件 =====
+
+export interface ProactiveLearningEvent {
+  scenario: 'conversation_learning' | 'skill_extraction' | 'multimodal_context'
+  items_extracted: number
+  categories: string[]
+  timestamp: string
+  summary: string
+}
+
+/** 最近的记忆捕捉事件（最多保留 10 条，新的在前） */
+export const proactiveLearningEventsAtom = atom<ProactiveLearningEvent[]>([])
+
 // ===== 初始化就绪状态 =====
 
 export const agentSettingsReadyAtom = atom(false)

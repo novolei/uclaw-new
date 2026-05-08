@@ -2506,6 +2506,12 @@ pub async fn send_agent_message(
         );
     }
 
+    // Publish incoming message event so ProactiveService can count messages
+    // and trigger proactive scenarios (conversation_learning, skill_extraction, etc.)
+    state.infra_service.publish_incoming("local", &input.user_message, serde_json::json!({
+        "session_id": input.session_id,
+    })).await;
+
     // Fire-and-forget title generation when needed
     if should_generate_title {
         tracing::debug!(session_id = %input.session_id, "[title] spawning title generation");
