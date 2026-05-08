@@ -2987,7 +2987,10 @@ async fn try_generate_title(
 
     let provider = crate::llm::create_provider(&llm_cfg)?;
 
+    // Pass system prompt as a System role message — the Anthropic provider reads
+    // it from the messages array, not from CompletionConfig.system_prompt.
     let messages = vec![
+        ChatMessage::system(system),
         ChatMessage::user(user_content),
     ];
 
@@ -2995,7 +2998,7 @@ async fn try_generate_title(
         model: llm_cfg.model.clone(),
         max_tokens: 256,
         temperature: 0.3,
-        system_prompt: Some(system.to_string()),
+        system_prompt: None,
         thinking_enabled: false,
     };
 
@@ -3167,13 +3170,14 @@ fn spawn_agent_session_title_summary(
                 )
             };
 
-            let messages = vec![ChatMessage::user(&user_content)];
-            let cfg_with_system = crate::llm::CompletionConfig {
-                system_prompt: Some(system.to_string()),
-                ..completion_cfg.clone()
-            };
+            // Pass system prompt as a System message — the Anthropic provider reads
+            // it from the messages array, not from CompletionConfig.system_prompt.
+            let messages = vec![
+                ChatMessage::system(system),
+                ChatMessage::user(&user_content),
+            ];
 
-            match provider.complete(messages, vec![], &cfg_with_system).await {
+            match provider.complete(messages, vec![], &completion_cfg).await {
                 Ok(output) => {
                     let text = match output {
                         crate::agent::types::RespondOutput::Text { text, .. } => text,
