@@ -59,7 +59,7 @@ export function Conversation({ resize, className, children }: ConversationProps)
     <ConversationContext.Provider value={ctxValue}>
       <div ref={setViewportEl} className="relative flex-1 flex flex-col min-h-0">
         <div
-          className={cn('flex-1 overflow-y-auto relative scrollbar-none', className)}
+          className={cn('flex-1 overflow-y-auto relative', className)}
           ref={scrollRef}
           onScroll={handleScroll}
         >

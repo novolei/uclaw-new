@@ -261,7 +261,7 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
   return (
     <div
       data-scroll-minimap
-      className="absolute right-2 top-0 bottom-0 z-50 flex pointer-events-none"
+      className="absolute right-1 top-0 bottom-0 z-50 flex pointer-events-none"
     >
       {/* 迷你地图悬停区域（面板 + 横杠） */}
       <div className="flex items-start h-full">
@@ -342,8 +342,8 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
         {/* 迷你地图条（极简悬浮 dock） */}
         <div
           className={cn(
-            'group relative mt-4 flex-shrink-0 pointer-events-auto flex flex-col items-center',
-            'rounded-full px-1.5 py-2 transition-all duration-200',
+            'group relative mt-2 flex-shrink-0 pointer-events-auto flex flex-col items-center',
+            'rounded-full px-0.5 py-1 transition-colors duration-200',
             hovered
               ? 'bg-foreground/[0.06] dark:bg-foreground/[0.08]'
               : 'hover:bg-foreground/[0.04]',
@@ -353,7 +353,7 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
           title="消息导航"
         >
           {/* 横杠容器 */}
-          <div className="relative" style={{ width: 14, height: Math.max(barCount * 7, 24) }}>
+          <div className="relative" style={{ width: 10, height: Math.max(barCount * 5, 18) }}>
             {Array.from({ length: barCount }, (_, i) => {
               const start = Math.floor((i * items.length) / barCount)
               const end = Math.floor(((i + 1) * items.length) / barCount)
@@ -367,10 +367,10 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
                   className={cn(
                     'absolute left-1/2 rounded-full transition-all duration-200 ease-out',
                     isVisible
-                      ? 'bg-primary h-[3px] w-[14px]'
+                      ? 'bg-primary h-[2px] w-[10px]'
                       : hasUser
-                        ? 'bg-foreground/40 h-[2px] w-[10px] group-hover:w-[14px] group-hover:bg-foreground/65'
-                        : 'bg-foreground/20 h-[2px] w-[7px] group-hover:w-[12px] group-hover:bg-foreground/55',
+                        ? 'bg-foreground/40 h-[1.5px] w-[7px] group-hover:w-[10px] group-hover:bg-foreground/65'
+                        : 'bg-foreground/20 h-[1.5px] w-[5px] group-hover:w-[8px] group-hover:bg-foreground/55',
                   )}
                   style={{ top: `${top}%`, transform: 'translate(-50%, -50%)' }}
                 />
@@ -380,33 +380,7 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
         </div>
       </div>
 
-      {/* 滚动进度条（仅在容器可滚动时显示） */}
-      {canScroll && (
-        <div
-          className="group/track relative ml-1 py-4 flex-shrink-0 pointer-events-auto"
-          style={{ width: 4 }}
-        >
-          <div
-            ref={trackRef}
-            className="relative h-full rounded-full cursor-pointer transition-colors duration-150 group-hover/track:bg-foreground/[0.05]"
-            onMouseDown={handleTrackMouseDown}
-          >
-            <div
-              className={cn(
-                'absolute left-0 right-0 rounded-full transition-all duration-150 ease-out',
-                isDragging
-                  ? 'bg-foreground/50 cursor-grabbing scale-x-[1.4]'
-                  : 'bg-foreground/20 cursor-grab group-hover/track:bg-foreground/40',
-              )}
-              style={{
-                height: `${thumbHeightPct}%`,
-                top: `${thumbTopPct}%`,
-              }}
-              onMouseDown={handleThumbMouseDown}
-            />
-          </div>
-        </div>
-      )}
+      {/* 自绘进度条已移除 — 改用原生 scrollbar；minimap 仅保留消息条入口 */}
     </div>
   )
 }
