@@ -36,9 +36,13 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         </div>
 
         {/* 中间容器：主内容区域 */}
-        <div className="flex-1 min-w-0 p-2 relative">
+        <div className="main-panel flex-1 min-w-0 p-2 relative">
+          {/* 主题背景图层（仅特殊主题如 THE FINALS 使用，其他主题下为空） */}
+          <div aria-hidden="true" className="main-panel-bg pointer-events-none absolute inset-0 z-0" />
           {/* 主内容区域（TabBar + TabContent） */}
-          <MainArea />
+          <div className="relative z-10 flex flex-col h-full min-h-0 min-w-0">
+            <MainArea />
+          </div>
         </div>
 
         {/* 右侧边栏：Agent 文件面板，带圆角和内边距 */}

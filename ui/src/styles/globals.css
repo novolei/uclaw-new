@@ -521,14 +521,34 @@
 .theme-warm-paper .shell-bg  { background: linear-gradient(135deg, hsl(44 31% 91%) 0%, hsl(44 38% 93%) 100%); }
 .theme-qingye .shell-bg      { background: linear-gradient(135deg, hsl(205 20% 18%) 0%, hsl(205 17% 22%) 100%); }
 .theme-black .shell-bg       { background: linear-gradient(135deg, hsl(230 10% 7%) 0%, hsl(230 8% 9%) 100%); }
-.theme-the-finals .shell-bg  {
+.theme-the-finals .shell-bg  { background: hsl(240 5% 9%); }
+
+/* THE FINALS：主面板背景图（keyart + 渐变叠层） */
+.theme-the-finals .main-panel-bg {
+  background-color: hsl(240 5% 10%);
   background-image:
+    /* 层 3：扫描线纹理 */
+    repeating-linear-gradient(0deg, rgb(255 244 223 / 0.030) 0 1px, transparent 1px 9px),
+    repeating-linear-gradient(90deg, rgb(255 244 223 / 0.022) 0 1px, transparent 1px 72px),
+    /* 层 2：径向红金光晕 */
+    radial-gradient(circle at 15% 16%, rgb(217 31 60 / 0.42) 0%, transparent 28%),
+    radial-gradient(circle at 84% 12%, rgb(255 210 63 / 0.22) 0%, transparent 24%),
+    linear-gradient(118deg, transparent 0 52%, rgb(217 31 60 / 0.26) 52% 56%, transparent 56%),
+    /* 层 1：keyart + 主叠层 */
     linear-gradient(90deg, rgb(10 10 12 / 0.84), rgb(10 10 12 / 0.58) 38%, rgb(10 10 12 / 0.74)),
     url('/themes/the-finals/s10-keyart-bkg.png');
-  background-size: 100% 100%, cover;
-  background-position: center center, center center;
-  background-repeat: no-repeat, no-repeat;
-  background-color: hsl(240 5% 9%);
+  background-size:
+    auto, auto,
+    100% 100%, 100% 100%, 100% 100%,
+    100% 100%, cover;
+  background-position:
+    0 0, 0 0,
+    center center, center center, center center,
+    center center, center center;
+  background-repeat:
+    repeat, repeat,
+    no-repeat, no-repeat, no-repeat,
+    no-repeat, no-repeat;
 }
 
 /* ===== 特殊主题：模式切换器选中状态 ===== */
