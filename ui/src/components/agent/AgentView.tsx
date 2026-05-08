@@ -1109,6 +1109,15 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     })
   }, [sessionId, agentChannelId, agentModelId, currentWorkspaceId, streaming, setStreamingStates, store])
 
+  // 当 agent 报错时用 toast 通知用户
+  const prevAgentError = React.useRef<string | null>(null)
+  React.useEffect(() => {
+    if (agentError && agentError !== prevAgentError.current) {
+      toast.error('Agent 出错了', { description: agentError, duration: 6000 })
+    }
+    prevAgentError.current = agentError
+  }, [agentError])
+
   /** 复制错误信息到剪贴板 */
   const handleCopyError = React.useCallback(async (): Promise<void> => {
     if (!agentError) return

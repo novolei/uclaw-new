@@ -2550,7 +2550,25 @@ pub async fn send_agent_message(
         let config = AgenticLoopConfig::default();
 
         let outcome = tokio::select! {
-            result = crate::agent::agentic_loop::run_agentic_loop(&delegate, &mut ctx, &config) => result,
+            result = tokio::time::timeout(
+                std::time::Duration::from_secs(180),
+                crate::agent::agentic_loop::run_agentic_loop(&delegate, &mut ctx, &config)
+            ) => match result {
+                Ok(o) => o,
+                Err(_) => {
+                    tracing::error!(session_id = %session_id, "Agentic loop timed out after 180s");
+                    let _ = app_handle.emit("chat:stream-error", serde_json::json!({
+                        "conversationId": session_id,
+                        "error": "Request timed out — the model took too long to respond.",
+                    }));
+                    let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
+                        "conversationId": session_id,
+                        "text": "",
+                    }));
+                    running_sessions.lock().await.remove(&session_id);
+                    return;
+                }
+            },
             _ = token.cancelled() => {
                 let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
                     "conversationId": session_id,
@@ -2561,6 +2579,15 @@ pub async fn send_agent_message(
                 return;
             }
         };
+
+        // On failure, surface error to frontend before emitting complete
+        if let LoopOutcome::Failure { error } = &outcome {
+            tracing::error!(session_id = %session_id, error = %error, "Agentic loop failed");
+            let _ = app_handle.emit("chat:stream-error", serde_json::json!({
+                "conversationId": session_id,
+                "error": error,
+            }));
+        }
 
         // Persist assistant response
         let response_text = match &outcome {
