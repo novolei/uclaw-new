@@ -13,7 +13,7 @@ import * as React from 'react'
 import { createPortal } from 'react-dom'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { AlertTriangle, ListTree, Search } from 'lucide-react'
+import { AlertTriangle, Search } from 'lucide-react'
 import { useConversationContext } from '@/components/ai-elements/conversation'
 import { Input } from '@/components/ui/input'
 import { UserAvatar } from '@/components/chat/UserAvatar'
@@ -261,7 +261,7 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
   return (
     <div
       data-scroll-minimap
-      className="absolute right-1 top-0 bottom-0 z-50 flex pointer-events-none"
+      className="absolute right-2 top-0 bottom-0 z-50 flex pointer-events-none"
     >
       {/* 迷你地图悬停区域（面板 + 横杠） */}
       <div className="flex items-start h-full">
@@ -269,30 +269,24 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
         {hovered && (
           <div
             className={cn(
-              'mr-1 w-[280px] rounded-lg border bg-popover shadow-xl origin-top-right flex flex-col overflow-hidden pointer-events-auto',
+              'mr-2 w-[300px] rounded-xl border border-border/40 bg-popover/95 backdrop-blur-xl',
+              'shadow-[0_8px_32px_-8px_rgba(0,0,0,0.18)] dark:shadow-[0_8px_32px_-4px_rgba(0,0,0,0.5)]',
+              'origin-top-right flex flex-col overflow-hidden pointer-events-auto',
               isLeaving
-                ? 'animate-out fade-out-0 zoom-out-95 duration-75'
-                : 'animate-in fade-in-0 zoom-in-95 duration-150',
+                ? 'animate-out fade-out-0 zoom-out-95 duration-100'
+                : 'animate-in fade-in-0 zoom-in-95 slide-in-from-right-1 duration-150',
             )}
-            style={{ maxHeight: 'min(420px, 60vh)', marginTop: 12 }}
+            style={{ maxHeight: 'min(440px, 60vh)', marginTop: 8 }}
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
           >
-            {/* 标题栏 */}
-            <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
-              <span className="text-xs font-medium text-popover-foreground/70">消息导航</span>
-              <span className="text-[11px] text-muted-foreground tabular-nums">
-                {visibleIds.size}/{items.length}
-              </span>
-            </div>
-
-            {/* 搜索框 */}
-            <div className="px-2 py-1.5 border-b shrink-0">
+            {/* 搜索框（同时承担标题作用） */}
+            <div className="px-2.5 pt-2.5 pb-2 shrink-0">
               <div className="relative">
-                <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground/50" />
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground/60" />
                 <Input
                   ref={searchInputRef}
-                  placeholder="搜索消息..."
+                  placeholder="搜索消息"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   onFocus={() => {
@@ -300,109 +294,118 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
                     if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
                     setIsLeaving(false)
                   }}
-                  className="h-7 text-xs pl-7"
+                  className="h-8 text-xs pl-8 bg-muted/40 border-0 focus-visible:ring-1 focus-visible:ring-primary/30"
                 />
+                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] tabular-nums text-muted-foreground/60 select-none pointer-events-none">
+                  {visibleIds.size}/{items.length}
+                </span>
               </div>
             </div>
 
             {/* 消息列表 */}
-            <div className="overflow-y-auto flex-1 p-1.5 space-y-0.5 scrollbar-thin">
+            <div className="overflow-y-auto flex-1 px-1.5 pb-1.5 space-y-px scrollbar-thin">
               {filteredItems.length === 0 ? (
-                <div className="py-6 text-center text-xs text-muted-foreground">
+                <div className="py-8 text-center text-xs text-muted-foreground/70">
                   未找到匹配消息
                 </div>
               ) : (
-                filteredItems.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={cn(
-                      'flex items-start gap-2 w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent',
-                      visibleIds.has(item.id) && 'bg-accent/50',
-                    )}
-                    onClick={() => scrollToMessage(item.id)}
-                  >
-                    <ItemIcon item={item} />
-                    <div className="flex-1 min-w-0">
-                      <HighlightedPreview text={item.preview} query={searchQuery} />
-                    </div>
-                  </button>
-                ))
+                filteredItems.map((item) => {
+                  const isVisible = visibleIds.has(item.id)
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={cn(
+                        'group relative flex items-start gap-2.5 w-full rounded-lg px-2 py-1.5 text-left',
+                        'transition-all duration-100',
+                        'hover:bg-accent/70',
+                        isVisible && 'bg-accent/40',
+                      )}
+                      onClick={() => scrollToMessage(item.id)}
+                    >
+                      {/* 当前可见消息的左侧高亮条 */}
+                      {isVisible && (
+                        <span className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-primary" />
+                      )}
+                      <ItemIcon item={item} />
+                      <div className="flex-1 min-w-0">
+                        <HighlightedPreview text={item.preview} query={searchQuery} />
+                      </div>
+                    </button>
+                  )
+                })
               )}
             </div>
           </div>
         )}
 
-        {/* 迷你地图横杠（紧凑排列）—— 只有这里触发面板展开 */}
+        {/* 迷你地图条（极简悬浮 dock） */}
         <div
           className={cn(
-            'relative mt-3 flex-shrink-0 pointer-events-auto flex flex-col items-center',
-            'rounded-lg border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm',
-            'px-1.5 py-2 hover:border-border hover:bg-background/90 transition-colors',
+            'group relative mt-4 flex-shrink-0 pointer-events-auto flex flex-col items-center',
+            'rounded-full px-1.5 py-2 transition-all duration-200',
+            hovered
+              ? 'bg-foreground/[0.06] dark:bg-foreground/[0.08]'
+              : 'hover:bg-foreground/[0.04]',
           )}
-          style={{ minWidth: 32 }}
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
-          title="消息导航 — 悬停查看"
+          title="消息导航"
         >
-          {/* 顶部图标：始终可见，作为导航入口的视觉提示 */}
-          <ListTree className="size-4 text-foreground/70 mb-2" />
-
-          {/* 横杠容器（带可见的垂直引导线） */}
-          <div className="relative" style={{ width: 20, height: Math.max(barCount * 6, 20) }}>
-            {/* 垂直引导线：让导航位置一眼可见 */}
-            <div className="absolute left-[9px] top-0 bottom-0 w-px bg-foreground/20 rounded-full" />
+          {/* 横杠容器 */}
+          <div className="relative" style={{ width: 14, height: Math.max(barCount * 7, 24) }}>
             {Array.from({ length: barCount }, (_, i) => {
-            const start = Math.floor((i * items.length) / barCount)
-            const end = Math.floor(((i + 1) * items.length) / barCount)
-            const group = items.slice(start, end)
-            const isVisible = group.some((it) => visibleIds.has(it.id))
-            const hasUser = group.some((it) => it.role === 'user')
-            const top = ((i + 0.5) / barCount) * 100
-            return (
-              <div
-                key={i}
-                className={cn(
-                  // 用 foreground 而非 primary：foreground 在 shadcn 主题中
-                  // 必然与 background 形成可读对比，确保在所有 uclaw 主题下可见
-                                  'absolute left-0 h-[2.5px] w-[18px] rounded-full transition-colors',
-                  isVisible
-                    ? 'bg-primary minimap-visible-indicator'
-                    : hasUser
-                      ? 'bg-foreground/55'
-                      : 'bg-foreground/75',
-                )}
-                style={{ top: `${top}%` }}
-              />
-            )
-          })}
+              const start = Math.floor((i * items.length) / barCount)
+              const end = Math.floor(((i + 1) * items.length) / barCount)
+              const group = items.slice(start, end)
+              const isVisible = group.some((it) => visibleIds.has(it.id))
+              const hasUser = group.some((it) => it.role === 'user')
+              const top = ((i + 0.5) / barCount) * 100
+              return (
+                <div
+                  key={i}
+                  className={cn(
+                    'absolute left-1/2 rounded-full transition-all duration-200 ease-out',
+                    isVisible
+                      ? 'bg-primary h-[3px] w-[14px]'
+                      : hasUser
+                        ? 'bg-foreground/40 h-[2px] w-[10px] group-hover:w-[14px] group-hover:bg-foreground/65'
+                        : 'bg-foreground/20 h-[2px] w-[7px] group-hover:w-[12px] group-hover:bg-foreground/55',
+                  )}
+                  style={{ top: `${top}%`, transform: 'translate(-50%, -50%)' }}
+                />
+              )
+            })}
           </div>
         </div>
       </div>
 
       {/* 滚动进度条（仅在容器可滚动时显示） */}
       {canScroll && (
-      <div className="relative ml-[4px] py-4 flex-shrink-0 pointer-events-auto" style={{ width: 7 }}>
         <div
-          ref={trackRef}
-          className="relative h-full rounded-full cursor-pointer"
-          onMouseDown={handleTrackMouseDown}
+          className="group/track relative ml-1 py-4 flex-shrink-0 pointer-events-auto"
+          style={{ width: 4 }}
         >
           <div
-            className={cn(
-              'absolute left-0 right-0 rounded-full transition-colors duration-100 scroll-progress-thumb',
-              isDragging
-                ? 'scroll-progress-thumb-active cursor-grabbing'
-                : 'cursor-grab',
-            )}
-            style={{
-              height: `${thumbHeightPct}%`,
-              top: `${thumbTopPct}%`,
-            }}
-            onMouseDown={handleThumbMouseDown}
-          />
+            ref={trackRef}
+            className="relative h-full rounded-full cursor-pointer transition-colors duration-150 group-hover/track:bg-foreground/[0.05]"
+            onMouseDown={handleTrackMouseDown}
+          >
+            <div
+              className={cn(
+                'absolute left-0 right-0 rounded-full transition-all duration-150 ease-out',
+                isDragging
+                  ? 'bg-foreground/50 cursor-grabbing scale-x-[1.4]'
+                  : 'bg-foreground/20 cursor-grab group-hover/track:bg-foreground/40',
+              )}
+              style={{
+                height: `${thumbHeightPct}%`,
+                top: `${thumbTopPct}%`,
+              }}
+              onMouseDown={handleThumbMouseDown}
+            />
+          </div>
         </div>
-      </div>
       )}
     </div>
   )
