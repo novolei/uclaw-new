@@ -38,9 +38,9 @@ const COMMON_LANGUAGES: BundledLanguage[] = [
   'diff',
 ]
 
-/** 高亮主题 */
+/** 高亮主题 — 选择高对比度且色彩鲜明的主题，避免标识符颜色过暗 */
 const LIGHT_THEME: BundledTheme = 'github-light'
-const DARK_THEME: BundledTheme = 'github-dark'
+const DARK_THEME: BundledTheme = 'one-dark-pro'
 
 /** 全局 highlighter 单例（懒初始化） */
 let highlighterPromise: Promise<Highlighter> | null = null
