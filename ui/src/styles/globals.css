@@ -799,14 +799,57 @@
   box-shadow: none !important;
 }
 
-/* THE FINALS：TabBar 半透明玻璃层（keyart 可透）*/
+/* THE FINALS：TabBar 半透明玻璃层 */
 .theme-the-finals .tabbar-bg {
-  background-color: rgb(10 10 12 / 0.72) !important;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  box-shadow:
-    inset 0 -1px 0 0 hsl(350 50% 20% / 0.7),
-    0 1px 0 0 rgb(255 244 223 / 0.04);
+  background-color: rgb(8 8 10 / 0.80) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: inset 0 -1px 0 0 rgb(217 31 60 / 0.25);
+}
+
+/* ===== THE FINALS 标签页重设计 ===== */
+
+/* 1. 重置所有 tab 按钮：扁平 + 无圆角 + 无三边框 + 大写紧缩字体 */
+.theme-the-finals .tabbar-bg button {
+  border-radius: 0 !important;
+  border-top-color: transparent !important;
+  border-left-color: transparent !important;
+  border-right-color: transparent !important;
+  border-bottom: 2px solid transparent !important;
+  height: 34px !important;
+  font-family: var(--font-sans);
+  font-size: 11.5px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease !important;
+}
+
+/* 2. 激活标签：金色底线 + 暖光背景 + 金色文字 */
+.theme-the-finals .tabbar-bg button.text-foreground {
+  background-color: rgb(255 244 223 / 0.07) !important;
+  border-bottom-color: #ffd23f !important;
+  color: #ffd23f !important;
+  box-shadow: 0 -1px 0 0 rgb(255 210 63 / 0.12) inset;
+}
+
+/* 3. 非激活标签：低调奶白 */
+.theme-the-finals .tabbar-bg button.text-muted-foreground {
+  background-color: transparent !important;
+  color: rgb(255 244 223 / 0.38) !important;
+}
+
+/* 4. 非激活 Hover：战斗红背景 + 红色底线 */
+.theme-the-finals .tabbar-bg button.text-muted-foreground:hover {
+  background-color: rgb(217 31 60 / 0.12) !important;
+  color: rgb(255 244 223 / 0.82) !important;
+  border-bottom-color: rgb(217 31 60 / 0.55) !important;
+}
+
+/* 5. 关闭按钮 × ：hover 变红 */
+.theme-the-finals .tabbar-bg button .hover\:bg-muted-foreground\/20:hover {
+  background-color: rgb(217 31 60 / 0.32) !important;
+  color: #fff4df !important;
 }
 
 /* ===== THE FINALS 主题：全局装饰层 ===== */
