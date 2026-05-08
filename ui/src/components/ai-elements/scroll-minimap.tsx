@@ -12,7 +12,7 @@
 import * as React from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { AlertTriangle, Search } from 'lucide-react'
+import { AlertTriangle, ListTree, Search, X } from 'lucide-react'
 import { useStickToBottomContext } from 'use-stick-to-bottom'
 
 /**
@@ -100,12 +100,16 @@ interface InnerProps {
 function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | null {
   const { scrollRef, stopScroll, state: stickyState } = ctx
   const [hovered, setHovered] = React.useState(false)
+  const [pinned, setPinned] = React.useState(false)
   const [isLeaving, setIsLeaving] = React.useState(false)
   const [visibleIds, setVisibleIds] = React.useState<Set<string>>(new Set())
   const [canScroll, setCanScroll] = React.useState(false)
   const [searchQuery, setSearchQuery] = React.useState('')
   const [isDragging, setIsDragging] = React.useState(false)
   const [scrollMetrics, setScrollMetrics] = React.useState({ scrollTop: 0, scrollHeight: 1, clientHeight: 1 })
+
+  // 面板"打开"由 hovered（悬停展开）或 pinned（点击固定）任一触发
+  const open = hovered || pinned
   const closeTimerRef = React.useRef<ReturnType<typeof setTimeout>>()
   const fadeTimerRef = React.useRef<ReturnType<typeof setTimeout>>()
   const searchInputRef = React.useRef<HTMLInputElement>(null)
@@ -155,16 +159,26 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
 
   // 面板打开时自动聚焦搜索框
   React.useEffect(() => {
-    if (hovered && searchInputRef.current) {
+    if (open && searchInputRef.current) {
       const timer = setTimeout(() => searchInputRef.current?.focus(), 80)
       return () => clearTimeout(timer)
     }
-  }, [hovered])
+  }, [open])
 
   // 面板关闭时清空搜索
   React.useEffect(() => {
-    if (!hovered) setSearchQuery('')
-  }, [hovered])
+    if (!open) setSearchQuery('')
+  }, [open])
+
+  // pin 模式下：按 ESC 或点击面板外部关闭
+  React.useEffect(() => {
+    if (!pinned) return
+    const handleKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setPinned(false)
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [pinned])
 
   const handleMouseEnter = (): void => {
     if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
@@ -285,27 +299,39 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
 
   return (
     <div className="absolute right-1 top-0 bottom-0 z-30 flex pointer-events-none">
-      {/* 迷你地图悬停区域（面板 + 横杠） */}
+      {/* 迷你地图悬停区域（面板 + 横杠 + 触发按钮） */}
       <div className="flex items-start h-full">
         {/* 展开面板 */}
-        {hovered && (
+        {open && (
           <div
             className={cn(
               'mr-1 w-[280px] rounded-lg border bg-popover shadow-xl origin-top-right flex flex-col overflow-hidden pointer-events-auto',
-              isLeaving
+              isLeaving && !pinned
                 ? 'animate-out fade-out-0 zoom-out-95 duration-75'
                 : 'animate-in fade-in-0 zoom-in-95 duration-150',
             )}
             style={{ maxHeight: 'min(420px, 60vh)', marginTop: 12 }}
             onMouseEnter={handleMouseEnter}
-            onMouseLeave={handleMouseLeave}
+            onMouseLeave={pinned ? undefined : handleMouseLeave}
           >
             {/* 标题栏 */}
-            <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
+            <div className="flex items-center justify-between px-3 py-2 border-b shrink-0 gap-2">
               <span className="text-xs font-medium text-popover-foreground/70">消息导航</span>
-              <span className="text-[11px] text-muted-foreground tabular-nums">
-                {visibleIds.size}/{items.length}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-muted-foreground tabular-nums">
+                  {visibleIds.size}/{items.length}
+                </span>
+                {pinned && (
+                  <button
+                    type="button"
+                    onClick={() => { setPinned(false); setHovered(false) }}
+                    className="p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                    title="关闭"
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* 搜索框 */}
@@ -355,14 +381,32 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
           </div>
         )}
 
-        {/* 迷你地图横杠 */}
+        {/* 迷你地图横杠 + 永久可见触发按钮 */}
         <div
-          className="relative mt-3 flex-shrink-0 pointer-events-auto"
-          style={{ width: 24, height: barCount * 6 }}
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={handleMouseLeave}
+          className="relative mt-3 flex-shrink-0 pointer-events-auto flex flex-col items-center gap-1"
+          style={{ width: 24 }}
+          onMouseEnter={pinned ? undefined : handleMouseEnter}
+          onMouseLeave={pinned ? undefined : handleMouseLeave}
         >
-          {Array.from({ length: barCount }, (_, i) => {
+          {/* 触发按钮：始终可见，点击切换 pin 状态 */}
+          <button
+            type="button"
+            onClick={() => setPinned((v) => !v)}
+            className={cn(
+              'flex items-center justify-center size-5 rounded-md transition-colors',
+              pinned
+                ? 'bg-primary/15 text-primary'
+                : 'text-muted-foreground/60 hover:text-foreground hover:bg-accent/60',
+            )}
+            title={pinned ? '关闭消息导航' : '打开消息导航'}
+            aria-label="消息导航"
+          >
+            <ListTree className="size-3.5" />
+          </button>
+
+          {/* 横杠组 */}
+          <div className="relative w-full" style={{ height: barCount * 6 }}>
+            {Array.from({ length: barCount }, (_, i) => {
             const start = Math.floor((i * items.length) / barCount)
             const end = Math.floor(((i + 1) * items.length) / barCount)
             const group = items.slice(start, end)
@@ -377,13 +421,14 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
                   isVisible
                     ? 'bg-primary dark:bg-primary/70 minimap-visible-indicator'
                     : hasUser
-                      ? 'bg-primary/25 dark:bg-primary/15'
-                      : 'bg-primary/40 dark:bg-primary/25',
+                      ? 'bg-primary/40 dark:bg-primary/30'
+                      : 'bg-primary/55 dark:bg-primary/40',
                 )}
                 style={{ top: `${top}%` }}
               />
             )
           })}
+          </div>
         </div>
       </div>
 
