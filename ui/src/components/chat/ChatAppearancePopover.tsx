@@ -11,7 +11,7 @@
 
 import * as React from 'react'
 import { useAtom } from 'jotai'
-import { Type } from 'lucide-react'
+import { ALargeSmall } from 'lucide-react'
 import {
   chatFontSizeAtom,
   chatSerifAtom,
@@ -59,7 +59,7 @@ export function ChatAppearancePopover(): React.ReactElement {
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
             <Button type="button" variant="ghost" size="icon" className="h-7 w-7">
-              <Type className="size-3.5" />
+              <ALargeSmall className="size-4" />
             </Button>
           </PopoverTrigger>
         </TooltipTrigger>

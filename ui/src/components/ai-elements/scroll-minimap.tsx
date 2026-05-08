@@ -10,27 +10,15 @@
  */
 
 import * as React from 'react'
+import { createPortal } from 'react-dom'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { AlertTriangle, ListTree, Search } from 'lucide-react'
-import { useStickToBottomContext } from 'use-stick-to-bottom'
+import { useConversationContext } from '@/components/ai-elements/conversation'
 import { Input } from '@/components/ui/input'
 import { UserAvatar } from '@/components/chat/UserAvatar'
 import { getModelLogo } from '@/lib/model-logo'
 import { cn } from '@/lib/utils'
-
-/**
- * 容错版的 useStickToBottomContext：当 ScrollMinimap 由于某种原因
- * 被渲染在 <StickToBottom> 之外（HMR、错误边界等），不抛错而返回 null。
- * 注意：useContext 永远会被调用，这里只捕获它内部的非空断言抛错。
- */
-function useSafeStickToBottomContext(): ReturnType<typeof useStickToBottomContext> | null {
-  try {
-    return useStickToBottomContext()
-  } catch {
-    return null
-  }
-}
 
 export interface MinimapItem {
   id: string
@@ -86,18 +74,20 @@ function escapeRegExp(str: string): string {
 // ── 主组件 ──
 
 export function ScrollMinimap({ items }: ScrollMinimapProps): React.ReactElement | null {
-  const ctx = useSafeStickToBottomContext()
-  if (!ctx) return null
-  return <ScrollMinimapInner items={items} ctx={ctx} />
+  const ctx = useConversationContext()
+  if (!ctx || !ctx.viewportEl) return null
+  return createPortal(
+    <ScrollMinimapInner items={items} scrollRef={ctx.scrollRef} />,
+    ctx.viewportEl,
+  )
 }
 
 interface InnerProps {
   items: MinimapItem[]
-  ctx: NonNullable<ReturnType<typeof useSafeStickToBottomContext>>
+  scrollRef: React.RefObject<HTMLDivElement | null>
 }
 
-function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | null {
-  const { scrollRef, stopScroll, state: stickyState } = ctx
+function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElement | null {
   const [hovered, setHovered] = React.useState(false)
   const [isLeaving, setIsLeaving] = React.useState(false)
   const [visibleIds, setVisibleIds] = React.useState<Set<string>>(new Set())
@@ -188,11 +178,6 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
     const target = el.querySelector<HTMLElement>(`[data-message-id="${id}"]`)
     if (!target) return
 
-    stopScroll()
-    stickyState.animation = undefined
-    stickyState.velocity = 0
-    stickyState.accumulated = 0
-
     const offsetTop = getOffsetTopRelativeTo(target, el)
     const targetHeight = target.offsetHeight
     const viewportHeight = el.clientHeight
@@ -202,7 +187,7 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
     el.scrollTo({ top: Math.max(0, scrollTarget), behavior: 'smooth' })
 
     setHovered(false)
-  }, [scrollRef, stopScroll, stickyState])
+  }, [scrollRef])
 
   const filteredItems = React.useMemo(() => {
     if (!searchQuery.trim()) return items
@@ -217,11 +202,6 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
     const el = scrollRef.current
     const track = trackRef.current
     if (!el || !track) return
-
-    stopScroll()
-    stickyState.animation = undefined
-    stickyState.velocity = 0
-    stickyState.accumulated = 0
 
     setIsDragging(true)
     const startY = e.clientY
@@ -251,7 +231,7 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
     document.body.style.cursor = 'grabbing'
     document.addEventListener('mousemove', onMouseMove)
     document.addEventListener('mouseup', onMouseUp)
-  }, [scrollRef, stopScroll, stickyState])
+  }, [scrollRef])
 
   const handleTrackMouseDown = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (e.target !== e.currentTarget) return
@@ -260,17 +240,12 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
     const el = scrollRef.current
     if (!track || !el) return
 
-    stopScroll()
-    stickyState.animation = undefined
-    stickyState.velocity = 0
-    stickyState.accumulated = 0
-
     const rect = track.getBoundingClientRect()
     const clickRatio = (e.clientY - rect.top) / rect.height
     const { scrollHeight, clientHeight } = el
     const targetTop = clickRatio * (scrollHeight - clientHeight)
     el.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' })
-  }, [scrollRef, stopScroll, stickyState])
+  }, [scrollRef])
 
   // 仅当无消息时隐藏；不再要求容器可滚动 — 即便消息很少也保留导航入口
   if (items.length < MIN_ITEMS) return null
@@ -284,7 +259,10 @@ function ScrollMinimapInner({ items, ctx }: InnerProps): React.ReactElement | nu
   const thumbTopPct = scrollRange > 0 ? (scrollTop / scrollRange) * (100 - thumbHeightPct) : 0
 
   return (
-    <div className="absolute right-1 top-0 bottom-0 z-30 flex pointer-events-none">
+    <div
+      data-scroll-minimap
+      className="absolute right-1 top-0 bottom-0 z-50 flex pointer-events-none"
+    >
       {/* 迷你地图悬停区域（面板 + 横杠） */}
       <div className="flex items-start h-full">
         {/* 展开面板 */}
