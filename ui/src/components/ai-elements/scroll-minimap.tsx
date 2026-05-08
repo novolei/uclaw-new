@@ -376,7 +376,7 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
           title="消息导航"
         >
           {/* 横杠容器 */}
-          <div className="relative" style={{ width: 10, height: Math.max(barCount * 5, 18) }}>
+          <div className="relative" style={{ width: 14, height: Math.max(barCount * 5, 18) }}>
             {Array.from({ length: barCount }, (_, i) => {
               const start = Math.floor((i * items.length) / barCount)
               const end = Math.floor(((i + 1) * items.length) / barCount)
@@ -390,10 +390,10 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
                   className={cn(
                     'absolute left-1/2 rounded-full transition-all duration-200 ease-out',
                     isVisible
-                      ? 'bg-primary h-[2px] w-[10px]'
+                      ? 'bg-primary h-[2px] w-[14px]'
                       : hasUser
-                        ? 'bg-foreground/40 h-[1.5px] w-[7px] group-hover:w-[10px] group-hover:bg-foreground/65'
-                        : 'bg-foreground/20 h-[1.5px] w-[5px] group-hover:w-[8px] group-hover:bg-foreground/55',
+                        ? 'bg-foreground/45 h-[1.5px] w-[9px] group-hover:w-[12px] group-hover:bg-foreground/70'
+                        : 'bg-foreground/20 h-[1.5px] w-[3px] group-hover:w-[6px] group-hover:bg-foreground/55',
                   )}
                   style={{ top: `${top}%`, transform: 'translate(-50%, -50%)' }}
                 />
