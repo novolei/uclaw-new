@@ -2552,6 +2552,10 @@ pub async fn send_agent_message(
         let outcome = tokio::select! {
             result = crate::agent::agentic_loop::run_agentic_loop(&delegate, &mut ctx, &config) => result,
             _ = token.cancelled() => {
+                let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
+                    "conversationId": session_id,
+                    "text": "",
+                }));
                 let _ = app_handle.emit("agent:done", serde_json::json!({ "text": "", "cancelled": true }));
                 running_sessions.lock().await.remove(&session_id);
                 return;
@@ -2579,6 +2583,12 @@ pub async fn send_agent_message(
             }
         }
 
+        // Emit chat:stream-complete so frontend listener marks session as done
+        let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
+            "conversationId": session_id,
+            "text": response_text,
+        }));
+        // Also emit agent:done for any other listeners
         let _ = app_handle.emit("agent:done", serde_json::json!({
             "text": response_text,
             "sessionId": session_id,

@@ -702,14 +702,13 @@ export const getAgentSessionSDKMessages = (sessionId: string): Promise<any[]> =>
   invoke<any[]>('get_agent_session_sdk_messages', { sessionId }).catch(() => [])
 
 export const sendAgentMessage = (input: any): Promise<void> => {
-  // Translate Proma-style AgentSendInput to SendMessageInput
-  const mapped = {
-    conversationId: input.sessionId ?? input.conversationId,
-    content: input.userMessage ?? input.content ?? '',
-    providerId: input.providerId ?? null,
+  return invoke<void>('send_agent_message', { input: {
+    sessionId: input.sessionId ?? input.conversationId ?? '',
+    userMessage: input.userMessage ?? input.content ?? '',
+    channelId: input.channelId ?? null,
     modelId: input.modelId ?? null,
-  }
-  return invoke<void>('send_agent_message', { input: mapped })
+    workspaceId: input.workspaceId ?? null,
+  }})
 }
 
 export const stopAgent = (sessionId: string): Promise<void> =>
