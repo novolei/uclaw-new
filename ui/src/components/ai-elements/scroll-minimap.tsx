@@ -339,8 +339,9 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
                       data-visible={isVisible || undefined}
                       className={cn(
                         'group relative flex items-start gap-2.5 w-full rounded-lg px-2 py-1.5 text-left',
-                        'transition-all duration-100',
-                        'hover:bg-accent/70',
+                        'transition-[background-color,transform,box-shadow] duration-150 ease-out',
+                        'hover:bg-accent hover:translate-x-[2px] hover:shadow-sm',
+                        'active:translate-x-0 active:scale-[0.99]',
                         isVisible && 'bg-accent/40',
                       )}
                       onClick={() => scrollToMessage(item.id)}
