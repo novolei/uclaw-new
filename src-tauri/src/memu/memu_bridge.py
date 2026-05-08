@@ -118,6 +118,41 @@ def _text_similarity(a: str, b: str) -> float:
     return intersection / union if union > 0 else 0.0
 
 
+def _categories_from_result(result: dict) -> list[str]:
+    """Extract category names that were actually updated in this memorize call.
+
+    Uses the ``relations`` list (item_id → category_id) together with the
+    ``categories`` list to resolve names.  Falls back to returning all categories
+    that have a non-null summary if relations data is unavailable.
+    """
+    categories = result.get("categories", [])
+    relations = result.get("relations", [])
+
+    if relations and categories:
+        # Build a map category_id → name
+        cat_id_to_name: dict[str, str] = {}
+        for cat in categories:
+            cid = cat.get("id")
+            name = cat.get("name")
+            if cid and name:
+                cat_id_to_name[cid] = name
+
+        # Collect the names referenced by new relations
+        updated: list[str] = []
+        seen: set[str] = set()
+        for rel in relations:
+            cid = rel.get("category_id")
+            if cid and cid in cat_id_to_name:
+                name = cat_id_to_name[cid]
+                if name not in seen:
+                    seen.add(name)
+                    updated.append(name)
+        return updated
+
+    # Fallback: any category with a summary (conservative)
+    return [cat["name"] for cat in categories if isinstance(cat, dict) and cat.get("name") and cat.get("summary")]
+
+
 def _deduplicate_items(items: list[dict]) -> list[dict]:
     """Remove semantically similar memory items, keeping the more detailed one."""
     if not items:
@@ -533,11 +568,144 @@ async def handle_list_categories(service: MemoryService, params: dict[str, Any])
     return result
 
 
+async def handle_memorize_with_config(service: MemoryService, params: dict[str, Any]) -> dict[str, Any]:
+    """Handle a memorize_with_config request (used by ProactiveService).
+
+    Params (wrapped in ``input`` key):
+        content      — raw text to memorize
+        memory_types — hint list (e.g. ["profile", "behavior"]); used only for
+                       result reporting, not passed to MemoryService
+        categories   — optional category filter (currently informational)
+        source_type  — caller label e.g. "proactive_conversation_learning"
+
+    Returns a ScenarioMemorizeResult-shaped dict:
+        {"items_extracted": N, "categories_updated": [...], "source_type": str}
+    """
+    inp = params.get("input", params)  # support both wrapped and flat layouts
+    content = inp.get("content", "")
+    source_type = inp.get("source_type", "unknown")
+    # memory_types and categories are informational hints — MemoryService decides
+    # what types to extract on its own based on content.
+
+    if not content.strip():
+        return {"items_extracted": 0, "categories_updated": [], "source_type": source_type}
+
+    resource_url = _resolve_resource_url(content, "conversation")
+
+    try:
+        result = await service.memorize(resource_url=resource_url, modality="text")
+    except Exception as e:
+        sys.stderr.write(f"[memu_bridge] memorize_with_config error: {e}\n")
+        raise
+
+    # Deduplicate
+    items = _deduplicate_items(result.get("items", []))
+    categories_updated = _categories_from_result(result)
+
+    sys.stderr.write(
+        f"[memu_bridge] memorize_with_config completed: {len(items)} items, "
+        f"source_type={source_type}, categories={categories_updated}\n"
+    )
+
+    return {
+        "items_extracted": len(items),
+        "categories_updated": categories_updated,
+        "source_type": source_type,
+    }
+
+
+async def handle_retrieve_with_context(service: MemoryService, params: dict[str, Any]) -> dict[str, Any]:
+    """Handle a retrieve_with_context request.
+
+    Params (wrapped in ``input`` key):
+        query             — search query string
+        memory_types      — optional list of type filters (currently informational)
+        limit             — max items to return (default 10)
+        include_categories — whether to include category info (always included)
+
+    Returns {"items": [EnrichedMemoryItem, ...]}.
+    """
+    inp = params.get("input", params)
+    query = inp.get("query", "")
+    limit = int(inp.get("limit", 10))
+
+    if not query.strip():
+        return {"items": []}
+
+    try:
+        result = await service.retrieve(queries=[query])
+    except Exception as e:
+        sys.stderr.write(f"[memu_bridge] retrieve_with_context error: {e}\n")
+        raise
+
+    raw_items = result.get("items", [])[:limit]
+
+    # Map to EnrichedMemoryItem shape expected by the Rust side
+    enriched: list[dict[str, Any]] = []
+    for item in raw_items:
+        enriched.append({
+            "content": item.get("summary") or item.get("memory_content") or "",
+            "memory_type": item.get("memory_type", "knowledge"),
+            "relevance_score": float(item.get("score", item.get("relevance_score", 0.0))),
+            "categories": item.get("categories", []),
+            "metadata": item.get("extra") or item.get("metadata") or {},
+            "created_at": item.get("created_at"),
+        })
+
+    return {"items": enriched}
+
+
+async def handle_memorize_multimodal(service: MemoryService, params: dict[str, Any]) -> dict[str, Any]:
+    """Handle a memorize_multimodal request.
+
+    The Rust side pre-combines text + caption into:
+        "[Caption: {caption}]\n\n{text}"
+    and includes source_type and metadata.
+
+    Params (wrapped in ``input`` key):
+        content     — pre-combined multimodal text
+        source_type — "image" | "document" | "code" | "audio"
+        metadata    — additional metadata dict
+
+    Returns a ScenarioMemorizeResult-shaped dict.
+    """
+    inp = params.get("input", params)
+    content = inp.get("content", "")
+    source_type = inp.get("source_type", "multimodal")
+
+    if not content.strip():
+        return {"items_extracted": 0, "categories_updated": [], "source_type": source_type}
+
+    resource_url = _resolve_resource_url(content, "text")
+
+    try:
+        result = await service.memorize(resource_url=resource_url, modality="text")
+    except Exception as e:
+        sys.stderr.write(f"[memu_bridge] memorize_multimodal error: {e}\n")
+        raise
+
+    items = _deduplicate_items(result.get("items", []))
+    categories_updated = _categories_from_result(result)
+
+    sys.stderr.write(
+        f"[memu_bridge] memorize_multimodal completed: {len(items)} items, source_type={source_type}\n"
+    )
+
+    return {
+        "items_extracted": len(items),
+        "categories_updated": categories_updated,
+        "source_type": source_type,
+    }
+
+
 # Method dispatch table
 HANDLERS: dict[str, Any] = {
     "health": handle_health,
     "memorize": handle_memorize,
+    "memorize_with_config": handle_memorize_with_config,
+    "memorize_multimodal": handle_memorize_multimodal,
     "retrieve": handle_retrieve,
+    "retrieve_with_context": handle_retrieve_with_context,
     "create_item": handle_create_item,
     "delete_item": handle_delete_item,
     "list_items": handle_list_items,
