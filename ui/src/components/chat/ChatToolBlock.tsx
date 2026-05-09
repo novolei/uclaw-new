@@ -57,42 +57,44 @@ export function ChatToolBlock({
         disabled={!canExpand}
         onClick={() => canExpand && setExpanded((v) => !v)}
         className={cn(
-          'group relative flex w-full items-center gap-2 rounded-md py-1 pl-2 pr-2 text-left',
+          'group relative flex w-full items-center gap-1.5 rounded-md py-0.5 pl-1.5 pr-1.5 text-left',
           'transition-colors duration-150',
           // 出错的整行轻微着染，让失败一眼可见
           isCompleted && isError && 'bg-destructive/[0.04] hover:bg-destructive/[0.07]',
           canExpand
-            ? !(isCompleted && isError) && 'hover:bg-foreground/[0.03] dark:hover:bg-foreground/[0.04]'
+            ? !(isCompleted && isError) && 'hover:bg-muted/40'
             : 'cursor-default',
           canExpand ? 'cursor-pointer' : '',
         )}
       >
-        {/* 状态指示：成功 check / 运行中 spinner / 出错 warning */}
+        {/* 状态指示：成功 check / 运行中 spinner / 出错 warning
+            尺寸 size-3 与 ThinkingBlock 头部 Brain 图标对齐 */}
         {!isCompleted ? (
-          <Loader2 className="size-3.5 shrink-0 animate-spin text-primary/70" />
+          <Loader2 className="size-3 shrink-0 animate-spin text-primary/70" />
         ) : isError ? (
-          <AlertTriangle className="size-3.5 shrink-0 text-destructive" />
+          <AlertTriangle className="size-3 shrink-0 text-destructive" />
         ) : (
-          <Check className="size-3.5 shrink-0 text-emerald-500/80 dark:text-emerald-400/80" strokeWidth={2.5} />
+          <Check className="size-3 shrink-0 text-emerald-500/80 dark:text-emerald-400/80" strokeWidth={2.5} />
         )}
 
-        {/* 工具图标 */}
+        {/* 工具图标 — 与 thinking 头部保持一致的尺寸和 muted 调性 */}
         <ToolIcon
           className={cn(
-            'size-3.5 shrink-0',
+            'size-3 shrink-0',
             isError
               ? 'text-destructive/70'
-              : 'text-muted-foreground/65 group-hover:text-foreground/75',
+              : 'text-muted-foreground/60 group-hover:text-muted-foreground transition-colors',
           )}
         />
 
-        {/* 命令/工具描述 */}
+        {/* 命令/工具描述 — 字号、行高、配色与 ThinkingBlock 展开正文保持一致
+            (text-[13px] leading-relaxed text-foreground/75 + 细微的弱化对比) */}
         <span
           className={cn(
-            'truncate text-[13.5px] tracking-[-0.005em]',
+            'truncate text-[13px] leading-relaxed',
             isError
               ? 'text-destructive font-medium'
-              : 'text-foreground/70 group-hover:text-foreground/90',
+              : 'text-foreground/75 group-hover:text-foreground/90 transition-colors',
             !isCompleted && !isError && 'text-foreground/85',
           )}
         >
@@ -102,8 +104,9 @@ export function ChatToolBlock({
         {canExpand && (
           <ChevronRight
             className={cn(
+              // 与 thinking 头部 chevron 一致：size-3，muted-foreground/40，rotate on expanded
               'ml-auto shrink-0 size-3 text-muted-foreground/40',
-              'transition-transform duration-150',
+              'transition-all duration-200',
               'opacity-0 group-hover:opacity-100',
               expanded && 'rotate-90 opacity-100',
             )}
@@ -111,12 +114,13 @@ export function ChatToolBlock({
         )}
       </button>
 
-      {/* 展开的结果面板 */}
+      {/* 展开的结果面板 — 字号 / 行高 / 颜色与 ThinkingBlock 展开正文一致 */}
       {expanded && result && (
         <div
           className={cn(
-            'ml-[26px] mr-2 mt-1 mb-2 pl-3 pr-1 py-1.5',
+            'ml-[22px] mr-2 mt-1 mb-2 pl-3 pr-1 py-1.5',
             'border-l border-border/50 dark:border-border/60',
+            'text-[13px] leading-relaxed text-foreground/75',
             'animate-in fade-in slide-in-from-top-1 duration-150',
           )}
         >
