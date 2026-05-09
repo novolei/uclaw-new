@@ -27,7 +27,8 @@ import {
   workspaceAttachedDirectoriesMapAtom,
   agentPendingFilesAtom,
 } from '@/atoms/agent-atoms'
-import type { FileEntry, AgentPendingFile } from '@/lib/proma-types'
+import type { FileEntry } from '@/lib/chat-types'
+import type { AgentPendingFile } from '@/lib/agent-types'
 import {
   getWorkspaceDirectories,
   attachDirectory,

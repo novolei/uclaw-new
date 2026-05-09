@@ -6,7 +6,7 @@
  */
 
 import { atom } from 'jotai'
-import type { AgentSessionMeta } from '@/lib/proma-types'
+import type { AgentSessionMeta } from '@/lib/agent-types'
 import {
   agentSessionsAtom,
   agentSessionIndicatorMapAtom,

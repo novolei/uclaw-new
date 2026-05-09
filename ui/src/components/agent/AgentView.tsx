@@ -81,14 +81,13 @@ import { useOpenSession } from '@/hooks/useOpenSession'
 import { AgentSessionProvider } from '@/contexts/session-context'
 import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { sendWithCmdEnterAtom } from '@/atoms/shortcut-atoms'
-import type { AgentSendInput, AgentMessage, AgentPendingFile, SDKMessage } from '@/lib/proma-types'
+import type { AgentSendInput, AgentMessage, AgentPendingFile } from '@/lib/agent-types'
 import { fileToBase64 } from '@/lib/file-utils'
 import {
   updateSettings,
   getAgentSessionPath,
   getWorkspaceFilesPath,
   getAgentSessionMessages,
-  getAgentSessionSDKMessages,
   sendAgentMessage,
   stopAgent,
   openFileDialog,
@@ -102,9 +101,6 @@ import {
   saveFilesToAgentSession,
   queueAgentMessage,
 } from '@/lib/tauri-bridge'
-
-/** 稳定的空 SDKMessage 数组引用，避免 ?? [] 每次创建新引用 */
-const EMPTY_SDK_MESSAGES: SDKMessage[] = []
 
 // ===== 思考模式 Hover Popover =====
 
@@ -195,7 +191,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   }
 
   const [messages, setMessages] = React.useState<AgentMessage[]>([])
-  const [persistedSDKMessages, setPersistedSDKMessages] = React.useState<SDKMessage[]>([])
   const setStreamingStates = useSetAtom(agentStreamingStatesAtom)
   const streamingStates = useAtomValue(agentStreamingStatesAtom)
   const streamState = streamingStates.get(sessionId)
@@ -206,7 +201,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const liveMessagesMap = useAtomValue(liveMessagesMapAtom)
   const setLiveMessagesMap = useSetAtom(liveMessagesMapAtom)
   // 稳定化空数组引用，避免 ?? [] 每次创建新引用导致下游 useMemo 链不必要重算
-  const liveMessages = liveMessagesMap.get(sessionId) ?? EMPTY_SDK_MESSAGES
+  const liveMessages = liveMessagesMap.get(sessionId) ?? []
   // Per-session 渠道/模型配置（优先读 session map，回退到全局默认值）
   const sessionChannelMap = useAtomValue(agentSessionChannelMapAtom)
   const sessionModelMap = useAtomValue(agentSessionModelMapAtom)
@@ -427,14 +422,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     if (!isCurrentlyStreaming) {
       setMessagesLoaded(false)
     }
-    // 并行加载旧格式（用于 Team 数据重建）和新格式（用于 UI 渲染）
-    const loadOldMessages = getAgentSessionMessages(sessionId)
-    const loadSDKMessages = getAgentSessionSDKMessages(sessionId)
-
-    Promise.all([loadOldMessages, loadSDKMessages])
-      .then(([msgs, sdkMsgs]) => {
+    getAgentSessionMessages(sessionId)
+      .then((msgs) => {
         setMessages(msgs)
-        setPersistedSDKMessages(sdkMsgs)
         setMessagesLoaded(true)
 
         // 消息加载完成后，同步清除流式展示状态和实时消息，
@@ -537,8 +527,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         createdAt: Date.now(),
       }
       setMessages((prev) => [...prev, tempUserMsg])
-
-      // Note: do NOT add to persistedSDKMessages — see handleSendMessage for explanation.
 
       // 发送消息
       const input: AgentSendInput = {
@@ -776,7 +764,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       const localUuid = crypto.randomUUID()
 
       // 1. 立即注入 liveMessages（作为普通用户消息显示）
-      const syntheticMsg: import('@/lib/proma-types').SDKMessage = {
+      const syntheticMsg = {
         type: 'user',
         uuid: localUuid,
         message: {
@@ -784,7 +772,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         },
         parent_tool_use_id: null,
         _createdAt: Date.now(),
-      } as unknown as import('@/lib/proma-types').SDKMessage
+      }
 
       store.set(liveMessagesMapAtom, (prev) => {
         const map = new Map(prev)
@@ -953,11 +941,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     }
     setMessages((prev) => [...prev, tempUserMsg])
 
-    // Note: do NOT add to persistedSDKMessages here — send_agent_message uses the
-    // old chat:stream-chunk/complete path, not the Phase 4 SDK event pipeline.
-    // Adding a synthetic user message would flip useSDKRenderer=true which causes
-    // the old-format messages renderer to be skipped, hiding all assistant history.
-
     const input: AgentSendInput = {
       sessionId,
       userMessage: finalMessage,
@@ -1036,7 +1019,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     const localUuid = crypto.randomUUID()
 
     // 1. 立即注入合成用户消息（/compact 气泡立刻可见，与普通发送路径一致）
-    const syntheticMsg: import('@/lib/proma-types').SDKMessage = {
+    const syntheticMsg = {
       type: 'user',
       uuid: localUuid,
       message: {
@@ -1044,7 +1027,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       },
       parent_tool_use_id: null,
       _createdAt: streamStartedAt,
-    } as unknown as import('@/lib/proma-types').SDKMessage
+    }
 
     store.set(liveMessagesMapAtom, (prev) => {
       const map = new Map(prev)
@@ -1314,7 +1297,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           sessionModelId={agentModelId || undefined}
           messages={messages}
           messagesLoaded={messagesLoaded}
-          persistedSDKMessages={persistedSDKMessages}
           streaming={streaming}
           streamState={streamState}
           liveMessages={liveMessages}

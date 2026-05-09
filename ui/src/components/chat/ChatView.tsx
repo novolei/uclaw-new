@@ -58,11 +58,7 @@ import {
   deleteAttachment,
   getConversationMessages,
 } from '@/lib/tauri-bridge'
-import type {
-  ChatMessage,
-  FileAttachment,
-  AttachmentSaveInput,
-} from '@/lib/proma-types'
+import type { ChatMessage, FileAttachment, AttachmentSaveInput } from '@/lib/chat-types'
 
 interface ChatViewProps {
   conversationId: string

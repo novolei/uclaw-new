@@ -4,24 +4,6 @@ use async_trait::async_trait;
 use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
 use super::BrowserService;
 
-macro_rules! browser_tool {
-    ($name:ident, $tool_name:expr, $desc:expr) => {
-        pub struct $name {
-            browser: Arc<BrowserService>,
-        }
-        impl $name {
-            pub fn new(browser: Arc<BrowserService>) -> Self {
-                Self { browser }
-            }
-        }
-        #[async_trait]
-        impl Tool for $name {
-            fn name(&self) -> &str { $tool_name }
-            fn description(&self) -> &str { $desc }
-        }
-    };
-}
-
 pub struct BrowserNavigateTool {
     browser: Arc<BrowserService>,
 }

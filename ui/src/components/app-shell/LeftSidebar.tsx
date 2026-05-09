@@ -81,7 +81,8 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import type { ActiveView } from '@/atoms/active-view'
-import type { ConversationMeta, AgentSessionMeta, WorkspaceCapabilities } from '@/lib/proma-types'
+import type { ConversationMeta } from '@/lib/chat-types'
+import type { AgentSessionMeta, WorkspaceCapabilities } from '@/lib/agent-types'
 import {
   getWorkspaceCapabilities,
   listConversations as listConversationsIPC,

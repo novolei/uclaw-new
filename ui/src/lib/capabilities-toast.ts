@@ -8,7 +8,7 @@
  */
 
 import { toast } from 'sonner'
-import type { WorkspaceCapabilities } from '@/lib/proma-types'
+import type { WorkspaceCapabilities } from '@/lib/agent-types'
 
 export interface CapabilityChange {
   type: 'mcp_added' | 'mcp_removed' | 'mcp_toggled' | 'skill_added' | 'skill_removed'
