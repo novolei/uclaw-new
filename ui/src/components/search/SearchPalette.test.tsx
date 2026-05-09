@@ -4,10 +4,10 @@ import { SearchPalette } from './SearchPalette'
 import { renderWithProviders, screen, waitFor } from '@/test-utils/render'
 import { searchPaletteOpenAtom } from '@/atoms/search-atoms'
 
-// SearchPalette passes shouldFilter={false} to cmdk's <Command> at the source
-// because the backend already does FTS filtering — cmdk's built-in fuzzy filter
-// operates on item `value` (ids) which would hide server-returned hits whose
-// content matched but whose id didn't. So no cmdk mock is needed here.
+// cmdk uses scrollIntoView for keyboard nav; jsdom doesn't implement it.
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = vi.fn()
+}
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string, args?: any) => {
@@ -32,6 +32,35 @@ vi.mock('@tauri-apps/api/core', () => ({
   }),
 }))
 
+vi.mock('@/lib/tauri-bridge', () => ({
+  listRecentThreads: vi.fn(async () => [
+    {
+      id: 'sess-1',
+      kind: 'chat',
+      title: '记住我最喜欢的fps',
+      titleEmoji: '🎨',
+      workspaceName: 'Workaround',
+      workspaceId: 'ws-1',
+      messageCount: 4,
+      updatedAt: new Date(Date.now() - 42 * 60_000).toISOString(),
+    },
+    {
+      id: 'sess-2',
+      kind: 'agent',
+      title: '新对话',
+      workspaceName: 'Downloads',
+      workspaceId: 'ws-2',
+      messageCount: 2,
+      updatedAt: new Date(Date.now() - 6 * 86_400_000).toISOString(),
+    },
+  ]),
+  listSpaces: vi.fn(async () => [
+    { id: 'ws-1', name: 'Workaround', icon: '📁', conversationCount: 6 },
+    { id: 'ws-2', name: 'Downloads', conversationCount: 1 },
+    { id: 'ws-3', name: 'me', icon: '👤', conversationCount: 3 },
+  ]),
+}))
+
 describe('SearchPalette', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
@@ -45,54 +74,107 @@ describe('SearchPalette', () => {
   it('opens when the atom is set true', async () => {
     const { store } = renderWithProviders(<SearchPalette />)
     store.set(searchPaletteOpenAtom, true)
-    expect(await screen.findByPlaceholderText(/Search conversations/i)).toBeInTheDocument()
+    expect(await screen.findByPlaceholderText('搜索线程、项目...')).toBeInTheDocument()
   })
 
   it('opens via ⌘K keyboard shortcut', async () => {
     const { store } = renderWithProviders(<SearchPalette />)
     expect(store.get(searchPaletteOpenAtom)).toBe(false)
-    // simulate Cmd+K
     document.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }),
     )
     await waitFor(() => expect(store.get(searchPaletteOpenAtom)).toBe(true))
   })
 
-  it('queries the backend and renders results', async () => {
-    const { store, user } = renderWithProviders(<SearchPalette />)
+  // ===== BROWSE MODE (empty input) =====
+
+  it('shows the three browse sections when input is empty', async () => {
+    const { store } = renderWithProviders(<SearchPalette />)
     store.set(searchPaletteOpenAtom, true)
-    const input = await screen.findByPlaceholderText(/Search conversations/i)
-    await user.type(input, 'gomoku')
-    // Wait for debounce + result render
-    await waitFor(() => {
-      expect(screen.getByText('Game session')).toBeInTheDocument()
-    }, { timeout: 1000 })
+    await screen.findByText('最近线程')
+    expect(screen.getByText('最近线程')).toBeInTheDocument()
+    expect(screen.getByText('设置与命令')).toBeInTheDocument()
+    expect(screen.getByText('项目')).toBeInTheDocument()
   })
 
-  it('calls onSelect when a result is clicked', async () => {
+  it('renders recent threads with workspace badge + relative time', async () => {
+    const { store } = renderWithProviders(<SearchPalette />)
+    store.set(searchPaletteOpenAtom, true)
+    await screen.findByText('记住我最喜欢的fps')
+    const rows = screen.getAllByRole('option')
+    expect(rows.length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Workaround').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(/分钟前|刚刚/)).toBeInTheDocument()
+  })
+
+  it('renders settings shortcuts with hint text', async () => {
+    const { store } = renderWithProviders(<SearchPalette />)
+    store.set(searchPaletteOpenAtom, true)
+    await screen.findByText('设置与命令')
+    expect(screen.getByText('服务商配置')).toBeInTheDocument()
+    expect(screen.getByText('Provider / API Key / Base URL')).toBeInTheDocument()
+  })
+
+  it('renders workspaces with thread count pill', async () => {
+    const { store } = renderWithProviders(<SearchPalette />)
+    store.set(searchPaletteOpenAtom, true)
+    await screen.findByText('项目')
+    expect(screen.getAllByText(/Workaround/).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(/6 个线程/)).toBeInTheDocument()
+  })
+
+  // ===== TYPING MODE =====
+
+  it('client-filters recent threads when typing', async () => {
+    const { store, user } = renderWithProviders(<SearchPalette />)
+    store.set(searchPaletteOpenAtom, true)
+    await screen.findByText('最近线程')
+    const input = screen.getByPlaceholderText('搜索线程、项目...')
+    await user.type(input, 'fps')
+    await waitFor(() => {
+      expect(screen.getByText('记住我最喜欢的fps')).toBeInTheDocument()
+      expect(screen.queryByText('新对话')).not.toBeInTheDocument()
+    })
+  })
+
+  it('queries the FTS backend and renders the search-hits section', async () => {
+    const { store, user } = renderWithProviders(<SearchPalette />)
+    store.set(searchPaletteOpenAtom, true)
+    const input = await screen.findByPlaceholderText('搜索线程、项目...')
+    await user.type(input, 'gomoku')
+    await waitFor(
+      () => {
+        expect(screen.getByText('搜索结果')).toBeInTheDocument()
+        expect(screen.getByText('Game session')).toBeInTheDocument()
+      },
+      { timeout: 1000 },
+    )
+  })
+
+  it('calls onSelect with thread payload when a recent thread is clicked', async () => {
     const onSelect = vi.fn()
     const { store, user } = renderWithProviders(<SearchPalette onSelect={onSelect} />)
     store.set(searchPaletteOpenAtom, true)
-    const input = await screen.findByPlaceholderText(/Search conversations/i)
-    await user.type(input, 'gomoku')
-    const item = await screen.findByText('Game session')
+    const item = await screen.findByText('记住我最喜欢的fps')
     await user.click(item)
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({
-      source: 'chat_message',
-      messageId: 'msg-1',
-      sourceId: 'sess-1',
+      kind: 'thread',
+      thread: expect.objectContaining({ id: 'sess-1', kind: 'chat' }),
     }))
-    // Palette should close after selection
     expect(store.get(searchPaletteOpenAtom)).toBe(false)
   })
 
-  it('shows "No results" when the backend returns empty', async () => {
-    const { store, user } = renderWithProviders(<SearchPalette />)
+  it('calls onSelect with search_hit payload when an FTS hit is clicked', async () => {
+    const onSelect = vi.fn()
+    const { store, user } = renderWithProviders(<SearchPalette onSelect={onSelect} />)
     store.set(searchPaletteOpenAtom, true)
-    const input = await screen.findByPlaceholderText(/Search conversations/i)
-    await user.type(input, 'no_match_query')
-    await waitFor(() => {
-      expect(screen.getByText('No results')).toBeInTheDocument()
-    }, { timeout: 1000 })
+    const input = await screen.findByPlaceholderText('搜索线程、项目...')
+    await user.type(input, 'gomoku')
+    const hit = await screen.findByText('Game session')
+    await user.click(hit)
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'search_hit',
+      hit: expect.objectContaining({ messageId: 'msg-1', sourceId: 'sess-1' }),
+    }))
   })
 })
