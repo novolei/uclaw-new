@@ -21,7 +21,6 @@ import type {
   ThinkingConfig,
   AgentEffort,
   TaskUsage,
-  SDKMessage,
 } from '@/lib/proma-types'
 
 /** 活动状态 */
@@ -228,7 +227,8 @@ export const currentAgentSessionIdAtom = atom<string | null>(null)
 export const currentAgentMessagesAtom = atom<AgentMessage[]>([])
 export const agentStreamingStatesAtom = atom<Map<string, AgentStreamState>>(new Map())
 
-export const liveMessagesMapAtom = atom<Map<string, SDKMessage[]>>(new Map())
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const liveMessagesMapAtom = atom<Map<string, any[]>>(new Map())
 
 export const agentPendingPromptAtom = atom<AgentPendingPrompt | null>(null)
 export const agentPendingFilesAtom = atom<AgentPendingFile[]>([])

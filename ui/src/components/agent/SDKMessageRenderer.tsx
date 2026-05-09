@@ -39,17 +39,19 @@ import { channelsAtom } from '@/atoms/chat-atoms'
 import { environmentCheckDialogOpenAtom } from '@/atoms/environment'
 import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
 import type {
-  SDKMessage,
-  SDKAssistantMessage,
-  SDKUserMessage,
-  SDKSystemMessage,
-  SDKContentBlock,
-  SDKResultMessage,
   AgentEventUsage,
-  SDKToolUseBlock,
-  SDKToolResultBlock,
   RecoveryAction,
 } from '@/lib/proma-types'
+
+// Local SDK message types (moved from proma-types; kept here for the renderer)
+interface SDKContentBlock { type: string; text?: string; id?: string; name?: string; input?: Record<string, any>; thinking?: string; tool_use_id?: string; content?: string | SDKContentBlock[]; is_error?: boolean; [key: string]: unknown }
+export interface SDKMessage { type: string; uuid?: string; message?: { content?: SDKContentBlock[] | string; model?: string; usage?: AgentEventUsage }; subtype?: string; tool_use_id?: string; usage?: { duration_ms?: number; total_tokens?: number; tool_uses?: number; input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }; parent_tool_use_id?: string | null; _createdAt?: number; model?: string; durationMs?: number; error?: { message?: string; code?: string }; recovery_actions?: RecoveryAction[]; inputTokens?: number; contextWindow?: number; [key: string]: unknown }
+type SDKAssistantMessage = SDKMessage & { type: 'assistant'; _channelModelId?: string; isReplay?: boolean; isSynthetic?: boolean }
+type SDKUserMessage = SDKMessage & { type: 'user' }
+type SDKSystemMessage = SDKMessage & { type: 'system'; subtype?: string; tool_use_id?: string }
+type SDKResultMessage = SDKMessage & { type: 'result'; modelUsage?: Record<string, { contextWindow?: number; [key: string]: unknown }>; total_cost_usd?: number }
+type SDKToolUseBlock = SDKContentBlock & { type: 'tool_use'; id: string; name: string; input: Record<string, any> }
+type SDKToolResultBlock = SDKContentBlock & { type: 'tool_result'; tool_use_id: string; content?: string | SDKContentBlock[]; is_error?: boolean }
 import type { ToolActivity } from '@/atoms/agent-atoms'
 import { readAttachment, saveImageAs, openExternal } from '@/lib/tauri-bridge'
 

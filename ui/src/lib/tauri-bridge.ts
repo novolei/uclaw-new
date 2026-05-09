@@ -698,9 +698,6 @@ export const createAgentSession = (title?: string, channelId?: string, workspace
 export const getAgentSessionMessages = (sessionId: string): Promise<any[]> =>
   invoke<any[]>('get_agent_session_messages', { sessionId }).catch(() => [])
 
-export const getAgentSessionSDKMessages = (sessionId: string): Promise<any[]> =>
-  invoke<any[]>('get_agent_session_sdk_messages', { sessionId }).catch(() => [])
-
 export const sendAgentMessage = (input: any): Promise<void> => {
   return invoke<void>('send_agent_message', { input: {
     sessionId: input.sessionId ?? input.conversationId ?? '',
