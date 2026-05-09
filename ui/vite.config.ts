@@ -33,9 +33,17 @@ export default defineConfig({
           ) {
             return 'vendor'
           }
-          // NEW: Shiki + its languages/themes — biggest single-source contributor
-          if (id.includes('node_modules/shiki') || id.includes('node_modules/@shikijs')) {
-            return 'shiki'
+          // Shiki: keep ONLY the core engine in a shared chunk; let Vite's natural
+          // code-splitting handle each language/theme as its own dynamic-import chunk
+          // (otherwise we force-bundle ~10 MB of shiki langs into one file and defeat
+          // shiki's own lazy loading.)
+          if (
+            id.includes('node_modules/shiki/dist/core') ||
+            id.includes('node_modules/shiki/dist/index') ||
+            id.includes('node_modules/@shikijs/core') ||
+            id.includes('node_modules/@shikijs/engine-')
+          ) {
+            return 'shiki-core'
           }
           // NEW: route-level splits — heaviest views become their own async chunks
           if (id.includes('/components/settings/')) return 'view-settings'
