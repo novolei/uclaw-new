@@ -475,12 +475,11 @@ export function ThinkingBlock({ block, dimmed = false }: ThinkingBlockProps): Re
       {isExpanded && (
         <div
           className={cn(
-            'rounded-lg px-3 py-2.5 animate-in fade-in slide-in-from-top-1 duration-150',
-            dimmed ? 'bg-muted/20' : 'bg-muted/30',
+            // 与 ChatToolBlock 展开面板风格统一：左边框 + 缩进，无背景/无虚线卡片
+            'ml-[18px] mr-2 mt-1 mb-2 pl-3 pr-1 py-1.5',
+            'border-l border-border/50 dark:border-border/60',
+            'animate-in fade-in slide-in-from-top-1 duration-150',
           )}
-          style={{
-            backgroundImage: `url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='8' ry='8' stroke='rgba(128,128,128,0.35)' stroke-width='1.5' stroke-dasharray='8%2c 6' stroke-dashoffset='0' stroke-linecap='round'/%3e%3c/svg%3e")`,
-          }}
         >
           <div
             className={cn(
