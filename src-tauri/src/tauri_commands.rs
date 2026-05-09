@@ -2850,34 +2850,125 @@ pub async fn get_agent_session_messages(
     session_id: String,
 ) -> Result<Vec<serde_json::Value>, Error> {
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
-    let mut stmt = conn.prepare(
-        "SELECT id, role, content, created_at, reasoning, tool_activities_json, model \
-         FROM agent_messages WHERE session_id = ?1 ORDER BY created_at ASC"
-    ).map_err(|e| Error::Database(e))?;
-    let rows = stmt.query_map(rusqlite::params![session_id], |row| {
-        let id: String = row.get(0)?;
-        let role: String = row.get(1)?;
-        let content: String = row.get(2)?;
-        let created_at: i64 = row.get(3)?;
-        let reasoning: Option<String> = row.get(4)?;
-        let tool_activities_json: Option<String> = row.get(5)?;
-        let model: Option<String> = row.get(6)?;
 
-        let tool_activities = tool_activities_json
+    // 1) Pull all messages in chronological order
+    #[derive(Clone)]
+    struct MsgRow {
+        id: String,
+        role: String,
+        content: String,
+        created_at: i64,
+        reasoning: Option<String>,
+        tool_activities_json: Option<String>,
+        model: Option<String>,
+    }
+    let messages: Vec<MsgRow> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, role, content, created_at, reasoning, tool_activities_json, model \
+             FROM agent_messages WHERE session_id = ?1 ORDER BY created_at ASC"
+        ).map_err(Error::Database)?;
+        let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+            Ok(MsgRow {
+                id: row.get(0)?,
+                role: row.get(1)?,
+                content: row.get(2)?,
+                created_at: row.get(3)?,
+                reasoning: row.get(4)?,
+                tool_activities_json: row.get(5)?,
+                model: row.get(6)?,
+            })
+        }).map_err(Error::Database)?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    // 2) Pull all tool turns for the session (used as a fallback for messages
+    //    that pre-date PR #5 — those rows have NULL tool_activities_json but
+    //    agent_turns has been recording every tool call since V5_TABLES).
+    struct ToolTurn {
+        tool_name: Option<String>,
+        tool_args: Option<String>,
+        tool_result: Option<String>,
+        is_error: bool,
+        created_at: i64,
+    }
+    let tool_turns: Vec<ToolTurn> = {
+        let mut stmt = conn.prepare(
+            "SELECT tool_name, tool_args, tool_result, is_error, created_at \
+             FROM agent_turns WHERE session_id = ?1 AND role = 'tool' ORDER BY created_at ASC"
+        ).map_err(Error::Database)?;
+        let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+            Ok(ToolTurn {
+                tool_name: row.get(0)?,
+                tool_args: row.get(1)?,
+                tool_result: row.get(2)?,
+                is_error: row.get::<_, i32>(3)? != 0,
+                created_at: row.get(4)?,
+            })
+        }).map_err(Error::Database)?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    drop(conn);
+
+    // 3) Build the response, recovering tool activities from agent_turns
+    //    when the message itself has NULL.
+    let mut out: Vec<serde_json::Value> = Vec::with_capacity(messages.len());
+    let mut prev_msg_ts: i64 = 0;
+    for msg in &messages {
+        let mut tool_activities: Option<serde_json::Value> = msg.tool_activities_json
             .as_deref()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
 
-        Ok(serde_json::json!({
-            "id": id,
-            "role": role,
-            "content": content,
-            "createdAt": created_at,
-            "reasoning": reasoning,
+        // Fallback: for assistant messages without persisted tool activities,
+        // gather tool turns whose created_at is in (prev_msg_ts, msg.created_at].
+        if msg.role == "assistant" && tool_activities.is_none() {
+            let recovered: Vec<serde_json::Value> = tool_turns.iter()
+                .filter(|t| t.created_at > prev_msg_ts && t.created_at <= msg.created_at)
+                .flat_map(|t| {
+                    let id = format!("trj-{}-{}", msg.id, t.created_at);
+                    let name = t.tool_name.clone().unwrap_or_default();
+                    let input: serde_json::Value = t.tool_args.as_deref()
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .unwrap_or(serde_json::json!({}));
+                    let result = t.tool_result.clone();
+                    let is_error = t.is_error;
+                    // Emit start + result pair to match ChatToolActivityIndicator's merge logic
+                    vec![
+                        serde_json::json!({
+                            "toolCallId": id,
+                            "type": "start",
+                            "toolName": name,
+                            "input": input,
+                        }),
+                        serde_json::json!({
+                            "toolCallId": id,
+                            "type": "result",
+                            "toolName": name,
+                            "input": input,
+                            "result": result,
+                            "status": if is_error { "failed" } else { "completed" },
+                            "isError": is_error,
+                        }),
+                    ]
+                })
+                .collect();
+            if !recovered.is_empty() {
+                tool_activities = Some(serde_json::Value::Array(recovered));
+            }
+        }
+
+        out.push(serde_json::json!({
+            "id": msg.id,
+            "role": msg.role,
+            "content": msg.content,
+            "createdAt": msg.created_at,
+            "reasoning": msg.reasoning,
             "toolActivities": tool_activities,
-            "model": model,
-        }))
-    }).map_err(|e| Error::Database(e))?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+            "model": msg.model,
+        }));
+        prev_msg_ts = msg.created_at;
+    }
+
+    Ok(out)
 }
 
 #[derive(Debug, serde::Deserialize)]
