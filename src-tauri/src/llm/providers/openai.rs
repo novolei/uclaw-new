@@ -8,8 +8,17 @@ use crate::agent::types::*;
 use crate::error::Error;
 use crate::llm::provider::{CompletionConfig, LlmProvider};
 
-/// Default request timeout in seconds.
-const DEFAULT_TIMEOUT_SECS: u64 = 60;
+/// Connect+TLS budget. Healthy OpenAI endpoints respond in <1s; longer means
+/// firewall / DNS / proxy issue — fail fast so the user can fix it.
+const CONNECT_TIMEOUT_SECS: u64 = 15;
+/// Per-chunk stall timeout for streaming. If the server emits no bytes for
+/// this long, declare the stream dead. Bounded by silence, not generation
+/// length, so long-running streams are fine as long as they keep flowing.
+const STREAM_STALL_TIMEOUT_SECS: u64 = 45;
+/// Total request timeout for non-streaming complete(). Single round-trip;
+/// no progress signal; bounded by what the model could realistically
+/// generate in one shot.
+const COMPLETE_TIMEOUT_SECS: u64 = 120;
 /// Maximum number of retry attempts.
 const MAX_RETRIES: u32 = 3;
 
@@ -17,18 +26,29 @@ pub struct OpenAIProvider {
     api_key: String,
     base_url: String,
     client: reqwest::Client,
-    timeout: Duration,
+    /// Per-chunk stall timeout. Used by the streaming SSE state machine.
+    stream_stall_timeout: Duration,
+    /// Total request timeout for non-streaming requests only.
+    complete_timeout: Duration,
 }
 
 impl OpenAIProvider {
     pub fn new(api_key: String, base_url: Option<String>) -> Self {
         let raw = base_url.unwrap_or_else(|| "https://api.openai.com".into());
         let base = normalize_base_url(&raw);
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .pool_idle_timeout(Duration::from_secs(90))
+            .build()
+            // Client::builder() failing here would mean a fundamentally broken
+            // tokio/reqwest install; not a runtime condition we should handle.
+            .expect("reqwest::Client should build with default config");
         Self {
             api_key,
             base_url: base,
-            client: reqwest::Client::new(),
-            timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+            client,
+            stream_stall_timeout: Duration::from_secs(STREAM_STALL_TIMEOUT_SECS),
+            complete_timeout: Duration::from_secs(COMPLETE_TIMEOUT_SECS),
         }
     }
 
@@ -210,6 +230,7 @@ impl OpenAIProvider {
     async fn send_with_retry(
         &self,
         body: &serde_json::Value,
+        is_stream: bool,
     ) -> Result<reqwest::Response, Error> {
         let mut last_error = None;
 
@@ -220,15 +241,22 @@ impl OpenAIProvider {
                 tokio::time::sleep(delay).await;
             }
 
-            let result = self
+            let mut req = self
                 .client
                 .post(format!("{}/v1/chat/completions", self.base_url))
                 .header("Authorization", format!("Bearer {}", self.api_key))
                 .header("content-type", "application/json")
-                .timeout(self.timeout)
-                .json(body)
-                .send()
-                .await;
+                .json(body);
+
+            // Only apply the total timeout for non-streaming requests.
+            // Streaming requests rely on the per-chunk stall timeout enforced
+            // by the SSE state machine — using a total timeout here would kill
+            // the connection mid-stream regardless of model progress.
+            if !is_stream {
+                req = req.timeout(self.complete_timeout);
+            }
+
+            let result = req.send().await;
 
             match result {
                 Ok(resp) => {
@@ -280,7 +308,7 @@ impl LlmProvider for OpenAIProvider {
 
         tracing::debug!(model = %config.model, "OpenAI complete request");
 
-        let resp = self.send_with_retry(&body).await?;
+        let resp = self.send_with_retry(&body, /* is_stream = */ false).await?;
         let status = resp.status();
         let json: serde_json::Value = resp
             .json()
@@ -361,7 +389,7 @@ impl LlmProvider for OpenAIProvider {
 
         tracing::debug!(model = %config.model, "OpenAI stream request");
 
-        let resp = self.send_with_retry(&body).await?;
+        let resp = self.send_with_retry(&body, /* is_stream = */ true).await?;
         let status = resp.status();
 
         if !status.is_success() {
@@ -376,7 +404,7 @@ impl LlmProvider for OpenAIProvider {
         }
 
         let byte_stream = resp.bytes_stream();
-        let stream = OpenAISseStream::new(byte_stream);
+        let stream = OpenAISseStream::new(byte_stream, self.stream_stall_timeout);
         Ok(Box::new(stream))
     }
 }
@@ -391,9 +419,10 @@ struct OpenAISseStream {
 impl OpenAISseStream {
     fn new(
         byte_stream: impl Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+        stall_timeout: Duration,
     ) -> Self {
         let stream = futures::stream::unfold(
-            OpenAiSseState::new(byte_stream),
+            OpenAiSseState::new(byte_stream, stall_timeout),
             |mut state| async move {
                 loop {
                     match state.next_delta().await {
@@ -430,11 +459,13 @@ struct OpenAiSseState {
     pending_finish_reason: Option<Option<String>>,
     /// Accumulated usage from a usage-bearing chunk.
     accumulated_usage: Option<TokenUsage>,
+    stall_timeout: Duration,
 }
 
 impl OpenAiSseState {
     fn new(
         byte_stream: impl Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+        stall_timeout: Duration,
     ) -> Self {
         Self {
             byte_stream: Box::pin(byte_stream),
@@ -442,6 +473,7 @@ impl OpenAiSseState {
             done: false,
             pending_finish_reason: None,
             accumulated_usage: None,
+            stall_timeout,
         }
     }
 
@@ -496,19 +528,19 @@ impl OpenAiSseState {
             }
 
             // Need more data from the byte stream
-            match self.byte_stream.next().await {
-                Some(Ok(bytes)) => {
+            match tokio::time::timeout(self.stall_timeout, self.byte_stream.next()).await {
+                Ok(Some(Ok(bytes))) => {
                     let text = String::from_utf8_lossy(&bytes);
                     self.buffer.push_str(&text);
                 }
-                Some(Err(e)) => {
+                Ok(Some(Err(e))) => {
                     self.done = true;
                     return Some(Err(Error::Internal(format!(
                         "OpenAI stream read error: {}",
                         e
                     ))));
                 }
-                None => {
+                Ok(None) => {
                     if !self.done {
                         self.done = true;
                         let finish_reason = self.pending_finish_reason.take()
@@ -520,6 +552,18 @@ impl OpenAiSseState {
                         }));
                     }
                     return None;
+                }
+                Err(_elapsed) => {
+                    // Stall: server emitted no bytes within stall_timeout. Declare dead
+                    // so the dispatcher can decide to retry (it will, see Task 5).
+                    self.done = true;
+                    tracing::warn!(
+                        stall_secs = self.stall_timeout.as_secs(),
+                        "OpenAI stream stalled — no bytes received"
+                    );
+                    return Some(Err(Error::StreamStalled {
+                        duration: self.stall_timeout,
+                    }));
                 }
             }
         }
