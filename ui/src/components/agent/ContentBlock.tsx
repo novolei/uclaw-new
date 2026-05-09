@@ -8,6 +8,8 @@
  */
 
 import * as React from 'react'
+import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   ChevronRight,
   ChevronDown,
@@ -439,6 +441,45 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
 
 // ===== 思考块（默认展开，Thinking 标签 + 虚线边框） =====
 
+/**
+ * 极简 markdown components — 与 ChatToolBlock 展开体一致的 13px 样式，
+ * 不引入 Tailwind Typography 的 prose 相关字号覆盖。
+ */
+const THINKING_MD_COMPONENTS = {
+  // 段落继承容器的 13px / leading-relaxed
+  p: ({ children }: { children?: React.ReactNode }) => (
+    <p className="my-1 [&:first-child]:mt-0 [&:last-child]:mb-0">{children}</p>
+  ),
+  // 行内 code 渲染为小灰底 chip（和聊天 prose 中行内 code 风格一致）
+  code: ({ children, className }: { children?: React.ReactNode; className?: string }) => (
+    <code
+      className={cn(
+        'rounded bg-foreground/10 px-[0.35em] py-[0.15em] text-[0.875em] font-medium',
+        className,
+      )}
+    >
+      {children}
+    </code>
+  ),
+  // 代码块：保持 13px 容器字号但用 mono + 轻微缩进
+  pre: ({ children }: { children?: React.ReactNode }) => (
+    <pre className="my-1.5 overflow-x-auto rounded bg-foreground/[0.04] px-2 py-1.5 text-[12.5px] leading-relaxed">
+      {children}
+    </pre>
+  ),
+  ul: ({ children }: { children?: React.ReactNode }) => (
+    <ul className="my-1 list-disc pl-5 space-y-0.5">{children}</ul>
+  ),
+  ol: ({ children }: { children?: React.ReactNode }) => (
+    <ol className="my-1 list-decimal pl-5 space-y-0.5">{children}</ol>
+  ),
+  a: ({ children, href }: { children?: React.ReactNode; href?: string }) => (
+    <a href={href} className="text-primary hover:underline">{children}</a>
+  ),
+} as const
+
+const THINKING_REMARK_PLUGINS = [remarkGfm]
+
 interface ThinkingBlockProps {
   block: SDKThinkingBlock
   dimmed?: boolean
@@ -475,20 +516,17 @@ export function ThinkingBlock({ block, dimmed = false }: ThinkingBlockProps): Re
       {isExpanded && (
         <div
           className={cn(
-            // 与 ChatToolBlock 展开面板风格统一：左边框 + 缩进，无背景/无虚线卡片
+            // 与 ChatToolBlock 展开面板风格统一：左边框 + 缩进 + 13px 字号
             'ml-[18px] mr-2 mt-1 mb-2 pl-3 pr-1 py-1.5',
             'border-l border-border/50 dark:border-border/60',
+            'text-[13px] leading-relaxed',
+            dimmed ? 'text-muted-foreground/60' : 'text-foreground/75',
             'animate-in fade-in slide-in-from-top-1 duration-150',
           )}
         >
-          <div
-            className={cn(
-              'prose prose-sm dark:prose-invert max-w-none prose-p:my-1 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 text-[13px] leading-relaxed',
-              dimmed ? 'text-muted-foreground/60' : 'text-foreground/75',
-            )}
-          >
-            <MessageResponse>{block.thinking}</MessageResponse>
-          </div>
+          <Markdown remarkPlugins={THINKING_REMARK_PLUGINS} components={THINKING_MD_COMPONENTS}>
+            {block.thinking}
+          </Markdown>
         </div>
       )}
     </div>
