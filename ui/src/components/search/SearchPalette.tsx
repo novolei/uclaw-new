@@ -232,29 +232,29 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-start justify-center pt-[15vh] bg-black/30 backdrop-blur-sm"
+      className="fixed inset-0 z-[100] flex items-start justify-center pt-[15vh] bg-foreground/10 backdrop-blur-sm"
       onClick={() => setOpen(false)}
     >
       <div
         onClick={(e) => e.stopPropagation()}
         className={cn(
           'global-search-panel',
-          'w-[min(92vw,640px)] mx-4 rounded-2xl border border-black/[0.07] dark:border-white/[0.08]',
-          'bg-white/92 dark:bg-zinc-900/92 backdrop-blur-2xl',
-          'shadow-[0_20px_60px_rgba(0,0,0,0.18),0_4px_16px_rgba(0,0,0,0.08),0_0_0_0.5px_rgba(0,0,0,0.06)]',
+          'w-[min(92vw,640px)] mx-4 rounded-2xl border border-border/60',
+          'bg-popover/95 backdrop-blur-2xl backdrop-saturate-150',
+          'shadow-2xl shadow-black/20 ring-1 ring-black/5 dark:ring-white/10',
           'overflow-hidden',
         )}
       >
         <Command label="Global search" loop shouldFilter={false}>
           {/* Input row */}
-          <div className="flex items-center gap-3 border-b border-border/70 px-4 py-3.5">
+          <div className="flex items-center gap-3 border-b border-border/50 px-4 py-3.5">
             <Search className="size-4 shrink-0 text-muted-foreground/50" />
             <Command.Input
               autoFocus
               value={query}
               onValueChange={setQuery}
               placeholder="搜索线程、项目..."
-              className="flex-1 bg-transparent outline-none text-[13.5px] text-foreground/85 placeholder:text-muted-foreground/40"
+              className="flex-1 bg-transparent outline-none text-[13.5px] text-foreground placeholder:text-muted-foreground/40"
             />
             {searching && (
               <span className="text-[10.5px] text-muted-foreground/40 tabular-nums">…</span>
@@ -267,15 +267,15 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
               'max-h-[440px] overflow-y-auto overflow-x-hidden px-1.5 py-1.5 scrollbar-thin',
               // Group headings
               '[&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:pt-2',
-              '[&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-semibold',
+              '[&_[cmdk-group-heading]]:text-[10.5px] [&_[cmdk-group-heading]]:font-semibold',
               '[&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest',
-              '[&_[cmdk-group-heading]]:text-muted-foreground/35',
+              '[&_[cmdk-group-heading]]:text-muted-foreground/70',
             )}
           >
             {totalRendered === 0 && q.length >= 2 && !searching ? (
               <Command.Empty className="flex flex-col items-center gap-2 py-10 text-center">
-                <Hash className="size-6 text-muted-foreground/20" />
-                <span className="text-[12.5px] text-muted-foreground/40">
+                <Hash className="size-6 text-muted-foreground/40" />
+                <span className="text-[12.5px] text-muted-foreground/65">
                   未找到「{query}」相关内容
                 </span>
               </Command.Empty>
@@ -289,23 +289,23 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
                     key={`thread:${t.kind}:${t.id}`}
                     value={`thread-${t.kind}-${t.id}`}
                     onSelect={() => handle({ kind: 'thread', thread: t })}
-                    className="relative flex cursor-pointer select-none items-center gap-2.5 rounded-lg px-2.5 py-2 text-[12.5px] text-foreground/65 outline-none transition-colors aria-selected:bg-accent aria-selected:text-accent-foreground"
+                    className="relative flex cursor-pointer select-none items-center gap-2.5 rounded-lg px-2.5 py-2 text-[12.5px] text-foreground/80 outline-none transition-colors aria-selected:bg-accent aria-selected:text-accent-foreground aria-selected:ring-1 aria-selected:ring-border/40"
                   >
                     {t.titleEmoji ? (
                       <span className="size-4 shrink-0 text-center text-[14px] leading-none">
                         {t.titleEmoji}
                       </span>
                     ) : t.kind === 'agent' ? (
-                      <Bot className="size-4 shrink-0 text-muted-foreground/55" />
+                      <Bot className="size-4 shrink-0 text-muted-foreground/75" />
                     ) : (
-                      <MessageSquare className="size-4 shrink-0 text-muted-foreground/55" />
+                      <MessageSquare className="size-4 shrink-0 text-muted-foreground/75" />
                     )}
                     <span className="flex-1 truncate">{t.title}</span>
-                    <span className="flex shrink-0 items-center gap-1 rounded-md bg-muted/70 px-1.5 py-0.5 text-[10.5px] text-muted-foreground/55 max-w-[120px] truncate">
+                    <span className="flex shrink-0 items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[10.5px] text-muted-foreground/85 border border-border/40 max-w-[120px] truncate">
                       <Folder className="size-2.5 shrink-0" />
                       <span className="truncate">{t.workspaceName}</span>
                     </span>
-                    <span className="flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground/35 tabular-nums">
+                    <span className="flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground/65 tabular-nums">
                       <Clock className="size-2.5" />
                       {formatAge(t.updatedAt)}
                     </span>
@@ -315,7 +315,7 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
             )}
 
             {filteredRecents.length > 0 && filteredSettings.length > 0 && (
-              <div className="mx-2 my-1 h-px bg-border/70" />
+              <div className="mx-2 my-1 h-px bg-border/40" />
             )}
 
             {/* 2. Settings & commands */}
@@ -326,11 +326,11 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
                     key={s.id}
                     value={s.id}
                     onSelect={() => handle({ kind: 'settings', settings: s })}
-                    className="relative flex cursor-pointer select-none items-center gap-2.5 rounded-lg px-2.5 py-2 text-[12.5px] text-foreground/65 outline-none transition-colors aria-selected:bg-accent aria-selected:text-accent-foreground"
+                    className="relative flex cursor-pointer select-none items-center gap-2.5 rounded-lg px-2.5 py-2 text-[12.5px] text-foreground/80 outline-none transition-colors aria-selected:bg-accent aria-selected:text-accent-foreground aria-selected:ring-1 aria-selected:ring-border/40"
                   >
-                    <s.icon className="size-4 shrink-0 text-muted-foreground/55" />
+                    <s.icon className="size-4 shrink-0 text-muted-foreground/75" />
                     <span className="flex-1 truncate">{s.label}</span>
-                    <span className="shrink-0 truncate text-[10.5px] text-muted-foreground/40 max-w-[280px]">
+                    <span className="shrink-0 truncate text-[10.5px] text-muted-foreground/65 max-w-[280px]">
                       {s.hint}
                     </span>
                   </Command.Item>
@@ -339,7 +339,7 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
             )}
 
             {(filteredRecents.length > 0 || filteredSettings.length > 0) && filteredWorkspaces.length > 0 && (
-              <div className="mx-2 my-1 h-px bg-border/70" />
+              <div className="mx-2 my-1 h-px bg-border/40" />
             )}
 
             {/* 3. Workspaces / projects */}
@@ -352,12 +352,12 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
                       key={`ws:${w.id}`}
                       value={`ws-${w.id}`}
                       onSelect={() => handle({ kind: 'workspace', workspace: w })}
-                      className="relative flex cursor-pointer select-none items-center gap-2.5 rounded-lg px-2.5 py-2 text-[12.5px] text-foreground/65 outline-none transition-colors aria-selected:bg-accent aria-selected:text-accent-foreground"
+                      className="relative flex cursor-pointer select-none items-center gap-2.5 rounded-lg px-2.5 py-2 text-[12.5px] text-foreground/80 outline-none transition-colors aria-selected:bg-accent aria-selected:text-accent-foreground aria-selected:ring-1 aria-selected:ring-border/40"
                     >
-                      <FolderOpen className="size-4 shrink-0 text-muted-foreground/55" />
+                      <FolderOpen className="size-4 shrink-0 text-muted-foreground/75" />
                       <span className="flex-1 truncate">{w.icon ? `${w.icon} ` : ''}{w.name}</span>
                       {count > 0 && (
-                        <span className="shrink-0 rounded-full bg-muted/70 px-2 py-0.5 text-[10.5px] text-muted-foreground/55 tabular-nums">
+                        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10.5px] text-muted-foreground/85 border border-border/40 tabular-nums">
                           {count} 个线程
                         </span>
                       )}
@@ -368,7 +368,7 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
             )}
 
             {hits.length > 0 && (filteredRecents.length > 0 || filteredSettings.length > 0 || filteredWorkspaces.length > 0) && (
-              <div className="mx-2 my-1 h-px bg-border/70" />
+              <div className="mx-2 my-1 h-px bg-border/40" />
             )}
 
             {/* 4. Server-side FTS hits */}
@@ -379,12 +379,12 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
                     key={`hit:${h.id}`}
                     value={`hit-${h.id}`}
                     onSelect={() => handle({ kind: 'search_hit', hit: h })}
-                    className="relative flex cursor-pointer select-none items-start gap-2.5 rounded-lg px-2.5 py-2 text-[12.5px] text-foreground/65 outline-none transition-colors aria-selected:bg-accent aria-selected:text-accent-foreground"
+                    className="relative flex cursor-pointer select-none items-start gap-2.5 rounded-lg px-2.5 py-2 text-[12.5px] text-foreground/80 outline-none transition-colors aria-selected:bg-accent aria-selected:text-accent-foreground aria-selected:ring-1 aria-selected:ring-border/40"
                   >
                     {h.source === 'agent_turn' ? (
-                      <Bot className="size-4 shrink-0 mt-0.5 text-muted-foreground/55" />
+                      <Bot className="size-4 shrink-0 mt-0.5 text-muted-foreground/75" />
                     ) : (
-                      <MessageSquare className="size-4 shrink-0 mt-0.5 text-muted-foreground/55" />
+                      <MessageSquare className="size-4 shrink-0 mt-0.5 text-muted-foreground/75" />
                     )}
                     <div className="flex-1 min-w-0">
                       <div className="truncate font-medium text-foreground/85">
@@ -403,17 +403,17 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
           </Command.List>
 
           {/* Footer */}
-          <div className="global-search-footer flex items-center justify-end gap-3 border-t border-black/[0.05] dark:border-white/[0.05] px-3.5 py-2 text-[10.5px] text-muted-foreground/35">
+          <div className="global-search-footer flex items-center justify-end gap-3 border-t border-border/50 bg-muted/30 px-3.5 py-2 text-[10.5px] text-muted-foreground/75">
             <span className="flex items-center gap-1">
-              <kbd className="rounded bg-black/[0.06] dark:bg-white/[0.08] px-1 py-0.5 font-mono text-[10px]">↑↓</kbd>
+              <kbd className="rounded bg-muted text-muted-foreground border border-border/40 px-1 py-0.5 font-mono text-[10px]">↑↓</kbd>
               导航
             </span>
             <span className="flex items-center gap-1">
-              <kbd className="rounded bg-black/[0.06] dark:bg-white/[0.08] px-1 py-0.5 font-mono text-[10px]">↵</kbd>
+              <kbd className="rounded bg-muted text-muted-foreground border border-border/40 px-1 py-0.5 font-mono text-[10px]">↵</kbd>
               打开
             </span>
             <span className="flex items-center gap-1">
-              <kbd className="rounded bg-black/[0.06] dark:bg-white/[0.08] px-1 py-0.5 font-mono text-[10px]">Esc</kbd>
+              <kbd className="rounded bg-muted text-muted-foreground border border-border/40 px-1 py-0.5 font-mono text-[10px]">Esc</kbd>
               关闭
             </span>
           </div>
