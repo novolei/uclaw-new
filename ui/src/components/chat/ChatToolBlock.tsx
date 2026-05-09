@@ -10,7 +10,7 @@
  */
 
 import * as React from 'react'
-import { ChevronRight, AlertTriangle, Loader2 } from 'lucide-react'
+import { ChevronRight, AlertTriangle, Loader2, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getToolIcon } from '@/components/agent/tool-utils'
 import { getToolPhrase } from '@/components/agent/tool-phrase'
@@ -59,24 +59,29 @@ export function ChatToolBlock({
         className={cn(
           'group relative flex w-full items-center gap-2 rounded-md py-1 pl-2 pr-2 text-left',
           'transition-colors duration-150',
+          // 出错的整行轻微着染，让失败一眼可见
+          isCompleted && isError && 'bg-destructive/[0.04] hover:bg-destructive/[0.07]',
           canExpand
-            ? 'hover:bg-foreground/[0.03] dark:hover:bg-foreground/[0.04] cursor-pointer'
+            ? !(isCompleted && isError) && 'hover:bg-foreground/[0.03] dark:hover:bg-foreground/[0.04]'
             : 'cursor-default',
+          canExpand ? 'cursor-pointer' : '',
         )}
       >
-        {/* 状态指示：运行中 spinner / 出错 warning，完成态不显示额外图标 */}
+        {/* 状态指示：成功 check / 运行中 spinner / 出错 warning */}
         {!isCompleted ? (
           <Loader2 className="size-3.5 shrink-0 animate-spin text-primary/70" />
         ) : isError ? (
-          <AlertTriangle className="size-3.5 shrink-0 text-destructive/70" />
-        ) : null}
+          <AlertTriangle className="size-3.5 shrink-0 text-destructive" />
+        ) : (
+          <Check className="size-3.5 shrink-0 text-emerald-500/80 dark:text-emerald-400/80" strokeWidth={2.5} />
+        )}
 
         {/* 工具图标 */}
         <ToolIcon
           className={cn(
             'size-3.5 shrink-0',
             isError
-              ? 'text-destructive/60'
+              ? 'text-destructive/70'
               : 'text-muted-foreground/65 group-hover:text-foreground/75',
           )}
         />
@@ -86,9 +91,9 @@ export function ChatToolBlock({
           className={cn(
             'truncate text-[13.5px] tracking-[-0.005em]',
             isError
-              ? 'text-destructive/85'
+              ? 'text-destructive font-medium'
               : 'text-foreground/70 group-hover:text-foreground/90',
-            !isCompleted && 'text-foreground/85',
+            !isCompleted && !isError && 'text-foreground/85',
           )}
         >
           {displayLabel}
