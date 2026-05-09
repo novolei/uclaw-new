@@ -15,6 +15,7 @@ import {
   proactiveLearningEventsAtom,
   type AgentStreamState,
   type ProactiveLearningEvent,
+  type AgentStreamErrorPayload,
 } from '@/atoms/agent-atoms'
 import { workspaceSessionsAtom, updateSessionTitleAtom, type WorkspaceSession } from '@/atoms/workspace'
 import { tabsAtom } from '@/atoms/tab-atoms'
@@ -123,11 +124,20 @@ function startAgentListeners(store: Store): void {
 
   // chat:stream-error → record error and stop
   reg(
-    listen<{ conversationId: string; error: string }>('chat:stream-error', ({ payload }) => {
+    listen<{
+      conversationId: string
+      error: string
+      kind?: AgentStreamErrorPayload['kind']
+      timeoutSecs?: number
+    }>('chat:stream-error', ({ payload }) => {
       const sid = payload.conversationId
       store.set(agentStreamErrorsAtom, (prev) => {
         const next = new Map(prev)
-        next.set(sid, payload.error)
+        next.set(sid, {
+          message: payload.error,
+          kind: payload.kind,
+          timeoutSecs: payload.timeoutSecs,
+        })
         return next
       })
       store.set(agentStreamingStatesAtom, (prev) => {

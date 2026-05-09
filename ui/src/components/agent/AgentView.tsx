@@ -16,7 +16,7 @@
 import * as React from 'react'
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
 import { toast } from 'sonner'
-import { Bot, CornerDownLeft, Square, Settings, Paperclip, FolderPlus, X, Copy, Check, Brain, Map as MapIcon, Sparkles } from 'lucide-react'
+import { Bot, CornerDownLeft, Square, Settings, Paperclip, FolderPlus, X, Copy, Check, Brain, Map as MapIcon, Sparkles, AlertTriangle } from 'lucide-react'
 import { AgentMessages } from './AgentMessages'
 import { AgentHeader } from './AgentHeader'
 import { ContextUsageBadge } from './ContextUsageBadge'
@@ -56,6 +56,7 @@ import {
   agentPendingFilesAtom,
   agentWorkspacesAtom,
   agentStreamErrorsAtom,
+  type AgentStreamErrorPayload,
   agentSessionDraftsAtom,
   agentSessionDraftHtmlAtom,
   agentPromptSuggestionsAtom,
@@ -1096,11 +1097,14 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     })
   }, [sessionId, agentChannelId, agentModelId, currentWorkspaceId, streaming, setStreamingStates, store])
 
-  // 当 agent 报错时用 toast 通知用户
-  const prevAgentError = React.useRef<string | null>(null)
+  // 当 agent 报错时用 toast 通知用户（outer_timeout 改为内联展示，不弹 toast）
+  const prevAgentError = React.useRef<AgentStreamErrorPayload | null>(null)
   React.useEffect(() => {
     if (agentError && agentError !== prevAgentError.current) {
-      toast.error('Agent 出错了', { description: agentError, duration: 6000 })
+      // outer_timeout 有专属的内联错误块，无需 toast
+      if (agentError.kind !== 'outer_timeout') {
+        toast.error('Agent 出错了', { description: agentError.message, duration: 6000 })
+      }
     }
     prevAgentError.current = agentError
   }, [agentError])
@@ -1110,7 +1114,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     if (!agentError) return
 
     try {
-      await navigator.clipboard.writeText(agentError)
+      await navigator.clipboard.writeText(agentError.message)
       setErrorCopied(true)
       setTimeout(() => setErrorCopied(false), 2000)
     } catch (error) {
@@ -1327,6 +1331,26 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           onRewind={handleRewindRequest}
           onCompact={handleCompact}
         />
+
+        {/* outer_timeout 内联错误块：显示超时提示 + 重试按钮 */}
+        {agentError && agentError.kind === 'outer_timeout' && (
+          <div className="mx-4 mb-2 rounded-md border border-destructive/40 bg-destructive/[0.04] p-3 animate-in fade-in slide-in-from-bottom-1 duration-200">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="size-4 text-destructive shrink-0 mt-0.5" />
+              <div className="flex-1 text-sm text-foreground/85">
+                <div>{agentError.message}</div>
+                {agentError.timeoutSecs != null && (
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    提示：可在 设置 → 高级 中调整 Agent 循环超时（当前 {agentError.timeoutSecs}s）。
+                  </div>
+                )}
+              </div>
+              <Button variant="outline" size="sm" onClick={handleRetry}>
+                重试
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* 权限请求横幅 */}
         <PermissionBanner sessionId={sessionId} />

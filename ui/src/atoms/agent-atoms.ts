@@ -702,10 +702,16 @@ export const agentContextStatusAtom = atom<AgentContextStatus>((get) => {
   }
 })
 
-export const agentStreamErrorsAtom = atom<Map<string, string>>(new Map())
+export interface AgentStreamErrorPayload {
+  message: string
+  kind?: 'outer_timeout' | 'stream_stalled' | 'stream_failed' | 'fatal'
+  timeoutSecs?: number
+}
+
+export const agentStreamErrorsAtom = atom<Map<string, AgentStreamErrorPayload>>(new Map())
 export const agentMessageRefreshAtom = atom<Map<string, number>>(new Map())
 
-export const currentAgentErrorAtom = atom<string | null>((get) => {
+export const currentAgentErrorAtom = atom<AgentStreamErrorPayload | null>((get) => {
   const currentId = get(currentAgentSessionIdAtom)
   if (!currentId) return null
   return get(agentStreamErrorsAtom).get(currentId) ?? null
