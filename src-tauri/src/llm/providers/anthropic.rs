@@ -8,8 +8,17 @@ use crate::agent::types::*;
 use crate::error::Error;
 use crate::llm::provider::{CompletionConfig, LlmProvider};
 
-/// Default request timeout in seconds.
-const DEFAULT_TIMEOUT_SECS: u64 = 60;
+/// Connect+TLS budget. Healthy Anthropic endpoints respond in <1s; longer means
+/// firewall / DNS / proxy issue — fail fast so the user can fix it.
+const CONNECT_TIMEOUT_SECS: u64 = 15;
+/// Per-chunk stall timeout for streaming. If the server emits no bytes for
+/// this long, declare the stream dead. Bounded by silence, not generation
+/// length, so long-running streams are fine as long as they keep flowing.
+const STREAM_STALL_TIMEOUT_SECS: u64 = 45;
+/// Total request timeout for non-streaming complete(). Single round-trip;
+/// no progress signal; bounded by what the model could realistically
+/// generate in one shot.
+const COMPLETE_TIMEOUT_SECS: u64 = 120;
 /// Maximum number of retry attempts.
 const MAX_RETRIES: u32 = 3;
 
@@ -17,18 +26,29 @@ pub struct AnthropicProvider {
     api_key: String,
     base_url: String,
     client: reqwest::Client,
-    timeout: Duration,
+    /// Per-chunk stall timeout. Used by the streaming SSE state machine.
+    stream_stall_timeout: Duration,
+    /// Total request timeout for non-streaming requests only.
+    complete_timeout: Duration,
 }
 
 impl AnthropicProvider {
     pub fn new(api_key: String, base_url: Option<String>) -> Self {
         let raw = base_url.unwrap_or_else(|| "https://api.anthropic.com".into());
         let base = normalize_base_url(&raw);
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .pool_idle_timeout(Duration::from_secs(90))
+            .build()
+            // Client::builder() failing here would mean a fundamentally broken
+            // tokio/reqwest install; not a runtime condition we should handle.
+            .expect("reqwest::Client should build with default config");
         Self {
             api_key,
             base_url: base,
-            client: reqwest::Client::new(),
-            timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+            client,
+            stream_stall_timeout: Duration::from_secs(STREAM_STALL_TIMEOUT_SECS),
+            complete_timeout: Duration::from_secs(COMPLETE_TIMEOUT_SECS),
         }
     }
 
@@ -145,6 +165,7 @@ impl AnthropicProvider {
     async fn send_with_retry(
         &self,
         body: &serde_json::Value,
+        is_stream: bool,
     ) -> Result<reqwest::Response, Error> {
         let mut last_error = None;
 
@@ -173,11 +194,18 @@ impl AnthropicProvider {
                 .post(format!("{}/v1/messages", self.base_url))
                 .header("x-api-key", &self.api_key)
                 .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
-                .timeout(self.timeout);
+                .header("content-type", "application/json");
 
             if let Some(ref beta_str) = beta_header {
                 request = request.header("anthropic-beta", beta_str);
+            }
+
+            // Only apply the total timeout for non-streaming requests.
+            // Streaming requests rely on the per-chunk stall timeout enforced
+            // by the SSE state machine — using a total timeout here would kill
+            // the connection mid-stream regardless of model progress.
+            if !is_stream {
+                request = request.timeout(self.complete_timeout);
             }
 
             let result = request.json(&body).send().await;
@@ -234,7 +262,7 @@ impl LlmProvider for AnthropicProvider {
 
         tracing::debug!(model = %config.model, "Anthropic complete request");
 
-        let resp = self.send_with_retry(&body).await?;
+        let resp = self.send_with_retry(&body, /* is_stream = */ false).await?;
         let status = resp.status();
         let json: serde_json::Value = resp
             .json()
@@ -329,7 +357,7 @@ impl LlmProvider for AnthropicProvider {
 
         tracing::debug!(model = %config.model, "Anthropic stream request");
 
-        let resp = self.send_with_retry(&body).await?;
+        let resp = self.send_with_retry(&body, /* is_stream = */ true).await?;
         let status = resp.status();
 
         if !status.is_success() {
@@ -344,7 +372,7 @@ impl LlmProvider for AnthropicProvider {
         }
 
         let byte_stream = resp.bytes_stream();
-        let stream = AnthropicSseStream::new(byte_stream);
+        let stream = AnthropicSseStream::new(byte_stream, self.stream_stall_timeout);
         Ok(Box::new(stream))
     }
 }
@@ -357,9 +385,12 @@ struct AnthropicSseStream {
 }
 
 impl AnthropicSseStream {
-    fn new(byte_stream: impl Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static) -> Self {
+    fn new(
+        byte_stream: impl Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+        stall_timeout: Duration,
+    ) -> Self {
         let stream = futures::stream::unfold(
-            SseParserState::new(byte_stream),
+            SseParserState::new(byte_stream, stall_timeout),
             |mut state| async move {
                 loop {
                     match state.next_delta().await {
@@ -399,10 +430,14 @@ struct SseParserState {
     /// Accumulated usage from message_start and message_delta events
     accumulated_usage: Option<TokenUsage>,
     done: bool,
+    stall_timeout: Duration,
 }
 
 impl SseParserState {
-    fn new(byte_stream: impl Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static) -> Self {
+    fn new(
+        byte_stream: impl Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+        stall_timeout: Duration,
+    ) -> Self {
         Self {
             byte_stream: Box::pin(byte_stream),
             buffer: String::new(),
@@ -411,6 +446,7 @@ impl SseParserState {
             current_block_is_thinking: false,
             accumulated_usage: None,
             done: false,
+            stall_timeout,
         }
     }
 
@@ -439,19 +475,19 @@ impl SseParserState {
             }
 
             // Need more data
-            match self.byte_stream.next().await {
-                Some(Ok(bytes)) => {
+            match tokio::time::timeout(self.stall_timeout, self.byte_stream.next()).await {
+                Ok(Some(Ok(bytes))) => {
                     let text = String::from_utf8_lossy(&bytes);
                     self.buffer.push_str(&text);
                 }
-                Some(Err(e)) => {
+                Ok(Some(Err(e))) => {
                     self.done = true;
                     return Some(Err(Error::Internal(format!(
                         "Anthropic stream read error: {}",
                         e
                     ))));
                 }
-                None => {
+                Ok(None) => {
                     // Stream ended without a message_stop
                     if !self.done {
                         self.done = true;
@@ -461,6 +497,18 @@ impl SseParserState {
                         }));
                     }
                     return None;
+                }
+                Err(_elapsed) => {
+                    // Stall: server emitted no bytes within stall_timeout. Declare dead
+                    // so the dispatcher can decide to retry (it will, see Task 5).
+                    self.done = true;
+                    tracing::warn!(
+                        stall_secs = self.stall_timeout.as_secs(),
+                        "Anthropic stream stalled — no bytes received"
+                    );
+                    return Some(Err(Error::StreamStalled {
+                        duration: self.stall_timeout,
+                    }));
                 }
             }
         }
