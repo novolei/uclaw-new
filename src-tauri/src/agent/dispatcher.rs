@@ -154,6 +154,12 @@ impl ChatDelegate {
                 "result": output.result,
                 "durationMs": output.duration_ms,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
+                // Soft-error detection: tools like bash signal failure via
+                // { ok: false, exit_code: 1, ... } even though the underlying
+                // execution succeeded. Mirror the frontend fallback here so
+                // both the live render and the persisted snapshot see the
+                // same isError value.
+                "isError": detect_soft_tool_error(&output.result),
             }
         }));
     }
@@ -612,7 +618,10 @@ impl LoopDelegate for ChatDelegate {
                                 raw_result_str
                             };
 
-                            // Record trajectory turn
+                            // Record trajectory turn (also reflect soft errors so the
+                            // agent_turns-based history recovery in get_agent_session_messages
+                            // shows the right status when persisted JSON is missing).
+                            let trajectory_is_error = detect_soft_tool_error(&output.result);
                             if let Some(ref store) = self.trajectory_store {
                                 use crate::harness::trajectory::TurnRecord;
                                 let tool_args_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
@@ -626,7 +635,7 @@ impl LoopDelegate for ChatDelegate {
                                     tool_args: Some(tool_args_json),
                                     tool_result: Some(result_str.clone()),
                                     reasoning: None,
-                                    is_error: false,
+                                    is_error: trajectory_is_error,
                                     duration_ms,
                                     created_at: chrono::Utc::now().timestamp_millis(),
                                 };
@@ -652,10 +661,14 @@ impl LoopDelegate for ChatDelegate {
                                 ).await;
                             }
 
+                            // Detect soft errors (e.g. bash non-zero exit) so the persisted
+                            // ContentBlock::ToolResult carries is_error correctly. Without this,
+                            // historical view would show a green check for failed bash commands.
+                            let soft_error = detect_soft_tool_error(&output.result);
                             reason_ctx.messages.push(ChatMessage::user_tool_result(
                                 &tc.id,
                                 &result_str,
-                                false,
+                                soft_error,
                             ));
                         }
                         Err(e) => {
@@ -750,6 +763,17 @@ impl LoopDelegate for ChatDelegate {
     async fn on_tool_intent_nudge(&self, text: &str, _ctx: &mut ReasoningContext) {
         self.emit_thinking(&format!("Detected tool intent in: {}", &text[..text.len().min(100)]));
     }
+}
+
+/// Tools whose Rust impl returned `Ok(...)` but where the underlying operation
+/// reports a logical failure via the result payload — bash uses
+/// `{ ok: false, exit_code: 1, output: "..." }`, MCP uses `{ isError: true }`.
+/// Mirrors the same heuristic the frontend applies in the streaming listener,
+/// so both live and persisted views agree on whether a row is an error.
+pub(crate) fn detect_soft_tool_error(result: &serde_json::Value) -> bool {
+    matches!(result.get("ok"), Some(serde_json::Value::Bool(false)))
+        || matches!(result.get("is_error"), Some(serde_json::Value::Bool(true)))
+        || matches!(result.get("isError"), Some(serde_json::Value::Bool(true)))
 }
 
 /// Truncate a string to at most `max_chars` characters, ensuring UTF-8 safety.
