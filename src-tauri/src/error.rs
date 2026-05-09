@@ -74,6 +74,9 @@ pub enum Error {
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
+    #[error("LLM stream stalled — no data received in {duration:?}")]
+    StreamStalled { duration: std::time::Duration },
+
     #[error("Internal error: {0}")]
     Internal(String),
 }

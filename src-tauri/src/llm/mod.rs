@@ -1,9 +1,11 @@
 pub mod provider;
 pub mod providers;
+pub mod stream_error;
 
 pub use provider::{CompletionConfig, LlmProvider};
 pub use providers::anthropic::AnthropicProvider;
 pub use providers::openai::OpenAIProvider;
+pub use stream_error::{classify_stream_error, StreamErrorKind};
 
 use crate::config::llm::LlmConfig;
 use std::sync::Arc;
