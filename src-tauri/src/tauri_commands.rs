@@ -490,7 +490,8 @@ pub async fn list_recent_threads(state: State<'_, AppState>) -> Result<Vec<Recen
     let mut stmt = conn.prepare(
         "SELECT
             c.id, c.title, c.metadata_json,
-            s.name AS workspace_name, s.id AS workspace_id,
+            COALESCE(s.name, 'default') AS workspace_name,
+            COALESCE(s.id, 'default') AS workspace_id,
             (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS msg_count,
             c.updated_at
          FROM conversations c
@@ -503,8 +504,8 @@ pub async fn list_recent_threads(state: State<'_, AppState>) -> Result<Vec<Recen
         let id: String = row.get(0)?;
         let title: Option<String> = row.get(1)?;
         let metadata_json: Option<String> = row.get(2)?;
-        let workspace_name: Option<String> = row.get(3)?;
-        let workspace_id: Option<String> = row.get(4)?;
+        let workspace_name: String = row.get(3)?;
+        let workspace_id: String = row.get(4)?;
         let msg_count: i64 = row.get(5)?;
         let updated_at: String = row.get(6)?;
         Ok((id, title, metadata_json, workspace_name, workspace_id, msg_count, updated_at))
@@ -518,8 +519,8 @@ pub async fn list_recent_threads(state: State<'_, AppState>) -> Result<Vec<Recen
             title: title.unwrap_or_else(|| "(untitled)".into()),
             title_emoji: emoji,
             title_pending: pending,
-            workspace_name: ws_name.unwrap_or_else(|| "default".into()),
-            workspace_id: ws_id.unwrap_or_else(|| "default".into()),
+            workspace_name: ws_name,
+            workspace_id: ws_id,
             message_count: msg_count.max(0) as u32,
             updated_at,
         });
@@ -556,6 +557,9 @@ pub async fn list_recent_threads(state: State<'_, AppState>) -> Result<Vec<Recen
     }).map_err(|e| Error::Internal(format!("query agent list: {}", e)))?;
     for r in rows.flatten() {
         let (id, title, emoji, pending, ws_name, ws_id, msg_count, updated_at) = r;
+        let updated_at_rfc = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(updated_at)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default();
         out.push(RecentThread {
             id,
             kind: "agent".into(),
@@ -565,25 +569,29 @@ pub async fn list_recent_threads(state: State<'_, AppState>) -> Result<Vec<Recen
             workspace_name: ws_name,
             workspace_id: ws_id,
             message_count: msg_count.max(0) as u32,
-            updated_at: updated_at.to_string(),
+            updated_at: updated_at_rfc,
         });
     }
     drop(stmt);
 
     // Sort merged list by updated_at DESC, cap at 20.
-    // Both chat and agent paths use string updated_at — chat is RFC3339, agent is i64 ms.
-    out.sort_by(|a, b| {
-        let pa = a.updated_at.parse::<i64>().ok();
-        let pb = b.updated_at.parse::<i64>().ok();
-        match (pa, pb) {
-            (Some(la), Some(lb)) => lb.cmp(&la),
-            (None, None) => b.updated_at.cmp(&a.updated_at),
-            (None, Some(_)) => std::cmp::Ordering::Less,
-            (Some(_), None) => std::cmp::Ordering::Greater,
-        }
-    });
+    // Both sides emit RFC3339 now, but normalize defensively to epoch-ms.
+    out.sort_by(|a, b| to_epoch_ms(&b.updated_at).cmp(&to_epoch_ms(&a.updated_at)));
     out.truncate(20);
     Ok(out)
+}
+
+/// Parse an `updated_at` string into epoch milliseconds. Accepts a bare i64-ms
+/// integer string (legacy agent format) or an RFC3339 timestamp; returns 0 on
+/// parse failure so unknown formats sort to the bottom rather than crashing.
+fn to_epoch_ms(s: &str) -> i64 {
+    if let Ok(n) = s.parse::<i64>() {
+        return n;
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return dt.timestamp_millis();
+    }
+    0
 }
 
 /// Parse the conversation `metadata_json` blob for `emoji` and `title_pending`.
