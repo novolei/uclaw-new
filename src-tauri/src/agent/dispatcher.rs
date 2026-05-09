@@ -426,9 +426,9 @@ impl LoopDelegate for ChatDelegate {
                                 }
                             }
                             Ok(StreamDelta::Done { finish_reason, usage }) => {
-                                // If thinking was still active, emit thinking-done
+                                // If thinking was still active, emit thinking-done.
+                                // No need to reset thinking_started — loop exits after Done.
                                 if thinking_started {
-                                    thinking_started = false;
                                     let duration = thinking_start_time
                                         .map(|t| t.elapsed().as_millis() as u64)
                                         .unwrap_or(0);
