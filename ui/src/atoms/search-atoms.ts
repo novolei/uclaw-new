@@ -8,3 +8,6 @@ import { atom } from 'jotai'
 
 /** 搜索 Dialog 是否打开 */
 export const searchDialogOpenAtom = atom(false)
+
+/** Whether the global search palette is currently open. */
+export const searchPaletteOpenAtom = atom<boolean>(false)
