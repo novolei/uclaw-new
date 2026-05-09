@@ -2,7 +2,7 @@
  * ChatToolActivityIndicator - Chat 模式工具活动指示器
  *
  * 将 ChatToolActivity[] 的 start/result 事件合并后，
- * 使用 ChatToolBlock 渲染（ContentBlock 风格）。
+ * 沿一根垂直时间线纵向排布每个 ChatToolBlock，制造时间流动感。
  */
 
 import * as React from 'react'
@@ -50,19 +50,26 @@ export function ChatToolActivityIndicator({
   if (merged.length === 0) return null
 
   return (
-    <div className="space-y-0.5 mb-2">
-      {merged.map(([callId, item], idx) => (
-        <ChatToolBlock
-          key={callId}
-          toolName={item.toolName}
-          input={item.input}
-          result={item.result}
-          isError={item.isError}
-          isCompleted={item.done}
-          animate={isStreaming}
-          index={idx}
-        />
-      ))}
+    <div className="relative mb-2 pl-1">
+      {/* 时间线主干：从第一个 dot 中心延伸到最后一个 dot 中心 */}
+      <span
+        aria-hidden="true"
+        className="absolute left-[11px] top-[14px] bottom-[14px] w-px bg-gradient-to-b from-border/30 via-border/60 to-border/30 dark:from-border/40 dark:via-border/70 dark:to-border/40"
+      />
+      <div className="space-y-px">
+        {merged.map(([callId, item], idx) => (
+          <ChatToolBlock
+            key={callId}
+            toolName={item.toolName}
+            input={item.input}
+            result={item.result}
+            isError={item.isError}
+            isCompleted={item.done}
+            animate={isStreaming}
+            index={idx}
+          />
+        ))}
+      </div>
     </div>
   )
 }
