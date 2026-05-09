@@ -7,21 +7,7 @@
 
 import { atom } from 'jotai'
 import { atomFamily } from 'jotai/utils'
-import type {
-  AgentSessionMeta,
-  AgentMessage,
-  AgentEvent,
-  AgentWorkspace,
-  AgentPendingFile,
-  RetryAttempt,
-  PromaPermissionMode,
-  PermissionRequest,
-  AskUserRequest,
-  ExitPlanModeRequest,
-  ThinkingConfig,
-  AgentEffort,
-  TaskUsage,
-} from '@/lib/proma-types'
+import type { AgentSessionMeta, AgentMessage, AgentEvent, AgentWorkspace, AgentPendingFile, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, AgentEffort, TaskUsage } from '@/lib/agent-types'
 
 /** 活动状态 */
 export type ActivityStatus = 'pending' | 'running' | 'completed' | 'error' | 'backgrounded'

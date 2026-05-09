@@ -20,7 +20,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
-import type { AgentWorkspace, AgentSessionMeta } from '@/lib/proma-types'
+import type { AgentWorkspace, AgentSessionMeta } from '@/lib/agent-types'
 import { moveAgentSessionToWorkspace } from '@/lib/tauri-bridge'
 
 interface MoveSessionDialogProps {

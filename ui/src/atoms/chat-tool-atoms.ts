@@ -5,7 +5,7 @@
  */
 
 import { atom } from 'jotai'
-import type { ChatToolInfo } from '@/lib/proma-types'
+import type { ChatToolInfo } from '@/lib/chat-types'
 
 /** 从后端加载的所有工具列表（唯一状态源） */
 export const chatToolsAtom = atom<ChatToolInfo[]>([])

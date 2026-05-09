@@ -12,7 +12,7 @@ import Markdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button } from '@/components/ui/button'
 import { allPendingAskUserRequestsAtom, agentStreamingStatesAtom, finalizeStreamingActivities } from '@/atoms/agent-atoms'
-import type { AskUserQuestion } from '@/lib/proma-types'
+import type { AskUserQuestion } from '@/lib/agent-types'
 import { stopAgent, respondAskUser } from '@/lib/tauri-bridge'
 
 interface QuestionAnswer {

@@ -45,7 +45,7 @@ import { cn } from '@/lib/utils'
 import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { CompactingIndicator } from './SDKMessageRenderer'
-import type { AgentMessage, AgentEventUsage, RetryAttempt } from '@/lib/proma-types'
+import type { AgentMessage, AgentEventUsage, RetryAttempt } from '@/lib/agent-types'
 import type { ToolActivity, AgentStreamState } from '@/atoms/agent-atoms'
 import { readAttachment, saveImageAs } from '@/lib/tauri-bridge'
 

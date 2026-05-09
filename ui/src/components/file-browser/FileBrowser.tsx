@@ -10,7 +10,7 @@ import * as React from 'react'
 import { ChevronRight, RefreshCw, FolderOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { FileTypeIcon } from './FileTypeIcon'
-import type { FileEntry } from '@/lib/proma-types'
+import type { FileEntry } from '@/lib/chat-types'
 
 // [PLACEHOLDER] Tauri file system operations
 // import { readDir } from '@tauri-apps/plugin-fs'

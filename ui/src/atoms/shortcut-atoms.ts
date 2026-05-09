@@ -5,7 +5,7 @@
  */
 
 import { atom } from 'jotai'
-import type { ShortcutOverrides } from '@/lib/proma-types'
+import type { ShortcutOverrides } from '@/lib/chat-types'
 
 /** 用户自定义快捷键覆盖（从 settings 加载） */
 export const shortcutOverridesAtom = atom<ShortcutOverrides>({})

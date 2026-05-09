@@ -22,7 +22,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { allPendingExitPlanRequestsAtom, agentStreamingStatesAtom, finalizeStreamingActivities } from '@/atoms/agent-atoms'
-import type { ExitPlanModeAction, ExitPlanAllowedPrompt } from '@/lib/proma-types'
+import type { ExitPlanModeAction, ExitPlanAllowedPrompt } from '@/lib/agent-types'
 import { respondExitPlanMode, stopAgent } from '@/lib/tauri-bridge'
 
 /** 选项定义 */

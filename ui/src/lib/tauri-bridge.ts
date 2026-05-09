@@ -102,7 +102,7 @@ import type {
   MemoryGraphUpdateNodeInput,
   MemoryGraphDeleteNodeInput,
 } from './types';
-import type { Channel } from './proma-types';
+import type { Channel } from './chat-types';
 
 // ─────────────────────────────────────────────────────────
 // Bootstrap / Settings

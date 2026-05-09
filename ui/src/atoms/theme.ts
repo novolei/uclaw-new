@@ -6,7 +6,7 @@
  */
 
 import { atom } from 'jotai'
-import type { ThemeMode, ThemeStyle } from '@/lib/proma-types'
+import type { ThemeMode, ThemeStyle } from '@/lib/chat-types'
 import * as bridge from '@/lib/tauri-bridge'
 
 /** localStorage 缓存键 */

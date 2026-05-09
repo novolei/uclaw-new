@@ -8,13 +8,7 @@
 
 import { atom } from 'jotai'
 import { atomWithStorage } from 'jotai/utils'
-import type {
-  ConversationMeta,
-  PrimaChatMessage,
-  FileAttachment,
-  ChatToolActivity,
-  Channel,
-} from '@/lib/proma-types'
+import type { ConversationMeta, PrimaChatMessage, FileAttachment, ChatToolActivity, Channel } from '@/lib/chat-types'
 
 /** 全局渠道列表缓存（启动时加载一次，设置变更时刷新） */
 export const channelsAtom = atom<Channel[]>([])

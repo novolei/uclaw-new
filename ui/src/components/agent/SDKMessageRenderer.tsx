@@ -38,10 +38,7 @@ import { userProfileAtom } from '@/atoms/user-profile'
 import { channelsAtom } from '@/atoms/chat-atoms'
 import { environmentCheckDialogOpenAtom } from '@/atoms/environment'
 import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
-import type {
-  AgentEventUsage,
-  RecoveryAction,
-} from '@/lib/proma-types'
+import type { AgentEventUsage, RecoveryAction } from '@/lib/agent-types'
 
 // Local SDK message types (moved from proma-types; kept here for the renderer)
 interface SDKContentBlock { type: string; text?: string; id?: string; name?: string; input?: Record<string, any>; thinking?: string; tool_use_id?: string; content?: string | SDKContentBlock[]; is_error?: boolean; [key: string]: unknown }

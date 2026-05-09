@@ -16,7 +16,7 @@ import {
 } from '@/components/ui/tooltip'
 import { feishuConnectedAtom, sessionFeishuNotifyModeAtom, feishuDefaultNotifyModeAtom } from '@/atoms/feishu-atoms'
 import { cn } from '@/lib/utils'
-import type { FeishuNotifyMode } from '@/lib/proma-types'
+import type { FeishuNotifyMode } from '@/lib/chat-types'
 import { setFeishuSessionNotify } from '@/lib/tauri-bridge'
 
 /** 模式循环顺序 */

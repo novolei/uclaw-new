@@ -81,7 +81,7 @@ import { useOpenSession } from '@/hooks/useOpenSession'
 import { AgentSessionProvider } from '@/contexts/session-context'
 import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { sendWithCmdEnterAtom } from '@/atoms/shortcut-atoms'
-import type { AgentSendInput, AgentMessage, AgentPendingFile } from '@/lib/proma-types'
+import type { AgentSendInput, AgentMessage, AgentPendingFile } from '@/lib/agent-types'
 import { fileToBase64 } from '@/lib/file-utils'
 import {
   updateSettings,

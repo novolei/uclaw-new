@@ -27,7 +27,7 @@ import { useConversationModelOptional } from '@/hooks/useConversationSettings'
 import { useConversationIdOptional } from '@/contexts/session-context'
 import { getModelLogo, getChannelLogo } from '@/lib/model-logo'
 import { cn } from '@/lib/utils'
-import type { Channel, ModelOption } from '@/lib/proma-types'
+import type { Channel, ModelOption } from '@/lib/chat-types'
 import { listChannels as listChannelsIPC, updateConversationModel } from '@/lib/tauri-bridge'
 
 /** 从渠道列表构建扁平化的模型选项 */

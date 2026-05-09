@@ -41,7 +41,7 @@ import { useConversationParallelMode } from '@/hooks/useConversationSettings'
 import { getModelLogo } from '@/lib/model-logo'
 import { userProfileAtom } from '@/atoms/user-profile'
 import { tabMinimapCacheAtom, type TabMinimapItem } from '@/atoms/tab-atoms'
-import type { ChatMessage, ChatToolActivity } from '@/lib/proma-types'
+import type { ChatMessage, ChatToolActivity } from '@/lib/chat-types'
 
 // ===== 滚动到顶部加载更多 =====
 

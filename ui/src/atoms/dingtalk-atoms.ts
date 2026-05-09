@@ -6,7 +6,7 @@
  */
 
 import { atom } from 'jotai'
-import type { DingTalkBridgeState, DingTalkBotBridgeState } from '@/lib/proma-types'
+import type { DingTalkBridgeState, DingTalkBotBridgeState } from '@/lib/chat-types'
 
 /** 所有 Bot 的状态（botId → 状态） */
 export const dingtalkBotStatesAtom = atom<Record<string, DingTalkBotBridgeState>>({})

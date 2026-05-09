@@ -6,7 +6,7 @@
  */
 
 import { atom } from 'jotai'
-import type { WeChatBridgeState } from '@/lib/proma-types'
+import type { WeChatBridgeState } from '@/lib/chat-types'
 
 /** 微信 Bridge 连接状态 */
 export const wechatBridgeStateAtom = atom<WeChatBridgeState>({

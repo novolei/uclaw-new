@@ -5,11 +5,7 @@
  */
 
 import { atom } from 'jotai'
-import type {
-  EnvironmentCheckResult,
-  RuntimeStatus,
-  InstallerManifest,
-} from '@/lib/proma-types'
+import type { EnvironmentCheckResult, RuntimeStatus, InstallerManifest } from '@/lib/chat-types'
 
 /** 单个安装包的下载状态 */
 export interface InstallerDownloadState {
