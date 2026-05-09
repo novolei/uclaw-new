@@ -48,6 +48,10 @@ export interface AgentMessage {
   errorCode?: string
   events?: AgentEvent[]
   attachedDirectories?: string[]
+  /** Concatenated thinking-block text — assistant only, hydrated from DB. */
+  reasoning?: string
+  /** Persisted tool activity records (ChatToolActivity[]), hydrated from DB. */
+  toolActivities?: ChatToolActivity[]
 }
 
 /** SDK 消息格式 (Phase 4) */

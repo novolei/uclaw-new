@@ -35,6 +35,7 @@ import { Button } from '@/components/ui/button'
 import { getModelLogo, resolveModelDisplayName } from '@/lib/model-logo'
 import { ToolActivityList } from './ToolActivityItem'
 import { ThinkingBlock } from './ContentBlock'
+import { ChatToolActivityIndicator } from '@/components/chat/ChatToolActivityIndicator'
 import { userProfileAtom } from '@/atoms/user-profile'
 import { tabMinimapCacheAtom } from '@/atoms/tab-atoms'
 import { channelsAtom } from '@/atoms/chat-atoms'
@@ -513,9 +514,24 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
           logo={<AssistantLogo model={message.model} />}
         />
         <MessageContent>
+          {/* 历史消息的 thinking block — 从持久化的 reasoning 字段渲染 */}
+          {message.reasoning && (
+            <div className="mb-3">
+              <ThinkingBlock
+                block={{ type: 'thinking', thinking: message.reasoning } as any}
+                dimmed={false}
+              />
+            </div>
+          )}
           {toolActivities.length > 0 && (
             <div className="mb-3">
               <ToolActivityList activities={toolActivities} />
+            </div>
+          )}
+          {/* 历史消息的工具调用（来自 toolActivities 字段，与 events 互补） */}
+          {toolActivities.length === 0 && message.toolActivities && message.toolActivities.length > 0 && (
+            <div className="mb-3">
+              <ChatToolActivityIndicator activities={message.toolActivities} />
             </div>
           )}
           <ToolResultInlineImages activities={toolActivities} />

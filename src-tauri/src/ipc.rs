@@ -103,6 +103,18 @@ pub struct MessageResponse {
     pub role: String,
     pub content: String,
     pub created_at: String,
+    /// Concatenated thinking-block text for assistant messages.
+    /// Frontend renders via the <Reasoning> collapsible block.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    /// Tool activity records for assistant messages — array of
+    /// `{ tool, status, input, output, ... }` objects matching the
+    /// frontend `ChatToolActivity` shape (deserialized JSON).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_activities: Option<serde_json::Value>,
+    /// Model identifier used for the assistant turn, e.g. "deepseek-v4-flash".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 // ─── Spaces ────────────────────────────────────────────────────────────

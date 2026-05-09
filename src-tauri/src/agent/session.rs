@@ -2,6 +2,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use crate::agent::types::*;
 
+/// Optional per-message metadata persisted alongside the message content.
+/// All fields are optional — pass `MessageMeta::default()` for plain
+/// user messages or non-streaming assistant messages.
+#[derive(Debug, Clone, Default)]
+pub struct MessageMeta {
+    /// Concatenated thinking-block text for assistant messages.
+    pub reasoning: Option<String>,
+    /// JSON-serialized array of tool activity records (frontend ChatToolActivity shape).
+    pub tool_activities_json: Option<String>,
+    /// Model identifier used for the assistant turn.
+    pub model: Option<String>,
+    /// JSON-serialized attachment array.
+    pub attachments_json: Option<String>,
+}
+
 /// Session state for a single conversation
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -94,6 +109,18 @@ impl SessionManager {
     }
 
     pub fn add_message(&mut self, session_id: &str, message: ChatMessage) {
+        self.add_message_with_meta(session_id, message, MessageMeta::default())
+    }
+
+    /// Add a message with optional reasoning + tool-activity metadata.
+    /// Used by the chat send_message path so historical messages can re-render
+    /// the thinking block and the tool-call cards after reload.
+    pub fn add_message_with_meta(
+        &mut self,
+        session_id: &str,
+        message: ChatMessage,
+        meta: MessageMeta,
+    ) {
         if let Some(session) = self.sessions.get_mut(session_id) {
             session.messages.push(message);
             session.updated_at = chrono::Utc::now().to_rfc3339();
@@ -111,8 +138,19 @@ impl SessionManager {
                 };
                 let content = serde_json::to_string(&session.messages.last().map(|m| &m.content)).unwrap_or_default();
                 let _ = conn.execute(
-                    "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    rusqlite::params![msg_id, session_id, role, content, chrono::Utc::now().to_rfc3339()],
+                    "INSERT INTO messages (id, conversation_id, role, content, created_at, reasoning, tool_activities_json, model, attachments_json) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    rusqlite::params![
+                        msg_id,
+                        session_id,
+                        role,
+                        content,
+                        chrono::Utc::now().to_rfc3339(),
+                        meta.reasoning,
+                        meta.tool_activities_json,
+                        meta.model,
+                        meta.attachments_json,
+                    ],
                 );
                 let _ = conn.execute(
                     "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
@@ -122,7 +160,118 @@ impl SessionManager {
         }
     }
 
+    /// Load a session's messages back from SQLite into the in-memory cache.
+    /// No-op if the session is already loaded.
+    /// Returns true if the session is now in memory after the call.
+    pub fn ensure_loaded(&mut self, conversation_id: &str) -> bool {
+        if self.sessions.contains_key(conversation_id) {
+            return true;
+        }
+        let conn = match self.db.lock() {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+
+        // Pull conversation row first
+        let conv: Option<(String, String, Option<String>, String, String)> = conn
+            .query_row(
+                "SELECT id, space_id, title, created_at, updated_at FROM conversations WHERE id = ?1",
+                rusqlite::params![conversation_id],
+                |row| Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                )),
+            )
+            .ok();
+
+        let Some((id, space_id, title, created_at, updated_at)) = conv else {
+            return false;
+        };
+
+        let mut session = Session {
+            id: id.clone(),
+            title: title.unwrap_or_default(),
+            space_id,
+            messages: Vec::new(),
+            created_at,
+            updated_at,
+            cumulative_input_tokens: 0,
+            cumulative_output_tokens: 0,
+        };
+
+        // Load messages (just role+content_json — meta columns are read by get_messages).
+        // Collect into a Vec first so the prepared statement borrow ends before we
+        // mutate `session.messages`.
+        let collected: Vec<(String, String)> = {
+            let mut stmt = match conn.prepare(
+                "SELECT role, content FROM messages WHERE conversation_id = ?1 ORDER BY created_at ASC",
+            ) {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
+            let rows = match stmt.query_map(rusqlite::params![conversation_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            }) {
+                Ok(r) => r,
+                Err(_) => return false,
+            };
+            rows.flatten().collect()
+        };
+
+        for (role_str, content_str) in collected {
+            let role = match role_str.as_str() {
+                "user" => MessageRole::User,
+                "system" => MessageRole::System,
+                _ => MessageRole::Assistant,
+            };
+            // content was stored as JSON of Option<&Vec<ContentBlock>>.
+            // Try the new shape first, fall back to wrapping plain text.
+            let content: Vec<ContentBlock> = serde_json::from_str::<Option<Vec<ContentBlock>>>(&content_str)
+                .ok()
+                .flatten()
+                .or_else(|| serde_json::from_str::<Vec<ContentBlock>>(&content_str).ok())
+                .unwrap_or_else(|| vec![ContentBlock::Text { text: content_str.clone() }]);
+            session.messages.push(ChatMessage { role, content });
+        }
+
+        drop(conn);
+        self.sessions.insert(id, session);
+        true
+    }
+
     pub fn list(&self) -> Vec<SessionSummary> {
+        // Prefer the database as the source of truth so conversations created
+        // before the current session-manager-cache is populated (e.g. after
+        // app restart) still show up. Falls back to in-memory if DB read fails.
+        if let Ok(conn) = self.db.lock() {
+            let mut stmt = conn.prepare(
+                "SELECT c.id, c.space_id, c.title, c.created_at, c.updated_at, \
+                        (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) \
+                 FROM conversations c \
+                 ORDER BY c.updated_at DESC",
+            );
+            if let Ok(ref mut s) = stmt {
+                if let Ok(rows) = s.query_map([], |row| {
+                    Ok(SessionSummary {
+                        id: row.get::<_, String>(0)?,
+                        space_id: row.get::<_, String>(1)?,
+                        title: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                        created_at: row.get::<_, String>(3)?,
+                        updated_at: row.get::<_, String>(4)?,
+                        message_count: row.get::<_, i64>(5)? as usize,
+                    })
+                }) {
+                    let collected: Vec<SessionSummary> = rows.flatten().collect();
+                    if !collected.is_empty() {
+                        return collected;
+                    }
+                }
+            }
+        }
+        // Fallback: in-memory snapshot
         let mut summaries: Vec<SessionSummary> = self.sessions.values().map(|s| s.into()).collect();
         summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         summaries

@@ -68,6 +68,12 @@ export interface Message {
   role: "user" | "assistant" | "system";
   content: string;
   createdAt: string;
+  /** Concatenated thinking-block text — assistant only. */
+  reasoning?: string;
+  /** Per-message tool activity records (frontend ChatToolActivity shape). */
+  toolActivities?: unknown[];
+  /** Model used for this assistant turn. */
+  model?: string;
 }
 
 export type SafetyMode = "ask" | "supervised" | "yolo";
