@@ -3200,13 +3200,6 @@ pub async fn search_trajectories(
 
 // ─── Session Title Generation ───────────────────────────────────────────────
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TitleGenerated {
-    title: String,
-    emoji: String,
-}
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionTitleUpdatePayload {
