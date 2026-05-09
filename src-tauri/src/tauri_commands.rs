@@ -2792,9 +2792,12 @@ pub async fn send_agent_message(
             let asst_msg_id = uuid::Uuid::new_v4().to_string();
             let now2 = chrono::Utc::now().timestamp_millis();
             // Pull thinking + tool activities from the loop's freshly-added messages.
-            // pre_loop_count = number of messages BEFORE we started this turn (history + the
-            // just-pushed user message); ctx.messages now also has the assistant turn(s).
-            let pre_loop_count = history.len() + 1;
+            // `history` was loaded AFTER the user message was INSERTed into agent_messages
+            // (lines ~2622-2625), so it already includes the user turn — and the
+            // ctx.messages bootstrap loop above pushed exactly history.len() entries.
+            // The slice we want is everything the agent loop appended after that.
+            // (Off-by-one warning: do NOT add 1 here, the user message is in `history`.)
+            let pre_loop_count = history.len();
             let process_meta = if ctx.messages.len() > pre_loop_count {
                 extract_process_meta_from_messages(
                     &ctx.messages[pre_loop_count..],
