@@ -1,14 +1,12 @@
 /**
- * ChatToolBlock — Chat 模式工具调用块
+ * ChatToolBlock — Chat 模式工具调用块（紧凑列表行样式）
  *
- * 时间线节点样式：
- *   ●─── 🔧 bash ls -a
- *   ●─── ✓ bash rm -rf …
+ *   🔧 bash ls -a
+ *   🔧 bash rm -rf …
+ *   ⟳  bash long-running …
+ *   ⚠  bash failing-cmd
  *
- * 节点（dot）位于左侧时间线主干上，状态以颜色编码：
- *   - 运行中：蓝色 + 脉冲
- *   - 出错：destructive
- *   - 完成：muted
+ * 状态以工具图标 + 行色变化体现，不再使用大圆点。
  */
 
 import * as React from 'react'
@@ -59,36 +57,21 @@ export function ChatToolBlock({
         disabled={!canExpand}
         onClick={() => canExpand && setExpanded((v) => !v)}
         className={cn(
-          // 时间线节点 + 行容器：左 padding 留出 22px 给 dot，右侧才是文字
-          'group relative flex w-full items-center gap-2 rounded-md py-1 pl-[26px] pr-2 text-left',
+          'group relative flex w-full items-center gap-2 rounded-md py-1 pl-2 pr-2 text-left',
           'transition-colors duration-150',
           canExpand
             ? 'hover:bg-foreground/[0.03] dark:hover:bg-foreground/[0.04] cursor-pointer'
             : 'cursor-default',
         )}
       >
-        {/* 时间线节点（圆点） */}
-        <span
-          aria-hidden="true"
-          className={cn(
-            'absolute left-[6px] top-1/2 -translate-y-1/2 size-[11px] rounded-full',
-            'ring-[3px] ring-background dark:ring-background',
-            // 状态颜色编码
-            !isCompleted
-              ? 'bg-primary/80 shadow-[0_0_0_2px_hsl(var(--primary)/0.18)] animate-pulse'
-              : isError
-                ? 'bg-destructive/80 shadow-[0_0_0_2px_hsl(var(--destructive)/0.18)]'
-                : 'bg-muted-foreground/35 group-hover:bg-foreground/55 transition-colors',
-          )}
-        />
-
-        {/* 状态/加载图标（仅运行中或出错显示）+ 工具图标 */}
+        {/* 状态指示：运行中 spinner / 出错 warning，完成态不显示额外图标 */}
         {!isCompleted ? (
-          <Loader2 className="size-3 shrink-0 animate-spin text-primary/70" />
+          <Loader2 className="size-3.5 shrink-0 animate-spin text-primary/70" />
         ) : isError ? (
-          <AlertTriangle className="size-3 shrink-0 text-destructive/70" />
+          <AlertTriangle className="size-3.5 shrink-0 text-destructive/70" />
         ) : null}
 
+        {/* 工具图标 */}
         <ToolIcon
           className={cn(
             'size-3.5 shrink-0',
@@ -98,6 +81,7 @@ export function ChatToolBlock({
           )}
         />
 
+        {/* 命令/工具描述 */}
         <span
           className={cn(
             'truncate text-[13.5px] tracking-[-0.005em]',
@@ -122,7 +106,7 @@ export function ChatToolBlock({
         )}
       </button>
 
-      {/* 展开面板：缩进对齐文字起始位置，左侧贴合时间线主干 */}
+      {/* 展开的结果面板 */}
       {expanded && result && (
         <div
           className={cn(
