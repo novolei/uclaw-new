@@ -438,6 +438,107 @@ AFTER DELETE ON messages BEGIN
 END;
 ";
 
+/// V11: switch FTS tokenizer from `unicode61` to `trigram`.
+///
+/// Why trigram:
+///   * Substring match within tokens — `gomo` finds `gomoku` without `*`.
+///   * CJK works naturally — `unicode61` treats Chinese runs as one token,
+///     trigram splits into 3-char shingles so `五子棋` matches anywhere.
+///   * Multi-word queries get FTS5's implicit AND between whitespace-
+///     separated terms, so `rules gomoku` matches both orderings.
+///
+/// Cost: ~3× index size. Acceptable for a desktop SQLite. Both tables are
+/// external-content (`content='messages'` / `content='agent_turns'`), so
+/// the FTS shadow has zero text bytes of its own — only postings.
+///
+/// We must DROP + recreate (FTS5 can't ALTER a tokenizer).
+pub const V11_FTS_TRIGRAM: &str = "
+-- Drop old triggers + tables. The data lives in messages / agent_turns and
+-- is preserved.
+DROP TRIGGER IF EXISTS messages_fts_insert;
+DROP TRIGGER IF EXISTS messages_fts_update;
+DROP TRIGGER IF EXISTS messages_fts_delete;
+DROP TABLE IF EXISTS messages_fts;
+
+DROP TRIGGER IF EXISTS agent_turns_fts_insert;
+DROP TRIGGER IF EXISTS agent_turns_fts_update;
+DROP TRIGGER IF EXISTS agent_turns_fts_delete;
+DROP TABLE IF EXISTS agent_turns_fts;
+
+-- Recreate messages_fts with trigram tokenizer.
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+    conversation_id UNINDEXED,
+    role UNINDEXED,
+    content_text,
+    reasoning,
+    content='messages',
+    content_rowid='rowid',
+    tokenize='trigram'
+);
+
+CREATE TRIGGER messages_fts_insert
+AFTER INSERT ON messages BEGIN
+  INSERT INTO messages_fts(rowid, conversation_id, role, content_text, reasoning)
+  VALUES (new.rowid, new.conversation_id, new.role, new.content_text, new.reasoning);
+END;
+
+CREATE TRIGGER messages_fts_update
+AFTER UPDATE ON messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, conversation_id, role, content_text, reasoning)
+  VALUES ('delete', old.rowid, old.conversation_id, old.role, old.content_text, old.reasoning);
+  INSERT INTO messages_fts(rowid, conversation_id, role, content_text, reasoning)
+  VALUES (new.rowid, new.conversation_id, new.role, new.content_text, new.reasoning);
+END;
+
+CREATE TRIGGER messages_fts_delete
+AFTER DELETE ON messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, conversation_id, role, content_text, reasoning)
+  VALUES ('delete', old.rowid, old.conversation_id, old.role, old.content_text, old.reasoning);
+END;
+
+-- Recreate agent_turns_fts with trigram tokenizer.
+CREATE VIRTUAL TABLE agent_turns_fts USING fts5(
+    session_id UNINDEXED,
+    content,
+    tool_result,
+    reasoning,
+    content='agent_turns',
+    content_rowid='rowid',
+    tokenize='trigram'
+);
+
+CREATE TRIGGER agent_turns_fts_insert
+AFTER INSERT ON agent_turns BEGIN
+  INSERT INTO agent_turns_fts(rowid, session_id, content, tool_result, reasoning)
+  VALUES (new.rowid, new.session_id, new.content, new.tool_result, new.reasoning);
+END;
+
+CREATE TRIGGER agent_turns_fts_update
+AFTER UPDATE ON agent_turns BEGIN
+  INSERT INTO agent_turns_fts(agent_turns_fts, rowid, session_id, content, tool_result, reasoning)
+  VALUES ('delete', old.rowid, old.session_id, old.content, old.tool_result, old.reasoning);
+  INSERT INTO agent_turns_fts(rowid, session_id, content, tool_result, reasoning)
+  VALUES (new.rowid, new.session_id, new.content, new.tool_result, new.reasoning);
+END;
+
+CREATE TRIGGER agent_turns_fts_delete
+AFTER DELETE ON agent_turns BEGIN
+  INSERT INTO agent_turns_fts(agent_turns_fts, rowid, session_id, content, tool_result, reasoning)
+  VALUES ('delete', old.rowid, old.session_id, old.content, old.tool_result, old.reasoning);
+END;
+";
+
+/// Backfill query for the recreated FTS tables. Run after V11 DDL.
+pub const V11_BACKFILL_MESSAGES: &str = "
+INSERT INTO messages_fts(rowid, conversation_id, role, content_text, reasoning)
+SELECT rowid, conversation_id, role, content_text, reasoning FROM messages
+";
+
+pub const V11_BACKFILL_AGENT_TURNS: &str = "
+INSERT INTO agent_turns_fts(rowid, session_id, content, tool_result, reasoning)
+SELECT rowid, session_id, content, tool_result, reasoning FROM agent_turns
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -497,6 +598,21 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
          WHERE rowid NOT IN (SELECT rowid FROM messages_fts)",
         [],
     );
+    // V11: re-tokenize FTS5 with trigram for CJK + substring + typo-resilience.
+    // Idempotent because the migration drops + recreates; backfill uses
+    // INSERT … SELECT into the freshly-empty external-content shadow.
+    tracing::debug!("Running migration V11: FTS trigram tokenizer");
+    for stmt in V11_FTS_TRIGRAM.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V11 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    if let Err(e) = conn.execute(V11_BACKFILL_MESSAGES, []) {
+        tracing::warn!("V11 messages backfill failed: {}", e);
+    }
+    if let Err(e) = conn.execute(V11_BACKFILL_AGENT_TURNS, []) {
+        tracing::warn!("V11 agent_turns backfill failed: {}", e);
+    }
     tracing::info!("Database migrations complete");
     Ok(())
 }
