@@ -988,12 +988,14 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         getAgentSessionMessages(sessionId)
           .then((msgs: any[]) => {
             if (msgs.length === 0) return
-            setMessages(msgs.map((m: any) => ({
-              id: m.id,
-              role: m.role,
-              content: m.content,
-              createdAt: new Date(m.createdAt).getTime(),
-            })))
+            // IMPORTANT: pass through the full message shape from the backend
+            // (id, role, content, createdAt, reasoning, toolActivities, model, …).
+            // A previous version of this code stripped everything except id/role/
+            // content/createdAt, which made historical thinking blocks and tool
+            // call cards vanish from earlier turns the moment a new message was
+            // sent — they only re-appeared after a tab switch (which hits the
+            // initial-load path that does setMessages(msgs) cleanly).
+            setMessages(msgs as AgentMessage[])
           })
           .catch(console.error)
       })

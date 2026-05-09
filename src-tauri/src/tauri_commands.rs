@@ -355,35 +355,10 @@ pub async fn send_message(
             .map(|s| s.messages.len())
             .unwrap_or(0);
         drop(session_mgr);
-        let slice = &reason_ctx.messages[pre_loop_msg_count..];
-        let (thinking_count, tool_use_count, tool_result_count) = slice.iter()
-            .flat_map(|m| m.content.iter())
-            .fold((0usize, 0usize, 0usize), |(t, tu, tr), block| match block {
-                ContentBlock::Thinking { .. } => (t + 1, tu, tr),
-                ContentBlock::ToolUse { .. } => (t, tu + 1, tr),
-                ContentBlock::ToolResult { .. } => (t, tu, tr + 1),
-                _ => (t, tu, tr),
-            });
-        tracing::info!(
-            conversation_id = %input.conversation_id,
-            pre_loop_msg_count,
-            ctx_messages_len = reason_ctx.messages.len(),
-            new_messages = slice.len(),
-            thinking_blocks = thinking_count,
-            tool_use_blocks = tool_use_count,
-            tool_result_blocks = tool_result_count,
-            "[chat] extracting process meta from new messages"
-        );
-        let meta = extract_process_meta_from_messages(slice, llm_config.model.clone());
-        tracing::info!(
-            conversation_id = %input.conversation_id,
-            has_reasoning = meta.reasoning.is_some(),
-            reasoning_len = meta.reasoning.as_deref().map(|s| s.len()).unwrap_or(0),
-            has_tool_activities = meta.tool_activities_json.is_some(),
-            tool_activities_len = meta.tool_activities_json.as_deref().map(|s| s.len()).unwrap_or(0),
-            "[chat] persisting assistant message with meta"
-        );
-        meta
+        extract_process_meta_from_messages(
+            &reason_ctx.messages[pre_loop_msg_count..],
+            llm_config.model.clone(),
+        )
     };
 
     // Save assistant response and cumulative token counts
@@ -2824,44 +2799,10 @@ pub async fn send_agent_message(
             // (Off-by-one warning: do NOT add 1 here, the user message is in `history`.)
             let pre_loop_count = history.len();
             let process_meta = if ctx.messages.len() > pre_loop_count {
-                let slice = &ctx.messages[pre_loop_count..];
-                // Count blocks for diagnostic logging
-                let (thinking_count, tool_use_count, tool_result_count) = slice.iter()
-                    .flat_map(|m| m.content.iter())
-                    .fold((0usize, 0usize, 0usize), |(t, tu, tr), block| match block {
-                        ContentBlock::Thinking { .. } => (t + 1, tu, tr),
-                        ContentBlock::ToolUse { .. } => (t, tu + 1, tr),
-                        ContentBlock::ToolResult { .. } => (t, tu, tr + 1),
-                        _ => (t, tu, tr),
-                    });
-                tracing::info!(
-                    session_id = %session_id,
-                    history_len = history.len(),
-                    ctx_messages_len = ctx.messages.len(),
-                    new_messages = slice.len(),
-                    thinking_blocks = thinking_count,
-                    tool_use_blocks = tool_use_count,
-                    tool_result_blocks = tool_result_count,
-                    "[agent] extracting process meta from new messages"
-                );
-                extract_process_meta_from_messages(slice, String::new())
+                extract_process_meta_from_messages(&ctx.messages[pre_loop_count..], String::new())
             } else {
-                tracing::warn!(
-                    session_id = %session_id,
-                    history_len = history.len(),
-                    ctx_messages_len = ctx.messages.len(),
-                    "[agent] no new messages in ctx after agent loop — meta will be empty"
-                );
                 crate::agent::session::MessageMeta::default()
             };
-            tracing::info!(
-                session_id = %session_id,
-                has_reasoning = process_meta.reasoning.is_some(),
-                reasoning_len = process_meta.reasoning.as_deref().map(|s| s.len()).unwrap_or(0),
-                has_tool_activities = process_meta.tool_activities_json.is_some(),
-                tool_activities_len = process_meta.tool_activities_json.as_deref().map(|s| s.len()).unwrap_or(0),
-                "[agent] persisting assistant message with meta"
-            );
             if let Ok(conn) = db.lock() {
                 let _ = conn.execute(
                     "INSERT INTO agent_messages (id, session_id, role, content, created_at, reasoning, tool_activities_json) \

@@ -162,6 +162,34 @@ function ToolResultInlineImages({ activities }: { activities: ToolActivity[] }):
   )
 }
 
+/**
+ * 把流式 agent ToolActivity[] 转换为持久化展示用的 ChatToolActivity[] start/result 配对。
+ * 让流式 UI 与历史消息（已用 ChatToolActivityIndicator 渲染）展示风格一致。
+ */
+function agentActivitiesToChatActivities(activities: ToolActivity[]): import('@/lib/proma-types').ChatToolActivity[] {
+  const out: import('@/lib/proma-types').ChatToolActivity[] = []
+  for (const a of activities) {
+    out.push({
+      toolCallId: a.toolUseId,
+      type: 'start',
+      toolName: a.toolName,
+      input: a.input,
+    })
+    if (a.done) {
+      out.push({
+        toolCallId: a.toolUseId,
+        type: 'result',
+        toolName: a.toolName,
+        input: a.input,
+        result: a.result,
+        isError: a.isError,
+        status: a.isError ? 'failed' : 'completed',
+      })
+    }
+  }
+  return out
+}
+
 /** 从持久化事件中提取工具活动列表 */
 function extractToolActivities(events: AgentMessage['events']): ToolActivity[] {
   if (!events) return []
@@ -523,17 +551,18 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
               />
             </div>
           )}
-          {toolActivities.length > 0 && (
-            <div className="mb-3">
-              <ToolActivityList activities={toolActivities} />
-            </div>
-          )}
-          {/* 历史消息的工具调用（来自 toolActivities 字段，与 events 互补） */}
-          {toolActivities.length === 0 && message.toolActivities && message.toolActivities.length > 0 && (
+          {/* 历史消息工具调用 — 优先用 message.toolActivities（chat 格式，PR #5 持久化的）；
+              若为空则把从 events 提取的 agent 格式转换为 chat 格式，统一用
+              ChatToolActivityIndicator 渲染（🔧 工具名 + 折叠结果卡片）。 */}
+          {(message.toolActivities && message.toolActivities.length > 0) ? (
             <div className="mb-3">
               <ChatToolActivityIndicator activities={message.toolActivities} />
             </div>
-          )}
+          ) : toolActivities.length > 0 ? (
+            <div className="mb-3">
+              <ChatToolActivityIndicator activities={agentActivitiesToChatActivities(toolActivities)} />
+            </div>
+          ) : null}
           <ToolResultInlineImages activities={toolActivities} />
           {message.content && (
             <MessageResponse basePath={sessionPath || undefined} basePaths={attachedDirs}>{message.content}</MessageResponse>
@@ -895,7 +924,12 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
                   )}
                   {(streamState?.toolActivities?.length ?? 0) > 0 && (
                     <div className="mb-3">
-                      <ToolActivityList activities={streamState!.toolActivities} animate={streaming} />
+                      {/* 流式工具调用 — 转成 ChatToolActivity 后用 ChatToolActivityIndicator 渲染，
+                          视觉与历史消息保持一致（ChatToolBlock 的 🔧 toolName + 折叠结果卡片样式） */}
+                      <ChatToolActivityIndicator
+                        activities={agentActivitiesToChatActivities(streamState!.toolActivities)}
+                        isStreaming={streaming}
+                      />
                     </div>
                   )}
                   {smoothContent ? (
