@@ -321,6 +321,23 @@ export interface AgentMessageSearchResult {
 }
 
 // ─────────────────────────────────────────────────────────
+// Recent Thread (SearchPalette browse mode)
+// ─────────────────────────────────────────────────────────
+
+/** Cross-domain recent thread shown in the search palette's browse mode. */
+export interface RecentThread {
+  id: string
+  kind: 'chat' | 'agent'
+  title: string
+  titleEmoji?: string
+  titlePending?: boolean
+  workspaceName: string
+  workspaceId: string
+  messageCount: number
+  updatedAt: string
+}
+
+// ─────────────────────────────────────────────────────────
 // Utility Functions (stub)
 // ─────────────────────────────────────────────────────────
 

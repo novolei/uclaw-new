@@ -103,6 +103,7 @@ import type {
   MemoryGraphDeleteNodeInput,
 } from './types';
 import type { Channel } from './chat-types';
+import type { RecentThread } from './agent-types';
 
 // ─────────────────────────────────────────────────────────
 // Bootstrap / Settings
@@ -196,6 +197,9 @@ export interface SessionTitleUpdate {
 
 export const listSpaces = (): Promise<SpaceSummary[]> =>
   invoke('list_spaces');
+
+export const listRecentThreads = (): Promise<RecentThread[]> =>
+  invoke<RecentThread[]>('list_recent_threads')
 
 export const createSpace = (input: CreateSpaceInput): Promise<SpaceSummary> =>
   invoke('create_space', { input });
