@@ -18,10 +18,31 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       output: {
-        manualChunks: {
-          react: ['react', 'react-dom'],
-          tauri: ['@tauri-apps/api'],
-          vendor: ['jotai', 'clsx', 'tailwind-merge'],
+        manualChunks(id: string) {
+          // Existing vendor splits — preserve
+          if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) {
+            return 'react'
+          }
+          if (id.includes('node_modules/@tauri-apps/')) {
+            return 'tauri'
+          }
+          if (
+            id.includes('node_modules/jotai') ||
+            id.includes('node_modules/clsx') ||
+            id.includes('node_modules/tailwind-merge')
+          ) {
+            return 'vendor'
+          }
+          // NEW: Shiki + its languages/themes — biggest single-source contributor
+          if (id.includes('node_modules/shiki') || id.includes('node_modules/@shikijs')) {
+            return 'shiki'
+          }
+          // NEW: route-level splits — heaviest views become their own async chunks
+          if (id.includes('/components/settings/')) return 'view-settings'
+          if (id.includes('/components/memory/')) return 'view-memory'
+          if (id.includes('/components/automation/')) return 'view-automation'
+          if (id.includes('/components/agent/')) return 'view-agent'
+          return undefined
         },
       },
     },
