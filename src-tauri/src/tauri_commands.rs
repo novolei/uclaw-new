@@ -4056,3 +4056,75 @@ pub async fn stop_agent_teams(
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod fts_query_tests {
+    use super::{build_fts_query, parse_scope};
+
+    #[test]
+    fn empty_input_returns_none() {
+        assert_eq!(build_fts_query(""), None);
+        assert_eq!(build_fts_query("   "), None);
+        assert_eq!(build_fts_query("\t\n"), None);
+    }
+
+    #[test]
+    fn single_word() {
+        assert_eq!(build_fts_query("gomoku").unwrap(), "\"gomoku\"");
+    }
+
+    #[test]
+    fn multi_word_implicit_and() {
+        assert_eq!(
+            build_fts_query("gomoku rules").unwrap(),
+            "\"gomoku\" \"rules\""
+        );
+    }
+
+    #[test]
+    fn cjk_token_preserved_as_phrase() {
+        // Trigram tokenizer will further split this server-side;
+        // build_fts_query just wraps the user's runs as phrases.
+        assert_eq!(build_fts_query("五子棋").unwrap(), "\"五子棋\"");
+    }
+
+    #[test]
+    fn mixed_cjk_and_ascii() {
+        assert_eq!(
+            build_fts_query("五子棋 rules").unwrap(),
+            "\"五子棋\" \"rules\""
+        );
+    }
+
+    #[test]
+    fn embedded_double_quotes_are_doubled() {
+        // FTS5 phrase escape: `"` → `""` inside a quoted phrase.
+        assert_eq!(
+            build_fts_query("a\"b c").unwrap(),
+            "\"a\"\"b\" \"c\""
+        );
+    }
+
+    #[test]
+    fn whitespace_collapsed() {
+        assert_eq!(
+            build_fts_query("  foo   bar  ").unwrap(),
+            "\"foo\" \"bar\""
+        );
+    }
+
+    #[test]
+    fn scope_session_parses() {
+        assert_eq!(
+            parse_scope(Some("session:abc-123")),
+            Some("abc-123".to_string())
+        );
+    }
+
+    #[test]
+    fn scope_unknown_returns_none() {
+        assert_eq!(parse_scope(Some("workspace:foo")), None);
+        assert_eq!(parse_scope(Some("")), None);
+        assert_eq!(parse_scope(None), None);
+    }
+}
