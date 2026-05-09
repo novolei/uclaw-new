@@ -114,31 +114,24 @@ export function ChatToolBlock({
         )}
       </button>
 
-      {/* 展开的结果面板 — 容器样式与 ThinkingBlock 展开正文完全一致：
-          rounded-lg + bg-muted/30 + 1.5px 虚线 SVG 边框 + 同样的 px-3 py-2.5 */}
+      {/* 展开的结果面板 — 保持轻量的左边框风格（用户偏好），
+          字号 / 行高 / 颜色仍与 ThinkingBlock 展开正文一致 */}
       {expanded && result && (
         <div
           className={cn(
-            'mt-1.5 mb-2 rounded-lg px-3 py-2.5',
+            'ml-[22px] mr-2 mt-1 mb-2 pl-3 pr-1 py-1.5',
+            'border-l',
+            isError ? 'border-destructive/40' : 'border-border/50 dark:border-border/60',
+            'text-[13px] leading-relaxed text-foreground/75',
             'animate-in fade-in slide-in-from-top-1 duration-150',
-            isError ? 'bg-destructive/[0.06]' : 'bg-muted/30',
           )}
-          style={{
-            backgroundImage: `url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='8' ry='8' stroke='${
-              isError
-                ? 'rgba(220%2c38%2c38%2c0.35)'
-                : 'rgba(128%2c128%2c128%2c0.35)'
-            }' stroke-width='1.5' stroke-dasharray='8%2c 6' stroke-dashoffset='0' stroke-linecap='round'/%3e%3c/svg%3e")`,
-          }}
         >
-          <div className="text-[13px] leading-relaxed text-foreground/75">
-            <ToolResultRenderer
-              toolName={toolName}
-              input={input}
-              result={result}
-              isError={isError}
-            />
-          </div>
+          <ToolResultRenderer
+            toolName={toolName}
+            input={input}
+            result={result}
+            isError={isError}
+          />
         </div>
       )}
     </div>
