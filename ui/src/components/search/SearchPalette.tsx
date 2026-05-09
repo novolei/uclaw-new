@@ -17,7 +17,7 @@
  */
 
 import * as React from 'react'
-import { useAtom } from 'jotai'
+import { useAtom, useAtomValue } from 'jotai'
 import { Command } from 'cmdk'
 import {
   Search,
@@ -34,7 +34,10 @@ import {
 } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { cn } from '@/lib/utils'
-import { searchPaletteOpenAtom } from '@/atoms/search-atoms'
+import { searchPaletteOpenAtom, searchPaletteScopeAtom } from '@/atoms/search-atoms'
+import { appModeAtom } from '@/atoms/app-mode'
+import { currentConversationIdAtom } from '@/atoms/chat-atoms'
+import { currentAgentSessionIdAtom } from '@/atoms/agent-atoms'
 import { listRecentThreads, listSpaces } from '@/lib/tauri-bridge'
 import type { RecentThread } from '@/lib/agent-types'
 import type { SpaceSummary } from '@/lib/types'
@@ -124,6 +127,24 @@ export interface SearchPaletteProps {
 
 export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElement | null {
   const [open, setOpen] = useAtom(searchPaletteOpenAtom)
+  const [scope, setScope] = useAtom(searchPaletteScopeAtom)
+  const appMode = useAtomValue(appModeAtom)
+  const currentConversationId = useAtomValue(currentConversationIdAtom)
+  const currentAgentSessionId = useAtomValue(currentAgentSessionIdAtom)
+
+  const activeSessionTarget = React.useMemo<{
+    id: string
+    label: string
+  } | null>(() => {
+    if (appMode === 'agent' && currentAgentSessionId) {
+      return { id: currentAgentSessionId, label: '当前 Agent 会话' }
+    }
+    if (appMode === 'chat' && currentConversationId) {
+      return { id: currentConversationId, label: '当前聊天' }
+    }
+    return null
+  }, [appMode, currentConversationId, currentAgentSessionId])
+
   const [query, setQuery] = React.useState('')
   const [recents, setRecents] = React.useState<RecentThread[]>([])
   const [workspaces, setWorkspaces] = React.useState<WorkspaceSummary[]>([])
@@ -131,24 +152,46 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
   const [searching, setSearching] = React.useState(false)
   const debounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Global ⌘K toggle
+  // Global ⌘K toggle + Tab scope toggle + two-step Esc
   React.useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Outside the palette: ⌘K / Ctrl-K opens.
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault()
         setOpen((v) => !v)
-      } else if (e.key === 'Escape' && open) {
-        setOpen(false)
+        return
+      }
+      if (!open) return
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        // Two-step Esc: first clear scope, second close.
+        if (scope !== 'all') {
+          setScope('all')
+        } else {
+          setOpen(false)
+        }
+        return
+      }
+      if (e.key === 'Tab' && activeSessionTarget) {
+        e.preventDefault()
+        setScope((s) =>
+          s === 'all'
+            ? { kind: 'session', id: activeSessionTarget.id, label: activeSessionTarget.label }
+            : 'all',
+        )
       }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [open, setOpen])
+  }, [open, setOpen, scope, setScope, activeSessionTarget])
 
-  // Reset query when palette closes
+  // Reset query + scope when palette closes
   React.useEffect(() => {
-    if (!open) setQuery('')
-  }, [open])
+    if (!open) {
+      setQuery('')
+      setScope('all')
+    }
+  }, [open, setScope])
 
   // Fetch browse data on open
   React.useEffect(() => {
@@ -176,8 +219,9 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
     setSearching(true)
     debounceRef.current = setTimeout(async () => {
       try {
+        const scopeArg = scope === 'all' ? null : `session:${scope.id}`
         const result = await invoke<SearchHit[]>('search_conversations', {
-          input: { query: query.trim() },
+          input: { query: query.trim(), scope: scopeArg },
         })
         setHits(result ?? [])
       } catch (err) {
@@ -190,7 +234,7 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
     }
-  }, [open, query])
+  }, [open, query, scope])
 
   // Client-side filtering for the three browse sections
   const q = query.trim().toLowerCase()
@@ -248,12 +292,24 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
         <Command label="Global search" loop shouldFilter={false}>
           {/* Input row */}
           <div className="flex items-center gap-3 border-b border-border/50 px-4 py-3.5">
-            <Search className="size-4 shrink-0 text-muted-foreground/50" />
+            <Search className="size-4 shrink-0 text-muted-foreground/60" />
+            {scope !== 'all' && (
+              <button
+                type="button"
+                onClick={() => setScope('all')}
+                className="flex shrink-0 items-center gap-1.5 rounded-md bg-accent/60 px-2 py-1 text-[11.5px] text-accent-foreground/90 hover:bg-accent transition-colors"
+                title="按 Esc 清除范围"
+              >
+                <Hash className="size-3" />
+                {scope.label}
+                <span className="text-accent-foreground/50">×</span>
+              </button>
+            )}
             <Command.Input
               autoFocus
               value={query}
               onValueChange={setQuery}
-              placeholder="搜索线程、项目..."
+              placeholder={scope === 'all' ? '搜索线程、项目...' : '在当前会话内搜索...'}
               className="flex-1 bg-transparent outline-none text-[13.5px] text-foreground placeholder:text-muted-foreground/40"
             />
             {searching && (
@@ -404,6 +460,12 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
 
           {/* Footer */}
           <div className="global-search-footer flex items-center justify-end gap-3 border-t border-border/50 bg-muted/30 px-3.5 py-2 text-[10.5px] text-muted-foreground/75">
+            {activeSessionTarget && (
+              <span className="flex items-center gap-1">
+                <kbd className="rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground border border-border/40">Tab</kbd>
+                {scope === 'all' ? '限定当前会话' : '取消限定'}
+              </span>
+            )}
             <span className="flex items-center gap-1">
               <kbd className="rounded bg-muted text-muted-foreground border border-border/40 px-1 py-0.5 font-mono text-[10px]">↑↓</kbd>
               导航
