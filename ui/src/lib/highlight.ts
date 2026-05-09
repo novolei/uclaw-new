@@ -7,48 +7,9 @@
 
 import { type Highlighter, createHighlighter, type BundledLanguage, type BundledTheme } from 'shiki'
 
-/** 支持的常用语言列表（按需加载） */
-const COMMON_LANGUAGES: BundledLanguage[] = [
-  'javascript',
-  'typescript',
-  'jsx',
-  'tsx',
-  'python',
-  'rust',
-  'go',
-  'java',
-  'c',
-  'cpp',
-  'csharp',
-  'ruby',
-  'php',
-  'swift',
-  'kotlin',
-  'html',
-  'css',
-  'json',
-  'yaml',
-  'toml',
-  'markdown',
-  'bash',
-  'shell',
-  'sql',
-  'xml',
-  'dockerfile',
-  'diff',
-]
-
-/** 高亮主题 — 预加载多套，由 getShikiThemeForCurrentApp() 按当前 app 主题选择 */
+/** 高亮主题 — 预加载两套基础主题，其余主题按需加载 */
 const LIGHT_THEME: BundledTheme = 'github-light'
 const DARK_THEME: BundledTheme = 'one-dark-pro'
-/** 额外预加载主题，覆盖 uclaw 自定义主题风格 */
-const EXTRA_THEMES: BundledTheme[] = [
-  'vitesse-light',     // 暖色 light（warm-paper）
-  'vitesse-dark',      // 海洋/森林 dark
-  'min-dark',          // 极简纯黑（black）
-  'dracula',           // 戏剧化深紫（the-finals）
-  'solarized-light',   // ocean-light / forest-light / slate-light
-]
 
 /**
  * 根据当前应用主题（document.documentElement 的 class）选择 Shiki 主题
@@ -85,17 +46,43 @@ export function getShikiThemeForCurrentApp(): BundledTheme {
 /** 全局 highlighter 单例（懒初始化） */
 let highlighterPromise: Promise<Highlighter> | null = null
 
+/** 已加载主题和语言的缓存集合，避免重复 loadTheme/loadLanguage 调用 */
+const loadedThemes = new Set<BundledTheme>([LIGHT_THEME, DARK_THEME])
+const loadedLangs = new Set<BundledLanguage>(['plaintext' as BundledLanguage])
+
 /**
  * 获取或初始化 Shiki highlighter 单例
+ * 仅预加载 2 套基础主题 + plaintext，其余主题/语言按需加载
  */
 export function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
     highlighterPromise = createHighlighter({
-      themes: [LIGHT_THEME, DARK_THEME, ...EXTRA_THEMES],
-      langs: COMMON_LANGUAGES,
+      themes: [LIGHT_THEME, DARK_THEME],
+      langs: ['plaintext'],
     })
   }
   return highlighterPromise
+}
+
+async function ensureTheme(highlighter: Highlighter, theme: BundledTheme): Promise<void> {
+  if (loadedThemes.has(theme)) return
+  try {
+    await highlighter.loadTheme(theme)
+    loadedThemes.add(theme)
+  } catch (err) {
+    console.warn('[highlight] loadTheme failed:', theme, err)
+    // theme will fall back to whichever is already loaded; don't crash
+  }
+}
+
+async function ensureLanguage(highlighter: Highlighter, lang: BundledLanguage): Promise<void> {
+  if (loadedLangs.has(lang)) return
+  try {
+    await highlighter.loadLanguage(lang)
+    loadedLangs.add(lang)
+  } catch {
+    // language doesn't exist — caller will fall back to plaintext silently
+  }
 }
 
 /**
@@ -108,30 +95,21 @@ export async function highlightCode(
 ): Promise<string> {
   try {
     const highlighter = await getHighlighter()
-
-    // 检查语言是否已加载
-    const loadedLangs = highlighter.getLoadedLanguages()
     const lang = language.toLowerCase() as BundledLanguage
-    if (!loadedLangs.includes(lang)) {
-      try {
-        await highlighter.loadLanguage(lang)
-      } catch {
-        // 语言不支持时使用纯文本
-        return escapeHtml(code)
-      }
-    }
+    await ensureLanguage(highlighter, lang)
 
-    // theme 显式指定时优先；否则按当前 app 主题自动选择 Shiki 主题
     const shikiTheme: BundledTheme = theme === 'light'
       ? LIGHT_THEME
       : theme === 'dark'
         ? DARK_THEME
         : getShikiThemeForCurrentApp()
+    await ensureTheme(highlighter, shikiTheme)
 
-    return highlighter.codeToHtml(code, {
-      lang,
-      theme: shikiTheme,
-    })
+    // If the language failed to load (still missing from getLoadedLanguages), fall back to plaintext
+    const currentLoadedLangs = highlighter.getLoadedLanguages()
+    const finalLang = currentLoadedLangs.includes(lang) ? lang : ('plaintext' as BundledLanguage)
+
+    return highlighter.codeToHtml(code, { lang: finalLang, theme: shikiTheme })
   } catch (error) {
     console.warn('[highlight] 高亮失败:', error)
     return `<pre><code>${escapeHtml(code)}</code></pre>`
@@ -157,8 +135,8 @@ export function highlightCodeSync(
 
   try {
     const lang = language.toLowerCase() as BundledLanguage
-    const loadedLangs = (highlighter as Highlighter).getLoadedLanguages()
-    if (!loadedLangs.includes(lang)) return null
+    const currentLoadedLangs = (highlighter as Highlighter).getLoadedLanguages()
+    if (!currentLoadedLangs.includes(lang)) return null
 
     const shikiTheme = theme === 'light' ? LIGHT_THEME : DARK_THEME
     return (highlighter as Highlighter).codeToHtml(code, { lang, theme: shikiTheme })
