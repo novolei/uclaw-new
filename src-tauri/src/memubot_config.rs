@@ -22,6 +22,11 @@ pub struct MemubotConfig {
     /// Proactive 场景配置
     #[serde(default)]
     pub scenarios: ScenariosConfig,
+    /// Maximum wall-clock seconds the agent loop may run for a single
+    /// user message before forcibly terminating. Default 600s (10 min).
+    /// Override via settings → Advanced (or edit ~/.uclaw/memubot_config.json).
+    #[serde(default = "default_agent_loop_timeout_secs")]
+    pub agent_loop_timeout_secs: u64,
 }
 
 /// 后台记忆提取配置
@@ -165,6 +170,8 @@ pub struct MultimodalContextConfig {
     pub system_prompt: Option<String>,
 }
 
+fn default_agent_loop_timeout_secs() -> u64 { 600 }
+
 // ─── Default 实现 ────────────────────────────────────────────────────────
 
 impl Default for MemubotConfig {
@@ -177,6 +184,7 @@ impl Default for MemubotConfig {
             context: ContextConfig::default(),
             observability: ObservabilityConfig::default(),
             scenarios: ScenariosConfig::default(),
+            agent_loop_timeout_secs: 600,
         }
     }
 }

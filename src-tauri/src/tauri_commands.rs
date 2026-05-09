@@ -2701,6 +2701,8 @@ pub async fn send_agent_message(
         sessions.insert(input.session_id.clone(), token.clone());
     }
 
+    let agent_loop_timeout_secs = state.memubot_config.agent_loop_timeout_secs;
+
     // Clone for spawn
     let session_id = input.session_id.clone();
     let db = Arc::clone(&state.db);
@@ -2744,15 +2746,24 @@ pub async fn send_agent_message(
 
         let outcome = tokio::select! {
             result = tokio::time::timeout(
-                std::time::Duration::from_secs(180),
+                std::time::Duration::from_secs(agent_loop_timeout_secs),
                 crate::agent::agentic_loop::run_agentic_loop(&delegate, &mut ctx, &config)
             ) => match result {
                 Ok(o) => o,
                 Err(_) => {
-                    tracing::error!(session_id = %session_id, "Agentic loop timed out after 180s");
+                    tracing::error!(
+                        session_id = %session_id,
+                        timeout_secs = agent_loop_timeout_secs,
+                        "Agentic loop timed out"
+                    );
                     let _ = app_handle.emit("chat:stream-error", serde_json::json!({
                         "conversationId": session_id,
-                        "error": "Request timed out — the model took too long to respond.",
+                        "error": format!(
+                            "Request timed out after {}s. The agent may have been working on a complex task; try increasing the timeout in Settings → Advanced.",
+                            agent_loop_timeout_secs
+                        ),
+                        "kind": "outer_timeout",
+                        "timeoutSecs": agent_loop_timeout_secs,
                     }));
                     let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
                         "conversationId": session_id,
