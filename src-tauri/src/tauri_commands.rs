@@ -958,23 +958,140 @@ pub async fn search_workspace(state: State<'_, AppState>, input: SearchInput) ->
 
 #[tauri::command]
 pub async fn search_conversations(state: State<'_, AppState>, input: SearchInput) -> Result<Vec<SearchResult>, Error> {
-    let mut results = Vec::new();
-    let query = input.query.to_lowercase();
-
-    let session_mgr = state.session_manager.read().await;
-    for session in session_mgr.list() {
-        if session.title.to_lowercase().contains(&query) {
-            results.push(SearchResult {
-                id: uuid::Uuid::new_v4().to_string(),
-                title: session.title.clone(),
-                snippet: format!("{} messages", session.message_count),
-                source: "conversation".into(),
-                source_id: session.id.clone(),
-                created_at: session.updated_at.clone(),
-            });
-        }
+    if input.query.trim().is_empty() {
+        return Ok(Vec::new());
     }
-    results.truncate(20);
+
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+
+    // Sanitize query for FTS5: wrap in quotes and double internal quotes so user input
+    // can't terminate the literal early. Append a `*` for prefix matching.
+    let fts_query = format!("\"{}\"*", input.query.replace('"', "\"\""));
+
+    let mut results: Vec<SearchResult> = Vec::new();
+
+    // 1. Title hits (chat + agent share the conversations table)
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.title, c.is_agent, c.updated_at
+         FROM conversations c
+         WHERE LOWER(c.title) LIKE LOWER(?1)
+         ORDER BY c.updated_at DESC
+         LIMIT 10",
+    ).map_err(|e| Error::Internal(format!("prepare title query: {}", e)))?;
+    let like_pattern = format!("%{}%", input.query);
+    let title_rows = stmt.query_map(rusqlite::params![like_pattern], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            row.get::<_, i64>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    }).map_err(|e| Error::Internal(format!("title query: {}", e)))?;
+    for r in title_rows.flatten() {
+        let (id, title, is_agent, updated_at) = r;
+        let snippet = if is_agent != 0 { "Agent session" } else { "Chat" };
+        results.push(SearchResult {
+            id: format!("title:{}", id),
+            title,
+            snippet: snippet.into(),
+            source: "conversation".into(),
+            source_id: id,
+            message_id: None,
+            created_at: updated_at,
+        });
+    }
+    drop(stmt);
+
+    // 2. Chat message FTS hits (messages_fts.content_text + reasoning)
+    let mut stmt = conn.prepare(
+        "SELECT
+             m.id,
+             m.conversation_id,
+             COALESCE(c.title, '') AS title,
+             snippet(messages_fts, 2, '<b>', '</b>', '...', 16) AS snip,
+             m.created_at,
+             bm25(messages_fts) AS score
+         FROM messages_fts f
+         JOIN messages m ON m.rowid = f.rowid
+         LEFT JOIN conversations c ON c.id = m.conversation_id
+         WHERE messages_fts MATCH ?1
+         ORDER BY score
+         LIMIT 30",
+    ).map_err(|e| Error::Internal(format!("prepare chat fts: {}", e)))?;
+    let chat_rows = stmt.query_map(rusqlite::params![&fts_query], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+        ))
+    }).map_err(|e| Error::Internal(format!("chat fts query: {}", e)))?;
+    for r in chat_rows.flatten() {
+        let (msg_id, conv_id, title, snip, created_at) = r;
+        results.push(SearchResult {
+            id: format!("chat:{}", msg_id),
+            title,
+            snippet: snip,
+            source: "chat_message".into(),
+            source_id: conv_id,
+            message_id: Some(msg_id),
+            created_at,
+        });
+    }
+    drop(stmt);
+
+    // 3. Agent turn FTS hits (agent_turns_fts.{content, tool_result, reasoning})
+    let mut stmt = conn.prepare(
+        "SELECT
+             at.id,
+             at.session_id,
+             COALESCE(s.title, '') AS title,
+             snippet(agent_turns_fts, 1, '<b>', '</b>', '...', 16) AS snip_content,
+             snippet(agent_turns_fts, 2, '<b>', '</b>', '...', 16) AS snip_tool,
+             snippet(agent_turns_fts, 3, '<b>', '</b>', '...', 16) AS snip_reasoning,
+             at.created_at,
+             bm25(agent_turns_fts) AS score
+         FROM agent_turns_fts f
+         JOIN agent_turns at ON at.rowid = f.rowid
+         LEFT JOIN agent_sessions s ON s.id = at.session_id
+         WHERE agent_turns_fts MATCH ?1
+         ORDER BY score
+         LIMIT 30",
+    ).map_err(|e| Error::Internal(format!("prepare agent fts: {}", e)))?;
+    let agent_rows = stmt.query_map(rusqlite::params![&fts_query], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, i64>(6)?,
+        ))
+    }).map_err(|e| Error::Internal(format!("agent fts query: {}", e)))?;
+    for r in agent_rows.flatten() {
+        let (turn_id, sess_id, title, snip_c, snip_t, snip_r, created_at) = r;
+        // Pick the most informative non-empty snippet
+        let snippet = [&snip_c, &snip_t, &snip_r]
+            .iter()
+            .find(|s| !s.is_empty() && **s != "...")
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "(no preview)".into());
+        results.push(SearchResult {
+            id: format!("agent_turn:{}", turn_id),
+            title,
+            snippet,
+            source: "agent_turn".into(),
+            source_id: sess_id,
+            message_id: None,
+            created_at: created_at.to_string(),
+        });
+    }
+    drop(stmt);
+
+    // Cap total results, prefer high-score hits already at the top of each batch
+    results.truncate(30);
     Ok(results)
 }
 
@@ -995,22 +1112,7 @@ pub async fn search_all(state: State<'_, AppState>, input: SearchInput) -> Resul
 }
 
 async fn search_conversations_inner(state: &State<'_, AppState>, query: &str) -> Result<Vec<SearchResult>, Error> {
-    let mut results = Vec::new();
-    let q = query.to_lowercase();
-    let session_mgr = state.session_manager.read().await;
-    for session in session_mgr.list() {
-        if session.title.to_lowercase().contains(&q) {
-            results.push(SearchResult {
-                id: uuid::Uuid::new_v4().to_string(),
-                title: session.title.clone(),
-                snippet: format!("{} messages", session.message_count),
-                source: "conversation".into(),
-                source_id: session.id.clone(),
-                created_at: session.updated_at.clone(),
-            });
-        }
-    }
-    Ok(results)
+    search_conversations(state.clone(), SearchInput { query: query.to_string(), scope: None }).await
 }
 
 async fn search_files(root: &std::path::Path, base: &std::path::Path, query: &str, results: &mut Vec<SearchResult>) -> Result<(), Error> {
@@ -1032,6 +1134,7 @@ async fn search_files(root: &std::path::Path, base: &std::path::Path, query: &st
                     snippet: format!("{} bytes", size),
                     source: "file".into(),
                     source_id: relative.to_string_lossy().into(),
+                    message_id: None,
                     created_at: chrono::Utc::now().to_rfc3339(),
                 });
             }

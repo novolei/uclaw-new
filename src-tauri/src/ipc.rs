@@ -208,8 +208,13 @@ pub struct SearchResult {
     pub id: String,
     pub title: String,
     pub snippet: String,
-    pub source: String, // "conversation" | "file" | "message"
+    /// One of: "conversation" (title hit), "chat_message", "agent_turn", "file".
+    pub source: String,
+    /// The session/conversation id we should navigate to.
     pub source_id: String,
+    /// Optional message id to scroll to inside the session. None for title-only hits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     pub created_at: String,
 }
 

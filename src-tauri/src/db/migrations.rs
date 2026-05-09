@@ -366,6 +366,78 @@ ALTER TABLE agent_messages ADD COLUMN events_json TEXT;
 ALTER TABLE agent_messages ADD COLUMN model TEXT;
 ";
 
+/// V10: FTS5 index over chat message content for the global search palette.
+///
+/// `messages.content` is stored as JSON (Vec<ContentBlock>), so we extract
+/// just the text via json_extract in the triggers. The `messages_fts` table
+/// uses external content (content='messages') so we don't duplicate storage —
+/// SQLite reads back from messages.content_text on snippet/highlight calls.
+///
+/// `content_text` is a generated column maintained by the same triggers so the
+/// FTS index doesn't have to deserialize JSON on every match.
+pub const V10_MESSAGES_FTS: &str = "
+ALTER TABLE messages ADD COLUMN content_text TEXT NOT NULL DEFAULT '';
+
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    conversation_id UNINDEXED,
+    role UNINDEXED,
+    content_text,
+    reasoning,
+    content='messages',
+    content_rowid='rowid',
+    tokenize='unicode61'
+);
+
+-- Triggers populate content_text from JSON on every write; the FTS table syncs from there.
+CREATE TRIGGER IF NOT EXISTS messages_content_text_insert
+AFTER INSERT ON messages BEGIN
+  UPDATE messages
+  SET content_text = (
+    SELECT COALESCE(group_concat(json_extract(value, '$.text'), ' '), '')
+    FROM json_each(new.content)
+    WHERE json_extract(value, '$.type') = 'text'
+  )
+  WHERE rowid = new.rowid;
+
+  INSERT INTO messages_fts(rowid, conversation_id, role, content_text, reasoning)
+  VALUES (
+    new.rowid,
+    new.conversation_id,
+    new.role,
+    (SELECT content_text FROM messages WHERE rowid = new.rowid),
+    new.reasoning
+  );
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_content_text_update
+AFTER UPDATE ON messages BEGIN
+  UPDATE messages
+  SET content_text = (
+    SELECT COALESCE(group_concat(json_extract(value, '$.text'), ' '), '')
+    FROM json_each(new.content)
+    WHERE json_extract(value, '$.type') = 'text'
+  )
+  WHERE rowid = new.rowid;
+
+  INSERT INTO messages_fts(messages_fts, rowid, conversation_id, role, content_text, reasoning)
+  VALUES ('delete', old.rowid, old.conversation_id, old.role, old.content_text, old.reasoning);
+  INSERT INTO messages_fts(rowid, conversation_id, role, content_text, reasoning)
+  VALUES (
+    new.rowid,
+    new.conversation_id,
+    new.role,
+    (SELECT content_text FROM messages WHERE rowid = new.rowid),
+    new.reasoning
+  );
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_content_text_delete
+AFTER DELETE ON messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, conversation_id, role, content_text, reasoning)
+  VALUES ('delete', old.rowid, old.conversation_id, old.role, old.content_text, old.reasoning);
+END;
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -402,6 +474,29 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V9_MESSAGE_PROCESS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         let _ = conn.execute(stmt, []);
     }
+    // V10: messages FTS for chat search — must run individual ALTER first because
+    // it can fail on re-runs if the column already exists. Subsequent CREATE TRIGGER
+    // / CREATE VIRTUAL TABLE statements have IF NOT EXISTS guards.
+    tracing::debug!("Running migration V10: messages FTS");
+    for stmt in V10_MESSAGES_FTS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let _ = conn.execute(stmt, []);
+    }
+    // Backfill content_text + FTS index for messages that pre-date V10. Idempotent.
+    let _ = conn.execute(
+        "UPDATE messages SET content_text = (
+            SELECT COALESCE(group_concat(json_extract(value, '$.text'), ' '), '')
+            FROM json_each(messages.content)
+            WHERE json_extract(value, '$.type') = 'text'
+        ) WHERE content_text = ''",
+        [],
+    );
+    let _ = conn.execute(
+        "INSERT INTO messages_fts(rowid, conversation_id, role, content_text, reasoning)
+         SELECT rowid, conversation_id, role, content_text, reasoning
+         FROM messages
+         WHERE rowid NOT IN (SELECT rowid FROM messages_fts)",
+        [],
+    );
     tracing::info!("Database migrations complete");
     Ok(())
 }

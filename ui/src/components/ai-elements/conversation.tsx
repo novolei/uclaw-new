@@ -22,6 +22,8 @@ interface ConversationContextValue {
   viewportEl: HTMLDivElement | null
   /** 主动滚动到底部 — 同时把 isAtBottom 标记重置为 true，保证之后的新内容继续跟随 */
   scrollToBottom: (behavior?: ScrollBehavior) => void
+  /** Scroll to a specific message by id, with a brief flash highlight. */
+  scrollToMessage: (messageId: string) => void
 }
 
 const ConversationContext = React.createContext<ConversationContextValue | null>(null)
@@ -117,9 +119,39 @@ export function Conversation({ resize, className, children }: ConversationProps)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const scrollToMessage = React.useCallback((messageId: string) => {
+    const el = scrollRef.current
+    if (!el) return
+    const target = el.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`)
+    if (!target) {
+      // Fall back to scrolling to bottom — message may not be loaded yet.
+      el.scrollTo({ top: el.scrollHeight, behavior: 'auto' })
+      return
+    }
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    // Brief flash: reuses the file-browser flash CSS already in globals.css
+    target.classList.add('file-browser-row-flash')
+    setTimeout(() => target.classList.remove('file-browser-row-flash'), 1300)
+  }, [])
+
+  React.useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ sessionId: string; messageId: string }>
+      const el = scrollRef.current
+      if (!el) return
+      // Only handle if the message is in OUR scroll container — multiple Conversation
+      // instances may be mounted (e.g. parallel mode). The DOM check filters them.
+      const found = el.querySelector(`[data-message-id="${CSS.escape(ce.detail.messageId)}"]`)
+      if (!found) return
+      scrollToMessage(ce.detail.messageId)
+    }
+    window.addEventListener('uclaw:scroll-to-message', handler as EventListener)
+    return () => window.removeEventListener('uclaw:scroll-to-message', handler as EventListener)
+  }, [scrollToMessage])
+
   const ctxValue = React.useMemo(
-    () => ({ scrollRef, viewportEl, scrollToBottom }),
-    [viewportEl, scrollToBottom],
+    () => ({ scrollRef, viewportEl, scrollToBottom, scrollToMessage }),
+    [viewportEl, scrollToBottom, scrollToMessage],
   )
 
   return (
