@@ -34,8 +34,10 @@ This document is the *master roadmap*, not an implementation plan. It enumerates
 
 ```
                   ┌──────────────────────────────────────────────────┐
-                  │  P1  Cleanup batch (A2 + A3 + A4 + A5)            │
-                  │  ── independent, can land first to clear noise   │
+                  │  P1  Cleanup batch                                │
+                  │  (A2 + A3 + A4 + A5 + dead-SDK-renderer removal) │
+                  │  ── independent, lands first; clears noise +     │
+                  │     removes Proma-era SDK plumbing               │
                   └──────────────────────────────────────────────────┘
                                        │
                                        ▼
@@ -46,9 +48,9 @@ This document is the *master roadmap*, not an implementation plan. It enumerates
                               │                       │
                               ▼                       ▼
                 ┌──────────────────────┐  ┌──────────────────────────┐
-                │ P2  SDK message       │  │ P4  Conversation FTS     │
-                │ persistence (A1)      │  │ search (B1)              │
-                │ ── unblocks B2/B6     │  │ ── self-contained        │
+                │ P2  Native structured │  │ P4  Conversation FTS     │
+                │ block rendering (A1') │  │ search (B1)              │
+                │ ── unblocks B2 only   │  │ ── self-contained        │
                 └──────────────────────┘  └──────────────────────────┘
                        │                                   │
         ┌──────────────┼──────────────────────────┐        │
@@ -64,20 +66,16 @@ This document is the *master roadmap*, not an implementation plan. It enumerates
                                   │ P8 MCP discov- │  │ P12 Sanity    │
                                   │ ery (B5)       │  │ sweep (C2)    │
                                   └────────────────┘  └──────────────┘
-                                            │
-                                            ▼
-                                  ┌────────────────┐
-                                  │ P9 Agent teams │
-                                  │ UX (B6)        │
-                                  └────────────────┘
 
+  P9  Agent teams UX (B6)    ── independent of P2 now (was a dep)
   P10 Memory graph viz (D3)  ── independent, can run any time
   P11 First-run + examples (D1+D2) ── after P5 (cost setup helps onboarding)
-  P13 Migration tests (C3)   ── adds tests over P2's V10 migration
+  P13 Migration tests (C3)   ── adds tests over future schema changes
+                                (P2 has no schema change; relevant for P6/P7/P8)
 ```
 
 **Critical path:** P1 → P3 → P2 → (P5 || P6 || P7) → P12. Everything else parallelizable.
-**Estimated total:** ~30 calendar days at 1 plan/day pace, more realistically ~6 weeks with reviews.
+**Estimated total:** ~28 calendar days at 1 plan/day pace, ~5–6 weeks realistic. (Reduced from 30d after P2 rescope and P9 dep removal.)
 
 ---
 
@@ -87,73 +85,97 @@ Each section below is what will become its own `docs/superpowers/plans/YYYY-MM-D
 
 ---
 
-## P1. Cleanup batch (A2 + A3 + A4 + A5)
+## P1. Cleanup batch (A2 + A3 + A4 + A5 + dead-SDK-renderer removal)
 
 **Plan file (when expanded):** `docs/superpowers/plans/uclaw-p1-cleanup-batch.md`
 
-**Goal:** Clear all known low-value noise from the repo in one focused pass: dead Rust code, oversized JS bundle, legacy type-file name, eager Shiki preload.
+**Goal:** Clear all known low-value noise from the repo in one focused pass: dead Rust code, oversized JS bundle, legacy type-file name, eager Shiki preload, **and the vestigial Claude Code SDK renderer plumbing** that uClaw never actually used.
 
 **Scope:**
 - **A2** Delete `browser_tool!` macro (currently `unused_macros`), the unused `thinking_started` write at `src-tauri/src/agent/agentic_loop.rs:413` (gate by an actual side-effect or remove), and `pub struct TitleGenerated` (never constructed — find call sites or delete).
 - **A3** Configure `vite.config.ts` `build.rollupOptions.output.manualChunks` to split routes: `Settings/*`, `Memory/*`, `Automation/*`, `Agent/AgentMessages` (the largest chunk per the warning) into separate async chunks. Verify gzip total stays ≤ pre-change.
-- **A4** Rename `ui/src/lib/proma-types.ts` → split into `chat-types.ts` (PrimaChatMessage, ChatMessage, ChatToolActivity, ContentBlock siblings) and `agent-types.ts` (AgentMessage, AgentEvent, SDK*Message). Update ~80 import sites via codemod. The aliases (`ChatMessage` exported from both for back-compat) stay during transition; remove in a follow-up.
+- **A4** Rename `ui/src/lib/proma-types.ts` → split into `chat-types.ts` (PrimaChatMessage, ChatMessage, ChatToolActivity, ContentBlock siblings) and `agent-types.ts` (AgentMessage, AgentEvent). Update ~80 import sites via codemod. The aliases (`ChatMessage` exported from both for back-compat) stay during transition; remove in a follow-up.
 - **A5** In `ui/src/lib/highlight.ts`, switch `EXTRA_THEMES` and `COMMON_LANGUAGES` from eager preload to lazy `loadLanguage` / `loadTheme` calls inside `highlightCode` itself. Cache loaded names in a `Set` so repeated highlights don't re-load. Measure: initial bundle drops by ~150–200KB.
+- **NEW: Dead SDK-renderer removal** — uClaw has its own pure-Rust agent loop (`agent/agentic_loop.rs`, `agent/dispatcher.rs`) and does **not** use the Claude Code SDK. The frontend SDK-renderer plumbing is a Proma migration leftover and never activates because no Rust side ever produces SDK messages. Delete:
+  - `getAgentSessionSDKMessages` from `ui/src/lib/tauri-bridge.ts` (the silent `.catch(() => [])` hides that the command doesn't exist).
+  - `persistedSDKMessages` state from `ui/src/components/agent/AgentView.tsx` and the `Promise.all` that loads it.
+  - `useSDKRenderer` derivation, `allSDKMessages`/`allGroups` memos, the SDK render branch in `ui/src/components/agent/AgentMessages.tsx:834-859`, and the SDK-only render path in `MessageActions`.
+  - `SDKMessage`, `SDKAssistantMessage`, `SDKUserMessage`, `SDKSystemMessage`, `SDKResultMessage`, `SDKMessageContent`, `SDKThinkingBlock`, `SDKTextBlock`, `SDKToolUseBlock` exports from `proma-types.ts` (after A4's split, just don't carry these into `agent-types.ts`).
+  - Any `<ContentBlock>` / `<ThinkingBlock>` consumer call sites that read SDK shapes — convert to consume our `ContentBlock` enum (text/thinking/tool_use/tool_result) when P2 lands. Until then, ThinkingBlock keeps its current callsite (it accepts a free-form `block` prop already and PR #18 made the body native).
 
 **Files to touch:**
 - `src-tauri/src/agent/dispatcher.rs` (delete `browser_tool!` macro)
 - `src-tauri/src/agent/agentic_loop.rs:413` (`thinking_started` warning)
 - `src-tauri/src/<various>` (`TitleGenerated` — find with grep)
 - `ui/vite.config.ts` (manualChunks)
-- `ui/src/lib/proma-types.ts` (split)
+- `ui/src/lib/proma-types.ts` (split into chat-types.ts + agent-types.ts; drop SDK* exports)
 - ~80 frontend import sites (renames)
 - `ui/src/lib/highlight.ts` (lazy theme/language loading)
+- `ui/src/lib/tauri-bridge.ts` (remove `getAgentSessionSDKMessages`)
+- `ui/src/components/agent/AgentView.tsx` (remove `persistedSDKMessages`, simplify load)
+- `ui/src/components/agent/AgentMessages.tsx` (remove `useSDKRenderer` branch, keep only the legacy/native renderer)
 
 **Acceptance criteria:**
 - `cargo build` shows 0 warnings (currently 3).
 - `vite build` reports no chunk >500KB pre-gzip; `index-*.js` drops below 700KB.
-- `tsc --noEmit` clean after rename.
-- App still loads — smoke test agent + chat views.
+- `tsc --noEmit` clean after rename and dead-code removal.
+- App still loads — smoke test agent + chat views render thinking + tools correctly.
+- `grep -rn "useSDKRenderer\|persistedSDKMessages\|getAgentSessionSDKMessages\|SDKMessage" ui/src/` returns empty (or only the renamed-as-internal types if any survive).
 
-**Estimated effort:** 0.5–1 day.
+**Estimated effort:** 1 day (was 0.5–1d; +0.5d for the SDK-removal sweep).
 
 **Risks:**
 - Rename codemod missing imports → caught by `tsc`.
 - manualChunks can break async chunk boundaries — verify Tauri's `frontendDist` serving still works.
+- Removing `useSDKRenderer` exposes any place that *only* worked through the SDK path. **Mitigation:** the P3 starter tests should cover the legacy renderer path; if a render bug surfaces, fix in P2 (block-ordered renderer) since that's the proper fix, not by reviving SDK code.
 
 ---
 
-## P2. SDK message persistence (A1) + V10 migration
+## P2. Native structured-block rendering (A1, rescoped)
 
-**Plan file (when expanded):** `docs/superpowers/plans/uclaw-p2-sdk-message-persistence.md`
+**Plan file (when expanded):** `docs/superpowers/plans/uclaw-p2-native-block-rendering.md`
 
-**Goal:** Implement the `get_agent_session_sdk_messages` Tauri command end-to-end so the SDK renderer path activates for historical sessions. This is the *correct* solution to the persistence problem PRs #5–#13 patched with JSON-blob columns.
+**Goal:** Stop flattening assistant turns into "all thinking first, then all tools, then text" on render. Persist + render the original `ContentBlock` ordering (Text / Thinking / ToolUse / ToolResult) so interleaved thinking and mid-turn assistant text show in their actual sequence. This is the *real* gap behind the original A1 framing — not "SDK persistence" (which doesn't apply, see P1).
+
+**Why the rescope:** uClaw has no external SDK in the loop. Each agent turn already produces a `Vec<ChatMessage>` of structured `ContentBlock`s, and `add_message_with_meta` already serializes the full vector to `messages.content` / `agent_messages.content` as JSON. The data is **already structured on disk** — the load path just throws away ordering by extracting only Text blocks (see `tauri_commands.rs:506-516` for `get_messages`, similar in `get_agent_session_messages`). Fix the load + render, no new schema needed.
 
 **Scope:**
-- New schema (V10): `agent_sdk_messages (id PK, session_id FK, seq INTEGER, sdk_json TEXT, created_at INTEGER)`. Composite index on `(session_id, seq)`.
-- Write path: hook into `dispatcher.rs` where the SDK emits assistant/user/system/result messages. Every emit also goes through a `record_sdk_message` call on a new `SdkMessageStore` (mirror of `TrajectoryStore`'s shape).
-- Read path: implement `get_agent_session_sdk_messages` Tauri command — selects all rows for a session ordered by `seq`, returns parsed `Vec<serde_json::Value>` (frontend already expects `any[]`).
-- Frontend: nothing to change — `AgentView.tsx:432` already calls the command and feeds `persistedSDKMessages`. Once non-empty, `useSDKRenderer` flips on automatically and PR #5–#13's JSON-blob columns become unused but harmless.
+- **No schema migration.** PR #5's V9 columns (`reasoning`, `tool_activities_json`) stay as flat summaries used by minimap previews and FTS snippets. The structured render reads from `content` directly.
+- **Backend: load path returns structured blocks.**
+  - Add `MessageResponse.content_blocks: Option<Vec<ContentBlock>>` alongside existing `content: String`. Populated by parsing `content` from JSON if it's a `Vec<ContentBlock>` shape; `None` for legacy plain-text rows.
+  - Same for `get_agent_session_messages`: return a parallel `contentBlocks` field.
+  - Old text-only rows still have `content` set, just no `contentBlocks` — renderer falls back gracefully.
+- **Frontend: native block renderer.**
+  - New `ui/src/components/agent/NativeBlockRenderer.tsx`. Iterates `contentBlocks` and renders each in order:
+    - `text` → `<MessageResponse>` (markdown body)
+    - `thinking` → `<ThinkingBlock>` (reusing the existing component, its API already takes a `{ thinking: string }` shape)
+    - `tool_use` → store tool input in a map keyed by `id`
+    - `tool_result` → look up the matching `tool_use` by `tool_use_id`, emit a `<ChatToolBlock>` with the merged input + result + isError (driven by `detect_soft_tool_error` patterns from PR #13)
+  - `AgentMessageItem` and `ChatMessageItem`: when `message.contentBlocks` is present, render via `NativeBlockRenderer`; else fall back to the current `reasoning` + `toolActivities` + `content` flat path.
+- **Edge case — streaming.** Streaming state still produces ordered events (thinking-delta, then tool-start, then tool-result, then text-delta). The streaming bubble keeps using the existing `streamingState.reasoning` + `streamingState.toolActivities` + `streamingState.content` path — that's already in order, just split across three fields. After stream-complete + reload, the persisted blocks render via the new path. No streaming change needed.
 
 **Files to touch:**
-- `src-tauri/src/db/migrations.rs` (V10)
-- `src-tauri/src/agent/sdk_store.rs` (new)
-- `src-tauri/src/agent/dispatcher.rs` (write hook)
-- `src-tauri/src/tauri_commands.rs` (new command + register in `main.rs`)
-- `src-tauri/src/main.rs` (register command)
+- `src-tauri/src/ipc.rs` (add `content_blocks` to `MessageResponse`)
+- `src-tauri/src/tauri_commands.rs` (parse content as `Vec<ContentBlock>` in `get_messages` + `get_agent_session_messages`, populate the new field)
+- `ui/src/lib/chat-types.ts` (add `contentBlocks` to `Message` / `AgentMessage`; depends on P1's split)
+- `ui/src/components/agent/NativeBlockRenderer.tsx` (new)
+- `ui/src/components/agent/AgentMessageItem.tsx` (use `NativeBlockRenderer` when blocks present)
+- `ui/src/components/chat/ChatMessageItem.tsx` (same)
 
 **Acceptance criteria:**
-- Send a message in agent view; `sqlite3 ~/.uclaw/uclaw.db "SELECT count(*) FROM agent_sdk_messages WHERE session_id = ?"` returns >0 after stream-complete.
-- Reload the session: thinking + tool + sub-turns render via `useSDKRenderer` path (verify by checking React DevTools that `AgentMessages` `useSDKRenderer` is `true`).
-- No regression: `agent_messages.tool_activities_json` keeps populating (legacy path stays for compatibility).
-- Migration is idempotent — running on a fresh and a populated DB both succeed.
+- A turn with structure `[Thinking → Text → ToolUse → ToolResult → Text → ToolUse → ToolResult]` renders in that exact order — thinking block, then text paragraph, then tool card, then a second text paragraph, then a second tool card. Verify with a curated test fixture.
+- Old persisted rows (where `content` is a string, not a JSON vec) still render via the legacy path.
+- The flat fields (`reasoning`, `toolActivities`) remain populated and used by the minimap preview and any other consumer that wants a flat summary.
+- No regression on streaming render — live bubble looks identical.
+- Tests (P3): `NativeBlockRenderer` matrix (text-only / thinking-only / interleaved / paired tools / unmatched tool_result).
 
-**Estimated effort:** 2–3 days.
+**Estimated effort:** 1.5 days (was 2–3d).
 
 **Risks:**
-- SDK message volume can be 10–50× larger than `agent_messages`. Index + truncation policy needed for very long sessions. **Mitigation:** add `length(sdk_json)` cap (e.g. 1MB per row) and drop SDK rows older than 90 days when cleaning.
-- Race between write and the post-stream-complete reload could cause stale `persistedSDKMessages`. **Mitigation:** ensure the flush happens before `chat:stream-complete` is emitted, or pass a sequence cursor.
+- `content` column historically stored `Option<&Vec<ContentBlock>>` JSON (see `session.rs:139` — `serde_json::to_string(&session.messages.last().map(|m| &m.content))`). The leading `Option` wrapper means the JSON is `[ContentBlock, ...]` or `null`. The parse needs to tolerate both shapes and fall back to plain-text. **Mitigation:** chained `.or_else` with three parse attempts: `Option<Vec<ContentBlock>>`, `Vec<ContentBlock>`, then plain string fallback (already done in `ensure_loaded` per PR #5).
+- Parallel render paths (block-renderer + flat-renderer) increase surface area for visual drift. **Mitigation:** P12 sweep validates both paths look identical on a curated test session.
 
-**Dependencies:** P1 (cleanup) recommended first to avoid touching code that's about to move.
+**Dependencies:** P1 (renames `proma-types.ts` to `chat-types.ts` and removes the dead SDK plumbing — without P1, this plan would touch the same files twice).
 
 ---
 
@@ -388,7 +410,7 @@ Each section below is what will become its own `docs/superpowers/plans/YYYY-MM-D
 
 **Estimated effort:** 4 days.
 
-**Dependencies:** P2 (SDK persistence helps multi-agent traces), P3.
+**Dependencies:** P3. (Originally listed P2 as a dep when it was "SDK persistence"; the rescoped P2 is about block-ordered rendering which doesn't affect team channel transcripts. P9 can ship in parallel with P2.)
 
 ---
 
@@ -508,13 +530,15 @@ Each section below is what will become its own `docs/superpowers/plans/YYYY-MM-D
 
 ## Open questions / risks
 
-1. **Q:** P2's `agent_sdk_messages` shape — should we deduplicate against `agent_turns` and `agent_messages`, or accept all three as separate stores? **Direction:** keep all three for now; revisit only if storage size becomes a complaint.
+1. **Resolved:** "Should P2 build SDK persistence?" — No. uClaw's agent loop is pure Rust (`agent/agentic_loop.rs` + `agent/dispatcher.rs`); there is no external SDK in the loop. The frontend's `useSDKRenderer`/`persistedSDKMessages` plumbing is a Proma-era leftover that never activates. P1 now removes it as dead code; P2 is rescoped to render the structured `Vec<ContentBlock>` we already persist. *(2026-05-09 — flagged by user during roadmap review.)*
 
 2. **Q:** P7's edit/regenerate UX — single-thread switcher vs full tree view? **Direction:** start with sibling-switcher (◀ ▶) only; full tree view is a follow-up if users want it.
 
 3. **R:** P11's `setup-python-env.sh` from the wizard requires shell exec at install-time. Some platforms (notarized macOS) restrict this. **Mitigation:** detect arch + offer manual instructions if exec is blocked.
 
-4. **R:** Each plan touches the schema (V10–V14). Out-of-order merging would corrupt. **Mitigation:** P13 lands after P2 + P7 to gate all schema changes; reviewers verify each PR uses the next sequential version.
+4. **R:** Schema migrations are now smaller in scope (P2 dropped its V10; remaining schema work is V10 in P5 cost-records, V11 in P4 FTS extension, V12 in P6 permissions, V13 in P7 edit/regen). Out-of-order merging would still corrupt. **Mitigation:** P13 lands after P5/P6/P7 land to gate all schema changes; reviewers verify each PR uses the next sequential version.
+
+5. **R:** P1 removes the `useSDKRenderer` branch which is the only path that *could* render multiple thinking segments interleaved with text + tools (in some hypothetical future). The legacy renderer flattens. P2 restores the in-order behavior natively, so the loss is temporary across the P1 → P2 window. **Mitigation:** ship P1 + P2 in close sequence; if P2 slips, revert just the P1 SDK-renderer-removal and keep the rest of P1's cleanups.
 
 ---
 
