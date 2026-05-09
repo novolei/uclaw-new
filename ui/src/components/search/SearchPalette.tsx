@@ -111,7 +111,11 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
           'overflow-hidden',
         )}
       >
-        <Command label="Global search" loop>
+        {/* shouldFilter={false}: cmdk's built-in fuzzy filter operates on the
+            item `value` prop (we use ids), which doesn't match the user's
+            query. The backend already does the FTS filtering, so disable
+            cmdk's client-side filter so all server-returned hits stay visible. */}
+        <Command label="Global search" loop shouldFilter={false}>
           <div className="flex items-center gap-2 px-3.5 py-3 border-b border-border/40">
             <Search className="size-4 shrink-0 text-muted-foreground/60" />
             <Command.Input

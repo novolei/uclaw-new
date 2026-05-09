@@ -4,34 +4,10 @@ import { SearchPalette } from './SearchPalette'
 import { renderWithProviders, screen, waitFor } from '@/test-utils/render'
 import { searchPaletteOpenAtom } from '@/atoms/search-atoms'
 
-// Mock cmdk to disable its built-in fuzzy filtering so items we render are always visible
-// in jsdom tests regardless of whether the search term matches the item value prop.
-// The SearchPalette does server-side search via debounce, so cmdk's client-side filter
-// would hide our fixture results (e.g. "Game session" doesn't match the query "gomoku").
-vi.mock('cmdk', async (importOriginal) => {
-  const original = await importOriginal<typeof import('cmdk')>()
-  const OriginalCommand = original.Command
-  // Wrap the root Command with shouldFilter=false
-  const PatchedCommand = React.forwardRef<
-    React.ElementRef<typeof OriginalCommand>,
-    React.ComponentPropsWithoutRef<typeof OriginalCommand>
-  >((props, ref) => {
-    return React.createElement(OriginalCommand, { ...props, shouldFilter: false, ref })
-  })
-  PatchedCommand.displayName = 'Command'
-  // Copy over sub-components
-  Object.assign(PatchedCommand, {
-    Input: OriginalCommand.Input,
-    List: OriginalCommand.List,
-    Item: OriginalCommand.Item,
-    Empty: OriginalCommand.Empty,
-    Group: OriginalCommand.Group,
-    Separator: OriginalCommand.Separator,
-    Dialog: OriginalCommand.Dialog,
-    Loading: OriginalCommand.Loading,
-  })
-  return { ...original, Command: PatchedCommand }
-})
+// SearchPalette passes shouldFilter={false} to cmdk's <Command> at the source
+// because the backend already does FTS filtering — cmdk's built-in fuzzy filter
+// operates on item `value` (ids) which would hide server-returned hits whose
+// content matched but whose id didn't. So no cmdk mock is needed here.
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string, args?: any) => {
