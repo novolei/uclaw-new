@@ -319,6 +319,7 @@ fn main() {
             uclaw_core::tauri_commands::send_message,
             uclaw_core::tauri_commands::create_conversation,
             uclaw_core::tauri_commands::list_conversations,
+            uclaw_core::tauri_commands::list_recent_threads,
             uclaw_core::tauri_commands::get_messages,
             uclaw_core::tauri_commands::delete_conversation,
             uclaw_core::tauri_commands::toggle_star_conversation,

@@ -44,46 +44,65 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const agentSessions = useAtomValue(agentSessionsAtom)
   const setCurrentAgentWorkspaceId = useSetAtom(currentAgentWorkspaceIdAtom)
 
-  const handleSearchResultSelect = React.useCallback((r: {
-    source: 'conversation' | 'chat_message' | 'agent_turn' | 'file'
-    sourceId: string
-    messageId?: string
-  }) => {
-    // Determine tab type from source — chat_message → chat, agent_turn → agent,
-    // conversation matches whichever type is already open (prefer existing tab).
-    const existingTab = tabs.find((t) => t.sessionId === r.sourceId)
-    const tabType = existingTab?.type
-      ?? (r.source === 'agent_turn' ? 'agent' : 'chat')
-
-    const result = openTab(tabs, {
-      type: tabType,
-      sessionId: r.sourceId,
-      title: existingTab?.title ?? '',
-    })
-    setTabs(result.tabs)
-    setActiveTabId(result.activeTabId)
-
-    // Sync sidebar state — mirrors TabBar.handleActivate
-    if (tabType === 'chat') {
-      setAppMode('chat')
-      setCurrentConversationId(r.sourceId)
-    } else if (tabType === 'agent') {
-      setAppMode('agent')
-      setCurrentAgentSessionId(r.sourceId)
-      const session = agentSessions.find((s) => s.id === r.sourceId)
-      if (session?.workspaceId) {
-        setCurrentAgentWorkspaceId(session.workspaceId)
-        localStorage.setItem(`uclaw:workspace:${r.sourceId}`, session.workspaceId)
+  const handleSearchResultSelect = React.useCallback((payload:
+    | { kind: 'thread'; thread: { id: string; kind: 'chat' | 'agent'; workspaceId: string } }
+    | { kind: 'workspace'; workspace: { id: string; name: string } }
+    | { kind: 'settings'; settings: { id: string } }
+    | { kind: 'search_hit'; hit: { source: string; sourceId: string; messageId?: string } }
+  ) => {
+    switch (payload.kind) {
+      case 'thread': {
+        const t = payload.thread
+        // Open the right tab type — chat or agent
+        const tabType = t.kind === 'agent' ? 'agent' : 'chat'
+        const result = openTab(tabs, { type: tabType, sessionId: t.id, title: '' })
+        setTabs(result.tabs)
+        setActiveTabId(result.activeTabId)
+        // Update the per-domain "current" atoms so the view focuses correctly.
+        setAppMode(t.kind === 'agent' ? 'agent' : 'chat')
+        if (t.kind === 'agent') setCurrentAgentSessionId(t.id)
+        else setCurrentConversationId(t.id)
+        setCurrentAgentWorkspaceId(t.workspaceId)
+        break
       }
-    }
-
-    // After a short paint delay, scroll to the specific message inside the session.
-    if (r.messageId) {
-      setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('uclaw:scroll-to-message', {
-          detail: { sessionId: r.sourceId, messageId: r.messageId },
-        }))
-      }, 200)
+      case 'workspace': {
+        // Switch to that workspace; don't open a thread automatically.
+        setCurrentAgentWorkspaceId(payload.workspace.id)
+        break
+      }
+      case 'settings': {
+        // Navigate to settings tab. The settings tab id convention from existing code:
+        setActiveTabId('settings')
+        // TODO: Optionally pass a deep-link hint via a separate atom if one exists.
+        // For now, just open the settings panel; the user can pick the right page.
+        console.warn('Settings deep-link not yet implemented')
+        break
+      }
+      case 'search_hit': {
+        const h = payload.hit
+        // existing PR #29 behavior — open the session and scroll to the message
+        const tabType = h.source === 'agent_turn' ? 'agent' : 'chat'
+        const result = openTab(tabs, { type: tabType, sessionId: h.sourceId, title: '' })
+        setTabs(result.tabs)
+        setActiveTabId(result.activeTabId)
+        setAppMode(h.source === 'agent_turn' ? 'agent' : 'chat')
+        if (h.source === 'agent_turn') setCurrentAgentSessionId(h.sourceId)
+        else setCurrentConversationId(h.sourceId)
+        // Look up workspace from agent sessions if available
+        const session = agentSessions.find((s) => s.id === h.sourceId)
+        if (session?.workspaceId) {
+          setCurrentAgentWorkspaceId(session.workspaceId)
+          localStorage.setItem(`uclaw:workspace:${h.sourceId}`, session.workspaceId)
+        }
+        if (h.messageId) {
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('uclaw:scroll-to-message', {
+              detail: { sessionId: h.sourceId, messageId: h.messageId },
+            }))
+          }, 200)
+        }
+        break
+      }
     }
   }, [tabs, setTabs, setActiveTabId, setAppMode, setCurrentConversationId, setCurrentAgentSessionId, agentSessions, setCurrentAgentWorkspaceId])
 
