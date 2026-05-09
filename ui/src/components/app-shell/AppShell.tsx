@@ -23,6 +23,7 @@ import { currentConversationIdAtom } from '@/atoms/chat-atoms'
 import { tabsAtom, activeTabIdAtom, openTab } from '@/atoms/tab-atoms'
 import { SearchPalette } from '@/components/search/SearchPalette'
 import { cn } from '@/lib/utils'
+import { installScrollToMessage } from '@/lib/scroll-to-message'
 
 export interface AppShellProps {
   /** Context 值，用于传递给子组件 */
@@ -43,6 +44,11 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const setCurrentAgentSessionId = useSetAtom(currentAgentSessionIdAtom)
   const agentSessions = useAtomValue(agentSessionsAtom)
   const setCurrentAgentWorkspaceId = useSetAtom(currentAgentWorkspaceIdAtom)
+
+  React.useEffect(() => {
+    const dispose = installScrollToMessage()
+    return dispose
+  }, [])
 
   const handleSearchResultSelect = React.useCallback((payload:
     | { kind: 'thread'; thread: { id: string; kind: 'chat' | 'agent'; workspaceId: string } }
