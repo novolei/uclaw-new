@@ -89,6 +89,30 @@ pub struct ConversationResponse {
     pub updated_at: String,
 }
 
+/// Cross-domain summary of a recent conversation or agent session for the
+/// search palette's browse mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentThread {
+    pub id: String,
+    /// "chat" | "agent"
+    pub kind: String,
+    pub title: String,
+    /// Optional emoji prefix (from conversation metadata)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_emoji: Option<String>,
+    /// Whether title generation is still pending (show spinner)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_pending: Option<bool>,
+    /// Human-readable workspace name (the space the thread lives in)
+    pub workspace_name: String,
+    /// Workspace id for navigation
+    pub workspace_id: String,
+    /// Number of messages in this thread
+    pub message_count: u32,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetMessagesInput {

@@ -480,6 +480,124 @@ pub async fn list_conversations(state: State<'_, AppState>) -> Result<Vec<Conver
     }).collect())
 }
 
+#[tauri::command]
+pub async fn list_recent_threads(state: State<'_, AppState>) -> Result<Vec<RecentThread>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+
+    let mut out: Vec<RecentThread> = Vec::new();
+
+    // Chat conversations — JOIN spaces for workspace name
+    let mut stmt = conn.prepare(
+        "SELECT
+            c.id, c.title, c.metadata_json,
+            s.name AS workspace_name, s.id AS workspace_id,
+            (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS msg_count,
+            c.updated_at
+         FROM conversations c
+         LEFT JOIN spaces s ON s.id = c.space_id
+         WHERE COALESCE(c.is_agent, 0) = 0
+         ORDER BY c.updated_at DESC
+         LIMIT 20"
+    ).map_err(|e| Error::Internal(format!("prepare chat list: {}", e)))?;
+    let rows = stmt.query_map([], |row| {
+        let id: String = row.get(0)?;
+        let title: Option<String> = row.get(1)?;
+        let metadata_json: Option<String> = row.get(2)?;
+        let workspace_name: Option<String> = row.get(3)?;
+        let workspace_id: Option<String> = row.get(4)?;
+        let msg_count: i64 = row.get(5)?;
+        let updated_at: String = row.get(6)?;
+        Ok((id, title, metadata_json, workspace_name, workspace_id, msg_count, updated_at))
+    }).map_err(|e| Error::Internal(format!("query chat list: {}", e)))?;
+    for r in rows.flatten() {
+        let (id, title, metadata_json, ws_name, ws_id, msg_count, updated_at) = r;
+        let (emoji, pending) = parse_title_metadata(metadata_json.as_deref());
+        out.push(RecentThread {
+            id,
+            kind: "chat".into(),
+            title: title.unwrap_or_else(|| "(untitled)".into()),
+            title_emoji: emoji,
+            title_pending: pending,
+            workspace_name: ws_name.unwrap_or_else(|| "default".into()),
+            workspace_id: ws_id.unwrap_or_else(|| "default".into()),
+            message_count: msg_count.max(0) as u32,
+            updated_at,
+        });
+    }
+    drop(stmt);
+
+    // Agent sessions — title_emoji/title_pending columns don't exist on this
+    // schema (V8 migration not present); use NULL placeholders so the query
+    // succeeds without a migration.
+    let mut stmt = conn.prepare(
+        "SELECT
+            s.id, s.title,
+            NULL AS title_emoji, NULL AS title_pending,
+            COALESCE(sp.name, 'default') AS workspace_name,
+            COALESCE(sp.id, 'default') AS workspace_id,
+            s.message_count,
+            s.updated_at
+         FROM agent_sessions s
+         LEFT JOIN spaces sp ON sp.id = s.space_id
+         ORDER BY s.updated_at DESC
+         LIMIT 20"
+    ).map_err(|e| Error::Internal(format!("prepare agent list: {}", e)))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?.unwrap_or_else(|| "(untitled)".into()),
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<i64>>(3)?.map(|v| v != 0),
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, i64>(7)?,
+        ))
+    }).map_err(|e| Error::Internal(format!("query agent list: {}", e)))?;
+    for r in rows.flatten() {
+        let (id, title, emoji, pending, ws_name, ws_id, msg_count, updated_at) = r;
+        out.push(RecentThread {
+            id,
+            kind: "agent".into(),
+            title,
+            title_emoji: emoji,
+            title_pending: pending,
+            workspace_name: ws_name,
+            workspace_id: ws_id,
+            message_count: msg_count.max(0) as u32,
+            updated_at: updated_at.to_string(),
+        });
+    }
+    drop(stmt);
+
+    // Sort merged list by updated_at DESC, cap at 20.
+    // Both chat and agent paths use string updated_at — chat is RFC3339, agent is i64 ms.
+    out.sort_by(|a, b| {
+        let pa = a.updated_at.parse::<i64>().ok();
+        let pb = b.updated_at.parse::<i64>().ok();
+        match (pa, pb) {
+            (Some(la), Some(lb)) => lb.cmp(&la),
+            (None, None) => b.updated_at.cmp(&a.updated_at),
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+        }
+    });
+    out.truncate(20);
+    Ok(out)
+}
+
+/// Parse the conversation `metadata_json` blob for `emoji` and `title_pending`.
+/// The blob looks like `{"title":"…","emoji":"🎨","title_pending":false}`.
+fn parse_title_metadata(meta: Option<&str>) -> (Option<String>, Option<bool>) {
+    let Some(raw) = meta else { return (None, None) };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return (None, None)
+    };
+    let emoji = parsed.get("emoji").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let pending = parsed.get("title_pending").and_then(|v| v.as_bool());
+    (emoji, pending)
+}
+
 /// Walk a slice of `ChatMessage` (typically the messages added during one
 /// agent loop) and extract:
 ///   - `reasoning`: concatenated text from all `Thinking` content blocks
