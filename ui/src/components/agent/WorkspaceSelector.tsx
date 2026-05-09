@@ -25,7 +25,7 @@ import {
   currentAgentWorkspaceIdAtom,
 } from '@/atoms/agent-atoms'
 import { workspaceListHeightAtom } from '@/atoms/sidebar-atoms'
-import type { AgentWorkspace } from '@/lib/proma-types'
+import type { AgentWorkspace } from '@/lib/agent-types'
 import {
   updateSettings,
   createAgentWorkspace,

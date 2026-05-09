@@ -25,7 +25,8 @@ import {
 } from '@/atoms/agent-atoms'
 import { activeViewAtom } from '@/atoms/active-view'
 import { useOpenSession } from '@/hooks/useOpenSession'
-import type { ConversationMeta, AgentSessionMeta, MessageSearchResult, AgentMessageSearchResult } from '@/lib/proma-types'
+import type { ConversationMeta, MessageSearchResult } from '@/lib/chat-types'
+import type { AgentSessionMeta, AgentMessageSearchResult } from '@/lib/agent-types'
 import { searchConversationMessages, searchAgentSessionMessages } from '@/lib/tauri-bridge'
 
 /** 标题搜索结果项 */

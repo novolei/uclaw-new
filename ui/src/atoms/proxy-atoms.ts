@@ -5,7 +5,7 @@
  */
 
 import { atom } from 'jotai'
-import type { ProxyConfig } from '@/lib/proma-types'
+import type { ProxyConfig } from '@/lib/chat-types'
 
 /** 代理配置 Atom */
 export const proxyConfigAtom = atom<ProxyConfig | null>(null)

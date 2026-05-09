@@ -6,8 +6,8 @@
  */
 
 import { atom } from 'jotai'
-import { DEFAULT_USER_AVATAR, DEFAULT_USER_NAME } from '@/lib/proma-types'
-import type { UserProfile } from '@/lib/proma-types'
+import { DEFAULT_USER_AVATAR, DEFAULT_USER_NAME } from '@/lib/chat-types'
+import type { UserProfile } from '@/lib/chat-types'
 
 /** 用户档案 */
 export const userProfileAtom = atom<UserProfile>({

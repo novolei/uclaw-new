@@ -8,7 +8,7 @@ import { activeViewAtom } from '@/atoms/active-view'
 import { WorkspaceCreateDialog } from '@/components/workspace/WorkspaceCreateDialog'
 import { useOpenSession } from '@/hooks/useOpenSession'
 import { createAgentSession } from '@/lib/tauri-bridge'
-import type { AgentSessionMeta } from '@/lib/proma-types'
+import type { AgentSessionMeta } from '@/lib/agent-types'
 
 function formatRelativeTime(updatedAt: number): string {
   const now = Date.now()

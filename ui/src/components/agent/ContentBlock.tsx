@@ -24,16 +24,15 @@ import { getToolIcon } from './tool-utils'
 import { getToolPhrase } from './tool-phrase'
 import { ToolResultRenderer } from './tool-result-renderers'
 import { formatDuration } from './AgentMessages'
-import type {
-  SDKContentBlock,
-  SDKMessage,
-  SDKTextBlock,
-  SDKToolUseBlock,
-  SDKThinkingBlock,
-  SDKUserMessage,
-  SDKToolResultBlock,
-  SDKSystemMessage,
-} from '@/lib/proma-types'
+// Local content-block types (SDK types removed; these structural equivalents are sufficient)
+interface SDKContentBlock { type: string; text?: string; id?: string; name?: string; input?: Record<string, any>; thinking?: string; tool_use_id?: string; content?: string | SDKContentBlock[]; is_error?: boolean; [key: string]: unknown }
+type SDKMessage = { type: string; uuid?: string; message?: { content?: SDKContentBlock[] | string }; subtype?: string; tool_use_id?: string; usage?: { duration_ms?: number; total_tokens?: number; tool_uses?: number }; [key: string]: unknown }
+type SDKTextBlock = SDKContentBlock & { type: 'text'; text: string }
+type SDKToolUseBlock = SDKContentBlock & { type: 'tool_use'; id: string; name: string; input: Record<string, any> }
+type SDKThinkingBlock = SDKContentBlock & { type: 'thinking'; thinking: string }
+type SDKUserMessage = SDKMessage & { type: 'user' }
+type SDKToolResultBlock = SDKContentBlock & { type: 'tool_result'; tool_use_id: string; content?: string | SDKContentBlock[]; is_error?: boolean }
+type SDKSystemMessage = SDKMessage & { type: 'system'; subtype?: string; tool_use_id?: string }
 
 // ===== useToolResult Hook =====
 

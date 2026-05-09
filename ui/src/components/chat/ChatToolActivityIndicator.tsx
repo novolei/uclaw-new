@@ -7,7 +7,7 @@
 
 import * as React from 'react'
 import { ChatToolBlock } from './ChatToolBlock'
-import type { ChatToolActivity } from '@/lib/proma-types'
+import type { ChatToolActivity } from '@/lib/chat-types'
 
 interface MergedActivity {
   toolName: string

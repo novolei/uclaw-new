@@ -7,22 +7,7 @@
 
 import { atom } from 'jotai'
 import { atomFamily } from 'jotai/utils'
-import type {
-  AgentSessionMeta,
-  AgentMessage,
-  AgentEvent,
-  AgentWorkspace,
-  AgentPendingFile,
-  RetryAttempt,
-  PromaPermissionMode,
-  PermissionRequest,
-  AskUserRequest,
-  ExitPlanModeRequest,
-  ThinkingConfig,
-  AgentEffort,
-  TaskUsage,
-  SDKMessage,
-} from '@/lib/proma-types'
+import type { AgentSessionMeta, AgentMessage, AgentEvent, AgentWorkspace, AgentPendingFile, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, AgentEffort, TaskUsage } from '@/lib/agent-types'
 
 /** 活动状态 */
 export type ActivityStatus = 'pending' | 'running' | 'completed' | 'error' | 'backgrounded'
@@ -228,7 +213,8 @@ export const currentAgentSessionIdAtom = atom<string | null>(null)
 export const currentAgentMessagesAtom = atom<AgentMessage[]>([])
 export const agentStreamingStatesAtom = atom<Map<string, AgentStreamState>>(new Map())
 
-export const liveMessagesMapAtom = atom<Map<string, SDKMessage[]>>(new Map())
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const liveMessagesMapAtom = atom<Map<string, any[]>>(new Map())
 
 export const agentPendingPromptAtom = atom<AgentPendingPrompt | null>(null)
 export const agentPendingFilesAtom = atom<AgentPendingFile[]>([])

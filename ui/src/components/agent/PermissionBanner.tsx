@@ -13,7 +13,7 @@ import { useAtom, useSetAtom } from 'jotai'
 import { Shield, ShieldAlert, Check, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { allPendingPermissionRequestsAtom, agentStreamingStatesAtom, finalizeStreamingActivities } from '@/atoms/agent-atoms'
-import type { DangerLevel } from '@/lib/proma-types'
+import type { DangerLevel } from '@/lib/agent-types'
 import { stopAgent, respondPermission } from '@/lib/tauri-bridge'
 
 /** 危险等级对应的图标颜色 */

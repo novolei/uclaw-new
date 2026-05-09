@@ -13,7 +13,7 @@ import { Paperclip, SendHorizontal, X } from 'lucide-react'
 import { MessageAction } from '@/components/ai-elements/message'
 import { AttachmentPreviewItem } from './AttachmentPreviewItem'
 import { cn } from '@/lib/utils'
-import type { ChatMessage, FileAttachment } from '@/lib/proma-types'
+import type { ChatMessage, FileAttachment } from '@/lib/chat-types'
 import { fileToBase64 } from '@/lib/file-utils'
 import { readAttachment, openFileDialog } from '@/lib/tauri-bridge'
 

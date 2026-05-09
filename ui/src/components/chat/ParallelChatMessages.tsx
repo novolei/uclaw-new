@@ -28,7 +28,7 @@ import {
 } from '@/components/ai-elements/reasoning'
 import { streamingModelAtom } from '@/atoms/chat-atoms'
 import { getModelLogo } from '@/lib/model-logo'
-import type { ChatMessage } from '@/lib/proma-types'
+import type { ChatMessage } from '@/lib/chat-types'
 
 interface MessageSegment {
   userMessages: ChatMessage[]

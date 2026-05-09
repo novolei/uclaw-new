@@ -6,7 +6,7 @@
  */
 
 import { atom } from 'jotai'
-import type { NotificationSoundId, NotificationSoundType, NotificationSoundSettings } from '@/lib/proma-types'
+import type { NotificationSoundId, NotificationSoundType, NotificationSoundSettings } from '@/lib/chat-types'
 import * as bridge from '@/lib/tauri-bridge'
 
 // ===== Jotai Atoms =====

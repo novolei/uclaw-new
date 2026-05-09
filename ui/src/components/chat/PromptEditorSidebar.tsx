@@ -20,7 +20,7 @@ import {
   defaultPromptIdAtom,
   promptSidebarOpenAtom,
 } from '@/atoms/system-prompt-atoms'
-import type { SystemPrompt, SystemPromptCreateInput, SystemPromptUpdateInput } from '@/lib/proma-types'
+import type { SystemPrompt, SystemPromptCreateInput, SystemPromptUpdateInput } from '@/lib/chat-types'
 import {
   createSystemPrompt,
   deleteSystemPrompt,

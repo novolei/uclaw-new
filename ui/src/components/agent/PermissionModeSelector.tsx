@@ -11,8 +11,8 @@ import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { Zap, Compass, Map as MapIcon } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { agentPermissionModeMapAtom, agentDefaultPermissionModeAtom, currentAgentWorkspaceIdAtom, agentWorkspacesAtom } from '@/atoms/agent-atoms'
-import type { PromaPermissionMode } from '@/lib/proma-types'
-import { PROMA_PERMISSION_MODE_ORDER } from '@/lib/proma-types'
+import type { PromaPermissionMode } from '@/lib/agent-types'
+import { PROMA_PERMISSION_MODE_ORDER } from '@/lib/agent-types'
 import { getPermissionMode, setPermissionMode } from '@/lib/tauri-bridge'
 
 /** 模式配置 */

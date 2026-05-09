@@ -19,7 +19,7 @@ import {
 } from '@/atoms/agent-atoms'
 import { workspaceSessionsAtom, updateSessionTitleAtom, type WorkspaceSession } from '@/atoms/workspace'
 import { tabsAtom } from '@/atoms/tab-atoms'
-import type { AgentSessionMeta } from '@/lib/proma-types'
+import type { AgentSessionMeta } from '@/lib/agent-types'
 import type { TabItem } from '@/atoms/tab-atoms'
 
 function createInitialStreamState(): AgentStreamState {

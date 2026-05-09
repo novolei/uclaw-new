@@ -2,7 +2,7 @@ import { useAtom, useAtomValue } from 'jotai'
 import { Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { themeModeAtom, themeStyleAtom, applyThemeToDOM, updateThemeMode, updateThemeStyle, systemIsDarkAtom } from '@/atoms/theme'
-import type { ThemeStyle } from '@/lib/proma-types'
+import type { ThemeStyle } from '@/lib/chat-types'
 
 // ─────────────────────────────────────────────────────────
 // Theme card definitions
