@@ -13,13 +13,16 @@ import { RightSidePanel } from './RightSidePanel'
 import { MainArea } from '@/components/tabs/MainArea'
 import { AppShellProvider, type AppShellContextType } from '@/contexts/AppShellContext'
 import { ApprovalModal } from '@/components/ApprovalModal'
+import { AskUserBanner } from '@/components/agent/AskUserBanner'
 import { ModeBanner } from '@/components/agent/ModeBanner'
 import { appModeAtom } from '@/atoms/app-mode'
 import {
   agentSessionsAtom,
+  allPendingAskUserRequestsAtom,
   currentAgentSessionIdAtom,
   currentAgentWorkspaceIdAtom,
   currentSessionSidePanelOpenAtom,
+  installAskUserListener,
 } from '@/atoms/agent-atoms'
 import { currentConversationIdAtom } from '@/atoms/chat-atoms'
 import { tabsAtom, activeTabIdAtom, openTab } from '@/atoms/tab-atoms'
@@ -46,11 +49,18 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const setCurrentAgentSessionId = useSetAtom(currentAgentSessionIdAtom)
   const agentSessions = useAtomValue(agentSessionsAtom)
   const setCurrentAgentWorkspaceId = useSetAtom(currentAgentWorkspaceIdAtom)
+  const setAllPendingAskUserRequests = useSetAtom(allPendingAskUserRequestsAtom)
 
   React.useEffect(() => {
     const dispose = installScrollToMessage()
     return dispose
   }, [])
+
+  React.useEffect(() => {
+    let dispose: (() => void) | undefined
+    installAskUserListener((updater) => setAllPendingAskUserRequests(updater)).then((d) => { dispose = d })
+    return () => { dispose?.() }
+  }, [setAllPendingAskUserRequests])
 
   const handleSearchResultSelect = React.useCallback((payload:
     | { kind: 'thread'; thread: { id: string; kind: 'chat' | 'agent'; workspaceId: string } }
@@ -150,6 +160,9 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
             time; the bug was hidden because `bash` was in the global
             auto-approve whitelist short-circuiting the resolver.) */}
         <ApprovalModal />
+
+        {/* Global ask_user banner — shows agent's question pending */}
+        {currentSessionId && <AskUserBanner sessionId={currentSessionId} />}
       </div>
     </AppShellProvider>
   )

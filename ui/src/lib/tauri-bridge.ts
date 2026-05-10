@@ -111,7 +111,7 @@ import type {
   CreatePermissionRuleInput,
 } from './types';
 import type { Channel } from './chat-types';
-import type { RecentThread } from './agent-types';
+import type { RecentThread, AskUserRequest } from './agent-types';
 
 // ─────────────────────────────────────────────────────────
 // Bootstrap / Settings
@@ -868,8 +868,11 @@ export const reorderAgentWorkspaces = (ids: string[]): Promise<void> =>
 export const respondPermission = (input: any): Promise<void> =>
   invoke<void>('respond_permission', { input }).catch(() => {})
 
-export const respondAskUser = (input: any): Promise<void> =>
-  invoke<void>('respond_ask_user', { input }).catch(() => {})
+export const respondAskUser = (input: { requestId: string; answers: Record<string, string> }): Promise<void> =>
+  invoke<void>('respond_ask_user', { input })
+
+export const onAskUserRequest = (cb: (payload: AskUserRequest) => void): Promise<UnlistenFn> =>
+  listen('agent:ask_user_request', (e) => cb(e.payload as AskUserRequest))
 
 export const respondExitPlanMode = (input: any): Promise<void> =>
   invoke<void>('respond_exit_plan_mode', { input }).catch(() => {})
