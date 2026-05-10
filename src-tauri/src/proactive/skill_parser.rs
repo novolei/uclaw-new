@@ -94,14 +94,39 @@ fn extract_tag_content(text: &str, tag: &str) -> Option<String> {
 
 /// 将 ParsedSkill 存储为 MemoryNode(kind=Procedure) + MemoryVersion
 ///
+/// **写入时去重 (D1)**：如果当前 space 里已经有一条 normalized title
+/// 完全相同的 learned skill（lowercase + trim），不创建新节点，而是：
+/// 1. deprecate 旧 active version
+/// 2. 创建一条新的 active version 记录新内容
+/// 3. 合并 keywords（旧 keyword 自动保留，新 keyword 增量插入）
+/// 4. usage_count + 1（视作"该技能再次被强化"）
+///
+/// 这样旧的 node_id 保持稳定，召回引用 / boot mount / usage_count
+/// 都不丢，但内容会持续被新提取强化。如果想要"模糊匹配同概念但不同
+/// 措辞"，那是 D2 的活，本函数只做精确匹配。
+///
 /// 注意：MemoryGraphStore 的方法是同步的。
 pub fn store_skill_as_procedure(
     store: &MemoryGraphStore,
     skill: &ParsedSkill,
     space_id: &str,
 ) -> anyhow::Result<MemoryNode> {
-    let node_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
+
+    // ── D1: dedup-on-write ────────────────────────────────────────
+    let normalized = normalize_title_for_dedup(&skill.name);
+    if !normalized.is_empty() {
+        if let Ok(Some(existing)) = store.find_learned_skill_by_normalized_title(space_id, &normalized) {
+            tracing::info!(
+                node_id = %existing.id,
+                title = %existing.title,
+                "skill_parser: dedup hit — folding new extraction into existing node"
+            );
+            return upgrade_existing_skill(store, existing, skill, &now);
+        }
+    }
+
+    let node_id = uuid::Uuid::new_v4().to_string();
 
     let metadata = serde_json::json!({
         "skill_type": "learned",
@@ -176,6 +201,107 @@ pub fn store_skill_as_procedure(
     }
 
     Ok(node)
+}
+
+/// Normalize a skill title for dedup comparison.
+///
+/// Strategy: trim + lowercase + collapse whitespace + drop trailing
+/// punctuation. Conservative — we only want to catch obvious duplicates
+/// like "前端游戏开发项目工作流" appearing twice with different
+/// casing or trailing colon. Fuzzy concept-level dedup is D2's job.
+pub fn normalize_title_for_dedup(title: &str) -> String {
+    let mut s = title.trim().to_lowercase();
+    // Collapse runs of whitespace into single space.
+    let collapsed: String = s
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    s = collapsed;
+    // Drop trailing punctuation (Chinese + ASCII).
+    s.trim_end_matches(|c: char| {
+        matches!(
+            c,
+            '.' | ',' | ';' | ':' | '!' | '?' | '。' | '，' | '；' | '：' | '！' | '？'
+        )
+    })
+    .to_string()
+}
+
+/// Fold a newly-extracted skill into an existing node (D1 dedup path).
+/// - Deprecates the old active version
+/// - Inserts a new active version with the freshly-extracted content
+/// - Bumps usage_count to reflect the "concept reinforced" signal
+/// - Inserts any new keywords (existing ones are preserved)
+fn upgrade_existing_skill(
+    store: &MemoryGraphStore,
+    existing: MemoryNode,
+    skill: &ParsedSkill,
+    now: &str,
+) -> anyhow::Result<MemoryNode> {
+    // Deprecate old active version (if any).
+    if let Ok(Some(active)) = store.get_active_version(&existing.id) {
+        if let Err(e) = store.deprecate_version(&active.id) {
+            tracing::warn!(
+                node_id = %existing.id,
+                err = %e,
+                "skill_parser: failed to deprecate old version (continuing with new version anyway)"
+            );
+        }
+    }
+
+    // New version content (same template as the create-fresh path).
+    let version_content = format!(
+        "# {}\n\n## 适用场景\n{}\n\n## 核心原则\n{}\n\n## 实现步骤\n{}\n\n## 常见陷阱\n{}",
+        skill.name, skill.context, skill.principles, skill.steps, skill.pitfalls
+    );
+    let new_version = MemoryVersion {
+        id: uuid::Uuid::new_v4().to_string(),
+        node_id: existing.id.clone(),
+        supersedes_version_id: None,
+        status: MemoryVersionStatus::Active,
+        content: version_content,
+        metadata: None,
+        embedding_json: None,
+        created_at: now.to_string(),
+    };
+    store.create_version(&new_version)?;
+
+    // Bump usage_count — the LLM re-derived this skill from a fresh
+    // session, which is itself a vote of confidence. Best-effort.
+    if let Err(e) = store.bump_skill_usage(&[existing.id.as_str()]) {
+        tracing::warn!(node_id = %existing.id, err = %e, "skill_parser: usage bump failed");
+    }
+
+    // Merge keywords — existing rows stay; new ones get inserted (the
+    // create_keyword path doesn't dedup but a stray duplicate keyword
+    // row is harmless for LIKE search).
+    let existing_kw: std::collections::HashSet<String> = store
+        .get_keywords_for_node(&existing.id)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let fresh_kw = extract_keywords(&skill.name, &skill.context);
+    for kw in fresh_kw {
+        if existing_kw.contains(&kw) {
+            continue;
+        }
+        let kw_row = MemoryKeyword {
+            id: uuid::Uuid::new_v4().to_string(),
+            space_id: existing.space_id.clone(),
+            node_id: existing.id.clone(),
+            keyword: kw,
+            created_at: now.to_string(),
+        };
+        if let Err(e) = store.create_keyword(&kw_row) {
+            tracing::warn!(
+                node_id = %existing.id,
+                err = %e,
+                "skill_parser: keyword merge insert failed"
+            );
+        }
+    }
+
+    Ok(existing)
 }
 
 /// Extract recall keywords from a skill's name + context.
@@ -491,6 +617,87 @@ mod tests {
         assert_eq!(kws.iter().filter(|k| k.as_str() == "rust").count(), 1);
         // Cap at 8
         assert!(kws.len() <= 8);
+    }
+
+    #[test]
+    fn normalize_title_collapses_case_whitespace_punctuation() {
+        // Real example from user's DB: "前端游戏开发项目工作流" appeared
+        // twice. Plus we want trailing ":" / case differences to fold.
+        assert_eq!(
+            normalize_title_for_dedup("前端游戏开发项目工作流"),
+            normalize_title_for_dedup("  前端游戏开发项目工作流  "),
+        );
+        assert_eq!(
+            normalize_title_for_dedup("Edit Tool Tips"),
+            normalize_title_for_dedup("edit tool tips"),
+        );
+        assert_eq!(
+            normalize_title_for_dedup("使用 edit 工具"),
+            normalize_title_for_dedup("使用 edit 工具："),
+        );
+        // Multiple spaces collapse
+        assert_eq!(
+            normalize_title_for_dedup("a  b   c"),
+            "a b c",
+        );
+        // Different titles remain different
+        assert_ne!(
+            normalize_title_for_dedup("edit 工具技巧"),
+            normalize_title_for_dedup("edit 工具陷阱"),
+        );
+    }
+
+    #[test]
+    fn dedup_folds_into_existing_node() {
+        use crate::memory_graph::store::MemoryGraphStore;
+        use rusqlite::Connection;
+        use std::sync::{Arc, Mutex};
+
+        // Set up an in-memory store.
+        let conn = Connection::open_in_memory().unwrap();
+        let store = MemoryGraphStore::new(Arc::new(Mutex::new(conn)));
+        store.ensure_tables();
+
+        let space = "test-space";
+        let s1 = ParsedSkill {
+            name: "前端游戏开发项目工作流".into(),
+            context: "v1 context".into(),
+            principles: "v1 principles".into(),
+            steps: "v1 steps".into(),
+            pitfalls: "v1 pitfalls".into(),
+        };
+        let s2 = ParsedSkill {
+            name: "  前端游戏开发项目工作流  ".into(), // same after normalize
+            context: "v2 context".into(),
+            principles: "v2 principles".into(),
+            steps: "v2 steps".into(),
+            pitfalls: "v2 pitfalls".into(),
+        };
+
+        let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
+        let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
+
+        // Same node_id — second call folded in.
+        assert_eq!(n1.id, n2.id, "expected dedup to reuse node id");
+
+        // Active version reflects v2 content.
+        let active = store.get_active_version(&n1.id).unwrap().expect("active version");
+        assert!(active.content.contains("v2 context"), "active version should have v2 content");
+        assert!(!active.content.contains("v1 context"), "v1 should be deprecated");
+
+        // History has both versions; v1 is deprecated, v2 is active.
+        let all_versions = store.get_versions(&n1.id).unwrap();
+        assert_eq!(all_versions.len(), 2, "should keep both versions in history");
+
+        // usage_count bumped by the dedup path.
+        let node = store.get_node(&n1.id).unwrap().unwrap();
+        let count = node
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("usage_count"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        assert!(count >= 1, "usage_count should be bumped on dedup hit");
     }
 
     #[test]
