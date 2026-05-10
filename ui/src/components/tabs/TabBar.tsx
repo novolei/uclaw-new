@@ -196,9 +196,12 @@ function TabBarInner({
   }, [])
 
   return (
-    <div data-tauri-drag-region className="flex items-end h-[34px] tabbar-bg relative titlebar-drag-region">
+    <div className="flex items-end h-[34px] tabbar-bg relative">
+      {/* 绝对定位的 drag 层全覆盖 TabBar 区域；内容层显式 no-drag 让 tab 可点。
+          这样空白处(tab 之间/右侧)落在内容层的非 tab 区,WebKit 仍按 drag 处理。 */}
+      <div className="absolute inset-0 titlebar-drag-region" />
 
-      <div className="relative flex items-end flex-1 min-w-0 overflow-x-clip">
+      <div className="relative flex items-end flex-1 min-w-0 overflow-x-clip titlebar-no-drag">
         {tabs.map((tab) => (
           <TabBarItem
             key={tab.id}

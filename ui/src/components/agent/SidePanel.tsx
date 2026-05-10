@@ -19,6 +19,7 @@ import {
 import { cn } from '@/lib/utils'
 import { FileBrowser, FileDropZone, FileTypeIcon } from '@/components/file-browser'
 import {
+  agentSessionsAtom,
   agentSidePanelOpenMapAtom,
   workspaceFilesVersionAtom,
   currentAgentWorkspaceIdAtom,
@@ -46,43 +47,30 @@ import {
   moveAttachedFile,
 } from '@/lib/tauri-bridge'
 
-interface SidePanelProps {
+interface WorkspaceFilesViewProps {
   sessionId: string
   sessionPath: string | null
 }
 
-export function SidePanel({ sessionId, sessionPath }: SidePanelProps): React.ReactElement {
-  // per-session 侧面板状态（默认打开）
-  const sidePanelOpenMap = useAtomValue(agentSidePanelOpenMapAtom)
+/**
+ * 工作区文件视图——直接作为 RightSidePanel 的 Files tab 内容渲染。
+ * 不再是独立的"侧面板",没有自己的圆角/阴影/关闭按钮——这些由 RightSidePanel 提供。
+ */
+export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesViewProps): React.ReactElement {
+  // 自动打开右侧面板的状态（被 RightSidePanel 的 Files tab 容器条件渲染，
+  // 这里只负责在文件变化时把外层 isOpen 设回 true）。
   const setSidePanelOpenMap = useSetAtom(agentSidePanelOpenMapAtom)
-
-  const isOpen = sidePanelOpenMap.get(sessionId) ?? true
-
-  // 动画标志：渲染阶段直接计算，同一会话内 isOpen 变化时启用过渡动画，切换会话时即时显示
-  const prevIsOpenRef = React.useRef(isOpen)
-  const prevSessionIdRef = React.useRef(sessionId)
-  const shouldAnimate = prevSessionIdRef.current === sessionId && prevIsOpenRef.current !== isOpen
-  // 在渲染后更新 prev 值，以便下次渲染比较
-  React.useEffect(() => {
-    prevIsOpenRef.current = isOpen
-    prevSessionIdRef.current = sessionId
-  })
-
-  const setIsOpen = React.useCallback((value: boolean | ((prev: boolean) => boolean)) => {
-    setSidePanelOpenMap((prev) => {
-      const map = new Map(prev)
-      const current = map.get(sessionId) ?? true
-      map.set(sessionId, typeof value === 'function' ? value(current) : value)
-      return map
-    })
-  }, [sessionId, setSidePanelOpenMap])
 
   const filesVersion = useAtomValue(workspaceFilesVersionAtom)
   const setFilesVersion = useSetAtom(workspaceFilesVersionAtom)
   const hasFileChanges = filesVersion > 0
 
-  // 派生当前工作区 slug（用于 FileDropZone IPC 调用）
-  const currentWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
+  // 派生当前工作区 slug：优先使用会话自身关联的 workspaceId，其次回落到全局当前工作区。
+  // 这样 Files tab 默认显示当前会话所属工作区的文件，不依赖 LeftSidebar 里的工作区选择。
+  const agentSessions = useAtomValue(agentSessionsAtom)
+  const sessionWorkspaceId = agentSessions.find((s) => s.id === sessionId)?.workspaceId
+  const globalWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
+  const currentWorkspaceId = sessionWorkspaceId ?? globalWorkspaceId
   const workspaces = useAtomValue(agentWorkspacesAtom)
   const workspaceSlug = workspaces.find((w) => w.id === currentWorkspaceId)?.slug ?? null
 
@@ -259,35 +247,23 @@ export function SidePanel({ sessionId, sessionPath }: SidePanelProps): React.Rea
     getWorkspaceFilesPath(workspaceSlug).then(setWorkspaceFilesPath).catch(() => setWorkspaceFilesPath(null))
   }, [workspaceSlug])
 
-  // 自动打开：文件变化时（仅在有 sessionPath 时）
+  // 自动打开右侧面板：文件变化时把外层 isOpen 设为 true
   const prevFilesVersionRef = React.useRef(filesVersion)
   React.useEffect(() => {
     if (filesVersion > prevFilesVersionRef.current && sessionPath) {
-      setIsOpen(true)
+      setSidePanelOpenMap((prev) => {
+        const map = new Map(prev)
+        map.set(sessionId, true)
+        return map
+      })
     }
     prevFilesVersionRef.current = filesVersion
-  }, [filesVersion, sessionPath, setIsOpen])
+  }, [filesVersion, sessionPath, sessionId, setSidePanelOpenMap])
 
   return (
-    <div
-      className={cn(
-        'relative h-full flex-shrink-0 overflow-hidden titlebar-drag-region bg-content-area rounded-2xl shadow-xl',
-        shouldAnimate && 'transition-[width] duration-300 ease-in-out',
-        isOpen ? 'w-[320px]' : 'w-0',
-      )}
-    >
-      {/* 面板内容 */}
-      <div
-        className={cn(
-          'w-[320px] h-full flex flex-col titlebar-no-drag pt-0.5',
-          shouldAnimate && 'transition-opacity duration-300',
-          isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none',
-        )}
-        >
-          {/* 顶部拖拽区域 */}
-          <div data-tauri-drag-region className="h-[34px] flex-shrink-0 titlebar-drag-region" />
-          {/* 文件浏览内容 */}
-          {workspaceSlug ? (
+    <div className="h-full flex flex-col">
+      {/* 文件浏览内容 — 直接铺满 RightSidePanel 的 Files tab，不再套圆角/阴影外壳 */}
+      {workspaceSlug ? (
             <div className="flex-1 min-h-0 flex flex-col">
                   {/* ===== 会话文件区（仅当 sessionPath 存在时显示） ===== */}
                   {sessionPath && (
@@ -338,23 +314,6 @@ export function SidePanel({ sessionId, sessionPath }: SidePanelProps): React.Rea
                             <p>刷新文件列表</p>
                           </TooltipContent>
                         </Tooltip>
-                        {/* 关闭面板按钮 */}
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="h-5 w-5 flex-shrink-0"
-                              onClick={() => setIsOpen((prev) => !prev)}
-                            >
-                              <X className="size-2.5" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent side="bottom">
-                            <p>关闭侧面板</p>
-                          </TooltipContent>
-                        </Tooltip>
                       </div>
                       {/* 会话文件内容区（独立滚动） */}
                       <div className="flex-1 min-h-0 overflow-y-auto">
@@ -387,28 +346,6 @@ export function SidePanel({ sessionId, sessionPath }: SidePanelProps): React.Rea
                       {/* ===== 分隔线 ===== */}
                       <div className="mx-3 my-3 border-t border-muted-foreground/20" />
                     </>
-                  )}
-
-                  {/* ===== 顶部关闭按钮（仅在无 sessionPath 时显示，有 sessionPath 时关闭按钮在会话文件区标题栏） ===== */}
-                  {!sessionPath && (
-                    <div className="flex items-center justify-end px-3 h-[32px] flex-shrink-0">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-5 w-5 flex-shrink-0"
-                            onClick={() => setIsOpen((prev) => !prev)}
-                          >
-                            <X className="size-2.5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent side="bottom">
-                          <p>关闭侧面板</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </div>
                   )}
 
                   {/* ===== 工作区文件区 ===== */}
@@ -475,33 +412,11 @@ export function SidePanel({ sessionId, sessionPath }: SidePanelProps): React.Rea
                     </div>
                   </div>
                 </div>
-              ) : (
-                <div className="flex-1 flex flex-col">
-                  {/* 顶部关闭按钮 */}
-                  <div className="flex items-center justify-end px-3 h-[32px] flex-shrink-0">
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-5 w-5 flex-shrink-0"
-                          onClick={() => setIsOpen((prev) => !prev)}
-                        >
-                          <X className="size-2.5" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side="bottom">
-                        <p>关闭侧面板</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </div>
-                  <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground">
-                    请选择工作区
-                  </div>
-                </div>
-              )}
+      ) : (
+        <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground">
+          请选择工作区
         </div>
+      )}
     </div>
   )
 }

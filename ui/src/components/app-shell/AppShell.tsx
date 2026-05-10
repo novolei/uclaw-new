@@ -136,18 +136,23 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
 
   return (
     <AppShellProvider value={contextValue}>
+      {/* macOS 全宽标题栏拖拽区（z-50）：覆盖窗口顶部 50px，让面板间隙也可拖动。
+          各 panel 以 z-[60] 叠在其上，拖动只在 panel 之外的可见间隙生效。 */}
+      <div className="titlebar-drag-region fixed top-0 left-0 right-0 h-[50px] z-50" />
+
       <div className="shell-bg h-screen w-screen flex overflow-hidden bg-gradient-to-br from-zinc-50 to-zinc-100 dark:from-zinc-950 dark:to-zinc-900">
         {/* 左侧边栏：可折叠，带圆角和内边距 */}
-        <div className="sidebar-wrapper p-2 pr-0 relative">
+        <div className="sidebar-wrapper p-2 pr-0 relative z-[60]">
           <LeftSidebar />
         </div>
 
-        {/* 中间容器：主内容区域 */}
-        <div className="main-panel flex-1 min-w-0 p-2 relative">
+        {/* 中间容器：主内容区域。wrapper 自身可拖拽（8px padding 区域生效），
+            内部 z-10 内容显式 no-drag 退出，TabBar 自身已有 drag class 自然覆盖回 drag。 */}
+        <div data-tauri-drag-region className="main-panel titlebar-drag-region flex-1 min-w-0 p-2 relative z-[60]">
           {/* 主题背景图层（仅特殊主题如 THE FINALS 使用，其他主题下为空） */}
           <div aria-hidden="true" className="main-panel-bg pointer-events-none absolute inset-0 z-0" />
           {/* 主内容区域（TabBar + TabContent） */}
-          <div className="relative z-10 flex flex-col h-full min-h-0 min-w-0">
+          <div className="titlebar-no-drag relative z-10 flex flex-col h-full min-h-0 min-w-0">
             <ModeBanner />
             <MainArea />
           </div>
@@ -155,7 +160,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
 
         {/* 右侧边栏：Agent 文件面板，带圆角和内边距 */}
         {showRightPanel && (
-          <div className={cn('right-panel-wrapper relative transition-[padding] duration-300 ease-in-out', isPanelOpen ? 'p-2 pl-0' : 'p-0')}>
+          <div className={cn('right-panel-wrapper relative z-[60] transition-[padding] duration-300 ease-in-out', isPanelOpen ? 'p-2 pl-0' : 'p-0')}>
             <RightSidePanel />
           </div>
         )}

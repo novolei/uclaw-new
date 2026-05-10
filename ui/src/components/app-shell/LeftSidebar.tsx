@@ -601,6 +601,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   if (sidebarCollapsed) {
     return (
       <div className="h-full flex flex-col items-center bg-background rounded-2xl shadow-xl transition-[width] duration-300" style={{ width: 48, flexShrink: 0 }}>
+        {/* 顶部独立拖拽条 + 红绿灯空间 */}
         <div data-tauri-drag-region className="w-full h-[50px] flex-shrink-0 titlebar-drag-region" />
         <div className="pt-2">
           <Tooltip>
@@ -644,6 +645,8 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   // ===== 展开状态 =====
   return (
     <div className="h-full flex flex-col bg-background rounded-2xl shadow-xl transition-[width] duration-300" style={{ width: width ?? 280, minWidth: 180, flexShrink: 1 }}>
+      {/* 顶部独立拖拽条：30px 给红绿灯留位置 + 让用户从此处拖动窗口
+          (与 AppShell 的 fixed z-50 拖拽条互补——这里覆盖 sidebar 内部) */}
       <div data-tauri-drag-region className="h-[30px] flex-shrink-0 titlebar-drag-region" />
       <div>
         <div className="flex items-start gap-1.5 px-3">
