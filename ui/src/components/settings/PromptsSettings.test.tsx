@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import * as React from 'react'
 import { PromptsSettings } from './PromptsSettings'
-import { renderWithProviders, screen, waitFor, fireEvent } from '@/test-utils/render'
+import { renderWithProviders, screen, waitFor } from '@/test-utils/render'
 
 vi.mock('@/lib/tauri-bridge', () => ({
   readWorkspaceUclawMd: vi.fn(async () => '# my project\nuse rust 2021'),
@@ -13,6 +13,7 @@ vi.mock('@/lib/tauri-bridge', () => ({
     modePlan: 'PLAN_TEXT',
     modeBypass: 'BYPASS_TEXT',
   })),
+  openWorkspaceUclawMdExternally: vi.fn(async () => {}),
 }))
 
 vi.mock('sonner', () => ({
@@ -40,9 +41,8 @@ describe('PromptsSettings', () => {
       if (!el.value.includes('# my project')) throw new Error('not loaded')
       return el
     })
-    // Replace content (fireEvent.change avoids the placeholder fallback issue
-    // that happens when user.clear sets content to '' before user.type runs)
-    fireEvent.change(textarea, { target: { value: '# edited content' } })
+    await user.clear(textarea)
+    await user.type(textarea, '# edited content')
     const save = screen.getByRole('button', { name: /保存/ })
     await user.click(save)
     await waitFor(() => {

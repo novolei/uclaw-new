@@ -1059,3 +1059,11 @@ export const writeWorkspaceUclawMd = (content: string): Promise<void> =>
 
 export const readDefaultPrompts = (): Promise<DefaultPromptsResponse> =>
   invoke<DefaultPromptsResponse>('read_default_prompts')
+
+/**
+ * Open `<active_workspace>/uclaw.md` in the OS default application (file
+ * manager / text editor). Creates the file if it doesn't exist.
+ * Errors propagate (caller should show toast).
+ */
+export const openWorkspaceUclawMdExternally = (): Promise<void> =>
+  invoke<void>('open_workspace_uclaw_md_externally')
