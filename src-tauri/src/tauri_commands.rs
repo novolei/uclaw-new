@@ -264,6 +264,7 @@ pub async fn send_message(
         safety_mode,
         state.pending_approvals.clone(),
         input.conversation_id.clone(),
+        None,
     );
 
     // Inject InfraService so dispatcher publishes ToolExecuted events
@@ -3317,6 +3318,7 @@ pub async fn send_agent_message(
             None,
             Arc::clone(&pending_approvals),
             session_id.clone(),
+            None,
         );
         delegate.set_infra_service(Arc::clone(&infra_service));
         delegate.set_trajectory_store(Arc::clone(&trajectory_store));
@@ -4357,6 +4359,7 @@ pub async fn start_agent_teams(
                     None,
                     Arc::clone(&approvals_for_factory),
                     uuid::Uuid::new_v4().to_string(),
+                    None,
                 );
                 Box::new(delegate)
             },

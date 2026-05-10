@@ -258,6 +258,7 @@ fn main() {
                                         None,
                                         std::sync::Arc::clone(&approvals),
                                         uuid::Uuid::new_v4().to_string(),
+                                        Some(workspace.clone()),
                                     ))
                                 });
 
