@@ -12,6 +12,7 @@ import { LeftSidebar } from './LeftSidebar'
 import { RightSidePanel } from './RightSidePanel'
 import { MainArea } from '@/components/tabs/MainArea'
 import { AppShellProvider, type AppShellContextType } from '@/contexts/AppShellContext'
+import { ApprovalModal } from '@/components/ApprovalModal'
 import { appModeAtom } from '@/atoms/app-mode'
 import {
   agentSessionsAtom,
@@ -139,6 +140,14 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
 
         {/* Global ⌘K search palette — mounts at root so it works from any view */}
         <SearchPalette onSelect={handleSearchResultSelect} />
+
+        {/* Global tool-approval modal — listens for `agent:need_approval`
+            IPC events. Must be mounted exactly once at the root, otherwise
+            the agent loop's oneshot channel never resolves and the agent
+            hangs forever waiting on the user. (This was missing for a long
+            time; the bug was hidden because `bash` was in the global
+            auto-approve whitelist short-circuiting the resolver.) */}
+        <ApprovalModal />
       </div>
     </AppShellProvider>
   )
