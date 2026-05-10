@@ -139,6 +139,13 @@ pub struct MessageResponse {
     /// Model identifier used for the assistant turn, e.g. "deepseek-v4-flash".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Original ordered ContentBlocks parsed from `messages.content`.
+    /// `None` for legacy plain-text rows or rows that fail to parse.
+    /// When `Some`, the frontend renders via NativeBlockRenderer for
+    /// in-order display; when `None`, falls back to flat `content` +
+    /// `reasoning` + `tool_activities`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_blocks: Option<Vec<crate::agent::types::ContentBlock>>,
 }
 
 // ─── Spaces ────────────────────────────────────────────────────────────

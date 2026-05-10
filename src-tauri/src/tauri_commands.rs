@@ -817,13 +817,21 @@ pub async fn get_messages(state: State<'_, AppState>, input: GetMessagesInput) -
     for row in rows.flatten() {
         let (id, role, raw_content, reasoning, tool_activities_json, model, created_at) = row;
 
-        // content was stored as JSON of `Option<&Vec<ContentBlock>>`. Filter
-        // to text blocks for backward-compat with the in-memory join logic.
-        // Fall back to treating content as plain text if JSON parse fails.
-        let content_text: String = serde_json::from_str::<Option<Vec<ContentBlock>>>(&raw_content)
-            .ok()
-            .flatten()
-            .or_else(|| serde_json::from_str::<Vec<ContentBlock>>(&raw_content).ok())
+        // Parse `content` once. Two persisted shapes have been seen historically:
+        //   - JSON of Option<Vec<ContentBlock>> — written by add_message_with_meta
+        //     via serde_json::to_string(&session.messages.last().map(|m| &m.content))
+        //   - JSON of Vec<ContentBlock> — written by older code paths
+        //   - Plain text — pre-V5 rows
+        let parsed_blocks: Option<Vec<ContentBlock>> =
+            serde_json::from_str::<Option<Vec<ContentBlock>>>(&raw_content)
+                .ok()
+                .flatten()
+                .or_else(|| serde_json::from_str::<Vec<ContentBlock>>(&raw_content).ok());
+
+        // Flat text projection — joins all Text blocks. Used by the legacy
+        // renderer + minimap snippets.
+        let content_text: String = parsed_blocks
+            .as_ref()
             .map(|blocks| {
                 blocks.iter()
                     .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.clone()) } else { None })
@@ -845,6 +853,7 @@ pub async fn get_messages(state: State<'_, AppState>, input: GetMessagesInput) -
             reasoning,
             tool_activities,
             model,
+            content_blocks: parsed_blocks,
         });
     }
     Ok(out)
@@ -3396,6 +3405,14 @@ pub async fn get_agent_session_messages(
     let mut out: Vec<serde_json::Value> = Vec::with_capacity(messages.len());
     let mut prev_msg_ts: i64 = 0;
     for msg in &messages {
+        // Parse content as Vec<ContentBlock> for in-order rendering.
+        // Same fallback as get_messages; None for plain-text legacy rows.
+        let parsed_blocks: Option<Vec<ContentBlock>> =
+            serde_json::from_str::<Option<Vec<ContentBlock>>>(&msg.content)
+                .ok()
+                .flatten()
+                .or_else(|| serde_json::from_str::<Vec<ContentBlock>>(&msg.content).ok());
+
         let mut tool_activities: Option<serde_json::Value> = msg.tool_activities_json
             .as_deref()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
@@ -3438,7 +3455,7 @@ pub async fn get_agent_session_messages(
             }
         }
 
-        out.push(serde_json::json!({
+        let mut obj = serde_json::json!({
             "id": msg.id,
             "role": msg.role,
             "content": msg.content,
@@ -3446,7 +3463,16 @@ pub async fn get_agent_session_messages(
             "reasoning": msg.reasoning,
             "toolActivities": tool_activities,
             "model": msg.model,
-        }));
+        });
+        if let Some(blocks) = parsed_blocks.as_ref() {
+            if let Some(map) = obj.as_object_mut() {
+                map.insert(
+                    "contentBlocks".into(),
+                    serde_json::to_value(blocks).unwrap_or(serde_json::Value::Null),
+                );
+            }
+        }
+        out.push(obj);
         prev_msg_ts = msg.created_at;
     }
 

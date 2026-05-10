@@ -4,8 +4,8 @@
  */
 
 // re-export shared chat types so agent consumers don't need 2 imports
-import type { ChatToolActivity, FileAttachment } from './chat-types'
-export type { ChatToolActivity, FileAttachment }
+import type { ChatToolActivity, FileAttachment, ContentBlock } from './chat-types'
+export type { ChatToolActivity, FileAttachment, ContentBlock }
 
 // ─────────────────────────────────────────────────────────
 // Agent Types
@@ -53,6 +53,8 @@ export interface AgentMessage {
   reasoning?: string
   /** Persisted tool activity records (ChatToolActivity[]), hydrated from DB. */
   toolActivities?: ChatToolActivity[]
+  /** Same as ChatMessage.contentBlocks — see chat-types.ts. */
+  contentBlocks?: ContentBlock[]
 }
 
 
