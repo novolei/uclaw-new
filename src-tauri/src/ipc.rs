@@ -903,3 +903,41 @@ pub struct DefaultPromptsResponse {
     pub mode_plan: String,
     pub mode_bypass: String,
 }
+
+// ─── ask_user ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserOption {
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserQuestion {
+    pub question: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    pub multi_select: bool,
+    #[serde(default)]
+    pub options: Vec<AskUserOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserRequestPayload {
+    pub request_id: String,
+    pub session_id: String,
+    pub questions: Vec<AskUserQuestion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RespondAskUserInput {
+    pub request_id: String,
+    pub answers: serde_json::Map<String, serde_json::Value>,
+}

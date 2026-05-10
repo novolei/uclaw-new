@@ -4492,6 +4492,22 @@ pub async fn stop_agent_teams(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn respond_ask_user(
+    state: State<'_, AppState>,
+    input: crate::ipc::RespondAskUserInput,
+) -> Result<(), Error> {
+    let answers: std::collections::HashMap<String, serde_json::Value> = input.answers
+        .into_iter()
+        .collect();
+    let result = crate::app::AskUserResult { answers };
+    let resolved = state.pending_ask_users.resolve(&input.request_id, result);
+    if !resolved {
+        tracing::warn!(request_id = %input.request_id, "respond_ask_user: no matching pending request");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod fts_query_tests {
     use super::{build_fts_query, parse_scope};
