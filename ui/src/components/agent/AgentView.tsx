@@ -19,6 +19,7 @@ import { toast } from 'sonner'
 import { Bot, CornerDownLeft, Square, Settings, Paperclip, FolderPlus, X, Copy, Check, Brain, Map as MapIcon, Sparkles, AlertTriangle } from 'lucide-react'
 import { AgentMessages } from './AgentMessages'
 import { AgentHeader } from './AgentHeader'
+import { BrowserPreviewOverlay } from './BrowserPreviewOverlay'
 import { ContextUsageBadge } from './ContextUsageBadge'
 import { PermissionBanner } from './PermissionBanner'
 import { PermissionModeSelector } from './PermissionModeSelector'
@@ -1304,7 +1305,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     <>
     <AgentSessionProvider sessionId={sessionId}>
       {/* 主内容区域 */}
-      <div className="flex flex-col h-full flex-1 min-w-0">
+      <div className="flex flex-col h-full flex-1 min-w-0 relative">
         {/* Agent Header */}
         <AgentHeader sessionId={sessionId} />
 
@@ -1326,6 +1327,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           onRewind={handleRewindRequest}
           onCompact={handleCompact}
         />
+
+        {/* Browser preview overlay — positioned absolute within the relative outer container
+            so it floats over the scroll area without scrolling with content */}
+        <BrowserPreviewOverlay sessionId={sessionId} />
 
         {/* outer_timeout 内联错误块：显示超时提示 + 重试按钮 */}
         {agentError && agentError.kind === 'outer_timeout' && (

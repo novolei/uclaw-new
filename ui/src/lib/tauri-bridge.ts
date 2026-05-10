@@ -1046,6 +1046,9 @@ export const browserLaunch = (): Promise<boolean> =>
 export const browserShutdown = (): Promise<boolean> =>
   invoke<boolean>('browser_shutdown')
 
+export const browserTakeScreenshot = (tabId: string): Promise<string> =>
+  invoke<string>('browser_take_screenshot', { tab_id: tabId })
+
 // ─── Automation (Phase 3) ─────────────────────────────────────────────
 export interface AutomationSpecRow {
   id: string

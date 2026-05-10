@@ -71,13 +71,16 @@ impl Tool for BrowserScreenshotTool {
         let result = self.browser.screenshot(tab_id).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
-        let summary = serde_json::json!({
-            "width": result.width,
-            "height": result.height,
-            "data": result.data,
-        });
-        Ok(ToolOutput::success(
-            &summary.to_string(),
+        // Use ToolOutput::new with a real JSON value so the frontend receives
+        // { ok: true, content: { width, height, data } } rather than a
+        // double-encoded string, making the base64 data directly accessible.
+        Ok(ToolOutput::new(
+            serde_json::json!({
+                "ok": true,
+                "width": result.width,
+                "height": result.height,
+                "data": result.data,
+            }),
             start.elapsed().as_millis() as u64,
         ))
     }

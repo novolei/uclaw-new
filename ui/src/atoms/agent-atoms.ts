@@ -819,3 +819,21 @@ export const proactiveLearningEventsAtom = atom<ProactiveLearningEvent[]>([])
 // ===== 初始化就绪状态 =====
 
 export const agentSettingsReadyAtom = atom(false)
+
+// ===== Browser preview overlay (per-session) =====
+
+export interface BrowserPreviewState {
+  /** Last successfully navigated URL */
+  url: string | null
+  /** Tab ID returned by browser_navigate, used to trigger auto-screenshot */
+  tabId: string | null
+  /** Base64 PNG data (no data: prefix) from the most recent browser_screenshot result */
+  screenshotData: string | null
+  /** Whether the overlay is visible (user hasn't dismissed it) */
+  visible: boolean
+  /** Whether the overlay is minimized (collapsed to just the URL bar) */
+  minimized: boolean
+}
+
+/** Per-session browser preview state. Keyed by sessionId. */
+export const sessionBrowserPreviewMapAtom = atom<Map<string, BrowserPreviewState>>(new Map())

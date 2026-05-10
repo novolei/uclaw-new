@@ -353,6 +353,7 @@ impl ChatDelegate {
     fn emit_stream_reset(&self) {
         tracing::debug!("Emitting stream reset to frontend");
         let _ = self.app_handle.emit("agent:stream-reset", serde_json::json!({
+            "conversationId": self.conversation_id,
             "timestamp": chrono::Utc::now().to_rfc3339(),
         }));
     }
@@ -613,48 +614,130 @@ impl LoopDelegate for ChatDelegate {
         metadata: ResponseMetadata,
         reason_ctx: &mut ReasoningContext,
     ) -> TextAction {
-        // If the model ran out of tokens mid-text (finish_reason="length"),
-        // do NOT terminate. Treat like a truncation — record what we have
-        // and ask the model to continue. Without this, multi-step plans get
-        // cut off whenever the response approaches max_tokens (8192) and
-        // remaining steps never execute.
-        if metadata.finish_reason.as_deref() == Some("length") {
+        let is_truncated = metadata.finish_reason.as_deref() == Some("length");
+
+        // Build the effective rescue text. If we have a partial code block
+        // accumulated from previous truncated responses, reconstruct the fence
+        // so parse_code_blocks can see the full (possibly-now-complete) block.
+        let effective_owned;
+        let effective_text: &str = match &reason_ctx.partial_code_buffer {
+            Some((lang, acc)) => {
+                effective_owned = format!("```{}\n{}{}", lang, acc, text);
+                &effective_owned
+            }
+            None => text,
+        };
+
+        if is_truncated {
+            reason_ctx.consecutive_length_truncations += 1;
+            let n = reason_ctx.consecutive_length_truncations;
             tracing::warn!(
                 text_len = text.len(),
-                "Text response hit length limit (finish_reason=length); injecting continuation prompt"
+                consecutive = n,
+                "Text response hit length limit (finish_reason=length)"
             );
-            reason_ctx.messages.push(ChatMessage::assistant(text));
-            reason_ctx.messages.push(ChatMessage::user(
-                "Your last reply was truncated by the token limit. Continue from where you left off. \
-                 If you intended to call a tool next, call it now."
-            ));
-            return TextAction::Continue;
+
+            // Even with truncation, the accumulated+current text might now
+            // form a complete code block — try rescue first.
+            let rescue_calls = crate::agent::code_rescue::extract_write_file_calls(
+                effective_text,
+                self.workspace_root.as_deref(),
+            );
+            if !rescue_calls.is_empty() {
+                tracing::info!(
+                    count = rescue_calls.len(),
+                    "Code-block rescue succeeded on accumulated partial text"
+                );
+                reason_ctx.partial_code_buffer = None;
+                reason_ctx.consecutive_length_truncations = 0;
+                return TextAction::RescueWithToolCalls(rescue_calls);
+            }
+
+            // No complete block yet — update accumulator so the next iteration
+            // can try again with more content.
+            if let Some((_, ref mut acc)) = reason_ctx.partial_code_buffer {
+                acc.push_str(text);
+            } else if let Some((lang, partial)) =
+                crate::agent::code_rescue::extract_partial_code_block(text)
+            {
+                reason_ctx.partial_code_buffer = Some((lang, partial));
+            }
+
+            // After 2+ truncations, escalate from generic nudge to explicit
+            // chunked-writing strategy — the file is too large for one shot.
+            let nudge = if n >= 2 {
+                format!(
+                    "Your response has been truncated {n} times in a row. \
+                     The file you are writing is too large to output as text. \
+                     STOP outputting text immediately. \
+                     Strategy: call write_file with the FIRST 250-300 lines as \
+                     the `content` argument. In the following turn, call \
+                     write_file again (or edit) for the remaining sections. \
+                     Do not output any code as text — call write_file NOW."
+                )
+            } else {
+                "Your last reply was truncated by the token limit. \
+                 If you were writing a file, call write_file NOW instead of \
+                 outputting the content as text. \
+                 If you were mid-sentence on something else, continue from \
+                 where you left off."
+                    .to_string()
+            };
+            return TextAction::ContinueWithNudge(nudge);
         }
 
-        // Plan-aware termination guard: if a plan_write file in this workspace
-        // was touched in the last 5 minutes and still has `- [ ]` (undone)
-        // steps, the LLM probably hasn't actually finished — it just gave a
-        // mid-task narration. Don't terminate; nudge it to keep going.
-        //
-        // 5-minute window prevents stale plans from older sessions from
-        // looping unrelated user replies forever.
+        // ── Complete response path ────────────────────────────────────────
+        // Reset truncation state (model sent a full response this time).
+        reason_ctx.consecutive_length_truncations = 0;
+
+        // Code-block rescue: try with accumulated+current text (clears buffer
+        // regardless of outcome — the response is done).
+        let rescue_calls = crate::agent::code_rescue::extract_write_file_calls(
+            effective_text,
+            self.workspace_root.as_deref(),
+        );
+        reason_ctx.partial_code_buffer = None;
+        if !rescue_calls.is_empty() {
+            tracing::warn!(
+                count = rescue_calls.len(),
+                "Code-block rescue triggered: model output code as text, converting to write_file calls"
+            );
+            return TextAction::RescueWithToolCalls(rescue_calls);
+        }
+
+        // Plan-aware termination guard: if a plan file still has undone steps
+        // modified in the last 5 minutes, the model hasn't actually finished —
+        // nudge it to continue rather than terminating.
+        // Cap: after MAX_PLAN_GUARD_NUDGES consecutive nudges without any tool
+        // call response, give up and let the response through to avoid infinite
+        // text-only loops (e.g. model did edits but forgot plan_update calls).
         if let Some(undone) = crate::agent::plan_state::pending_plan_steps(
             self.workspace_root.as_deref(),
             300,
         ) {
-            tracing::info!(
-                undone_steps = undone,
-                "Pending plan steps detected; injecting continuation instead of terminating"
-            );
-            reason_ctx.messages.push(ChatMessage::assistant(text));
-            reason_ctx.messages.push(ChatMessage::user(&format!(
-                "Your most recent plan still has {} step(s) marked `- [ ]` (undone). \
-                 Continue with the next undone step now. \
-                 If the plan is actually complete, call `plan_update` with `done: true` \
-                 on each remaining step to acknowledge them, then reply with a brief summary.",
-                undone
-            )));
-            return TextAction::Continue;
+            if reason_ctx.consecutive_plan_guard_nudges >= crate::agent::types::MAX_PLAN_GUARD_NUDGES {
+                tracing::warn!(
+                    undone_steps = undone,
+                    nudges = reason_ctx.consecutive_plan_guard_nudges,
+                    "Plan guard giving up after {} nudges without tool response — returning response as-is",
+                    crate::agent::types::MAX_PLAN_GUARD_NUDGES
+                );
+                // Fall through to emit_done / Return below
+            } else {
+                reason_ctx.consecutive_plan_guard_nudges += 1;
+                tracing::info!(
+                    undone_steps = undone,
+                    nudge_count = reason_ctx.consecutive_plan_guard_nudges,
+                    "Pending plan steps detected; injecting continuation instead of terminating"
+                );
+                return TextAction::ContinueWithNudge(format!(
+                    "Your plan has {} undone step(s) marked `- [ ]`. \
+                     Execute the next undone step RIGHT NOW by calling a tool — \
+                     use write_file to write code, edit to modify an existing file, \
+                     or bash to run a command. DO NOT output file content as text.",
+                    undone
+                ));
+            }
         }
 
         self.emit_done(text);
@@ -923,6 +1006,11 @@ impl LoopDelegate for ChatDelegate {
                                     .mutations_since_last_plan_done
                                     .saturating_add(1);
                             }
+                            // Any successful tool call ends the truncation
+                            // streak and plan-guard nudge streak.
+                            reason_ctx.consecutive_length_truncations = 0;
+                            reason_ctx.partial_code_buffer = None;
+                            reason_ctx.consecutive_plan_guard_nudges = 0;
                             // Reset on successful plan_update done:true so the
                             // NEXT step needs its own mutation evidence. If the
                             // call was the soft-blocked path it `continue`d
@@ -1024,7 +1112,7 @@ impl LoopDelegate for ChatDelegate {
     }
 
     async fn on_tool_intent_nudge(&self, text: &str, _ctx: &mut ReasoningContext) {
-        self.emit_thinking(&format!("Detected tool intent in: {}", &text[..text.len().min(100)]));
+        self.emit_thinking(&format!("Detected tool intent in: {}", truncate_utf8(text, 100)));
     }
 }
 

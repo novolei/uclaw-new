@@ -773,15 +773,19 @@ async def main() -> None:
     # Use a robust stdin reading approach that works in subprocess (pipe) mode
     loop = asyncio.get_event_loop()
 
+    # 32 MB line limit — large memorization payloads (long documents, code files)
+    # easily exceed the default 64 KB limit and raise LimitOverrunError.
+    _LINE_LIMIT = 32 * 1024 * 1024
+
     try:
         # Try the standard asyncio pipe approach first
-        reader = asyncio.StreamReader()
+        reader = asyncio.StreamReader(limit=_LINE_LIMIT)
         protocol = asyncio.StreamReaderProtocol(reader)
         await loop.connect_read_pipe(lambda: protocol, sys.stdin)
     except (OSError, NotImplementedError):
         # Fallback: use thread-based stdin reading for non-pipe environments
         sys.stderr.write("[memu_bridge] connect_read_pipe failed, using thread-based fallback\n")
-        reader = asyncio.StreamReader()
+        reader = asyncio.StreamReader(limit=_LINE_LIMIT)
 
         def _stdin_reader():
             try:

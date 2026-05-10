@@ -3,6 +3,7 @@ pub mod types;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 use futures::StreamExt;
 use chromiumoxide::{Browser, Page};
@@ -48,8 +49,40 @@ impl BrowserService {
             return Ok(());
         }
 
+        // Dedicated profile dir so we don't collide with the user's real Chrome.
+        let profile_dir = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .join(".uclaw")
+            .join("browser-profile");
+        if let Err(e) = std::fs::create_dir_all(&profile_dir) {
+            tracing::warn!("Could not create browser profile dir: {}", e);
+        }
+
+        // Remove stale Chrome singleton lock files that prevent relaunch after
+        // a crash or force-quit.
+        for lock in &["SingletonLock", "SingletonCookie", "SingletonSocket"] {
+            let path = profile_dir.join(lock);
+            if path.exists() {
+                tracing::info!("Removing stale browser lock: {:?}", path);
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+
         let config = BrowserConfig::builder()
             .no_sandbox()
+            .user_data_dir(&profile_dir)
+            // Give Chrome up to 60 s to start (default 20 s is too short on first
+            // run when the profile dir is freshly created and Chrome sets up extensions).
+            .launch_timeout(Duration::from_secs(60))
+            // Suppress first-run UI and background services that slow startup.
+            .args([
+                "--no-first-run",
+                "--disable-default-apps",
+                "--disable-infobars",
+                "--disable-notifications",
+                "--disable-translate",
+                "--disable-extensions",
+            ])
             .build()
             .map_err(|e| Error::Internal(format!("Browser config error: {}", e)))?;
 
