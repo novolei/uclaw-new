@@ -445,6 +445,9 @@ export interface ProactiveLearningEvent {
   categories: string[];
   timestamp: string;
   summary: string;
+  /** Session ID that sourced the extraction context. Used by AgentMessages
+   *  to scope the chip to that session. May be null for legacy events. */
+  sessionId?: string | null;
 }
 
 /** Context token stats */

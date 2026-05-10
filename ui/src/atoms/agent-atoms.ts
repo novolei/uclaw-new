@@ -806,6 +806,11 @@ export interface ProactiveLearningEvent {
   categories: string[]
   timestamp: string
   summary: string
+  /** Session ID that most recently sourced messages into the proactive
+   *  context window when this extraction fired. Used by AgentMessages to
+   *  scope the chip to that single session. May be null if the
+   *  extraction ran before any user message in this app session. */
+  sessionId?: string | null
 }
 
 /** 最近的记忆捕捉事件（最多保留 10 条，新的在前） */

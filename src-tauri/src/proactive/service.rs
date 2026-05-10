@@ -125,6 +125,10 @@ struct ProactiveStateRefs {
     new_execution_count: Arc<AtomicUsize>,
     /// 当前活跃的 Space ID（用于记忆召回）
     active_space_id: Arc<RwLock<String>>,
+    /// 最近一次有 user/assistant 消息的 session_id（来自 InfraEvent.metadata
+    /// 的 conversation_id 字段）。用于把 proactive-learning IPC 事件
+    /// 标记到具体 session — 否则前端就只能在每个 session 都展示，造成噪声。
+    last_active_session_id: Arc<RwLock<Option<String>>>,
 }
 
 // ─── ProactiveService ─────────────────────────────────────────────────
@@ -189,6 +193,8 @@ pub struct ProactiveService {
     new_execution_count: Arc<AtomicUsize>,
     /// 当前活跃的 Space ID（用于记忆召回，默认 "default"）
     active_space_id: Arc<RwLock<String>>,
+    /// 最近一次有消息流过来的 session_id（见 ProactiveStateRefs 同名字段）
+    last_active_session_id: Arc<RwLock<Option<String>>>,
 
     /// 轮询循环任务句柄
     tick_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
@@ -241,6 +247,7 @@ impl ProactiveService {
             new_message_count: Arc::new(AtomicUsize::new(0)),
             new_execution_count: Arc::new(AtomicUsize::new(0)),
             active_space_id: Arc::new(RwLock::new("default".to_string())),
+            last_active_session_id: Arc::new(RwLock::new(None)),
             tick_handle: Arc::new(RwLock::new(None)),
             listener_handle: Arc::new(RwLock::new(None)),
         }
@@ -271,6 +278,7 @@ impl ProactiveService {
             new_message_count: self.new_message_count.clone(),
             new_execution_count: self.new_execution_count.clone(),
             active_space_id: self.active_space_id.clone(),
+            last_active_session_id: self.last_active_session_id.clone(),
         }
     }
 
@@ -286,6 +294,7 @@ impl ProactiveService {
         let new_msg_count = self.new_message_count.clone();
         let new_exec_count = self.new_execution_count.clone();
         let exec_log_collector = self.execution_log_collector.clone();
+        let last_session = self.last_active_session_id.clone();
 
         let handle = tokio::spawn(async move {
             while is_running.load(Ordering::SeqCst) {
@@ -302,6 +311,15 @@ impl ProactiveService {
                                 }
                                 has_new.store(true, Ordering::SeqCst);
                                 new_msg_count.fetch_add(1, Ordering::SeqCst);
+                                // Track last-active session so the next proactive
+                                // extraction tick can tag its IPC payload with
+                                // the session that most likely sourced it.
+                                if let Some(cid) = event.metadata
+                                    .get("conversation_id")
+                                    .and_then(|v| v.as_str())
+                                {
+                                    *last_session.write().await = Some(cid.to_string());
+                                }
                             }
                             // 工具执行事件 → 记录到 ExecutionLogCollector
                             InfraEventType::ToolExecuted => {
@@ -645,6 +663,7 @@ impl ProactiveService {
 
                                     // Tauri IPC 发射到前端
                                     let summary = extract_summary_text(&llm_response);
+                                    let session_id = refs.last_active_session_id.read().await.clone();
                                     if let Some(ref handle) = refs.app_handle {
                                         let _ = handle.emit("agent:proactive-learning", serde_json::json!({
                                             "scenario": "skill_extraction",
@@ -652,6 +671,7 @@ impl ProactiveService {
                                             "categories": ["procedure"],
                                             "timestamp": chrono::Utc::now().to_rfc3339(),
                                             "summary": summary,
+                                            "sessionId": session_id,
                                         }));
                                     }
                                 } else {
@@ -703,6 +723,7 @@ impl ProactiveService {
                                                     "multimodal_context" => "multimodal_context",
                                                     _ => "conversation_learning",
                                                 };
+                                                let session_id = refs.last_active_session_id.read().await.clone();
                                                 if let Some(ref handle) = refs.app_handle {
                                                     let _ = handle.emit("agent:proactive-learning", serde_json::json!({
                                                         "scenario": scenario_key,
@@ -710,6 +731,7 @@ impl ProactiveService {
                                                         "categories": result.categories_updated,
                                                         "timestamp": chrono::Utc::now().to_rfc3339(),
                                                         "summary": summary,
+                                                        "sessionId": session_id,
                                                     }));
                                                 }
                                             }
