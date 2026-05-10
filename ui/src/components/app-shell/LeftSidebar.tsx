@@ -931,11 +931,13 @@ function AgentSessionItem({ session, active, hovered, indicatorStatus, showPinIc
         ) : (
           <div className={cn('truncate text-[13px] leading-5 flex items-center gap-1.5', active ? 'text-foreground' : 'text-foreground/80')}>
             {showPinIcon && <Pin size={11} className="flex-shrink-0 text-primary/60" />}
-            {session.titlePending ? (
-              <LoaderCircle size={14} strokeWidth={2} className="flex-shrink-0 animate-spin text-foreground/40" />
-            ) : session.titleEmoji ? (
-              <span className="flex-shrink-0 text-[13px] leading-none">{session.titleEmoji}</span>
-            ) : null}
+            <span className="flex-shrink-0 inline-flex items-center justify-center text-primary" style={{ width: '18px' }}>
+              {session.titlePending ? (
+                <LoaderCircle size={14} strokeWidth={2} className="animate-spin" />
+              ) : session.titleEmoji ? (
+                <span className="text-[14px] leading-none" style={{ fontFamily: '"Apple Color Emoji", "Segoe UI Emoji", "Noto Emoji", sans-serif' }}>{session.titleEmoji}</span>
+              ) : null}
+            </span>
             {session.titlePending ? (
               <span className="flex-1 h-3 rounded bg-foreground/10 animate-pulse" />
             ) : (
