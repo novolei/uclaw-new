@@ -68,16 +68,22 @@ pub fn resolve_decision(
         return decision;
     }
 
+    // Compute the call's command/arg-prefix once. Both session-rule and
+    // pattern-rule lookups consult it (session rules with a target use prefix
+    // matching just like pattern rules; session rules without a target are
+    // tool-wide for backward compatibility).
+    let call_target = pattern_target(arguments);
+
     // 1. Session rule
-    if let Some(rule) = lookup_session_rule(db, session_id, tool_name) {
+    if let Some(rule) = lookup_session_rule(db, session_id, tool_name, call_target.as_deref()) {
         let decision = mode_to_decision(&rule.mode, tool_name);
         log_audit(db, session_id, tool_name, arguments, &decision, Some(&rule.id));
         return decision;
     }
 
     // 2. Pattern rule
-    if let Some(target) = pattern_target(arguments) {
-        if let Some(rule) = lookup_pattern_rule(db, tool_name, &target) {
+    if let Some(ref target) = call_target {
+        if let Some(rule) = lookup_pattern_rule(db, tool_name, target) {
             let decision = mode_to_decision(&rule.mode, tool_name);
             log_audit(db, session_id, tool_name, arguments, &decision, Some(&rule.id));
             return decision;
@@ -118,21 +124,43 @@ fn mode_to_decision(mode: &str, tool_name: &str) -> ApprovalDecision {
     }
 }
 
+/// Find the most-specific session rule for (session, tool, call_target).
+///
+/// A rule with a non-null `target` only matches when the call's `call_target`
+/// (extracted via `pattern_target` from the arguments) starts with it —
+/// same prefix-match semantics as pattern rules. A rule with NULL target is
+/// tool-wide and matches any call (legacy "本次会话允许" semantics; kept for
+/// back-compat with rules created before targeted session rules existed).
+///
+/// Longest target wins (so a more specific rule shadows a broader one).
 fn lookup_session_rule(
     db: &Arc<Mutex<Connection>>,
     session_id: &str,
     tool_name: &str,
+    call_target: Option<&str>,
 ) -> Option<PermissionRule> {
     let conn = db.lock().ok()?;
-    conn.query_row(
-        "SELECT id, scope, session_id, tool_name, target, mode, created_at
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, scope, session_id, tool_name, target, mode, created_at
          FROM tool_permission_rules
          WHERE scope = 'session' AND session_id = ?1 AND tool_name = ?2
-         ORDER BY created_at DESC LIMIT 1",
-        rusqlite::params![session_id, tool_name],
-        row_to_rule,
-    )
-    .ok()
+         ORDER BY length(COALESCE(target, '')) DESC, created_at DESC",
+        )
+        .ok()?;
+    let rows = stmt
+        .query_map(rusqlite::params![session_id, tool_name], row_to_rule)
+        .ok()?;
+    for r in rows.flatten() {
+        match (r.target.as_deref(), call_target) {
+            // Tool-wide session rule (legacy) — matches any call.
+            (None, _) | (Some(""), _) => return Some(r),
+            // Targeted session rule — only match if call target starts with it.
+            (Some(t), Some(c)) if c.starts_with(t) => return Some(r),
+            _ => continue,
+        }
+    }
+    None
 }
 
 fn lookup_pattern_rule(
@@ -487,5 +515,81 @@ mod tests {
         let h2 = args_hash(&serde_json::json!({"a": 1}));
         assert_eq!(h1, h2);
         assert_eq!(h1.len(), 16);
+    }
+
+    /// A targeted session rule (target = "git status") must NOT auto-pass an
+    /// unrelated bash call (e.g. "rm README.md"). Falls through to the global
+    /// SafetyMode (Supervised + Always → RequireApproval).
+    #[test]
+    fn targeted_session_rule_does_not_match_unrelated_command() {
+        let db = fresh_db();
+        let policy = baseline_policy();
+        create_rule(
+            &db,
+            CreatePermissionRuleInput {
+                scope: "session".into(),
+                session_id: Some("sess1".into()),
+                tool_name: "bash".into(),
+                target: Some("git status".into()),
+                mode: "allow".into(),
+            },
+        )
+        .unwrap();
+        // Matching command → AutoApprove
+        let ok_args = serde_json::json!({"command": "git status -uall"});
+        let d = resolve_decision(
+            &db,
+            &policy,
+            "sess1",
+            "bash",
+            &ok_args,
+            &ApprovalRequirement::Always,
+            None,
+        );
+        assert!(matches!(d, ApprovalDecision::AutoApprove));
+        // Different command → not matched, falls through to RequireApproval.
+        let bad_args = serde_json::json!({"command": "rm README.md"});
+        let d = resolve_decision(
+            &db,
+            &policy,
+            "sess1",
+            "bash",
+            &bad_args,
+            &ApprovalRequirement::Always,
+            None,
+        );
+        assert!(matches!(d, ApprovalDecision::RequireApproval { .. }));
+    }
+
+    /// A legacy tool-wide session rule (target = NULL) keeps matching every
+    /// call in the session. This is the pre-fix behavior of "本次会话允许"
+    /// preserved for back-compat with rules created before the targeted
+    /// version landed.
+    #[test]
+    fn legacy_tool_wide_session_rule_still_matches_any_command() {
+        let db = fresh_db();
+        let policy = baseline_policy();
+        create_rule(
+            &db,
+            CreatePermissionRuleInput {
+                scope: "session".into(),
+                session_id: Some("sess1".into()),
+                tool_name: "bash".into(),
+                target: None,
+                mode: "allow".into(),
+            },
+        )
+        .unwrap();
+        let args = serde_json::json!({"command": "anything goes"});
+        let d = resolve_decision(
+            &db,
+            &policy,
+            "sess1",
+            "bash",
+            &args,
+            &ApprovalRequirement::Always,
+            None,
+        );
+        assert!(matches!(d, ApprovalDecision::AutoApprove));
     }
 }
