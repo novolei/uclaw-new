@@ -2,6 +2,7 @@ use tauri::State;
 use crate::app::AppState;
 use crate::error::Error;
 use crate::ipc::*;
+use crate::ipc::{DailyCostRollup, ModelCostRollup, SessionCostRollup};
 use crate::agent::types::*;
 use crate::agent::tools::tool::ToolRegistry;
 use crate::agent::tools::builtin;
@@ -579,6 +580,118 @@ pub async fn list_recent_threads(state: State<'_, AppState>) -> Result<Vec<Recen
     out.sort_by(|a, b| to_epoch_ms(&b.updated_at).cmp(&to_epoch_ms(&a.updated_at)));
     out.truncate(20);
     Ok(out)
+}
+
+#[tauri::command]
+pub async fn get_daily_costs(
+    state: State<'_, AppState>,
+    days_back: Option<u32>,
+) -> Result<Vec<DailyCostRollup>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let days = days_back.unwrap_or(30).clamp(1, 365);
+    let cutoff_ms = chrono::Utc::now().timestamp_millis() - (days as i64) * 86_400_000;
+
+    // SQLite stores created_at as epoch-ms. Group by UTC YYYY-MM-DD.
+    let mut stmt = conn.prepare(
+        "SELECT
+            strftime('%Y-%m-%d', created_at / 1000, 'unixepoch') AS day,
+            SUM(input_tokens) AS in_tok,
+            SUM(output_tokens) AS out_tok,
+            SUM(cost_usd) AS cost,
+            COUNT(*) AS turns
+         FROM cost_records
+         WHERE created_at >= ?1
+         GROUP BY day
+         ORDER BY day ASC",
+    ).map_err(|e| Error::Internal(format!("prepare daily: {}", e)))?;
+
+    let rows = stmt.query_map(rusqlite::params![cutoff_ms], |row| {
+        Ok(DailyCostRollup {
+            day: row.get(0)?,
+            input_tokens: row.get(1)?,
+            output_tokens: row.get(2)?,
+            cost_usd: row.get(3)?,
+            turn_count: row.get(4)?,
+        })
+    }).map_err(|e| Error::Internal(format!("daily query: {}", e)))?;
+
+    Ok(rows.flatten().collect())
+}
+
+#[tauri::command]
+pub async fn get_model_costs(
+    state: State<'_, AppState>,
+    days_back: Option<u32>,
+) -> Result<Vec<ModelCostRollup>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let days = days_back.unwrap_or(30).clamp(1, 365);
+    let cutoff_ms = chrono::Utc::now().timestamp_millis() - (days as i64) * 86_400_000;
+
+    let mut stmt = conn.prepare(
+        "SELECT model,
+                SUM(input_tokens), SUM(output_tokens),
+                SUM(cost_usd), COUNT(*)
+         FROM cost_records
+         WHERE created_at >= ?1
+         GROUP BY model
+         ORDER BY cost_usd DESC"
+    ).map_err(|e| Error::Internal(format!("prepare model: {}", e)))?;
+
+    let rows = stmt.query_map(rusqlite::params![cutoff_ms], |row| {
+        Ok(ModelCostRollup {
+            model: row.get(0)?,
+            input_tokens: row.get(1)?,
+            output_tokens: row.get(2)?,
+            cost_usd: row.get(3)?,
+            turn_count: row.get(4)?,
+        })
+    }).map_err(|e| Error::Internal(format!("model query: {}", e)))?;
+
+    Ok(rows.flatten().collect())
+}
+
+#[tauri::command]
+pub async fn get_session_costs(
+    state: State<'_, AppState>,
+    days_back: Option<u32>,
+    limit: Option<u32>,
+) -> Result<Vec<SessionCostRollup>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let days = days_back.unwrap_or(30).clamp(1, 365);
+    let lim  = limit.unwrap_or(50).clamp(1, 500);
+    let cutoff_ms = chrono::Utc::now().timestamp_millis() - (days as i64) * 86_400_000;
+
+    // session_id may live in either `agent_sessions` (agent runs) or
+    // `conversations` (chat runs). Use COALESCE on the two title sources.
+    let mut stmt = conn.prepare(
+        "SELECT
+            cr.session_id,
+            COALESCE(s.title, c.title, '') AS title,
+            SUM(cr.input_tokens), SUM(cr.output_tokens),
+            SUM(cr.cost_usd), COUNT(*),
+            MAX(cr.created_at) AS last_used
+         FROM cost_records cr
+         LEFT JOIN agent_sessions s ON s.id = cr.session_id
+         LEFT JOIN conversations  c ON c.id = cr.session_id
+         WHERE cr.created_at >= ?1
+         GROUP BY cr.session_id
+         ORDER BY last_used DESC
+         LIMIT ?2"
+    ).map_err(|e| Error::Internal(format!("prepare session: {}", e)))?;
+
+    let rows = stmt.query_map(rusqlite::params![cutoff_ms, lim as i64], |row| {
+        Ok(SessionCostRollup {
+            session_id: row.get(0)?,
+            title: row.get(1)?,
+            input_tokens: row.get(2)?,
+            output_tokens: row.get(3)?,
+            cost_usd: row.get(4)?,
+            turn_count: row.get(5)?,
+            last_used_at: row.get(6)?,
+        })
+    }).map_err(|e| Error::Internal(format!("session query: {}", e)))?;
+
+    Ok(rows.flatten().collect())
 }
 
 /// Parse an `updated_at` string into epoch milliseconds. Accepts a bare i64-ms
