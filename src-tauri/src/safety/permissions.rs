@@ -16,6 +16,10 @@ use crate::safety::{ApprovalDecision, SafetyMode, SafetyPolicy};
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 
+/// Tool names that auto-pass under `AcceptEdits` mode. These are stable
+/// built-in tool names — see `agent/tools/builtin/{file,edit}.rs`.
+const EDIT_TOOLS: &[&str] = &["edit", "write_file"];
+
 /// Hash the call's arguments for the audit log. SHA-256 truncated to 16 hex
 /// chars — enough to dedupe similar calls in the UI without storing PII.
 fn args_hash(args: &serde_json::Value) -> String {
@@ -97,8 +101,31 @@ pub fn resolve_decision(
 
     let decision = match effective_mode {
         SafetyMode::Yolo => ApprovalDecision::AutoApprove,
-        SafetyMode::Ask | SafetyMode::AcceptEdits | SafetyMode::Plan => ApprovalDecision::RequireApproval {
+        SafetyMode::Ask => ApprovalDecision::RequireApproval {
             reason: format!("Safety mode requires approval for tool '{}'", tool_name),
+        },
+        SafetyMode::AcceptEdits => {
+            if EDIT_TOOLS.contains(&tool_name) {
+                ApprovalDecision::AutoApprove
+            } else {
+                ApprovalDecision::RequireApproval {
+                    reason: format!(
+                        "Accept-edits mode: tool '{}' is not an edit tool, requires approval",
+                        tool_name
+                    ),
+                }
+            }
+        }
+        SafetyMode::Plan => match tool_approval {
+            ApprovalRequirement::Never => ApprovalDecision::AutoApprove,
+            // UnlessAutoApproved + Always both indicate the tool has side
+            // effects — block in plan mode regardless of category.
+            _ => ApprovalDecision::Block {
+                reason: format!(
+                    "Plan mode — execution blocked for tool '{}'. Use exit_plan_mode to propose plan.",
+                    tool_name
+                ),
+            },
         },
         SafetyMode::Supervised => match tool_approval {
             ApprovalRequirement::Always => ApprovalDecision::RequireApproval {
@@ -590,6 +617,75 @@ mod tests {
             &ApprovalRequirement::Always,
             None,
         );
+        assert!(matches!(d, ApprovalDecision::AutoApprove));
+    }
+
+    #[test]
+    fn accept_edits_passes_edit_blocks_other() {
+        let db = fresh_db();
+        let mut policy = baseline_policy();
+        policy.global_mode = SafetyMode::AcceptEdits;
+        // edit auto-pass
+        let d = resolve_decision(&db, &policy, "sess1", "edit", &serde_json::json!({}),
+            &ApprovalRequirement::UnlessAutoApproved, None);
+        assert!(matches!(d, ApprovalDecision::AutoApprove));
+        // write_file auto-pass
+        let d = resolve_decision(&db, &policy, "sess1", "write_file", &serde_json::json!({}),
+            &ApprovalRequirement::UnlessAutoApproved, None);
+        assert!(matches!(d, ApprovalDecision::AutoApprove));
+        // bash asks (use Always so it doesn't trip the early Never→AutoApprove)
+        let d = resolve_decision(&db, &policy, "sess1", "bash", &serde_json::json!({"command":"ls"}),
+            &ApprovalRequirement::Always, None);
+        assert!(matches!(d, ApprovalDecision::RequireApproval { .. }));
+    }
+
+    #[test]
+    fn plan_mode_blocks_writes_passes_reads() {
+        let db = fresh_db();
+        let mut policy = baseline_policy();
+        policy.global_mode = SafetyMode::Plan;
+        // read_file auto-pass (Never)
+        let d = resolve_decision(&db, &policy, "sess1", "read_file", &serde_json::json!({"path":"foo"}),
+            &ApprovalRequirement::Never, None);
+        assert!(matches!(d, ApprovalDecision::AutoApprove));
+        // edit blocked (UnlessAutoApproved)
+        let d = resolve_decision(&db, &policy, "sess1", "edit", &serde_json::json!({}),
+            &ApprovalRequirement::UnlessAutoApproved, None);
+        assert!(matches!(d, ApprovalDecision::Block { .. }));
+        // bash with dangerous command blocked (Always)
+        let d = resolve_decision(&db, &policy, "sess1", "bash", &serde_json::json!({"command":"rm foo"}),
+            &ApprovalRequirement::Always, None);
+        assert!(matches!(d, ApprovalDecision::Block { .. }));
+    }
+
+    #[test]
+    fn plan_mode_passes_safe_bash() {
+        let db = fresh_db();
+        let mut policy = baseline_policy();
+        policy.global_mode = SafetyMode::Plan;
+        // bash with safe command (its requires_approval returns Never) auto-pass
+        let d = resolve_decision(&db, &policy, "sess1", "bash", &serde_json::json!({"command":"ls"}),
+            &ApprovalRequirement::Never, None);
+        assert!(matches!(d, ApprovalDecision::AutoApprove));
+    }
+
+    #[test]
+    fn v14_pattern_rule_overrides_plan_mode_block() {
+        let db = fresh_db();
+        let mut policy = baseline_policy();
+        policy.global_mode = SafetyMode::Plan;
+        // Add an escape-hatch rule
+        create_rule(&db, CreatePermissionRuleInput {
+            scope: "pattern".into(),
+            session_id: None,
+            tool_name: "bash".into(),
+            target: Some("cargo test".into()),
+            mode: "allow".into(),
+        }).unwrap();
+        // bash cargo test → AutoApprove (rule wins over plan-mode block)
+        let d = resolve_decision(&db, &policy, "sess1", "bash",
+            &serde_json::json!({"command":"cargo test --lib"}),
+            &ApprovalRequirement::Always, None);
         assert!(matches!(d, ApprovalDecision::AutoApprove));
     }
 

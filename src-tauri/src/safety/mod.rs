@@ -222,8 +222,29 @@ impl SafetyManager {
 
         let decision = match effective_mode {
             SafetyMode::Yolo => ApprovalDecision::AutoApprove,
-            SafetyMode::Ask | SafetyMode::AcceptEdits | SafetyMode::Plan => ApprovalDecision::RequireApproval {
+            SafetyMode::Ask => ApprovalDecision::RequireApproval {
                 reason: format!("Safety mode requires approval for tool '{}'", tool_name),
+            },
+            SafetyMode::AcceptEdits => {
+                if matches!(tool_name, "edit" | "write_file") {
+                    ApprovalDecision::AutoApprove
+                } else {
+                    ApprovalDecision::RequireApproval {
+                        reason: format!(
+                            "Accept-edits mode: tool '{}' is not an edit tool, requires approval",
+                            tool_name
+                        ),
+                    }
+                }
+            }
+            SafetyMode::Plan => match tool_approval {
+                ApprovalRequirement::Never => ApprovalDecision::AutoApprove,
+                _ => ApprovalDecision::Block {
+                    reason: format!(
+                        "Plan mode — execution blocked for tool '{}'. Use exit_plan_mode to propose plan.",
+                        tool_name
+                    ),
+                },
             },
             SafetyMode::Supervised => {
                 // In supervised mode: Always => require, UnlessAutoApproved => auto
