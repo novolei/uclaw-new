@@ -16,10 +16,12 @@ import {
   Keyboard,
   X,
   Cpu,
+  BarChart3,
 } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { GeneralSettings } from './GeneralSettings'
 import { AppearanceSettings } from './AppearanceSettings'
+import { UsageSettings } from './UsageSettings'
 import { AgentSettings } from './AgentSettings'
 import { ToolSettings } from './ToolSettings'
 import { PromptSettings } from './PromptSettings'
@@ -41,6 +43,7 @@ const TABS: TabItem[] = [
   { id: 'models', label: '模型配置', icon: <Cpu size={15} /> },
   { id: 'general', label: '通用', icon: <Settings size={15} /> },
   { id: 'appearance', label: '外观', icon: <Palette size={15} /> },
+  { id: 'usage', label: '用量', icon: <BarChart3 size={15} /> },
   { id: 'agent', label: 'Agent', icon: <Plug size={15} /> },
   { id: 'tools', label: '工具', icon: <Wrench size={15} /> },
   { id: 'prompts', label: '提示词', icon: <BookOpen size={15} /> },
@@ -60,6 +63,8 @@ function SettingsContent({ tab }: { tab: SettingsTab }) {
       return <ModelSettings />
     case 'appearance':
       return <AppearanceSettings />
+    case 'usage':
+      return <UsageSettings />
     case 'agent':
       return <AgentSettings />
     case 'tools':

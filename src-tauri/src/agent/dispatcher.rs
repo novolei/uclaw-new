@@ -216,6 +216,20 @@ impl ChatDelegate {
             cost_usd = %turn_cost.cost_usd,
             "Emitting agent:turn_cost"
         );
+
+        // Persist BEFORE emitting so the dashboard never undercounts even if
+        // the frontend listener races. Best-effort — failures don't propagate.
+        use tauri::Manager;
+        if let Some(state) = self.app_handle.try_state::<crate::app::AppState>() {
+            crate::cost_store::record(
+                &state,
+                &self.conversation_id,
+                &self.model,
+                usage.input_tokens,
+                usage.output_tokens,
+            );
+        }
+
         let _ = self.app_handle.emit("agent:turn_cost", &turn_cost);
     }
 

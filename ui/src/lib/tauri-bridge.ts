@@ -101,6 +101,10 @@ import type {
   MemoryGraphCreateNodeInput,
   MemoryGraphUpdateNodeInput,
   MemoryGraphDeleteNodeInput,
+  // Cost dashboard
+  DailyCostRollup,
+  ModelCostRollup,
+  SessionCostRollup,
 } from './types';
 import type { Channel } from './chat-types';
 import type { RecentThread } from './agent-types';
@@ -608,6 +612,17 @@ export const onThinkingDone = (cb: (payload: StreamThinkingDone) => void): Promi
 
 export const onTurnCost = (cb: (payload: TurnCost) => void): Promise<UnlistenFn> =>
   listen('agent:turn_cost', (e) => cb(e.payload as TurnCost));
+
+// — Cost dashboard —
+
+export const getDailyCosts = (daysBack = 30): Promise<DailyCostRollup[]> =>
+  invoke<DailyCostRollup[]>('get_daily_costs', { daysBack });
+
+export const getModelCosts = (daysBack = 30): Promise<ModelCostRollup[]> =>
+  invoke<ModelCostRollup[]>('get_model_costs', { daysBack });
+
+export const getSessionCosts = (daysBack = 30, limit = 50): Promise<SessionCostRollup[]> =>
+  invoke<SessionCostRollup[]>('get_session_costs', { daysBack, limit });
 
 export const onContextStats = (cb: (payload: ContextStats) => void): Promise<UnlistenFn> =>
   listen('agent:context_stats', (e) => cb(e.payload as ContextStats));

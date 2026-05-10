@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { LoaderCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface SessionItemProps {
@@ -30,8 +31,14 @@ export function SessionItem({
           : 'text-muted-foreground hover:bg-muted hover:text-foreground'
       )}
     >
-      <span className="shrink-0 text-[14px] leading-none">
-        {titlePending ? '⏳' : titleEmoji || '💬'}
+      <span className="shrink-0 inline-flex items-center justify-center text-primary" style={{ width: '18px' }}>
+        {titlePending ? (
+          <LoaderCircle size={14} strokeWidth={2} className="animate-spin" />
+        ) : (
+          <span className="text-[14px] leading-none" style={{ fontVariantEmoji: 'text' } as React.CSSProperties}>
+            {titleEmoji || '💬'}
+          </span>
+        )}
       </span>
       {titlePending ? (
         <span className="flex-1 h-3.5 rounded bg-muted-foreground/20 animate-pulse" />

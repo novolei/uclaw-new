@@ -802,3 +802,40 @@ pub struct MemoryGraphUpdateNodeInput {
 pub struct MemoryGraphDeleteNodeInput {
     pub node_id: String,
 }
+
+// ─── Cost dashboard ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyCostRollup {
+    /// `YYYY-MM-DD` (UTC).
+    pub day: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cost_usd: f64,
+    pub turn_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCostRollup {
+    pub model: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cost_usd: f64,
+    pub turn_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCostRollup {
+    pub session_id: String,
+    /// Joined session title from `agent_sessions`/`conversations`. Empty if unknown.
+    pub title: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cost_usd: f64,
+    pub turn_count: i64,
+    /// Most-recent record's created_at (epoch ms).
+    pub last_used_at: i64,
+}

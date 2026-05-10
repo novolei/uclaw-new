@@ -481,6 +481,27 @@ AFTER DELETE ON agent_messages BEGIN
 END;
 ";
 
+/// V13: per-turn cost records for the usage dashboard.
+///
+/// Captures one row per LLM call so we can roll up by (day, model, session).
+/// `cost_usd` stored as REAL — small numbers, no exact-decimal requirement.
+/// Indexes target the three rollup queries: daily totals (created_at),
+/// per-session aggregation (session_id), per-model breakdown (model).
+pub const V13_COST_RECORDS: &str = "
+CREATE TABLE IF NOT EXISTS cost_records (
+    id            TEXT PRIMARY KEY,
+    session_id    TEXT NOT NULL,
+    model         TEXT NOT NULL,
+    input_tokens  INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd      REAL NOT NULL DEFAULT 0,
+    created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cost_records_created ON cost_records(created_at);
+CREATE INDEX IF NOT EXISTS idx_cost_records_session ON cost_records(session_id);
+CREATE INDEX IF NOT EXISTS idx_cost_records_model   ON cost_records(model);
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -559,6 +580,12 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
         [],
     ) {
         tracing::warn!("V12 agent_messages backfill failed: {}", e);
+    }
+    tracing::debug!("Running migration V13: cost records");
+    for stmt in V13_COST_RECORDS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V13 stmt skipped: {} :: {}", e, stmt);
+        }
     }
     tracing::info!("Database migrations complete");
     Ok(())
