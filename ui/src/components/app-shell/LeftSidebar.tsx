@@ -706,7 +706,6 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
               handleSelectAgentSession(id, session?.title ?? '')
             }}
             onDeleteSession={(id) => handleRequestDelete(id)}
-            onOpenSettings={() => setSettingsOpen(true)}
           />
         </div>
       ) : (
