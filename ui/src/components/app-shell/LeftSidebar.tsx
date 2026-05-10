@@ -948,6 +948,20 @@ function AgentSessionItem({ session, active, hovered, indicatorStatus, showPinIc
           </div>
         )}
       </div>
+      {/* Always-visible running indicator — pulsing primary dot when this
+          session has an active agent loop. Lets the user spot in-flight
+          tasks even when looking at a different session's tab. */}
+      {indicatorStatus === 'running' && !editing && (
+        <span
+          className={cn(
+            'flex-shrink-0 size-2 rounded-full bg-primary',
+            'animate-pulse shadow-[0_0_8px_hsl(var(--primary))]',
+            // hide when the action icons appear on hover, to avoid double-rendering
+            hovered && 'opacity-0 transition-opacity',
+          )}
+          title="任务执行中"
+        />
+      )}
       <div className={cn('flex items-center gap-0.5 flex-shrink-0 transition-all duration-100 overflow-hidden', hovered && !editing ? 'opacity-100' : 'opacity-0 w-0 pointer-events-none')}>
         <Tooltip><TooltipTrigger asChild><button onClick={(e) => { e.stopPropagation(); onTogglePin(session.id) }} className="p-1 rounded-md text-foreground/30 hover:bg-foreground/[0.08] hover:text-foreground/60 transition-colors">{session.pinned ? <PinOff size={13} /> : <Pin size={13} />}</button></TooltipTrigger><TooltipContent side="top">{session.pinned ? '取消置顶' : '置顶会话'}</TooltipContent></Tooltip>
         <Tooltip><TooltipTrigger asChild><button onClick={(e) => { e.stopPropagation(); if (indicatorStatus !== 'running') onToggleManualWorking(session.id) }} disabled={indicatorStatus === 'running'} className={cn('p-1 rounded-md transition-colors', indicatorStatus === 'running' ? 'text-primary/40 cursor-not-allowed' : (isInWorkingSection || session.manualWorking) ? 'text-primary hover:bg-foreground/[0.08]' : 'text-foreground/30 hover:bg-foreground/[0.08] hover:text-foreground/60')}><Hammer size={13} className={(isInWorkingSection || session.manualWorking) ? 'fill-current' : ''} /></button></TooltipTrigger><TooltipContent side="top">{indicatorStatus === 'running' ? '运行中无法移出' : (isInWorkingSection || session.manualWorking) ? '取消工作中' : '标记为工作中'}</TooltipContent></Tooltip>
