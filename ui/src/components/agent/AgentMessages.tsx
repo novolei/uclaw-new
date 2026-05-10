@@ -994,13 +994,15 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
           </>
         )}
       </ConversationContent>
-      {/* 记忆捕捉 chip 列表 — 只显示来自当前 session 的提取事件，
-          否则切换 session 时会看到无关 session 的提取记录造成噪声。
-          后端 PR #61 在 IPC payload 里加了 sessionId 用于这个 filter；
-          没有 sessionId 的旧事件不再显示（不回退到全局，那是旧行为）。 */}
+      {/* 记忆捕捉 chip 列表 — 只显示来自当前 session 的提取事件。
+          PR #61 加了 sessionId 字段做 filter，避免切 session 时看到
+          无关事件。但当后端 last_active_session_id 还没填（app 启动
+          后第一次 user message 之前）时 sessionId 可能是 null —
+          这种事件按"无 session 归属"处理，**fallback 显示在当前
+          active session 里**，给用户看见而不是默默吞掉。 */}
       {(() => {
         const sessionEvents = proactiveLearningEvents.filter(
-          (ev) => ev.sessionId === sessionId
+          (ev) => ev.sessionId === sessionId || ev.sessionId == null
         )
         if (sessionEvents.length === 0) return null
         return (

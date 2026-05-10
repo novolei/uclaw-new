@@ -90,7 +90,12 @@ impl MemUClient {
             "user_scope": user_scope,
         });
 
-        let result = self.bridge.send_request("memorize", params).await?;
+        // memorize runs an LLM extraction that yields ~8-10 items per call —
+        // 30s default timeout is too tight. See MEMORIZE_TIMEOUT comment.
+        let result = self
+            .bridge
+            .send_request_with_timeout("memorize", params, crate::memu::bridge::MEMORIZE_TIMEOUT)
+            .await?;
         serde_json::from_value(result).map_err(BridgeError::JsonError)
     }
 
@@ -276,7 +281,14 @@ impl MemUClient {
             }
         });
 
-        let result = self.bridge.send_request("memorize_with_config", params).await?;
+        let result = self
+            .bridge
+            .send_request_with_timeout(
+                "memorize_with_config",
+                params,
+                crate::memu::bridge::MEMORIZE_TIMEOUT,
+            )
+            .await?;
         serde_json::from_value(result).map_err(BridgeError::JsonError)
     }
 
@@ -355,7 +367,14 @@ impl MemUClient {
             }
         });
 
-        let result = self.bridge.send_request("memorize_multimodal", params).await?;
+        let result = self
+            .bridge
+            .send_request_with_timeout(
+                "memorize_multimodal",
+                params,
+                crate::memu::bridge::MEMORIZE_TIMEOUT,
+            )
+            .await?;
         serde_json::from_value(result).map_err(BridgeError::JsonError)
     }
 }

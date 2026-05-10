@@ -8,7 +8,19 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 /// Default timeout for JSON-RPC requests (30 seconds).
+/// Suitable for fast operations: retrieve, list, delete, get_*.
+/// LLM-backed operations (memorize*) override this via
+/// `send_request_with_timeout` because end-to-end LLM extraction of
+/// many items can legitimately take a minute.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Timeout for LLM-backed memorize operations (2 minutes).
+/// MemU's memorize pipeline runs an LLM extraction over the input that
+/// can yield 8-10+ memory items per call, each requiring a model
+/// invocation. 30s default produces "Request timed out" + orphan
+/// "Received response for unknown id" warnings — both indicate the
+/// Python side completed slightly after the Rust side gave up.
+pub const MEMORIZE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Maximum number of automatic restart attempts before giving up.
 const MAX_RESTART_ATTEMPTS: u32 = 3;
@@ -243,7 +255,11 @@ impl MemUBridge {
 
                         let _ = pending.tx.send(result);
                     } else {
-                        tracing::warn!("Received response for unknown request id={id}");
+                        // Late response (caller already timed out and removed
+                        // the pending entry) or duplicate. Common with the
+                        // 30s default timeout vs slow memorize LLM calls.
+                        // Demoted to debug — not actionable, just noise.
+                        tracing::debug!(id, "memU: response for unknown/timed-out request id");
                     }
                 }
                 Ok(None) => {
