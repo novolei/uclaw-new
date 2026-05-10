@@ -113,16 +113,60 @@ pub fn store_skill_as_procedure(
 ) -> anyhow::Result<MemoryNode> {
     let now = chrono::Utc::now().to_rfc3339();
 
-    // ── D1: dedup-on-write ────────────────────────────────────────
+    // ── D1: exact-after-normalize dedup ───────────────────────────
     let normalized = normalize_title_for_dedup(&skill.name);
     if !normalized.is_empty() {
         if let Ok(Some(existing)) = store.find_learned_skill_by_normalized_title(space_id, &normalized) {
             tracing::info!(
                 node_id = %existing.id,
                 title = %existing.title,
-                "skill_parser: dedup hit — folding new extraction into existing node"
+                "skill_parser: exact dedup hit — folding new extraction into existing node"
             );
             return upgrade_existing_skill(store, existing, skill, &now);
+        }
+    }
+
+    // ── D2: fuzzy (bigram-Jaccard) dedup ──────────────────────────
+    // Catches near-duplicates like "处理 edit 工具..." vs "edit 工具..."
+    // (one extra prefix word) or "基于计划的增量式X工作流" vs the same
+    // string with a single word inserted. Pure character bigrams on
+    // normalized title — language-agnostic, no tokenizer dependency.
+    //
+    // Threshold 0.75 is conservative: high enough to reject "前端游戏
+    // 开发" vs "基于计划的增量式游戏开发" (Jaccard ~0.24 — not the same
+    // concept by string overlap), low enough to catch the genuine
+    // "+1 word" near-dups the user keeps accumulating.
+    //
+    // Skip very short titles (< 4 chars) — bigram counts are too small
+    // for the metric to mean anything.
+    if normalized.chars().count() >= 4 {
+        if let Ok(candidates) = store.list_top_learned_skills(space_id, 500) {
+            let new_grams = title_bigrams(&normalized);
+            let mut best: Option<(f32, crate::memory_graph::models::MemoryNode)> = None;
+            for cand in candidates {
+                let cand_norm = normalize_title_for_dedup(&cand.node.title);
+                if cand_norm == normalized {
+                    continue; // would have been caught by D1
+                }
+                let cand_grams = title_bigrams(&cand_norm);
+                let sim = jaccard_similarity(&new_grams, &cand_grams);
+                if sim >= FUZZY_DEDUP_THRESHOLD {
+                    match &best {
+                        Some((b, _)) if *b >= sim => {}
+                        _ => best = Some((sim, cand.node)),
+                    }
+                }
+            }
+            if let Some((sim, existing)) = best {
+                tracing::info!(
+                    node_id = %existing.id,
+                    title = %existing.title,
+                    new_title = %skill.name,
+                    similarity = sim,
+                    "skill_parser: fuzzy dedup hit — folding new extraction into similar existing node"
+                );
+                return upgrade_existing_skill(store, existing, skill, &now);
+            }
         }
     }
 
@@ -201,6 +245,46 @@ pub fn store_skill_as_procedure(
     }
 
     Ok(node)
+}
+
+/// Threshold for fuzzy (bigram-Jaccard) dedup. ≥ this similarity →
+/// fold into existing skill instead of creating a new node. Tuned
+/// conservatively: catches "+1 word" near-dups but rejects
+/// concept-level overlap (which is D3's territory, not D2's).
+pub const FUZZY_DEDUP_THRESHOLD: f32 = 0.75;
+
+/// Character bigrams of a string. Language-agnostic — works for CJK
+/// without a tokenizer, and for ASCII without a stemmer.
+///
+/// Empty / 1-char strings produce empty sets; 2-char strings produce
+/// a single bigram. Both are correctly handled by `jaccard_similarity`.
+pub fn title_bigrams(s: &str) -> std::collections::HashSet<String> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut set = std::collections::HashSet::new();
+    if chars.len() < 2 {
+        return set;
+    }
+    for w in chars.windows(2) {
+        set.insert(w.iter().collect::<String>());
+    }
+    set
+}
+
+/// Jaccard similarity (|A ∩ B| / |A ∪ B|) between two bigram sets.
+/// Returns 0.0 for empty sets to avoid 0/0 NaN.
+pub fn jaccard_similarity(
+    a: &std::collections::HashSet<String>,
+    b: &std::collections::HashSet<String>,
+) -> f32 {
+    if a.is_empty() && b.is_empty() {
+        return 0.0;
+    }
+    let inter = a.intersection(b).count();
+    let union = a.len() + b.len() - inter;
+    if union == 0 {
+        return 0.0;
+    }
+    inter as f32 / union as f32
 }
 
 /// Normalize a skill title for dedup comparison.
@@ -645,6 +729,66 @@ mod tests {
             normalize_title_for_dedup("edit 工具技巧"),
             normalize_title_for_dedup("edit 工具陷阱"),
         );
+    }
+
+    #[test]
+    fn jaccard_similarity_basics() {
+        let a = title_bigrams("处理 edit 工具");
+        let b = title_bigrams("edit 工具");
+        let sim = jaccard_similarity(&a, &b);
+        // Mostly the same bigrams — should be high.
+        assert!(sim > 0.6, "expected high similarity for prefix-only diff, got {}", sim);
+
+        let c = title_bigrams("基于计划的增量式游戏前端开发工作流");
+        let d = title_bigrams("基于计划的增量式游戏开发工作流");
+        let sim2 = jaccard_similarity(&c, &d);
+        // Single-word insertion ("前端") inside an otherwise identical
+        // phrase — should fire D2.
+        assert!(sim2 >= FUZZY_DEDUP_THRESHOLD, "expected fuzzy hit for inserted word, got {}", sim2);
+
+        let e = title_bigrams("前端游戏开发项目工作流");
+        let f = title_bigrams("基于计划的增量式游戏前端开发工作流");
+        let sim3 = jaccard_similarity(&e, &f);
+        // Different concepts that share some words — should NOT fire D2.
+        // (D3 LLM-judgment is the right tool for this.)
+        assert!(sim3 < FUZZY_DEDUP_THRESHOLD, "expected fuzzy miss for concept overlap, got {}", sim3);
+    }
+
+    #[test]
+    fn fuzzy_dedup_folds_near_duplicate() {
+        use crate::memory_graph::store::MemoryGraphStore;
+        use rusqlite::Connection;
+        use std::sync::{Arc, Mutex};
+
+        let conn = Connection::open_in_memory().unwrap();
+        let store = MemoryGraphStore::new(Arc::new(Mutex::new(conn)));
+        store.ensure_tables();
+        let space = "fuzz-space";
+
+        let s1 = ParsedSkill {
+            name: "edit 工具文本匹配错误的备选插入策略".into(),
+            context: "v1".into(),
+            principles: "v1".into(),
+            steps: "v1".into(),
+            pitfalls: "v1".into(),
+        };
+        let s2 = ParsedSkill {
+            name: "处理 edit 工具文本匹配错误的备选插入策略".into(), // +1 word prefix
+            context: "v2".into(),
+            principles: "v2".into(),
+            steps: "v2".into(),
+            pitfalls: "v2".into(),
+        };
+
+        let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
+        let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
+
+        // Fuzzy dedup should have folded n2 into n1.
+        assert_eq!(n1.id, n2.id, "fuzzy dedup should reuse node id");
+
+        // Active version reflects v2 content.
+        let active = store.get_active_version(&n1.id).unwrap().expect("active version");
+        assert!(active.content.contains("v2"), "active version should be v2");
     }
 
     #[test]

@@ -3065,6 +3065,373 @@ pub async fn record_skill_cited(
     Ok(Some(node.id))
 }
 
+// ─── D3: LLM-driven skill consolidation ───────────────────────────────
+
+const CONSOLIDATION_SYSTEM_PROMPT: &str = "你是一个技能库整合专家。\
+用户会给你一个 JSON 数组，每个元素是一条已学技能（id + title + context 摘要）。\
+你的任务：识别**概念上重复**的技能（同一个工作流 / 同一个工具技巧 / 同一类问题的解决方案），\
+把它们聚合成 cluster，每个 cluster 选一条作为 canonical（保留），合并成一份更完整的内容。\
+\n\n输出严格 JSON 数组（不要 markdown 包裹），shape 如下：\
+\n[\n  {\
+\n    \"cluster\": [\"id1\", \"id2\", \"id3\"],   // 同概念的所有 id（≥2 才算重复，1 个不输出）\
+\n    \"canonical_id\": \"id1\",                  // 选最完整 / 最近 / 最具代表性的那条\
+\n    \"merged_title\": \"...\",                  // 合并后标题（精炼，可改写）\
+\n    \"merged_context\": \"...\",                // 合并后的适用场景\
+\n    \"merged_principles\": \"...\",             // 合并后的核心原则\
+\n    \"merged_steps\": \"...\",                  // 合并后的 SOP 步骤（含原各 skill 的精华）\
+\n    \"merged_pitfalls\": \"...\",               // 合并后的常见陷阱\
+\n    \"reason\": \"为什么这几条是同一概念，简短说明\"\
+\n  }\
+\n]\n\n\
+规则：\
+\n1. 不要把不同概念硬塞进一个 cluster — 宁可保留多条独立技能。\
+\n2. 没有重复的技能不要出现在输出里。\
+\n3. cluster 至少 2 条（独行没意义）。\
+\n4. merged 字段要比单条更完整 / 更精炼，不能只是 concat。\
+\n5. 输出**纯 JSON**，无 markdown 代码块、无解释文字。如果没有任何可合并的，输出 `[]`。";
+
+#[tauri::command]
+pub async fn propose_skill_consolidation(
+    state: State<'_, AppState>,
+    space_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use crate::memory_graph::models::MemoryNodeKind;
+
+    let store = &state.memory_graph_store;
+    let sid = space_id.unwrap_or_else(|| "default".into());
+
+    // Load all learned skills.
+    let nodes = store
+        .list_nodes_by_kind(&sid, MemoryNodeKind::Procedure, 500)
+        .map_err(|e| format!("Failed to list skills: {}", e))?;
+    let learned: Vec<_> = nodes
+        .into_iter()
+        .filter(|n| {
+            n.metadata
+                .as_ref()
+                .and_then(|m| m.get("skill_type"))
+                .and_then(|v| v.as_str())
+                == Some("learned")
+        })
+        .collect();
+
+    if learned.len() < 2 {
+        return Ok(serde_json::json!({
+            "clusters": [],
+            "total_skills": learned.len(),
+            "proposed_canonical_count": learned.len(),
+        }));
+    }
+
+    // Build LLM input — id + title + truncated context (keeps token cost
+    // bounded; LLM doesn't need full SOPs to identify concept overlap).
+    let skills_input: Vec<serde_json::Value> = learned
+        .iter()
+        .map(|n| {
+            let meta = n.metadata.as_ref();
+            let context = meta
+                .and_then(|m| m.get("context"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let truncated_ctx = if context.chars().count() > 120 {
+                let cut: String = context.chars().take(120).collect();
+                format!("{}…", cut)
+            } else {
+                context.to_string()
+            };
+            serde_json::json!({
+                "id": n.id,
+                "title": n.title,
+                "context": truncated_ctx,
+            })
+        })
+        .collect();
+
+    let user_content = serde_json::to_string_pretty(&skills_input)
+        .map_err(|e| format!("Failed to serialize skills: {}", e))?;
+
+    // Call active LLM provider — same shape as try_generate_title.
+    let llm_cfg = if let Some((provider_id, model, api_key, base_url)) =
+        state.provider_service.get_active_llm_config().await
+    {
+        crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 4096, 0.2)
+    } else {
+        return Err("No active LLM provider configured".into());
+    };
+    let provider = crate::llm::create_provider(&llm_cfg)
+        .map_err(|e| format!("Failed to create LLM provider: {}", e))?;
+    let messages = vec![
+        ChatMessage::system(CONSOLIDATION_SYSTEM_PROMPT),
+        ChatMessage::user(&user_content),
+    ];
+    let cfg = crate::llm::CompletionConfig {
+        model: llm_cfg.model.clone(),
+        max_tokens: 4096,
+        temperature: 0.2,
+        system_prompt: None,
+        thinking_enabled: false,
+    };
+    let output = provider
+        .complete(messages, vec![], &cfg)
+        .await
+        .map_err(|e| format!("LLM call failed: {}", e))?;
+    let llm_text = match output {
+        crate::agent::types::RespondOutput::Text { text, .. } => text,
+        crate::agent::types::RespondOutput::ToolCalls { text, .. } => text.unwrap_or_default(),
+    };
+
+    // Parse JSON — tolerate ```json fences and other LLM cruft.
+    let clusters_raw: Vec<serde_json::Value> = parse_json_array_tolerant(&llm_text)
+        .ok_or_else(|| format!("LLM returned non-JSON: {}", llm_text))?;
+
+    // Validate clusters against the actual id set.
+    let id_to_title: std::collections::HashMap<String, String> = learned
+        .iter()
+        .map(|n| (n.id.clone(), n.title.clone()))
+        .collect();
+
+    let mut clusters_out: Vec<serde_json::Value> = Vec::new();
+    for c in clusters_raw {
+        let cluster_ids: Vec<String> = c
+            .get("cluster")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .filter(|id| id_to_title.contains_key(id))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if cluster_ids.len() < 2 {
+            continue;
+        }
+        let canonical_id = c
+            .get("canonical_id")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .filter(|id| cluster_ids.contains(id))
+            .unwrap_or_else(|| cluster_ids[0].clone());
+        let canonical_title = id_to_title
+            .get(&canonical_id)
+            .cloned()
+            .unwrap_or_default();
+        let duplicate_ids: Vec<String> = cluster_ids
+            .iter()
+            .filter(|id| **id != canonical_id)
+            .cloned()
+            .collect();
+        let duplicate_titles: Vec<String> = duplicate_ids
+            .iter()
+            .filter_map(|id| id_to_title.get(id).cloned())
+            .collect();
+
+        clusters_out.push(serde_json::json!({
+            "canonical_id": canonical_id,
+            "canonical_title": canonical_title,
+            "merged_title": c.get("merged_title").and_then(|v| v.as_str()).unwrap_or(&canonical_title),
+            "merged_context": c.get("merged_context").and_then(|v| v.as_str()).unwrap_or(""),
+            "merged_principles": c.get("merged_principles").and_then(|v| v.as_str()).unwrap_or(""),
+            "merged_steps": c.get("merged_steps").and_then(|v| v.as_str()).unwrap_or(""),
+            "merged_pitfalls": c.get("merged_pitfalls").and_then(|v| v.as_str()).unwrap_or(""),
+            "duplicate_ids": duplicate_ids,
+            "duplicate_titles": duplicate_titles,
+            "reason": c.get("reason").and_then(|v| v.as_str()).unwrap_or(""),
+        }));
+    }
+
+    let consolidated: usize = clusters_out
+        .iter()
+        .map(|c| {
+            c.get("duplicate_ids")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0)
+        })
+        .sum();
+    let total = learned.len();
+    let proposed = total.saturating_sub(consolidated);
+
+    Ok(serde_json::json!({
+        "clusters": clusters_out,
+        "total_skills": total,
+        "proposed_canonical_count": proposed,
+    }))
+}
+
+#[tauri::command]
+pub async fn apply_skill_consolidation(
+    state: State<'_, AppState>,
+    plan: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use crate::memory_graph::models::{MemoryVersion, MemoryVersionStatus};
+
+    let store = &state.memory_graph_store;
+    let clusters = plan
+        .get("clusters")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut applied = 0u32;
+    let mut deprecated = 0u32;
+    let mut updated = 0u32;
+    let now = chrono::Utc::now().to_rfc3339();
+
+    for c in clusters {
+        let canonical_id = c
+            .get("canonical_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if canonical_id.is_empty() {
+            continue;
+        }
+
+        let merged_title = c
+            .get("merged_title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let merged_context = c
+            .get("merged_context")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let merged_principles = c
+            .get("merged_principles")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let merged_steps = c
+            .get("merged_steps")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let merged_pitfalls = c
+            .get("merged_pitfalls")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let Ok(Some(node)) = store.get_node(&canonical_id) else {
+            tracing::warn!(canonical_id, "consolidation: canonical node not found, skipping cluster");
+            continue;
+        };
+
+        // Update canonical metadata.
+        let mut meta = node.metadata.clone().unwrap_or(serde_json::json!({}));
+        if let Some(obj) = meta.as_object_mut() {
+            if !merged_context.is_empty() {
+                obj.insert("context".into(), serde_json::Value::String(merged_context.clone()));
+            }
+            if !merged_principles.is_empty() {
+                obj.insert("principles".into(), serde_json::Value::String(merged_principles.clone()));
+            }
+            if !merged_steps.is_empty() {
+                obj.insert("steps".into(), serde_json::Value::String(merged_steps.clone()));
+            }
+            if !merged_pitfalls.is_empty() {
+                obj.insert("pitfalls".into(), serde_json::Value::String(merged_pitfalls.clone()));
+            }
+            obj.insert("consolidated_at".into(), serde_json::Value::String(now.clone()));
+        }
+
+        let new_title = if merged_title.trim().is_empty() {
+            node.title.clone()
+        } else {
+            merged_title
+        };
+        if let Err(e) = store.update_node(&canonical_id, Some(&new_title), None, Some(&meta)) {
+            tracing::warn!(canonical_id, err = %e, "consolidation: update_node failed");
+            continue;
+        }
+
+        // Deprecate old active version, create new with merged content.
+        if let Ok(Some(active)) = store.get_active_version(&canonical_id) {
+            let _ = store.deprecate_version(&active.id);
+        }
+        let new_content = format!(
+            "# {}\n\n## 适用场景\n{}\n\n## 核心原则\n{}\n\n## 实现步骤\n{}\n\n## 常见陷阱\n{}",
+            new_title, merged_context, merged_principles, merged_steps, merged_pitfalls
+        );
+        let _ = store.create_version(&MemoryVersion {
+            id: uuid::Uuid::new_v4().to_string(),
+            node_id: canonical_id.clone(),
+            supersedes_version_id: None,
+            status: MemoryVersionStatus::Active,
+            content: new_content,
+            metadata: None,
+            embedding_json: None,
+            created_at: now.clone(),
+        });
+        updated += 1;
+
+        // Hard-delete duplicates (cascades to versions / keywords / edges
+        // / FTS). Hard delete chosen over soft: the user explicitly asked
+        // for these to merge; leaving deprecated nodes around would just
+        // re-pollute boot ranking and recall.
+        let duplicate_ids = c
+            .get("duplicate_ids")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for did in duplicate_ids {
+            if let Some(d) = did.as_str() {
+                if d == canonical_id {
+                    continue;
+                }
+                if store.delete_node(d).is_ok() {
+                    deprecated += 1;
+                } else {
+                    tracing::warn!(duplicate_id = d, "consolidation: delete_node failed");
+                }
+            }
+        }
+
+        applied += 1;
+    }
+
+    tracing::info!(
+        applied,
+        deprecated,
+        updated,
+        "skill consolidation completed"
+    );
+    Ok(serde_json::json!({
+        "applied_clusters": applied,
+        "deprecated_skills": deprecated,
+        "updated_skills": updated,
+    }))
+}
+
+/// Parse an LLM response that should contain a JSON array. Tolerates
+/// markdown code fences (```json ... ```), leading prose, and trailing
+/// whitespace. Returns None if no parseable array is found.
+fn parse_json_array_tolerant(text: &str) -> Option<Vec<serde_json::Value>> {
+    // Try direct parse first.
+    if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(text.trim()) {
+        return Some(arr);
+    }
+    // Strip ```json ... ``` fences if present.
+    let stripped = text
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```JSON")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+    if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(stripped) {
+        return Some(arr);
+    }
+    // Last resort: find first '[' and last ']'.
+    let start = text.find('[')?;
+    let end = text.rfind(']')?;
+    if end <= start {
+        return None;
+    }
+    serde_json::from_str(&text[start..=end]).ok()
+}
+
 // ─── Dev / Testing Commands ──────────────────────────────────────────────────
 
 /// 手动触发指定的 Proactive 场景（跳过定时器和阈值条件）

@@ -168,8 +168,14 @@ impl MemoryGraphStore {
     ///
     /// Filter: kind=Procedure, metadata.skill_type='learned',
     /// metadata.enabled (default true).
-    /// Order: usage_count DESC NULLS LAST, then updated_at DESC.
-    /// Excludes nodes already in the regular boot set (kind=Boot).
+    ///
+    /// Order (E3 ranking):
+    ///   1. cited_count DESC — actually-cited beats merely-recalled. A skill
+    ///      the LLM applied is real evidence; one that just sat in context
+    ///      is not.
+    ///   2. usage_count DESC — recall frequency as tiebreaker.
+    ///   3. updated_at DESC — fresh edits win when both counts are zero
+    ///      (e.g. a skill just extracted but not yet used).
     pub fn list_top_learned_skills(
         &self,
         space_id: &str,
@@ -184,7 +190,8 @@ impl MemoryGraphStore {
              WHERE space_id = ?1 AND kind = ?2
                AND COALESCE(json_extract(metadata_json, '$.skill_type'), '') = 'learned'
                AND COALESCE(json_extract(metadata_json, '$.enabled'), 1) <> 0
-             ORDER BY COALESCE(json_extract(metadata_json, '$.usage_count'), 0) DESC,
+             ORDER BY COALESCE(json_extract(metadata_json, '$.cited_count'), 0) DESC,
+                      COALESCE(json_extract(metadata_json, '$.usage_count'), 0) DESC,
                       updated_at DESC
              LIMIT ?3"
         ).map_err(crate::error::Error::Database)?;
