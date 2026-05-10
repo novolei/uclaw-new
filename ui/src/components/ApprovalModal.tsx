@@ -73,10 +73,16 @@ export function ApprovalModal(): React.ReactElement {
     if (!request || loading || !activeSessionId) return
     setLoading(true)
     try {
+      // Same logic as 始终允许 (PR #43): if the call has a command (bash),
+      // narrow the rule to that command prefix. Without target, a session
+      // rule for `bash` would auto-pass every bash call in this session
+      // including `rm -rf /` — same footgun as a global whitelist.
+      const command = request.command?.trim()
       await createPermissionRule({
         scope: 'session',
         sessionId: activeSessionId,
         toolName: request.toolName,
+        target: command || undefined,
         mode: 'allow',
       })
       await approveToolCall({
