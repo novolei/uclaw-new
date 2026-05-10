@@ -164,6 +164,82 @@ impl MemoryGraphStore {
         Ok(details)
     }
 
+    /// List the top-N enabled `learned` skills for boot-layer auto-mount.
+    ///
+    /// Filter: kind=Procedure, metadata.skill_type='learned',
+    /// metadata.enabled (default true).
+    /// Order: usage_count DESC NULLS LAST, then updated_at DESC.
+    /// Excludes nodes already in the regular boot set (kind=Boot).
+    pub fn list_top_learned_skills(
+        &self,
+        space_id: &str,
+        limit: usize,
+    ) -> Result<Vec<MemoryNodeDetail>, crate::error::Error> {
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        // SQLite has limited JSON support — order by raw json_extract(...) so
+        // we don't need to deserialize/sort in Rust. NULL coerces low.
+        let mut stmt = conn.prepare(
+            "SELECT id, space_id, kind, title, metadata_json, created_at, updated_at
+             FROM memory_nodes
+             WHERE space_id = ?1 AND kind = ?2
+               AND COALESCE(json_extract(metadata_json, '$.skill_type'), '') = 'learned'
+               AND COALESCE(json_extract(metadata_json, '$.enabled'), 1) <> 0
+             ORDER BY COALESCE(json_extract(metadata_json, '$.usage_count'), 0) DESC,
+                      updated_at DESC
+             LIMIT ?3"
+        ).map_err(crate::error::Error::Database)?;
+
+        let nodes: Vec<MemoryNode> = stmt
+            .query_map(
+                params![space_id, MemoryNodeKind::Procedure.as_str(), limit as i64],
+                |row| Self::row_to_node(row),
+            )
+            .map_err(crate::error::Error::Database)?
+            .flatten()
+            .collect();
+        // Drop the lock before fetching versions/routes/keywords (which
+        // re-lock per call). Avoids self-deadlock.
+        drop(stmt);
+        drop(conn);
+
+        let mut details = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            let active_version = self.get_active_version(&node.id)?;
+            let routes = self.get_routes_for_node(&node.id)?;
+            let keywords = self.get_keywords_for_node(&node.id)?;
+            details.push(MemoryNodeDetail { node, active_version, routes, keywords });
+        }
+        Ok(details)
+    }
+
+    /// Increment usage_count on the given skill nodes by 1 each.
+    ///
+    /// Best-effort: failures are returned but the caller usually ignores
+    /// them — usage_count is a soft signal for ranking, not correctness.
+    pub fn bump_skill_usage(&self, node_ids: &[&str]) -> Result<(), crate::error::Error> {
+        if node_ids.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        let now = chrono::Utc::now().to_rfc3339();
+        // json_set + COALESCE so first-time usage_count gets initialized
+        // from 0 rather than NULL+1=NULL.
+        let mut stmt = conn.prepare(
+            "UPDATE memory_nodes
+             SET metadata_json = json_set(
+                     COALESCE(metadata_json, '{}'),
+                     '$.usage_count',
+                     COALESCE(json_extract(metadata_json, '$.usage_count'), 0) + 1
+                 ),
+                 updated_at = ?1
+             WHERE id = ?2"
+        ).map_err(crate::error::Error::Database)?;
+        for id in node_ids {
+            stmt.execute(params![now, id]).map_err(crate::error::Error::Database)?;
+        }
+        Ok(())
+    }
+
     pub fn list_recent_nodes(
         &self,
         space_id: &str,

@@ -310,6 +310,10 @@ pub async fn send_message(
                     let memory_ctx = crate::memory_graph::recall::MemoryRecallEngine::format_recall_for_prompt(&plan);
                     tracing::info!(total_candidates = total, "Memory recall injected into system prompt");
                     delegate.set_memory_context(memory_ctx);
+                    // Bump usage_count on every learned skill we emitted.
+                    // Best-effort, fire-and-forget — usage_count is a soft
+                    // ranking signal, never a correctness requirement.
+                    recall_engine.record_used_skills(&plan);
                 } else {
                     tracing::info!("Memory recall returned no candidates");
                 }

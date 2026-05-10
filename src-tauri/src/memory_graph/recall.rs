@@ -22,6 +22,10 @@ pub struct MemoryRecallConfig {
     pub rrf_k: u32,
     pub fts_weight: f32,
     pub vector_weight: f32,
+    /// How many top-N learned skills to auto-mount in the boot layer
+    /// regardless of query relevance. Set to 0 to disable.
+    /// Skills are ranked by usage_count DESC then updated_at DESC.
+    pub boot_learned_skills_limit: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +46,7 @@ impl Default for MemoryRecallConfig {
             rrf_k: 60,
             fts_weight: 0.5,
             vector_weight: 0.5,
+            boot_learned_skills_limit: 3,
         }
     }
 }
@@ -123,6 +128,29 @@ impl MemoryRecallEngine {
         }
     }
 
+    /// Increment usage_count on every learned-skill candidate that was
+    /// rendered into the prompt. Call this AFTER format_recall_for_prompt
+    /// has been invoked and the system prompt has been handed to the LLM —
+    /// the count tracks "how often this skill influenced a turn", which
+    /// is the signal `boot_learned_skills_limit` ranks by.
+    ///
+    /// Best-effort: errors are logged and swallowed. Failing to bump
+    /// usage_count must never fail an agent turn.
+    pub fn record_used_skills(&self, plan: &MemoryRecallPlan) {
+        let ids = collect_emitted_skill_ids(plan);
+        if ids.is_empty() {
+            return;
+        }
+        let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        if let Err(e) = self.store.bump_skill_usage(&id_refs) {
+            tracing::warn!(
+                count = ids.len(),
+                err = %e,
+                "memory_graph: failed to bump skill usage_count (non-fatal)"
+            );
+        }
+    }
+
     /// Build a complete 5-layer recall plan.
     pub async fn build_recall_plan(
         &self,
@@ -187,6 +215,10 @@ impl MemoryRecallEngine {
 
     /// Format a recall plan as injectable system-prompt text.
     pub fn format_recall_for_prompt(plan: &MemoryRecallPlan) -> String {
+        // Note: the emit-detection logic below is duplicated by
+        // collect_emitted_skill_ids() at the bottom of this file. Keep
+        // the two in sync — both must agree on what counts as "rendered
+        // into the Learned Skills section" for usage_count to be honest.
         let mut out = String::from("<memory_context>\n");
 
         // Collect all learned skills from every layer for a dedicated section
@@ -402,6 +434,42 @@ impl MemoryRecallEngine {
                 matched_keywords: detail.keywords.clone(),
                 metadata: node.metadata.clone(),
             });
+        }
+
+        // ── Auto-mount top-N learned skills regardless of query ─────
+        // Without this, learned skills only surface when L2 (keyword) or
+        // L3 (FTS) lights them up — and FTS5 unicode61 needs literal
+        // word overlap. A power user's high-usage skill should always be
+        // in context. boot_learned_skills_limit=0 disables this layer.
+        if self.config.boot_learned_skills_limit > 0 {
+            let learned = self
+                .store
+                .list_top_learned_skills(space_id, self.config.boot_learned_skills_limit)
+                .unwrap_or_default();
+            for detail in learned {
+                let node = &detail.node;
+                if seen.contains(&node.id) {
+                    continue;
+                }
+                let content = match &detail.active_version {
+                    Some(v) => v.content.clone(),
+                    None => continue,
+                };
+                seen.insert(node.id.clone());
+                candidates.push(MemoryRecallCandidate {
+                    node_id: node.id.clone(),
+                    title: node.title.clone(),
+                    content,
+                    kind: node.kind,
+                    source: "boot".to_string(),
+                    reason: "Top learned skill (auto-mount)".to_string(),
+                    score: None,
+                    fts_rank: None,
+                    vector_rank: None,
+                    matched_keywords: detail.keywords.clone(),
+                    metadata: node.metadata.clone(),
+                });
+            }
         }
 
         Ok(candidates)
@@ -856,5 +924,91 @@ fn capitalize_kind(kind: &MemoryNodeKind) -> &'static str {
         MemoryNodeKind::Episode => "Episode",
         MemoryNodeKind::Procedure => "Procedure",
         MemoryNodeKind::Reference => "Reference",
+    }
+}
+
+/// Collect node IDs of every learned skill that `format_recall_for_prompt`
+/// would render into the "Learned Skills" section. Must mirror the same
+/// filter (Procedure + skill_type=='learned' + enabled).
+///
+/// Used by `MemoryRecallEngine::record_used_skills` to bump usage_count.
+fn collect_emitted_skill_ids(plan: &MemoryRecallPlan) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let layers: Vec<&MemoryRecallCandidate> = plan
+        .boot
+        .iter()
+        .chain(plan.triggered.iter())
+        .chain(plan.relevant.iter())
+        .chain(plan.expanded.iter())
+        .collect();
+    for c in layers {
+        if c.kind != MemoryNodeKind::Procedure {
+            continue;
+        }
+        let Some(ref meta) = c.metadata else { continue };
+        let enabled = meta.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+        let skill_type = meta.get("skill_type").and_then(|v| v.as_str()).unwrap_or("");
+        if !(enabled && skill_type == "learned") {
+            continue;
+        }
+        if seen.insert(c.node_id.clone()) {
+            ids.push(c.node_id.clone());
+        }
+    }
+    ids
+}
+
+#[cfg(test)]
+mod recall_helpers_tests {
+    use super::*;
+
+    fn skill_candidate(node_id: &str, enabled: bool, learned: bool) -> MemoryRecallCandidate {
+        MemoryRecallCandidate {
+            node_id: node_id.into(),
+            title: "t".into(),
+            content: "c".into(),
+            kind: MemoryNodeKind::Procedure,
+            source: "boot".into(),
+            reason: "r".into(),
+            score: None,
+            fts_rank: None,
+            vector_rank: None,
+            matched_keywords: vec![],
+            metadata: Some(serde_json::json!({
+                "enabled": enabled,
+                "skill_type": if learned { "learned" } else { "static" },
+            })),
+        }
+    }
+
+    fn empty_plan() -> MemoryRecallPlan {
+        MemoryRecallPlan {
+            boot: vec![],
+            triggered: vec![],
+            relevant: vec![],
+            expanded: vec![],
+            recent: vec![],
+        }
+    }
+
+    #[test]
+    fn collect_emitted_skips_disabled_and_non_learned() {
+        let mut plan = empty_plan();
+        plan.boot.push(skill_candidate("a", true, true));     // included
+        plan.boot.push(skill_candidate("b", false, true));    // disabled, skip
+        plan.boot.push(skill_candidate("c", true, false));    // static, skip
+        plan.triggered.push(skill_candidate("a", true, true)); // dup of a, skip
+        plan.relevant.push(skill_candidate("d", true, true)); // included
+        let ids = collect_emitted_skill_ids(&plan);
+        assert_eq!(ids, vec!["a".to_string(), "d".to_string()]);
+    }
+
+    #[test]
+    fn collect_emitted_returns_empty_when_no_learned() {
+        let mut plan = empty_plan();
+        plan.boot.push(skill_candidate("a", true, false));
+        let ids = collect_emitted_skill_ids(&plan);
+        assert!(ids.is_empty());
     }
 }

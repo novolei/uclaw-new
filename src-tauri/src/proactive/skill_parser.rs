@@ -1,6 +1,6 @@
 //! skill_parser — 从 LLM 响应中解析 <skill_report> XML 并存储为 Procedure 节点
 
-use crate::memory_graph::models::{MemoryNode, MemoryNodeKind, MemoryVersion, MemoryVersionStatus};
+use crate::memory_graph::models::{MemoryKeyword, MemoryNode, MemoryNodeKind, MemoryVersion, MemoryVersionStatus};
 use crate::memory_graph::store::MemoryGraphStore;
 
 /// 解析后的技能结构
@@ -140,12 +140,167 @@ pub fn store_skill_as_procedure(
         content: version_content,
         metadata: None,
         embedding_json: None,
-        created_at: now,
+        created_at: now.clone(),
     };
 
     store.create_version(&version)?;
 
+    // ── Keyword index for L2 triggered recall ────────────────────────
+    // Without this, learned skills can ONLY be recalled via FTS5 word
+    // overlap (L3) — meaning a skill titled "SwiftData 项目分析" won't
+    // surface when the user asks "看下这个 SwiftUI 项目". Writing
+    // keywords plugs them into L2 keyword search where partial matches
+    // and synonym-ish overlap can light them up.
+    //
+    // Keywords are pulled from name + context (the two fields most
+    // likely to contain "what scenarios this skill applies to" tokens).
+    // Best-effort: a failure here is logged but doesn't break the
+    // create_version write — we'd rather have the skill stored without
+    // keywords than abort skill extraction entirely.
+    let keywords = extract_keywords(&skill.name, &skill.context);
+    for kw in keywords {
+        let kw_row = MemoryKeyword {
+            id: uuid::Uuid::new_v4().to_string(),
+            space_id: space_id.to_string(),
+            node_id: node.id.clone(),
+            keyword: kw,
+            created_at: now.clone(),
+        };
+        if let Err(e) = store.create_keyword(&kw_row) {
+            tracing::warn!(
+                node_id = %node.id,
+                err = %e,
+                "skill_parser: keyword insert failed (skill stored OK)"
+            );
+        }
+    }
+
     Ok(node)
+}
+
+/// Extract recall keywords from a skill's name + context.
+///
+/// Strategy: tokenize on whitespace + common CJK/ASCII punctuation,
+/// drop tokens shorter than 2 characters (CJK) or 3 characters (ASCII),
+/// drop a small Chinese stopword list, dedupe, cap at 8 keywords.
+///
+/// Conservative on purpose — keywords go into a LIKE '%kw%' search, so
+/// a few short/noisy tokens spam the recall layer with false positives.
+/// Better to miss recall than to spuriously inject the wrong skill.
+pub fn extract_keywords(name: &str, context: &str) -> Vec<String> {
+    let combined = format!("{} {}", name, context);
+    let raw_tokens: Vec<&str> = combined
+        .split(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    ',' | '.'
+                        | ';'
+                        | ':'
+                        | '/'
+                        | '\\'
+                        | '('
+                        | ')'
+                        | '['
+                        | ']'
+                        | '{'
+                        | '}'
+                        | '<'
+                        | '>'
+                        | '"'
+                        | '\''
+                        | '!'
+                        | '?'
+                        | '、'
+                        | '，'
+                        | '。'
+                        | '；'
+                        | '：'
+                        | '（'
+                        | '）'
+                        | '「'
+                        | '」'
+                        | '『'
+                        | '』'
+                        | '！'
+                        | '？'
+                )
+        })
+        .collect();
+
+    const STOPWORDS: &[&str] = &[
+        "的", "了", "和", "与", "是", "在", "对", "为", "中", "上", "下",
+        "中文", "处理", "使用", "进行", "需要", "可以", "如果", "时候",
+        "the", "and", "for", "with", "this", "that", "from", "into",
+    ];
+
+    // Two-pass extraction so bigrams from one CJK chunk don't squeeze
+    // out distinct primary tokens from other chunks.
+    //
+    // Pass 1: every whitespace token gets one slot — preserves coverage
+    //         across name + context.
+    // Pass 2: fill remaining slots with CJK bigrams so partial Chinese
+    //         queries can still match (without bigrams, "项目结构分析"
+    //         wouldn't match a user typing just "项目").
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    let cap = 8usize;
+    let push = |s: String,
+                seen: &mut std::collections::HashSet<String>,
+                out: &mut Vec<String>|
+     -> bool {
+        if out.len() >= cap {
+            return false;
+        }
+        if STOPWORDS.iter().any(|w| *w == s.as_str()) {
+            return false;
+        }
+        if seen.insert(s.clone()) {
+            out.push(s);
+        }
+        true
+    };
+
+    // Pass 1: primary tokens.
+    let mut cjk_chunks_for_bigrams: Vec<String> = Vec::new();
+    for t in &raw_tokens {
+        let t = t.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let cjk_chars = t.chars().filter(|c| (*c as u32) >= 0x3000).count();
+        let total_chars = t.chars().count();
+        let cjk_dominant = cjk_chars >= total_chars / 2;
+
+        if cjk_dominant {
+            if total_chars < 2 {
+                continue;
+            }
+            push(t.to_string(), &mut seen, &mut out);
+            if total_chars >= 4 {
+                cjk_chunks_for_bigrams.push(t.to_string());
+            }
+        } else {
+            if total_chars < 3 {
+                continue;
+            }
+            push(t.to_lowercase(), &mut seen, &mut out);
+        }
+    }
+
+    // Pass 2: bigrams from CJK chunks ≥4 chars, until we hit the cap.
+    'outer: for chunk in &cjk_chunks_for_bigrams {
+        let chars: Vec<char> = chunk.chars().collect();
+        for w in chars.windows(2) {
+            let bigram: String = w.iter().collect();
+            push(bigram, &mut seen, &mut out);
+            if out.len() >= cap {
+                break 'outer;
+            }
+        }
+    }
+
+    out
 }
 
 // ─── 单元测试 ─────────────────────────────────────────────────────────
@@ -310,5 +465,42 @@ mod tests {
         let version = version.unwrap();
         assert!(version.content.contains("测试技能"));
         assert!(version.content.contains("测试场景"));
+    }
+
+    #[test]
+    fn extract_keywords_zh_basic() {
+        let kws = extract_keywords("SwiftData 项目结构分析", "适用于 SwiftUI 项目的数据层快速调研");
+        // Should pick up SwiftData / SwiftUI / 项目 / 结构 / 分析 / 数据层 / 调研
+        assert!(kws.contains(&"swiftdata".to_string()));
+        assert!(kws.contains(&"swiftui".to_string()));
+        assert!(kws.contains(&"项目".to_string()));
+        // Stopwords + short tokens dropped
+        assert!(!kws.contains(&"的".to_string()));
+        assert!(!kws.contains(&"于".to_string()));
+        assert!(kws.len() <= 8);
+    }
+
+    #[test]
+    fn extract_keywords_dedupe_and_cap() {
+        let kws = extract_keywords(
+            "Rust Rust Rust",
+            "Rust async tokio future stream channel mpsc oneshot RwLock Mutex",
+        );
+        assert!(kws.iter().all(|k| !k.is_empty()));
+        // Dedupe: "rust" appears once max
+        assert_eq!(kws.iter().filter(|k| k.as_str() == "rust").count(), 1);
+        // Cap at 8
+        assert!(kws.len() <= 8);
+    }
+
+    #[test]
+    fn extract_keywords_drops_punctuation() {
+        let kws = extract_keywords("调用 plan_update", "成功执行 done:true 之后,记得 commit。");
+        // No tokens with leading/trailing punctuation
+        for k in &kws {
+            assert!(!k.starts_with(','));
+            assert!(!k.starts_with(':'));
+            assert!(!k.ends_with('。'));
+        }
     }
 }
