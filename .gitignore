@@ -33,3 +33,4 @@ package-lock.json
 .vscode/settings.json
 *.swp
 .claire/
+.claude/worktrees/

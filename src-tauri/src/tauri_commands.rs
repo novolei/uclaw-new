@@ -3891,6 +3891,38 @@ pub async fn write_workspace_uclaw_md(
     Ok(())
 }
 
+/// Open the active workspace's `uclaw.md` in the OS-native default
+/// application (file manager / text editor). Used by the Settings →
+/// 提示词 tab "在外部编辑器打开" button. Creates the file if it doesn't
+/// exist yet so the editor opens an empty file rather than failing.
+#[tauri::command]
+pub async fn open_workspace_uclaw_md_externally(state: State<'_, AppState>) -> Result<(), Error> {
+    let root = active_workspace_root(&state)
+        .ok_or_else(|| Error::InvalidInput("No active workspace".into()))?;
+    if !root.exists() {
+        std::fs::create_dir_all(&root).map_err(Error::Io)?;
+    }
+    let path = root.join("uclaw.md");
+    if !path.exists() {
+        // Touch with empty content so the OS opener has something to open.
+        std::fs::write(&path, "").map_err(Error::Io)?;
+    }
+
+    #[cfg(target_os = "macos")]
+    let cmd = "open";
+    #[cfg(target_os = "linux")]
+    let cmd = "xdg-open";
+    #[cfg(target_os = "windows")]
+    let cmd = "explorer";
+
+    std::process::Command::new(cmd)
+        .arg(&path)
+        .spawn()
+        .map_err(|e| Error::Internal(format!("open external editor: {}", e)))?;
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn read_default_prompts() -> Result<crate::ipc::DefaultPromptsResponse, Error> {
     use crate::agent::mode_prompts;

@@ -18,6 +18,7 @@ import {
   readWorkspaceUclawMd,
   writeWorkspaceUclawMd,
   readDefaultPrompts,
+  openWorkspaceUclawMdExternally,
 } from '@/lib/tauri-bridge'
 import type { DefaultPromptsResponse } from '@/lib/types'
 import { safetyModeAtom } from '@/atoms/safety-atoms'
@@ -119,7 +120,14 @@ export function PromptsSettings(): React.ReactElement {
           <div className="flex items-center gap-2">
             <Button
               variant="ghost" size="sm"
-              onClick={() => toast.info('请使用文件管理器打开 <workspace>/uclaw.md')}
+              onClick={async () => {
+                try {
+                  await openWorkspaceUclawMdExternally()
+                } catch (e) {
+                  console.error('[PromptsSettings] open external failed:', e)
+                  toast.error('打开外部编辑器失败')
+                }
+              }}
             >
               <ExternalLink className="size-3.5 mr-1" />
               在外部编辑器打开
@@ -135,7 +143,8 @@ export function PromptsSettings(): React.ReactElement {
           </div>
         </div>
         <textarea
-          value={loading ? '加载中…' : (content || PLACEHOLDER_TEMPLATE)}
+          value={loading ? '加载中…' : content}
+          placeholder={loading ? '' : PLACEHOLDER_TEMPLATE}
           onChange={(e) => setContent(e.target.value)}
           disabled={loading}
           spellCheck={false}
