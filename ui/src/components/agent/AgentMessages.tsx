@@ -42,36 +42,7 @@ import { channelsAtom } from '@/atoms/chat-atoms'
 import { proactiveLearningEventsAtom } from '@/atoms/agent-atoms'
 import { ProactiveLearningChip } from '@/components/chat/ProactiveLearningChip'
 import { parseSkillCitations } from '@/lib/skill-citation'
-
-/**
- * Normalise markdown heading markers that lack a preceding newline.
- *
- * Some LLMs (notably DeepSeek) output headings inline without the newline
- * that markdown requires: "...text### Heading" instead of "...text\n### Heading".
- * Without the newline, react-markdown treats the whole thing as a paragraph
- * and renders the literal `###` characters instead of a formatted heading.
- *
- * Scope-limited on purpose:
- *   - We insert a newline before `#` heading markers that follow content.
- *   - We DO NOT rewrite list markers (`- ` / `* `) anymore. The earlier
- *     version did, and it broke markdown TABLE separator rows:
- *     `| --- | --- |` contains `-- ` substrings, replacement split each
- *     row into multiple lines that markdown then rendered as a bullet
- *     list — collapsing the whole table. Tables are far more common
- *     than the prose-list inline case the rule was meant to fix, so
- *     the rule was net-negative and is removed.
- *   - We skip lines starting with `|` so headings inside table cells
- *     (rare) can't trigger a misfire either.
- */
-function normalizeAgentMarkdown(text: string): string {
-  return text
-    .split('\n')
-    .map((line) => {
-      if (line.trimStart().startsWith('|')) return line
-      return line.replace(/([^\n])(#{1,6} )/g, '$1\n$2')
-    })
-    .join('\n')
-}
+import { normalizeAgentMarkdown } from '@/lib/normalize-agent-markdown'
 import { SkillCitationChips } from './SkillCitationChips'
 import { ScrollPositionManager } from '@/hooks/useScrollPositionMemory'
 import { cn } from '@/lib/utils'
