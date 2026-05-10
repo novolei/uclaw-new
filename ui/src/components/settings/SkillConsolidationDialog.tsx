@@ -117,24 +117,24 @@ function ClusterCard({ cluster, expanded, onToggle }: ClusterCardProps): React.R
             </Section>
           )}
 
-          {/* Merged content */}
+          {/* 保留后内容（直接使用 canonical 的现有内容；后续可在卡片里手动编辑） */}
           {cluster.mergedContext && (
-            <Section label="合并后场景">
+            <Section label="保留后场景">
               <p className="text-[12px] leading-relaxed text-muted-foreground">{cluster.mergedContext}</p>
             </Section>
           )}
           {cluster.mergedPrinciples && (
-            <Section label="合并后原则">
+            <Section label="保留后原则">
               <MarkdownBlock text={cluster.mergedPrinciples} />
             </Section>
           )}
           {cluster.mergedSteps && (
-            <Section label="合并后步骤">
+            <Section label="保留后步骤">
               <MarkdownBlock text={cluster.mergedSteps} />
             </Section>
           )}
           {cluster.mergedPitfalls && (
-            <Section label="合并后陷阱">
+            <Section label="保留后陷阱">
               <MarkdownBlock text={cluster.mergedPitfalls} />
             </Section>
           )}
