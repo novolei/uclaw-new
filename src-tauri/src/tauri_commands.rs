@@ -4272,3 +4272,125 @@ pub async fn stop_agent_teams(
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod cost_rollup_tests {
+    use rusqlite::Connection;
+
+    /// Apply just the V13 schema to an in-memory DB so tests don't need
+    /// the full migration chain.
+    fn fresh_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V13_COST_RECORDS).unwrap();
+        // Minimal stub for the COALESCE join in get_session_costs.
+        conn.execute_batch(
+            "CREATE TABLE agent_sessions (id TEXT PRIMARY KEY, title TEXT);
+             CREATE TABLE conversations  (id TEXT PRIMARY KEY, title TEXT);"
+        ).unwrap();
+        conn
+    }
+
+    fn insert_cost(
+        conn: &Connection,
+        session_id: &str,
+        model: &str,
+        input_tokens: i64,
+        output_tokens: i64,
+        cost_usd: f64,
+        created_at: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO cost_records (id, session_id, model, input_tokens, output_tokens, cost_usd, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                uuid::Uuid::new_v4().to_string(),
+                session_id, model, input_tokens, output_tokens, cost_usd, created_at,
+            ],
+        ).unwrap();
+    }
+
+    #[test]
+    fn daily_rollup_groups_by_day() {
+        let conn = fresh_db();
+        // Two rows on day A, one on day B.
+        let day_a = 1_715_000_000_000_i64; // some fixed epoch ms
+        let day_b = day_a + 86_400_000;
+        insert_cost(&conn, "s1", "claude-4", 100, 50, 0.001, day_a);
+        insert_cost(&conn, "s1", "claude-4", 200, 80, 0.002, day_a);
+        insert_cost(&conn, "s2", "gpt-4o",   500, 100, 0.005, day_b);
+
+        let mut stmt = conn.prepare(
+            "SELECT strftime('%Y-%m-%d', created_at / 1000, 'unixepoch'),
+                    SUM(input_tokens), SUM(output_tokens), SUM(cost_usd), COUNT(*)
+             FROM cost_records
+             GROUP BY 1 ORDER BY 1"
+        ).unwrap();
+        let rows: Vec<(String, i64, i64, f64, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(rows.len(), 2);
+        // Day A — 300 input, 130 output, 0.003 cost, 2 turns
+        assert_eq!(rows[0].1, 300);
+        assert_eq!(rows[0].2, 130);
+        assert!((rows[0].3 - 0.003).abs() < 1e-9);
+        assert_eq!(rows[0].4, 2);
+        // Day B — 500/100/0.005/1
+        assert_eq!(rows[1].1, 500);
+        assert_eq!(rows[1].4, 1);
+    }
+
+    #[test]
+    fn model_rollup_sums_per_model() {
+        let conn = fresh_db();
+        let now = 1_715_000_000_000_i64;
+        insert_cost(&conn, "s1", "claude-4", 100, 50, 0.001, now);
+        insert_cost(&conn, "s2", "claude-4", 200, 80, 0.003, now);
+        insert_cost(&conn, "s3", "gpt-4o",   500, 100, 0.010, now);
+
+        let mut stmt = conn.prepare(
+            "SELECT model, SUM(input_tokens), SUM(output_tokens), SUM(cost_usd), COUNT(*)
+             FROM cost_records GROUP BY model ORDER BY cost_usd DESC"
+        ).unwrap();
+        let rows: Vec<(String, i64, i64, f64, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .unwrap().flatten().collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "gpt-4o"); // higher spend first
+        assert_eq!(rows[0].4, 1);
+        assert_eq!(rows[1].0, "claude-4");
+        assert_eq!(rows[1].1, 300);
+        assert_eq!(rows[1].4, 2);
+    }
+
+    #[test]
+    fn session_rollup_uses_coalesced_title() {
+        let conn = fresh_db();
+        conn.execute("INSERT INTO agent_sessions VALUES ('s1', 'Agent run alpha')", []).unwrap();
+        conn.execute("INSERT INTO conversations  VALUES ('c1', 'Chat about beta')", []).unwrap();
+        let now = 1_715_000_000_000_i64;
+        insert_cost(&conn, "s1", "claude-4", 100, 50, 0.001, now);
+        insert_cost(&conn, "c1", "gpt-4o",   200, 80, 0.002, now);
+        insert_cost(&conn, "unknown", "qwen", 50, 25, 0.0001, now);
+
+        let mut stmt = conn.prepare(
+            "SELECT cr.session_id,
+                    COALESCE(s.title, c.title, '') AS title,
+                    SUM(cr.cost_usd), MAX(cr.created_at)
+             FROM cost_records cr
+             LEFT JOIN agent_sessions s ON s.id = cr.session_id
+             LEFT JOIN conversations  c ON c.id = cr.session_id
+             GROUP BY cr.session_id"
+        ).unwrap();
+        let mut titles: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let _ = stmt.query_map([], |r| {
+            titles.insert(r.get::<_, String>(0)?, r.get::<_, String>(1)?);
+            Ok(())
+        }).unwrap().for_each(|_| ());
+        assert_eq!(titles.get("s1").map(|s| s.as_str()), Some("Agent run alpha"));
+        assert_eq!(titles.get("c1").map(|s| s.as_str()), Some("Chat about beta"));
+        assert_eq!(titles.get("unknown").map(|s| s.as_str()), Some("")); // empty fallback
+    }
+}
