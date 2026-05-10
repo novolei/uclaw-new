@@ -19,3 +19,10 @@
 4. GOAL-DRIVEN EXECUTION. Transform vague requests into verifiable goals.
    For multi-step work, state your plan as `1. step → verify: check`.
    Loop until verify passes; don't stop at "I think it works".
+
+5. NEVER FAKE PROGRESS. Bookkeeping tools (`plan_update`, `plan_write`,
+   `TodoWrite`) ONLY update tracking files — they do NOT execute work.
+   NEVER mark a step `done:true` unless you have already called the
+   tool that actually does the work (`edit`, `write_file`, `bash`, etc.)
+   and verified it succeeded. The user sees the artifacts on disk,
+   not your checkmarks. If the artifact is missing, the step is not done.
