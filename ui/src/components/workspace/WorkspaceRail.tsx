@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { Plus, Settings } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import {
   workspacesAtom,
   activeWorkspaceIdAtom,
@@ -16,14 +16,12 @@ interface WorkspaceRailProps {
   activeSessionId: string | null
   onSelectSession: (sessionId: string) => void
   onDeleteSession?: (sessionId: string) => void
-  onOpenSettings?: () => void
 }
 
 export function WorkspaceRail({
   activeSessionId,
   onSelectSession,
   onDeleteSession,
-  onOpenSettings,
 }: WorkspaceRailProps): React.ReactElement {
   const workspaces = useAtomValue(workspacesAtom)
   const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
@@ -42,20 +40,8 @@ export function WorkspaceRail({
   }
 
   return (
-    <div className="flex flex-col h-full w-[220px] shrink-0">
-      <div className="flex items-center justify-between px-3 py-3">
-        <span className="text-sm font-semibold text-foreground">uClaw</span>
-        <button
-          onClick={onOpenSettings}
-          className="text-muted-foreground hover:text-foreground rounded p-1"
-        >
-          <Settings className="h-4 w-4" />
-        </button>
-      </div>
-      <div className="flex-1 overflow-y-auto px-2 py-1">
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground px-2 mb-1">
-          Workspaces
-        </p>
+    <div className="flex flex-col h-full w-full">
+      <div className="flex-1 overflow-y-auto px-3 pt-1 pb-1 scrollbar-none">
         {workspaces.map((ws) => (
           <WorkspaceGroup
             key={ws.id}
@@ -71,17 +57,17 @@ export function WorkspaceRail({
           />
         ))}
       </div>
-      <div className="p-2 border-t border-border/50">
+      <div className="px-3 pb-2">
         <button
           onClick={() => setCreateOpen(true)}
           className={cn(
-            'flex items-center gap-2 w-full px-2 py-1.5 rounded-md',
-            'text-[12px] text-muted-foreground hover:text-foreground hover:bg-muted',
-            'transition-colors duration-100'
+            'flex items-center gap-2 w-full px-3 py-1.5 rounded-[10px]',
+            'text-[12px] text-foreground/40 hover:text-foreground/70 hover:bg-primary/5',
+            'transition-colors duration-100 titlebar-no-drag'
           )}
         >
           <Plus className="h-3.5 w-3.5" />
-          New Workspace
+          新建工作区
         </button>
       </div>
       <WorkspaceCreateDialog
