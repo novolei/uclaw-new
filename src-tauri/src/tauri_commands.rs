@@ -756,7 +756,7 @@ fn extract_process_meta_from_messages(
     for msg in messages {
         for block in &msg.content {
             match block {
-                ContentBlock::Thinking { thinking } => {
+                ContentBlock::Thinking { thinking, .. } => {
                     if !thinking_buf.is_empty() {
                         thinking_buf.push_str("\n\n");
                     }

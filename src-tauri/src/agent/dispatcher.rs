@@ -283,7 +283,7 @@ impl ChatDelegate {
                     ContentBlock::Text { text } => {
                         messages_tokens += estimate_tokens(text);
                     }
-                    ContentBlock::Thinking { thinking } => {
+                    ContentBlock::Thinking { thinking, .. } => {
                         messages_tokens += estimate_tokens(thinking);
                     }
                 }
@@ -420,6 +420,7 @@ impl LoopDelegate for ChatDelegate {
                     // mix partial output from a failed attempt into the next.
                     let mut full_text = String::new();
                     let mut full_thinking = String::new();
+                    let mut full_thinking_signature: Option<String> = None;
                     let mut tool_calls: Vec<ToolCall> = Vec::new();
                     let mut current_tool: Option<(String, String, String)> = None;
                     let mut thinking_started = false;
@@ -447,6 +448,9 @@ impl LoopDelegate for ChatDelegate {
                                 }
                                 self.emit_thinking(&thinking);
                                 full_thinking.push_str(&thinking);
+                            }
+                            Ok(StreamDelta::SignatureDelta { signature }) => {
+                                full_thinking_signature = Some(signature);
                             }
                             Ok(StreamDelta::ToolCallDelta { id, name, input_json }) => {
                                 // If thinking just finished, emit thinking-done
@@ -510,10 +514,11 @@ impl LoopDelegate for ChatDelegate {
                                         tool_calls,
                                         text: if full_text.is_empty() { None } else { Some(full_text) },
                                         thinking,
+                                        thinking_signature: full_thinking_signature,
                                         metadata: meta,
                                     });
                                 } else {
-                                    return Ok(RespondOutput::Text { text: full_text, thinking, metadata: meta });
+                                    return Ok(RespondOutput::Text { text: full_text, thinking, thinking_signature: full_thinking_signature, metadata: meta });
                                 }
                             }
                             Err(e) => {
@@ -570,10 +575,11 @@ impl LoopDelegate for ChatDelegate {
                             tool_calls,
                             text: if full_text.is_empty() { None } else { Some(full_text) },
                             thinking,
+                            thinking_signature: full_thinking_signature,
                             metadata: meta,
                         });
                     } else {
-                        return Ok(RespondOutput::Text { text: full_text, thinking, metadata: meta });
+                        return Ok(RespondOutput::Text { text: full_text, thinking, thinking_signature: full_thinking_signature, metadata: meta });
                     }
                 }
                 Err(e) => {
