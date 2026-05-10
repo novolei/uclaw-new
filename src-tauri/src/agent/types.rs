@@ -95,6 +95,19 @@ pub struct ReasoningContext {
     /// Cumulative token usage tracked across iterations.
     pub total_input_tokens: u32,
     pub total_output_tokens: u32,
+    /// Number of mutating tool calls (write_file / edit / apply_patch /
+    /// side-effecting bash) executed since the last `plan_update done:true`.
+    /// Reset to 0 when `plan_update done:true` succeeds. Anti-fake-progress
+    /// guard: a `plan_update done:true` that arrives with this counter at 0
+    /// is intercepted in the dispatcher and replaced with a soft error so
+    /// the model can't game plan-aware termination.
+    pub mutations_since_last_plan_done: usize,
+    /// How many times in this loop we've already intercepted a
+    /// `plan_update done:true` with zero mutation evidence. Bounded escape
+    /// hatch — after `MAX_MUTATION_CHALLENGES` we let the call through with
+    /// a logged warning (so genuine corner cases like "I did the work in a
+    /// way the heuristic doesn't recognize" don't loop forever).
+    pub mutation_challenges_issued: usize,
 }
 
 impl ReasoningContext {
@@ -106,6 +119,8 @@ impl ReasoningContext {
             thread_state: ThreadState::Idle,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            mutations_since_last_plan_done: 0,
+            mutation_challenges_issued: 0,
         }
     }
 
@@ -402,6 +417,154 @@ pub struct ReflectionMessage {
     pub id: String,
     pub content: String,
     pub created_at: String,
+}
+
+// ─── Anti-fake-progress: mutation classification ───────────────────────
+
+/// Maximum number of times we'll soft-block a `plan_update done:true` call
+/// in a single loop run before letting it through with a warning. Higher
+/// = stricter; lower = more permissive for genuine edge cases. 2 means
+/// the model gets one challenge then must either provide evidence in
+/// `note` or call a real mutating tool.
+pub const MAX_MUTATION_CHALLENGES: usize = 2;
+
+/// Did this tool call cause a mutation to the workspace / outside world?
+/// Used by the anti-fake-progress guard to decide whether a subsequent
+/// `plan_update done:true` is plausibly justified by real work.
+///
+/// Conservative on purpose: pure read tools (`read_file`, `glob`,
+/// `grep`, `ls`-only bash) deliberately do NOT count. The LLM can't game
+/// the guard by spamming reads.
+pub fn is_mutating_tool(name: &str, args: &serde_json::Value) -> bool {
+    match name {
+        // Direct write tools — always count.
+        "write_file" | "edit" | "apply_patch" | "create_file" | "delete_file"
+        | "move_file" | "rename_file" => true,
+        // Bash is mutating only if the command contains a side-effect marker.
+        "bash" => {
+            let cmd = args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            bash_command_is_mutating(cmd)
+        }
+        // Anything else is treated as non-mutating. Add explicit cases here
+        // (e.g. mcp tools that write) when known.
+        _ => false,
+    }
+}
+
+/// Heuristic: does this bash command produce a side effect in the workspace?
+/// Patterns chosen for high precision (low false-positive) — `ls`, `cat`,
+/// `git status`, `pwd`, etc. correctly classify as non-mutating.
+pub fn bash_command_is_mutating(cmd: &str) -> bool {
+    // Whitespace-stripped lowercase command for substring checks. We look
+    // at the raw too because some markers (`>`) are punctuation.
+    let lower = cmd.to_lowercase();
+
+    // Output redirection — almost always a write.
+    if cmd.contains('>') {
+        return true;
+    }
+
+    // Specific mutating commands. Match with leading/trailing space to
+    // avoid false positives like "rmdir" matching "rm" via prefix.
+    const MUTATING_CMDS: &[&str] = &[
+        "mkdir ", "touch ", "cp ", "mv ", "rm ", "rmdir ",
+        "tee ", "sed -i", "patch ",
+        "git add", "git commit", "git rm", "git mv", "git checkout -b",
+        "git merge", "git push", "git pull", "git rebase",
+        "npm install", "npm i ", "npm uninstall", "npm run build",
+        "yarn add", "yarn install", "pnpm install", "pnpm add",
+        "cargo new", "cargo init", "cargo add", "cargo build",
+        "pip install", "pip uninstall",
+        "make install", "make build",
+        "chmod ", "chown ",
+        "echo ", // echo without > is benign but still counts as activity
+    ];
+    if MUTATING_CMDS.iter().any(|m| lower.contains(m)) {
+        return true;
+    }
+
+    false
+}
+
+/// Synthetic tool result body returned when we intercept a
+/// `plan_update done:true` that has no mutation evidence. The model
+/// sees this in the tool_result slot and (per baseline #5) is expected
+/// to either actually do the work or supply explicit evidence.
+pub const FAKE_PROGRESS_CHALLENGE: &str =
+    "Blocked: this `plan_update done:true` call has no supporting evidence. \
+     Since the previous `plan_update done:true` (or the start of this turn), \
+     ZERO mutating tool calls have run (write_file / edit / apply_patch / \
+     bash with > / mkdir / touch / git commit / npm install / etc.).\n\n\
+     If the step actually requires writing or modifying code, call the \
+     appropriate tool now (write_file / edit / bash) to do the real work, \
+     then call plan_update again.\n\n\
+     If the step was genuinely completed via means this guard doesn't \
+     recognize (e.g. you executed work in a previous turn the user has now \
+     resumed), call plan_update again with the `note` field set to a \
+     concrete description of WHAT was done and WHERE (file paths, command \
+     output, etc.) — that will satisfy the challenge.";
+
+#[cfg(test)]
+mod mutation_tracking_tests {
+    use super::{bash_command_is_mutating, is_mutating_tool};
+    use serde_json::json;
+
+    #[test]
+    fn write_tools_are_mutating() {
+        assert!(is_mutating_tool("write_file", &json!({"path": "a.txt"})));
+        assert!(is_mutating_tool("edit", &json!({})));
+        assert!(is_mutating_tool("apply_patch", &json!({})));
+    }
+
+    #[test]
+    fn read_tools_are_not_mutating() {
+        assert!(!is_mutating_tool("read_file", &json!({})));
+        assert!(!is_mutating_tool("glob", &json!({})));
+        assert!(!is_mutating_tool("grep", &json!({})));
+        assert!(!is_mutating_tool("plan_write", &json!({})));
+        assert!(!is_mutating_tool("plan_update", &json!({})));
+    }
+
+    #[test]
+    fn bash_ls_pwd_status_are_not_mutating() {
+        // Regression: 泡泡龙 session — `ls paopao/` was the only bash
+        // call before plan_update done:true, must NOT count as mutation.
+        assert!(!bash_command_is_mutating("ls -la paopao/"));
+        assert!(!bash_command_is_mutating("pwd"));
+        assert!(!bash_command_is_mutating("git status"));
+        assert!(!bash_command_is_mutating("git log --oneline -5"));
+        assert!(!bash_command_is_mutating("cat README.md"));
+        assert!(!bash_command_is_mutating("find . -name '*.html'"));
+    }
+
+    #[test]
+    fn bash_with_redirect_is_mutating() {
+        assert!(bash_command_is_mutating("echo 'hello' > a.html"));
+        assert!(bash_command_is_mutating("cat a >> b"));
+    }
+
+    #[test]
+    fn bash_side_effect_commands_are_mutating() {
+        assert!(bash_command_is_mutating("mkdir paopao"));
+        assert!(bash_command_is_mutating("touch a.html"));
+        assert!(bash_command_is_mutating("cp a b"));
+        assert!(bash_command_is_mutating("git add ."));
+        assert!(bash_command_is_mutating("git commit -m 'x'"));
+        assert!(bash_command_is_mutating("npm install"));
+    }
+
+    #[test]
+    fn rm_does_not_match_rmdir_via_prefix() {
+        // Both should still count as mutating, but for different reasons.
+        assert!(bash_command_is_mutating("rm a.txt"));
+        assert!(bash_command_is_mutating("rmdir foo"));
+        // And the "rm " marker must require trailing space to avoid
+        // matching e.g. "harmonize" — sanity check:
+        assert!(!bash_command_is_mutating("harmonize the system"));
+    }
 }
 
 /// Heuristic: did the LLM say "I'm about to use a tool" without actually

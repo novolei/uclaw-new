@@ -667,6 +667,57 @@ impl LoopDelegate for ChatDelegate {
         reason_ctx: &mut ReasoningContext,
     ) -> Result<Option<LoopOutcome>, Error> {
         for tc in &tool_calls {
+            // ── Anti-fake-progress challenge ─────────────────────────
+            // Intercept `plan_update done:true` calls that have neither
+            // a recent mutating tool call NOR explicit evidence in `note`.
+            // Inject a synthetic error tool_result and skip the actual
+            // tool dispatch. See agent/types.rs::FAKE_PROGRESS_CHALLENGE
+            // for the reasoning. After MAX_MUTATION_CHALLENGES soft-blocks
+            // in this loop, we let it through with a logged warning so a
+            // genuinely-completed step doesn't loop forever.
+            if tc.name == "plan_update"
+                && tc.arguments.get("done").and_then(|v| v.as_bool()).unwrap_or(false)
+                && reason_ctx.mutations_since_last_plan_done == 0
+                && reason_ctx.mutation_challenges_issued < crate::agent::types::MAX_MUTATION_CHALLENGES
+            {
+                // Treat a `note` of >= 20 chars as evidence: if the LLM
+                // bothered to type a real explanation we let it through.
+                let note_len = tc.arguments.get("note")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().len())
+                    .unwrap_or(0);
+                if note_len < 20 {
+                    reason_ctx.mutation_challenges_issued += 1;
+                    tracing::warn!(
+                        tool = %tc.name,
+                        challenges = reason_ctx.mutation_challenges_issued,
+                        max = crate::agent::types::MAX_MUTATION_CHALLENGES,
+                        step_index = ?tc.arguments.get("step_index"),
+                        "Soft-blocking plan_update done:true with no mutation evidence"
+                    );
+                    self.emit_tool_start(&tc.name, &tc.id, &tc.arguments);
+                    self.emit_tool_result(
+                        &tc.name,
+                        &tc.id,
+                        &crate::agent::tools::tool::ToolOutput::error(
+                            crate::agent::types::FAKE_PROGRESS_CHALLENGE,
+                            0,
+                        ),
+                    );
+                    reason_ctx.messages.push(ChatMessage::user_tool_result(
+                        &tc.id,
+                        crate::agent::types::FAKE_PROGRESS_CHALLENGE,
+                        true,
+                    ));
+                    continue;
+                }
+                tracing::info!(
+                    tool = %tc.name,
+                    note_len,
+                    "plan_update done:true accepted via `note` evidence"
+                );
+            }
+
             let tool = self.tools.get(&tc.name);
             match tool {
                 Some(tool) => {
@@ -859,6 +910,29 @@ impl LoopDelegate for ChatDelegate {
                                 &result_str,
                                 soft_error,
                             ));
+
+                            // ── Anti-fake-progress bookkeeping ────────────
+                            // Track real mutations so the next plan_update
+                            // done:true has evidence to point at. A `bash`
+                            // that hard-failed (soft_error=true) doesn't
+                            // count — failed mutation isn't mutation.
+                            if !soft_error
+                                && crate::agent::types::is_mutating_tool(&tc.name, &tc.arguments)
+                            {
+                                reason_ctx.mutations_since_last_plan_done = reason_ctx
+                                    .mutations_since_last_plan_done
+                                    .saturating_add(1);
+                            }
+                            // Reset on successful plan_update done:true so the
+                            // NEXT step needs its own mutation evidence. If the
+                            // call was the soft-blocked path it `continue`d
+                            // above and never reaches here.
+                            if tc.name == "plan_update"
+                                && tc.arguments.get("done").and_then(|v| v.as_bool()).unwrap_or(false)
+                            {
+                                reason_ctx.mutations_since_last_plan_done = 0;
+                                reason_ctx.mutation_challenges_issued = 0;
+                            }
                         }
                         Err(e) => {
                             let duration_ms = tool_start.elapsed().as_millis() as u64;
