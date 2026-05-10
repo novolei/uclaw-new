@@ -299,3 +299,188 @@ pub fn list_audit(
     })?;
     Ok(rows.flatten().collect())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::tools::tool::ApprovalRequirement;
+    use rusqlite::Connection;
+    use std::sync::{Arc, Mutex};
+
+    fn fresh_db() -> Arc<Mutex<Connection>> {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V14_PERMISSION_TABLES)
+            .unwrap();
+        Arc::new(Mutex::new(conn))
+    }
+
+    fn baseline_policy() -> SafetyPolicy {
+        SafetyPolicy {
+            global_mode: SafetyMode::Supervised,
+            tool_overrides: Default::default(),
+            auto_approved_tools: Default::default(),
+            blocked_tools: Default::default(),
+        }
+    }
+
+    #[test]
+    fn no_rules_falls_through_to_global() {
+        let db = fresh_db();
+        let policy = baseline_policy();
+        let args = serde_json::json!({});
+        let d = resolve_decision(
+            &db,
+            &policy,
+            "sess1",
+            "bash",
+            &args,
+            &ApprovalRequirement::Always,
+            None,
+        );
+        assert!(matches!(d, ApprovalDecision::RequireApproval { .. }));
+    }
+
+    #[test]
+    fn session_rule_wins_over_pattern() {
+        let db = fresh_db();
+        let policy = baseline_policy();
+        // Session rule allow
+        create_rule(
+            &db,
+            CreatePermissionRuleInput {
+                scope: "session".into(),
+                session_id: Some("sess1".into()),
+                tool_name: "bash".into(),
+                target: None,
+                mode: "allow".into(),
+            },
+        )
+        .unwrap();
+        // Pattern rule block (lower precedence)
+        create_rule(
+            &db,
+            CreatePermissionRuleInput {
+                scope: "pattern".into(),
+                session_id: None,
+                tool_name: "bash".into(),
+                target: Some("rm".into()),
+                mode: "block".into(),
+            },
+        )
+        .unwrap();
+        let args = serde_json::json!({"command": "rm -rf /tmp/foo"});
+        let d = resolve_decision(
+            &db,
+            &policy,
+            "sess1",
+            "bash",
+            &args,
+            &ApprovalRequirement::Always,
+            None,
+        );
+        assert!(matches!(d, ApprovalDecision::AutoApprove));
+    }
+
+    #[test]
+    fn pattern_rule_uses_longest_match() {
+        let db = fresh_db();
+        let policy = baseline_policy();
+        create_rule(
+            &db,
+            CreatePermissionRuleInput {
+                scope: "pattern".into(),
+                session_id: None,
+                tool_name: "bash".into(),
+                target: Some("git ".into()),
+                mode: "ask".into(),
+            },
+        )
+        .unwrap();
+        create_rule(
+            &db,
+            CreatePermissionRuleInput {
+                scope: "pattern".into(),
+                session_id: None,
+                tool_name: "bash".into(),
+                target: Some("git status".into()),
+                mode: "allow".into(),
+            },
+        )
+        .unwrap();
+        let args = serde_json::json!({"command": "git status"});
+        let d = resolve_decision(
+            &db,
+            &policy,
+            "sess1",
+            "bash",
+            &args,
+            &ApprovalRequirement::Always,
+            None,
+        );
+        // Longest match "git status" wins → allow
+        assert!(matches!(d, ApprovalDecision::AutoApprove));
+    }
+
+    #[test]
+    fn blocked_list_overrides_everything() {
+        let db = fresh_db();
+        let mut policy = baseline_policy();
+        policy.blocked_tools.insert("bash".into());
+        // Even a session-allow rule shouldn't override blocked_tools
+        create_rule(
+            &db,
+            CreatePermissionRuleInput {
+                scope: "session".into(),
+                session_id: Some("sess1".into()),
+                tool_name: "bash".into(),
+                target: None,
+                mode: "allow".into(),
+            },
+        )
+        .unwrap();
+        let args = serde_json::json!({"command": "ls"});
+        let d = resolve_decision(
+            &db,
+            &policy,
+            "sess1",
+            "bash",
+            &args,
+            &ApprovalRequirement::Always,
+            None,
+        );
+        assert!(matches!(d, ApprovalDecision::Block { .. }));
+    }
+
+    #[test]
+    fn audit_log_records_each_decision() {
+        let db = fresh_db();
+        let policy = baseline_policy();
+        let args = serde_json::json!({"command": "ls"});
+        let _ = resolve_decision(
+            &db,
+            &policy,
+            "sess1",
+            "bash",
+            &args,
+            &ApprovalRequirement::Always,
+            None,
+        );
+        let log = list_audit(&db, Some("sess1"), 10).unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].tool_name, "bash");
+    }
+
+    #[test]
+    fn pattern_target_extracts_command_first() {
+        let args = serde_json::json!({"command": "ls -la", "cwd": "/tmp"});
+        assert_eq!(pattern_target(&args).as_deref(), Some("ls -la"));
+    }
+
+    #[test]
+    fn args_hash_is_stable_and_short() {
+        let h1 = args_hash(&serde_json::json!({"a": 1}));
+        let h2 = args_hash(&serde_json::json!({"a": 1}));
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 16);
+    }
+}
