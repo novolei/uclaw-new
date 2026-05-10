@@ -240,6 +240,43 @@ impl MemoryGraphStore {
         Ok(())
     }
 
+    /// Find an existing learned-skill node whose title matches the
+    /// provided normalized form. Used by `store_skill_as_procedure` to
+    /// avoid creating duplicates on every proactive extraction.
+    ///
+    /// Normalization is done in SQL: trim + collapse internal whitespace
+    /// + lowercase. We compare lowercase forms because LLM titles often
+    /// differ only by capitalization or trailing punctuation.
+    ///
+    /// Returns the most recently updated match (so chained dedup keeps
+    /// folding into the freshest node) or None.
+    pub fn find_learned_skill_by_normalized_title(
+        &self,
+        space_id: &str,
+        normalized_title: &str,
+    ) -> Result<Option<MemoryNode>, crate::error::Error> {
+        if normalized_title.trim().is_empty() {
+            return Ok(None);
+        }
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, space_id, kind, title, metadata_json, created_at, updated_at
+             FROM memory_nodes
+             WHERE space_id = ?1 AND kind = ?2
+               AND COALESCE(json_extract(metadata_json, '$.skill_type'), '') = 'learned'
+               AND lower(trim(title)) = ?3
+             ORDER BY updated_at DESC LIMIT 1"
+        ).map_err(crate::error::Error::Database)?;
+
+        let result = stmt
+            .query_row(
+                params![space_id, MemoryNodeKind::Procedure.as_str(), normalized_title],
+                |row| Self::row_to_node(row),
+            )
+            .ok();
+        Ok(result)
+    }
+
     pub fn list_recent_nodes(
         &self,
         space_id: &str,

@@ -267,9 +267,24 @@ impl MemoryRecallEngine {
         };
 
         // ── Learned Skills section (top priority) ──
+        // E1: stronger directive — softer wording lets the LLM treat
+        // the section as background reading. Now we require an explicit
+        // citation ("> 应用技能：X — 因为 Y") at the start of any
+        // response that uses one. This makes citation observable
+        // (downstream code can detect "> 应用技能：" prefix) and makes
+        // the agent more likely to actually follow the SOP rather than
+        // just having it visible in context.
         if !learned_skills.is_empty() {
             out.push_str("## Learned Skills (已学技能)\n");
-            out.push_str("以下是你已学会的技能 SOP，当任务匹配适用场景时请严格遵循。\n\n");
+            out.push_str(
+                "以下是你已学会的技能 SOP。**强制规则**：\n\
+                 1. 任务开始前先判断本次请求是否匹配下列任一技能的「适用场景」。\n\
+                 2. 如匹配，**必须**在你的响应开头以引用块形式声明：\n   \
+                 `> 应用技能：<技能名> — <一句话说明为何匹配>`\n   \
+                 然后严格按该技能的「SOP 步骤」执行，不要绕过 / 简化 / 自创流程。\n\
+                 3. 如不匹配任何技能，无需声明，正常回复即可。\n\
+                 这一规则用于积累\"技能是否真正被使用\"的反馈数据，请配合执行。\n\n",
+            );
             for c in &learned_skills {
                 let meta = c.metadata.as_ref().unwrap(); // safe: checked above
                 let context = meta.get("context").and_then(|v| v.as_str()).unwrap_or("");
