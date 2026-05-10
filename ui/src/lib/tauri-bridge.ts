@@ -374,6 +374,18 @@ export const toggleLearnedSkill = (skillId: string, enabled: boolean): Promise<v
 export const deleteLearnedSkill = (skillId: string): Promise<void> =>
   invoke('delete_learned_skill', { skillId });
 
+/**
+ * Record that the LLM cited a learned skill in its response.
+ * Bumps `cited_count` in metadata (separate from `usage_count` /
+ * `recalled_count`). Returns the matched skill_id, or null if the
+ * cited title doesn't match any skill in the DB.
+ */
+export const recordSkillCited = (
+  title: string,
+  spaceId: string = 'default',
+): Promise<string | null> =>
+  invoke('record_skill_cited', { spaceId, title });
+
 // ─────────────────────────────────────────────────────────
 // Memory Graph
 // ─────────────────────────────────────────────────────────
