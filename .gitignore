@@ -34,3 +34,4 @@ package-lock.json
 *.swp
 .claire/
 .claude/worktrees/
+.claude/
