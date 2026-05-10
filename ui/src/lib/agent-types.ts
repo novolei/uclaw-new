@@ -216,26 +216,12 @@ export interface AskUserResponse {
   answers: Record<string, string>
 }
 
-/** ExitPlanMode 请求 */
+/** ExitPlanMode 请求 — backend wire format (see ExitPlanRequestPayload) */
 export interface ExitPlanModeRequest {
   requestId: string
   sessionId: string
-  allowedPrompts: ExitPlanAllowedPrompt[]
-}
-
-/** ExitPlanMode 允许的操作提示 */
-export interface ExitPlanAllowedPrompt {
-  prompt: string
-}
-
-/** ExitPlanMode 动作类型 */
-export type ExitPlanModeAction = 'approve_auto' | 'approve_edit' | 'deny' | 'feedback'
-
-/** ExitPlanMode 响应 */
-export interface ExitPlanModeResponse {
-  requestId: string
-  action: ExitPlanModeAction
-  feedback?: string
+  plan: string
+  allowedPrompts?: string[]
 }
 
 /** 思考模式配置 */

@@ -111,7 +111,7 @@ import type {
   CreatePermissionRuleInput,
 } from './types';
 import type { Channel } from './chat-types';
-import type { RecentThread, AskUserRequest } from './agent-types';
+import type { RecentThread, AskUserRequest, ExitPlanModeRequest } from './agent-types';
 
 // ─────────────────────────────────────────────────────────
 // Bootstrap / Settings
@@ -874,8 +874,19 @@ export const respondAskUser = (input: { requestId: string; answers: Record<strin
 export const onAskUserRequest = (cb: (payload: AskUserRequest) => void): Promise<UnlistenFn> =>
   listen('agent:ask_user_request', (e) => cb(e.payload as AskUserRequest))
 
-export const respondExitPlanMode = (input: any): Promise<void> =>
-  invoke<void>('respond_exit_plan_mode', { input }).catch(() => {})
+export interface RespondExitPlanModeInput {
+  requestId: string
+  decision: 'accept_and_auto' | 'accept_keep_plan' | 'reject'
+  feedback?: string
+  allowedPrompts?: string[]
+  sessionId: string
+}
+
+export const respondExitPlanMode = (input: RespondExitPlanModeInput): Promise<void> =>
+  invoke<void>('respond_exit_plan_mode', { input })
+
+export const onExitPlanRequest = (cb: (payload: ExitPlanModeRequest) => void): Promise<UnlistenFn> =>
+  listen('agent:exit_plan_request', (e) => cb(e.payload as ExitPlanModeRequest))
 
 // --- Agent session management compat ---
 export const moveAgentSessionToWorkspace = (input: any): Promise<any> =>

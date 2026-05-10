@@ -14,15 +14,18 @@ import { MainArea } from '@/components/tabs/MainArea'
 import { AppShellProvider, type AppShellContextType } from '@/contexts/AppShellContext'
 import { ApprovalModal } from '@/components/ApprovalModal'
 import { AskUserBanner } from '@/components/agent/AskUserBanner'
+import { ExitPlanModeBanner } from '@/components/agent/ExitPlanModeBanner'
 import { ModeBanner } from '@/components/agent/ModeBanner'
 import { appModeAtom } from '@/atoms/app-mode'
 import {
   agentSessionsAtom,
   allPendingAskUserRequestsAtom,
+  allPendingExitPlanRequestsAtom,
   currentAgentSessionIdAtom,
   currentAgentWorkspaceIdAtom,
   currentSessionSidePanelOpenAtom,
   installAskUserListener,
+  installExitPlanListener,
 } from '@/atoms/agent-atoms'
 import { currentConversationIdAtom } from '@/atoms/chat-atoms'
 import { tabsAtom, activeTabIdAtom, openTab } from '@/atoms/tab-atoms'
@@ -50,6 +53,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const agentSessions = useAtomValue(agentSessionsAtom)
   const setCurrentAgentWorkspaceId = useSetAtom(currentAgentWorkspaceIdAtom)
   const setAllPendingAskUserRequests = useSetAtom(allPendingAskUserRequestsAtom)
+  const setAllPendingExitPlanRequests = useSetAtom(allPendingExitPlanRequestsAtom)
 
   React.useEffect(() => {
     const dispose = installScrollToMessage()
@@ -61,6 +65,12 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
     installAskUserListener((updater) => setAllPendingAskUserRequests(updater)).then((d) => { dispose = d })
     return () => { dispose?.() }
   }, [setAllPendingAskUserRequests])
+
+  React.useEffect(() => {
+    let dispose: (() => void) | undefined
+    installExitPlanListener((updater) => setAllPendingExitPlanRequests(updater)).then((d) => { dispose = d })
+    return () => { dispose?.() }
+  }, [setAllPendingExitPlanRequests])
 
   const handleSearchResultSelect = React.useCallback((payload:
     | { kind: 'thread'; thread: { id: string; kind: 'chat' | 'agent'; workspaceId: string } }
@@ -163,6 +173,9 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
 
         {/* Global ask_user banner — shows agent's question pending */}
         {currentSessionId && <AskUserBanner sessionId={currentSessionId} />}
+
+        {/* Global exit_plan_mode banner — plan markdown + 3-decision modal */}
+        {currentSessionId && <ExitPlanModeBanner sessionId={currentSessionId} />}
       </div>
     </AppShellProvider>
   )

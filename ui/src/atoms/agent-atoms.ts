@@ -323,6 +323,24 @@ export async function installAskUserListener(
 }
 
 export const allPendingExitPlanRequestsAtom = atom<Map<string, readonly ExitPlanModeRequest[]>>(new Map())
+
+/**
+ * Initialize the IPC listener that populates `allPendingExitPlanRequestsAtom`
+ * from `agent:exit_plan_request` events. Call once at app start.
+ */
+export async function installExitPlanListener(
+  setMap: (update: (prev: Map<string, readonly ExitPlanModeRequest[]>) => Map<string, readonly ExitPlanModeRequest[]>) => void,
+): Promise<() => void> {
+  const { onExitPlanRequest } = await import('@/lib/tauri-bridge')
+  return await onExitPlanRequest((payload) => {
+    setMap((prev) => {
+      const next = new Map(prev)
+      const existing = next.get(payload.sessionId) ?? []
+      next.set(payload.sessionId, [...existing, payload])
+      return next
+    })
+  })
+}
 export const agentPlanModeSessionsAtom = atom<Set<string>>(new Set<string>())
 
 export const currentAgentSessionAtom = atom<AgentSessionMeta | null>((get) => {
