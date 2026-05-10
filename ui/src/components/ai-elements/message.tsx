@@ -224,7 +224,7 @@ const MarkdownTable = React.memo(function MarkdownTable({
 }: React.HTMLAttributes<HTMLTableElement>): React.ReactElement {
   return (
     <div className="my-3 rounded-[10px] border border-border overflow-hidden bg-card">
-      <table className="w-full border-collapse">{children}</table>
+      <table className="w-full border-collapse text-[14px]">{children}</table>
     </div>
   )
 })
@@ -232,14 +232,30 @@ const MarkdownTable = React.memo(function MarkdownTable({
 const MarkdownThead = React.memo(function MarkdownThead({
   children,
 }: React.HTMLAttributes<HTMLTableSectionElement>): React.ReactElement {
-  return <thead className="bg-muted/50">{children}</thead>
+  // Slightly stronger header tint than `bg-muted/50` so the dim
+  // muted-foreground text reads as deliberately understated rather than
+  // accidentally washed out, especially on the warm-paper theme.
+  return <thead className="bg-muted/70">{children}</thead>
 })
 
 const MarkdownTr = React.memo(function MarkdownTr({
   children,
 }: React.HTMLAttributes<HTMLTableRowElement>): React.ReactElement {
+  // Polish set:
+  //   - Subtle zebra on even rows (1.5% black/white tint via muted/30)
+  //     — improves row scanning without competing with status badges
+  //   - Hover highlight reuses the same tint at 60% — gives the table
+  //     a tactile feel matching the rest of the chat surface
+  //   - Border on every td except in the last row keeps the card
+  //     bottom edge clean
   return (
-    <tr className="[&:not(:last-child)>td]:border-b [&>td]:border-border/40">
+    <tr
+      className={cn(
+        '[&:not(:last-child)>td]:border-b [&>td]:border-border/40',
+        '[&:nth-child(even)]:bg-muted/30',
+        'hover:bg-muted/60 transition-colors',
+      )}
+    >
       {children}
     </tr>
   )
@@ -249,7 +265,7 @@ const MarkdownTh = React.memo(function MarkdownTh({
   children,
 }: React.HTMLAttributes<HTMLTableCellElement>): React.ReactElement {
   return (
-    <th className="text-left px-3.5 py-2.5 text-[11.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground border-b border-border">
+    <th className="text-left px-3.5 py-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground/85 border-b border-border align-middle">
       {children}
     </th>
   )
@@ -295,9 +311,15 @@ const MarkdownTd = React.memo(function MarkdownTd({
 }: React.HTMLAttributes<HTMLTableCellElement>): React.ReactElement {
   const text = extractText(children).trim()
   const variant = text ? detectStatus(text) : null
+  // Polish: tighter vertical padding + middle align + zero out any
+  // `prose-p:my-1.5` margin that would otherwise stretch cells when
+  // the content is wrapped in <p> by react-markdown. `align-middle`
+  // matters when one cell wraps to two lines and the neighbour doesn't.
+  const tdClass =
+    'px-3.5 py-2 text-[14px] align-middle leading-[1.55] [&>p]:my-0 [&_p]:my-0'
   if (variant) {
     return (
-      <td className="px-3.5 py-3 text-[14.5px]">
+      <td className={tdClass}>
         <span
           data-status={variant}
           className={cn(
@@ -310,7 +332,7 @@ const MarkdownTd = React.memo(function MarkdownTd({
       </td>
     )
   }
-  return <td className="px-3.5 py-3 text-[14.5px]">{children}</td>
+  return <td className={tdClass}>{children}</td>
 })
 
 const MarkdownBlockquote = React.memo(function MarkdownBlockquote({
