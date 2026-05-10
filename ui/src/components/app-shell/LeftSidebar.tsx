@@ -935,7 +935,7 @@ function AgentSessionItem({ session, active, hovered, indicatorStatus, showPinIc
               {session.titlePending ? (
                 <LoaderCircle size={14} strokeWidth={2} className="animate-spin" />
               ) : session.titleEmoji ? (
-                <span className="text-[14px] leading-none" style={{ fontFamily: '"Apple Color Emoji", "Segoe UI Emoji", "Noto Emoji", sans-serif' }}>{session.titleEmoji}</span>
+                <span className="text-[14px] leading-none" style={{ fontVariant: 'normal', fontVariantEmoji: 'text' } as React.CSSProperties}>{session.titleEmoji}</span>
               ) : null}
             </span>
             {session.titlePending ? (

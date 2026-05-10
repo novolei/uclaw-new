@@ -35,7 +35,7 @@ export function SessionItem({
         {titlePending ? (
           <LoaderCircle size={14} strokeWidth={2} className="animate-spin" />
         ) : (
-          <span className="text-[14px] leading-none" style={{ fontFamily: '"Apple Color Emoji", "Segoe UI Emoji", "Noto Emoji", sans-serif' }}>
+          <span className="text-[14px] leading-none" style={{ fontVariantEmoji: 'text' } as React.CSSProperties}>
             {titleEmoji || '💬'}
           </span>
         )}
