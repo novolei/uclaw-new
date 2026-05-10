@@ -4447,20 +4447,20 @@ pub(crate) fn resolve_workspace_id_or_default(
         None => return "default".into(),
         Some(id) => id,
     };
-    let exists: bool = conn
-        .query_row(
-            "SELECT 1 FROM spaces WHERE id = ?1",
-            rusqlite::params![&candidate],
-            |_| Ok(true),
-        )
-        .unwrap_or(false);
-    if exists {
-        candidate
-    } else {
-        tracing::warn!(
-            "create_agent_session: unknown workspace_id={candidate:?}, falling back to 'default'"
-        );
-        "default".into()
+    match conn.query_row(
+        "SELECT 1 FROM spaces WHERE id = ?1",
+        rusqlite::params![&candidate],
+        |_| Ok(()),
+    ) {
+        Ok(()) => candidate,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            tracing::warn!(workspace_id = %candidate, "unknown workspace_id, falling back to 'default'");
+            "default".into()
+        }
+        Err(e) => {
+            tracing::warn!(workspace_id = %candidate, error = %e, "DB error during workspace existence check, falling back to 'default'");
+            "default".into()
+        }
     }
 }
 
@@ -4471,19 +4471,16 @@ pub(crate) fn require_workspace_exists(
     conn: &rusqlite::Connection,
     workspace_id: &str,
 ) -> Result<(), Error> {
-    let exists: bool = conn
-        .query_row(
-            "SELECT 1 FROM spaces WHERE id = ?1",
-            rusqlite::params![workspace_id],
-            |_| Ok(true),
-        )
-        .unwrap_or(false);
-    if exists {
-        Ok(())
-    } else {
-        Err(Error::Internal(format!(
-            "workspace_id '{workspace_id}' does not exist"
-        )))
+    match conn.query_row(
+        "SELECT 1 FROM spaces WHERE id = ?1",
+        rusqlite::params![workspace_id],
+        |_| Ok(()),
+    ) {
+        Ok(()) => Ok(()),
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            Err(Error::NotFound(format!("workspace '{workspace_id}'")))
+        }
+        Err(e) => Err(Error::Database(e)),
     }
 }
 
@@ -4494,11 +4491,11 @@ pub(crate) fn require_workspace_exists(
 pub(crate) fn rehome_agent_sessions_to_default(
     conn: &rusqlite::Connection,
     workspace_id: &str,
-) -> Result<(), rusqlite::Error> {
+) -> Result<(), Error> {
     conn.execute(
         "UPDATE agent_sessions SET space_id = 'default', updated_at = ?2 WHERE space_id = ?1",
         rusqlite::params![workspace_id, chrono::Utc::now().timestamp_millis()],
-    )?;
+    ).map_err(Error::Database)?;
     Ok(())
 }
 
@@ -4547,7 +4544,7 @@ pub async fn delete_workspace(
     // dropping the workspace row. agent_sessions has no FK constraint, so
     // without this, sessions would be silently orphaned. (Conversations
     // already cascade via FK ON DELETE CASCADE — see V1_INITIAL.)
-    rehome_agent_sessions_to_default(&conn, &id).map_err(Error::Database)?;
+    rehome_agent_sessions_to_default(&conn, &id)?;
 
     conn.execute("DELETE FROM spaces WHERE id = ?1", rusqlite::params![id])
         .map_err(Error::Database)?;
@@ -5550,6 +5547,7 @@ mod cost_rollup_tests {
 #[cfg(test)]
 mod workspace_integrity_tests {
     use rusqlite::Connection;
+    use crate::error::Error;
 
     fn fresh_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -5622,7 +5620,8 @@ mod workspace_integrity_tests {
     #[test]
     fn require_workspace_exists_err_when_missing() {
         let conn = fresh_db();
-        assert!(super::require_workspace_exists(&conn, "ghost").is_err());
+        let result = super::require_workspace_exists(&conn, "ghost");
+        assert!(matches!(result, Err(Error::NotFound(_))));
     }
 
     #[test]
