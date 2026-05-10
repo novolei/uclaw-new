@@ -35,7 +35,7 @@ export function SessionItem({
         {titlePending ? (
           <LoaderCircle size={14} strokeWidth={2} className="animate-spin" />
         ) : (
-          <span className="text-[14px] leading-none">
+          <span className="text-[14px] leading-none" style={{ fontFamily: "'Noto Emoji', sans-serif" }}>
             {titleEmoji || '💬'}
           </span>
         )}
