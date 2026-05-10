@@ -190,6 +190,8 @@ Track which V-number is claimed by which open PR before starting schema work:
 | V12 | agent_messages_fts (trigram) + sync triggers + backfill | merged |
 | V13 | cost_records + indexes | merged (PR #39) |
 | V14 | tool_permission_rules + permission_audit_log | merged (PR #41) |
+| V15 | agent_messages metrics columns (duration_ms, token counts, cost) | merged |
+| V16 | persist 'default' workspace + heal orphan agent_sessions | **claude/workspace-phase1** (open) |
 
 If you're adding a migration: pick the next number after both merged AND open PRs to avoid conflicts. Update this table in your PR.
 
