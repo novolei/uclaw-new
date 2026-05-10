@@ -1557,3 +1557,14 @@ html[data-chat-serif="true"] .chat-content pre {
   --code-header-hover: rgb(255 210 63 / 0.10);
   --code-scrollbar: rgb(255 210 63 / 0.20);
 }
+
+/* Search-hit flash — applied briefly to a scrolled-to message row. */
+@keyframes flash-hit-pulse {
+  0% { background-color: hsl(var(--accent) / 0.0); }
+  20% { background-color: hsl(var(--accent) / 0.55); }
+  100% { background-color: hsl(var(--accent) / 0.0); }
+}
+.flash-hit {
+  animation: flash-hit-pulse 1400ms ease-out;
+  border-radius: 0.5rem;
+}

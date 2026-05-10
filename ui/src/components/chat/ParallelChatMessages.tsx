@@ -168,8 +168,8 @@ function MessageColumn({
     >
       <div className="flex flex-col gap-6 p-4">
         {messages.map((message) => (
+          <div key={message.id} data-message-id={message.id}>
           <ChatMessageItem
-            key={message.id}
             message={message}
             conversationId={conversationId}
             allMessages={allMessages}
@@ -181,6 +181,7 @@ function MessageColumn({
             isInlineEditing={message.id === inlineEditingMessageId}
             isParallelMode
           />
+          </div>
         ))}
         {side === 'assistant' && (streaming || streamingContent || streamingReasoning) && (
           <Message from="assistant">

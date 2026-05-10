@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import * as React from 'react'
 import { SearchPalette } from './SearchPalette'
 import { renderWithProviders, screen, waitFor } from '@/test-utils/render'
-import { searchPaletteOpenAtom } from '@/atoms/search-atoms'
+import { searchPaletteOpenAtom, searchPaletteScopeAtom } from '@/atoms/search-atoms'
+import { appModeAtom } from '@/atoms/app-mode'
+import { currentConversationIdAtom } from '@/atoms/chat-atoms'
 
 // cmdk uses scrollIntoView for keyboard nav; jsdom doesn't implement it.
 if (!Element.prototype.scrollIntoView) {
@@ -176,5 +178,36 @@ describe('SearchPalette', () => {
       kind: 'search_hit',
       hit: expect.objectContaining({ messageId: 'msg-1', sourceId: 'sess-1' }),
     }))
+  })
+
+  // ===== SCOPE BEHAVIOR =====
+
+  it('Tab toggles scope chip when an active session exists', async () => {
+    const { store, user } = renderWithProviders(<SearchPalette />)
+    store.set(appModeAtom, 'chat')
+    store.set(currentConversationIdAtom, 'conv-1')
+    store.set(searchPaletteOpenAtom, true)
+    await screen.findByPlaceholderText('搜索线程、项目...')
+    expect(store.get(searchPaletteScopeAtom)).toBe('all')
+    await user.keyboard('{Tab}')
+    await waitFor(() => {
+      const s = store.get(searchPaletteScopeAtom)
+      expect(s).not.toBe('all')
+      if (s !== 'all') expect(s.id).toBe('conv-1')
+    })
+  })
+
+  it('first Esc clears scope, second Esc closes the palette', async () => {
+    const { store, user } = renderWithProviders(<SearchPalette />)
+    store.set(appModeAtom, 'chat')
+    store.set(currentConversationIdAtom, 'conv-1')
+    store.set(searchPaletteOpenAtom, true)
+    await screen.findByPlaceholderText('搜索线程、项目...')
+    store.set(searchPaletteScopeAtom, { kind: 'session', id: 'conv-1', label: '当前聊天' })
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(store.get(searchPaletteScopeAtom)).toBe('all'))
+    expect(store.get(searchPaletteOpenAtom)).toBe(true)
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(store.get(searchPaletteOpenAtom)).toBe(false))
   })
 })
