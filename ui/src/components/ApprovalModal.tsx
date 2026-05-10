@@ -7,6 +7,7 @@
  */
 
 import * as React from 'react'
+import { useAtomValue } from 'jotai'
 import {
   AlertDialog,
   AlertDialogContent,
@@ -22,8 +23,11 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { ShieldAlert, ShieldCheck, ShieldOff, Terminal, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { approveToolCall, onNeedApproval } from '@/lib/tauri-bridge'
+import { approveToolCall, onNeedApproval, createPermissionRule } from '@/lib/tauri-bridge'
 import type { ApprovalRequest } from '@/lib/types'
+import { appModeAtom } from '@/atoms/app-mode'
+import { currentAgentSessionIdAtom } from '@/atoms/agent-atoms'
+import { currentConversationIdAtom } from '@/atoms/chat-atoms'
 
 const RISK_CONFIG: Record<string, { label: string; icon: React.ElementType; color: string; bgClass: string }> = {
   low: { label: '低风险', icon: ShieldCheck, color: '#22c55e', bgClass: 'bg-green-500/10 text-green-500 border-green-500/20' },
@@ -40,6 +44,11 @@ export function ApprovalModal(): React.ReactElement {
   const [request, setRequest] = React.useState<ApprovalRequest | null>(null)
   const [loading, setLoading] = React.useState(false)
 
+  const appMode = useAtomValue(appModeAtom)
+  const currentAgentSessionId = useAtomValue(currentAgentSessionIdAtom)
+  const currentConversationId = useAtomValue(currentConversationIdAtom)
+  const activeSessionId = appMode === 'agent' ? currentAgentSessionId : currentConversationId
+
   // 监听后端审批事件
   React.useEffect(() => {
     let unlisten: (() => void) | undefined
@@ -50,6 +59,30 @@ export function ApprovalModal(): React.ReactElement {
     })
     return () => unlisten?.()
   }, [])
+
+  const respondWithSessionRule = async (): Promise<void> => {
+    if (!request || loading || !activeSessionId) return
+    setLoading(true)
+    try {
+      await createPermissionRule({
+        scope: 'session',
+        sessionId: activeSessionId,
+        toolName: request.toolName,
+        mode: 'allow',
+      })
+      await approveToolCall({
+        sessionId: request.sessionId,
+        toolId: request.toolId,
+        approved: true,
+        alwaysAllow: false,
+      })
+    } catch (err) {
+      console.error('[ApprovalModal] session-allow failed:', err)
+    } finally {
+      setLoading(false)
+      setRequest(null)
+    }
+  }
 
   const respond = async (approved: boolean, alwaysAllow?: boolean): Promise<void> => {
     if (!request || loading) return
@@ -133,7 +166,7 @@ export function ApprovalModal(): React.ReactElement {
           </div>
         )}
 
-        <AlertDialogFooter className="flex-col sm:flex-row gap-2">
+        <AlertDialogFooter className="flex-col sm:flex-row gap-2 flex-wrap">
           <AlertDialogCancel asChild>
             <Button
               variant="outline"
@@ -144,11 +177,23 @@ export function ApprovalModal(): React.ReactElement {
               拒绝
             </Button>
           </AlertDialogCancel>
+          {activeSessionId && (
+            <Button
+              variant="outline"
+              onClick={respondWithSessionRule}
+              disabled={loading}
+              className="border-muted-foreground/30"
+              title="为当前会话创建一条 allow 规则"
+            >
+              本次会话允许
+            </Button>
+          )}
           <Button
             variant="outline"
             onClick={() => respond(true, true)}
             disabled={loading}
             className="border-muted-foreground/30"
+            title="把工具加入全局白名单"
           >
             始终允许
           </Button>

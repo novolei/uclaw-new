@@ -2,7 +2,7 @@ use tauri::State;
 use crate::app::AppState;
 use crate::error::Error;
 use crate::ipc::*;
-use crate::ipc::{DailyCostRollup, ModelCostRollup, SessionCostRollup};
+use crate::ipc::{DailyCostRollup, ModelCostRollup, SessionCostRollup, PermissionRule, PermissionAuditEntry, CreatePermissionRuleInput};
 use crate::agent::types::*;
 use crate::agent::tools::tool::ToolRegistry;
 use crate::agent::tools::builtin;
@@ -2522,6 +2522,42 @@ pub async fn approve_tool_call(
     }
 
     Ok(ApproveToolCallResponse { success: resolved })
+}
+
+#[tauri::command]
+pub async fn list_permission_rules(
+    state: State<'_, AppState>,
+) -> Result<Vec<PermissionRule>, Error> {
+    crate::safety::permissions::list_rules(&state.db)
+        .map_err(|e| Error::Internal(format!("list_permission_rules: {}", e)))
+}
+
+#[tauri::command]
+pub async fn create_permission_rule(
+    state: State<'_, AppState>,
+    input: CreatePermissionRuleInput,
+) -> Result<PermissionRule, Error> {
+    crate::safety::permissions::create_rule(&state.db, input)
+        .map_err(|e| Error::Internal(format!("create_permission_rule: {}", e)))
+}
+
+#[tauri::command]
+pub async fn delete_permission_rule(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<bool, Error> {
+    crate::safety::permissions::delete_rule(&state.db, &id)
+        .map_err(|e| Error::Internal(format!("delete_permission_rule: {}", e)))
+}
+
+#[tauri::command]
+pub async fn list_permission_audit(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<PermissionAuditEntry>, Error> {
+    crate::safety::permissions::list_audit(&state.db, session_id.as_deref(), limit.unwrap_or(100))
+        .map_err(|e| Error::Internal(format!("list_permission_audit: {}", e)))
 }
 
 // ─── Memory Graph Commands ──────────────────────────────────────────────

@@ -188,8 +188,8 @@ Track which V-number is claimed by which open PR before starting schema work:
 | V1–V10 | Initial schema → V10 messages_fts (unicode61) | merged |
 | V11 | trigram tokenizer for messages_fts + agent_turns_fts | **PR #33** (open) |
 | V12 | agent_messages_fts (trigram) + sync triggers + backfill | merged |
-| V13 | cost_records + indexes | **PR #37 plan** (P5, in flight) |
-| V14 | tool_permission_rules + permission_audit_log | **PR (this one)** |
+| V13 | cost_records + indexes | merged (PR #39) |
+| V14 | tool_permission_rules + permission_audit_log | merged (PR #41) |
 
 If you're adding a migration: pick the next number after both merged AND open PRs to avoid conflicts. Update this table in your PR.
 

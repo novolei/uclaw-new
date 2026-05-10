@@ -105,6 +105,10 @@ import type {
   DailyCostRollup,
   ModelCostRollup,
   SessionCostRollup,
+  // Permission rules
+  PermissionRule,
+  PermissionAuditEntry,
+  CreatePermissionRuleInput,
 } from './types';
 import type { Channel } from './chat-types';
 import type { RecentThread } from './agent-types';
@@ -1011,3 +1015,16 @@ export const getAutomationActivity = (specId: string, limit?: number): Promise<A
 // ─── Badge ────────────────────────────────────────────────────────────
 export const updateBadgeCount = (count: number): Promise<boolean> =>
   invoke<boolean>('update_badge_count', { count })
+
+// ─── Permission Rules ─────────────────────────────────────────────────
+export const listPermissionRules = (): Promise<PermissionRule[]> =>
+  invoke<PermissionRule[]>('list_permission_rules')
+
+export const createPermissionRule = (input: CreatePermissionRuleInput): Promise<PermissionRule> =>
+  invoke<PermissionRule>('create_permission_rule', { input })
+
+export const deletePermissionRule = (id: string): Promise<boolean> =>
+  invoke<boolean>('delete_permission_rule', { id })
+
+export const listPermissionAudit = (sessionId?: string, limit = 100): Promise<PermissionAuditEntry[]> =>
+  invoke<PermissionAuditEntry[]>('list_permission_audit', { sessionId, limit })

@@ -1040,3 +1040,34 @@ export interface SessionCostRollup {
   turnCount: number
   lastUsedAt: number
 }
+
+// ===== Permission rules =====
+
+export interface PermissionRule {
+  id: string
+  scope: 'session' | 'pattern'
+  sessionId?: string
+  toolName: string
+  /** For pattern scope: argument prefix to match. Undefined for session scope. */
+  target?: string
+  mode: 'allow' | 'block' | 'ask'
+  createdAt: number
+}
+
+export interface PermissionAuditEntry {
+  id: string
+  sessionId: string
+  toolName: string
+  argsHash: string
+  decision: 'auto_approve' | 'user_approve' | 'user_deny' | 'blocked'
+  ruleId?: string
+  createdAt: number
+}
+
+export interface CreatePermissionRuleInput {
+  scope: 'session' | 'pattern'
+  sessionId?: string
+  toolName: string
+  target?: string
+  mode: 'allow' | 'block' | 'ask'
+}

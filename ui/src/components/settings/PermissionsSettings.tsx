@@ -9,7 +9,7 @@
  */
 
 import * as React from 'react'
-import { ShieldCheck, ShieldAlert, ShieldOff, Trash2, Plus, RefreshCw } from 'lucide-react'
+import { Trash2, Plus, RefreshCw } from 'lucide-react'
 import {
   listPermissionRules,
   createPermissionRule,
