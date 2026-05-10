@@ -42,6 +42,26 @@ import { channelsAtom } from '@/atoms/chat-atoms'
 import { proactiveLearningEventsAtom } from '@/atoms/agent-atoms'
 import { ProactiveLearningChip } from '@/components/chat/ProactiveLearningChip'
 import { parseSkillCitations } from '@/lib/skill-citation'
+
+/**
+ * Normalise markdown heading markers that lack a preceding newline.
+ *
+ * Some LLMs (notably DeepSeek) output headings inline without the newline
+ * that markdown requires: "...text### Heading" instead of "...text\n### Heading".
+ * Without the newline, react-markdown treats the whole thing as a paragraph
+ * and renders the literal `###` characters instead of a formatted heading.
+ *
+ * We also handle list items (-, *, numbered) that run together in the same way.
+ */
+function normalizeAgentMarkdown(text: string): string {
+  // Insert newline before heading markers not already at line start.
+  let out = text.replace(/([^\n])(#{1,6} )/g, '$1\n$2')
+  // Insert newline before list item markers that run into prose.
+  out = out.replace(/([^\n])(\n?[-*] )/g, (_, pre, marker) =>
+    pre + '\n' + marker.trimStart()
+  )
+  return out
+}
 import { SkillCitationChips } from './SkillCitationChips'
 import { ScrollPositionManager } from '@/hooks/useScrollPositionMemory'
 import { cn } from '@/lib/utils'
@@ -624,7 +644,7 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
     // Parse skill citations once — used both to clean the body for
     // markdown render and to drive the chip row below MessageContent.
     const parsed = message.content
-      ? parseSkillCitations(message.content)
+      ? parseSkillCitations(normalizeAgentMarkdown(message.content))
       : { cleanedContent: '', citations: [] }
 
     return (
@@ -940,7 +960,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
                     </div>
                   )}
                   {smoothContent ? (() => {
-                    const { cleanedContent: streamCleanedContent, citations: streamCitations } = parseSkillCitations(smoothContent)
+                    const { cleanedContent: streamCleanedContent, citations: streamCitations } = parseSkillCitations(normalizeAgentMarkdown(smoothContent))
                     return (
                       <>
                         <MessageResponse basePath={sessionPath || undefined} basePaths={attachedDirs}>{streamCleanedContent}</MessageResponse>

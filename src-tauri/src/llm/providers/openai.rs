@@ -368,12 +368,14 @@ impl LlmProvider for OpenAIProvider {
                 tool_calls,
                 text,
                 thinking,
+                thinking_signature: None,
                 metadata,
             })
         } else {
             Ok(RespondOutput::Text {
                 text: text.unwrap_or_default(),
                 thinking,
+                thinking_signature: None,
                 metadata,
             })
         }
