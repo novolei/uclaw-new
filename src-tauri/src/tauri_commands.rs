@@ -2,6 +2,7 @@ use tauri::State;
 use crate::app::AppState;
 use crate::error::Error;
 use crate::ipc::*;
+use crate::ipc::{DailyCostRollup, ModelCostRollup, SessionCostRollup};
 use crate::agent::types::*;
 use crate::agent::tools::tool::ToolRegistry;
 use crate::agent::tools::builtin;
@@ -581,6 +582,118 @@ pub async fn list_recent_threads(state: State<'_, AppState>) -> Result<Vec<Recen
     Ok(out)
 }
 
+#[tauri::command]
+pub async fn get_daily_costs(
+    state: State<'_, AppState>,
+    days_back: Option<u32>,
+) -> Result<Vec<DailyCostRollup>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let days = days_back.unwrap_or(30).clamp(1, 365);
+    let cutoff_ms = chrono::Utc::now().timestamp_millis() - (days as i64) * 86_400_000;
+
+    // SQLite stores created_at as epoch-ms. Group by UTC YYYY-MM-DD.
+    let mut stmt = conn.prepare(
+        "SELECT
+            strftime('%Y-%m-%d', created_at / 1000, 'unixepoch') AS day,
+            SUM(input_tokens) AS in_tok,
+            SUM(output_tokens) AS out_tok,
+            SUM(cost_usd) AS cost,
+            COUNT(*) AS turns
+         FROM cost_records
+         WHERE created_at >= ?1
+         GROUP BY day
+         ORDER BY day ASC",
+    ).map_err(|e| Error::Internal(format!("prepare daily: {}", e)))?;
+
+    let rows = stmt.query_map(rusqlite::params![cutoff_ms], |row| {
+        Ok(DailyCostRollup {
+            day: row.get(0)?,
+            input_tokens: row.get(1)?,
+            output_tokens: row.get(2)?,
+            cost_usd: row.get(3)?,
+            turn_count: row.get(4)?,
+        })
+    }).map_err(|e| Error::Internal(format!("daily query: {}", e)))?;
+
+    Ok(rows.flatten().collect())
+}
+
+#[tauri::command]
+pub async fn get_model_costs(
+    state: State<'_, AppState>,
+    days_back: Option<u32>,
+) -> Result<Vec<ModelCostRollup>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let days = days_back.unwrap_or(30).clamp(1, 365);
+    let cutoff_ms = chrono::Utc::now().timestamp_millis() - (days as i64) * 86_400_000;
+
+    let mut stmt = conn.prepare(
+        "SELECT model,
+                SUM(input_tokens), SUM(output_tokens),
+                SUM(cost_usd), COUNT(*)
+         FROM cost_records
+         WHERE created_at >= ?1
+         GROUP BY model
+         ORDER BY cost_usd DESC"
+    ).map_err(|e| Error::Internal(format!("prepare model: {}", e)))?;
+
+    let rows = stmt.query_map(rusqlite::params![cutoff_ms], |row| {
+        Ok(ModelCostRollup {
+            model: row.get(0)?,
+            input_tokens: row.get(1)?,
+            output_tokens: row.get(2)?,
+            cost_usd: row.get(3)?,
+            turn_count: row.get(4)?,
+        })
+    }).map_err(|e| Error::Internal(format!("model query: {}", e)))?;
+
+    Ok(rows.flatten().collect())
+}
+
+#[tauri::command]
+pub async fn get_session_costs(
+    state: State<'_, AppState>,
+    days_back: Option<u32>,
+    limit: Option<u32>,
+) -> Result<Vec<SessionCostRollup>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let days = days_back.unwrap_or(30).clamp(1, 365);
+    let lim  = limit.unwrap_or(50).clamp(1, 500);
+    let cutoff_ms = chrono::Utc::now().timestamp_millis() - (days as i64) * 86_400_000;
+
+    // session_id may live in either `agent_sessions` (agent runs) or
+    // `conversations` (chat runs). Use COALESCE on the two title sources.
+    let mut stmt = conn.prepare(
+        "SELECT
+            cr.session_id,
+            COALESCE(s.title, c.title, '') AS title,
+            SUM(cr.input_tokens), SUM(cr.output_tokens),
+            SUM(cr.cost_usd), COUNT(*),
+            MAX(cr.created_at) AS last_used
+         FROM cost_records cr
+         LEFT JOIN agent_sessions s ON s.id = cr.session_id
+         LEFT JOIN conversations  c ON c.id = cr.session_id
+         WHERE cr.created_at >= ?1
+         GROUP BY cr.session_id
+         ORDER BY last_used DESC
+         LIMIT ?2"
+    ).map_err(|e| Error::Internal(format!("prepare session: {}", e)))?;
+
+    let rows = stmt.query_map(rusqlite::params![cutoff_ms, lim as i64], |row| {
+        Ok(SessionCostRollup {
+            session_id: row.get(0)?,
+            title: row.get(1)?,
+            input_tokens: row.get(2)?,
+            output_tokens: row.get(3)?,
+            cost_usd: row.get(4)?,
+            turn_count: row.get(5)?,
+            last_used_at: row.get(6)?,
+        })
+    }).map_err(|e| Error::Internal(format!("session query: {}", e)))?;
+
+    Ok(rows.flatten().collect())
+}
+
 /// Parse an `updated_at` string into epoch milliseconds. Accepts a bare i64-ms
 /// integer string (legacy agent format) or an RFC3339 timestamp; returns 0 on
 /// parse failure so unknown formats sort to the bottom rather than crashing.
@@ -704,13 +817,21 @@ pub async fn get_messages(state: State<'_, AppState>, input: GetMessagesInput) -
     for row in rows.flatten() {
         let (id, role, raw_content, reasoning, tool_activities_json, model, created_at) = row;
 
-        // content was stored as JSON of `Option<&Vec<ContentBlock>>`. Filter
-        // to text blocks for backward-compat with the in-memory join logic.
-        // Fall back to treating content as plain text if JSON parse fails.
-        let content_text: String = serde_json::from_str::<Option<Vec<ContentBlock>>>(&raw_content)
-            .ok()
-            .flatten()
-            .or_else(|| serde_json::from_str::<Vec<ContentBlock>>(&raw_content).ok())
+        // Parse `content` once. Two persisted shapes have been seen historically:
+        //   - JSON of Option<Vec<ContentBlock>> — written by add_message_with_meta
+        //     via serde_json::to_string(&session.messages.last().map(|m| &m.content))
+        //   - JSON of Vec<ContentBlock> — written by older code paths
+        //   - Plain text — pre-V5 rows
+        let parsed_blocks: Option<Vec<ContentBlock>> =
+            serde_json::from_str::<Option<Vec<ContentBlock>>>(&raw_content)
+                .ok()
+                .flatten()
+                .or_else(|| serde_json::from_str::<Vec<ContentBlock>>(&raw_content).ok());
+
+        // Flat text projection — joins all Text blocks. Used by the legacy
+        // renderer + minimap snippets.
+        let content_text: String = parsed_blocks
+            .as_ref()
             .map(|blocks| {
                 blocks.iter()
                     .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.clone()) } else { None })
@@ -732,6 +853,7 @@ pub async fn get_messages(state: State<'_, AppState>, input: GetMessagesInput) -
             reasoning,
             tool_activities,
             model,
+            content_blocks: parsed_blocks,
         });
     }
     Ok(out)
@@ -1271,8 +1393,169 @@ pub async fn search_conversations(state: State<'_, AppState>, input: SearchInput
         }
     }
 
+    // 4. Agent message FTS hits (agent_messages_fts.{content, reasoning}).
+    //    This is the user/assistant conversation in the agent domain — historically
+    //    unindexed, which made user prompts and assistant replies invisible to
+    //    search. agent_turns above only covers tool-call rows.
+    let mut stmt = conn.prepare(
+        "SELECT
+             am.id,
+             am.session_id,
+             COALESCE(s.title, '') AS title,
+             am.role,
+             snippet(agent_messages_fts, 2, '<b>', '</b>', '...', 16) AS snip_content,
+             snippet(agent_messages_fts, 3, '<b>', '</b>', '...', 16) AS snip_reasoning,
+             am.created_at,
+             bm25(agent_messages_fts) AS score
+         FROM agent_messages_fts f
+         JOIN agent_messages am ON am.rowid = f.rowid
+         LEFT JOIN agent_sessions s ON s.id = am.session_id
+         WHERE agent_messages_fts MATCH ?1
+         ORDER BY score
+         LIMIT 30",
+    ).map_err(|e| Error::Internal(format!("prepare agent_messages fts: {}", e)))?;
+    let agent_msg_rows = stmt.query_map(rusqlite::params![&fts_query], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, i64>(6)?,
+        ))
+    }).map_err(|e| Error::Internal(format!("agent_messages fts query: {}", e)))?;
+    for r in agent_msg_rows.flatten() {
+        let (msg_id, sess_id, title, _role, snip_c, snip_r, created_at) = r;
+        let snippet = [&snip_c, &snip_r]
+            .iter()
+            .find(|s| !s.is_empty() && **s != "...")
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "(no preview)".into());
+        results.push(SearchResult {
+            id: format!("agent_msg:{}", msg_id),
+            title,
+            snippet,
+            source: "agent_message".into(),
+            source_id: sess_id,
+            message_id: Some(msg_id),
+            created_at: created_at.to_string(),
+        });
+    }
+    drop(stmt);
+
+    // 5. Substring LIKE fallback over agent_messages.content + messages.content_text.
+    //    Trigram FTS requires queries of ≥3 codepoints; CJK 2-char queries
+    //    (e.g. "几点", "时间") return 0 from MATCH. LIKE handles those, plus
+    //    English short prefixes. Bounded scan — fine for desktop SQLite at the
+    //    sizes these tables reach.
+    let q_trimmed = input.query.trim();
+    if !q_trimmed.is_empty() {
+        let like_pattern = format!("%{}%", q_trimmed);
+
+        // Track what FTS already surfaced so we don't double-render the same
+        // message id in the palette.
+        let already_seen: std::collections::HashSet<String> = results.iter()
+            .filter_map(|r| r.message_id.as_ref().map(|m| format!("{}:{}", r.source, m)))
+            .collect();
+
+        // Agent messages
+        let mut stmt = conn.prepare(
+            "SELECT am.id, am.session_id, COALESCE(s.title, '') AS title,
+                    am.content, am.created_at
+             FROM agent_messages am
+             LEFT JOIN agent_sessions s ON s.id = am.session_id
+             WHERE am.content LIKE ?1 COLLATE NOCASE
+             ORDER BY am.created_at DESC
+             LIMIT 20"
+        ).map_err(|e| Error::Internal(format!("prepare agent_messages like: {}", e)))?;
+        let rows = stmt.query_map(rusqlite::params![&like_pattern], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        }).map_err(|e| Error::Internal(format!("agent_messages like query: {}", e)))?;
+        for r in rows.flatten() {
+            let (msg_id, sess_id, title, content, created_at) = r;
+            if already_seen.contains(&format!("agent_message:{}", msg_id)) { continue; }
+            // Build a windowed snippet around the first hit, mimicking FTS snippet().
+            let snippet = build_substring_snippet(&content, q_trimmed, 24);
+            results.push(SearchResult {
+                id: format!("agent_msg:{}", msg_id),
+                title,
+                snippet,
+                source: "agent_message".into(),
+                source_id: sess_id,
+                message_id: Some(msg_id),
+                created_at: created_at.to_string(),
+            });
+        }
+        drop(stmt);
+
+        // Chat messages — use content_text (V10 generated column).
+        let mut stmt = conn.prepare(
+            "SELECT m.id, m.conversation_id, COALESCE(c.title, '') AS title,
+                    m.content_text, m.created_at
+             FROM messages m
+             LEFT JOIN conversations c ON c.id = m.conversation_id
+             WHERE m.content_text LIKE ?1 COLLATE NOCASE
+             ORDER BY m.created_at DESC
+             LIMIT 20"
+        ).map_err(|e| Error::Internal(format!("prepare messages like: {}", e)))?;
+        let rows = stmt.query_map(rusqlite::params![&like_pattern], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        }).map_err(|e| Error::Internal(format!("messages like query: {}", e)))?;
+        for r in rows.flatten() {
+            let (msg_id, conv_id, title, content_text, created_at) = r;
+            if already_seen.contains(&format!("chat_message:{}", msg_id)) { continue; }
+            let snippet = build_substring_snippet(&content_text, q_trimmed, 24);
+            results.push(SearchResult {
+                id: format!("chat:{}", msg_id),
+                title,
+                snippet,
+                source: "chat_message".into(),
+                source_id: conv_id,
+                message_id: Some(msg_id),
+                created_at,
+            });
+        }
+        drop(stmt);
+    }
+
+    // Cap total results, prefer high-score hits already at the top of each batch
     results.truncate(30);
     Ok(results)
+}
+
+/// Build a short snippet around the first case-insensitive occurrence of
+/// `needle` in `text`, with `<b>` markers around the match. Mimics the
+/// shape FTS5's snippet() returns so the frontend can render uniformly.
+fn build_substring_snippet(text: &str, needle: &str, window: usize) -> String {
+    let lower = text.to_lowercase();
+    let lneedle = needle.to_lowercase();
+    let Some(byte_idx) = lower.find(&lneedle) else {
+        return text.chars().take(window * 2).collect::<String>();
+    };
+    // Convert byte_idx → char index for safe slicing on the original text.
+    let char_idx = lower[..byte_idx].chars().count();
+    let needle_chars = needle.chars().count();
+    let start = char_idx.saturating_sub(window);
+    let end = (char_idx + needle_chars + window).min(text.chars().count());
+    let prefix = if start > 0 { "..." } else { "" };
+    let suffix = if end < text.chars().count() { "..." } else { "" };
+    let pre: String = text.chars().take(char_idx).skip(start).collect();
+    let mid: String = text.chars().skip(char_idx).take(needle_chars).collect();
+    let post: String = text.chars().skip(char_idx + needle_chars).take(end - char_idx - needle_chars).collect();
+    format!("{}{}<b>{}</b>{}{}", prefix, pre, mid, post, suffix)
 }
 
 #[tauri::command]
@@ -2869,39 +3152,8 @@ pub async fn send_agent_message(
     // Persist user message
     let user_msg_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
-    let should_generate_title: bool;
     {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
-        // Trigger title generation if:
-        // 1. First message (message_count == 0), OR
-        // 2. No emoji has been set yet in metadata_json (previous attempt failed)
-        //    AND title_pending is not already true (no ongoing generation)
-        //    AND message_count is small (retry window: up to 5 messages)
-        let (message_count, metadata_json_opt): (i64, Option<String>) = conn.query_row(
-            "SELECT message_count, metadata_json FROM agent_sessions WHERE id = ?1",
-            rusqlite::params![input.session_id],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
-        ).unwrap_or((1, None));
-        // Parse metadata once
-        let meta: serde_json::Value = metadata_json_opt
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or(serde_json::Value::Null);
-        let emoji_in_meta = meta.get("emoji").and_then(|v| v.as_str()).unwrap_or("");
-        let title_in_meta = meta.get("title").and_then(|v| v.as_str()).unwrap_or("");
-        let title_pending = meta.get("title_pending").and_then(|v| v.as_bool()).unwrap_or(false);
-        // "No real title" means: no emoji, OR emoji is still the default placeholder
-        // ("💬") with title still "New session" — i.e. a previous attempt failed/used fallback.
-        let no_real_title = emoji_in_meta.is_empty()
-            || (emoji_in_meta == "💬" && (title_in_meta.is_empty() || title_in_meta == "New session"));
-        should_generate_title = !title_pending && no_real_title;
-        tracing::debug!(
-            session_id = %input.session_id,
-            message_count,
-            no_real_title,
-            should_generate_title,
-            "[title] trigger decision"
-        );
         let _ = conn.execute(
             "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'user',?3,?4)",
             rusqlite::params![user_msg_id, input.session_id, input.user_message, now],
@@ -2918,13 +3170,16 @@ pub async fn send_agent_message(
         "session_id": input.session_id,
     })).await;
 
-    // Fire-and-forget title generation when needed
-    if should_generate_title {
+    // Always regenerate title on every message (Steward-style): uses request_id to discard
+    // stale results when multiple messages arrive quickly.
+    {
         tracing::debug!(session_id = %input.session_id, "[title] spawning title generation");
+        let title_request_id = uuid::Uuid::new_v4().to_string();
         let llm_config_for_title = state.llm_config.read().await.clone();
         spawn_agent_session_title_summary(
             input.session_id.clone(),
             input.user_message.clone(),
+            title_request_id,
             Arc::clone(&state.db),
             Arc::clone(&state.provider_service),
             llm_config_for_title,
@@ -3205,6 +3460,14 @@ pub async fn get_agent_session_messages(
     let mut out: Vec<serde_json::Value> = Vec::with_capacity(messages.len());
     let mut prev_msg_ts: i64 = 0;
     for msg in &messages {
+        // Parse content as Vec<ContentBlock> for in-order rendering.
+        // Same fallback as get_messages; None for plain-text legacy rows.
+        let parsed_blocks: Option<Vec<ContentBlock>> =
+            serde_json::from_str::<Option<Vec<ContentBlock>>>(&msg.content)
+                .ok()
+                .flatten()
+                .or_else(|| serde_json::from_str::<Vec<ContentBlock>>(&msg.content).ok());
+
         let mut tool_activities: Option<serde_json::Value> = msg.tool_activities_json
             .as_deref()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
@@ -3247,7 +3510,7 @@ pub async fn get_agent_session_messages(
             }
         }
 
-        out.push(serde_json::json!({
+        let mut obj = serde_json::json!({
             "id": msg.id,
             "role": msg.role,
             "content": msg.content,
@@ -3255,7 +3518,16 @@ pub async fn get_agent_session_messages(
             "reasoning": msg.reasoning,
             "toolActivities": tool_activities,
             "model": msg.model,
-        }));
+        });
+        if let Some(blocks) = parsed_blocks.as_ref() {
+            if let Some(map) = obj.as_object_mut() {
+                map.insert(
+                    "contentBlocks".into(),
+                    serde_json::to_value(blocks).unwrap_or(serde_json::Value::Null),
+                );
+            }
+        }
+        out.push(obj);
         prev_msg_ts = msg.created_at;
     }
 
@@ -3649,16 +3921,18 @@ const AGENT_TITLE_SYSTEM_RETRY: &str = r#"你是一个会话标题生成器。
 fn spawn_agent_session_title_summary(
     session_id: String,
     first_message: String,
+    request_id: String,
     db: std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
     provider_service: std::sync::Arc<crate::providers::service::ProviderService>,
     llm_config_legacy: crate::config::LlmConfig,
     app_handle: tauri::AppHandle,
 ) {
-    // Merge title_pending into existing metadata (don't overwrite other keys)
+    // Merge title_pending + request_id into metadata (don't overwrite other keys)
     {
         if let Ok(conn) = db.lock() {
             let mut updates = serde_json::Map::new();
             updates.insert("title_pending".to_string(), serde_json::json!(true));
+            updates.insert("title_request_id".to_string(), serde_json::json!(request_id));
             merge_agent_session_meta(&conn, &session_id, &updates);
         }
     }
@@ -3794,8 +4068,33 @@ fn spawn_agent_session_title_summary(
             }
         }
 
+        // Race check: discard this result if a newer title request has already started
+        let is_current_request = {
+            if let Ok(conn) = db.lock() {
+                let meta_str: Option<String> = conn.query_row(
+                    "SELECT metadata_json FROM agent_sessions WHERE id = ?1",
+                    rusqlite::params![session_id],
+                    |row| row.get(0),
+                ).ok().flatten();
+                let meta: serde_json::Value = meta_str
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or(serde_json::Value::Null);
+                meta.get("title_request_id")
+                    .and_then(|v| v.as_str())
+                    .map(|rid| rid == request_id)
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        };
+
+        if !is_current_request {
+            tracing::debug!(session_id = %session_id, "[title] discarding stale result (newer request active)");
+            return;
+        }
+
         if let Some((title, emoji)) = result {
-            // SUCCESS: persist emoji + title so future trigger checks see no_emoji_yet = false
             if let Ok(conn) = db.lock() {
                 let mut updates = serde_json::Map::new();
                 updates.insert("title".to_string(), serde_json::json!(title));
@@ -3816,14 +4115,12 @@ fn spawn_agent_session_title_summary(
                 },
             );
         } else {
-            // FAILURE: clear title_pending but do NOT write emoji — so the next
-            // message will see no_emoji_yet = true and trigger a retry.
+            // FAILURE: clear pending; next message will spawn a new generation attempt
             if let Ok(conn) = db.lock() {
                 let mut updates = serde_json::Map::new();
                 updates.insert("title_pending".to_string(), serde_json::json!(false));
                 merge_agent_session_meta(&conn, &session_id, &updates);
             }
-            // Emit a "New session" fallback so the UI stops the skeleton animation
             let _ = app_handle.emit(
                 "session:title-updated",
                 SessionTitleUpdatePayload {
@@ -4126,5 +4423,127 @@ mod fts_query_tests {
         assert_eq!(parse_scope(Some("workspace:foo")), None);
         assert_eq!(parse_scope(Some("")), None);
         assert_eq!(parse_scope(None), None);
+    }
+}
+
+#[cfg(test)]
+mod cost_rollup_tests {
+    use rusqlite::Connection;
+
+    /// Apply just the V13 schema to an in-memory DB so tests don't need
+    /// the full migration chain.
+    fn fresh_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V13_COST_RECORDS).unwrap();
+        // Minimal stub for the COALESCE join in get_session_costs.
+        conn.execute_batch(
+            "CREATE TABLE agent_sessions (id TEXT PRIMARY KEY, title TEXT);
+             CREATE TABLE conversations  (id TEXT PRIMARY KEY, title TEXT);"
+        ).unwrap();
+        conn
+    }
+
+    fn insert_cost(
+        conn: &Connection,
+        session_id: &str,
+        model: &str,
+        input_tokens: i64,
+        output_tokens: i64,
+        cost_usd: f64,
+        created_at: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO cost_records (id, session_id, model, input_tokens, output_tokens, cost_usd, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                uuid::Uuid::new_v4().to_string(),
+                session_id, model, input_tokens, output_tokens, cost_usd, created_at,
+            ],
+        ).unwrap();
+    }
+
+    #[test]
+    fn daily_rollup_groups_by_day() {
+        let conn = fresh_db();
+        // Two rows on day A, one on day B.
+        let day_a = 1_715_000_000_000_i64; // some fixed epoch ms
+        let day_b = day_a + 86_400_000;
+        insert_cost(&conn, "s1", "claude-4", 100, 50, 0.001, day_a);
+        insert_cost(&conn, "s1", "claude-4", 200, 80, 0.002, day_a);
+        insert_cost(&conn, "s2", "gpt-4o",   500, 100, 0.005, day_b);
+
+        let mut stmt = conn.prepare(
+            "SELECT strftime('%Y-%m-%d', created_at / 1000, 'unixepoch'),
+                    SUM(input_tokens), SUM(output_tokens), SUM(cost_usd), COUNT(*)
+             FROM cost_records
+             GROUP BY 1 ORDER BY 1"
+        ).unwrap();
+        let rows: Vec<(String, i64, i64, f64, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(rows.len(), 2);
+        // Day A — 300 input, 130 output, 0.003 cost, 2 turns
+        assert_eq!(rows[0].1, 300);
+        assert_eq!(rows[0].2, 130);
+        assert!((rows[0].3 - 0.003).abs() < 1e-9);
+        assert_eq!(rows[0].4, 2);
+        // Day B — 500/100/0.005/1
+        assert_eq!(rows[1].1, 500);
+        assert_eq!(rows[1].4, 1);
+    }
+
+    #[test]
+    fn model_rollup_sums_per_model() {
+        let conn = fresh_db();
+        let now = 1_715_000_000_000_i64;
+        insert_cost(&conn, "s1", "claude-4", 100, 50, 0.001, now);
+        insert_cost(&conn, "s2", "claude-4", 200, 80, 0.003, now);
+        insert_cost(&conn, "s3", "gpt-4o",   500, 100, 0.010, now);
+
+        let mut stmt = conn.prepare(
+            "SELECT model, SUM(input_tokens), SUM(output_tokens), SUM(cost_usd), COUNT(*)
+             FROM cost_records GROUP BY model ORDER BY cost_usd DESC"
+        ).unwrap();
+        let rows: Vec<(String, i64, i64, f64, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .unwrap().flatten().collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "gpt-4o"); // higher spend first
+        assert_eq!(rows[0].4, 1);
+        assert_eq!(rows[1].0, "claude-4");
+        assert_eq!(rows[1].1, 300);
+        assert_eq!(rows[1].4, 2);
+    }
+
+    #[test]
+    fn session_rollup_uses_coalesced_title() {
+        let conn = fresh_db();
+        conn.execute("INSERT INTO agent_sessions VALUES ('s1', 'Agent run alpha')", []).unwrap();
+        conn.execute("INSERT INTO conversations  VALUES ('c1', 'Chat about beta')", []).unwrap();
+        let now = 1_715_000_000_000_i64;
+        insert_cost(&conn, "s1", "claude-4", 100, 50, 0.001, now);
+        insert_cost(&conn, "c1", "gpt-4o",   200, 80, 0.002, now);
+        insert_cost(&conn, "unknown", "qwen", 50, 25, 0.0001, now);
+
+        let mut stmt = conn.prepare(
+            "SELECT cr.session_id,
+                    COALESCE(s.title, c.title, '') AS title,
+                    SUM(cr.cost_usd), MAX(cr.created_at)
+             FROM cost_records cr
+             LEFT JOIN agent_sessions s ON s.id = cr.session_id
+             LEFT JOIN conversations  c ON c.id = cr.session_id
+             GROUP BY cr.session_id"
+        ).unwrap();
+        let mut titles: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let _ = stmt.query_map([], |r| {
+            titles.insert(r.get::<_, String>(0)?, r.get::<_, String>(1)?);
+            Ok(())
+        }).unwrap().for_each(|_| ());
+        assert_eq!(titles.get("s1").map(|s| s.as_str()), Some("Agent run alpha"));
+        assert_eq!(titles.get("c1").map(|s| s.as_str()), Some("Chat about beta"));
+        assert_eq!(titles.get("unknown").map(|s| s.as_str()), Some("")); // empty fallback
     }
 }

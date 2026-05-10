@@ -438,23 +438,13 @@ AFTER DELETE ON messages BEGIN
 END;
 ";
 
-/// V11: switch FTS tokenizer from `unicode61` to `trigram`.
+/// V11: switch FTS tokenizer from `unicode61` to `trigram` for messages_fts
+/// and agent_turns_fts.
 ///
-/// Why trigram:
-///   * Substring match within tokens — `gomo` finds `gomoku` without `*`.
-///   * CJK works naturally — `unicode61` treats Chinese runs as one token,
-///     trigram splits into 3-char shingles so `五子棋` matches anywhere.
-///   * Multi-word queries get FTS5's implicit AND between whitespace-
-///     separated terms, so `rules gomoku` matches both orderings.
-///
-/// Cost: ~3× index size. Acceptable for a desktop SQLite. Both tables are
-/// external-content (`content='messages'` / `content='agent_turns'`), so
-/// the FTS shadow has zero text bytes of its own — only postings.
-///
-/// We must DROP + recreate (FTS5 can't ALTER a tokenizer).
+/// Drops + recreates both tables (FTS5 has no ALTER tokenizer). Backfills
+/// from messages and agent_turns. Trigram gives substring + CJK + multi-
+/// word implicit AND. Cost: ~3× index size — acceptable for desktop SQLite.
 pub const V11_FTS_TRIGRAM: &str = "
--- Drop old triggers + tables. The data lives in messages / agent_turns and
--- is preserved.
 DROP TRIGGER IF EXISTS messages_fts_insert;
 DROP TRIGGER IF EXISTS messages_fts_update;
 DROP TRIGGER IF EXISTS messages_fts_delete;
@@ -465,7 +455,6 @@ DROP TRIGGER IF EXISTS agent_turns_fts_update;
 DROP TRIGGER IF EXISTS agent_turns_fts_delete;
 DROP TABLE IF EXISTS agent_turns_fts;
 
--- Recreate messages_fts with trigram tokenizer.
 CREATE VIRTUAL TABLE messages_fts USING fts5(
     conversation_id UNINDEXED,
     role UNINDEXED,
@@ -496,7 +485,6 @@ AFTER DELETE ON messages BEGIN
   VALUES ('delete', old.rowid, old.conversation_id, old.role, old.content_text, old.reasoning);
 END;
 
--- Recreate agent_turns_fts with trigram tokenizer.
 CREATE VIRTUAL TABLE agent_turns_fts USING fts5(
     session_id UNINDEXED,
     content,
@@ -528,7 +516,6 @@ AFTER DELETE ON agent_turns BEGIN
 END;
 ";
 
-/// Backfill query for the recreated FTS tables. Run after V11 DDL.
 pub const V11_BACKFILL_MESSAGES: &str = "
 INSERT INTO messages_fts(rowid, conversation_id, role, content_text, reasoning)
 SELECT rowid, conversation_id, role, content_text, reasoning FROM messages
@@ -537,6 +524,55 @@ SELECT rowid, conversation_id, role, content_text, reasoning FROM messages
 pub const V11_BACKFILL_AGENT_TURNS: &str = "
 INSERT INTO agent_turns_fts(rowid, session_id, content, tool_result, reasoning)
 SELECT rowid, session_id, content, tool_result, reasoning FROM agent_turns
+";
+
+/// V12: agent_messages FTS so the agent-domain conversation is searchable.
+pub const V12_AGENT_MESSAGES_FTS: &str = "
+CREATE VIRTUAL TABLE IF NOT EXISTS agent_messages_fts USING fts5(
+    session_id UNINDEXED,
+    role UNINDEXED,
+    content,
+    reasoning,
+    content='agent_messages',
+    content_rowid='rowid',
+    tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS agent_messages_fts_insert
+AFTER INSERT ON agent_messages BEGIN
+  INSERT INTO agent_messages_fts(rowid, session_id, role, content, reasoning)
+  VALUES (new.rowid, new.session_id, new.role, new.content, new.reasoning);
+END;
+
+CREATE TRIGGER IF NOT EXISTS agent_messages_fts_update
+AFTER UPDATE ON agent_messages BEGIN
+  INSERT INTO agent_messages_fts(agent_messages_fts, rowid, session_id, role, content, reasoning)
+  VALUES ('delete', old.rowid, old.session_id, old.role, old.content, old.reasoning);
+  INSERT INTO agent_messages_fts(rowid, session_id, role, content, reasoning)
+  VALUES (new.rowid, new.session_id, new.role, new.content, new.reasoning);
+END;
+
+CREATE TRIGGER IF NOT EXISTS agent_messages_fts_delete
+AFTER DELETE ON agent_messages BEGIN
+  INSERT INTO agent_messages_fts(agent_messages_fts, rowid, session_id, role, content, reasoning)
+  VALUES ('delete', old.rowid, old.session_id, old.role, old.content, old.reasoning);
+END;
+";
+
+/// V13: per-turn cost records for the usage dashboard.
+pub const V13_COST_RECORDS: &str = "
+CREATE TABLE IF NOT EXISTS cost_records (
+    id            TEXT PRIMARY KEY,
+    session_id    TEXT NOT NULL,
+    model         TEXT NOT NULL,
+    input_tokens  INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd      REAL NOT NULL DEFAULT 0,
+    created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cost_records_created ON cost_records(created_at);
+CREATE INDEX IF NOT EXISTS idx_cost_records_session ON cost_records(session_id);
+CREATE INDEX IF NOT EXISTS idx_cost_records_model   ON cost_records(model);
 ";
 
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
@@ -599,8 +635,6 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
         [],
     );
     // V11: re-tokenize FTS5 with trigram for CJK + substring + typo-resilience.
-    // Idempotent because the migration drops + recreates; backfill uses
-    // INSERT … SELECT into the freshly-empty external-content shadow.
     tracing::debug!("Running migration V11: FTS trigram tokenizer");
     for stmt in V11_FTS_TRIGRAM.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
@@ -612,6 +646,29 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     }
     if let Err(e) = conn.execute(V11_BACKFILL_AGENT_TURNS, []) {
         tracing::warn!("V11 agent_turns backfill failed: {}", e);
+    }
+    // V12: agent_messages FTS so the agent-domain conversation is searchable.
+    tracing::debug!("Running migration V12: agent_messages FTS");
+    for stmt in V12_AGENT_MESSAGES_FTS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V12 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    if let Err(e) = conn.execute(
+        "INSERT INTO agent_messages_fts(rowid, session_id, role, content, reasoning)
+         SELECT rowid, session_id, role, content, reasoning
+         FROM agent_messages
+         WHERE rowid NOT IN (SELECT rowid FROM agent_messages_fts)",
+        [],
+    ) {
+        tracing::warn!("V12 agent_messages backfill failed: {}", e);
+    }
+    // V13: per-turn cost records for the usage dashboard.
+    tracing::debug!("Running migration V13: cost records");
+    for stmt in V13_COST_RECORDS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V13 stmt skipped: {} :: {}", e, stmt);
+        }
     }
     tracing::info!("Database migrations complete");
     Ok(())

@@ -34,6 +34,7 @@ import { Button } from '@/components/ui/button'
 import { getModelLogo, resolveModelDisplayName } from '@/lib/model-logo'
 import { ToolActivityList } from './ToolActivityItem'
 import { ThinkingBlock } from './ContentBlock'
+import { NativeBlockRenderer } from './NativeBlockRenderer'
 import { ChatToolActivityIndicator } from '@/components/chat/ChatToolActivityIndicator'
 import { userProfileAtom } from '@/atoms/user-profile'
 import { tabMinimapCacheAtom } from '@/atoms/tab-atoms'
@@ -539,30 +540,39 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
           logo={<AssistantLogo model={message.model} />}
         />
         <MessageContent>
-          {/* 历史消息的 thinking block — 从持久化的 reasoning 字段渲染 */}
-          {message.reasoning && (
-            <div className="mb-3">
-              <ThinkingBlock
-                block={{ type: 'thinking', thinking: message.reasoning } as any}
-                dimmed={false}
-              />
-            </div>
-          )}
-          {/* 历史消息工具调用 — 优先用 message.toolActivities（chat 格式，PR #5 持久化的）；
-              若为空则把从 events 提取的 agent 格式转换为 chat 格式，统一用
-              ChatToolActivityIndicator 渲染（🔧 工具名 + 折叠结果卡片）。 */}
-          {(message.toolActivities && message.toolActivities.length > 0) ? (
-            <div className="mb-3">
-              <ChatToolActivityIndicator activities={message.toolActivities} />
-            </div>
-          ) : toolActivities.length > 0 ? (
-            <div className="mb-3">
-              <ChatToolActivityIndicator activities={agentActivitiesToChatActivities(toolActivities)} />
-            </div>
-          ) : null}
-          <ToolResultInlineImages activities={toolActivities} />
-          {message.content && (
-            <MessageResponse basePath={sessionPath || undefined} basePaths={attachedDirs}>{message.content}</MessageResponse>
+          {message.contentBlocks && message.contentBlocks.length > 0 ? (
+            <NativeBlockRenderer
+              blocks={message.contentBlocks}
+              conversationId={message.sessionId}
+            />
+          ) : (
+            <>
+              {/* 历史消息的 thinking block — 从持久化的 reasoning 字段渲染 */}
+              {message.reasoning && (
+                <div className="mb-3">
+                  <ThinkingBlock
+                    block={{ type: 'thinking', thinking: message.reasoning } as any}
+                    dimmed={false}
+                  />
+                </div>
+              )}
+              {/* 历史消息工具调用 — 优先用 message.toolActivities（chat 格式，PR #5 持久化的）；
+                  若为空则把从 events 提取的 agent 格式转换为 chat 格式，统一用
+                  ChatToolActivityIndicator 渲染（🔧 工具名 + 折叠结果卡片）。 */}
+              {(message.toolActivities && message.toolActivities.length > 0) ? (
+                <div className="mb-3">
+                  <ChatToolActivityIndicator activities={message.toolActivities} />
+                </div>
+              ) : toolActivities.length > 0 ? (
+                <div className="mb-3">
+                  <ChatToolActivityIndicator activities={agentActivitiesToChatActivities(toolActivities)} />
+                </div>
+              ) : null}
+              <ToolResultInlineImages activities={toolActivities} />
+              {message.content && (
+                <MessageResponse basePath={sessionPath || undefined} basePaths={attachedDirs}>{message.content}</MessageResponse>
+              )}
+            </>
           )}
         </MessageContent>
         {/* 操作栏：左侧靠左排列 */}

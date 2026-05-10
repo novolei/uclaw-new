@@ -34,6 +34,10 @@ export interface PrimaChatMessage {
   toolActivities?: ChatToolActivity[]
   attachments?: FileAttachment[]
   createdAt: number
+  /** Original ordered ContentBlocks. When present, the renderer uses
+   *  NativeBlockRenderer for in-order display. Falls back to the flat
+   *  `content` + `reasoning` + `toolActivities` path when absent. */
+  contentBlocks?: ContentBlock[]
 }
 
 /** ChatMessage — Proma 组件使用的消息类型（兼容别名） */
@@ -48,6 +52,10 @@ export interface ChatMessage {
   toolActivities?: ChatToolActivity[]
   attachments?: FileAttachment[]
   createdAt: number
+  /** Original ordered ContentBlocks. When present, the renderer uses
+   *  NativeBlockRenderer for in-order display. Falls back to the flat
+   *  `content` + `reasoning` + `toolActivities` path when absent. */
+  contentBlocks?: ContentBlock[]
 }
 
 /** 文件附件 */
@@ -81,6 +89,18 @@ export interface ChatToolActivity {
   error?: string
   durationMs?: number
 }
+
+// ===== Native content blocks =====
+//
+// Mirrors the Rust `ContentBlock` enum at `src-tauri/src/agent/types.rs:55`.
+// Serde tags the variant via `type` and uses snake_case, so the wire format
+// is e.g. `{ "type": "tool_use", "id": "...", "name": "...", "input": {...} }`.
+
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'thinking'; thinking: string }
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
 
 /** 渠道模型 */
 export interface ChannelModel {

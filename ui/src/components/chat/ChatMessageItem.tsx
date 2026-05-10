@@ -36,6 +36,7 @@ import { channelsAtom } from '@/atoms/chat-atoms'
 import type { ChatMessage } from '@/lib/chat-types'
 import type { InlineEditSubmitPayload } from './InlineEditForm'
 import { ChatToolActivityIndicator } from './ChatToolActivityIndicator'
+import { NativeBlockRenderer } from '@/components/agent/NativeBlockRenderer'
 
 // 重导出供外部使用
 export type { InlineEditSubmitPayload } from './InlineEditForm'
@@ -141,6 +142,12 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
 
         <MessageContent className={isInlineEditing ? 'w-full' : undefined}>
           {message.role === 'assistant' ? (
+            message.contentBlocks && message.contentBlocks.length > 0 ? (
+              <NativeBlockRenderer
+                blocks={message.contentBlocks}
+                conversationId={conversationId}
+              />
+            ) : (
             <>
               {message.toolActivities && message.toolActivities.length > 0 && (
                 <ChatToolActivityIndicator activities={message.toolActivities} />
@@ -180,6 +187,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
                 <MessageAttachments attachments={message.attachments} />
               )}
             </>
+            )
           ) : (
             <>
               {!isInlineEditing && message.attachments && message.attachments.length > 0 && (

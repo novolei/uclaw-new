@@ -188,7 +188,7 @@ export default function WelcomeView(): React.ReactElement {
                     onClick={() => handleSelectSession(session)}
                     className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-muted/60 transition-colors text-left group"
                   >
-                    <span className="text-[15px] leading-none flex-shrink-0">💬</span>
+                    <span className="text-[15px] leading-none flex-shrink-0">{session.titleEmoji || '💬'}</span>
                     <span className="flex-1 min-w-0 text-[13px] text-foreground/80 group-hover:text-foreground truncate">
                       {session.title}
                     </span>

@@ -1012,3 +1012,31 @@ export interface LearnedSkill {
   usageCount: number;
   createdAt: string;
 }
+
+// ===== Cost dashboard =====
+
+export interface DailyCostRollup {
+  day: string // YYYY-MM-DD
+  inputTokens: number
+  outputTokens: number
+  costUsd: number
+  turnCount: number
+}
+
+export interface ModelCostRollup {
+  model: string
+  inputTokens: number
+  outputTokens: number
+  costUsd: number
+  turnCount: number
+}
+
+export interface SessionCostRollup {
+  sessionId: string
+  title: string
+  inputTokens: number
+  outputTokens: number
+  costUsd: number
+  turnCount: number
+  lastUsedAt: number
+}

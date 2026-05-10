@@ -139,6 +139,13 @@ pub struct MessageResponse {
     /// Model identifier used for the assistant turn, e.g. "deepseek-v4-flash".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Original ordered ContentBlocks parsed from `messages.content`.
+    /// `None` for legacy plain-text rows or rows that fail to parse.
+    /// When `Some`, the frontend renders via NativeBlockRenderer for
+    /// in-order display; when `None`, falls back to flat `content` +
+    /// `reasoning` + `tool_activities`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_blocks: Option<Vec<crate::agent::types::ContentBlock>>,
 }
 
 // ─── Spaces ────────────────────────────────────────────────────────────
@@ -801,4 +808,41 @@ pub struct MemoryGraphUpdateNodeInput {
 #[serde(rename_all = "camelCase")]
 pub struct MemoryGraphDeleteNodeInput {
     pub node_id: String,
+}
+
+// ─── Cost dashboard ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyCostRollup {
+    /// `YYYY-MM-DD` (UTC).
+    pub day: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cost_usd: f64,
+    pub turn_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCostRollup {
+    pub model: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cost_usd: f64,
+    pub turn_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCostRollup {
+    pub session_id: String,
+    /// Joined session title from `agent_sessions`/`conversations`. Empty if unknown.
+    pub title: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cost_usd: f64,
+    pub turn_count: i64,
+    /// Most-recent record's created_at (epoch ms).
+    pub last_used_at: i64,
 }

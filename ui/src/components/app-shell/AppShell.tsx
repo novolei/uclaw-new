@@ -87,12 +87,12 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
       case 'search_hit': {
         const h = payload.hit
         // existing PR #29 behavior — open the session and scroll to the message
-        const tabType = h.source === 'agent_turn' ? 'agent' : 'chat'
+        const tabType = (h.source === 'agent_turn' || h.source === 'agent_message') ? 'agent' : 'chat'
         const result = openTab(tabs, { type: tabType, sessionId: h.sourceId, title: '' })
         setTabs(result.tabs)
         setActiveTabId(result.activeTabId)
-        setAppMode(h.source === 'agent_turn' ? 'agent' : 'chat')
-        if (h.source === 'agent_turn') setCurrentAgentSessionId(h.sourceId)
+        setAppMode((h.source === 'agent_turn' || h.source === 'agent_message') ? 'agent' : 'chat')
+        if ((h.source === 'agent_turn' || h.source === 'agent_message')) setCurrentAgentSessionId(h.sourceId)
         else setCurrentConversationId(h.sourceId)
         // Look up workspace from agent sessions if available
         const session = agentSessions.find((s) => s.id === h.sourceId)
