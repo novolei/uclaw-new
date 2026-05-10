@@ -120,11 +120,13 @@ impl ChatDelegate {
     /// Build the effective system prompt including memory context, the user's
     /// uclaw.md (workspace-level), Karpathy baseline, and mode-specific
     /// guardrails. Reads uclaw.md on every call (small file, OS cache).
-    fn effective_system_prompt(&self) -> String {
+    ///
+    /// `effective_mode` should be the current resolved SafetyMode — usually
+    /// the global policy mode (or the per-session override when set). Caller
+    /// resolves it before invoking; we don't read SafetyManager here because
+    /// this method is sync and called from the LLM hot path.
+    fn effective_system_prompt(&self, effective_mode: &SafetyMode) -> String {
         let memory_block = self.memory_context.as_deref().filter(|s| !s.is_empty());
-        let mode = self.safety_mode.clone().unwrap_or_default();
-        // Karpathy + uclaw.md + mode prompt composition. The "user_global_base"
-        // here is the existing system_prompt + memory context if any.
         let base_with_memory = match memory_block {
             Some(ctx) => format!("{}\n\n{}", self.system_prompt, ctx),
             None => self.system_prompt.clone(),
@@ -132,8 +134,18 @@ impl ChatDelegate {
         crate::agent::mode_prompts::compose_system_prompt(
             &base_with_memory,
             self.workspace_root.as_deref(),
-            &mode,
+            effective_mode,
         )
+    }
+
+    /// Resolve the effective SafetyMode for this call: per-session override
+    /// (dispatcher's `safety_mode` field) wins; otherwise read the global
+    /// policy mode from SafetyManager.
+    async fn resolve_effective_mode(&self) -> SafetyMode {
+        if let Some(m) = self.safety_mode.as_ref() {
+            return m.clone();
+        }
+        self.safety_manager.read().await.policy().global_mode.clone()
     }
 
     /// Returns a cloneable handle that can be used to signal the loop to stop.
@@ -365,7 +377,16 @@ impl LoopDelegate for ChatDelegate {
         reason_ctx: &mut ReasoningContext,
         _iteration: usize,
     ) -> Result<RespondOutput, Error> {
-        let mut messages = vec![ChatMessage::system(&self.effective_system_prompt())];
+        // Resolve mode once (per-session override > global policy) so the
+        // system prompt actually reflects the user's chosen mode. Without
+        // this, dispatcher.safety_mode is None for normal sessions and the
+        // composer falls through to Supervised default — meaning Plan/Ask/
+        // Bypass/AcceptEdits prompt additions would never reach the LLM,
+        // and the agent never learns it should call exit_plan_mode etc.
+        let effective_mode = self.resolve_effective_mode().await;
+        let effective_prompt = self.effective_system_prompt(&effective_mode);
+
+        let mut messages = vec![ChatMessage::system(&effective_prompt)];
         messages.extend(reason_ctx.messages.clone());
 
         let tools = if reason_ctx.force_text {
@@ -373,8 +394,6 @@ impl LoopDelegate for ChatDelegate {
         } else {
             self.tools.list_definitions()
         };
-
-        let effective_prompt = self.effective_system_prompt();
         let config = crate::llm::CompletionConfig {
             model: self.model.clone(),
             max_tokens: 8192,
