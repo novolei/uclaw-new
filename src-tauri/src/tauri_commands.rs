@@ -1216,9 +1216,169 @@ pub async fn search_conversations(state: State<'_, AppState>, input: SearchInput
     }
     drop(stmt);
 
+    // 4. Agent message FTS hits (agent_messages_fts.{content, reasoning}).
+    //    This is the user/assistant conversation in the agent domain — historically
+    //    unindexed, which made user prompts and assistant replies invisible to
+    //    search. agent_turns above only covers tool-call rows.
+    let mut stmt = conn.prepare(
+        "SELECT
+             am.id,
+             am.session_id,
+             COALESCE(s.title, '') AS title,
+             am.role,
+             snippet(agent_messages_fts, 2, '<b>', '</b>', '...', 16) AS snip_content,
+             snippet(agent_messages_fts, 3, '<b>', '</b>', '...', 16) AS snip_reasoning,
+             am.created_at,
+             bm25(agent_messages_fts) AS score
+         FROM agent_messages_fts f
+         JOIN agent_messages am ON am.rowid = f.rowid
+         LEFT JOIN agent_sessions s ON s.id = am.session_id
+         WHERE agent_messages_fts MATCH ?1
+         ORDER BY score
+         LIMIT 30",
+    ).map_err(|e| Error::Internal(format!("prepare agent_messages fts: {}", e)))?;
+    let agent_msg_rows = stmt.query_map(rusqlite::params![&fts_query], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, i64>(6)?,
+        ))
+    }).map_err(|e| Error::Internal(format!("agent_messages fts query: {}", e)))?;
+    for r in agent_msg_rows.flatten() {
+        let (msg_id, sess_id, title, _role, snip_c, snip_r, created_at) = r;
+        let snippet = [&snip_c, &snip_r]
+            .iter()
+            .find(|s| !s.is_empty() && **s != "...")
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "(no preview)".into());
+        results.push(SearchResult {
+            id: format!("agent_msg:{}", msg_id),
+            title,
+            snippet,
+            source: "agent_message".into(),
+            source_id: sess_id,
+            message_id: Some(msg_id),
+            created_at: created_at.to_string(),
+        });
+    }
+    drop(stmt);
+
+    // 5. Substring LIKE fallback over agent_messages.content + messages.content_text.
+    //    Trigram FTS requires queries of ≥3 codepoints; CJK 2-char queries
+    //    (e.g. "几点", "时间") return 0 from MATCH. LIKE handles those, plus
+    //    English short prefixes. Bounded scan — fine for desktop SQLite at the
+    //    sizes these tables reach.
+    let q_trimmed = input.query.trim();
+    if !q_trimmed.is_empty() {
+        let like_pattern = format!("%{}%", q_trimmed);
+
+        // Track what FTS already surfaced so we don't double-render the same
+        // message id in the palette.
+        let already_seen: std::collections::HashSet<String> = results.iter()
+            .filter_map(|r| r.message_id.as_ref().map(|m| format!("{}:{}", r.source, m)))
+            .collect();
+
+        // Agent messages
+        let mut stmt = conn.prepare(
+            "SELECT am.id, am.session_id, COALESCE(s.title, '') AS title,
+                    am.content, am.created_at
+             FROM agent_messages am
+             LEFT JOIN agent_sessions s ON s.id = am.session_id
+             WHERE am.content LIKE ?1 COLLATE NOCASE
+             ORDER BY am.created_at DESC
+             LIMIT 20"
+        ).map_err(|e| Error::Internal(format!("prepare agent_messages like: {}", e)))?;
+        let rows = stmt.query_map(rusqlite::params![&like_pattern], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        }).map_err(|e| Error::Internal(format!("agent_messages like query: {}", e)))?;
+        for r in rows.flatten() {
+            let (msg_id, sess_id, title, content, created_at) = r;
+            if already_seen.contains(&format!("agent_message:{}", msg_id)) { continue; }
+            // Build a windowed snippet around the first hit, mimicking FTS snippet().
+            let snippet = build_substring_snippet(&content, q_trimmed, 24);
+            results.push(SearchResult {
+                id: format!("agent_msg:{}", msg_id),
+                title,
+                snippet,
+                source: "agent_message".into(),
+                source_id: sess_id,
+                message_id: Some(msg_id),
+                created_at: created_at.to_string(),
+            });
+        }
+        drop(stmt);
+
+        // Chat messages — use content_text (V10 generated column).
+        let mut stmt = conn.prepare(
+            "SELECT m.id, m.conversation_id, COALESCE(c.title, '') AS title,
+                    m.content_text, m.created_at
+             FROM messages m
+             LEFT JOIN conversations c ON c.id = m.conversation_id
+             WHERE m.content_text LIKE ?1 COLLATE NOCASE
+             ORDER BY m.created_at DESC
+             LIMIT 20"
+        ).map_err(|e| Error::Internal(format!("prepare messages like: {}", e)))?;
+        let rows = stmt.query_map(rusqlite::params![&like_pattern], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        }).map_err(|e| Error::Internal(format!("messages like query: {}", e)))?;
+        for r in rows.flatten() {
+            let (msg_id, conv_id, title, content_text, created_at) = r;
+            if already_seen.contains(&format!("chat_message:{}", msg_id)) { continue; }
+            let snippet = build_substring_snippet(&content_text, q_trimmed, 24);
+            results.push(SearchResult {
+                id: format!("chat:{}", msg_id),
+                title,
+                snippet,
+                source: "chat_message".into(),
+                source_id: conv_id,
+                message_id: Some(msg_id),
+                created_at,
+            });
+        }
+        drop(stmt);
+    }
+
     // Cap total results, prefer high-score hits already at the top of each batch
     results.truncate(30);
     Ok(results)
+}
+
+/// Build a short snippet around the first case-insensitive occurrence of
+/// `needle` in `text`, with `<b>` markers around the match. Mimics the
+/// shape FTS5's snippet() returns so the frontend can render uniformly.
+fn build_substring_snippet(text: &str, needle: &str, window: usize) -> String {
+    let lower = text.to_lowercase();
+    let lneedle = needle.to_lowercase();
+    let Some(byte_idx) = lower.find(&lneedle) else {
+        return text.chars().take(window * 2).collect::<String>();
+    };
+    // Convert byte_idx → char index for safe slicing on the original text.
+    let char_idx = lower[..byte_idx].chars().count();
+    let needle_chars = needle.chars().count();
+    let start = char_idx.saturating_sub(window);
+    let end = (char_idx + needle_chars + window).min(text.chars().count());
+    let prefix = if start > 0 { "..." } else { "" };
+    let suffix = if end < text.chars().count() { "..." } else { "" };
+    let pre: String = text.chars().take(char_idx).skip(start).collect();
+    let mid: String = text.chars().skip(char_idx).take(needle_chars).collect();
+    let post: String = text.chars().skip(char_idx + needle_chars).take(end - char_idx - needle_chars).collect();
+    format!("{}{}<b>{}</b>{}{}", prefix, pre, mid, post, suffix)
 }
 
 #[tauri::command]

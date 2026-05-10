@@ -438,6 +438,49 @@ AFTER DELETE ON messages BEGIN
 END;
 ";
 
+/// V12: FTS5 index over agent_messages content for the global search palette.
+///
+/// agent_messages stores user/assistant conversation as plain text in `content`
+/// (no JSON wrapping like the chat `messages` table). The previous FTS coverage
+/// only indexed `messages` (chat domain) and `agent_turns` (tool-call rows whose
+/// `content` is empty), leaving the actual agent conversation content
+/// unsearchable — searching for a question the user asked or an assistant reply
+/// only matched the session title.
+///
+/// Uses trigram tokenizer so CJK content + substring match work without any
+/// additional client-side preprocessing.
+pub const V12_AGENT_MESSAGES_FTS: &str = "
+CREATE VIRTUAL TABLE IF NOT EXISTS agent_messages_fts USING fts5(
+    session_id UNINDEXED,
+    role UNINDEXED,
+    content,
+    reasoning,
+    content='agent_messages',
+    content_rowid='rowid',
+    tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS agent_messages_fts_insert
+AFTER INSERT ON agent_messages BEGIN
+  INSERT INTO agent_messages_fts(rowid, session_id, role, content, reasoning)
+  VALUES (new.rowid, new.session_id, new.role, new.content, new.reasoning);
+END;
+
+CREATE TRIGGER IF NOT EXISTS agent_messages_fts_update
+AFTER UPDATE ON agent_messages BEGIN
+  INSERT INTO agent_messages_fts(agent_messages_fts, rowid, session_id, role, content, reasoning)
+  VALUES ('delete', old.rowid, old.session_id, old.role, old.content, old.reasoning);
+  INSERT INTO agent_messages_fts(rowid, session_id, role, content, reasoning)
+  VALUES (new.rowid, new.session_id, new.role, new.content, new.reasoning);
+END;
+
+CREATE TRIGGER IF NOT EXISTS agent_messages_fts_delete
+AFTER DELETE ON agent_messages BEGIN
+  INSERT INTO agent_messages_fts(agent_messages_fts, rowid, session_id, role, content, reasoning)
+  VALUES ('delete', old.rowid, old.session_id, old.role, old.content, old.reasoning);
+END;
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -497,6 +540,26 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
          WHERE rowid NOT IN (SELECT rowid FROM messages_fts)",
         [],
     );
+    // V12: agent_messages FTS so the actual agent-domain conversation
+    // (user prompts + assistant replies) is searchable. Previous FTS coverage
+    // only indexed `messages` (chat domain) and `agent_turns` (tool calls),
+    // leaving the agent conversation itself unsearchable.
+    tracing::debug!("Running migration V12: agent_messages FTS");
+    for stmt in V12_AGENT_MESSAGES_FTS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V12 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // Backfill: pull every existing agent_messages row into the new FTS table.
+    if let Err(e) = conn.execute(
+        "INSERT INTO agent_messages_fts(rowid, session_id, role, content, reasoning)
+         SELECT rowid, session_id, role, content, reasoning
+         FROM agent_messages
+         WHERE rowid NOT IN (SELECT rowid FROM agent_messages_fts)",
+        [],
+    ) {
+        tracing::warn!("V12 agent_messages backfill failed: {}", e);
+    }
     tracing::info!("Database migrations complete");
     Ok(())
 }
