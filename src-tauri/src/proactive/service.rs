@@ -664,6 +664,15 @@ impl ProactiveService {
                                     // Tauri IPC 发射到前端
                                     let summary = extract_summary_text(&llm_response);
                                     let session_id = refs.last_active_session_id.read().await.clone();
+                                    // Diagnostic: surface the sessionId we tag the
+                                    // event with so we can correlate with the
+                                    // frontend's filter when chips don't show.
+                                    tracing::info!(
+                                        items_extracted,
+                                        session_id = ?session_id,
+                                        scenario = "skill_extraction",
+                                        "Emitting agent:proactive-learning IPC event"
+                                    );
                                     if let Some(ref handle) = refs.app_handle {
                                         let _ = handle.emit("agent:proactive-learning", serde_json::json!({
                                             "scenario": "skill_extraction",
@@ -724,6 +733,12 @@ impl ProactiveService {
                                                     _ => "conversation_learning",
                                                 };
                                                 let session_id = refs.last_active_session_id.read().await.clone();
+                                                tracing::info!(
+                                                    items_extracted = result.items_extracted,
+                                                    session_id = ?session_id,
+                                                    scenario = scenario_key,
+                                                    "Emitting agent:proactive-learning IPC event"
+                                                );
                                                 if let Some(ref handle) = refs.app_handle {
                                                     let _ = handle.emit("agent:proactive-learning", serde_json::json!({
                                                         "scenario": scenario_key,

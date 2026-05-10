@@ -386,6 +386,15 @@ function startAgentListeners(store: Store): void {
   // agent:proactive-learning → prepend to events list (cap at 10)
   reg(
     listen<ProactiveLearningEvent>('agent:proactive-learning', ({ payload }) => {
+      // Diagnostic: log every received event so we can correlate with
+      // backend emit logs when the chip doesn't show. Includes
+      // sessionId so we can spot filter mismatches.
+      console.info('[proactive-learning] received', {
+        scenario: payload.scenario,
+        items: payload.items_extracted,
+        sessionId: payload.sessionId,
+        timestamp: payload.timestamp,
+      })
       store.set(proactiveLearningEventsAtom, (prev) =>
         [payload, ...prev].slice(0, 10)
       )
