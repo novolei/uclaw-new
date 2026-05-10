@@ -3820,6 +3820,68 @@ pub async fn delete_workspace(
     Ok(())
 }
 
+// ─── Workspace uclaw.md ────────────────────────────────────────────────
+
+fn active_workspace_root(state: &AppState) -> Option<std::path::PathBuf> {
+    // Use the active workspace setting; fall back to data_dir/workspace if unset.
+    // Real workspace lookup is in workspace/ mod; for v1 we use the same
+    // resolution dispatcher uses.
+    let conn = state.db.lock().ok()?;
+    let id: String = conn.query_row(
+        "SELECT value FROM settings WHERE key = 'active_workspace_id'",
+        [],
+        |row| row.get::<_, String>(0),
+    ).ok()?;
+    drop(conn);
+    let conn = state.db.lock().ok()?;
+    conn.query_row(
+        "SELECT path FROM spaces WHERE id = ?1",
+        rusqlite::params![id],
+        |row| row.get::<_, Option<String>>(0),
+    ).ok().flatten().map(std::path::PathBuf::from)
+}
+
+#[tauri::command]
+pub async fn read_workspace_uclaw_md(state: State<'_, AppState>) -> Result<String, Error> {
+    let Some(root) = active_workspace_root(&state) else {
+        return Ok(String::new());
+    };
+    let path = root.join("uclaw.md");
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(Error::Internal(format!("read uclaw.md: {}", e))),
+    }
+}
+
+#[tauri::command]
+pub async fn write_workspace_uclaw_md(
+    state: State<'_, AppState>,
+    content: String,
+) -> Result<(), Error> {
+    let root = active_workspace_root(&state)
+        .ok_or_else(|| Error::InvalidInput("No active workspace".into()))?;
+    if !root.exists() {
+        std::fs::create_dir_all(&root).map_err(|e| Error::Io(e))?;
+    }
+    let path = root.join("uclaw.md");
+    std::fs::write(&path, content).map_err(|e| Error::Io(e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn read_default_prompts() -> Result<crate::ipc::DefaultPromptsResponse, Error> {
+    use crate::agent::mode_prompts;
+    use crate::safety::SafetyMode;
+    Ok(crate::ipc::DefaultPromptsResponse {
+        baseline: mode_prompts::KARPATHY_BASELINE.to_string(),
+        mode_ask: mode_prompts::mode_addition(&SafetyMode::Ask).to_string(),
+        mode_accept_edits: mode_prompts::mode_addition(&SafetyMode::AcceptEdits).to_string(),
+        mode_plan: mode_prompts::mode_addition(&SafetyMode::Plan).to_string(),
+        mode_bypass: mode_prompts::mode_addition(&SafetyMode::Yolo).to_string(),
+    })
+}
+
 // ─── Trajectory Commands ────────────────────────────────────────────────────
 
 #[tauri::command]

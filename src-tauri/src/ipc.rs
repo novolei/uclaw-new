@@ -891,3 +891,15 @@ pub struct CreatePermissionRuleInput {
     pub target: Option<String>,
     pub mode: String,
 }
+
+// ─── Default prompts (for Settings → 提示词 read-only preview) ─────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DefaultPromptsResponse {
+    pub baseline: String,
+    pub mode_ask: String,
+    pub mode_accept_edits: String,
+    pub mode_plan: String,
+    pub mode_bypass: String,
+}
