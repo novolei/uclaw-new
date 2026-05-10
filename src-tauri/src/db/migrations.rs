@@ -575,6 +575,48 @@ CREATE INDEX IF NOT EXISTS idx_cost_records_session ON cost_records(session_id);
 CREATE INDEX IF NOT EXISTS idx_cost_records_model   ON cost_records(model);
 ";
 
+/// V14: tool permission rules + audit log.
+///
+/// `tool_permission_rules` extends the existing safety_policy.json model
+/// (which stays as the "global tier") with two new scopes:
+///   - 'session' — only for the named session_id; cleared on session delete
+///   - 'pattern' — for tools whose first-arg / command matches `target` as a
+///     simple prefix (kept simple on purpose; regex is YAGNI)
+/// Resolution precedence in safety/permissions.rs: session > pattern > tool > global.
+///
+/// `permission_audit_log` records every decision the resolver makes so the
+/// settings UI can show a per-session table.
+pub const V14_PERMISSION_TABLES: &str = "
+CREATE TABLE IF NOT EXISTS tool_permission_rules (
+    id          TEXT PRIMARY KEY,
+    scope       TEXT NOT NULL CHECK(scope IN ('session', 'pattern')),
+    session_id  TEXT,
+    tool_name   TEXT NOT NULL,
+    target      TEXT,
+    mode        TEXT NOT NULL CHECK(mode IN ('allow', 'block', 'ask')),
+    created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_permission_rules_session
+    ON tool_permission_rules(session_id, tool_name);
+CREATE INDEX IF NOT EXISTS idx_tool_permission_rules_pattern
+    ON tool_permission_rules(scope, tool_name)
+    WHERE scope = 'pattern';
+
+CREATE TABLE IF NOT EXISTS permission_audit_log (
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    tool_name   TEXT NOT NULL,
+    args_hash   TEXT NOT NULL,
+    decision    TEXT NOT NULL CHECK(decision IN ('auto_approve', 'user_approve', 'user_deny', 'blocked')),
+    rule_id     TEXT,
+    created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_permission_audit_session ON permission_audit_log(session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_permission_audit_tool    ON permission_audit_log(tool_name, created_at DESC);
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -668,6 +710,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V13_COST_RECORDS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V13 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V14: per-session + pattern rules + audit log.
+    tracing::debug!("Running migration V14: permission tables");
+    for stmt in V14_PERMISSION_TABLES.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V14 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
