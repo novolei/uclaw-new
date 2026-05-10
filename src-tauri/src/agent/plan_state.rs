@@ -27,6 +27,14 @@ use std::time::{Duration, SystemTime};
 ///   - all steps are marked `- [x]`
 pub fn pending_plan_steps(workspace_root: Option<&Path>, recent_secs: u64) -> Option<usize> {
     let root = workspace_root?;
+    // Defensive: an empty PathBuf joins into a relative path ("" + ".uclaw/plans"
+    // → ".uclaw/plans") which would resolve against the binary's CWD instead of
+    // the user's workspace. This was a real bug — see active_workspace_root in
+    // tauri_commands.rs for the upstream fix. We also reject it here so any
+    // future caller can't silently regress the guard.
+    if root.as_os_str().is_empty() {
+        return None;
+    }
     let plans_dir = root.join(".uclaw").join("plans");
     let entries = std::fs::read_dir(&plans_dir).ok()?;
 
@@ -98,6 +106,15 @@ mod tests {
     #[test]
     fn returns_none_for_missing_workspace() {
         assert_eq!(pending_plan_steps(None, 300), None);
+    }
+
+    #[test]
+    fn returns_none_for_empty_pathbuf() {
+        // Regression: spaces.path was empty string in the user's DB, which
+        // produced PathBuf::from("") and made read_dir resolve a bogus
+        // relative path. The guard MUST treat empty PathBuf as None.
+        let empty = std::path::PathBuf::from("");
+        assert_eq!(pending_plan_steps(Some(empty.as_path()), 300), None);
     }
 
     #[test]
