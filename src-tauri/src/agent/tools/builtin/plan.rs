@@ -178,9 +178,26 @@ impl Tool for PlanUpdateTool {
         }));
 
         let duration = start.elapsed().as_millis() as u64;
-        Ok(ToolOutput::success(
-            &format!("Step {} updated in {}", step_index, safe_filename),
-            duration,
-        ))
+        // When marking done, append an honesty reminder to the tool result so
+        // the LLM doesn't use plan_update as a shortcut to "complete" steps it
+        // didn't actually execute. Observed in the wild: agent calls
+        // mkdir + ls + plan_update(done:true) for a "build the game engine"
+        // step without ever calling write_file. The reminder makes the LLM
+        // re-check itself and prevents the plan-aware termination guard from
+        // being bypassed by fake completions.
+        let result_text = if done {
+            format!(
+                "Step {} marked DONE in {}.\n\n\
+                 IMPORTANT: plan_update is a bookkeeping tool. It does NOT execute work. \
+                 If this step required code changes (writing files, editing, running commands), \
+                 you must have already called edit / write_file / bash to actually do that work. \
+                 If you haven't, undo this update (call plan_update again with done:false) and \
+                 perform the actual work first. Users see code on disk, not plan checkmarks.",
+                step_index, safe_filename
+            )
+        } else {
+            format!("Step {} marked NOT DONE in {}", step_index, safe_filename)
+        };
+        Ok(ToolOutput::success(&result_text, duration))
     }
 }

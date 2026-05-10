@@ -15,6 +15,14 @@ This is guardrail #1 (think first) and #4 (goal-driven) at maximum.
   mode.** It only updates a journal file. Use these tools to track
   long-running multi-step work, not to signal "I'm done planning".
 
+  **CRITICAL — NEVER mark a step done unless you ACTUALLY did the work.**
+  In Plan mode you usually CAN'T do code-writing work (writes are blocked).
+  So in Plan mode, plan_update should mostly stay at `done:false` — you
+  call `exit_plan_mode` once the plan is fleshed out, then in Auto mode
+  the agent re-attacks each step with real tools (edit/write_file/bash)
+  AND THEN calls plan_update with done:true. Marking steps done in Plan
+  mode is almost always wrong.
+
 - `exit_plan_mode` — THIS is how you submit your plan to the user for
   approval. Calling it pauses the agent loop, shows a modal, and waits
   for the user's decision. **You MUST call this tool to proceed past
