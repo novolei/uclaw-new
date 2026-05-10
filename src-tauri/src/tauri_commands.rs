@@ -3845,22 +3845,37 @@ pub async fn delete_workspace(
 // ─── Workspace uclaw.md ────────────────────────────────────────────────
 
 fn active_workspace_root(state: &AppState) -> Option<std::path::PathBuf> {
-    // Use the active workspace setting; fall back to data_dir/workspace if unset.
-    // Real workspace lookup is in workspace/ mod; for v1 we use the same
-    // resolution dispatcher uses.
-    let conn = state.db.lock().ok()?;
-    let id: String = conn.query_row(
-        "SELECT value FROM settings WHERE key = 'active_workspace_id'",
-        [],
-        |row| row.get::<_, String>(0),
-    ).ok()?;
-    drop(conn);
-    let conn = state.db.lock().ok()?;
-    conn.query_row(
-        "SELECT path FROM spaces WHERE id = ?1",
-        rusqlite::params![id],
-        |row| row.get::<_, Option<String>>(0),
-    ).ok().flatten().map(std::path::PathBuf::from)
+    // Active workspace path resolution. Order of preference:
+    //   1. spaces.path for the active_workspace_id (if non-empty)
+    //   2. AppState.workspace_root (the real on-disk default, ~/Documents/workground)
+    //
+    // Why fall back: spaces rows can have empty `path` (legacy workspaces created
+    // before the path column was populated). Without the fallback, downstream
+    // consumers that join paths onto the result silently produce relative paths
+    // ("" + ".uclaw/plans" → ".uclaw/plans") that resolve from the binary's CWD,
+    // not the user's workspace. This was the root cause of plan_state's
+    // pending_plan_steps returning None even when a fresh plan with `- [ ]`
+    // steps existed — the guard never saw the file because read_dir was looking
+    // in the wrong directory. Symptom: agent loops terminate mid-plan despite
+    // the plan-aware termination heuristic.
+    let path_from_db: Option<std::path::PathBuf> = (|| {
+        let conn = state.db.lock().ok()?;
+        let id: String = conn.query_row(
+            "SELECT value FROM settings WHERE key = 'active_workspace_id'",
+            [],
+            |row| row.get::<_, String>(0),
+        ).ok()?;
+        drop(conn);
+        let conn = state.db.lock().ok()?;
+        let raw: Option<String> = conn.query_row(
+            "SELECT path FROM spaces WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get::<_, Option<String>>(0),
+        ).ok().flatten();
+        // Reject empty / whitespace-only paths so they don't shadow the fallback.
+        raw.filter(|s| !s.trim().is_empty()).map(std::path::PathBuf::from)
+    })();
+    path_from_db.or_else(|| Some(state.workspace_root.clone()))
 }
 
 #[tauri::command]
