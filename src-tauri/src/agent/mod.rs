@@ -1,4 +1,5 @@
 pub mod agentic_loop;
+pub mod code_rescue;
 pub mod context;
 pub mod dispatcher;
 pub mod mode_prompts;

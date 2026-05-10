@@ -155,6 +155,80 @@ pub async fn run_agentic_loop(
                         delegate.after_iteration(iteration).await;
                         continue;
                     }
+                    // Dispatcher detected a condition (length truncation, pending plan steps,
+                    // etc.) and wants to inject a nudge. The dispatcher must NOT push the
+                    // assistant message itself — we own that here to avoid double-push.
+                    TextAction::ContinueWithNudge(nudge) => {
+                        let mut blocks = Vec::new();
+                        if let Some(ref t) = thinking {
+                            if !t.is_empty() {
+                                blocks.push(ContentBlock::Thinking { thinking: t.clone() });
+                            }
+                        }
+                        blocks.push(ContentBlock::Text { text: text.clone() });
+                        reason_ctx.messages.push(ChatMessage {
+                            role: MessageRole::Assistant,
+                            content: blocks,
+                        });
+                        reason_ctx.messages.push(ChatMessage::user(&nudge));
+                        delegate.after_iteration(iteration).await;
+                        continue;
+                    }
+                    // The model outputted file content as markdown text instead of calling
+                    // write_file. Dispatcher extracted synthetic ToolCalls from the code
+                    // blocks. Route them through the full tool execution path (safety,
+                    // approval, events) just like model-initiated calls.
+                    TextAction::RescueWithToolCalls(synthetic_calls) => {
+                        // Build the assistant message: text content + synthetic tool_use
+                        // blocks so the API sees a valid tool_use → tool_result exchange.
+                        let mut blocks = Vec::new();
+                        if let Some(ref t) = thinking {
+                            if !t.is_empty() {
+                                blocks.push(ContentBlock::Thinking { thinking: t.clone() });
+                            }
+                        }
+                        blocks.push(ContentBlock::Text { text: text.clone() });
+                        for tc in &synthetic_calls {
+                            blocks.push(ContentBlock::ToolUse {
+                                id: tc.id.clone(),
+                                name: tc.name.clone(),
+                                input: tc.arguments.clone(),
+                            });
+                        }
+                        reason_ctx.messages.push(ChatMessage {
+                            role: MessageRole::Assistant,
+                            content: blocks,
+                        });
+
+                        match delegate.execute_tool_calls(synthetic_calls, reason_ctx).await {
+                            Ok(Some(outcome)) => {
+                                reason_ctx.thread_state = match &outcome {
+                                    LoopOutcome::NeedApproval {
+                                        tool_name,
+                                        tool_call_id,
+                                        parameters,
+                                    } => ThreadState::AwaitingApproval {
+                                        tool_name: tool_name.clone(),
+                                        tool_id: tool_call_id.clone(),
+                                        arguments: parameters.clone(),
+                                    },
+                                    _ => ThreadState::Completed,
+                                };
+                                delegate.after_iteration(iteration).await;
+                                return outcome;
+                            }
+                            Ok(None) => {
+                                delegate.after_iteration(iteration).await;
+                                continue;
+                            }
+                            Err(e) => {
+                                tracing::error!("Rescue tool execution failed: {}", e);
+                                reason_ctx.thread_state =
+                                    ThreadState::Failed { error: e.to_string() };
+                                return LoopOutcome::Failure { error: e.to_string() };
+                            }
+                        }
+                    }
                 }
             }
 

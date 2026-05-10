@@ -4233,6 +4233,15 @@ pub async fn browser_shutdown(
     Ok(true)
 }
 
+#[tauri::command]
+pub async fn browser_take_screenshot(
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<String, Error> {
+    let result = state.browser_service.screenshot(&tab_id).await?;
+    Ok(result.data)
+}
+
 // ─── System Tray / Badge Commands (Phase 3) ─────────────────────────────────
 
 #[tauri::command]

@@ -13,14 +13,17 @@ import {
   currentAgentSessionIdAtom,
   agentSessionsAtom,
   proactiveLearningEventsAtom,
+  sessionBrowserPreviewMapAtom,
   type AgentStreamState,
   type ProactiveLearningEvent,
   type AgentStreamErrorPayload,
+  type BrowserPreviewState,
 } from '@/atoms/agent-atoms'
 import { workspaceSessionsAtom, updateSessionTitleAtom, type WorkspaceSession } from '@/atoms/workspace'
 import { tabsAtom } from '@/atoms/tab-atoms'
 import type { AgentSessionMeta } from '@/lib/agent-types'
 import type { TabItem } from '@/atoms/tab-atoms'
+import { browserTakeScreenshot } from '@/lib/tauri-bridge'
 
 function createInitialStreamState(): AgentStreamState {
   return {
@@ -82,6 +85,21 @@ function startAgentListeners(store: Store): void {
         if (!prev.has(sid)) return prev
         const next = new Set(prev)
         next.delete(sid)
+        return next
+      })
+    })
+  )
+
+  // agent:stream-reset → backend is retrying a failed stream from scratch;
+  // clear accumulated content so duplicate tokens don't pile up.
+  reg(
+    listen<{ conversationId: string; timestamp: string }>('agent:stream-reset', ({ payload }) => {
+      const sid = payload.conversationId
+      store.set(agentStreamingStatesAtom, (prev) => {
+        const existing = prev.get(sid)
+        if (!existing) return prev
+        const next = new Map(prev)
+        next.set(sid, { ...existing, content: '', reasoning: '' })
         return next
       })
     })
@@ -217,6 +235,80 @@ function startAgentListeners(store: Store): void {
         next.set(sid, { ...existing, toolActivities: activities })
         return next
       })
+    })
+  )
+
+  // browser tool events → update per-session browser preview overlay
+  reg(
+    listen<{ conversationId: string; activity: any }>('chat:stream-tool-activity', ({ payload }) => {
+      const sid = payload.conversationId
+      const ev = payload.activity
+      if (ev.type !== 'tool_result') return
+      const toolName: string = ev.toolName ?? ''
+      if (toolName !== 'browser_navigate' && toolName !== 'browser_screenshot') return
+
+      // ToolOutput::success wraps the text as { ok: true, content: "..." }.
+      // Extract the inner content string regardless of whether result is already
+      // a plain string or the wrapped object form.
+      const rawResult = ev.result
+      const contentStr: string =
+        typeof rawResult === 'string'
+          ? rawResult
+          : (rawResult?.content ?? rawResult?.output ?? JSON.stringify(rawResult ?? ''))
+
+      let resolvedTabId: string | null = null
+
+      store.set(sessionBrowserPreviewMapAtom, (prev) => {
+        const existing: BrowserPreviewState = prev.get(sid) ?? {
+          url: null, tabId: null, screenshotData: null, visible: true, minimized: false,
+        }
+        let next = { ...existing, visible: true }
+
+        if (toolName === 'browser_navigate' && !ev.isError) {
+          // contentStr: "Navigated to <url>. tab_id=..."
+          const urlMatch = contentStr.match(/Navigated to (\S+?)\.?\s/)
+          if (urlMatch) next = { ...next, url: urlMatch[1] }
+          const tabMatch = contentStr.match(/tab_id=(\S+)/)
+          if (tabMatch) {
+            next = { ...next, tabId: tabMatch[1] }
+            resolvedTabId = tabMatch[1]
+          }
+        } else if (toolName === 'browser_screenshot' && !ev.isError) {
+          // ToolOutput::new → result is { ok, width, height, data } directly.
+          // Also handle legacy string-wrapped form just in case.
+          const data: string | undefined =
+            rawResult?.data ??
+            (() => { try { return JSON.parse(contentStr)?.data } catch { return undefined } })()
+          if (data) next = { ...next, screenshotData: data }
+        }
+
+        const map = new Map(prev)
+        map.set(sid, next)
+        return map
+      })
+
+      // After a successful navigate, auto-capture screenshots so the preview
+      // tracks the page without the agent needing to call browser_screenshot.
+      // Take two: one at 1.2 s (first paint) and one at 3.5 s (fully loaded).
+      if (toolName === 'browser_navigate' && !ev.isError && resolvedTabId) {
+        const tabId = resolvedTabId
+        const updateScreenshot = (delay: number) =>
+          new Promise<void>((resolve) =>
+            setTimeout(() => {
+              browserTakeScreenshot(tabId).then((data) => {
+                store.set(sessionBrowserPreviewMapAtom, (prev) => {
+                  const existing = prev.get(sid)
+                  if (!existing) return prev
+                  const map = new Map(prev)
+                  map.set(sid, { ...existing, screenshotData: data })
+                  return map
+                })
+                resolve()
+              }).catch(() => resolve())
+            }, delay)
+          )
+        updateScreenshot(1200).then(() => updateScreenshot(3500))
+      }
     })
   )
 

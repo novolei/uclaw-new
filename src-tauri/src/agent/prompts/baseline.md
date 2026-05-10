@@ -26,3 +26,17 @@
    tool that actually does the work (`edit`, `write_file`, `bash`, etc.)
    and verified it succeeded. The user sees the artifacts on disk,
    not your checkmarks. If the artifact is missing, the step is not done.
+
+6. NEVER OUTPUT FILE CONTENT AS TEXT. To create or modify a file you
+   MUST call `write_file` or `edit`. Putting code or file content in
+   your reply text does NOT create or modify any file — the user cannot
+   use text output as actual code. Always call the tool, never describe
+   what you would write.
+
+7. FOR LARGE FILES, WRITE IN CHUNKS. A single tool call can hold roughly
+   250-300 lines before hitting output limits. For larger files: call
+   `write_file` with the first 250-300 lines, then call `write_file`
+   again (or `edit`) for each subsequent section. Never attempt to write
+   an 800-line file in one shot — it will be truncated. Plan how many
+   chunks you need before you start, then execute them one tool call at
+   a time.

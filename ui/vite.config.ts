@@ -12,6 +12,12 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    fs: {
+      // node_modules is a symlink to the parent project; Vite resolves symlinks
+      // before checking the allow-list, so the real path falls outside the
+      // worktree root and fonts/assets get blocked. Allow the symlink target.
+      allow: ['.', path.resolve(__dirname, 'node_modules')],
+    },
   },
   build: {
     outDir: '../static',

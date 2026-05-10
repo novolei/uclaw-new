@@ -108,6 +108,22 @@ pub struct ReasoningContext {
     /// a logged warning (so genuine corner cases like "I did the work in a
     /// way the heuristic doesn't recognize" don't loop forever).
     pub mutation_challenges_issued: usize,
+    /// How many consecutive text responses ended with finish_reason=length.
+    /// Resets to 0 on any successful tool call. Used to escalate from a
+    /// generic "call write_file" nudge to a chunked-writing strategy after
+    /// repeated truncations (the file is simply too large for one shot).
+    pub consecutive_length_truncations: usize,
+    /// Partial code block being accumulated across finish_reason=length
+    /// responses. Stores (language_tag, content_so_far). When the model
+    /// continues a truncated response, we prepend this fence+content before
+    /// running code-block rescue, so a block split across multiple responses
+    /// can still be rescued as a complete write_file call.
+    pub partial_code_buffer: Option<(String, String)>,
+    /// How many consecutive times the plan-guard nudge fired without the
+    /// model making a tool call in response. Resets to 0 on any tool call.
+    /// After MAX_PLAN_GUARD_NUDGES, the guard gives up and returns the
+    /// response as-is to avoid infinite text-only loops.
+    pub consecutive_plan_guard_nudges: usize,
 }
 
 impl ReasoningContext {
@@ -121,6 +137,9 @@ impl ReasoningContext {
             total_output_tokens: 0,
             mutations_since_last_plan_done: 0,
             mutation_challenges_issued: 0,
+            consecutive_length_truncations: 0,
+            partial_code_buffer: None,
+            consecutive_plan_guard_nudges: 0,
         }
     }
 
@@ -329,6 +348,15 @@ pub enum LoopOutcome {
 pub enum TextAction {
     Return(LoopOutcome),
     Continue,
+    /// Like Continue, but agentic_loop will append the assistant turn and inject
+    /// this nudge as a user message before the next iteration. The dispatcher must
+    /// NOT push the assistant message itself — the loop owns that responsibility.
+    ContinueWithNudge(String),
+    /// The text response contained complete code block(s) that were rescued into
+    /// synthetic write_file ToolCalls. The loop should append the assistant turn
+    /// (text + synthetic tool_use blocks), execute the calls through the normal
+    /// tool path (including safety approval), then continue.
+    RescueWithToolCalls(Vec<ToolCall>),
 }
 
 // ─── Loop Delegate Trait ───────────────────────────────────────────────
@@ -372,7 +400,7 @@ impl Default for AgenticLoopConfig {
         Self {
             max_iterations: 50,
             enable_tool_intent_nudge: true,
-            max_tool_intent_nudges: 2,
+            max_tool_intent_nudges: 4,
             max_truncations: 3,
             token_budget: 128_000,
             compression_threshold: 0.80,
@@ -384,7 +412,9 @@ impl Default for AgenticLoopConfig {
 
 // ─── Constants ─────────────────────────────────────────────────────────
 
-pub const TOOL_INTENT_NUDGE: &str = "You mentioned an action — if you intended to use a tool, please re-invoke it. Otherwise, continue your response.";
+pub const TOOL_INTENT_NUDGE: &str = "You described an action but did not call any tool. \
+    Call the tool NOW — do not return text describing what you will do. \
+    Use write_file to write code, edit to modify an existing file, or bash to run a command.";
 
 /// Detect LLM signalling tool intent without actually calling a tool
 // ─── Reflection Types ──────────────────────────────────────────────────
@@ -428,6 +458,11 @@ pub struct ReflectionMessage {
 /// the model gets one challenge then must either provide evidence in
 /// `note` or call a real mutating tool.
 pub const MAX_MUTATION_CHALLENGES: usize = 2;
+
+/// How many times the plan-guard nudge may fire consecutively without a tool
+/// call response before the guard gives up and lets the response through.
+/// This prevents infinite text-only loops when the model ignores nudges.
+pub const MAX_PLAN_GUARD_NUDGES: usize = 2;
 
 /// Did this tool call cause a mutation to the workspace / outside world?
 /// Used by the anti-fake-progress guard to decide whether a subsequent
