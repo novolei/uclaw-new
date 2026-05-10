@@ -17,6 +17,7 @@ import {
   X,
   Cpu,
   BarChart3,
+  ShieldCheck,
 } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { GeneralSettings } from './GeneralSettings'
@@ -24,6 +25,7 @@ import { AppearanceSettings } from './AppearanceSettings'
 import { UsageSettings } from './UsageSettings'
 import { AgentSettings } from './AgentSettings'
 import { ToolSettings } from './ToolSettings'
+import { PermissionsSettings } from './PermissionsSettings'
 import { PromptSettings } from './PromptSettings'
 import { ShortcutSettings } from './ShortcutSettings'
 import { ChannelSettings } from './ChannelSettings'
@@ -46,6 +48,7 @@ const TABS: TabItem[] = [
   { id: 'usage', label: '用量', icon: <BarChart3 size={15} /> },
   { id: 'agent', label: 'Agent', icon: <Plug size={15} /> },
   { id: 'tools', label: '工具', icon: <Wrench size={15} /> },
+  { id: 'permissions', label: '工具权限', icon: <ShieldCheck size={15} /> },
   { id: 'prompts', label: '提示词', icon: <BookOpen size={15} /> },
   { id: 'bots', label: 'Bot', icon: <Bot size={15} /> },
   { id: 'shortcuts', label: '快捷键', icon: <Keyboard size={15} /> },
@@ -69,6 +72,8 @@ function SettingsContent({ tab }: { tab: SettingsTab }) {
       return <AgentSettings />
     case 'tools':
       return <ToolSettings />
+    case 'permissions':
+      return <PermissionsSettings />
     case 'prompts':
       return <PromptSettings />
     case 'bots':
