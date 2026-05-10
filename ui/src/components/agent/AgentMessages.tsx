@@ -680,8 +680,28 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
   return null
 }
 
-/** Agent 运行指示器 — Shimmer Spinner + 无括号的运行时间 */
-function AgentRunningIndicator({ startedAt }: { startedAt?: number }): React.ReactElement {
+/**
+ * Agent 运行指示器 — 3 段式流转点 + 运行时间 + 可选累积统计。
+ *
+ * Layer 3 of the agent status visibility upgrade. Lives inside the
+ * streaming bubble (in-conversation cursor of "this turn is in progress").
+ * Distinct visual rhythm from AgentStatusBar (which is the persistent
+ * sticky bar above input).
+ *
+ * Visual: 3 dots cascade-pulsing left→right (ChatGPT-style typing
+ * indicator), accent-colored, more modern than a generic spinner.
+ */
+function AgentRunningIndicator({
+  startedAt,
+  toolCount,
+  inputTokens,
+  outputTokens,
+}: {
+  startedAt?: number
+  toolCount?: number
+  inputTokens?: number
+  outputTokens?: number
+}): React.ReactElement {
   const [elapsed, setElapsed] = React.useState(0)
 
   React.useEffect(() => {
@@ -698,11 +718,33 @@ function AgentRunningIndicator({ startedAt }: { startedAt?: number }): React.Rea
     const s = seconds % 60
     return `${m}m ${s.toFixed(1)}s`
   }
+  const formatTokens = (n?: number): string => {
+    if (!n) return '0'
+    if (n < 1000) return String(n)
+    return `${(n / 1000).toFixed(1)}k`
+  }
+
+  const showStats = (toolCount ?? 0) > 0 || !!inputTokens || !!outputTokens
 
   return (
     <div className="flex items-center gap-2 min-h-[28px]">
-      <Spinner size="sm" className="text-primary/75" />
-      <span className="text-[13px] font-light text-muted-foreground/75 tabular-nums">Agent Running {formatTime(elapsed)}</span>
+      {/* 3-dot cascading pulse — modern typing-indicator style */}
+      <span className="flex items-center gap-[3px]" aria-label="正在执行">
+        <span className="size-1.5 rounded-full bg-primary/75 animate-pulse" style={{ animationDelay: '0ms', animationDuration: '1200ms' }} />
+        <span className="size-1.5 rounded-full bg-primary/75 animate-pulse" style={{ animationDelay: '200ms', animationDuration: '1200ms' }} />
+        <span className="size-1.5 rounded-full bg-primary/75 animate-pulse" style={{ animationDelay: '400ms', animationDuration: '1200ms' }} />
+      </span>
+      <span className="text-[13px] font-light text-muted-foreground/75 tabular-nums">
+        Agent Running {formatTime(elapsed)}
+      </span>
+      {showStats && (
+        <span className="text-[11px] text-muted-foreground/50 tabular-nums">
+          {(toolCount ?? 0) > 0 && <>· {toolCount} 工具</>}
+          {(inputTokens || outputTokens) && (
+            <> · ↑{formatTokens(inputTokens)} ↓{formatTokens(outputTokens)}</>
+          )}
+        </span>
+      )}
     </div>
   )
 }
@@ -890,10 +932,24 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
                   {smoothContent ? (
                     <>
                       <MessageResponse basePath={sessionPath || undefined} basePaths={attachedDirs}>{smoothContent}</MessageResponse>
-                      {streaming && <AgentRunningIndicator startedAt={startedAt} />}
+                      {streaming && (
+                      <AgentRunningIndicator
+                        startedAt={startedAt}
+                        toolCount={streamState?.toolActivities?.length}
+                        inputTokens={streamState?.inputTokens}
+                        outputTokens={streamState?.outputTokens}
+                      />
+                    )}
                     </>
                   ) : (
-                    streaming && <AgentRunningIndicator startedAt={startedAt} />
+                    streaming && (
+                      <AgentRunningIndicator
+                        startedAt={startedAt}
+                        toolCount={streamState?.toolActivities?.length}
+                        inputTokens={streamState?.inputTokens}
+                        outputTokens={streamState?.outputTokens}
+                      />
+                    )
                   )}
                 </MessageContent>
                 {/* 流式完成后显示 token 用量 */}
