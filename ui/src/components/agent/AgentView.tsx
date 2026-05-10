@@ -69,8 +69,6 @@ import {
   agentThinkingAtom,
   stoppedByUserSessionsAtom,
   agentPlanModeSessionsAtom,
-  agentPermissionModeMapAtom,
-  agentDefaultPermissionModeAtom,
   agentSessionPathMapAtom,
   allPendingAskUserRequestsAtom,
   allPendingExitPlanRequestsAtom,
@@ -263,10 +261,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const agentError = streamErrors.get(sessionId) ?? null
   const planModeSessions = useAtomValue(agentPlanModeSessionsAtom)
   const isPlanMode = planModeSessions.has(sessionId)
-  const permissionModeMap = useAtomValue(agentPermissionModeMapAtom)
-  const defaultPermissionMode = useAtomValue(agentDefaultPermissionModeAtom)
-  const permissionMode = permissionModeMap.get(sessionId) ?? defaultPermissionMode
-  const isPermissionPlanMode = permissionMode === 'plan'
   const store = useStore()
   const suggestionsMap = useAtomValue(agentPromptSuggestionsAtom)
   const suggestion = suggestionsMap.get(sessionId) ?? null
@@ -1376,14 +1370,14 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           <div
             className={cn(
               'rounded-[17px] border-[0.5px] border-border bg-background/70 backdrop-blur-sm transition-all duration-200',
-              (isPlanMode || isPermissionPlanMode) && !isDragOver && 'plan-mode-border',
+              isPlanMode && !isDragOver && 'plan-mode-border',
               isDragOver && 'border-[2px] border-dashed border-[#2ecc71] bg-[#2ecc71]/[0.03]'
             )}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
           >
-            {(isPlanMode || isPermissionPlanMode) && !isDragOver && <PlanModeDashedBorder />}
+            {isPlanMode && !isDragOver && <PlanModeDashedBorder />}
             {/* 未配置模型提示 */}
             {!activeProviderModel && (
               <div className="flex items-center gap-2 px-4 py-2 text-sm text-amber-600 dark:text-amber-400">

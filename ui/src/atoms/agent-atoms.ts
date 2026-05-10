@@ -7,7 +7,7 @@
 
 import { atom } from 'jotai'
 import { atomFamily } from 'jotai/utils'
-import type { AgentSessionMeta, AgentMessage, AgentEvent, AgentWorkspace, AgentPendingFile, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, AgentEffort, TaskUsage } from '@/lib/agent-types'
+import type { AgentSessionMeta, AgentMessage, AgentEvent, AgentWorkspace, AgentPendingFile, RetryAttempt, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, AgentEffort, TaskUsage } from '@/lib/agent-types'
 
 /** 活动状态 */
 export type ActivityStatus = 'pending' | 'running' | 'completed' | 'error' | 'backgrounded'
@@ -244,9 +244,13 @@ export const recentlyModifiedPathsAtom = atom<Map<string, Map<string, number>>>(
 export const RECENTLY_MODIFIED_TTL_MS = 60_000
 
 // ===== 权限系统 Atoms =====
+//
+// NOTE: agentDefaultPermissionModeAtom + agentPermissionModeMapAtom were removed.
+// They drove the input-bar mode selector against Tauri commands that never
+// existed in the backend (`get_permission_mode` / `set_permission_mode`); the
+// bridge silenced the IPC failures. The selector now lives in
+// `safety-atoms.ts::safetyModeAtom` and writes to the real SafetyManager.
 
-export const agentDefaultPermissionModeAtom = atom<PromaPermissionMode>('auto')
-export const agentPermissionModeMapAtom = atom<Map<string, PromaPermissionMode>>(new Map())
 export const agentThinkingAtom = atom<ThinkingConfig | undefined>(undefined)
 export const agentEffortAtom = atom<AgentEffort | undefined>(undefined)
 export const agentMaxBudgetUsdAtom = atom<number | undefined>(undefined)

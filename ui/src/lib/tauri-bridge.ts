@@ -811,12 +811,18 @@ export const getPathForFile = (_file: File): string | null => {
 export const checkPathsType = (paths: string[]): Promise<{ directories: string[]; files: string[] }> =>
   invoke<{ directories: string[]; files: string[] }>('check_paths_type', { paths }).catch(() => ({ directories: [], files: paths }))
 
-// --- Permission mode ---
-export const getPermissionMode = (workspaceSlug: string): Promise<string> =>
-  invoke<string>('get_permission_mode', { workspaceSlug }).catch(() => 'auto')
+// --- Safety mode quick-toggle ---
+//
+// The previous `getPermissionMode` / `setPermissionMode` wrappers called
+// Tauri commands that never existed and silenced errors via `.catch()`, so
+// the input-bar selector visibly cycled but the backend never received the
+// value. Replaced by the existing `getSafetyPolicy` / `setSafetyMode` (above)
+// which talk to the real SafetyManager.
+//
+// `SafetyModeWire` mirrors the Rust enum's serde shape
+// (`#[serde(rename_all = "lowercase")]` in `src-tauri/src/safety/mod.rs:11`).
 
-export const setPermissionMode = (workspaceSlug: string, mode: string): Promise<void> =>
-  invoke<void>('set_permission_mode', { workspaceSlug, mode }).catch(() => {})
+export type SafetyModeWire = 'ask' | 'supervised' | 'yolo'
 
 // --- System prompt compat ---
 export const createSystemPrompt = (input: any): Promise<any> =>
