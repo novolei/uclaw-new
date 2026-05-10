@@ -56,6 +56,7 @@ import {
   agentPendingFilesAtom,
   agentWorkspacesAtom,
   agentStreamErrorsAtom,
+  workingDoneSessionIdsAtom,
   type AgentStreamErrorPayload,
   agentSessionDraftsAtom,
   agentSessionDraftHtmlAtom,
@@ -412,6 +413,23 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   // 监听消息刷新版本号
   const refreshMap = useAtomValue(agentMessageRefreshAtom)
   const refreshVersion = refreshMap.get(sessionId) ?? 0
+
+  // 当本会话的流式结束（chat:stream-complete）时刷新消息列表，
+  // 确保 duration_ms / input_tokens 等在 agent_messages 写入后立即拉取。
+  // sendAgentMessage().then() 的 reload 发生在 agent loop 开始时，此时 DB 尚未写入。
+  const workingDoneIds = useAtomValue(workingDoneSessionIdsAtom)
+  const prevWorkingDoneRef = React.useRef<Set<string>>(workingDoneIds)
+  React.useEffect(() => {
+    const prev = prevWorkingDoneRef.current
+    prevWorkingDoneRef.current = workingDoneIds
+    if (!prev.has(sessionId) && workingDoneIds.has(sessionId)) {
+      store.set(agentMessageRefreshAtom, (m) => {
+        const next = new Map(m)
+        next.set(sessionId, (m.get(sessionId) ?? 0) + 1)
+        return next
+      })
+    }
+  }, [workingDoneIds, sessionId, store])
 
   // 消息是否已完成首次加载（用于 auto-send 等待）
   const [messagesLoaded, setMessagesLoaded] = React.useState(false)

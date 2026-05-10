@@ -578,8 +578,7 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
         {/* 操作栏：左侧靠左排列 */}
         {(message.durationMs != null || message.usage || message.content) && (
           <MessageActions className="pl-[46px] mt-0.5 justify-start gap-2.5">
-            {message.durationMs != null && <DurationBadge durationMs={message.durationMs} usage={message.usage} />}
-            {message.usage && <TurnCostBar usage={message.usage} />}
+            <MessageMetaBar durationMs={message.durationMs ?? undefined} usage={message.usage ?? undefined} />
             {message.content && <CopyButton content={message.content} />}
             <span className="text-[12px] text-muted-foreground/40 tabular-nums">
               {formatRelativeShort(message.createdAt)}
@@ -644,24 +643,6 @@ function formatRelativeShort(ts: number): string {
   return new Date(ts).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
 }
 
-/** 每轮 token 用量行 — Steward 风格内联显示 */
-function TurnCostBar({ usage }: { usage: AgentEventUsage }): React.ReactElement {
-  const { inputTokens, outputTokens, costUsd } = usage
-  return (
-    <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground/50 tabular-nums animate-in fade-in slide-in-from-bottom-1 duration-300">
-      <Zap size={11} strokeWidth={2} />
-      <span>{inputTokens.toLocaleString()} 输入</span>
-      <span className="opacity-50">·</span>
-      <span>{(outputTokens ?? 0).toLocaleString()} 输出</span>
-      {costUsd != null && costUsd > 0 && (
-        <>
-          <span className="opacity-50">·</span>
-          <span>${costUsd.toFixed(4)}</span>
-        </>
-      )}
-    </span>
-  )
-}
 
 /** Agent 运行指示器 — Shimmer Spinner + 无括号的运行时间 */
 function AgentRunningIndicator({ startedAt }: { startedAt?: number }): React.ReactElement {
@@ -882,7 +863,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
                 {/* 流式完成后显示 token 用量 */}
                 {!streaming && smoothContent && streamState?.inputTokens != null && (
                   <MessageActions className="pl-[46px] mt-0.5 justify-start gap-2.5">
-                    <TurnCostBar usage={{
+                    <MessageMetaBar usage={{
                       inputTokens: streamState.inputTokens,
                       outputTokens: streamState.outputTokens,
                       costUsd: streamState.costUsd,
