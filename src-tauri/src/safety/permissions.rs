@@ -181,9 +181,14 @@ fn log_audit(
     decision: &ApprovalDecision,
     rule_id: Option<&str>,
 ) {
+    // NOTE: This logs at the moment the resolver decides, BEFORE the user has
+    // actually confirmed. `user_approve` here really means "RequireApproval
+    // was returned to the dispatcher" — the actual user outcome is not yet
+    // known. A real "awaiting" status would need a CHECK-constraint migration
+    // — left as TODO. See P6 §audit-log followup.
     let decision_str = match decision {
         ApprovalDecision::AutoApprove => "auto_approve",
-        ApprovalDecision::RequireApproval { .. } => "user_approve", // resolver returned "ask" — UI still has to confirm
+        ApprovalDecision::RequireApproval { .. } => "user_approve",
         ApprovalDecision::Block { .. } => "blocked",
     };
     let conn = match db.lock() {
