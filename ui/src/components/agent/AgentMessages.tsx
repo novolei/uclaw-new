@@ -581,6 +581,9 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
             {message.durationMs != null && <DurationBadge durationMs={message.durationMs} usage={message.usage} />}
             {message.usage && <TurnCostBar usage={message.usage} />}
             {message.content && <CopyButton content={message.content} />}
+            <span className="text-[12px] text-muted-foreground/40 tabular-nums">
+              {formatRelativeShort(message.createdAt)}
+            </span>
           </MessageActions>
         )}
       </Message>
@@ -630,6 +633,15 @@ export function DurationBadge({ durationMs, usage }: { durationMs: number; usage
       </TooltipContent>
     </Tooltip>
   )
+}
+
+/** 相对时间戳 — 简化显示，如 "2m ago" / "刚刚" */
+function formatRelativeShort(ts: number): string {
+  const diff = Math.floor((Date.now() - ts) / 1000)
+  if (diff < 60) return '刚刚'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return new Date(ts).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
 }
 
 /** 每轮 token 用量行 — Steward 风格内联显示 */
