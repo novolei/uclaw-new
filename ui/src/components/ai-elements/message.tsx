@@ -232,28 +232,33 @@ const MarkdownTable = React.memo(function MarkdownTable({
 const MarkdownThead = React.memo(function MarkdownThead({
   children,
 }: React.HTMLAttributes<HTMLTableSectionElement>): React.ReactElement {
-  // Slightly stronger header tint than `bg-muted/50` so the dim
-  // muted-foreground text reads as deliberately understated rather than
-  // accidentally washed out, especially on the warm-paper theme.
-  return <thead className="bg-muted/70">{children}</thead>
+  // Theme-agnostic tint via `--foreground` — warm-paper / qingye etc.
+  // have such low-contrast `--muted` against their `--card` that
+  // bg-muted/* is invisible. A foreground-derived tint is identical
+  // visual weight on every theme.
+  return <thead className="bg-foreground/[0.05]">{children}</thead>
 })
 
 const MarkdownTr = React.memo(function MarkdownTr({
   children,
 }: React.HTMLAttributes<HTMLTableRowElement>): React.ReactElement {
-  // Polish set:
-  //   - Subtle zebra on even rows (1.5% black/white tint via muted/30)
-  //     — improves row scanning without competing with status badges
-  //   - Hover highlight reuses the same tint at 60% — gives the table
-  //     a tactile feel matching the rest of the chat surface
+  // Polish set, all theme-agnostic via foreground tint:
+  //   - Zebra (3.5% foreground tint) — readable on every theme without
+  //     competing with status badges or text legibility
+  //   - Hover (8% foreground tint) — clearly tactile on light AND dark
   //   - Border on every td except in the last row keeps the card
   //     bottom edge clean
+  // Why foreground/<alpha> and not muted/<alpha>: `--muted` is ~95-98%
+  // of `--card` on warm themes (paper, sepia), so a 30% overlay of one
+  // beige on another beige produces ~1% rendered difference — invisible.
+  // Foreground tints are derived from the text color, so contrast is
+  // guaranteed on every theme.
   return (
     <tr
       className={cn(
         '[&:not(:last-child)>td]:border-b [&>td]:border-border/40',
-        '[&:nth-child(even)]:bg-muted/30',
-        'hover:bg-muted/60 transition-colors',
+        '[&:nth-child(even)]:bg-foreground/[0.035]',
+        'hover:bg-foreground/[0.075] transition-colors',
       )}
     >
       {children}
