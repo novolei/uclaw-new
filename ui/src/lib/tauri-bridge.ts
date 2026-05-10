@@ -109,6 +109,7 @@ import type {
   PermissionRule,
   PermissionAuditEntry,
   CreatePermissionRuleInput,
+  DefaultPromptsResponse,
 } from './types';
 import type { Channel } from './chat-types';
 import type { RecentThread, AskUserRequest, ExitPlanModeRequest } from './agent-types';
@@ -1048,3 +1049,13 @@ export const deletePermissionRule = (id: string): Promise<boolean> =>
 
 export const listPermissionAudit = (sessionId?: string, limit = 100): Promise<PermissionAuditEntry[]> =>
   invoke<PermissionAuditEntry[]>('list_permission_audit', { sessionId, limit })
+
+// ─── Prompts (workspace uclaw.md + default mode prompts) ──────────────
+export const readWorkspaceUclawMd = (): Promise<string> =>
+  invoke<string>('read_workspace_uclaw_md')
+
+export const writeWorkspaceUclawMd = (content: string): Promise<void> =>
+  invoke<void>('write_workspace_uclaw_md', { content })
+
+export const readDefaultPrompts = (): Promise<DefaultPromptsResponse> =>
+  invoke<DefaultPromptsResponse>('read_default_prompts')

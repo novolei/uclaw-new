@@ -1054,6 +1054,16 @@ export interface PermissionRule {
   createdAt: number
 }
 
+// ===== Prompts =====
+
+export interface DefaultPromptsResponse {
+  baseline: string
+  modeAsk: string
+  modeAcceptEdits: string
+  modePlan: string
+  modeBypass: string
+}
+
 export interface PermissionAuditEntry {
   id: string
   sessionId: string
