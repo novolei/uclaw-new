@@ -76,3 +76,61 @@ describe('MessageResponse — tables', () => {
     expect(th!.className).toContain('text-muted-foreground')
   })
 })
+
+describe('MessageResponse — status badges in table cells', () => {
+  function tableWithStatus(status: string): string {
+    return [
+      '| Project | Status |',
+      '|---------|--------|',
+      `| Alpha   | ${status} |`,
+    ].join('\n')
+  }
+
+  it('detects success badge for "✅ 已完成"', () => {
+    const { container } = renderWithProviders(
+      <MessageResponse>{tableWithStatus('✅ 已完成')}</MessageResponse>,
+    )
+    const cells = Array.from(container.querySelectorAll('td'))
+    const statusCell = cells[1]!
+    const badge = statusCell.querySelector('span[data-status]')
+    expect(badge).not.toBeNull()
+    expect(badge!.getAttribute('data-status')).toBe('success')
+  })
+
+  it('detects warning badge for "⏳ 未完成"', () => {
+    const { container } = renderWithProviders(
+      <MessageResponse>{tableWithStatus('⏳ 未完成')}</MessageResponse>,
+    )
+    const cells = Array.from(container.querySelectorAll('td'))
+    const badge = cells[1]!.querySelector('span[data-status="warning"]')
+    expect(badge).not.toBeNull()
+  })
+
+  it('detects danger badge for "❌ 尚未开始"', () => {
+    const { container } = renderWithProviders(
+      <MessageResponse>{tableWithStatus('❌ 尚未开始')}</MessageResponse>,
+    )
+    const cells = Array.from(container.querySelectorAll('td'))
+    const badge = cells[1]!.querySelector('span[data-status="danger"]')
+    expect(badge).not.toBeNull()
+  })
+
+  it('renders cell content unchanged when no status pattern matches', () => {
+    const { container } = renderWithProviders(
+      <MessageResponse>{tableWithStatus('HTML/CSS/JS')}</MessageResponse>,
+    )
+    const cells = Array.from(container.querySelectorAll('td'))
+    const statusCell = cells[1]!
+    expect(statusCell.querySelector('span[data-status]')).toBeNull()
+    expect(statusCell.textContent).toBe('HTML/CSS/JS')
+  })
+
+  it('badge uses success token classes', () => {
+    const { container } = renderWithProviders(
+      <MessageResponse>{tableWithStatus('✅ done')}</MessageResponse>,
+    )
+    const badge = container.querySelector('span[data-status="success"]')!
+    expect(badge.className).toContain('hsl(var(--success-bg))')
+    expect(badge.className).toContain('hsl(var(--success))')
+  })
+})

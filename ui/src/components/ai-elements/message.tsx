@@ -255,6 +255,63 @@ const MarkdownTh = React.memo(function MarkdownTh({
   )
 })
 
+/** 递归收集 React 子树里的文本节点（用于 td 内的状态识别） */
+function extractText(node: React.ReactNode): string {
+  if (node == null || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(extractText).join('')
+  if (React.isValidElement(node)) {
+    const props = node.props as { children?: React.ReactNode }
+    return extractText(props.children)
+  }
+  return ''
+}
+
+type StatusVariant = 'success' | 'warning' | 'danger'
+
+const STATUS_PATTERNS: Array<{ re: RegExp; variant: StatusVariant }> = [
+  { re: /✅|✓|已完成|completed|done\b|success\b/i, variant: 'success' },
+  { re: /⏳|未完成|in[\s-]?progress|pending|wip\b/i, variant: 'warning' },
+  { re: /❌|✗|未开始|尚未|failed|error\b/i, variant: 'danger' },
+]
+
+function detectStatus(text: string): StatusVariant | null {
+  for (const { re, variant } of STATUS_PATTERNS) {
+    if (re.test(text)) return variant
+  }
+  return null
+}
+
+const STATUS_CLASS: Record<StatusVariant, string> = {
+  success: 'bg-[hsl(var(--success-bg))] text-[hsl(var(--success))]',
+  warning: 'bg-[hsl(var(--warning-bg))] text-[hsl(var(--warning))]',
+  danger:  'bg-[hsl(var(--danger-bg))] text-[hsl(var(--danger))]',
+}
+
+/** 单元格渲染器：检测状态文本，自动包成 badge */
+const MarkdownTd = React.memo(function MarkdownTd({
+  children,
+}: React.HTMLAttributes<HTMLTableCellElement>): React.ReactElement {
+  const text = extractText(children).trim()
+  const variant = text ? detectStatus(text) : null
+  if (variant) {
+    return (
+      <td className="px-3.5 py-3 text-[14.5px]">
+        <span
+          data-status={variant}
+          className={cn(
+            'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[12px] font-medium',
+            STATUS_CLASS[variant],
+          )}
+        >
+          {text}
+        </span>
+      </td>
+    )
+  }
+  return <td className="px-3.5 py-3 text-[14.5px]">{children}</td>
+})
+
 const MARKDOWN_COMPONENTS = {
   a: MarkdownLink,
   pre: MarkdownPre,
@@ -266,6 +323,7 @@ const MARKDOWN_COMPONENTS = {
   thead: MarkdownThead,
   tr: MarkdownTr,
   th: MarkdownTh,
+  td: MarkdownTd,
 } as const
 
 interface MessageResponseProps {
