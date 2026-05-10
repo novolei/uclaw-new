@@ -51,16 +51,26 @@ import { parseSkillCitations } from '@/lib/skill-citation'
  * Without the newline, react-markdown treats the whole thing as a paragraph
  * and renders the literal `###` characters instead of a formatted heading.
  *
- * We also handle list items (-, *, numbered) that run together in the same way.
+ * Scope-limited on purpose:
+ *   - We insert a newline before `#` heading markers that follow content.
+ *   - We DO NOT rewrite list markers (`- ` / `* `) anymore. The earlier
+ *     version did, and it broke markdown TABLE separator rows:
+ *     `| --- | --- |` contains `-- ` substrings, replacement split each
+ *     row into multiple lines that markdown then rendered as a bullet
+ *     list — collapsing the whole table. Tables are far more common
+ *     than the prose-list inline case the rule was meant to fix, so
+ *     the rule was net-negative and is removed.
+ *   - We skip lines starting with `|` so headings inside table cells
+ *     (rare) can't trigger a misfire either.
  */
 function normalizeAgentMarkdown(text: string): string {
-  // Insert newline before heading markers not already at line start.
-  let out = text.replace(/([^\n])(#{1,6} )/g, '$1\n$2')
-  // Insert newline before list item markers that run into prose.
-  out = out.replace(/([^\n])(\n?[-*] )/g, (_, pre, marker) =>
-    pre + '\n' + marker.trimStart()
-  )
-  return out
+  return text
+    .split('\n')
+    .map((line) => {
+      if (line.trimStart().startsWith('|')) return line
+      return line.replace(/([^\n])(#{1,6} )/g, '$1\n$2')
+    })
+    .join('\n')
 }
 import { SkillCitationChips } from './SkillCitationChips'
 import { ScrollPositionManager } from '@/hooks/useScrollPositionMemory'
