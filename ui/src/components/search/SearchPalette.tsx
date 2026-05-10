@@ -45,7 +45,7 @@ interface SearchHit {
   id: string
   title: string
   snippet: string
-  source: 'conversation' | 'chat_message' | 'agent_turn' | 'file'
+  source: 'conversation' | 'chat_message' | 'agent_turn' | 'agent_message' | 'file'
   sourceId: string
   messageId?: string
   createdAt: string
@@ -168,7 +168,7 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
   // Debounced FTS search
   React.useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current)
-    if (!open || query.trim().length < 2) {
+    if (!open || query.trim().length < 1) {
       setHits([])
       setSearching(false)
       return
@@ -272,7 +272,7 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
               '[&_[cmdk-group-heading]]:text-muted-foreground/70',
             )}
           >
-            {totalRendered === 0 && q.length >= 2 && !searching ? (
+            {totalRendered === 0 && q.length >= 1 && !searching ? (
               <Command.Empty className="flex flex-col items-center gap-2 py-10 text-center">
                 <Hash className="size-6 text-muted-foreground/40" />
                 <span className="text-[12.5px] text-muted-foreground/65">
@@ -381,7 +381,7 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
                     onSelect={() => handle({ kind: 'search_hit', hit: h })}
                     className="relative flex cursor-pointer select-none items-start gap-2.5 rounded-lg px-2.5 py-2 text-[12.5px] text-foreground/80 outline-none transition-colors aria-selected:bg-accent aria-selected:text-accent-foreground aria-selected:ring-1 aria-selected:ring-border/40"
                   >
-                    {h.source === 'agent_turn' ? (
+                    {h.source === 'agent_turn' || h.source === 'agent_message' ? (
                       <Bot className="size-4 shrink-0 mt-0.5 text-muted-foreground/75" />
                     ) : (
                       <MessageSquare className="size-4 shrink-0 mt-0.5 text-muted-foreground/75" />
