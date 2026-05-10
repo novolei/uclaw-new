@@ -13,6 +13,7 @@ import { RightSidePanel } from './RightSidePanel'
 import { MainArea } from '@/components/tabs/MainArea'
 import { AppShellProvider, type AppShellContextType } from '@/contexts/AppShellContext'
 import { ApprovalModal } from '@/components/ApprovalModal'
+import { ModeBanner } from '@/components/agent/ModeBanner'
 import { appModeAtom } from '@/atoms/app-mode'
 import {
   agentSessionsAtom,
@@ -127,6 +128,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
           <div aria-hidden="true" className="main-panel-bg pointer-events-none absolute inset-0 z-0" />
           {/* 主内容区域（TabBar + TabContent） */}
           <div className="relative z-10 flex flex-col h-full min-h-0 min-w-0">
+            <ModeBanner />
             <MainArea />
           </div>
         </div>
