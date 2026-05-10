@@ -222,8 +222,19 @@ const MarkdownH3 = React.memo(function MarkdownH3({
 const MarkdownTable = React.memo(function MarkdownTable({
   children,
 }: React.HTMLAttributes<HTMLTableElement>): React.ReactElement {
+  // `not-prose` opts the entire table subtree out of @tailwindcss/typography
+  // defaults. Without it, prose injects:
+  //   - `table { margin-top: 2em; margin-bottom: 2em }`
+  //     → renders as empty cream bands above/below the table inside our
+  //       `bg-card` wrapper (user-visible "blank rows" bug).
+  //   - `tbody tr { border-bottom: 1px }`
+  //     → competes with our `border-border/40` row borders.
+  //   - `thead th { vertical-align: bottom }`
+  //     → fights our `align-middle`.
+  // Once not-prose is set, our MarkdownTr/Th/Td classes have unambiguous
+  // control of every visual property.
   return (
-    <div className="my-3 rounded-[10px] border border-border overflow-hidden bg-card">
+    <div className="not-prose my-3 rounded-[10px] border border-border overflow-hidden bg-card">
       <table className="w-full border-collapse text-[14px]">{children}</table>
     </div>
   )
