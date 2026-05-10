@@ -86,6 +86,7 @@ fn main() {
                 let safety_manager = state.safety_manager.clone();
                 let pending_approvals = state.pending_approvals.clone();
                 let pending_ask_users = state.pending_ask_users.clone();
+                let pending_exit_plans = state.pending_exit_plans.clone();
 
                 // 在后台异步执行服务注册和启动
                 tauri::async_runtime::spawn(async move {
@@ -235,6 +236,7 @@ fn main() {
                                 let safety = safety_manager.clone();
                                 let approvals = pending_approvals.clone();
                                 let ask_users = pending_ask_users.clone();
+                                let exit_plans = pending_exit_plans.clone();
 
                                 let factory: std::sync::Arc<
                                     dyn Fn(String) -> Box<dyn uclaw_core::agent::types::LoopDelegate + Send>
@@ -253,6 +255,11 @@ fn main() {
                                     reg.register(builtin::ask_user::AskUserTool::new(
                                         app_h.clone(),
                                         std::sync::Arc::clone(&ask_users),
+                                        session_id_for_tools.clone(),
+                                    ));
+                                    reg.register(builtin::exit_plan_mode::ExitPlanModeTool::new(
+                                        app_h.clone(),
+                                        std::sync::Arc::clone(&exit_plans),
                                         session_id_for_tools.clone(),
                                     ));
                                     let tools = std::sync::Arc::new(reg);
@@ -425,6 +432,7 @@ fn main() {
             // Tool Approval
             uclaw_core::tauri_commands::approve_tool_call,
             uclaw_core::tauri_commands::respond_ask_user,
+            uclaw_core::tauri_commands::respond_exit_plan_mode,
             uclaw_core::tauri_commands::list_permission_rules,
             uclaw_core::tauri_commands::create_permission_rule,
             uclaw_core::tauri_commands::delete_permission_rule,

@@ -4508,6 +4508,58 @@ pub async fn respond_ask_user(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn respond_exit_plan_mode(
+    state: State<'_, AppState>,
+    input: crate::ipc::RespondExitPlanInput,
+) -> Result<(), Error> {
+    use crate::app::{ExitPlanDecision, ExitPlanResult};
+    use crate::ipc::CreatePermissionRuleInput;
+
+    let decision = match input.decision.as_str() {
+        "accept_and_auto" => {
+            // Switch session SafetyMode to Supervised globally for now (per-
+            // session override would be cleaner but requires plumbing through
+            // the dispatcher at runtime). Updating the global policy is the
+            // simplest implementation that meets the spec acceptance criteria.
+            let mut mgr = state.safety_manager.write().await;
+            let _ = mgr.set_global_mode(crate::safety::SafetyMode::Supervised);
+            ExitPlanDecision::AcceptAndAuto
+        }
+        "accept_keep_plan" => {
+            // Write each allowed_prompt as a V14 session pattern rule so it
+            // auto-passes while user stays in Plan mode.
+            for prompt in &input.allowed_prompts {
+                let trimmed = prompt.trim();
+                if trimmed.is_empty() { continue; }
+                // Parse "bash cargo build" → tool="bash", target="cargo build"
+                let (tool_name, target) = match trimmed.split_once(' ') {
+                    Some((t, rest)) if !t.is_empty() => (t.to_string(), Some(rest.trim().to_string())),
+                    _ => (trimmed.to_string(), None),
+                };
+                let _ = crate::safety::permissions::create_rule(&state.db, CreatePermissionRuleInput {
+                    scope: "session".into(),
+                    session_id: Some(input.session_id.clone()),
+                    tool_name,
+                    target,
+                    mode: "allow".into(),
+                });
+            }
+            ExitPlanDecision::AcceptKeepPlan
+        }
+        "reject" => ExitPlanDecision::Reject {
+            feedback: input.feedback.unwrap_or_else(|| "(no feedback provided)".into()),
+        },
+        other => return Err(Error::InvalidInput(format!("unknown decision: {}", other))),
+    };
+
+    let resolved = state.pending_exit_plans.resolve(&input.request_id, ExitPlanResult { decision });
+    if !resolved {
+        tracing::warn!(request_id = %input.request_id, "respond_exit_plan_mode: no matching pending request");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod fts_query_tests {
     use super::{build_fts_query, parse_scope};

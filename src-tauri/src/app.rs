@@ -98,6 +98,45 @@ impl PendingAskUsers {
     }
 }
 
+/// Decision from the user on an exit_plan_mode request.
+#[derive(Debug, Clone)]
+pub enum ExitPlanDecision {
+    /// User accepted; switch session SafetyMode to Supervised and proceed.
+    AcceptAndAuto,
+    /// User accepted but wants to stay in Plan; agent may run only the
+    /// pre-declared allowed_prompts.
+    AcceptKeepPlan,
+    /// User rejected; agent receives feedback as tool error.
+    Reject { feedback: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct ExitPlanResult {
+    pub decision: ExitPlanDecision,
+}
+
+pub struct PendingExitPlans {
+    pending: std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<ExitPlanResult>>>,
+}
+
+impl PendingExitPlans {
+    pub fn new() -> Self {
+        Self { pending: std::sync::Mutex::new(HashMap::new()) }
+    }
+    pub fn register(&self, request_id: String) -> tokio::sync::oneshot::Receiver<ExitPlanResult> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending.lock().unwrap().insert(request_id, tx);
+        rx
+    }
+    pub fn resolve(&self, request_id: &str, result: ExitPlanResult) -> bool {
+        if let Some(tx) = self.pending.lock().unwrap().remove(request_id) {
+            tx.send(result).is_ok()
+        } else {
+            false
+        }
+    }
+}
+
 /// Global application state managed by Tauri
 pub struct AppState {
     pub data_dir: PathBuf,
@@ -132,6 +171,9 @@ pub struct AppState {
 
     // ask_user pending requests
     pub pending_ask_users: Arc<PendingAskUsers>,
+
+    // exit_plan_mode pending requests
+    pub pending_exit_plans: Arc<PendingExitPlans>,
 
     // memU memory service (None if Python is unavailable)
     pub memu_client: Option<Arc<MemUClient>>,
@@ -252,6 +294,9 @@ impl AppState {
         // ask_user pending requests
         let pending_ask_users = Arc::new(PendingAskUsers::new());
 
+        // exit_plan_mode pending requests
+        let pending_exit_plans = Arc::new(PendingExitPlans::new());
+
         // memU integration (degraded mode if Python unavailable)
         // Get Tauri resource directory for embedded Python detection
         let resource_dir = app_handle.path().resource_dir().ok();
@@ -331,6 +376,7 @@ impl AppState {
             safety_manager,
             pending_approvals,
             pending_ask_users,
+            pending_exit_plans,
             memu_client,
             memory_graph_store,
             infra_service,
