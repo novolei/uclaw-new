@@ -79,8 +79,12 @@ impl AnthropicProvider {
                 ContentBlock::Text { text } => {
                     serde_json::json!({"type": "text", "text": text})
                 }
-                ContentBlock::Thinking { thinking } => {
-                    serde_json::json!({"type": "thinking", "thinking": thinking})
+                ContentBlock::Thinking { thinking, signature } => {
+                    let mut val = serde_json::json!({"type": "thinking", "thinking": thinking});
+                    if let Some(sig) = signature {
+                        val["signature"] = serde_json::json!(sig);
+                    }
+                    val
                 }
                 ContentBlock::ToolUse { id, name, input } => {
                     serde_json::json!({"type": "tool_use", "id": id, "name": name, "input": input})
@@ -295,6 +299,7 @@ impl LlmProvider for AnthropicProvider {
         let mut tool_calls = Vec::new();
         let mut text_parts = Vec::new();
         let mut thinking_parts = Vec::new();
+        let mut thinking_signature: Option<String> = None;
 
         if let Some(blocks) = json["content"].as_array() {
             for block in blocks {
@@ -307,6 +312,9 @@ impl LlmProvider for AnthropicProvider {
                     Some("thinking") => {
                         if let Some(t) = block["thinking"].as_str() {
                             thinking_parts.push(t.to_string());
+                        }
+                        if thinking_signature.is_none() {
+                            thinking_signature = block["signature"].as_str().map(|s| s.to_string());
                         }
                     }
                     Some("tool_use") => {
@@ -336,12 +344,14 @@ impl LlmProvider for AnthropicProvider {
                     Some(text_parts.join("\n"))
                 },
                 thinking,
+                thinking_signature,
                 metadata,
             })
         } else {
             Ok(RespondOutput::Text {
                 text: text_parts.join("\n"),
                 thinking,
+                thinking_signature,
                 metadata,
             })
         }
@@ -623,6 +633,13 @@ impl SseParserState {
                             if let Some(thinking) = delta["thinking"].as_str() {
                                 return EventResult::Delta(StreamDelta::ThinkingDelta {
                                     thinking: thinking.to_string(),
+                                });
+                            }
+                        }
+                        Some("signature_delta") => {
+                            if let Some(signature) = delta["signature"].as_str() {
+                                return EventResult::Delta(StreamDelta::SignatureDelta {
+                                    signature: signature.to_string(),
                                 });
                             }
                         }

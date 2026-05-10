@@ -83,7 +83,7 @@ pub async fn run_agentic_loop(
 
         // ── 5. Handle response ───────────────────────────────────────
         match output {
-            RespondOutput::Text { text, thinking, metadata } => {
+            RespondOutput::Text { text, thinking, thinking_signature, metadata } => {
                 // Track token usage and emit events
                 if let Some(ref usage) = metadata.usage {
                     reason_ctx.total_input_tokens += usage.input_tokens;
@@ -111,7 +111,7 @@ pub async fn run_agentic_loop(
                     let mut blocks = Vec::new();
                     if let Some(ref t) = thinking {
                         if !t.is_empty() {
-                            blocks.push(ContentBlock::Thinking { thinking: t.clone() });
+                            blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
                         }
                     }
                     blocks.push(ContentBlock::Text { text: text.clone() });
@@ -144,7 +144,7 @@ pub async fn run_agentic_loop(
                         let mut blocks = Vec::new();
                         if let Some(ref t) = thinking {
                             if !t.is_empty() {
-                                blocks.push(ContentBlock::Thinking { thinking: t.clone() });
+                                blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
                             }
                         }
                         blocks.push(ContentBlock::Text { text: text.clone() });
@@ -162,6 +162,7 @@ pub async fn run_agentic_loop(
                 tool_calls,
                 text,
                 thinking,
+                thinking_signature,
                 metadata,
             } => {
                 // Track token usage and emit events
@@ -215,7 +216,7 @@ pub async fn run_agentic_loop(
                 let mut blocks: Vec<ContentBlock> = Vec::new();
                 if let Some(ref t) = thinking {
                     if !t.is_empty() {
-                        blocks.push(ContentBlock::Thinking { thinking: t.clone() });
+                        blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
                     }
                 }
                 if let Some(t) = &text {

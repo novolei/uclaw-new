@@ -170,7 +170,7 @@ impl OpenAIProvider {
         let parts: Vec<&str> = blocks
             .iter()
             .filter_map(|b| {
-                if let ContentBlock::Thinking { thinking } = b {
+                if let ContentBlock::Thinking { thinking, .. } = b {
                     Some(thinking.as_str())
                 } else {
                     None

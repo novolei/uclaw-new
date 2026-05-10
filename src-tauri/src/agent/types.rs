@@ -54,7 +54,7 @@ pub enum MessageRole {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     Text { text: String },
-    Thinking { thinking: String },
+    Thinking { thinking: String, signature: Option<String> },
     ToolUse { id: String, name: String, input: serde_json::Value },
     ToolResult { tool_use_id: String, content: String, is_error: Option<bool> },
 }
@@ -131,7 +131,7 @@ impl ReasoningContext {
         let msg_tokens: usize = self.messages.iter().map(|m| {
             m.content.iter().map(|b| match b {
                 ContentBlock::Text { text } => text.len() / 4,
-                ContentBlock::Thinking { thinking } => thinking.len() / 4,
+                ContentBlock::Thinking { thinking, .. } => thinking.len() / 4,
                 ContentBlock::ToolUse { input, .. } => input.to_string().len() / 4 + 20,
                 ContentBlock::ToolResult { content, .. } => content.len() / 4 + 10,
             }).sum::<usize>()
@@ -239,7 +239,7 @@ fn is_cjk(ch: char) -> bool {
 pub fn estimate_message_tokens(msg: &ChatMessage) -> u32 {
     msg.content.iter().map(|b| match b {
         ContentBlock::Text { text } => estimate_tokens(text),
-        ContentBlock::Thinking { thinking } => estimate_tokens(thinking),
+        ContentBlock::Thinking { thinking, .. } => estimate_tokens(thinking),
         ContentBlock::ToolUse { input, name, .. } => {
             estimate_tokens(name) + estimate_tokens(&input.to_string()) + 10
         }
@@ -288,8 +288,8 @@ pub fn get_model_context_length(model: &str) -> u32 {
 
 #[derive(Debug, Clone)]
 pub enum RespondOutput {
-    Text { text: String, thinking: Option<String>, metadata: ResponseMetadata },
-    ToolCalls { tool_calls: Vec<ToolCall>, text: Option<String>, thinking: Option<String>, metadata: ResponseMetadata },
+    Text { text: String, thinking: Option<String>, thinking_signature: Option<String>, metadata: ResponseMetadata },
+    ToolCalls { tool_calls: Vec<ToolCall>, text: Option<String>, thinking: Option<String>, thinking_signature: Option<String>, metadata: ResponseMetadata },
 }
 
 /// Streaming delta
@@ -298,6 +298,7 @@ pub enum RespondOutput {
 pub enum StreamDelta {
     TextDelta { text: String },
     ThinkingDelta { thinking: String },
+    SignatureDelta { signature: String },
     ToolCallDelta { id: String, name: Option<String>, input_json: Option<String> },
     Done { finish_reason: Option<String>, usage: Option<TokenUsage> },
 }
