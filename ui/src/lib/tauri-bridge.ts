@@ -822,7 +822,7 @@ export const checkPathsType = (paths: string[]): Promise<{ directories: string[]
 // `SafetyModeWire` mirrors the Rust enum's serde shape
 // (`#[serde(rename_all = "lowercase")]` in `src-tauri/src/safety/mod.rs:11`).
 
-export type SafetyModeWire = 'ask' | 'supervised' | 'yolo'
+export type SafetyModeWire = 'ask' | 'acceptedits' | 'plan' | 'supervised' | 'yolo'
 
 // --- System prompt compat ---
 export const createSystemPrompt = (input: any): Promise<any> =>
