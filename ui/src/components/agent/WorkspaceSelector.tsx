@@ -7,7 +7,7 @@
 
 import * as React from 'react'
 import { useAtom } from 'jotai'
-import { FolderOpen, Plus, Pencil, Trash2, GripVertical } from 'lucide-react'
+import { FolderOpen, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import {
@@ -28,10 +28,8 @@ import { workspaceListHeightAtom } from '@/atoms/sidebar-atoms'
 import type { AgentWorkspace } from '@/lib/agent-types'
 import {
   updateSettings,
-  createAgentWorkspace,
-  updateAgentWorkspace,
-  deleteAgentWorkspace,
-  reorderAgentWorkspaces,
+  createWorkspace,
+  deleteWorkspace,
 } from '@/lib/tauri-bridge'
 
 export function WorkspaceSelector(): React.ReactElement {
@@ -88,21 +86,11 @@ export function WorkspaceSelector(): React.ReactElement {
   /** 防止连续 Enter 触发多次创建请求 */
   const createInFlightRef = React.useRef(false)
 
-  // 重命名状态
-  const [editingId, setEditingId] = React.useState<string | null>(null)
-  const [editName, setEditName] = React.useState('')
-  const editInputRef = React.useRef<HTMLInputElement>(null)
-
   // 删除确认状态
   const [deleteTargetId, setDeleteTargetId] = React.useState<string | null>(null)
 
-  // 拖拽状态
-  const [dragId, setDragId] = React.useState<string | null>(null)
-  const [dropIndicator, setDropIndicator] = React.useState<{ id: string; position: 'before' | 'after' } | null>(null)
-
   /** 切换工作区 */
   const handleSelect = (workspace: AgentWorkspace): void => {
-    if (editingId) return
     setCurrentWorkspaceId(workspace.id)
 
     updateSettings({
@@ -130,7 +118,15 @@ export function WorkspaceSelector(): React.ReactElement {
     createInFlightRef.current = true
 
     try {
-      const workspace = await createAgentWorkspace(trimmed)
+      // Real backend command: returns { id, name, icon, path, createdAt }.
+      // Adapter normalizes to AgentWorkspace shape (slug removed in Task 8).
+      const created = await createWorkspace(trimmed)
+      const workspace: AgentWorkspace = {
+        id: created.id,
+        name: created.name,
+        createdAt: Date.parse(created.createdAt) || Date.now(),
+        updatedAt: Date.parse(created.createdAt) || Date.now(),
+      }
       setWorkspaces((prev) => [workspace, ...prev])
       setCurrentWorkspaceId(workspace.id)
       setCreating(false)
@@ -157,48 +153,6 @@ export function WorkspaceSelector(): React.ReactElement {
     }
   }
 
-  // ===== 重命名 =====
-
-  const handleStartRename = (e: React.MouseEvent, ws: AgentWorkspace): void => {
-    e.stopPropagation()
-    setEditingId(ws.id)
-    setEditName(ws.name)
-    requestAnimationFrame(() => {
-      editInputRef.current?.focus()
-      editInputRef.current?.select()
-    })
-  }
-
-  const handleRename = async (): Promise<void> => {
-    if (!editingId) return
-    const trimmed = editName.trim()
-
-    if (!trimmed) {
-      setEditingId(null)
-      return
-    }
-
-    try {
-      const updated = await updateAgentWorkspace(editingId, { name: trimmed })
-      setWorkspaces((prev) => prev.map((w) => (w.id === updated.id ? updated : w)))
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : '重命名失败'
-      toast.error(msg)
-    } finally {
-      setEditingId(null)
-    }
-  }
-
-  const handleRenameKeyDown = (e: React.KeyboardEvent): void => {
-    if (e.key === 'Enter') {
-      if (e.nativeEvent.isComposing) return
-      e.preventDefault()
-      handleRename()
-    } else if (e.key === 'Escape') {
-      setEditingId(null)
-    }
-  }
-
   // ===== 删除 =====
 
   const handleStartDelete = (e: React.MouseEvent, wsId: string): void => {
@@ -210,7 +164,7 @@ export function WorkspaceSelector(): React.ReactElement {
     if (!deleteTargetId) return
 
     try {
-      await deleteAgentWorkspace(deleteTargetId)
+      await deleteWorkspace(deleteTargetId)
       const remaining = workspaces.filter((w) => w.id !== deleteTargetId)
       setWorkspaces(remaining)
 
@@ -221,85 +175,15 @@ export function WorkspaceSelector(): React.ReactElement {
         }).catch(console.error)
       }
     } catch (error) {
-      console.error('[WorkspaceSelector] 删除工作区失败:', error)
+      const msg = error instanceof Error ? error.message : '删除失败'
+      toast.error(msg)
     } finally {
       setDeleteTargetId(null)
     }
   }
 
   const canDelete = (ws: AgentWorkspace): boolean => {
-    return ws.slug !== 'default' && workspaces.length > 1
-  }
-
-  // ===== 拖拽排序 =====
-
-  const handleDragStart = (e: React.DragEvent, wsId: string): void => {
-    setDragId(wsId)
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', wsId)
-  }
-
-  const handleDragOver = (e: React.DragEvent, wsId: string): void => {
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
-    if (!dragId || wsId === dragId) {
-      setDropIndicator(null)
-      return
-    }
-    // 根据鼠标在目标元素的上半/下半部分决定插入位置
-    // 中线附近 30% 区域为死区，避免鼠标抖动导致横线闪烁
-    const rect = e.currentTarget.getBoundingClientRect()
-    const ratio = (e.clientY - rect.top) / rect.height
-    let position: 'before' | 'after'
-    if (ratio < 0.35) {
-      position = 'before'
-    } else if (ratio > 0.65) {
-      position = 'after'
-    } else {
-      // 死区内保持当前方向不变
-      if (dropIndicator?.id === wsId) return
-      position = ratio < 0.5 ? 'before' : 'after'
-    }
-    // 仅在状态变化时更新，减少不必要的重渲染
-    if (dropIndicator?.id === wsId && dropIndicator.position === position) return
-    setDropIndicator({ id: wsId, position })
-  }
-
-  const handleDragLeave = (e: React.DragEvent): void => {
-    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-      setDropIndicator(null)
-    }
-  }
-
-  const handleDrop = (e: React.DragEvent, targetId: string): void => {
-    e.preventDefault()
-    if (!dragId || dragId === targetId || !dropIndicator || dropIndicator.id !== targetId) {
-      setDragId(null)
-      setDropIndicator(null)
-      return
-    }
-
-    const fromIdx = workspaces.findIndex((w) => w.id === dragId)
-    const toIdx = workspaces.findIndex((w) => w.id === targetId)
-    if (fromIdx === -1 || toIdx === -1) return
-
-    const reordered = [...workspaces]
-    const [moved] = reordered.splice(fromIdx, 1)
-    // 从原数组中移除后，目标索引需要调整
-    const adjustedToIdx = fromIdx < toIdx ? toIdx - 1 : toIdx
-    const insertIdx = dropIndicator.position === 'after' ? adjustedToIdx + 1 : adjustedToIdx
-    reordered.splice(insertIdx, 0, moved!)
-
-    setWorkspaces(reordered)
-    setDragId(null)
-    setDropIndicator(null)
-
-    reorderAgentWorkspaces(reordered.map((w) => w.id)).catch(console.error)
-  }
-
-  const handleDragEnd = (): void => {
-    setDragId(null)
-    setDropIndicator(null)
+    return ws.id !== 'default' && workspaces.length > 1
   }
 
   return (
@@ -325,73 +209,31 @@ export function WorkspaceSelector(): React.ReactElement {
         >
           {workspaces.map((ws) => (
             <div key={ws.id} className="relative">
-              {/* 上方插入指示线 */}
-              {dropIndicator?.id === ws.id && dropIndicator.position === 'before' && (
-                <div className="absolute top-0 left-1 right-1 h-0.5 bg-primary rounded-full z-10" />
-              )}
-
               <div
-                draggable={editingId !== ws.id}
-                onDragStart={(e) => handleDragStart(e, ws.id)}
-                onDragOver={(e) => handleDragOver(e, ws.id)}
-                onDragLeave={handleDragLeave}
-                onDrop={(e) => handleDrop(e, ws.id)}
-                onDragEnd={handleDragEnd}
                 onClick={() => handleSelect(ws)}
                 className={cn(
                   'group w-full flex items-center gap-1 px-1 py-[5px] rounded-md text-[13px] transition-colors duration-100 cursor-pointer titlebar-no-drag',
                   ws.id === currentWorkspaceId
                     ? 'workspace-item-selected bg-foreground/[0.08] text-foreground shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]'
                     : 'text-foreground/70 hover:bg-foreground/[0.04]',
-                  dragId === ws.id && 'opacity-40',
                 )}
               >
-              {/* 拖拽手柄 */}
-              <GripVertical size={12} className="flex-shrink-0 text-foreground/20 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing" />
+                <FolderOpen size={13} className="flex-shrink-0 text-foreground/40" />
 
-              <FolderOpen size={13} className="flex-shrink-0 text-foreground/40" />
+                <span className="flex-1 min-w-0 truncate">{ws.name}</span>
 
-              {editingId === ws.id ? (
-                <input
-                  ref={editInputRef}
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  onKeyDown={handleRenameKeyDown}
-                  onBlur={handleRename}
-                  onClick={(e) => e.stopPropagation()}
-                  className="flex-1 min-w-0 bg-transparent text-[13px] text-foreground border-b border-primary/50 outline-none px-0.5"
-                  maxLength={50}
-                />
-              ) : (
-                <>
-                  <span className="flex-1 min-w-0 truncate">{ws.name}</span>
-
-                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                  {canDelete(ws) && (
                     <button
-                      onClick={(e) => handleStartRename(e, ws)}
-                      className="p-0.5 rounded hover:bg-foreground/[0.08] text-foreground/30 hover:text-foreground/60 transition-colors"
-                      title="重命名"
+                      onClick={(e) => handleStartDelete(e, ws.id)}
+                      className="p-0.5 rounded hover:bg-destructive/10 text-foreground/30 hover:text-destructive transition-colors"
+                      title="删除"
                     >
-                      <Pencil size={12} />
+                      <Trash2 size={12} />
                     </button>
-                    {canDelete(ws) && (
-                      <button
-                        onClick={(e) => handleStartDelete(e, ws.id)}
-                        className="p-0.5 rounded hover:bg-destructive/10 text-foreground/30 hover:text-destructive transition-colors"
-                        title="删除"
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    )}
-                  </div>
-                </>
-              )}
+                  )}
+                </div>
               </div>
-
-              {/* 下方插入指示线 */}
-              {dropIndicator?.id === ws.id && dropIndicator.position === 'after' && (
-                <div className="absolute bottom-0 left-1 right-1 h-0.5 bg-primary rounded-full z-10" />
-              )}
             </div>
           ))}
 
