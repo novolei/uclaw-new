@@ -133,4 +133,21 @@ describe('MessageResponse — status badges in table cells', () => {
     expect(badge.className).toContain('hsl(var(--success-bg))')
     expect(badge.className).toContain('hsl(var(--success))')
   })
+
+  it('does not badge "Not done yet" as success (regression: bare word match)', () => {
+    const { container } = renderWithProviders(
+      <MessageResponse>{tableWithStatus('Not done yet')}</MessageResponse>,
+    )
+    const cells = Array.from(container.querySelectorAll('td'))
+    expect(cells[1]!.querySelector('span[data-status]')).toBeNull()
+    expect(cells[1]!.textContent).toBe('Not done yet')
+  })
+
+  it('detects danger when both ❌ and ✅ appear (danger wins by ordering)', () => {
+    const { container } = renderWithProviders(
+      <MessageResponse>{tableWithStatus('❌ blocked, ✅ partial')}</MessageResponse>,
+    )
+    const cells = Array.from(container.querySelectorAll('td'))
+    expect(cells[1]!.querySelector('span[data-status="danger"]')).not.toBeNull()
+  })
 })

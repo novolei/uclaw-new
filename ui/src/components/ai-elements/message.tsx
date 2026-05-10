@@ -270,9 +270,10 @@ function extractText(node: React.ReactNode): string {
 type StatusVariant = 'success' | 'warning' | 'danger'
 
 const STATUS_PATTERNS: Array<{ re: RegExp; variant: StatusVariant }> = [
-  { re: /✅|✓|已完成|completed|done\b|success\b/i, variant: 'success' },
-  { re: /⏳|未完成|in[\s-]?progress|pending|wip\b/i, variant: 'warning' },
-  { re: /❌|✗|未开始|尚未|failed|error\b/i, variant: 'danger' },
+  // Order matters: explicit failure / negation wins over completion.
+  { re: /❌|✗|未开始|尚未|failed\b|error\b/i, variant: 'danger' },
+  { re: /⏳|未完成|in[\s-]?progress\b|pending\b|wip\b/i, variant: 'warning' },
+  { re: /✅|✓|已完成/, variant: 'success' },
 ]
 
 function detectStatus(text: string): StatusVariant | null {
