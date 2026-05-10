@@ -267,11 +267,6 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
     syncWorkspaceSessions(agentSessions as any)
   }, [agentSessions, syncWorkspaceSessions])
 
-  const currentWorkspaceSlug = React.useMemo(() => {
-    if (!currentWorkspaceId) return null
-    return workspaces.find((w) => w.id === currentWorkspaceId)?.slug ?? null
-  }, [currentWorkspaceId, workspaces])
-
   const workspaceNameMap = React.useMemo(() => {
     const map = new Map<string, string>()
     for (const w of workspaces) map.set(w.id, w.name)
@@ -279,9 +274,9 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   }, [workspaces])
 
   React.useEffect(() => {
-    if (!currentWorkspaceSlug || mode !== 'agent') { setCapabilities(null); return }
-    getWorkspaceCapabilities(currentWorkspaceSlug).then(setCapabilities).catch(console.error)
-  }, [currentWorkspaceSlug, mode, activeView, capabilitiesVersion])
+    if (!currentWorkspaceId || mode !== 'agent') { setCapabilities(null); return }
+    getWorkspaceCapabilities(currentWorkspaceId).then(setCapabilities).catch(console.error)
+  }, [currentWorkspaceId, mode, activeView, capabilitiesVersion])
 
   const pinnedConversations = React.useMemo(
     () => viewMode === 'active' ? conversations.filter((c) => c.pinned && !draftSessionIds.has(c.id)) : [],

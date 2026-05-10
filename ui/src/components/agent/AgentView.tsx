@@ -805,7 +805,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           }))
           try {
             const saved = await saveFilesToAgentSession({
-              workspaceSlug: workspace.slug,
+              workspaceSlug: workspace.id,
               sessionId,
               files: filesToSave,
             })
