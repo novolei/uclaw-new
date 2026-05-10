@@ -846,3 +846,48 @@ pub struct SessionCostRollup {
     /// Most-recent record's created_at (epoch ms).
     pub last_used_at: i64,
 }
+
+// ─── Permission rules ─────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRule {
+    pub id: String,
+    /// "session" | "pattern"
+    pub scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub tool_name: String,
+    /// For scope='pattern': the arg/command prefix to match. None for session scope.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// "allow" | "block" | "ask"
+    pub mode: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionAuditEntry {
+    pub id: String,
+    pub session_id: String,
+    pub tool_name: String,
+    pub args_hash: String,
+    /// "auto_approve" | "user_approve" | "user_deny" | "blocked"
+    pub decision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePermissionRuleInput {
+    pub scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub tool_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    pub mode: String,
+}

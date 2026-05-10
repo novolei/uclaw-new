@@ -599,22 +599,30 @@ impl LoopDelegate for ChatDelegate {
                         "Evaluating tool approval"
                     );
 
-                    // Consult SafetyManager with the session safety mode
+                    // Consult SafetyManager with the session safety mode.
+                    // Uses the DB-backed resolver when AppState is available
+                    // (the normal case in the running app); falls back to the
+                    // in-memory shim if not (keeps any test path that doesn't
+                    // wire AppState working).
                     let decision = {
+                        use tauri::Manager;
                         let mgr = self.safety_manager.read().await;
-                        if let Some(ref mode) = self.safety_mode {
-                            // Use session-level safety mode override
-                            match mode {
-                                SafetyMode::Yolo => ApprovalDecision::AutoApprove,
-                                SafetyMode::Ask | SafetyMode::Supervised => {
-                                    // Pass session mode as override so it takes precedence
-                                    // over global policy mode
-                                    mgr.should_approve(&tc.name, &tc.arguments, &tool_approval, Some(mode))
-                                }
-                            }
+                        let db_state = self.app_handle.try_state::<crate::app::AppState>();
+                        let session_mode = self.safety_mode.as_ref();
+                        // Yolo session override short-circuits without touching DB
+                        if matches!(session_mode, Some(SafetyMode::Yolo)) {
+                            ApprovalDecision::AutoApprove
+                        } else if let Some(state) = db_state {
+                            mgr.should_approve_with_db(
+                                &state.db,
+                                &self.conversation_id,
+                                &tc.name,
+                                &tc.arguments,
+                                &tool_approval,
+                                session_mode,
+                            )
                         } else {
-                            // No session override — use SafetyManager's global policy
-                            mgr.should_approve(&tc.name, &tc.arguments, &tool_approval, None)
+                            mgr.should_approve(&tc.name, &tc.arguments, &tool_approval, session_mode)
                         }
                     };
 

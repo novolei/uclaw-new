@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use crate::agent::tools::tool::ApprovalRequirement;
 
+pub mod permissions;
+
 // ─── Types ──────────────────────────────────────────────────────────────
 
 /// Safety mode determines how tool approval is handled
@@ -236,6 +238,33 @@ impl SafetyManager {
         );
 
         decision
+    }
+
+    /// DB-backed approval resolver. Replaces the in-memory `should_approve`
+    /// flow with one that consults `tool_permission_rules` (session + pattern
+    /// scopes) before falling through to the legacy global tier, and writes
+    /// one row to `permission_audit_log` per call.
+    ///
+    /// Existing `should_approve` is kept for tests / call sites that don't
+    /// have a DB handle.
+    pub fn should_approve_with_db(
+        &self,
+        db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
+        session_id: &str,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+        tool_approval: &ApprovalRequirement,
+        mode_override: Option<&SafetyMode>,
+    ) -> ApprovalDecision {
+        permissions::resolve_decision(
+            db,
+            &self.policy,
+            session_id,
+            tool_name,
+            arguments,
+            tool_approval,
+            mode_override,
+        )
     }
 
     /// Assess the risk of a shell command
