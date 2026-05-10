@@ -1,22 +1,35 @@
 /**
  * PermissionsSettings — Settings → 工具权限 tab.
  *
- * Two sections:
- *   1. Rules table — add / delete session + pattern rules
- *   2. Audit log table — most-recent decisions across all sessions
+ * Three sections:
+ *   1. Global allow / block lists — legacy whole-tool whitelist + blocklist
+ *      from `safety_policy.json`. Most users should NOT add to allow here:
+ *      whitelisting `bash` means every `rm -rf` auto-passes. Use pattern
+ *      rules (section 2) for granular trust. This section exists so the
+ *      whitelist that previously drove "始终允许" is finally visible.
+ *   2. Permission rules — V14 session + pattern rules (the granular tier).
+ *   3. Audit log — most-recent decisions across all sessions.
  *
  * Live update: re-fetch on mount; manual refresh button.
  */
 
 import * as React from 'react'
-import { Trash2, Plus, RefreshCw } from 'lucide-react'
+import { Trash2, Plus, RefreshCw, ShieldCheck, ShieldOff } from 'lucide-react'
 import {
   listPermissionRules,
   createPermissionRule,
   deletePermissionRule,
   listPermissionAudit,
+  getSafetyPolicy,
+  removeAutoApprovedTool,
+  unblockTool,
 } from '@/lib/tauri-bridge'
-import type { PermissionRule, PermissionAuditEntry, CreatePermissionRuleInput } from '@/lib/types'
+import type {
+  PermissionRule,
+  PermissionAuditEntry,
+  CreatePermissionRuleInput,
+  SafetyPolicyResponse,
+} from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
@@ -41,6 +54,7 @@ function formatTime(epochMs: number): string {
 export function PermissionsSettings(): React.ReactElement {
   const [rules, setRules] = React.useState<PermissionRule[]>([])
   const [audit, setAudit] = React.useState<PermissionAuditEntry[]>([])
+  const [policy, setPolicy] = React.useState<SafetyPolicyResponse | null>(null)
   const [loading, setLoading] = React.useState(true)
   const [draft, setDraft] = React.useState<CreatePermissionRuleInput>({
     scope: 'pattern', toolName: '', target: '', mode: 'allow',
@@ -49,17 +63,28 @@ export function PermissionsSettings(): React.ReactElement {
   const refetch = React.useCallback(async () => {
     setLoading(true)
     try {
-      const [r, a] = await Promise.all([
+      const [r, a, p] = await Promise.all([
         listPermissionRules(),
         listPermissionAudit(undefined, 100),
+        getSafetyPolicy(),
       ])
       setRules(r)
       setAudit(a)
+      setPolicy(p)
     } finally {
       setLoading(false)
     }
   }, [])
   React.useEffect(() => { void refetch() }, [refetch])
+
+  const onRemoveAllow = async (toolName: string) => {
+    await removeAutoApprovedTool({ toolName })
+    await refetch()
+  }
+  const onUnblock = async (toolName: string) => {
+    await unblockTool({ toolName })
+    await refetch()
+  }
 
   const onAddRule = async () => {
     if (!draft.toolName.trim()) return
@@ -79,17 +104,86 @@ export function PermissionsSettings(): React.ReactElement {
     await refetch()
   }
 
+  const allowList = policy?.autoApprovedTools ?? []
+  const blockList = policy?.blockedTools ?? []
+
   return (
     <div className="space-y-6 pb-8">
+      {/* Global tier — legacy whole-tool whitelist + blocklist */}
+      <section>
+        <div className="mb-2.5 flex items-center justify-between">
+          <h3 className="text-[12px] font-semibold uppercase tracking-widest text-muted-foreground/70">
+            全局放行 / 阻止
+          </h3>
+          <Button size="sm" variant="ghost" onClick={() => void refetch()} disabled={loading} title="刷新">
+            <RefreshCw className="size-3.5" />
+          </Button>
+        </div>
+        <p className="mb-2 text-[11.5px] text-muted-foreground/70 leading-relaxed">
+          全局放行 = 该工具的<b>所有</b>调用自动通过（包括 <code className="px-1 rounded bg-muted/60">bash rm -rf</code> 这种）。粒度过粗，建议改用下方"权限规则"针对命令前缀放行。
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          {/* Allow list */}
+          <div className="rounded-lg border border-green-500/30 bg-green-500/5 p-2">
+            <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-green-700 dark:text-green-400">
+              <ShieldCheck className="size-3.5" />
+              全局放行（auto-approve）
+            </div>
+            {allowList.length === 0 ? (
+              <div className="text-[11.5px] text-muted-foreground/60 px-1 py-2">空</div>
+            ) : (
+              <ul className="space-y-1">
+                {allowList.map((tool) => (
+                  <li key={tool} className="flex items-center justify-between gap-2 px-1.5 py-1 rounded hover:bg-green-500/10 group">
+                    <code className="font-mono text-[12px]">{tool}</code>
+                    <Button
+                      size="sm" variant="ghost"
+                      onClick={() => void onRemoveAllow(tool)}
+                      className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100"
+                      title="移除"
+                    >
+                      <Trash2 className="size-3 text-muted-foreground/70" />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          {/* Block list */}
+          <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-2">
+            <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-red-700 dark:text-red-400">
+              <ShieldOff className="size-3.5" />
+              全局阻止（block）
+            </div>
+            {blockList.length === 0 ? (
+              <div className="text-[11.5px] text-muted-foreground/60 px-1 py-2">空</div>
+            ) : (
+              <ul className="space-y-1">
+                {blockList.map((tool) => (
+                  <li key={tool} className="flex items-center justify-between gap-2 px-1.5 py-1 rounded hover:bg-red-500/10 group">
+                    <code className="font-mono text-[12px]">{tool}</code>
+                    <Button
+                      size="sm" variant="ghost"
+                      onClick={() => void onUnblock(tool)}
+                      className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100"
+                      title="解除"
+                    >
+                      <Trash2 className="size-3 text-muted-foreground/70" />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </section>
+
       {/* Rules section */}
       <section>
         <div className="mb-2.5 flex items-center justify-between">
           <h3 className="text-[12px] font-semibold uppercase tracking-widest text-muted-foreground/70">
             权限规则
           </h3>
-          <Button size="sm" variant="ghost" onClick={() => void refetch()} disabled={loading}>
-            <RefreshCw className="size-3.5" />
-          </Button>
         </div>
 
         {/* Rule editor */}

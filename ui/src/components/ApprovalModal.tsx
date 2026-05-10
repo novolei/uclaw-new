@@ -2,8 +2,17 @@
  * ApprovalModal - 工具调用审批弹窗
  *
  * 当后端请求审批时弹出，展示工具名称、参数、风险等级，
- * 提供"批准"/"拒绝"/"始终允许"操作。
- * 使用 shadcn AlertDialog。
+ * 提供"批准"/"拒绝"/"本次会话允许"/"始终允许"操作。
+ *
+ * "始终允许" semantics differ by tool shape:
+ *   - When `request.command` is present (e.g. bash) → create a V14 pattern
+ *     rule with target = the exact command. Matcher uses prefix matching, so
+ *     this allows the same command + longer ones starting with it but does
+ *     NOT whitelist the whole tool. Avoids the "click 始终允许 on `bash ls`
+ *     and now `bash rm -rf /` auto-passes too" footgun.
+ *   - Without a command (read_file, write_file, etc.) → legacy
+ *     `alwaysAllow=true` adds the whole tool to the global whitelist. These
+ *     tools are uniform enough that "trust this tool" is the right concept.
  */
 
 import * as React from 'react'
@@ -102,6 +111,49 @@ export function ApprovalModal(): React.ReactElement {
     }
   }
 
+  /**
+   * "始终允许" handler — chooses between pattern rule (when the call has a
+   * command, like bash) and legacy whole-tool whitelist (everything else).
+   */
+  const respondAlwaysAllow = async (): Promise<void> => {
+    if (!request || loading) return
+    setLoading(true)
+    try {
+      const command = request.command?.trim()
+      if (command) {
+        // Granular: V14 pattern rule, target = exact command (prefix match
+        // means future "<command> <more args>" also passes).
+        await createPermissionRule({
+          scope: 'pattern',
+          toolName: request.toolName,
+          target: command,
+          mode: 'allow',
+        })
+        await approveToolCall({
+          sessionId: request.sessionId,
+          toolId: request.toolId,
+          approved: true,
+          alwaysAllow: false,
+        })
+      } else {
+        // Legacy: whole-tool whitelist via SafetyManager.add_auto_approved.
+        await approveToolCall({
+          sessionId: request.sessionId,
+          toolId: request.toolId,
+          approved: true,
+          alwaysAllow: true,
+        })
+      }
+    } catch (err) {
+      console.error('[ApprovalModal] always-allow failed:', err)
+    } finally {
+      setLoading(false)
+      setRequest(null)
+    }
+  }
+
+  const hasCommand = !!request?.command?.trim()
+
   const risk = getRiskConfig(request?.riskLevel)
   const RiskIcon = risk.icon
 
@@ -190,12 +242,14 @@ export function ApprovalModal(): React.ReactElement {
           )}
           <Button
             variant="outline"
-            onClick={() => respond(true, true)}
+            onClick={respondAlwaysAllow}
             disabled={loading}
             className="border-muted-foreground/30"
-            title="把工具加入全局白名单"
+            title={hasCommand
+              ? `为命令 "${request?.command}" 创建放行规则（匹配该命令前缀）`
+              : '把工具加入全局白名单（所有调用自动通过）'}
           >
-            始终允许
+            {hasCommand ? '始终允许这条命令' : '始终允许'}
           </Button>
           <AlertDialogAction asChild>
             <Button onClick={() => respond(true)} disabled={loading}>

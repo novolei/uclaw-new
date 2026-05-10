@@ -485,6 +485,94 @@ function RetryAttemptItem({
 }
 
 /** AgentMessageItem 属性接口 */
+/** 格式化耗时（毫秒 → 可读字符串） */
+export function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  const seconds = ms / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)}s`
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return `${m}m ${s.toFixed(0)}s`
+}
+
+/** 构建 usage tooltip 多行文本 */
+export function buildUsageTooltip(durationMs: number, usage?: AgentEventUsage): string {
+  const lines: string[] = []
+  lines.push(`耗时: ${formatDuration(durationMs)}`)
+  if (usage) {
+    const pureInput = usage.inputTokens - (usage.cacheReadTokens ?? 0) - (usage.cacheCreationTokens ?? 0)
+    if (pureInput > 0) lines.push(`输入: ${pureInput.toLocaleString()}`)
+    if (usage.outputTokens) lines.push(`输出: ${usage.outputTokens.toLocaleString()}`)
+    if (usage.cacheCreationTokens) lines.push(`缓存写入: ${usage.cacheCreationTokens.toLocaleString()}`)
+    if (usage.cacheReadTokens) lines.push(`缓存读取: ${usage.cacheReadTokens.toLocaleString()}`)
+  }
+  return lines.join('\n')
+}
+
+/** 耗时徽章 — 悬浮显示 token 用量明细（SDKMessageRenderer 复用） */
+export function DurationBadge({ durationMs, usage }: { durationMs: number; usage?: AgentEventUsage }): React.ReactElement {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="text-[12px] text-muted-foreground/50 tabular-nums cursor-default hover:text-muted-foreground/70 transition-colors">
+          {formatDuration(durationMs)}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        <p className="whitespace-pre-line text-left">{buildUsageTooltip(durationMs, usage)}</p>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+/** 统一消息元信息栏 — 耗时 + token 用量合并为单行，单一 tooltip */
+function MessageMetaBar({ durationMs, usage }: { durationMs?: number; usage?: AgentEventUsage }): React.ReactElement | null {
+  if (durationMs == null && usage == null) return null
+
+  const parts: string[] = []
+  if (durationMs != null) parts.push(formatDuration(durationMs))
+  if (usage) {
+    const { inputTokens, outputTokens, costUsd } = usage
+    parts.push(`${inputTokens.toLocaleString()} 输入`)
+    parts.push(`${(outputTokens ?? 0).toLocaleString()} 输出`)
+    if (costUsd != null && costUsd > 0) parts.push(`$${costUsd.toFixed(4)}`)
+  }
+
+  const tooltipText = durationMs != null ? buildUsageTooltip(durationMs, usage) : null
+
+  const content = (
+    <span className="inline-flex items-center gap-1 text-[12px] text-muted-foreground/50 tabular-nums cursor-default hover:text-muted-foreground/70 transition-colors animate-in fade-in duration-300">
+      <Zap size={11} strokeWidth={2} className="shrink-0" />
+      {parts.map((p, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && <span className="opacity-40">·</span>}
+          <span>{p}</span>
+        </React.Fragment>
+      ))}
+    </span>
+  )
+
+  if (!tooltipText) return content
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{content}</TooltipTrigger>
+      <TooltipContent side="top">
+        <p className="whitespace-pre-line text-left">{tooltipText}</p>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+/** 相对时间戳 — 简化显示，如 "2m ago" / "刚刚" */
+function formatRelativeShort(ts: number): string {
+  const diff = Math.floor((Date.now() - ts) / 1000)
+  if (diff < 60) return '刚刚'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return new Date(ts).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
+}
+
 interface AgentMessageItemProps {
   message: AgentMessage
   sessionPath?: string | null
@@ -591,97 +679,6 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
 
   return null
 }
-
-/** 格式化耗时（毫秒 → 可读字符串） */
-export function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  const seconds = ms / 1000
-  if (seconds < 60) return `${seconds.toFixed(1)}s`
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  return `${m}m ${s.toFixed(0)}s`
-}
-
-/** 构建 usage tooltip 多行文本 */
-export function buildUsageTooltip(durationMs: number, usage?: AgentEventUsage): string {
-  const lines: string[] = []
-  lines.push(`耗时: ${formatDuration(durationMs)}`)
-
-  if (usage) {
-    const pureInput = usage.inputTokens - (usage.cacheReadTokens ?? 0) - (usage.cacheCreationTokens ?? 0)
-    if (pureInput > 0) lines.push(`输入: ${pureInput.toLocaleString()}`)
-    if (usage.outputTokens) lines.push(`输出: ${usage.outputTokens.toLocaleString()}`)
-    if (usage.cacheCreationTokens) lines.push(`缓存写入: ${usage.cacheCreationTokens.toLocaleString()}`)
-    if (usage.cacheReadTokens) lines.push(`缓存读取: ${usage.cacheReadTokens.toLocaleString()}`)
-  }
-
-  return lines.join('\n')
-}
-
-/** 耗时徽章 — 悬浮显示 token 用量明细（SDKMessageRenderer 复用） */
-export function DurationBadge({ durationMs, usage }: { durationMs: number; usage?: AgentEventUsage }): React.ReactElement {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span className="text-[12px] text-muted-foreground/50 tabular-nums cursor-default hover:text-muted-foreground/70 transition-colors">
-          {formatDuration(durationMs)}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="top">
-        <p className="whitespace-pre-line text-left">{buildUsageTooltip(durationMs, usage)}</p>
-      </TooltipContent>
-    </Tooltip>
-  )
-}
-
-/** 统一消息元信息栏 — 耗时 + token 用量合并为单行，单一 tooltip */
-function MessageMetaBar({ durationMs, usage }: { durationMs?: number; usage?: AgentEventUsage }): React.ReactElement | null {
-  if (durationMs == null && usage == null) return null
-
-  const parts: string[] = []
-  if (durationMs != null) parts.push(formatDuration(durationMs))
-  if (usage) {
-    const { inputTokens, outputTokens, costUsd } = usage
-    parts.push(`${inputTokens.toLocaleString()} 输入`)
-    parts.push(`${(outputTokens ?? 0).toLocaleString()} 输出`)
-    if (costUsd != null && costUsd > 0) parts.push(`$${costUsd.toFixed(4)}`)
-  }
-
-  const tooltipText = durationMs != null ? buildUsageTooltip(durationMs, usage) : null
-
-  const content = (
-    <span className="inline-flex items-center gap-1 text-[12px] text-muted-foreground/50 tabular-nums cursor-default hover:text-muted-foreground/70 transition-colors animate-in fade-in duration-300">
-      <Zap size={11} strokeWidth={2} className="shrink-0" />
-      {parts.map((p, i) => (
-        <React.Fragment key={i}>
-          {i > 0 && <span className="opacity-40">·</span>}
-          <span>{p}</span>
-        </React.Fragment>
-      ))}
-    </span>
-  )
-
-  if (!tooltipText) return content
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>{content}</TooltipTrigger>
-      <TooltipContent side="top">
-        <p className="whitespace-pre-line text-left">{tooltipText}</p>
-      </TooltipContent>
-    </Tooltip>
-  )
-}
-
-/** 相对时间戳 — 简化显示，如 "2m ago" / "刚刚" */
-function formatRelativeShort(ts: number): string {
-  const diff = Math.floor((Date.now() - ts) / 1000)
-  if (diff < 60) return '刚刚'
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-  return new Date(ts).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
-}
-
 
 /** Agent 运行指示器 — Shimmer Spinner + 无括号的运行时间 */
 function AgentRunningIndicator({ startedAt }: { startedAt?: number }): React.ReactElement {
