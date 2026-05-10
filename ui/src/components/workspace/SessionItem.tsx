@@ -8,6 +8,8 @@ interface SessionItemProps {
   titleEmoji: string
   titlePending: boolean
   isActive: boolean
+  /** Whether the agent loop is currently running for this session. */
+  running?: boolean
   onClick: () => void
   onDelete?: () => void
 }
@@ -17,6 +19,7 @@ export function SessionItem({
   titleEmoji,
   titlePending,
   isActive,
+  running,
   onClick,
   onDelete,
 }: SessionItemProps): React.ReactElement {
@@ -44,6 +47,15 @@ export function SessionItem({
         <span className="flex-1 h-3.5 rounded bg-muted-foreground/20 animate-pulse" />
       ) : (
         <span className="flex-1 truncate">{title || 'New session'}</span>
+      )}
+      {/* Always-visible running indicator — pulsing primary dot when this
+          session has an active agent loop. Lets the user spot in-flight
+          tasks across sessions without switching tabs. */}
+      {running && !titlePending && (
+        <span
+          className="shrink-0 size-1.5 rounded-full bg-primary animate-pulse shadow-[0_0_6px_hsl(var(--primary))] group-hover:opacity-0 transition-opacity"
+          title="任务执行中"
+        />
       )}
       {onDelete && (
         <button

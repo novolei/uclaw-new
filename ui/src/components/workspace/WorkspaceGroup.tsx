@@ -1,7 +1,9 @@
 import * as React from 'react'
+import { useAtomValue } from 'jotai'
 import { ChevronRight, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SessionItem } from './SessionItem'
+import { agentSessionIndicatorMapAtom } from '@/atoms/agent-atoms'
 import type { WorkspaceSession } from '@/atoms/workspace'
 
 interface WorkspaceGroupProps {
@@ -27,6 +29,7 @@ export function WorkspaceGroup({
   onSelectWorkspace,
 }: WorkspaceGroupProps): React.ReactElement {
   const [expanded, setExpanded] = React.useState(isActive)
+  const indicatorMap = useAtomValue(agentSessionIndicatorMapAtom)
 
   React.useEffect(() => {
     if (isActive) setExpanded(true)
@@ -68,6 +71,7 @@ export function WorkspaceGroup({
               titleEmoji={s.titleEmoji}
               titlePending={s.titlePending}
               isActive={activeSessionId === s.id}
+              running={indicatorMap.get(s.id) === 'running'}
               onClick={() => onSelectSession(s.id)}
               onDelete={onDeleteSession ? () => onDeleteSession(s.id) : undefined}
             />
