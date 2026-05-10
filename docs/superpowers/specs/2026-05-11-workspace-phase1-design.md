@@ -43,12 +43,12 @@ If implementation discovers a bug in non-goal territory, surface it as a separat
 
 ## 4. Design
 
-### 4.1 Database migration (V15)
+### 4.1 Database migration (V16)
 
 Append a new migration to `src-tauri/src/db/migrations.rs`. **Idempotent, no schema changes.**
 
 ```sql
--- V15_workspace_default_and_orphan_heal
+-- V16_workspace_default_and_orphan_heal
 
 -- (1) Persist 'default' workspace row so list_spaces() never has to synthesize it.
 INSERT OR IGNORE INTO spaces (id, name, icon, path, created_at, updated_at)
@@ -66,11 +66,11 @@ WHERE space_id NOT IN (SELECT id FROM spaces);
 
 **Rationale for `WHERE … NOT IN (SELECT id FROM spaces)`**: subquery is evaluated after the `INSERT OR IGNORE` above, so 'default' is guaranteed to exist when this UPDATE runs. Orphaned sessions land somewhere known.
 
-**Rerun safety**: both statements are idempotent; running V15 twice is a no-op.
+**Rerun safety**: both statements are idempotent; running V16 twice is a no-op.
 
 ### 4.2 Remove the synthetic-default fallback
 
-In `tauri_commands.rs::list_spaces`, the branch that returns an in-memory `vec![SpaceResponse { id: "default", … }]` when the table is empty becomes dead after V15. Delete it. `list_spaces` now always reads from DB. Saves ~10 lines and one source of truth.
+In `tauri_commands.rs::list_spaces`, the branch that returns an in-memory `vec![SpaceResponse { id: "default", … }]` when the table is empty becomes dead after V16. Delete it. `list_spaces` now always reads from DB. Saves ~10 lines and one source of truth.
 
 ### 4.3 Application-layer integrity (validation + delete-cascade)
 
@@ -166,34 +166,34 @@ These features did not actually work before Phase 1 (silent failures or dead pat
 
 All inline `#[cfg(test)]` per repo convention. Use the existing in-memory SQLite test harness pattern (search the repo for `Connection::open_in_memory` or `setup_test_db()` to copy).
 
-1. **`migrations::tests::v15_inserts_default_idempotent`**
-   - Open in-memory DB, run all migrations through V15.
+1. **`migrations::tests::v16_inserts_default_idempotent`**
+   - Open in-memory DB, run all migrations through V16.
    - Assert `SELECT COUNT(*) FROM spaces WHERE id='default'` = 1.
-   - Run V15 again manually. Assert count is still 1.
+   - Run V16 again manually. Assert count is still 1.
 
-2. **`migrations::tests::v15_heals_orphan_agent_sessions`**
+2. **`migrations::tests::v16_heals_orphan_agent_sessions`**
    - Open in-memory DB, run migrations through V14.
    - Insert an `agent_sessions` row with `space_id='ghost-workspace-that-does-not-exist'`.
-   - Run V15.
+   - Run V16.
    - Assert that session's `space_id` is now `'default'`.
 
 3. **`tauri_commands::tests::create_agent_session_falls_back_to_default_on_unknown_workspace`**
-   - Set up `AppState` with test DB at V15.
+   - Set up `AppState` with test DB at V16.
    - Call `create_agent_session(title=Some("test"), channel_id=None, workspace_id=Some("ghost"))`.
    - Assert: returns `Ok`, the new session's `space_id` is `'default'`.
 
 4. **`tauri_commands::tests::move_agent_session_errors_on_unknown_target`**
-   - Set up `AppState` at V15. Create a real session in `'default'`.
+   - Set up `AppState` at V16. Create a real session in `'default'`.
    - Call `move_agent_session_to_workspace(session_id, target_workspace_id="ghost")`.
    - Assert: returns `Err`. Session's `space_id` is still `'default'`.
 
 5. **`tauri_commands::tests::delete_workspace_reassigns_agent_sessions_to_default`**
-   - Set up `AppState` at V15. Create workspace `ws-x`. Create a session bound to `ws-x`.
+   - Set up `AppState` at V16. Create workspace `ws-x`. Create a session bound to `ws-x`.
    - Call `delete_workspace("ws-x")`.
    - Assert: returns `Ok`. The session's `space_id` is now `'default'`. `ws-x` no longer in `spaces`.
 
 6. **`tauri_commands::tests::delete_workspace_refuses_default`**
-   - Set up `AppState` at V15.
+   - Set up `AppState` at V16.
    - Call `delete_workspace("default")`.
    - Assert: returns `Err`. `'default'` still in `spaces`.
 
@@ -219,17 +219,17 @@ After implementation, manual smoke per the PR description checklist:
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| User has stale data: workspace deleted at runtime, sessions become orphaned post-Phase-1 | Low | §4.3's `delete_workspace` UPDATE handles user-initiated deletes within Phase 1. V15 heals existing orphans on first boot. The only remaining gap is direct DB tampering, which Phase 1 explicitly accepts. |
+| User has stale data: workspace deleted at runtime, sessions become orphaned post-Phase-1 | Low | §4.3's `delete_workspace` UPDATE handles user-initiated deletes within Phase 1. V16 heals existing orphans on first boot. The only remaining gap is direct DB tampering, which Phase 1 explicitly accepts. |
 | Removing image preview from `handleAddToChat` regresses chat UX (no thumbnails) | Low | Document in PR. Phase 2 restores `read_attached_file`. |
 | `createWorkspace` return shape (`{id,name,icon,path,createdAt}`) doesn't match what `agentWorkspacesAtom` expects (`{id,name,slug,createdAt,updatedAt}`) | High | Step 6 (slug removal) fixes this. Adapt the atom shape and any consumers. TS compiler enforces. |
 | Tests for migrations may not exist; need to bootstrap test infrastructure | Low | Search for `setup_test_db`, `Connection::open_in_memory` in repo first. CLAUDE.md says tests are inline `#[cfg(test)]`; pattern should exist. |
-| Migration runs against production DB at next launch — cannot easily roll back if something goes wrong | Medium | (1) Migration is idempotent and additive (no DROP, no ALTER COLUMN). (2) Test on a copy of `~/.uclaw/uclaw.db` before merging. (3) The V15 changes are limited to one INSERT and one UPDATE — the blast radius is contained. |
+| Migration runs against production DB at next launch — cannot easily roll back if something goes wrong | Medium | (1) Migration is idempotent and additive (no DROP, no ALTER COLUMN). (2) Test on a copy of `~/.uclaw/uclaw.db` before merging. (3) The V16 changes are limited to one INSERT and one UPDATE — the blast radius is contained. |
 
 ## 7. Implementation Order (PR shape)
 
 CLAUDE.md prefers one logical change per commit. Suggested commit sequence (single PR, bisectable):
 
-1. `chore(db): add V15 migration — persist default workspace + heal agent_session orphans` (migration + 2 unit tests)
+1. `chore(db): add V16 migration — persist default workspace + heal agent_session orphans` (migration + 2 unit tests)
 2. `refactor(workspace): remove synthetic-default branch from list_spaces` (10-line cleanup)
 3. `feat(workspace): IPC validation + delete_workspace re-homes agent_sessions to default` (validation + cascade + 4 unit tests)
 4. `chore(ui): remove 17 phantom IPC wrappers from tauri-bridge` (deletion only — TS will fail to compile after this; that's intentional)
@@ -247,5 +247,5 @@ None at design time. If implementation surfaces ambiguity (e.g. `setup_test_db` 
 ## 9. References
 
 - Survey report (in chat history, 2026-05-11): catalog of phantom IPCs, schema state, and dual-identity issues.
-- `CLAUDE.md` working-style guidelines, especially "Active migration registry" (V15 is the next free V-number after V14 `tool_permission_rules`).
+- `CLAUDE.md` working-style guidelines, especially "Active migration registry" (V16 is the next free V-number after V14 `tool_permission_rules`).
 - Prior Phase 1-style PRs in repo: #33, #41 for migration shape; #36 for TS cleanup style.
