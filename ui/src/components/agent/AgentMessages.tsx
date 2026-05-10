@@ -6,7 +6,7 @@
 
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { Bot, FileText, FileImage, RotateCw, AlertTriangle, ChevronDown, ChevronRight, Download } from 'lucide-react'
+import { Bot, FileText, FileImage, RotateCw, AlertTriangle, ChevronDown, ChevronRight, Download, Zap } from 'lucide-react'
 import { ImageLightbox } from '@/components/ui/image-lightbox'
 import { WelcomeEmptyState } from '@/components/welcome/WelcomeEmptyState'
 import {
@@ -576,9 +576,10 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
           )}
         </MessageContent>
         {/* 操作栏：左侧靠左排列 */}
-        {(message.durationMs != null || message.content) && (
+        {(message.durationMs != null || message.usage || message.content) && (
           <MessageActions className="pl-[46px] mt-0.5 justify-start gap-2.5">
             {message.durationMs != null && <DurationBadge durationMs={message.durationMs} usage={message.usage} />}
+            {message.usage && <TurnCostBar usage={message.usage} />}
             {message.content && <CopyButton content={message.content} />}
           </MessageActions>
         )}
@@ -628,6 +629,25 @@ export function DurationBadge({ durationMs, usage }: { durationMs: number; usage
         <p className="whitespace-pre-line text-left">{buildUsageTooltip(durationMs, usage)}</p>
       </TooltipContent>
     </Tooltip>
+  )
+}
+
+/** 每轮 token 用量行 — Steward 风格内联显示 */
+function TurnCostBar({ usage }: { usage: AgentEventUsage }): React.ReactElement {
+  const { inputTokens, outputTokens, costUsd } = usage
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground/50 tabular-nums animate-in fade-in slide-in-from-bottom-1 duration-300">
+      <Zap size={11} strokeWidth={2} />
+      <span>{inputTokens.toLocaleString()} 输入</span>
+      <span className="opacity-50">·</span>
+      <span>{(outputTokens ?? 0).toLocaleString()} 输出</span>
+      {costUsd != null && costUsd > 0 && (
+        <>
+          <span className="opacity-50">·</span>
+          <span>${costUsd.toFixed(4)}</span>
+        </>
+      )}
+    </span>
   )
 }
 
