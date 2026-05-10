@@ -436,6 +436,12 @@ pub fn llm_signals_tool_intent(text: &str) -> bool {
         "接下来", "下一步", "我来", "让我", "我现在", "现在我",
         "我将", "我要", "马上", "继续", "我来更新", "我来编辑",
         "我来写", "我来调用", "我来读", "下面我", "接着我",
+        // "宣告了就不做"型短语 — 模型常说"现在开始写XX"然后直接结束 turn。
+        // 这些必须触发 nudge，否则 plan_update done:true 配合空文本会让
+        // loop 误判为完成。参考: 泡泡龙 session 中 "现在开始写完整的泡泡龙游戏 HTML 文件！"
+        "现在开始", "开始写", "开始编写", "开始构建", "开始创建",
+        "开始实现", "开始制作", "开始添加", "开始修改", "开始整合",
+        "我来创建", "我来实现", "我来构建", "我来制作", "我来添加",
     ];
     zh_patterns.iter().any(|p| text.contains(p))
 }
@@ -465,6 +471,16 @@ mod tool_intent_tests {
         assert!(long.len() >= 600);
         // Long replies are usually completion summaries, not pre-action — skip nudge.
         assert!(!llm_signals_tool_intent(&long));
+    }
+
+    #[test]
+    fn announce_then_stop_phrases_match() {
+        // Regression: 泡泡龙 session — agent said these and then returned
+        // without ever calling write_file. These must trigger the nudge.
+        assert!(llm_signals_tool_intent("现在开始写完整的泡泡龙游戏 HTML 文件！"));
+        assert!(llm_signals_tool_intent("现在开始构建 **泡泡龙游戏**！"));
+        assert!(llm_signals_tool_intent("我来创建主入口文件"));
+        assert!(llm_signals_tool_intent("开始编写核心引擎"));
     }
 
     #[test]
