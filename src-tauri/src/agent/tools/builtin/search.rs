@@ -58,7 +58,11 @@ impl GrepTool {
             let path = entry.path();
             if path.is_dir() {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !name.starts_with('.') && name != "node_modules" && name != "target" {
+                // Descend into .uclaw (plans/config); skip .git and heavy build dirs.
+                let skip = (name.starts_with('.') && name != ".uclaw")
+                    || name == "node_modules"
+                    || name == "target";
+                if !skip {
                     Box::pin(self.search_dir(&path, re, include, results)).await?;
                 }
             } else if path.is_file() {
@@ -145,7 +149,11 @@ impl GlobTool {
 
             if path.is_dir() {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !name.starts_with('.') && name != "node_modules" && name != "target" {
+                // Descend into .uclaw (plans/config); skip .git and heavy build dirs.
+                let skip = (name.starts_with('.') && name != ".uclaw")
+                    || name == "node_modules"
+                    || name == "target";
+                if !skip {
                     // Check if directory matches pattern for recursive glob
                     let dir_pattern = format!("{}/**", relative_str);
                     if self.simple_glob_match(&dir_pattern, pattern) || pattern.contains("**") {

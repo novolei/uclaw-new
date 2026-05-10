@@ -162,7 +162,10 @@ pub async fn run_agentic_loop(
                         let mut blocks = Vec::new();
                         if let Some(ref t) = thinking {
                             if !t.is_empty() {
-                                blocks.push(ContentBlock::Thinking { thinking: t.clone() });
+                                blocks.push(ContentBlock::Thinking {
+                                    thinking: t.clone(),
+                                    signature: thinking_signature.clone(),
+                                });
                             }
                         }
                         blocks.push(ContentBlock::Text { text: text.clone() });
@@ -184,7 +187,10 @@ pub async fn run_agentic_loop(
                         let mut blocks = Vec::new();
                         if let Some(ref t) = thinking {
                             if !t.is_empty() {
-                                blocks.push(ContentBlock::Thinking { thinking: t.clone() });
+                                blocks.push(ContentBlock::Thinking {
+                                    thinking: t.clone(),
+                                    signature: thinking_signature.clone(),
+                                });
                             }
                         }
                         blocks.push(ContentBlock::Text { text: text.clone() });
