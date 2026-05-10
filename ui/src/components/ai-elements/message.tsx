@@ -185,10 +185,162 @@ const MarkdownInlineCode = React.memo(function MarkdownInlineCode({
   )
 })
 
+/** 标题渲染器：h1/h2 带左侧实心条做视觉锚点；h3 纯文本 */
+const MarkdownH1 = React.memo(function MarkdownH1({
+  children,
+}: React.HTMLAttributes<HTMLHeadingElement>): React.ReactElement {
+  return (
+    <h1 className="flex items-center gap-2.5 text-[22px] font-semibold tracking-[-0.015em] mt-7 mb-3.5 first:mt-0 leading-[1.3]">
+      <span className="w-[3px] h-[18px] bg-foreground rounded-sm shrink-0" aria-hidden />
+      <span>{children}</span>
+    </h1>
+  )
+})
+
+const MarkdownH2 = React.memo(function MarkdownH2({
+  children,
+}: React.HTMLAttributes<HTMLHeadingElement>): React.ReactElement {
+  return (
+    <h2 className="flex items-center gap-2.5 text-[19px] font-semibold tracking-[-0.012em] mt-[22px] mb-3 first:mt-0 leading-[1.35]">
+      <span className="w-[3px] h-4 bg-foreground rounded-sm shrink-0" aria-hidden />
+      <span>{children}</span>
+    </h2>
+  )
+})
+
+const MarkdownH3 = React.memo(function MarkdownH3({
+  children,
+}: React.HTMLAttributes<HTMLHeadingElement>): React.ReactElement {
+  return (
+    <h3 className="text-[16px] font-semibold mt-[18px] mb-2 first:mt-0 leading-[1.4] tracking-[-0.005em]">
+      {children}
+    </h3>
+  )
+})
+
+/** 表格渲染器：包一层 card 容器，让表格有清晰边界 */
+const MarkdownTable = React.memo(function MarkdownTable({
+  children,
+}: React.HTMLAttributes<HTMLTableElement>): React.ReactElement {
+  return (
+    <div className="my-3 rounded-[10px] border border-border overflow-hidden bg-card">
+      <table className="w-full border-collapse">{children}</table>
+    </div>
+  )
+})
+
+const MarkdownThead = React.memo(function MarkdownThead({
+  children,
+}: React.HTMLAttributes<HTMLTableSectionElement>): React.ReactElement {
+  return <thead className="bg-muted/50">{children}</thead>
+})
+
+const MarkdownTr = React.memo(function MarkdownTr({
+  children,
+}: React.HTMLAttributes<HTMLTableRowElement>): React.ReactElement {
+  return (
+    <tr className="[&:not(:last-child)>td]:border-b [&>td]:border-border/40">
+      {children}
+    </tr>
+  )
+})
+
+const MarkdownTh = React.memo(function MarkdownTh({
+  children,
+}: React.HTMLAttributes<HTMLTableCellElement>): React.ReactElement {
+  return (
+    <th className="text-left px-3.5 py-2.5 text-[11.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground border-b border-border">
+      {children}
+    </th>
+  )
+})
+
+/** 递归收集 React 子树里的文本节点（用于 td 内的状态识别） */
+function extractText(node: React.ReactNode): string {
+  if (node == null || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(extractText).join('')
+  if (React.isValidElement(node)) {
+    const props = node.props as { children?: React.ReactNode }
+    return extractText(props.children)
+  }
+  return ''
+}
+
+type StatusVariant = 'success' | 'warning' | 'danger'
+
+const STATUS_PATTERNS: Array<{ re: RegExp; variant: StatusVariant }> = [
+  // Order matters: explicit failure / negation wins over completion.
+  { re: /❌|✗|未开始|尚未|failed\b|error\b/i, variant: 'danger' },
+  { re: /⏳|未完成|in[\s-]?progress\b|pending\b|wip\b/i, variant: 'warning' },
+  { re: /✅|✓|已完成/, variant: 'success' },
+]
+
+function detectStatus(text: string): StatusVariant | null {
+  for (const { re, variant } of STATUS_PATTERNS) {
+    if (re.test(text)) return variant
+  }
+  return null
+}
+
+const STATUS_CLASS: Record<StatusVariant, string> = {
+  success: 'bg-[hsl(var(--success-bg))] text-[hsl(var(--success))]',
+  warning: 'bg-[hsl(var(--warning-bg))] text-[hsl(var(--warning))]',
+  danger:  'bg-[hsl(var(--danger-bg))] text-[hsl(var(--danger))]',
+}
+
+/** 单元格渲染器：检测状态文本，自动包成 badge */
+const MarkdownTd = React.memo(function MarkdownTd({
+  children,
+}: React.HTMLAttributes<HTMLTableCellElement>): React.ReactElement {
+  const text = extractText(children).trim()
+  const variant = text ? detectStatus(text) : null
+  if (variant) {
+    return (
+      <td className="px-3.5 py-3 text-[14.5px]">
+        <span
+          data-status={variant}
+          className={cn(
+            'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[12px] font-medium',
+            STATUS_CLASS[variant],
+          )}
+        >
+          {text}
+        </span>
+      </td>
+    )
+  }
+  return <td className="px-3.5 py-3 text-[14.5px]">{children}</td>
+})
+
+const MarkdownBlockquote = React.memo(function MarkdownBlockquote({
+  children,
+}: React.HTMLAttributes<HTMLQuoteElement>): React.ReactElement {
+  return (
+    <blockquote className="my-3 pl-3 border-l-2 border-foreground/20 text-foreground/75 not-italic [&>p]:my-1">
+      {children}
+    </blockquote>
+  )
+})
+
+const MarkdownHr = React.memo(function MarkdownHr(): React.ReactElement {
+  return <hr className="my-6 border-0 border-t border-border/60" />
+})
+
 const MARKDOWN_COMPONENTS = {
   a: MarkdownLink,
   pre: MarkdownPre,
   code: MarkdownInlineCode,
+  h1: MarkdownH1,
+  h2: MarkdownH2,
+  h3: MarkdownH3,
+  table: MarkdownTable,
+  thead: MarkdownThead,
+  tr: MarkdownTr,
+  th: MarkdownTh,
+  td: MarkdownTd,
+  blockquote: MarkdownBlockquote,
+  hr: MarkdownHr,
 } as const
 
 interface MessageResponseProps {
@@ -213,13 +365,11 @@ export const MessageResponse = React.memo(
     return (
       <div
         className={cn(
-          'chat-content prose prose-sm dark:prose-invert max-w-none text-[15px] leading-relaxed',
-          'prose-p:my-1.5 prose-p:leading-[1.6] prose-li:leading-[1.6]',
+          'chat-content prose prose-sm dark:prose-invert max-w-none',
+          'prose-p:my-1.5 prose-p:leading-[1.65]',
           'prose-pre:my-0 prose-pre:bg-transparent prose-pre:p-0',
-          'prose-headings:my-2 prose-headings:font-semibold',
           'prose-a:text-primary prose-a:no-underline hover:prose-a:underline',
-          'prose-blockquote:border-l-2 prose-blockquote:border-foreground/20 prose-blockquote:text-foreground/70',
-          'prose-table:my-2 prose-th:bg-muted/40 prose-th:font-semibold',
+          'prose-strong:font-semibold prose-strong:text-foreground',
           '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
           className,
         )}

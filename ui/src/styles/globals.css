@@ -85,6 +85,13 @@
     /* 虚线边框色（新会话按钮、搜索按钮） */
     --dashed-border: 0 0% 9% / 0.35;
     --dashed-border-hover: 0 0% 9% / 0.50;
+    /* Semantic status tokens — used by chat-content table badges */
+    --success:    142 65% 35%;
+    --success-bg: 142 70% 94%;
+    --warning:    35 85% 38%;
+    --warning-bg: 40 95% 92%;
+    --danger:     0 70% 45%;
+    --danger-bg:  0 80% 96%;
   }
 
   .dark {
@@ -120,6 +127,12 @@
     /* 虚线边框色（新会话按钮、搜索按钮） */
     --dashed-border: 0 0% 98% / 0.25;
     --dashed-border-hover: 0 0% 98% / 0.40;
+    --success:    142 50% 60%;
+    --success-bg: 142 35% 18%;
+    --warning:    40 80% 65%;
+    --warning-bg: 35 40% 18%;
+    --danger:     0 65% 65%;
+    --danger-bg:  0 40% 18%;
   }
 
   /* ===== 特殊风格主题 ===== */
@@ -157,6 +170,9 @@
     /* 虚线边框色 */
     --dashed-border: 205 50% 50% / 0.30;
     --dashed-border-hover: 205 50% 50% / 0.45;
+    --success: 175 50% 35%; --success-bg: 175 50% 94%;
+    --warning: 35 80% 40%;  --warning-bg: 35 85% 92%;
+    --danger:  350 65% 45%; --danger-bg:  350 70% 95%;
   }
 
   /* 苍穹暮色 (ocean-dark) */
@@ -192,6 +208,9 @@
     /* 虚线边框色 */
     --dashed-border: 205 60% 55% / 0.35;
     --dashed-border-hover: 205 60% 55% / 0.50;
+    --success: 175 45% 55%; --success-bg: 175 30% 18%;
+    --warning: 35 75% 65%;  --warning-bg: 35 35% 18%;
+    --danger:  350 60% 60%; --danger-bg:  350 35% 18%;
   }
 
   /* ===== 森系色系 ===== */
@@ -229,6 +248,9 @@
     /* 虚线边框色 */
     --dashed-border: 150 35% 38% / 0.35;
     --dashed-border-hover: 150 35% 38% / 0.50;
+    --success: 145 60% 32%; --success-bg: 145 50% 92%;
+    --warning: 35 85% 38%;  --warning-bg: 40 90% 92%;
+    --danger:  0 70% 45%;   --danger-bg:  0 75% 95%;
   }
 
   /* 森息夜语（深色） */
@@ -264,6 +286,9 @@
     /* 虚线边框色 */
     --dashed-border: 150 35% 45% / 0.35;
     --dashed-border-hover: 150 35% 45% / 0.50;
+    --success: 150 50% 60%; --success-bg: 150 30% 18%;
+    --warning: 40 75% 60%;  --warning-bg: 40 35% 18%;
+    --danger:  0 60% 60%;   --danger-bg:  0 35% 18%;
   }
 
   /* ===== 赛博朋克色系 ===== */
@@ -306,6 +331,9 @@
     /* 虚线边框色 */
     --dashed-border: 18 20% 50% / 0.40;
     --dashed-border-hover: 18 20% 50% / 0.55;
+    --success: 145 50% 35%; --success-bg: 145 40% 93%;
+    --warning: 35 80% 40%;  --warning-bg: 35 80% 92%;
+    --danger:  0 65% 45%;   --danger-bg:  0 70% 95%;
   }
 
   /* ===== 新暖纸色系 ===== */
@@ -341,6 +369,9 @@
     --code-bg: 210 35% 14%;
     --dashed-border: 205 28% 46% / 0.30;
     --dashed-border-hover: 205 28% 46% / 0.45;
+    --success: 95 35% 35%;  --success-bg: 95 30% 92%;
+    --warning: 30 65% 45%;  --warning-bg: 30 60% 90%;
+    --danger:  10 60% 45%;  --danger-bg:  10 60% 94%;
   }
 
   /* ===== 青夜色系 ===== */
@@ -376,6 +407,9 @@
     --code-bg: 205 30% 10%;
     --dashed-border: 340 25% 57% / 0.35;
     --dashed-border-hover: 340 25% 57% / 0.50;
+    --success: 165 40% 55%; --success-bg: 165 30% 18%;
+    --warning: 35 65% 60%;  --warning-bg: 35 35% 18%;
+    --danger:  5 60% 60%;   --danger-bg:  5 35% 18%;
   }
 
   /* ===== 黑色色系 ===== */
@@ -411,6 +445,9 @@
     --code-bg: 230 15% 9%;
     --dashed-border: 43 53% 49% / 0.30;
     --dashed-border-hover: 43 53% 49% / 0.45;
+    --success: 142 45% 55%; --success-bg: 142 25% 14%;
+    --warning: 40 70% 60%;  --warning-bg: 40 30% 14%;
+    --danger:  0 60% 60%;   --danger-bg:  0 30% 14%;
   }
 
   /* ===== THE FINALS 竞技赛场（深色）===== */
@@ -448,6 +485,9 @@
     --font-sans:  "Saira Condensed", "Poppins", "PingFang SC", "Helvetica Neue", sans-serif;
     --font-serif: "Saira Extra Condensed", "Saira Condensed", "PingFang SC", sans-serif;
     --font-mono:  "SF Mono", "Cascadia Code", "Fira Code", Consolas, "Courier New", monospace;
+    --success: 145 60% 55%; --success-bg: 145 30% 12%;
+    --warning: 40 85% 60%;  --warning-bg: 40 35% 12%;
+    --danger:  0 70% 60%;   --danger-bg:  0 35% 12%;
   }
 
   /* 莫兰迪夜（深色） */
@@ -488,6 +528,9 @@
     /* 虚线边框色 */
     --dashed-border: 15 25% 68% / 0.30;
     --dashed-border-hover: 15 25% 68% / 0.45;
+    --success: 145 45% 60%; --success-bg: 145 25% 18%;
+    --warning: 35 70% 65%;  --warning-bg: 35 30% 18%;
+    --danger:  0 60% 60%;   --danger-bg:  0 30% 18%;
   }
 }
 
@@ -1439,8 +1482,16 @@ html.theme-the-finals body::after {
  * 通过 .chat-content 类应用到具体的消息内容容器。
  */
 .chat-content {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
   font-size: 15px;
-  line-height: 1.6;
+  line-height: 1.65;
+  letter-spacing: 0.005em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "tnum", "ss01";
+  text-rendering: optimizeLegibility;
 }
 html[data-chat-font-size="sm"] .chat-content {
   font-size: 13px;
@@ -1568,3 +1619,78 @@ html[data-chat-serif="true"] .chat-content pre {
   animation: flash-hit-pulse 1400ms ease-out;
   border-radius: 0.5rem;
 }
+
+/* ===== Agent response: ordered-list numbered cards (B structure) ===== */
+.chat-content ol {
+  list-style: none;
+  padding-left: 0;
+  margin: 12px 0;
+  counter-reset: chat-ordered;
+}
+.chat-content ol > li {
+  counter-increment: chat-ordered;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px;
+  margin: 8px 0;
+  background: hsl(var(--muted) / 0.45);
+  border-radius: 10px;
+  line-height: 1.6;
+}
+.chat-content ol > li::before {
+  content: counter(chat-ordered);
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  background: hsl(var(--foreground));
+  color: hsl(var(--background));
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin-top: 1px;
+}
+.chat-content ol > li > :first-child { margin-top: 0; }
+.chat-content ol > li > :last-child  { margin-bottom: 0; }
+/* nested ordered lists revert to default decimal numbering, no card */
+.chat-content ol ol {
+  list-style: decimal;
+  padding-left: 20px;
+  counter-reset: none;
+  margin: 4px 0;
+}
+.chat-content ol ol > li {
+  counter-increment: none;
+  display: list-item;
+  background: transparent;
+  padding: 0;
+  margin: 2px 0;
+  border-radius: 0;
+}
+.chat-content ol ol > li::before { content: none; }
+
+/* ===== Agent response: unordered list (kept simple) ===== */
+.chat-content ul {
+  list-style: disc;
+  padding-left: 20px;
+  margin: 8px 0;
+}
+.chat-content ul > li { margin: 2px 0; line-height: 1.7; }
+
+/* sm: ~0.85x of base */
+html[data-chat-font-size="sm"] .chat-content h1 { font-size: 19px; }
+html[data-chat-font-size="sm"] .chat-content h2 { font-size: 17px; }
+html[data-chat-font-size="sm"] .chat-content h3 { font-size: 14.5px; }
+html[data-chat-font-size="sm"] .chat-content th { font-size: 10.5px; }
+html[data-chat-font-size="sm"] .chat-content td { font-size: 13px; }
+
+/* lg: ~1.13x of base */
+html[data-chat-font-size="lg"] .chat-content h1 { font-size: 25px; }
+html[data-chat-font-size="lg"] .chat-content h2 { font-size: 22px; }
+html[data-chat-font-size="lg"] .chat-content h3 { font-size: 18px; }
+html[data-chat-font-size="lg"] .chat-content th { font-size: 13px; }
+html[data-chat-font-size="lg"] .chat-content td { font-size: 16.5px; }
