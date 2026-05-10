@@ -610,11 +610,28 @@ impl LoopDelegate for ChatDelegate {
     async fn handle_text_response(
         &self,
         text: &str,
-        _metadata: ResponseMetadata,
-        _reason_ctx: &mut ReasoningContext,
+        metadata: ResponseMetadata,
+        reason_ctx: &mut ReasoningContext,
     ) -> TextAction {
+        // If the model ran out of tokens mid-text (finish_reason="length"),
+        // do NOT terminate. Treat like a truncation — record what we have
+        // and ask the model to continue. Without this, multi-step plans get
+        // cut off whenever the response approaches max_tokens (8192) and
+        // remaining steps never execute.
+        if metadata.finish_reason.as_deref() == Some("length") {
+            tracing::warn!(
+                text_len = text.len(),
+                "Text response hit length limit (finish_reason=length); injecting continuation prompt"
+            );
+            reason_ctx.messages.push(ChatMessage::assistant(text));
+            reason_ctx.messages.push(ChatMessage::user(
+                "Your last reply was truncated by the token limit. Continue from where you left off. \
+                 If you intended to call a tool next, call it now."
+            ));
+            return TextAction::Continue;
+        }
         self.emit_done(text);
-        TextAction::Return(LoopOutcome::Response { text: text.to_string(), usage: _metadata.usage })
+        TextAction::Return(LoopOutcome::Response { text: text.to_string(), usage: metadata.usage })
     }
 
     async fn execute_tool_calls(

@@ -404,14 +404,72 @@ pub struct ReflectionMessage {
     pub created_at: String,
 }
 
+/// Heuristic: did the LLM say "I'm about to use a tool" without actually
+/// calling one? If yes, the loop nudges it to actually invoke the tool
+/// instead of terminating on text. Covers English + Chinese phrasings.
+///
+/// The 600-char cap (was 200) is to filter out long completion summaries —
+/// "intent" phrases in long replies are usually post-hoc descriptions, not
+/// pre-action announcements. 600 chars accommodates short Chinese paragraph
+/// responses that talk about next-step intent.
 pub fn llm_signals_tool_intent(text: &str) -> bool {
+    if text.len() >= 600 {
+        return false;
+    }
     let lower = text.to_lowercase();
-    let patterns = [
-        "let me search", "i'll look", "i will search", "let me check",
+    // English action-intent phrases.
+    let en_patterns = [
+        "let me search", "i'll search", "i'll look", "i will search", "let me check",
         "i'll find", "let me find", "i'll read", "let me read",
         "i'll grep", "let me grep", "i'll fetch", "let me fetch",
         "let me run", "i'll run", "let me open", "i'll open",
         "let me list", "i'll list", "let me write", "i'll write",
+        "let me edit", "i'll edit", "next, i'll", "now i'll",
+        "let me continue", "i'll continue", "let me update", "i'll update",
     ];
-    lower.len() < 200 && patterns.iter().any(|p| lower.contains(p))
+    if en_patterns.iter().any(|p| lower.contains(p)) {
+        return true;
+    }
+    // Chinese action-intent phrases (matched on the original text, not lowered —
+    // CJK isn't affected by lowercasing).
+    let zh_patterns = [
+        "接下来", "下一步", "我来", "让我", "我现在", "现在我",
+        "我将", "我要", "马上", "继续", "我来更新", "我来编辑",
+        "我来写", "我来调用", "我来读", "下面我", "接着我",
+    ];
+    zh_patterns.iter().any(|p| text.contains(p))
+}
+
+#[cfg(test)]
+mod tool_intent_tests {
+    use super::llm_signals_tool_intent;
+
+    #[test]
+    fn english_intent_phrases_match() {
+        assert!(llm_signals_tool_intent("Let me read the config first."));
+        assert!(llm_signals_tool_intent("I'll search for that pattern."));
+        assert!(llm_signals_tool_intent("Now I'll update the imports."));
+    }
+
+    #[test]
+    fn chinese_intent_phrases_match() {
+        assert!(llm_signals_tool_intent("接下来我来编辑这个文件"));
+        assert!(llm_signals_tool_intent("好的，让我先读一下源码"));
+        assert!(llm_signals_tool_intent("现在我要调用 grep 找一下"));
+        assert!(llm_signals_tool_intent("继续修改剩余的部分"));
+    }
+
+    #[test]
+    fn long_responses_dont_trigger() {
+        let long = "我来更新".to_string() + &"这是一段很长的描述文本，".repeat(50);
+        assert!(long.len() >= 600);
+        // Long replies are usually completion summaries, not pre-action — skip nudge.
+        assert!(!llm_signals_tool_intent(&long));
+    }
+
+    #[test]
+    fn unrelated_text_does_not_match() {
+        assert!(!llm_signals_tool_intent("The function returned successfully."));
+        assert!(!llm_signals_tool_intent("代码已经写完了，测试通过。"));
+    }
 }
