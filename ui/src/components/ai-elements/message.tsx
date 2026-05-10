@@ -185,10 +185,46 @@ const MarkdownInlineCode = React.memo(function MarkdownInlineCode({
   )
 })
 
+/** 标题渲染器：h1/h2 带左侧实心条做视觉锚点；h3 纯文本 */
+const MarkdownH1 = React.memo(function MarkdownH1({
+  children,
+}: React.HTMLAttributes<HTMLHeadingElement>): React.ReactElement {
+  return (
+    <h1 className="flex items-center gap-2.5 text-[22px] font-semibold tracking-[-0.015em] mt-7 mb-3.5 first:mt-0 leading-[1.3]">
+      <span className="w-[3px] h-[18px] bg-foreground rounded-sm shrink-0" aria-hidden />
+      <span>{children}</span>
+    </h1>
+  )
+})
+
+const MarkdownH2 = React.memo(function MarkdownH2({
+  children,
+}: React.HTMLAttributes<HTMLHeadingElement>): React.ReactElement {
+  return (
+    <h2 className="flex items-center gap-2.5 text-[19px] font-semibold tracking-[-0.012em] mt-[22px] mb-3 first:mt-0 leading-[1.35]">
+      <span className="w-[3px] h-4 bg-foreground rounded-sm shrink-0" aria-hidden />
+      <span>{children}</span>
+    </h2>
+  )
+})
+
+const MarkdownH3 = React.memo(function MarkdownH3({
+  children,
+}: React.HTMLAttributes<HTMLHeadingElement>): React.ReactElement {
+  return (
+    <h3 className="text-[16px] font-semibold mt-[18px] mb-2 first:mt-0 leading-[1.4] tracking-[-0.005em]">
+      {children}
+    </h3>
+  )
+})
+
 const MARKDOWN_COMPONENTS = {
   a: MarkdownLink,
   pre: MarkdownPre,
   code: MarkdownInlineCode,
+  h1: MarkdownH1,
+  h2: MarkdownH2,
+  h3: MarkdownH3,
 } as const
 
 interface MessageResponseProps {
