@@ -41,6 +41,8 @@ import { tabMinimapCacheAtom } from '@/atoms/tab-atoms'
 import { channelsAtom } from '@/atoms/chat-atoms'
 import { proactiveLearningEventsAtom } from '@/atoms/agent-atoms'
 import { ProactiveLearningChip } from '@/components/chat/ProactiveLearningChip'
+import { parseSkillCitations } from '@/lib/skill-citation'
+import { SkillCitationChips } from './SkillCitationChips'
 import { ScrollPositionManager } from '@/hooks/useScrollPositionMemory'
 import { cn } from '@/lib/utils'
 import { Spinner } from '@/components/ui/spinner'
@@ -619,6 +621,11 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
 
   if (message.role === 'assistant') {
     const toolActivities = extractToolActivities(message.events)
+    // Parse skill citations once — used both to clean the body for
+    // markdown render and to drive the chip row below MessageContent.
+    const parsed = message.content
+      ? parseSkillCitations(message.content)
+      : { cleanedContent: '', citations: [] }
 
     return (
       <Message from="assistant">
@@ -658,11 +665,14 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
               ) : null}
               <ToolResultInlineImages activities={toolActivities} />
               {message.content && (
-                <MessageResponse basePath={sessionPath || undefined} basePaths={attachedDirs}>{message.content}</MessageResponse>
+                <MessageResponse basePath={sessionPath || undefined} basePaths={attachedDirs}>{parsed.cleanedContent}</MessageResponse>
               )}
             </>
           )}
         </MessageContent>
+        {/* Skill citation chips — sibling of MessageActions so the
+            pl-[46px] indent aligns with the avatar gutter. */}
+        <SkillCitationChips citations={parsed.citations} messageKey={message.id} />
         {/* 操作栏：左侧靠左排列 */}
         {(message.durationMs != null || message.usage || message.content) && (
           <MessageActions className="pl-[46px] mt-0.5 justify-start gap-2.5">
@@ -929,19 +939,30 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
                       />
                     </div>
                   )}
-                  {smoothContent ? (
-                    <>
-                      <MessageResponse basePath={sessionPath || undefined} basePaths={attachedDirs}>{smoothContent}</MessageResponse>
-                      {streaming && (
-                      <AgentRunningIndicator
-                        startedAt={startedAt}
-                        toolCount={streamState?.toolActivities?.length}
-                        inputTokens={streamState?.inputTokens}
-                        outputTokens={streamState?.outputTokens}
-                      />
-                    )}
-                    </>
-                  ) : (
+                  {smoothContent ? (() => {
+                    const { cleanedContent: streamCleanedContent, citations: streamCitations } = parseSkillCitations(smoothContent)
+                    return (
+                      <>
+                        <MessageResponse basePath={sessionPath || undefined} basePaths={attachedDirs}>{streamCleanedContent}</MessageResponse>
+                        {/* Once the citation block has fully streamed in, render
+                            the chip(s) — the dedupe key uses the session id so
+                            the streaming chip and the post-finalization chip
+                            don't both bump cited_count. */}
+                        <SkillCitationChips
+                          citations={streamCitations}
+                          messageKey={`stream-${sessionId}`}
+                        />
+                        {streaming && (
+                          <AgentRunningIndicator
+                            startedAt={startedAt}
+                            toolCount={streamState?.toolActivities?.length}
+                            inputTokens={streamState?.inputTokens}
+                            outputTokens={streamState?.outputTokens}
+                          />
+                        )}
+                      </>
+                    )
+                  })() : (
                     streaming && (
                       <AgentRunningIndicator
                         startedAt={startedAt}

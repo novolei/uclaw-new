@@ -2907,6 +2907,8 @@ pub async fn list_learned_skills(
                     "pitfalls": meta.get("pitfalls").cloned().unwrap_or(serde_json::Value::Null),
                     "enabled": meta.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
                     "usageCount": meta.get("usage_count").and_then(|v| v.as_u64()).unwrap_or(0),
+                    "citedCount": meta.get("cited_count").and_then(|v| v.as_u64()).unwrap_or(0),
+                    "lastCitedAt": meta.get("last_cited_at").cloned().unwrap_or(serde_json::Value::Null),
                     "createdAt": node.created_at,
                 }));
             }
@@ -2980,6 +2982,87 @@ pub async fn delete_learned_skill(
     store.delete_node(&skill_id)
         .map_err(|e| format!("Failed to delete skill: {}", e))?;
     Ok(())
+}
+
+/// 记录一个技能被 LLM 引用 (E2 → E3 桥接)
+///
+/// 由前端在解析到 `> 应用技能：X — Y` citation 块后调用一次。
+/// 在 metadata 里 bump 一个独立的 `cited_count` 字段（与
+/// `usage_count` 分开 — 后者只代表"进入 system prompt"，前者代表
+/// "LLM 真的应用了"）。E3 之后会让 boot 排序优先看 cited_count。
+///
+/// 返回匹配到的 skill_id（或 null 如果 LLM cite 了一个不存在的标题）。
+/// 软失败：写入错误只 log，不抛给前端 — UI 不应因为这点小事报错。
+#[tauri::command]
+pub async fn record_skill_cited(
+    state: State<'_, AppState>,
+    space_id: Option<String>,
+    title: String,
+) -> Result<Option<String>, String> {
+    let store = &state.memory_graph_store;
+    let sid = space_id.unwrap_or_else(|| "default".into());
+
+    // Normalize the same way skill_parser does so capitalization /
+    // trailing punctuation differences don't break the lookup.
+    let normalized = title
+        .trim()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_end_matches(|c: char| {
+            matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | '。' | '，' | '；' | '：' | '！' | '？')
+        })
+        .to_string();
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+
+    let node = store
+        .find_learned_skill_by_normalized_title(&sid, &normalized)
+        .map_err(|e| format!("lookup failed: {}", e))?;
+
+    let Some(node) = node else {
+        tracing::info!(
+            cited_title = %title,
+            normalized,
+            "record_skill_cited: LLM cited a title that doesn't exist in the skill DB"
+        );
+        return Ok(None);
+    };
+
+    // Bump cited_count via json_set (mirrors bump_skill_usage shape).
+    let mut meta = node.metadata.clone().unwrap_or(serde_json::json!({}));
+    if let Some(obj) = meta.as_object_mut() {
+        let prev = obj
+            .get("cited_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        obj.insert(
+            "cited_count".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(prev + 1)),
+        );
+        obj.insert(
+            "last_cited_at".to_string(),
+            serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+        );
+    }
+
+    if let Err(e) = store.update_node(&node.id, None, None, Some(&meta)) {
+        tracing::warn!(
+            node_id = %node.id,
+            err = %e,
+            "record_skill_cited: bump cited_count failed (non-fatal)"
+        );
+    } else {
+        tracing::info!(
+            node_id = %node.id,
+            title = %node.title,
+            "record_skill_cited: bumped cited_count"
+        );
+    }
+
+    Ok(Some(node.id))
 }
 
 // ─── Dev / Testing Commands ──────────────────────────────────────────────────
