@@ -56,7 +56,6 @@ import {
   agentPendingFilesAtom,
   agentWorkspacesAtom,
   agentStreamErrorsAtom,
-  workingDoneSessionIdsAtom,
   type AgentStreamErrorPayload,
   agentSessionDraftsAtom,
   agentSessionDraftHtmlAtom,
@@ -100,6 +99,7 @@ import {
   rewindSession,
   saveFilesToAgentSession,
   queueAgentMessage,
+  onStreamComplete,
 } from '@/lib/tauri-bridge'
 
 // ===== 思考模式 Hover Popover =====
@@ -408,22 +408,22 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const refreshMap = useAtomValue(agentMessageRefreshAtom)
   const refreshVersion = refreshMap.get(sessionId) ?? 0
 
-  // 当本会话的流式结束（chat:stream-complete）时刷新消息列表，
+  // 当本会话的 chat:stream-complete 触发时刷新消息列表，
   // 确保 duration_ms / input_tokens 等在 agent_messages 写入后立即拉取。
   // sendAgentMessage().then() 的 reload 发生在 agent loop 开始时，此时 DB 尚未写入。
-  const workingDoneIds = useAtomValue(workingDoneSessionIdsAtom)
-  const prevWorkingDoneRef = React.useRef<Set<string>>(workingDoneIds)
+  // 注意：不能用 workingDoneSessionIdsAtom — sessionId 在集合中会永久留存，
+  // 导致第二轮及之后的 prev.has(sid)=true，条件永远不成立。
   React.useEffect(() => {
-    const prev = prevWorkingDoneRef.current
-    prevWorkingDoneRef.current = workingDoneIds
-    if (!prev.has(sessionId) && workingDoneIds.has(sessionId)) {
+    const unlisten = onStreamComplete((payload: { conversationId: string }) => {
+      if (payload.conversationId !== sessionId) return
       store.set(agentMessageRefreshAtom, (m) => {
         const next = new Map(m)
         next.set(sessionId, (m.get(sessionId) ?? 0) + 1)
         return next
       })
-    }
-  }, [workingDoneIds, sessionId, store])
+    })
+    return unlisten
+  }, [sessionId, store])
 
   // 消息是否已完成首次加载（用于 auto-send 等待）
   const [messagesLoaded, setMessagesLoaded] = React.useState(false)
