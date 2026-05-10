@@ -5,6 +5,7 @@ pub mod error;
 pub mod ipc;
 pub mod settings;
 pub mod tauri_commands;
+pub mod cost_store;
 
 pub mod agent;
 pub mod llm;
