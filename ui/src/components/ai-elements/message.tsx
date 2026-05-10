@@ -313,6 +313,20 @@ const MarkdownTd = React.memo(function MarkdownTd({
   return <td className="px-3.5 py-3 text-[14.5px]">{children}</td>
 })
 
+const MarkdownBlockquote = React.memo(function MarkdownBlockquote({
+  children,
+}: React.HTMLAttributes<HTMLQuoteElement>): React.ReactElement {
+  return (
+    <blockquote className="my-3 pl-3 border-l-2 border-foreground/20 text-foreground/75 not-italic [&>p]:my-1">
+      {children}
+    </blockquote>
+  )
+})
+
+const MarkdownHr = React.memo(function MarkdownHr(): React.ReactElement {
+  return <hr className="my-6 border-0 border-t border-border/60" />
+})
+
 const MARKDOWN_COMPONENTS = {
   a: MarkdownLink,
   pre: MarkdownPre,
@@ -325,6 +339,8 @@ const MARKDOWN_COMPONENTS = {
   tr: MarkdownTr,
   th: MarkdownTh,
   td: MarkdownTd,
+  blockquote: MarkdownBlockquote,
+  hr: MarkdownHr,
 } as const
 
 interface MessageResponseProps {
@@ -349,13 +365,11 @@ export const MessageResponse = React.memo(
     return (
       <div
         className={cn(
-          'chat-content prose prose-sm dark:prose-invert max-w-none text-[15px] leading-relaxed',
-          'prose-p:my-1.5 prose-p:leading-[1.6] prose-li:leading-[1.6]',
+          'chat-content prose prose-sm dark:prose-invert max-w-none',
+          'prose-p:my-1.5 prose-p:leading-[1.65]',
           'prose-pre:my-0 prose-pre:bg-transparent prose-pre:p-0',
-          'prose-headings:my-2 prose-headings:font-semibold',
           'prose-a:text-primary prose-a:no-underline hover:prose-a:underline',
-          'prose-blockquote:border-l-2 prose-blockquote:border-foreground/20 prose-blockquote:text-foreground/70',
-          'prose-table:my-2 prose-th:bg-muted/40 prose-th:font-semibold',
+          'prose-strong:font-semibold prose-strong:text-foreground',
           '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
           className,
         )}

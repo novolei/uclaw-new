@@ -151,3 +151,35 @@ describe('MessageResponse — status badges in table cells', () => {
     expect(cells[1]!.querySelector('span[data-status="danger"]')).not.toBeNull()
   })
 })
+
+describe('MessageResponse — blockquote and lists', () => {
+  it('renders blockquote with left border + non-italic', () => {
+    const { container } = renderWithProviders(
+      <MessageResponse>{'> A quoted line.'}</MessageResponse>,
+    )
+    const bq = container.querySelector('blockquote')
+    expect(bq).not.toBeNull()
+    expect(bq!.className).toContain('border-l-2')
+    expect(bq!.className).toContain('not-italic')
+  })
+
+  it('renders hr with subtle border', () => {
+    const { container } = renderWithProviders(
+      <MessageResponse>{'before\n\n---\n\nafter'}</MessageResponse>,
+    )
+    const hr = container.querySelector('hr')
+    expect(hr).not.toBeNull()
+    expect(hr!.className).toContain('border-t')
+  })
+
+  it('renders ordered list with li children (CSS handles card visual)', () => {
+    const { container } = renderWithProviders(
+      <MessageResponse>{'1. First step\n2. Second step'}</MessageResponse>,
+    )
+    const ol = container.querySelector('ol')
+    expect(ol).not.toBeNull()
+    const items = ol!.querySelectorAll(':scope > li')
+    expect(items).toHaveLength(2)
+    expect(items[0]!.textContent).toContain('First step')
+  })
+})
