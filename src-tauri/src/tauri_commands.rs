@@ -2815,39 +2815,8 @@ pub async fn send_agent_message(
     // Persist user message
     let user_msg_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
-    let should_generate_title: bool;
     {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
-        // Trigger title generation if:
-        // 1. First message (message_count == 0), OR
-        // 2. No emoji has been set yet in metadata_json (previous attempt failed)
-        //    AND title_pending is not already true (no ongoing generation)
-        //    AND message_count is small (retry window: up to 5 messages)
-        let (message_count, metadata_json_opt): (i64, Option<String>) = conn.query_row(
-            "SELECT message_count, metadata_json FROM agent_sessions WHERE id = ?1",
-            rusqlite::params![input.session_id],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
-        ).unwrap_or((1, None));
-        // Parse metadata once
-        let meta: serde_json::Value = metadata_json_opt
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or(serde_json::Value::Null);
-        let emoji_in_meta = meta.get("emoji").and_then(|v| v.as_str()).unwrap_or("");
-        let title_in_meta = meta.get("title").and_then(|v| v.as_str()).unwrap_or("");
-        let title_pending = meta.get("title_pending").and_then(|v| v.as_bool()).unwrap_or(false);
-        // "No real title" means: no emoji, OR emoji is still the default placeholder
-        // ("💬") with title still "New session" — i.e. a previous attempt failed/used fallback.
-        let no_real_title = emoji_in_meta.is_empty()
-            || (emoji_in_meta == "💬" && (title_in_meta.is_empty() || title_in_meta == "New session"));
-        should_generate_title = !title_pending && no_real_title;
-        tracing::debug!(
-            session_id = %input.session_id,
-            message_count,
-            no_real_title,
-            should_generate_title,
-            "[title] trigger decision"
-        );
         let _ = conn.execute(
             "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'user',?3,?4)",
             rusqlite::params![user_msg_id, input.session_id, input.user_message, now],
@@ -2864,13 +2833,16 @@ pub async fn send_agent_message(
         "session_id": input.session_id,
     })).await;
 
-    // Fire-and-forget title generation when needed
-    if should_generate_title {
+    // Always regenerate title on every message (Steward-style): uses request_id to discard
+    // stale results when multiple messages arrive quickly.
+    {
         tracing::debug!(session_id = %input.session_id, "[title] spawning title generation");
+        let title_request_id = uuid::Uuid::new_v4().to_string();
         let llm_config_for_title = state.llm_config.read().await.clone();
         spawn_agent_session_title_summary(
             input.session_id.clone(),
             input.user_message.clone(),
+            title_request_id,
             Arc::clone(&state.db),
             Arc::clone(&state.provider_service),
             llm_config_for_title,
@@ -3595,16 +3567,18 @@ const AGENT_TITLE_SYSTEM_RETRY: &str = r#"你是一个会话标题生成器。
 fn spawn_agent_session_title_summary(
     session_id: String,
     first_message: String,
+    request_id: String,
     db: std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
     provider_service: std::sync::Arc<crate::providers::service::ProviderService>,
     llm_config_legacy: crate::config::LlmConfig,
     app_handle: tauri::AppHandle,
 ) {
-    // Merge title_pending into existing metadata (don't overwrite other keys)
+    // Merge title_pending + request_id into metadata (don't overwrite other keys)
     {
         if let Ok(conn) = db.lock() {
             let mut updates = serde_json::Map::new();
             updates.insert("title_pending".to_string(), serde_json::json!(true));
+            updates.insert("title_request_id".to_string(), serde_json::json!(request_id));
             merge_agent_session_meta(&conn, &session_id, &updates);
         }
     }
@@ -3740,8 +3714,33 @@ fn spawn_agent_session_title_summary(
             }
         }
 
+        // Race check: discard this result if a newer title request has already started
+        let is_current_request = {
+            if let Ok(conn) = db.lock() {
+                let meta_str: Option<String> = conn.query_row(
+                    "SELECT metadata_json FROM agent_sessions WHERE id = ?1",
+                    rusqlite::params![session_id],
+                    |row| row.get(0),
+                ).ok().flatten();
+                let meta: serde_json::Value = meta_str
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or(serde_json::Value::Null);
+                meta.get("title_request_id")
+                    .and_then(|v| v.as_str())
+                    .map(|rid| rid == request_id)
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        };
+
+        if !is_current_request {
+            tracing::debug!(session_id = %session_id, "[title] discarding stale result (newer request active)");
+            return;
+        }
+
         if let Some((title, emoji)) = result {
-            // SUCCESS: persist emoji + title so future trigger checks see no_emoji_yet = false
             if let Ok(conn) = db.lock() {
                 let mut updates = serde_json::Map::new();
                 updates.insert("title".to_string(), serde_json::json!(title));
@@ -3762,14 +3761,12 @@ fn spawn_agent_session_title_summary(
                 },
             );
         } else {
-            // FAILURE: clear title_pending but do NOT write emoji — so the next
-            // message will see no_emoji_yet = true and trigger a retry.
+            // FAILURE: clear pending; next message will spawn a new generation attempt
             if let Ok(conn) = db.lock() {
                 let mut updates = serde_json::Map::new();
                 updates.insert("title_pending".to_string(), serde_json::json!(false));
                 merge_agent_session_meta(&conn, &session_id, &updates);
             }
-            // Emit a "New session" fallback so the UI stops the skeleton animation
             let _ = app_handle.emit(
                 "session:title-updated",
                 SessionTitleUpdatePayload {
