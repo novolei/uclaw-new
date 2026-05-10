@@ -949,17 +949,7 @@ pub async fn list_spaces(state: State<'_, AppState>) -> Result<Vec<SpaceResponse
     .filter_map(|r| r.ok())
     .collect();
 
-    if spaces.is_empty() {
-        Ok(vec![SpaceResponse {
-            id: "default".into(),
-            name: "Default".into(),
-            icon: "📁".into(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            updated_at: chrono::Utc::now().to_rfc3339(),
-        }])
-    } else {
-        Ok(spaces)
-    }
+    Ok(spaces)
 }
 
 #[tauri::command]
