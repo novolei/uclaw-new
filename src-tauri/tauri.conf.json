@@ -1,49 +1,53 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
-  "productName": "uClaw",
-  "version": "0.1.0",
-  "identifier": "ai.uclaw.desktop",
-  "build": {
-    "beforeDevCommand": "cd ../ui && npm run dev",
-    "beforeBuildCommand": "cd ../ui && npm run build",
-    "devUrl": "http://localhost:5173",
-    "frontendDist": "../static"
-  },
-  "app": {
-    "macOSPrivateApi": true,
-    "windows": [
-      {
-        "title": "uClaw",
-        "width": 1280,
-        "height": 820,
-        "resizable": true,
-        "fullscreen": false,
-        "dragDropEnabled": true,
-        "hiddenTitle": true,
-        "titleBarStyle": "Overlay"
-      }
-    ],
-    "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https://api.anthropic.com https://api.openai.com https://api.deepseek.com https://generativelanguage.googleapis.com https://api.groq.com https://openrouter.ai; font-src 'self' data:; frame-src 'self' blob:"
+    "$schema": "https://schema.tauri.app/config/2",
+    "productName": "uClaw",
+    "version": "0.1.0",
+    "identifier": "ai.uclaw.desktop",
+    "build": {
+        "beforeDevCommand": "cd ../ui && npm run dev",
+        "beforeBuildCommand": "cd ../ui && npm run build",
+        "devUrl": "http://localhost:5173",
+        "frontendDist": "../static"
+    },
+    "app": {
+        "macOSPrivateApi": true,
+        "windows": [
+            {
+                "title": "uClaw",
+                "width": 1280,
+                "height": 820,
+                "resizable": true,
+                "fullscreen": false,
+                "dragDropEnabled": true,
+                "hiddenTitle": true,
+                "titleBarStyle": "Overlay",
+                "trafficLightPosition": {
+                    "x": 16,
+                    "y": 26
+                }
+            }
+        ],
+        "security": {
+            "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https://api.anthropic.com https://api.openai.com https://api.deepseek.com https://generativelanguage.googleapis.com https://api.groq.com https://openrouter.ai; font-src 'self' data:; frame-src 'self' blob:"
+        }
+    },
+    "plugins": {
+        "updater": {
+            "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENEMzgzNDg1NEU3QzFEMDgKUldRSUhYeE9oVFE0elRUeXdhY0tzTW9JaU41MVBOY2E0TDhTalphVlU2eTJqcGEyQlMzRjRSbVUK",
+            "endpoints": [
+                "https://github.com/OWNER/REPO/releases/latest/download/latest.json"
+            ]
+        }
+    },
+    "bundle": {
+        "active": true,
+        "targets": "all",
+        "icon": [
+            "icons/icon.png"
+        ],
+        "resources": {
+            "pyembed/python": "python",
+            "src/memu/memu_bridge.py": "memu_bridge.py"
+        }
     }
-  },
-  "plugins": {
-    "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENEMzgzNDg1NEU3QzFEMDgKUldRSUhYeE9oVFE0elRUeXdhY0tzTW9JaU41MVBOY2E0TDhTalphVlU2eTJqcGEyQlMzRjRSbVUK",
-      "endpoints": [
-        "https://github.com/OWNER/REPO/releases/latest/download/latest.json"
-      ]
-    }
-  },
-  "bundle": {
-    "active": true,
-    "targets": "all",
-    "icon": [
-      "icons/icon.png"
-    ],
-    "resources": {
-      "pyembed/python": "python",
-      "src/memu/memu_bridge.py": "memu_bridge.py"
-    }
-  }
 }

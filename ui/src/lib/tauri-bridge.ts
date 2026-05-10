@@ -772,8 +772,6 @@ export const generateTitle = (input: any): Promise<string> =>
 export const openFileDialog = (): Promise<{ files: any[] }> =>
   invoke<{ files: any[] }>('open_file_dialog').catch(() => ({ files: [] }))
 
-export const openFolderDialog = (): Promise<{ path: string; name: string } | null> =>
-  invoke<{ path: string; name: string } | null>('open_folder_dialog').catch(() => null)
 
 // --- Agent session compat ---
 export const listAgentSessions = (): Promise<any[]> =>
@@ -821,45 +819,7 @@ export const saveFilesToAgentSession = (input: any): Promise<any[]> =>
 export const getWorkspaceCapabilities = (slug: string): Promise<{ mcpServers: any[]; skills: any[] }> =>
   invoke<{ mcpServers: any[]; skills: any[] }>('get_workspace_capabilities', { slug }).catch(() => ({ mcpServers: [], skills: [] }))
 
-export const getWorkspaceDirectories = (workspaceSlug: string): Promise<string[]> =>
-  invoke<string[]>('get_workspace_directories', { workspaceSlug }).catch(() => [])
 
-export const getWorkspaceFilesPath = (workspaceSlug: string): Promise<string> =>
-  invoke<string>('get_workspace_files_path', { workspaceSlug }).catch(() => '')
-
-export const attachDirectory = (input: { sessionId: string; directoryPath: string }): Promise<string[]> =>
-  invoke<string[]>('attach_directory', { input })
-
-export const detachDirectory = (input: { sessionId: string; directoryPath: string }): Promise<string[]> =>
-  invoke<string[]>('detach_directory', { input })
-
-export const attachWorkspaceDirectory = (input: { workspaceSlug: string; directoryPath: string }): Promise<string[]> =>
-  invoke<string[]>('attach_workspace_directory', { input })
-
-export const detachWorkspaceDirectory = (input: { workspaceSlug: string; directoryPath: string }): Promise<string[]> =>
-  invoke<string[]>('detach_workspace_directory', { input })
-
-export const listAttachedDirectory = (dirPath: string): Promise<any[]> =>
-  invoke<any[]>('list_attached_directory', { dirPath }).catch(() => [])
-
-export const readAttachedFile = (path: string, sessionId: string, workspaceSlug?: string): Promise<string> =>
-  invoke('read_attached_file', { path, sessionId, workspaceSlug: workspaceSlug ?? null })
-
-// --- File operations ---
-export const openFile = (path: string): Promise<void> =>
-  invoke<void>('open_file', { path }).catch(() => {})
-
-export const openAttachedFile = (path: string): Promise<void> =>
-  invoke<void>('open_attached_file', { path }).catch(() => {})
-
-export const showAttachedInFolder = (path: string): Promise<void> =>
-  invoke<void>('show_attached_in_folder', { path }).catch(() => {})
-
-export const renameAttachedFile = (path: string, newName: string): Promise<void> =>
-  invoke<void>('rename_attached_file', { path, newName }).catch(() => {})
-
-export const moveAttachedFile = (path: string, destDir: string): Promise<void> =>
-  invoke<void>('move_attached_file', { path, destDir }).catch(() => {})
 
 export const saveImageAs = (path: string, filename: string): Promise<void> =>
   invoke<void>('save_image_as', { path, filename }).catch(() => {})
@@ -916,18 +876,6 @@ export const getChatTools = (): Promise<any[]> =>
 export const setFeishuSessionNotify = (sessionId: string, mode: string): Promise<void> =>
   invoke<void>('set_feishu_session_notify', { sessionId, mode }).catch(() => {})
 
-// --- Agent workspace compat ---
-export const createAgentWorkspace = (name: string): Promise<any> =>
-  invoke('create_agent_workspace', { name }).catch(() => ({ id: crypto.randomUUID(), name, slug: name.toLowerCase(), createdAt: Date.now(), updatedAt: Date.now() }))
-
-export const updateAgentWorkspace = (id: string, patch: any): Promise<any> =>
-  invoke('update_agent_workspace', { id, patch }).catch(() => ({ id, ...patch, updatedAt: Date.now() }))
-
-export const deleteAgentWorkspace = (id: string): Promise<void> =>
-  invoke<void>('delete_agent_workspace', { id }).catch(() => {})
-
-export const reorderAgentWorkspaces = (ids: string[]): Promise<void> =>
-  invoke<void>('reorder_agent_workspaces', { ids }).catch(() => {})
 
 // --- Agent permission / ask-user / exit-plan compat ---
 export const respondPermission = (input: any): Promise<void> =>

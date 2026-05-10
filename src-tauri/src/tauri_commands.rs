@@ -949,17 +949,7 @@ pub async fn list_spaces(state: State<'_, AppState>) -> Result<Vec<SpaceResponse
     .filter_map(|r| r.ok())
     .collect();
 
-    if spaces.is_empty() {
-        Ok(vec![SpaceResponse {
-            id: "default".into(),
-            name: "Default".into(),
-            icon: "📁".into(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            updated_at: chrono::Utc::now().to_rfc3339(),
-        }])
-    } else {
-        Ok(spaces)
-    }
+    Ok(spaces)
 }
 
 #[tauri::command]
@@ -3768,17 +3758,18 @@ pub async fn create_agent_session(
 ) -> Result<serde_json::Value, Error> {
     let id = uuid::Uuid::new_v4().to_string();
     let title = title.unwrap_or_else(|| "New session".into());
-    let space_id = workspace_id.unwrap_or_else(|| "default".into());
     let now = chrono::Utc::now().timestamp_millis();
     let meta = serde_json::json!({ "channelId": channel_id });
-    {
+    let space_id = {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let resolved = resolve_workspace_id_or_default(&conn, workspace_id);
         conn.execute(
             "INSERT INTO agent_sessions (id, space_id, title, metadata_json, message_count, pinned, archived, created_at, updated_at)
              VALUES (?1,?2,?3,?4,0,0,0,?5,?5)",
-            rusqlite::params![id, space_id, title, meta.to_string(), now],
+            rusqlite::params![id, &resolved, title, meta.to_string(), now],
         ).map_err(|e| Error::Database(e))?;
-    }
+        resolved
+    };
     Ok(serde_json::json!({
         "id": id,
         "workspaceId": space_id,
@@ -4267,6 +4258,7 @@ pub async fn move_agent_session_to_workspace(
     input: MoveSessionInput,
 ) -> Result<(), Error> {
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    require_workspace_exists(&conn, &input.target_workspace_id)?;
     conn.execute(
         "UPDATE agent_sessions SET space_id = ?1, updated_at = ?2 WHERE id = ?3",
         rusqlite::params![
@@ -4437,6 +4429,76 @@ pub async fn set_active_workspace_id(
     Ok(())
 }
 
+// ─── Workspace integrity helpers ──────────────────────────────────────
+//
+// Extracted as standalone fns so they can be unit-tested without an
+// AppState mock. See `workspace_integrity_tests` at the bottom of this
+// file. Phase 1 spec §4.3.
+
+/// Validate `workspace_id` exists in `spaces`. Falls back to `'default'`
+/// silently (with a warning log) for unknown values, including `None`.
+/// Used by automatic flows like `create_agent_session` where a stale
+/// frontend ID should not block session creation.
+pub(crate) fn resolve_workspace_id_or_default(
+    conn: &rusqlite::Connection,
+    workspace_id: Option<String>,
+) -> String {
+    let candidate = match workspace_id {
+        None => return "default".into(),
+        Some(id) => id,
+    };
+    match conn.query_row(
+        "SELECT 1 FROM spaces WHERE id = ?1",
+        rusqlite::params![&candidate],
+        |_| Ok(()),
+    ) {
+        Ok(()) => candidate,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            tracing::warn!(workspace_id = %candidate, "unknown workspace_id, falling back to 'default'");
+            "default".into()
+        }
+        Err(e) => {
+            tracing::warn!(workspace_id = %candidate, error = %e, "DB error during workspace existence check, falling back to 'default'");
+            "default".into()
+        }
+    }
+}
+
+/// Validate `workspace_id` exists. Returns `Err` if not. Used by explicit
+/// user actions like `move_agent_session_to_workspace` where a silent
+/// re-route would surprise the user.
+pub(crate) fn require_workspace_exists(
+    conn: &rusqlite::Connection,
+    workspace_id: &str,
+) -> Result<(), Error> {
+    match conn.query_row(
+        "SELECT 1 FROM spaces WHERE id = ?1",
+        rusqlite::params![workspace_id],
+        |_| Ok(()),
+    ) {
+        Ok(()) => Ok(()),
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            Err(Error::NotFound(format!("workspace '{workspace_id}'")))
+        }
+        Err(e) => Err(Error::Database(e)),
+    }
+}
+
+/// Re-home all agent_sessions in the given workspace to `'default'`.
+/// Application-layer equivalent of `ON DELETE SET DEFAULT` (the FK does
+/// not exist on agent_sessions.space_id — see Phase 1 spec §3 non-goals).
+/// Called by `delete_workspace` BEFORE the DELETE FROM spaces statement.
+pub(crate) fn rehome_agent_sessions_to_default(
+    conn: &rusqlite::Connection,
+    workspace_id: &str,
+) -> Result<(), Error> {
+    conn.execute(
+        "UPDATE agent_sessions SET space_id = 'default', updated_at = ?2 WHERE space_id = ?1",
+        rusqlite::params![workspace_id, chrono::Utc::now().timestamp_millis()],
+    ).map_err(Error::Database)?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn create_workspace(
     state: State<'_, AppState>,
@@ -4460,7 +4522,15 @@ pub async fn delete_workspace(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), Error> {
+    if id == "default" {
+        return Err(Error::Internal(
+            "cannot delete the 'default' workspace".into(),
+        ));
+    }
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+
+    // If this workspace is currently active, clear the setting so the next
+    // active_workspace_root() call falls back to the global default.
     let active: Option<String> = conn.query_row(
         "SELECT value FROM settings WHERE key = 'active_workspace_id'",
         [],
@@ -4469,6 +4539,13 @@ pub async fn delete_workspace(
     if active.as_deref() == Some(&id) {
         let _ = conn.execute("DELETE FROM settings WHERE key = 'active_workspace_id'", []);
     }
+
+    // Application-layer cascade: re-home agent_sessions to 'default' BEFORE
+    // dropping the workspace row. agent_sessions has no FK constraint, so
+    // without this, sessions would be silently orphaned. (Conversations
+    // already cascade via FK ON DELETE CASCADE — see V1_INITIAL.)
+    rehome_agent_sessions_to_default(&conn, &id)?;
+
     conn.execute("DELETE FROM spaces WHERE id = ?1", rusqlite::params![id])
         .map_err(Error::Database)?;
     Ok(())
@@ -5464,5 +5541,108 @@ mod cost_rollup_tests {
         assert_eq!(titles.get("s1").map(|s| s.as_str()), Some("Agent run alpha"));
         assert_eq!(titles.get("c1").map(|s| s.as_str()), Some("Chat about beta"));
         assert_eq!(titles.get("unknown").map(|s| s.as_str()), Some("")); // empty fallback
+    }
+}
+
+#[cfg(test)]
+mod workspace_integrity_tests {
+    use rusqlite::Connection;
+    use crate::error::Error;
+
+    fn fresh_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V1_INITIAL).unwrap();
+        conn.execute_batch(crate::db::migrations::V8_AGENT_SESSIONS).unwrap();
+        // Apply V16 to insert 'default'.
+        for stmt in crate::db::migrations::V16_WORKSPACE_DEFAULT_AND_ORPHAN_HEAL
+            .split(';')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            conn.execute(stmt, []).unwrap();
+        }
+        conn
+    }
+
+    fn insert_workspace(conn: &Connection, id: &str, name: &str) {
+        conn.execute(
+            "INSERT INTO spaces (id, name, icon, created_at, updated_at)
+             VALUES (?1, ?2, '📁', datetime('now'), datetime('now'))",
+            rusqlite::params![id, name],
+        ).unwrap();
+    }
+
+    fn insert_session(conn: &Connection, id: &str, space_id: &str) {
+        conn.execute(
+            "INSERT INTO agent_sessions (id, space_id, title, created_at, updated_at)
+             VALUES (?1, ?2, 'test', 0, 0)",
+            rusqlite::params![id, space_id],
+        ).unwrap();
+    }
+
+    fn space_id_of(conn: &Connection, session_id: &str) -> String {
+        conn.query_row(
+            "SELECT space_id FROM agent_sessions WHERE id = ?1",
+            rusqlite::params![session_id],
+            |r| r.get(0),
+        ).unwrap()
+    }
+
+    #[test]
+    fn resolve_workspace_id_passes_through_existing() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-real", "real");
+        let resolved = super::resolve_workspace_id_or_default(&conn, Some("ws-real".into()));
+        assert_eq!(resolved, "ws-real");
+    }
+
+    #[test]
+    fn resolve_workspace_id_falls_back_for_unknown() {
+        let conn = fresh_db();
+        let resolved = super::resolve_workspace_id_or_default(&conn, Some("ghost".into()));
+        assert_eq!(resolved, "default");
+    }
+
+    #[test]
+    fn resolve_workspace_id_falls_back_for_none() {
+        let conn = fresh_db();
+        let resolved = super::resolve_workspace_id_or_default(&conn, None);
+        assert_eq!(resolved, "default");
+    }
+
+    #[test]
+    fn require_workspace_exists_ok_when_present() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-real", "real");
+        assert!(super::require_workspace_exists(&conn, "ws-real").is_ok());
+    }
+
+    #[test]
+    fn require_workspace_exists_err_when_missing() {
+        let conn = fresh_db();
+        let result = super::require_workspace_exists(&conn, "ghost");
+        assert!(matches!(result, Err(Error::NotFound(_))));
+    }
+
+    #[test]
+    fn rehome_agent_sessions_moves_them_to_default() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-x", "x");
+        insert_session(&conn, "s-1", "ws-x");
+        insert_session(&conn, "s-2", "ws-x");
+
+        super::rehome_agent_sessions_to_default(&conn, "ws-x").unwrap();
+
+        assert_eq!(space_id_of(&conn, "s-1"), "default");
+        assert_eq!(space_id_of(&conn, "s-2"), "default");
+    }
+
+    #[test]
+    fn rehome_does_nothing_when_no_sessions_in_workspace() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-empty", "empty");
+        // No sessions inserted.
+        let result = super::rehome_agent_sessions_to_default(&conn, "ws-empty");
+        assert!(result.is_ok());
     }
 }

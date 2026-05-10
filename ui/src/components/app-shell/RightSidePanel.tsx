@@ -12,7 +12,7 @@ import { FolderOpen, Users, ListChecks, History, Globe } from 'lucide-react'
 import { appModeAtom } from '@/atoms/app-mode'
 import { currentAgentSessionIdAtom, agentSessionPathMapAtom } from '@/atoms/agent-atoms'
 import { activePlanAtom } from '@/atoms/agent-teams'
-import { SidePanel } from '@/components/agent/SidePanel'
+import { WorkspaceFilesView } from '@/components/agent/SidePanel'
 import { AgentTeamsPanel } from '@/components/agent/AgentTeamsPanel'
 import { PlanViewer } from '@/components/agent/PlanViewer'
 import { TrajectoryReel } from '@/components/agent/TrajectoryReel'
@@ -88,7 +88,7 @@ export function RightSidePanel(): React.ReactElement | null {
   const sessionPath = sessionPathMap.get(currentSessionId) ?? null
 
   return (
-    <div className="relative h-full w-[320px] flex-shrink-0 overflow-hidden titlebar-drag-region bg-content-area rounded-2xl shadow-xl">
+    <div className="relative h-full w-[380px] flex-shrink-0 overflow-hidden titlebar-drag-region bg-content-area rounded-2xl shadow-xl">
       {/* Tab bar */}
       <div className="flex items-center gap-0.5 px-2 pt-[38px] pb-1 border-b border-border/50 flex-shrink-0">
         <TabButton
@@ -126,7 +126,7 @@ export function RightSidePanel(): React.ReactElement | null {
       {/* Tab content */}
       <div className="flex-1 overflow-auto h-[calc(100%-72px)]">
         {activeTab === 'files' && (
-          <SidePanel sessionId={currentSessionId} sessionPath={sessionPath} />
+          <WorkspaceFilesView sessionId={currentSessionId} sessionPath={sessionPath} />
         )}
         {activeTab === 'teams' && (
           <AgentTeamsPanel />

@@ -745,8 +745,6 @@ export const currentAgentErrorAtom = atom<AgentStreamErrorPayload | null>((get) 
 
 export const agentSessionDraftsAtom = atom<Map<string, string>>(new Map())
 export const agentSessionDraftHtmlAtom = atom<Map<string, string>>(new Map())
-export const agentAttachedDirectoriesMapAtom = atom<Map<string, string[]>>(new Map())
-export const workspaceAttachedDirectoriesMapAtom = atom<Map<string, string[]>>(new Map())
 
 export const currentAgentSessionDraftAtom = atom(
   (get) => {

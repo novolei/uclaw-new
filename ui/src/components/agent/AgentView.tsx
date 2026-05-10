@@ -16,7 +16,7 @@
 import * as React from 'react'
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
 import { toast } from 'sonner'
-import { Bot, CornerDownLeft, Square, Settings, Paperclip, FolderPlus, X, Copy, Check, Brain, Map as MapIcon, Sparkles, AlertTriangle } from 'lucide-react'
+import { Bot, CornerDownLeft, Square, Settings, Paperclip, X, Copy, Check, Brain, Map as MapIcon, Sparkles, AlertTriangle } from 'lucide-react'
 import { AgentMessages } from './AgentMessages'
 import { AgentHeader } from './AgentHeader'
 import { BrowserPreviewOverlay } from './BrowserPreviewOverlay'
@@ -64,8 +64,6 @@ import {
   agentPromptSuggestionsAtom,
   agentMessageRefreshAtom,
   agentSessionsAtom,
-  agentAttachedDirectoriesMapAtom,
-  workspaceAttachedDirectoriesMapAtom,
   liveMessagesMapAtom,
   agentThinkingAtom,
   stoppedByUserSessionsAtom,
@@ -87,13 +85,10 @@ import { fileToBase64 } from '@/lib/file-utils'
 import {
   updateSettings,
   getAgentSessionPath,
-  getWorkspaceFilesPath,
   getAgentSessionMessages,
   sendAgentMessage,
   stopAgent,
   openFileDialog,
-  openFolderDialog,
-  attachDirectory,
   getPathForFile,
   checkPathsType,
   createAgentSession,
@@ -269,11 +264,11 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const setPromptSuggestions = useSetAtom(agentPromptSuggestionsAtom)
   const setAgentSessions = useSetAtom(agentSessionsAtom)
   const openSession = useOpenSession()
-  const setAttachedDirsMap = useSetAtom(agentAttachedDirectoriesMapAtom)
-  const attachedDirsMap = useAtomValue(agentAttachedDirectoriesMapAtom)
-  const attachedDirs = attachedDirsMap.get(sessionId) ?? []
-  const wsAttachedDirsMap = useAtomValue(workspaceAttachedDirectoriesMapAtom)
-  const wsAttachedDirs = currentWorkspaceId ? (wsAttachedDirsMap.get(currentWorkspaceId) ?? []) : []
+  // Attached directories feature is gone in Phase 1 (phantom backend).
+  // These constants keep prop-passing compiling without restructuring the
+  // child component APIs. Phase 2 restores the data flow.
+  const attachedDirs: string[] = []
+  const wsAttachedDirs: string[] = []
 
   const draftsMap = useAtomValue(agentSessionDraftsAtom)
   const setDraftsMap = useSetAtom(agentSessionDraftsAtom)
@@ -306,7 +301,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const sessionPathMap = useAtomValue(agentSessionPathMapAtom)
   const setSessionPathMap = useSetAtom(agentSessionPathMapAtom)
   const sessionPath = sessionPathMap.get(sessionId) ?? null
-  const [workspaceFilesPath, setWorkspaceFilesPath] = React.useState<string | null>(null)
   const [isDragOver, setIsDragOver] = React.useState(false)
   const [errorCopied, setErrorCopied] = React.useState(false)
 
@@ -380,31 +374,25 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       })
   }, [sessionId, currentWorkspaceId, setSessionPathMap])
 
-  // 获取工作区共享文件目录路径（@ 引用时需要搜索）
-  const workspaceSlug = workspaces.find((w) => w.id === currentWorkspaceId)?.slug ?? null
-  React.useEffect(() => {
-    if (!workspaceSlug) {
-      setWorkspaceFilesPath(null)
-      return
-    }
-    getWorkspaceFilesPath(workspaceSlug)
-      .then(setWorkspaceFilesPath)
-      .catch(() => setWorkspaceFilesPath(null))
-  }, [workspaceSlug])
+  // Workspace shared files path: not reachable in Phase 1 (getWorkspaceFilesPath
+  // is phantom; AgentWorkspace doesn't carry path). Stub to null; Phase 2 will
+  // wire this up properly when AgentWorkspace gains a path field.
+  const workspaceSlug: string | null = null
+  const workspaceFilesPath: string | null = null
 
-  // 合并工作区文件目录、工作区级附加目录和会话级附加目录，供 @ 引用搜索
+  // Phase 1: all attached-dir sources are stubbed to [] / null, so this is
+  // always []. Kept as a memo so child prop signatures are unchanged.
   const allAttachedDirs = React.useMemo(() => {
     const dirs = [...attachedDirs]
-    // 添加工作区级附加目录
     for (const d of wsAttachedDirs) {
       if (!dirs.includes(d)) dirs.push(d)
     }
-    // 添加工作区共享文件目录
     if (workspaceFilesPath && !dirs.includes(workspaceFilesPath)) {
       dirs.unshift(workspaceFilesPath)
     }
     return dirs
-  }, [attachedDirs, wsAttachedDirs, workspaceFilesPath])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // 监听消息刷新版本号
   const refreshMap = useAtomValue(agentMessageRefreshAtom)
@@ -481,21 +469,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       })
       .catch(console.error)
   }, [sessionId, refreshVersion, setStreamingStates, setLiveMessagesMap, store])
-
-  // 从会话元数据初始化附加目录（仅冷启动水合，后续由 handleAttachFolder/handleDetachDirectory 实时写入）
-  React.useEffect(() => {
-    const meta = sessions.find((s) => s.id === sessionId)
-    const dirs = meta?.attachedDirectories ?? []
-    setAttachedDirsMap((prev) => {
-      const existing = prev.get(sessionId)
-      if (existing != null) return prev
-      const map = new Map(prev)
-      if (dirs.length > 0) {
-        map.set(sessionId, dirs)
-      }
-      return map
-    })
-  }, [sessionId, sessions, setAttachedDirsMap])
 
   // 自动发送 pending prompt（从快速任务窗口或设置页触发）
   // 等待 messagesLoaded 确保消息加载完成后再插入乐观消息，避免被加载结果覆盖。
@@ -643,30 +616,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     }
   }, [setPendingFiles])
 
-  /** 附加文件夹（不复制，仅记录路径） */
-  const handleAttachFolder = React.useCallback(async (): Promise<void> => {
-    try {
-      const result = await openFolderDialog()
-      if (!result) return
-
-      const updated = await attachDirectory({
-        sessionId,
-        directoryPath: result.path,
-      })
-
-      setAttachedDirsMap((prev) => {
-        const map = new Map(prev)
-        map.set(sessionId, updated)
-        return map
-      })
-
-      toast.success(`已附加目录: ${result.name}`)
-    } catch (error) {
-      console.error('[AgentView] 附加文件夹失败:', error)
-      toast.error('附加文件夹失败')
-    }
-  }, [sessionId, setAttachedDirsMap])
-
   /** 移除待发送文件 */
   const handleRemoveFile = React.useCallback((id: string): void => {
     setPendingFiles((prev) => {
@@ -723,23 +672,11 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         // 通过主进程检测目录 vs 文件
         const { directories, files: filePaths } = await checkPathsType(paths)
 
-        // 拖拽的文件夹直接附加
+        // Phase 1: dropping folders is a no-op until Phase 2 implements
+        // attach_directory. Show a toast so users aren't confused.
         for (const dirPath of directories) {
-          try {
-            const updated = await attachDirectory({
-              sessionId,
-              directoryPath: dirPath,
-            })
-            setAttachedDirsMap((prev) => {
-              const map = new Map(prev)
-              map.set(sessionId, updated)
-              return map
-            })
-            const dirName = dirPath.split('/').pop() || dirPath
-            toast.success(`已附加目录: ${dirName}`)
-          } catch (error) {
-            console.error('[AgentView] 拖拽附加文件夹失败:', error)
-          }
+          const dirName = dirPath.split('/').pop() || dirPath
+          toast.message(`Folder drag is disabled in Phase 1: ${dirName}`)
         }
 
         // 普通文件作为附件
@@ -755,7 +692,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       // 无路径信息：回退，所有项按普通文件处理
       addFilesAsAttachments(droppedFiles)
     }
-  }, [sessionId, addFilesAsAttachments, setAttachedDirsMap])
+  }, [sessionId, addFilesAsAttachments])
 
   /** ModelSelector 选择回调 */
 
@@ -868,7 +805,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           }))
           try {
             const saved = await saveFilesToAgentSession({
-              workspaceSlug: workspace.slug,
+              workspaceSlug: workspace.id,
               sessionId,
               files: filesToSave,
             })
@@ -963,7 +900,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       modelId: activeProviderModel?.modelId || agentModelId || undefined,
       workspaceId: currentWorkspaceId || undefined,
       startedAt: streamStartedAt,
-      ...(attachedDirs.length > 0 && { additionalDirectories: attachedDirs }),
       // 解析用户消息中的 Skill/MCP 引用，传递结构化元数据给后端
       ...(() => {
         const skills = [...effectiveText.matchAll(/\/skill:(\S+)/g)].map(m => m[1]).filter(Boolean) as string[]
@@ -1007,7 +943,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           return map
         })
       })
-  }, [inputContent, pendingFiles, attachedDirs, sessionId, activeProviderModel, agentChannelId, agentModelId, currentWorkspaceId, workspaces, streaming, suggestion, store, setStreamingStates, setPendingFiles, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, setMessages])
+  }, [inputContent, pendingFiles, sessionId, activeProviderModel, agentChannelId, agentModelId, currentWorkspaceId, workspaces, streaming, suggestion, store, setStreamingStates, setPendingFiles, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, setMessages])
 
   /** 停止生成 */
   const handleStop = React.useCallback((): void => {
@@ -1489,22 +1425,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                   </TooltipTrigger>
                   <TooltipContent side="top">
                     <p>添加附件</p>
-                  </TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="size-[36px] rounded-full text-foreground/60 hover:text-foreground"
-                      onClick={handleAttachFolder}
-                    >
-                      <FolderPlus className="size-5" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    <p>附加文件夹</p>
                   </TooltipContent>
                 </Tooltip>
                 <ContextUsageBadge

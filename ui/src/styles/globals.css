@@ -538,6 +538,13 @@
   * {
     @apply border-border;
   }
+  /* Lock the document scroll so trackpad/mouse-wheel doesn't rubber-band the
+     whole window content on macOS — only inner scroll containers should scroll. */
+  html, body, #root {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
   body {
     @apply bg-background text-foreground;
   }

@@ -625,6 +625,19 @@ ALTER TABLE agent_messages ADD COLUMN output_tokens INTEGER;
 ALTER TABLE agent_messages ADD COLUMN cost_usd REAL;
 ";
 
+/// V16: persist the 'default' workspace as a real DB row (replaces the
+/// synthetic in-memory fallback in list_spaces) and re-home agent_sessions
+/// whose space_id points at a workspace that doesn't exist (orphan healing
+/// from before this migration). Idempotent — safe to re-run.
+pub const V16_WORKSPACE_DEFAULT_AND_ORPHAN_HEAL: &str = "
+INSERT OR IGNORE INTO spaces (id, name, icon, path, created_at, updated_at)
+VALUES ('default', '默认工作区', '📁', NULL, datetime('now'), datetime('now'));
+
+UPDATE agent_sessions
+SET space_id = 'default'
+WHERE space_id NOT IN (SELECT id FROM spaces);
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -734,7 +747,87 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             tracing::warn!("V15 stmt skipped: {} :: {}", e, stmt);
         }
     }
+    // V16: persist 'default' workspace + heal orphan agent_sessions.
+    tracing::debug!("Running migration V16: workspace default + orphan heal");
+    for stmt in V16_WORKSPACE_DEFAULT_AND_ORPHAN_HEAL.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V16 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
     tracing::info!("Database migrations complete");
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+
+    /// Apply only the migrations needed to set up `spaces` and `agent_sessions`,
+    /// stopping BEFORE V16 so tests can drive V16 themselves and observe
+    /// pre/post state.
+    fn db_pre_v16() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        // V1 creates `spaces`. V8 creates `agent_sessions`. We don't need the
+        // intermediate migrations because none of them touch the columns
+        // we're testing here.
+        conn.execute_batch(super::V1_INITIAL).unwrap();
+        // V8 contains a multi-statement block; use execute_batch.
+        conn.execute_batch(super::V8_AGENT_SESSIONS).unwrap();
+        conn
+    }
+
+    fn run_v16(conn: &Connection) {
+        for stmt in super::V16_WORKSPACE_DEFAULT_AND_ORPHAN_HEAL
+            .split(';')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            conn.execute(stmt, []).unwrap();
+        }
+    }
+
+    #[test]
+    fn v16_inserts_default_idempotent() {
+        let conn = db_pre_v16();
+
+        // First run inserts 'default'.
+        run_v16(&conn);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM spaces WHERE id = 'default'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "first V16 run should insert one 'default' row");
+
+        // Second run is a no-op.
+        run_v16(&conn);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM spaces WHERE id = 'default'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "second V16 run must not create a duplicate");
+    }
+
+    #[test]
+    fn v16_heals_orphan_agent_sessions() {
+        let conn = db_pre_v16();
+
+        // Pre-V16: insert an agent_session pointing at a workspace that does
+        // not exist in `spaces`.
+        conn.execute(
+            "INSERT INTO agent_sessions (id, space_id, title, created_at, updated_at)
+             VALUES ('s-orphan', 'ghost-workspace', 'orphaned session', 0, 0)",
+            [],
+        )
+        .unwrap();
+
+        run_v16(&conn);
+
+        // Post-V16: orphan should be re-homed to 'default'.
+        let space_id: String = conn
+            .query_row(
+                "SELECT space_id FROM agent_sessions WHERE id = 's-orphan'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(space_id, "default", "orphan session must be re-homed to 'default'");
+    }
+}
