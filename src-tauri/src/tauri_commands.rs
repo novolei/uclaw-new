@@ -3067,28 +3067,36 @@ pub async fn record_skill_cited(
 
 // ─── D3: LLM-driven skill consolidation ───────────────────────────────
 
-const CONSOLIDATION_SYSTEM_PROMPT: &str = "你是一个技能库整合专家。\
-用户会给你一个 JSON 数组，每个元素是一条已学技能（id + title + context 摘要）。\
-你的任务：识别**概念上重复**的技能（同一个工作流 / 同一个工具技巧 / 同一类问题的解决方案），\
-把它们聚合成 cluster，每个 cluster 选一条作为 canonical（保留），合并成一份更完整的内容。\
-\n\n输出严格 JSON 数组（不要 markdown 包裹），shape 如下：\
-\n[\n  {\
-\n    \"cluster\": [\"id1\", \"id2\", \"id3\"],   // 同概念的所有 id（≥2 才算重复，1 个不输出）\
-\n    \"canonical_id\": \"id1\",                  // 选最完整 / 最近 / 最具代表性的那条\
-\n    \"merged_title\": \"...\",                  // 合并后标题（精炼，可改写）\
-\n    \"merged_context\": \"...\",                // 合并后的适用场景\
-\n    \"merged_principles\": \"...\",             // 合并后的核心原则\
-\n    \"merged_steps\": \"...\",                  // 合并后的 SOP 步骤（含原各 skill 的精华）\
-\n    \"merged_pitfalls\": \"...\",               // 合并后的常见陷阱\
-\n    \"reason\": \"为什么这几条是同一概念，简短说明\"\
+// Two-stage consolidation:
+//   Stage 1 (propose): LLM only identifies which skills are duplicates.
+//                      Just outputs cluster mapping — no merged content.
+//                      Token cost: ~50 tokens per cluster instead of 500.
+//   Stage 2 (apply):   Backend keeps canonical's existing content; deletes
+//                      duplicates. User can manually edit canonical later.
+//
+// Why this split:
+//   - First version asked LLM to also generate merged content per cluster
+//     (4 markdown sections × 5 clusters × 35 skills → token starvation
+//     with deepseek-v4-flash, returned empty response, parse failure)
+//   - Identification is the hard semantic task; merging is mechanical and
+//     can be done deterministically (or punted to manual edit)
+//   - Reliable failure mode: if LLM emits empty / garbage, just show
+//     "no clusters found" instead of crashing the dialog
+const CONSOLIDATION_SYSTEM_PROMPT: &str = "你是技能去重助手。\
+用户给你一个 JSON 数组，每条是已学技能：{id, title, context}。\
+你的唯一任务：把**概念上重复**的技能聚合成 cluster。\n\n\
+输出**纯 JSON 数组**（不要 markdown 代码块、不要任何解释文字），shape：\n\
+[\n  {\
+\n    \"cluster\": [\"id1\", \"id2\"],   // 同概念的 id（必须 ≥ 2 个）\
+\n    \"canonical_id\": \"id1\",         // 选最完整 / 最准确的那条作为保留\
+\n    \"reason\": \"简短说明为什么是同一概念\"\
 \n  }\
-\n]\n\n\
-规则：\
-\n1. 不要把不同概念硬塞进一个 cluster — 宁可保留多条独立技能。\
-\n2. 没有重复的技能不要出现在输出里。\
-\n3. cluster 至少 2 条（独行没意义）。\
-\n4. merged 字段要比单条更完整 / 更精炼，不能只是 concat。\
-\n5. 输出**纯 JSON**，无 markdown 代码块、无解释文字。如果没有任何可合并的，输出 `[]`。";
+\n]\n\n规则：\
+\n1. cluster 至少 2 个 id；单条独立的不要输出。\
+\n2. 不同概念绝不混在一个 cluster — 宁可保留独立条目。\
+\n3. 如果完全没有可合并的，直接返回 []。\
+\n4. 输出必须以 [ 开头，以 ] 结尾。不要任何前缀 / 后缀文字。\
+\n5. canonical_id 必须是 cluster 里的某一个 id。";
 
 #[tauri::command]
 pub async fn propose_skill_consolidation(
@@ -3150,14 +3158,25 @@ pub async fn propose_skill_consolidation(
     let user_content = serde_json::to_string_pretty(&skills_input)
         .map_err(|e| format!("Failed to serialize skills: {}", e))?;
 
-    // Call active LLM provider — same shape as try_generate_title.
+    // Build LLM config — prefer chat-role model (which falls back through
+    // the role_models chain), then active model. Larger token budget so
+    // the response isn't silently truncated to empty.
     let llm_cfg = if let Some((provider_id, model, api_key, base_url)) =
+        state.provider_service.get_chat_llm_config().await
+    {
+        crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 2048, 0.1)
+    } else if let Some((provider_id, model, api_key, base_url)) =
         state.provider_service.get_active_llm_config().await
     {
-        crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 4096, 0.2)
+        crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 2048, 0.1)
     } else {
-        return Err("No active LLM provider configured".into());
+        return Err("未配置可用的 LLM provider".into());
     };
+    tracing::info!(
+        model = %llm_cfg.model,
+        skill_count = learned.len(),
+        "propose_skill_consolidation: calling LLM"
+    );
     let provider = crate::llm::create_provider(&llm_cfg)
         .map_err(|e| format!("Failed to create LLM provider: {}", e))?;
     let messages = vec![
@@ -3166,8 +3185,8 @@ pub async fn propose_skill_consolidation(
     ];
     let cfg = crate::llm::CompletionConfig {
         model: llm_cfg.model.clone(),
-        max_tokens: 4096,
-        temperature: 0.2,
+        max_tokens: 2048,
+        temperature: 0.1,
         system_prompt: None,
         thinking_enabled: false,
     };
@@ -3175,20 +3194,53 @@ pub async fn propose_skill_consolidation(
         .complete(messages, vec![], &cfg)
         .await
         .map_err(|e| format!("LLM call failed: {}", e))?;
-    let llm_text = match output {
-        crate::agent::types::RespondOutput::Text { text, .. } => text,
-        crate::agent::types::RespondOutput::ToolCalls { text, .. } => text.unwrap_or_default(),
+    let (llm_text, finish_reason) = match output {
+        crate::agent::types::RespondOutput::Text { text, metadata, .. } => {
+            (text, metadata.finish_reason)
+        }
+        crate::agent::types::RespondOutput::ToolCalls { text, metadata, .. } => {
+            (text.unwrap_or_default(), metadata.finish_reason)
+        }
     };
 
-    // Parse JSON — tolerate ```json fences and other LLM cruft.
-    let clusters_raw: Vec<serde_json::Value> = parse_json_array_tolerant(&llm_text)
-        .ok_or_else(|| format!("LLM returned non-JSON: {}", llm_text))?;
+    // Diagnostic log — let the user inspect via uclaw stderr if anything
+    // about the response is fishy. Truncate at 500 chars to keep logs sane.
+    let preview: String = llm_text.chars().take(500).collect();
+    tracing::info!(
+        finish_reason = ?finish_reason,
+        text_len = llm_text.len(),
+        preview = %preview,
+        "propose_skill_consolidation: LLM response received"
+    );
 
-    // Validate clusters against the actual id set.
-    let id_to_title: std::collections::HashMap<String, String> = learned
-        .iter()
-        .map(|n| (n.id.clone(), n.title.clone()))
-        .collect();
+    // Empty response is its own failure mode (≠ "non-JSON"). Common with
+    // models that have aggressive thinking-mode separation or strict
+    // safety filters; surface that distinction so the user knows what to
+    // try (different model, longer max_tokens, etc.).
+    if llm_text.trim().is_empty() {
+        return Err(format!(
+            "LLM 返回了空响应（model: {}, finish_reason: {:?}）。\
+             试试切换到其他模型，或检查模型是否支持 system prompt。",
+            llm_cfg.model, finish_reason
+        ));
+    }
+
+    // Parse JSON — tolerate ```json fences and other LLM cruft.
+    let clusters_raw: Vec<serde_json::Value> =
+        parse_json_array_tolerant(&llm_text).ok_or_else(|| {
+            format!(
+                "LLM 输出无法解析为 JSON 数组。原始响应（截断）：\n{}",
+                preview
+            )
+        })?;
+
+    // Validate clusters against the actual id set + look up content from
+    // the canonical's existing metadata. We DON'T ask the LLM to generate
+    // merged content — too lossy / token-hungry. The user keeps the
+    // canonical's content as-is and can edit later via the manual edit
+    // feature (when it exists).
+    let id_to_node: std::collections::HashMap<String, &crate::memory_graph::models::MemoryNode> =
+        learned.iter().map(|n| (n.id.clone(), n)).collect();
 
     let mut clusters_out: Vec<serde_json::Value> = Vec::new();
     for c in clusters_raw {
@@ -3198,7 +3250,7 @@ pub async fn propose_skill_consolidation(
             .map(|a| {
                 a.iter()
                     .filter_map(|x| x.as_str().map(String::from))
-                    .filter(|id| id_to_title.contains_key(id))
+                    .filter(|id| id_to_node.contains_key(id))
                     .collect()
             })
             .unwrap_or_default();
@@ -3211,10 +3263,18 @@ pub async fn propose_skill_consolidation(
             .map(String::from)
             .filter(|id| cluster_ids.contains(id))
             .unwrap_or_else(|| cluster_ids[0].clone());
-        let canonical_title = id_to_title
-            .get(&canonical_id)
-            .cloned()
-            .unwrap_or_default();
+
+        let canonical = id_to_node.get(&canonical_id).cloned();
+        let canonical_title = canonical.map(|n| n.title.clone()).unwrap_or_default();
+        let canonical_meta = canonical.and_then(|n| n.metadata.as_ref());
+        let pull = |key: &str| -> String {
+            canonical_meta
+                .and_then(|m| m.get(key))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+
         let duplicate_ids: Vec<String> = cluster_ids
             .iter()
             .filter(|id| **id != canonical_id)
@@ -3222,17 +3282,17 @@ pub async fn propose_skill_consolidation(
             .collect();
         let duplicate_titles: Vec<String> = duplicate_ids
             .iter()
-            .filter_map(|id| id_to_title.get(id).cloned())
+            .filter_map(|id| id_to_node.get(id).map(|n| n.title.clone()))
             .collect();
 
         clusters_out.push(serde_json::json!({
             "canonical_id": canonical_id,
-            "canonical_title": canonical_title,
-            "merged_title": c.get("merged_title").and_then(|v| v.as_str()).unwrap_or(&canonical_title),
-            "merged_context": c.get("merged_context").and_then(|v| v.as_str()).unwrap_or(""),
-            "merged_principles": c.get("merged_principles").and_then(|v| v.as_str()).unwrap_or(""),
-            "merged_steps": c.get("merged_steps").and_then(|v| v.as_str()).unwrap_or(""),
-            "merged_pitfalls": c.get("merged_pitfalls").and_then(|v| v.as_str()).unwrap_or(""),
+            "canonical_title": canonical_title.clone(),
+            "merged_title": canonical_title,
+            "merged_context": pull("context"),
+            "merged_principles": pull("principles"),
+            "merged_steps": pull("steps"),
+            "merged_pitfalls": pull("pitfalls"),
             "duplicate_ids": duplicate_ids,
             "duplicate_titles": duplicate_titles,
             "reason": c.get("reason").and_then(|v| v.as_str()).unwrap_or(""),
