@@ -218,6 +218,43 @@ const MarkdownH3 = React.memo(function MarkdownH3({
   )
 })
 
+/** 表格渲染器：包一层 card 容器，让表格有清晰边界 */
+const MarkdownTable = React.memo(function MarkdownTable({
+  children,
+}: React.HTMLAttributes<HTMLTableElement>): React.ReactElement {
+  return (
+    <div className="my-3 rounded-[10px] border border-border overflow-hidden bg-card">
+      <table className="w-full border-collapse">{children}</table>
+    </div>
+  )
+})
+
+const MarkdownThead = React.memo(function MarkdownThead({
+  children,
+}: React.HTMLAttributes<HTMLTableSectionElement>): React.ReactElement {
+  return <thead className="bg-muted/50">{children}</thead>
+})
+
+const MarkdownTr = React.memo(function MarkdownTr({
+  children,
+}: React.HTMLAttributes<HTMLTableRowElement>): React.ReactElement {
+  return (
+    <tr className="[&:not(:last-child)>td]:border-b [&>td]:border-border/40">
+      {children}
+    </tr>
+  )
+})
+
+const MarkdownTh = React.memo(function MarkdownTh({
+  children,
+}: React.HTMLAttributes<HTMLTableCellElement>): React.ReactElement {
+  return (
+    <th className="text-left px-3.5 py-2.5 text-[11.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground border-b border-border">
+      {children}
+    </th>
+  )
+})
+
 const MARKDOWN_COMPONENTS = {
   a: MarkdownLink,
   pre: MarkdownPre,
@@ -225,6 +262,10 @@ const MARKDOWN_COMPONENTS = {
   h1: MarkdownH1,
   h2: MarkdownH2,
   h3: MarkdownH3,
+  table: MarkdownTable,
+  thead: MarkdownThead,
+  tr: MarkdownTr,
+  th: MarkdownTh,
 } as const
 
 interface MessageResponseProps {

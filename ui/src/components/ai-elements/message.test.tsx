@@ -35,3 +35,44 @@ describe('MessageResponse — headings', () => {
     expect(h3!.querySelector('span[aria-hidden]')).toBeNull()
   })
 })
+
+describe('MessageResponse — tables', () => {
+  const tableMd = [
+    '| Project | Status |',
+    '|---------|--------|',
+    '| Alpha   | done   |',
+    '| Beta    | wip    |',
+  ].join('\n')
+
+  it('wraps table in a card container', () => {
+    const { container } = renderWithProviders(
+      <MessageResponse>{tableMd}</MessageResponse>,
+    )
+    const table = container.querySelector('table')
+    expect(table).not.toBeNull()
+    const wrapper = table!.parentElement
+    expect(wrapper).not.toBeNull()
+    expect(wrapper!.className).toContain('rounded-')
+    expect(wrapper!.className).toContain('border')
+  })
+
+  it('renders thead with muted background', () => {
+    const { container } = renderWithProviders(
+      <MessageResponse>{tableMd}</MessageResponse>,
+    )
+    const thead = container.querySelector('thead')
+    expect(thead).not.toBeNull()
+    expect(thead!.className).toContain('bg-muted')
+  })
+
+  it('renders th with uppercase + tracking + muted-foreground', () => {
+    const { container } = renderWithProviders(
+      <MessageResponse>{tableMd}</MessageResponse>,
+    )
+    const th = container.querySelector('th')
+    expect(th).not.toBeNull()
+    expect(th!.className).toContain('uppercase')
+    expect(th!.className).toContain('tracking-')
+    expect(th!.className).toContain('text-muted-foreground')
+  })
+})
