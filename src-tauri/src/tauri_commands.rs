@@ -142,6 +142,16 @@ pub async fn send_message(
     tools.register(builtin::web::HttpRequestTool::new());
     tools.register(builtin::edit::EditTool::new(workspace.clone()));
     tools.register(builtin::shell::BashTool::new(workspace.clone()));
+    tools.register(builtin::ask_user::AskUserTool::new(
+        app_handle.clone(),
+        Arc::clone(&state.pending_ask_users),
+        input.conversation_id.clone(),
+    ));
+    tools.register(builtin::exit_plan_mode::ExitPlanModeTool::new(
+        app_handle.clone(),
+        Arc::clone(&state.pending_exit_plans),
+        input.conversation_id.clone(),
+    ));
     tools.register(builtin::plan::PlanWriteTool::new(workspace.clone(), app_handle.clone()));
     tools.register(builtin::plan::PlanUpdateTool::new(workspace.clone(), app_handle.clone()));
     tools.register(
@@ -254,6 +264,7 @@ pub async fn send_message(
         .map(|s| parse_safety_mode(s))
         .transpose()?;
 
+    let workspace_root = active_workspace_root(&state);
     let mut delegate = crate::agent::dispatcher::ChatDelegate::new(
         llm,
         tools,
@@ -264,6 +275,7 @@ pub async fn send_message(
         safety_mode,
         state.pending_approvals.clone(),
         input.conversation_id.clone(),
+        workspace_root,
     );
 
     // Inject InfraService so dispatcher publishes ToolExecuted events
@@ -2328,15 +2340,21 @@ fn parse_api_type(s: &str) -> Option<crate::providers::types::ApiType> {
 fn parse_safety_mode(s: &str) -> Result<crate::safety::SafetyMode, Error> {
     match s {
         "ask" => Ok(crate::safety::SafetyMode::Ask),
+        "acceptedits" => Ok(crate::safety::SafetyMode::AcceptEdits),
+        "plan" => Ok(crate::safety::SafetyMode::Plan),
         "supervised" => Ok(crate::safety::SafetyMode::Supervised),
         "yolo" => Ok(crate::safety::SafetyMode::Yolo),
-        _ => Err(Error::InvalidInput(format!("Invalid safety mode: '{}'. Use 'ask', 'supervised', or 'yolo'", s))),
+        _ => Err(Error::InvalidInput(format!(
+            "Invalid safety mode: '{}'. Use 'ask', 'acceptedits', 'plan', 'supervised', or 'yolo'", s
+        ))),
     }
 }
 
 fn safety_mode_to_str(mode: &crate::safety::SafetyMode) -> &'static str {
     match mode {
         crate::safety::SafetyMode::Ask => "ask",
+        crate::safety::SafetyMode::AcceptEdits => "acceptedits",
+        crate::safety::SafetyMode::Plan => "plan",
         crate::safety::SafetyMode::Supervised => "supervised",
         crate::safety::SafetyMode::Yolo => "yolo",
     }
@@ -3247,6 +3265,16 @@ pub async fn send_agent_message(
     tools.register(builtin::web::HttpRequestTool::new());
     tools.register(builtin::edit::EditTool::new(workspace.clone()));
     tools.register(builtin::shell::BashTool::new(workspace.clone()));
+    tools.register(builtin::ask_user::AskUserTool::new(
+        app_handle.clone(),
+        Arc::clone(&state.pending_ask_users),
+        input.session_id.clone(),
+    ));
+    tools.register(builtin::exit_plan_mode::ExitPlanModeTool::new(
+        app_handle.clone(),
+        Arc::clone(&state.pending_exit_plans),
+        input.session_id.clone(),
+    ));
     tools.register(builtin::plan::PlanWriteTool::new(workspace.clone(), app_handle.clone()));
     tools.register(builtin::plan::PlanUpdateTool::new(workspace.clone(), app_handle.clone()));
     tools.register(
@@ -3286,6 +3314,7 @@ pub async fn send_agent_message(
     let trajectory_store = Arc::clone(&state.trajectory_store);
     let tool_budget = Arc::clone(&state.tool_budget);
     let running_sessions = Arc::clone(&state.running_sessions);
+    let workspace_root_for_delegate = active_workspace_root(&state);
 
     const AGENT_SYSTEM_PROMPT: &str = "You are uClaw, a helpful AI desktop coworker. You help users with tasks using the available tools.";
 
@@ -3311,6 +3340,7 @@ pub async fn send_agent_message(
             None,
             Arc::clone(&pending_approvals),
             session_id.clone(),
+            workspace_root_for_delegate.clone(),
         );
         delegate.set_infra_service(Arc::clone(&infra_service));
         delegate.set_trajectory_store(Arc::clone(&trajectory_store));
@@ -3812,6 +3842,68 @@ pub async fn delete_workspace(
     Ok(())
 }
 
+// ─── Workspace uclaw.md ────────────────────────────────────────────────
+
+fn active_workspace_root(state: &AppState) -> Option<std::path::PathBuf> {
+    // Use the active workspace setting; fall back to data_dir/workspace if unset.
+    // Real workspace lookup is in workspace/ mod; for v1 we use the same
+    // resolution dispatcher uses.
+    let conn = state.db.lock().ok()?;
+    let id: String = conn.query_row(
+        "SELECT value FROM settings WHERE key = 'active_workspace_id'",
+        [],
+        |row| row.get::<_, String>(0),
+    ).ok()?;
+    drop(conn);
+    let conn = state.db.lock().ok()?;
+    conn.query_row(
+        "SELECT path FROM spaces WHERE id = ?1",
+        rusqlite::params![id],
+        |row| row.get::<_, Option<String>>(0),
+    ).ok().flatten().map(std::path::PathBuf::from)
+}
+
+#[tauri::command]
+pub async fn read_workspace_uclaw_md(state: State<'_, AppState>) -> Result<String, Error> {
+    let Some(root) = active_workspace_root(&state) else {
+        return Ok(String::new());
+    };
+    let path = root.join("uclaw.md");
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(Error::Internal(format!("read uclaw.md: {}", e))),
+    }
+}
+
+#[tauri::command]
+pub async fn write_workspace_uclaw_md(
+    state: State<'_, AppState>,
+    content: String,
+) -> Result<(), Error> {
+    let root = active_workspace_root(&state)
+        .ok_or_else(|| Error::InvalidInput("No active workspace".into()))?;
+    if !root.exists() {
+        std::fs::create_dir_all(&root).map_err(|e| Error::Io(e))?;
+    }
+    let path = root.join("uclaw.md");
+    std::fs::write(&path, content).map_err(|e| Error::Io(e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn read_default_prompts() -> Result<crate::ipc::DefaultPromptsResponse, Error> {
+    use crate::agent::mode_prompts;
+    use crate::safety::SafetyMode;
+    Ok(crate::ipc::DefaultPromptsResponse {
+        baseline: mode_prompts::KARPATHY_BASELINE.to_string(),
+        mode_ask: mode_prompts::mode_addition(&SafetyMode::Ask).to_string(),
+        mode_accept_edits: mode_prompts::mode_addition(&SafetyMode::AcceptEdits).to_string(),
+        mode_plan: mode_prompts::mode_addition(&SafetyMode::Plan).to_string(),
+        mode_bypass: mode_prompts::mode_addition(&SafetyMode::Yolo).to_string(),
+    })
+}
+
 // ─── Trajectory Commands ────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -4302,17 +4394,8 @@ pub async fn start_agent_teams(
     };
     let llm: Arc<dyn crate::llm::LlmProvider> = llm::create_provider(&llm_cfg)?;
 
-    // Build tool registry for workers
-    let mut tool_reg = ToolRegistry::new();
     let workspace = state.workspace_root.clone();
-    tool_reg.register(builtin::file::ReadFileTool::new(workspace.clone()));
-    tool_reg.register(builtin::file::WriteFileTool::new(workspace.clone()));
-    tool_reg.register(builtin::search::GrepTool::new(workspace.clone()));
-    tool_reg.register(builtin::search::GlobTool::new(workspace.clone()));
-    tool_reg.register(builtin::web::WebFetchTool::new());
-    tool_reg.register(builtin::edit::EditTool::new(workspace.clone()));
-    tool_reg.register(builtin::shell::BashTool::new(workspace.clone()));
-    let tools = Arc::new(tool_reg);
+    let workspace_root_for_factory = active_workspace_root(&state);
 
     // Clone everything that needs to move into the spawn
     let db = Arc::clone(&state.db);
@@ -4322,13 +4405,14 @@ pub async fn start_agent_teams(
     let max_cycles = input.max_review_cycles.unwrap_or(2);
     let safety_manager = Arc::clone(&state.safety_manager);
     let pending_approvals = Arc::clone(&state.pending_approvals);
+    let pending_ask_users = Arc::clone(&state.pending_ask_users);
+    let pending_exit_plans = Arc::clone(&state.pending_exit_plans);
 
     // Explicit clones for orchestrator vs delegate_factory
     let llm_for_orchestrator = Arc::clone(&llm);
     let model_for_orchestrator = model.clone();
     let llm_for_factory = Arc::clone(&llm);
     let model_for_factory = model.clone();
-    let tools_for_factory = Arc::clone(&tools);
     let app_for_factory = app_handle.clone();
     let safety_for_factory = Arc::clone(&safety_manager);
     let approvals_for_factory = Arc::clone(&pending_approvals);
@@ -4341,16 +4425,37 @@ pub async fn start_agent_teams(
             app_handle.clone(),
             Arc::clone(&db),
             move |system_prompt: String| -> Box<dyn crate::agent::types::LoopDelegate + Send> {
+                let session_id_for_tools = uuid::Uuid::new_v4().to_string();
+                let mut tool_reg = ToolRegistry::new();
+                tool_reg.register(builtin::file::ReadFileTool::new(workspace.clone()));
+                tool_reg.register(builtin::file::WriteFileTool::new(workspace.clone()));
+                tool_reg.register(builtin::search::GrepTool::new(workspace.clone()));
+                tool_reg.register(builtin::search::GlobTool::new(workspace.clone()));
+                tool_reg.register(builtin::web::WebFetchTool::new());
+                tool_reg.register(builtin::edit::EditTool::new(workspace.clone()));
+                tool_reg.register(builtin::shell::BashTool::new(workspace.clone()));
+                tool_reg.register(builtin::ask_user::AskUserTool::new(
+                    app_for_factory.clone(),
+                    Arc::clone(&pending_ask_users),
+                    session_id_for_tools.clone(),
+                ));
+                tool_reg.register(builtin::exit_plan_mode::ExitPlanModeTool::new(
+                    app_for_factory.clone(),
+                    Arc::clone(&pending_exit_plans),
+                    session_id_for_tools.clone(),
+                ));
+                let tools = Arc::new(tool_reg);
                 let delegate = crate::agent::dispatcher::ChatDelegate::new(
                     Arc::clone(&llm_for_factory),
-                    Arc::clone(&tools_for_factory),
+                    tools,
                     app_for_factory.clone(),
                     model_for_factory.clone(),
                     system_prompt,
                     Arc::clone(&safety_for_factory),
                     None,
                     Arc::clone(&approvals_for_factory),
-                    uuid::Uuid::new_v4().to_string(),
+                    session_id_for_tools,
+                    workspace_root_for_factory.clone(),
                 );
                 Box::new(delegate)
             },
@@ -4418,6 +4523,74 @@ pub async fn stop_agent_teams(
         "UPDATE team_runs SET status = 'cancelled' WHERE id = ?1",
         rusqlite::params![team_id],
     );
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn respond_ask_user(
+    state: State<'_, AppState>,
+    input: crate::ipc::RespondAskUserInput,
+) -> Result<(), Error> {
+    let answers: std::collections::HashMap<String, serde_json::Value> = input.answers
+        .into_iter()
+        .collect();
+    let result = crate::app::AskUserResult { answers };
+    let resolved = state.pending_ask_users.resolve(&input.request_id, result);
+    if !resolved {
+        tracing::warn!(request_id = %input.request_id, "respond_ask_user: no matching pending request");
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn respond_exit_plan_mode(
+    state: State<'_, AppState>,
+    input: crate::ipc::RespondExitPlanInput,
+) -> Result<(), Error> {
+    use crate::app::{ExitPlanDecision, ExitPlanResult};
+    use crate::ipc::CreatePermissionRuleInput;
+
+    let decision = match input.decision.as_str() {
+        "accept_and_auto" => {
+            // Switch session SafetyMode to Supervised globally for now (per-
+            // session override would be cleaner but requires plumbing through
+            // the dispatcher at runtime). Updating the global policy is the
+            // simplest implementation that meets the spec acceptance criteria.
+            let mut mgr = state.safety_manager.write().await;
+            let _ = mgr.set_global_mode(crate::safety::SafetyMode::Supervised);
+            ExitPlanDecision::AcceptAndAuto
+        }
+        "accept_keep_plan" => {
+            // Write each allowed_prompt as a V14 session pattern rule so it
+            // auto-passes while user stays in Plan mode.
+            for prompt in &input.allowed_prompts {
+                let trimmed = prompt.trim();
+                if trimmed.is_empty() { continue; }
+                // Parse "bash cargo build" → tool="bash", target="cargo build"
+                let (tool_name, target) = match trimmed.split_once(' ') {
+                    Some((t, rest)) if !t.is_empty() => (t.to_string(), Some(rest.trim().to_string())),
+                    _ => (trimmed.to_string(), None),
+                };
+                let _ = crate::safety::permissions::create_rule(&state.db, CreatePermissionRuleInput {
+                    scope: "session".into(),
+                    session_id: Some(input.session_id.clone()),
+                    tool_name,
+                    target,
+                    mode: "allow".into(),
+                });
+            }
+            ExitPlanDecision::AcceptKeepPlan
+        }
+        "reject" => ExitPlanDecision::Reject {
+            feedback: input.feedback.unwrap_or_else(|| "(no feedback provided)".into()),
+        },
+        other => return Err(Error::InvalidInput(format!("unknown decision: {}", other))),
+    };
+
+    let resolved = state.pending_exit_plans.resolve(&input.request_id, ExitPlanResult { decision });
+    if !resolved {
+        tracing::warn!(request_id = %input.request_id, "respond_exit_plan_mode: no matching pending request");
+    }
     Ok(())
 }
 

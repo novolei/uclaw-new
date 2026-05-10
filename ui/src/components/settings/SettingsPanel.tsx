@@ -10,7 +10,6 @@ import {
   Info,
   Plug,
   Globe,
-  BookOpen,
   Wrench,
   Bot,
   Keyboard,
@@ -18,6 +17,7 @@ import {
   Cpu,
   BarChart3,
   ShieldCheck,
+  FileCode2,
 } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { GeneralSettings } from './GeneralSettings'
@@ -26,7 +26,7 @@ import { UsageSettings } from './UsageSettings'
 import { AgentSettings } from './AgentSettings'
 import { ToolSettings } from './ToolSettings'
 import { PermissionsSettings } from './PermissionsSettings'
-import { PromptSettings } from './PromptSettings'
+import { PromptsSettings } from './PromptsSettings'
 import { ShortcutSettings } from './ShortcutSettings'
 import { ChannelSettings } from './ChannelSettings'
 import { ModelSettings } from './ModelSettings'
@@ -49,7 +49,7 @@ const TABS: TabItem[] = [
   { id: 'agent', label: 'Agent', icon: <Plug size={15} /> },
   { id: 'tools', label: '工具', icon: <Wrench size={15} /> },
   { id: 'permissions', label: '工具权限', icon: <ShieldCheck size={15} /> },
-  { id: 'prompts', label: '提示词', icon: <BookOpen size={15} /> },
+  { id: 'prompts', label: '提示词', icon: <FileCode2 size={15} /> },
   { id: 'bots', label: 'Bot', icon: <Bot size={15} /> },
   { id: 'shortcuts', label: '快捷键', icon: <Keyboard size={15} /> },
   { id: 'proxy', label: '代理', icon: <Globe size={15} /> },
@@ -75,7 +75,7 @@ function SettingsContent({ tab }: { tab: SettingsTab }) {
     case 'permissions':
       return <PermissionsSettings />
     case 'prompts':
-      return <PromptSettings />
+      return <PromptsSettings />
     case 'bots':
       return <BotDefaultSettings />
     case 'shortcuts':

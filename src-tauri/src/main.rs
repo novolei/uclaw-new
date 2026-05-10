@@ -85,6 +85,8 @@ fn main() {
                 let llm_config = state.llm_config.clone();
                 let safety_manager = state.safety_manager.clone();
                 let pending_approvals = state.pending_approvals.clone();
+                let pending_ask_users = state.pending_ask_users.clone();
+                let pending_exit_plans = state.pending_exit_plans.clone();
 
                 // 在后台异步执行服务注册和启动
                 tauri::async_runtime::spawn(async move {
@@ -233,12 +235,15 @@ fn main() {
                                 let app_h = app_handle.clone();
                                 let safety = safety_manager.clone();
                                 let approvals = pending_approvals.clone();
+                                let ask_users = pending_ask_users.clone();
+                                let exit_plans = pending_exit_plans.clone();
 
                                 let factory: std::sync::Arc<
                                     dyn Fn(String) -> Box<dyn uclaw_core::agent::types::LoopDelegate + Send>
                                         + Send + Sync,
                                 > = std::sync::Arc::new(move |system_prompt: String| {
                                     use uclaw_core::agent::tools::{tool::ToolRegistry, builtin};
+                                    let session_id_for_tools = uuid::Uuid::new_v4().to_string();
                                     let mut reg = ToolRegistry::new();
                                     reg.register(builtin::file::ReadFileTool::new(workspace.clone()));
                                     reg.register(builtin::file::WriteFileTool::new(workspace.clone()));
@@ -247,6 +252,16 @@ fn main() {
                                     reg.register(builtin::web::WebFetchTool::new());
                                     reg.register(builtin::edit::EditTool::new(workspace.clone()));
                                     reg.register(builtin::shell::BashTool::new(workspace.clone()));
+                                    reg.register(builtin::ask_user::AskUserTool::new(
+                                        app_h.clone(),
+                                        std::sync::Arc::clone(&ask_users),
+                                        session_id_for_tools.clone(),
+                                    ));
+                                    reg.register(builtin::exit_plan_mode::ExitPlanModeTool::new(
+                                        app_h.clone(),
+                                        std::sync::Arc::clone(&exit_plans),
+                                        session_id_for_tools.clone(),
+                                    ));
                                     let tools = std::sync::Arc::new(reg);
                                     Box::new(uclaw_core::agent::dispatcher::ChatDelegate::new(
                                         std::sync::Arc::clone(&llm),
@@ -257,7 +272,8 @@ fn main() {
                                         std::sync::Arc::clone(&safety),
                                         None,
                                         std::sync::Arc::clone(&approvals),
-                                        uuid::Uuid::new_v4().to_string(),
+                                        session_id_for_tools,
+                                        Some(workspace.clone()),
                                     ))
                                 });
 
@@ -415,6 +431,8 @@ fn main() {
             uclaw_core::tauri_commands::assess_command_risk,
             // Tool Approval
             uclaw_core::tauri_commands::approve_tool_call,
+            uclaw_core::tauri_commands::respond_ask_user,
+            uclaw_core::tauri_commands::respond_exit_plan_mode,
             uclaw_core::tauri_commands::list_permission_rules,
             uclaw_core::tauri_commands::create_permission_rule,
             uclaw_core::tauri_commands::delete_permission_rule,
@@ -472,6 +490,9 @@ fn main() {
             uclaw_core::tauri_commands::set_active_workspace_id,
             uclaw_core::tauri_commands::create_workspace,
             uclaw_core::tauri_commands::delete_workspace,
+            uclaw_core::tauri_commands::read_workspace_uclaw_md,
+            uclaw_core::tauri_commands::write_workspace_uclaw_md,
+            uclaw_core::tauri_commands::read_default_prompts,
             // Trajectory
             uclaw_core::tauri_commands::get_session_trajectory,
             uclaw_core::tauri_commands::search_trajectories,

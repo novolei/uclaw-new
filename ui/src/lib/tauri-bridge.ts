@@ -109,9 +109,10 @@ import type {
   PermissionRule,
   PermissionAuditEntry,
   CreatePermissionRuleInput,
+  DefaultPromptsResponse,
 } from './types';
 import type { Channel } from './chat-types';
-import type { RecentThread } from './agent-types';
+import type { RecentThread, AskUserRequest, ExitPlanModeRequest } from './agent-types';
 
 // ─────────────────────────────────────────────────────────
 // Bootstrap / Settings
@@ -822,7 +823,7 @@ export const checkPathsType = (paths: string[]): Promise<{ directories: string[]
 // `SafetyModeWire` mirrors the Rust enum's serde shape
 // (`#[serde(rename_all = "lowercase")]` in `src-tauri/src/safety/mod.rs:11`).
 
-export type SafetyModeWire = 'ask' | 'supervised' | 'yolo'
+export type SafetyModeWire = 'ask' | 'acceptedits' | 'plan' | 'supervised' | 'yolo'
 
 // --- System prompt compat ---
 export const createSystemPrompt = (input: any): Promise<any> =>
@@ -868,11 +869,25 @@ export const reorderAgentWorkspaces = (ids: string[]): Promise<void> =>
 export const respondPermission = (input: any): Promise<void> =>
   invoke<void>('respond_permission', { input }).catch(() => {})
 
-export const respondAskUser = (input: any): Promise<void> =>
-  invoke<void>('respond_ask_user', { input }).catch(() => {})
+export const respondAskUser = (input: { requestId: string; answers: Record<string, string> }): Promise<void> =>
+  invoke<void>('respond_ask_user', { input })
 
-export const respondExitPlanMode = (input: any): Promise<void> =>
-  invoke<void>('respond_exit_plan_mode', { input }).catch(() => {})
+export const onAskUserRequest = (cb: (payload: AskUserRequest) => void): Promise<UnlistenFn> =>
+  listen('agent:ask_user_request', (e) => cb(e.payload as AskUserRequest))
+
+export interface RespondExitPlanModeInput {
+  requestId: string
+  decision: 'accept_and_auto' | 'accept_keep_plan' | 'reject'
+  feedback?: string
+  allowedPrompts?: string[]
+  sessionId: string
+}
+
+export const respondExitPlanMode = (input: RespondExitPlanModeInput): Promise<void> =>
+  invoke<void>('respond_exit_plan_mode', { input })
+
+export const onExitPlanRequest = (cb: (payload: ExitPlanModeRequest) => void): Promise<UnlistenFn> =>
+  listen('agent:exit_plan_request', (e) => cb(e.payload as ExitPlanModeRequest))
 
 // --- Agent session management compat ---
 export const moveAgentSessionToWorkspace = (input: any): Promise<any> =>
@@ -1034,3 +1049,13 @@ export const deletePermissionRule = (id: string): Promise<boolean> =>
 
 export const listPermissionAudit = (sessionId?: string, limit = 100): Promise<PermissionAuditEntry[]> =>
   invoke<PermissionAuditEntry[]>('list_permission_audit', { sessionId, limit })
+
+// ─── Prompts (workspace uclaw.md + default mode prompts) ──────────────
+export const readWorkspaceUclawMd = (): Promise<string> =>
+  invoke<string>('read_workspace_uclaw_md')
+
+export const writeWorkspaceUclawMd = (content: string): Promise<void> =>
+  invoke<void>('write_workspace_uclaw_md', { content })
+
+export const readDefaultPrompts = (): Promise<DefaultPromptsResponse> =>
+  invoke<DefaultPromptsResponse>('read_default_prompts')

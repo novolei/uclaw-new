@@ -891,3 +891,83 @@ pub struct CreatePermissionRuleInput {
     pub target: Option<String>,
     pub mode: String,
 }
+
+// ─── Default prompts (for Settings → 提示词 read-only preview) ─────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DefaultPromptsResponse {
+    pub baseline: String,
+    pub mode_ask: String,
+    pub mode_accept_edits: String,
+    pub mode_plan: String,
+    pub mode_bypass: String,
+}
+
+// ─── ask_user ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserOption {
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserQuestion {
+    pub question: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    pub multi_select: bool,
+    #[serde(default)]
+    pub options: Vec<AskUserOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserRequestPayload {
+    pub request_id: String,
+    pub session_id: String,
+    pub questions: Vec<AskUserQuestion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RespondAskUserInput {
+    pub request_id: String,
+    pub answers: serde_json::Map<String, serde_json::Value>,
+}
+
+// ─── exit_plan_mode ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExitPlanRequestPayload {
+    pub request_id: String,
+    pub session_id: String,
+    pub plan: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_prompts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RespondExitPlanInput {
+    pub request_id: String,
+    /// "accept_and_auto" | "accept_keep_plan" | "reject"
+    pub decision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<String>,
+    /// For accept_keep_plan + accept_and_auto, the original allowed_prompts
+    /// list (frontend echoes them back since backend's pending registry
+    /// doesn't store the request body).
+    #[serde(default)]
+    pub allowed_prompts: Vec<String>,
+    /// Echo of session_id (frontend already knows it, simpler than backend
+    /// stashing it).
+    pub session_id: String,
+}

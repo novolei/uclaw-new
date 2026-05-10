@@ -56,6 +56,8 @@ pub struct ChatDelegate {
     /// Lets the frontend deduplicate events that arrive more than once (e.g. due
     /// to HMR or React Strict Mode registering multiple listeners).
     thinking_seq: Arc<AtomicU64>,
+    /// Workspace root used to source `uclaw.md` for prompt composition.
+    workspace_root: Option<std::path::PathBuf>,
 }
 
 impl ChatDelegate {
@@ -69,6 +71,7 @@ impl ChatDelegate {
         safety_mode: Option<SafetyMode>,
         pending_approvals: Arc<PendingApprovals>,
         conversation_id: String,
+        workspace_root: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             llm, tools, app_handle, model, system_prompt,
@@ -84,6 +87,7 @@ impl ChatDelegate {
             turn_index: Arc::new(AtomicU32::new(0)),
             thinking_enabled: false,
             thinking_seq: Arc::new(AtomicU64::new(0)),
+            workspace_root,
         }
     }
 
@@ -113,14 +117,23 @@ impl ChatDelegate {
         self.memory_context = Some(context);
     }
 
-    /// Build the effective system prompt, including memory context if available.
+    /// Build the effective system prompt including memory context, the user's
+    /// uclaw.md (workspace-level), Karpathy baseline, and mode-specific
+    /// guardrails. Reads uclaw.md on every call (small file, OS cache).
     fn effective_system_prompt(&self) -> String {
-        match &self.memory_context {
-            Some(ctx) if !ctx.is_empty() => {
-                format!("{}\n\n{}", self.system_prompt, ctx)
-            }
-            _ => self.system_prompt.clone(),
-        }
+        let memory_block = self.memory_context.as_deref().filter(|s| !s.is_empty());
+        let mode = self.safety_mode.clone().unwrap_or_default();
+        // Karpathy + uclaw.md + mode prompt composition. The "user_global_base"
+        // here is the existing system_prompt + memory context if any.
+        let base_with_memory = match memory_block {
+            Some(ctx) => format!("{}\n\n{}", self.system_prompt, ctx),
+            None => self.system_prompt.clone(),
+        };
+        crate::agent::mode_prompts::compose_system_prompt(
+            &base_with_memory,
+            self.workspace_root.as_deref(),
+            &mode,
+        )
     }
 
     /// Returns a cloneable handle that can be used to signal the loop to stop.

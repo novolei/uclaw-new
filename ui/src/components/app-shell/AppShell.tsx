@@ -13,12 +13,19 @@ import { RightSidePanel } from './RightSidePanel'
 import { MainArea } from '@/components/tabs/MainArea'
 import { AppShellProvider, type AppShellContextType } from '@/contexts/AppShellContext'
 import { ApprovalModal } from '@/components/ApprovalModal'
+import { AskUserBanner } from '@/components/agent/AskUserBanner'
+import { ExitPlanModeBanner } from '@/components/agent/ExitPlanModeBanner'
+import { ModeBanner } from '@/components/agent/ModeBanner'
 import { appModeAtom } from '@/atoms/app-mode'
 import {
   agentSessionsAtom,
+  allPendingAskUserRequestsAtom,
+  allPendingExitPlanRequestsAtom,
   currentAgentSessionIdAtom,
   currentAgentWorkspaceIdAtom,
   currentSessionSidePanelOpenAtom,
+  installAskUserListener,
+  installExitPlanListener,
 } from '@/atoms/agent-atoms'
 import { currentConversationIdAtom } from '@/atoms/chat-atoms'
 import { tabsAtom, activeTabIdAtom, openTab } from '@/atoms/tab-atoms'
@@ -45,11 +52,25 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const setCurrentAgentSessionId = useSetAtom(currentAgentSessionIdAtom)
   const agentSessions = useAtomValue(agentSessionsAtom)
   const setCurrentAgentWorkspaceId = useSetAtom(currentAgentWorkspaceIdAtom)
+  const setAllPendingAskUserRequests = useSetAtom(allPendingAskUserRequestsAtom)
+  const setAllPendingExitPlanRequests = useSetAtom(allPendingExitPlanRequestsAtom)
 
   React.useEffect(() => {
     const dispose = installScrollToMessage()
     return dispose
   }, [])
+
+  React.useEffect(() => {
+    let dispose: (() => void) | undefined
+    installAskUserListener((updater) => setAllPendingAskUserRequests(updater)).then((d) => { dispose = d })
+    return () => { dispose?.() }
+  }, [setAllPendingAskUserRequests])
+
+  React.useEffect(() => {
+    let dispose: (() => void) | undefined
+    installExitPlanListener((updater) => setAllPendingExitPlanRequests(updater)).then((d) => { dispose = d })
+    return () => { dispose?.() }
+  }, [setAllPendingExitPlanRequests])
 
   const handleSearchResultSelect = React.useCallback((payload:
     | { kind: 'thread'; thread: { id: string; kind: 'chat' | 'agent'; workspaceId: string } }
@@ -127,6 +148,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
           <div aria-hidden="true" className="main-panel-bg pointer-events-none absolute inset-0 z-0" />
           {/* 主内容区域（TabBar + TabContent） */}
           <div className="relative z-10 flex flex-col h-full min-h-0 min-w-0">
+            <ModeBanner />
             <MainArea />
           </div>
         </div>
@@ -148,6 +170,12 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
             time; the bug was hidden because `bash` was in the global
             auto-approve whitelist short-circuiting the resolver.) */}
         <ApprovalModal />
+
+        {/* Global ask_user banner — shows agent's question pending */}
+        {currentSessionId && <AskUserBanner sessionId={currentSessionId} />}
+
+        {/* Global exit_plan_mode banner — plan markdown + 3-decision modal */}
+        {currentSessionId && <ExitPlanModeBanner sessionId={currentSessionId} />}
       </div>
     </AppShellProvider>
   )
