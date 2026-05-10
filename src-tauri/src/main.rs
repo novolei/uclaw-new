@@ -459,6 +459,7 @@ fn main() {
             uclaw_core::tauri_commands::toggle_learned_skill,
             uclaw_core::tauri_commands::delete_learned_skill,
             uclaw_core::tauri_commands::record_skill_cited,
+            uclaw_core::tauri_commands::backfill_skill_keywords,
             uclaw_core::tauri_commands::propose_skill_consolidation,
             uclaw_core::tauri_commands::apply_skill_consolidation,
             // MEMUBOT Services

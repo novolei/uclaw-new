@@ -3065,6 +3065,115 @@ pub async fn record_skill_cited(
     Ok(Some(node.id))
 }
 
+/// Backfill `memory_keywords` rows for learned skills that are missing them.
+///
+/// Background: PR #58 added keyword writing to `store_skill_as_procedure`,
+/// but the ~35 skills extracted before that PR have no keyword index rows.
+/// L2 keyword recall therefore misses them entirely. This dev/maintenance
+/// command rebuilds the index by running `extract_keywords` on every
+/// learned skill that has no current keyword rows and inserting the
+/// resulting tokens.
+///
+/// Idempotent: skills that already have any keyword rows are skipped.
+/// Re-running the command is safe and a no-op once the index is full.
+///
+/// Returns counts so the UI can show "回填了 N 条 skill 共 K 个关键词".
+#[tauri::command]
+pub async fn backfill_skill_keywords(
+    state: State<'_, AppState>,
+    space_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use crate::memory_graph::models::{MemoryKeyword, MemoryNodeKind};
+
+    let store = &state.memory_graph_store;
+    let sid = space_id.unwrap_or_else(|| "default".into());
+
+    let nodes = store
+        .list_nodes_by_kind(&sid, MemoryNodeKind::Procedure, 1000)
+        .map_err(|e| format!("Failed to list skills: {}", e))?;
+
+    let mut total_learned = 0usize;
+    let mut already_indexed = 0usize;
+    let mut backfilled_skills = 0usize;
+    let mut total_keywords_inserted = 0usize;
+    let now = chrono::Utc::now().to_rfc3339();
+
+    for node in nodes {
+        let meta = match node.metadata.as_ref() {
+            Some(m) => m,
+            None => continue,
+        };
+        if meta.get("skill_type").and_then(|v| v.as_str()) != Some("learned") {
+            continue;
+        }
+        total_learned += 1;
+
+        let existing = store
+            .get_keywords_for_node(&node.id)
+            .map_err(|e| format!("get_keywords_for_node failed: {}", e))?;
+        if !existing.is_empty() {
+            already_indexed += 1;
+            continue;
+        }
+
+        let context = meta
+            .get("context")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let keywords = crate::proactive::skill_parser::extract_keywords(&node.title, context);
+        if keywords.is_empty() {
+            // Title + context produced no usable tokens (very short / pure
+            // punctuation). Skip — re-running won't change anything.
+            continue;
+        }
+
+        let mut inserted_for_node = 0usize;
+        for kw in keywords {
+            let row = MemoryKeyword {
+                id: uuid::Uuid::new_v4().to_string(),
+                space_id: node.space_id.clone(),
+                node_id: node.id.clone(),
+                keyword: kw,
+                created_at: now.clone(),
+            };
+            // Best-effort: a unique-constraint failure or any other DB
+            // error here just means one keyword didn't land. Log + keep
+            // going so a single bad row doesn't poison the whole backfill.
+            match store.create_keyword(&row) {
+                Ok(()) => {
+                    inserted_for_node += 1;
+                    total_keywords_inserted += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        node_id = %node.id,
+                        keyword = %row.keyword,
+                        err = %e,
+                        "backfill_skill_keywords: insert failed (continuing)"
+                    );
+                }
+            }
+        }
+        if inserted_for_node > 0 {
+            backfilled_skills += 1;
+        }
+    }
+
+    tracing::info!(
+        total_learned,
+        already_indexed,
+        backfilled_skills,
+        total_keywords_inserted,
+        "backfill_skill_keywords: done"
+    );
+    Ok(serde_json::json!({
+        "totalLearnedSkills": total_learned,
+        "alreadyIndexed": already_indexed,
+        "backfilledSkills": backfilled_skills,
+        "keywordsInserted": total_keywords_inserted,
+    }))
+}
+
 // ─── D3: LLM-driven skill consolidation ───────────────────────────────
 
 // Two-stage consolidation:
