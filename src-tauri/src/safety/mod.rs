@@ -11,11 +11,17 @@ pub mod permissions;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum SafetyMode {
-    /// All tools that require approval will ask for user confirmation
+    /// Every tool ask. Most paranoid.
     Ask,
-    /// High-risk tools require approval, low-risk auto-approve
+    /// Edit + write_file auto-pass; everything else asks.
+    /// Hardcoded edit tool set: see permissions.rs::EDIT_TOOLS.
+    AcceptEdits,
+    /// Read-only investigation. Writes/execs return Block error.
+    /// Agent uses `exit_plan_mode` tool to propose plan.
+    Plan,
+    /// Smart approval — high-risk tools ask, low-risk auto. Default.
     Supervised,
-    /// All tools auto-approve (not recommended)
+    /// All tools auto-approve. No friction, no safety net.
     Yolo,
 }
 
@@ -216,7 +222,7 @@ impl SafetyManager {
 
         let decision = match effective_mode {
             SafetyMode::Yolo => ApprovalDecision::AutoApprove,
-            SafetyMode::Ask => ApprovalDecision::RequireApproval {
+            SafetyMode::Ask | SafetyMode::AcceptEdits | SafetyMode::Plan => ApprovalDecision::RequireApproval {
                 reason: format!("Safety mode requires approval for tool '{}'", tool_name),
             },
             SafetyMode::Supervised => {

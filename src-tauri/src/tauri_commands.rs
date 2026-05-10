@@ -2328,15 +2328,21 @@ fn parse_api_type(s: &str) -> Option<crate::providers::types::ApiType> {
 fn parse_safety_mode(s: &str) -> Result<crate::safety::SafetyMode, Error> {
     match s {
         "ask" => Ok(crate::safety::SafetyMode::Ask),
+        "acceptedits" => Ok(crate::safety::SafetyMode::AcceptEdits),
+        "plan" => Ok(crate::safety::SafetyMode::Plan),
         "supervised" => Ok(crate::safety::SafetyMode::Supervised),
         "yolo" => Ok(crate::safety::SafetyMode::Yolo),
-        _ => Err(Error::InvalidInput(format!("Invalid safety mode: '{}'. Use 'ask', 'supervised', or 'yolo'", s))),
+        _ => Err(Error::InvalidInput(format!(
+            "Invalid safety mode: '{}'. Use 'ask', 'acceptedits', 'plan', 'supervised', or 'yolo'", s
+        ))),
     }
 }
 
 fn safety_mode_to_str(mode: &crate::safety::SafetyMode) -> &'static str {
     match mode {
         crate::safety::SafetyMode::Ask => "ask",
+        crate::safety::SafetyMode::AcceptEdits => "acceptedits",
+        crate::safety::SafetyMode::Plan => "plan",
         crate::safety::SafetyMode::Supervised => "supervised",
         crate::safety::SafetyMode::Yolo => "yolo",
     }

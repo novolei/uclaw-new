@@ -97,7 +97,7 @@ pub fn resolve_decision(
 
     let decision = match effective_mode {
         SafetyMode::Yolo => ApprovalDecision::AutoApprove,
-        SafetyMode::Ask => ApprovalDecision::RequireApproval {
+        SafetyMode::Ask | SafetyMode::AcceptEdits | SafetyMode::Plan => ApprovalDecision::RequireApproval {
             reason: format!("Safety mode requires approval for tool '{}'", tool_name),
         },
         SafetyMode::Supervised => match tool_approval {
@@ -591,5 +591,24 @@ mod tests {
             None,
         );
         assert!(matches!(d, ApprovalDecision::AutoApprove));
+    }
+
+    #[test]
+    fn safety_mode_serde_roundtrip_all_5_variants() {
+        use crate::safety::SafetyMode;
+        let modes = [
+            ("ask", SafetyMode::Ask),
+            ("acceptedits", SafetyMode::AcceptEdits),
+            ("plan", SafetyMode::Plan),
+            ("supervised", SafetyMode::Supervised),
+            ("yolo", SafetyMode::Yolo),
+        ];
+        for (wire, expected) in modes {
+            let json = format!("\"{}\"", wire);
+            let parsed: SafetyMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, expected, "wire `{}` must parse to {:?}", wire, expected);
+            let serialized = serde_json::to_string(&expected).unwrap();
+            assert_eq!(serialized, json);
+        }
     }
 }
