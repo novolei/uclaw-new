@@ -386,6 +386,43 @@ export const recordSkillCited = (
 ): Promise<string | null> =>
   invoke('record_skill_cited', { spaceId, title });
 
+// — Skill consolidation —
+
+export interface SkillConsolidationCluster {
+  canonicalId: string
+  canonicalTitle: string
+  mergedTitle: string
+  mergedContext: string
+  mergedPrinciples: string
+  mergedSteps: string
+  mergedPitfalls: string
+  duplicateIds: string[]
+  duplicateTitles: string[]
+  reason: string
+}
+
+export interface SkillConsolidationProposal {
+  clusters: SkillConsolidationCluster[]
+  totalSkills: number
+  proposedCanonicalCount: number
+}
+
+export interface SkillConsolidationResult {
+  appliedClusters: number
+  deprecatedSkills: number
+  updatedSkills: number
+}
+
+export const proposeSkillConsolidation = (
+  spaceId: string = 'default',
+): Promise<SkillConsolidationProposal> =>
+  invoke('propose_skill_consolidation', { spaceId });
+
+export const applySkillConsolidation = (
+  plan: SkillConsolidationProposal,
+): Promise<SkillConsolidationResult> =>
+  invoke('apply_skill_consolidation', { plan });
+
 // ─────────────────────────────────────────────────────────
 // Memory Graph
 // ─────────────────────────────────────────────────────────
