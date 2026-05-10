@@ -1,8 +1,11 @@
 /**
- * SidePanel — Agent 侧面板容器
+ * WorkspaceFilesView — RightSidePanel 的 Files tab 内容渲染
  *
- * 直接展示文件浏览器，默认打开状态。
- * 切换按钮在面板关闭时显示活动指示点。
+ * 两个文件区:
+ *   - 会话文件 (sessionPath 存在时):当前 agent 会话的专属文件树
+ *   - 工作区文件:当前工作区的共享文件树(Phase 2 接通)
+ *
+ * 不再是独立的"侧面板"——圆角/阴影/关闭按钮由 RightSidePanel 提供。
  */
 
 import * as React from 'react'
