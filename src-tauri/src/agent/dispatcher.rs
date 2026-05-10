@@ -610,11 +610,55 @@ impl LoopDelegate for ChatDelegate {
     async fn handle_text_response(
         &self,
         text: &str,
-        _metadata: ResponseMetadata,
-        _reason_ctx: &mut ReasoningContext,
+        metadata: ResponseMetadata,
+        reason_ctx: &mut ReasoningContext,
     ) -> TextAction {
+        // If the model ran out of tokens mid-text (finish_reason="length"),
+        // do NOT terminate. Treat like a truncation — record what we have
+        // and ask the model to continue. Without this, multi-step plans get
+        // cut off whenever the response approaches max_tokens (8192) and
+        // remaining steps never execute.
+        if metadata.finish_reason.as_deref() == Some("length") {
+            tracing::warn!(
+                text_len = text.len(),
+                "Text response hit length limit (finish_reason=length); injecting continuation prompt"
+            );
+            reason_ctx.messages.push(ChatMessage::assistant(text));
+            reason_ctx.messages.push(ChatMessage::user(
+                "Your last reply was truncated by the token limit. Continue from where you left off. \
+                 If you intended to call a tool next, call it now."
+            ));
+            return TextAction::Continue;
+        }
+
+        // Plan-aware termination guard: if a plan_write file in this workspace
+        // was touched in the last 5 minutes and still has `- [ ]` (undone)
+        // steps, the LLM probably hasn't actually finished — it just gave a
+        // mid-task narration. Don't terminate; nudge it to keep going.
+        //
+        // 5-minute window prevents stale plans from older sessions from
+        // looping unrelated user replies forever.
+        if let Some(undone) = crate::agent::plan_state::pending_plan_steps(
+            self.workspace_root.as_deref(),
+            300,
+        ) {
+            tracing::info!(
+                undone_steps = undone,
+                "Pending plan steps detected; injecting continuation instead of terminating"
+            );
+            reason_ctx.messages.push(ChatMessage::assistant(text));
+            reason_ctx.messages.push(ChatMessage::user(&format!(
+                "Your most recent plan still has {} step(s) marked `- [ ]` (undone). \
+                 Continue with the next undone step now. \
+                 If the plan is actually complete, call `plan_update` with `done: true` \
+                 on each remaining step to acknowledge them, then reply with a brief summary.",
+                undone
+            )));
+            return TextAction::Continue;
+        }
+
         self.emit_done(text);
-        TextAction::Return(LoopOutcome::Response { text: text.to_string(), usage: _metadata.usage })
+        TextAction::Return(LoopOutcome::Response { text: text.to_string(), usage: metadata.usage })
     }
 
     async fn execute_tool_calls(
