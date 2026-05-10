@@ -269,6 +269,28 @@ function startAgentListeners(store: Store): void {
     )
   )
 
+  // agent:turn_cost → store per-turn token usage in streaming state
+  reg(
+    listen<{ conversationId: string; inputTokens: number; outputTokens: number; costUsd: string }>(
+      'agent:turn_cost',
+      ({ payload }) => {
+        const sid = payload.conversationId
+        store.set(agentStreamingStatesAtom, (prev) => {
+          const existing = prev.get(sid)
+          if (!existing) return prev
+          const next = new Map(prev)
+          next.set(sid, {
+            ...existing,
+            inputTokens: payload.inputTokens,
+            outputTokens: payload.outputTokens,
+            costUsd: parseFloat(payload.costUsd.replace('$', '')),
+          })
+          return next
+        })
+      }
+    )
+  )
+
   // agent:proactive-learning → prepend to events list (cap at 10)
   reg(
     listen<ProactiveLearningEvent>('agent:proactive-learning', ({ payload }) => {

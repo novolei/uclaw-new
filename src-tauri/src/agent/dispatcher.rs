@@ -230,7 +230,12 @@ impl ChatDelegate {
             );
         }
 
-        let _ = self.app_handle.emit("agent:turn_cost", &turn_cost);
+        let _ = self.app_handle.emit("agent:turn_cost", serde_json::json!({
+            "conversationId": self.conversation_id,
+            "inputTokens": turn_cost.input_tokens,
+            "outputTokens": turn_cost.output_tokens,
+            "costUsd": turn_cost.cost_usd,
+        }));
     }
 
     /// Emit context stats after each LLM call
