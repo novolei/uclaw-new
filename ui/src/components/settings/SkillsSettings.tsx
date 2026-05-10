@@ -12,12 +12,13 @@
 import * as React from 'react'
 import Markdown from 'react-markdown'
 import { toast } from 'sonner'
-import { ChevronDown, ChevronRight, Trash2, Sparkles, RefreshCw, Search, Combine } from 'lucide-react'
+import { ChevronDown, ChevronRight, Trash2, Sparkles, RefreshCw, Search, Combine, KeyRound } from 'lucide-react'
 import {
   listLearnedSkills,
   toggleLearnedSkill,
   deleteLearnedSkill,
   proposeSkillConsolidation,
+  backfillSkillKeywords,
   type SkillConsolidationProposal,
 } from '@/lib/tauri-bridge'
 import { SkillConsolidationDialog } from './SkillConsolidationDialog'
@@ -161,6 +162,7 @@ export function SkillsSettings(): React.ReactElement {
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set())
   const [pendingDelete, setPendingDelete] = React.useState<LearnedSkill | null>(null)
   const [proposing, setProposing] = React.useState(false)
+  const [backfilling, setBackfilling] = React.useState(false)
   const [proposal, setProposal] = React.useState<SkillConsolidationProposal | null>(null)
   const [consolidationOpen, setConsolidationOpen] = React.useState(false)
 
@@ -239,6 +241,27 @@ export function SkillsSettings(): React.ReactElement {
     }
   }
 
+  const onBackfill = async () => {
+    setBackfilling(true)
+    try {
+      const result = await backfillSkillKeywords()
+      if (result.backfilledSkills === 0) {
+        toast.info('关键词索引已完整', {
+          description: `${result.totalLearnedSkills} 条技能全部已索引`,
+        })
+      } else {
+        toast.success('关键词回填完成', {
+          description: `${result.backfilledSkills}/${result.totalLearnedSkills} 条新增 · 共 ${result.keywordsInserted} 个关键词`,
+        })
+      }
+    } catch (err) {
+      console.error('[SkillsSettings] backfill keywords failed', err)
+      toast.error('回填关键词失败', { description: String(err) })
+    } finally {
+      setBackfilling(false)
+    }
+  }
+
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return skills
@@ -279,6 +302,19 @@ export function SkillsSettings(): React.ReactElement {
             累计使用 <span className="text-foreground font-medium">{usageSum}</span> 次
           </div>
           <div className="flex items-center gap-1">
+            {total > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void onBackfill()}
+                disabled={backfilling || loading}
+                className="h-7 px-2 text-[11.5px] gap-1.5"
+                title="为缺少关键词索引的旧技能补全索引（提升 L2 召回命中率）"
+              >
+                <KeyRound className={cn('size-3.5', backfilling && 'animate-pulse')} />
+                {backfilling ? '回填中…' : '回填关键词'}
+              </Button>
+            )}
             {enabledCount >= 2 && (
               <Button
                 size="sm"

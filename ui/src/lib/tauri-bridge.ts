@@ -386,6 +386,21 @@ export const recordSkillCited = (
 ): Promise<string | null> =>
   invoke('record_skill_cited', { spaceId, title });
 
+/**
+ * Backfill `memory_keywords` rows for learned skills that lack them.
+ * Idempotent: skills already indexed are skipped. Re-running is safe.
+ */
+export interface SkillKeywordBackfillResult {
+  totalLearnedSkills: number;
+  alreadyIndexed: number;
+  backfilledSkills: number;
+  keywordsInserted: number;
+}
+export const backfillSkillKeywords = (
+  spaceId: string = 'default',
+): Promise<SkillKeywordBackfillResult> =>
+  invoke('backfill_skill_keywords', { spaceId });
+
 // — Skill consolidation —
 
 export interface SkillConsolidationCluster {
