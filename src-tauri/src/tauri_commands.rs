@@ -142,6 +142,16 @@ pub async fn send_message(
     tools.register(builtin::web::HttpRequestTool::new());
     tools.register(builtin::edit::EditTool::new(workspace.clone()));
     tools.register(builtin::shell::BashTool::new(workspace.clone()));
+    tools.register(builtin::ask_user::AskUserTool::new(
+        app_handle.clone(),
+        Arc::clone(&state.pending_ask_users),
+        input.conversation_id.clone(),
+    ));
+    tools.register(builtin::exit_plan_mode::ExitPlanModeTool::new(
+        app_handle.clone(),
+        Arc::clone(&state.pending_exit_plans),
+        input.conversation_id.clone(),
+    ));
     tools.register(builtin::plan::PlanWriteTool::new(workspace.clone(), app_handle.clone()));
     tools.register(builtin::plan::PlanUpdateTool::new(workspace.clone(), app_handle.clone()));
     tools.register(
@@ -254,6 +264,7 @@ pub async fn send_message(
         .map(|s| parse_safety_mode(s))
         .transpose()?;
 
+    let workspace_root = active_workspace_root(&state);
     let mut delegate = crate::agent::dispatcher::ChatDelegate::new(
         llm,
         tools,
@@ -264,7 +275,7 @@ pub async fn send_message(
         safety_mode,
         state.pending_approvals.clone(),
         input.conversation_id.clone(),
-        None,
+        workspace_root,
     );
 
     // Inject InfraService so dispatcher publishes ToolExecuted events
@@ -3254,6 +3265,16 @@ pub async fn send_agent_message(
     tools.register(builtin::web::HttpRequestTool::new());
     tools.register(builtin::edit::EditTool::new(workspace.clone()));
     tools.register(builtin::shell::BashTool::new(workspace.clone()));
+    tools.register(builtin::ask_user::AskUserTool::new(
+        app_handle.clone(),
+        Arc::clone(&state.pending_ask_users),
+        input.session_id.clone(),
+    ));
+    tools.register(builtin::exit_plan_mode::ExitPlanModeTool::new(
+        app_handle.clone(),
+        Arc::clone(&state.pending_exit_plans),
+        input.session_id.clone(),
+    ));
     tools.register(builtin::plan::PlanWriteTool::new(workspace.clone(), app_handle.clone()));
     tools.register(builtin::plan::PlanUpdateTool::new(workspace.clone(), app_handle.clone()));
     tools.register(
@@ -3293,6 +3314,7 @@ pub async fn send_agent_message(
     let trajectory_store = Arc::clone(&state.trajectory_store);
     let tool_budget = Arc::clone(&state.tool_budget);
     let running_sessions = Arc::clone(&state.running_sessions);
+    let workspace_root_for_delegate = active_workspace_root(&state);
 
     const AGENT_SYSTEM_PROMPT: &str = "You are uClaw, a helpful AI desktop coworker. You help users with tasks using the available tools.";
 
@@ -3318,7 +3340,7 @@ pub async fn send_agent_message(
             None,
             Arc::clone(&pending_approvals),
             session_id.clone(),
-            None,
+            workspace_root_for_delegate.clone(),
         );
         delegate.set_infra_service(Arc::clone(&infra_service));
         delegate.set_trajectory_store(Arc::clone(&trajectory_store));
@@ -4372,17 +4394,8 @@ pub async fn start_agent_teams(
     };
     let llm: Arc<dyn crate::llm::LlmProvider> = llm::create_provider(&llm_cfg)?;
 
-    // Build tool registry for workers
-    let mut tool_reg = ToolRegistry::new();
     let workspace = state.workspace_root.clone();
-    tool_reg.register(builtin::file::ReadFileTool::new(workspace.clone()));
-    tool_reg.register(builtin::file::WriteFileTool::new(workspace.clone()));
-    tool_reg.register(builtin::search::GrepTool::new(workspace.clone()));
-    tool_reg.register(builtin::search::GlobTool::new(workspace.clone()));
-    tool_reg.register(builtin::web::WebFetchTool::new());
-    tool_reg.register(builtin::edit::EditTool::new(workspace.clone()));
-    tool_reg.register(builtin::shell::BashTool::new(workspace.clone()));
-    let tools = Arc::new(tool_reg);
+    let workspace_root_for_factory = active_workspace_root(&state);
 
     // Clone everything that needs to move into the spawn
     let db = Arc::clone(&state.db);
@@ -4392,13 +4405,14 @@ pub async fn start_agent_teams(
     let max_cycles = input.max_review_cycles.unwrap_or(2);
     let safety_manager = Arc::clone(&state.safety_manager);
     let pending_approvals = Arc::clone(&state.pending_approvals);
+    let pending_ask_users = Arc::clone(&state.pending_ask_users);
+    let pending_exit_plans = Arc::clone(&state.pending_exit_plans);
 
     // Explicit clones for orchestrator vs delegate_factory
     let llm_for_orchestrator = Arc::clone(&llm);
     let model_for_orchestrator = model.clone();
     let llm_for_factory = Arc::clone(&llm);
     let model_for_factory = model.clone();
-    let tools_for_factory = Arc::clone(&tools);
     let app_for_factory = app_handle.clone();
     let safety_for_factory = Arc::clone(&safety_manager);
     let approvals_for_factory = Arc::clone(&pending_approvals);
@@ -4411,17 +4425,37 @@ pub async fn start_agent_teams(
             app_handle.clone(),
             Arc::clone(&db),
             move |system_prompt: String| -> Box<dyn crate::agent::types::LoopDelegate + Send> {
+                let session_id_for_tools = uuid::Uuid::new_v4().to_string();
+                let mut tool_reg = ToolRegistry::new();
+                tool_reg.register(builtin::file::ReadFileTool::new(workspace.clone()));
+                tool_reg.register(builtin::file::WriteFileTool::new(workspace.clone()));
+                tool_reg.register(builtin::search::GrepTool::new(workspace.clone()));
+                tool_reg.register(builtin::search::GlobTool::new(workspace.clone()));
+                tool_reg.register(builtin::web::WebFetchTool::new());
+                tool_reg.register(builtin::edit::EditTool::new(workspace.clone()));
+                tool_reg.register(builtin::shell::BashTool::new(workspace.clone()));
+                tool_reg.register(builtin::ask_user::AskUserTool::new(
+                    app_for_factory.clone(),
+                    Arc::clone(&pending_ask_users),
+                    session_id_for_tools.clone(),
+                ));
+                tool_reg.register(builtin::exit_plan_mode::ExitPlanModeTool::new(
+                    app_for_factory.clone(),
+                    Arc::clone(&pending_exit_plans),
+                    session_id_for_tools.clone(),
+                ));
+                let tools = Arc::new(tool_reg);
                 let delegate = crate::agent::dispatcher::ChatDelegate::new(
                     Arc::clone(&llm_for_factory),
-                    Arc::clone(&tools_for_factory),
+                    tools,
                     app_for_factory.clone(),
                     model_for_factory.clone(),
                     system_prompt,
                     Arc::clone(&safety_for_factory),
                     None,
                     Arc::clone(&approvals_for_factory),
-                    uuid::Uuid::new_v4().to_string(),
-                    None,
+                    session_id_for_tools,
+                    workspace_root_for_factory.clone(),
                 );
                 Box::new(delegate)
             },
