@@ -12,12 +12,15 @@
 import * as React from 'react'
 import Markdown from 'react-markdown'
 import { toast } from 'sonner'
-import { ChevronDown, ChevronRight, Trash2, Sparkles, RefreshCw, Search } from 'lucide-react'
+import { ChevronDown, ChevronRight, Trash2, Sparkles, RefreshCw, Search, Combine } from 'lucide-react'
 import {
   listLearnedSkills,
   toggleLearnedSkill,
   deleteLearnedSkill,
+  proposeSkillConsolidation,
+  type SkillConsolidationProposal,
 } from '@/lib/tauri-bridge'
+import { SkillConsolidationDialog } from './SkillConsolidationDialog'
 import type { LearnedSkill } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -157,6 +160,9 @@ export function SkillsSettings(): React.ReactElement {
   const [query, setQuery] = React.useState('')
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set())
   const [pendingDelete, setPendingDelete] = React.useState<LearnedSkill | null>(null)
+  const [proposing, setProposing] = React.useState(false)
+  const [proposal, setProposal] = React.useState<SkillConsolidationProposal | null>(null)
+  const [consolidationOpen, setConsolidationOpen] = React.useState(false)
 
   const refetch = React.useCallback(async () => {
     setLoading(true)
@@ -215,6 +221,24 @@ export function SkillsSettings(): React.ReactElement {
     }
   }
 
+  const onPropose = async () => {
+    setProposing(true)
+    try {
+      const result = await proposeSkillConsolidation()
+      if (!result.clusters || result.clusters.length === 0) {
+        toast.info('暂无可合并的重复技能')
+        return
+      }
+      setProposal(result)
+      setConsolidationOpen(true)
+    } catch (err) {
+      console.error('[SkillsSettings] propose consolidation failed', err)
+      toast.error('无法分析技能整合方案', { description: String(err) })
+    } finally {
+      setProposing(false)
+    }
+  }
+
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return skills
@@ -254,16 +278,31 @@ export function SkillsSettings(): React.ReactElement {
             启用 <span className="text-foreground font-medium">{enabledCount}</span> 条 ·
             累计使用 <span className="text-foreground font-medium">{usageSum}</span> 次
           </div>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => void refetch()}
-            disabled={loading}
-            title="刷新"
-            className="h-7 w-7 p-0"
-          >
-            <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
-          </Button>
+          <div className="flex items-center gap-1">
+            {enabledCount >= 2 && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void onPropose()}
+                disabled={proposing || loading}
+                className="h-7 px-2 text-[11.5px] gap-1.5"
+                title="使用 LLM 分析并合并概念重复的技能"
+              >
+                <Combine className={cn('size-3.5', proposing && 'animate-pulse')} />
+                {proposing ? '分析中…' : '整合现有技能'}
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => void refetch()}
+              disabled={loading}
+              title="刷新"
+              className="h-7 w-7 p-0"
+            >
+              <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
+            </Button>
+          </div>
         </div>
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground/60 pointer-events-none" />
@@ -342,6 +381,19 @@ export function SkillsSettings(): React.ReactElement {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Consolidation preview */}
+      <SkillConsolidationDialog
+        open={consolidationOpen}
+        proposal={proposal}
+        onOpenChange={(next) => {
+          setConsolidationOpen(next)
+          if (!next) setProposal(null)
+        }}
+        onApplied={() => {
+          void refetch()
+        }}
+      />
     </div>
   )
 }
