@@ -129,7 +129,7 @@ export function TabBarItem({
         {isNarrow ? (
           <span className="flex-1" />
         ) : (
-          <span className="flex-1 min-w-0 truncate text-left">{title}</span>
+          <span className="flex-1 min-w-0 truncate text-left" style={{ fontFamily: "'Noto Emoji', sans-serif" }}>{title}</span>
         )}
 
         {/* 关闭按钮 */}
