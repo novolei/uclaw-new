@@ -617,6 +617,14 @@ CREATE INDEX IF NOT EXISTS idx_permission_audit_session ON permission_audit_log(
 CREATE INDEX IF NOT EXISTS idx_permission_audit_tool    ON permission_audit_log(tool_name, created_at DESC);
 ";
 
+/// V15: per-message metrics — duration_ms, token counts, cost stored on each assistant turn.
+pub const V15_AGENT_MESSAGE_METRICS: &str = "
+ALTER TABLE agent_messages ADD COLUMN duration_ms INTEGER;
+ALTER TABLE agent_messages ADD COLUMN input_tokens INTEGER;
+ALTER TABLE agent_messages ADD COLUMN output_tokens INTEGER;
+ALTER TABLE agent_messages ADD COLUMN cost_usd REAL;
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -717,6 +725,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V14_PERMISSION_TABLES.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V14 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V15: per-message metrics (duration, token counts, cost).
+    tracing::debug!("Running migration V15: agent_message metrics columns");
+    for stmt in V15_AGENT_MESSAGE_METRICS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V15 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");

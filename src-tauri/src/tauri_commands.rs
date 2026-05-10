@@ -3282,6 +3282,7 @@ pub async fn send_agent_message(
 
         let config = AgenticLoopConfig::default();
 
+        let loop_start = std::time::Instant::now();
         let outcome = tokio::select! {
             result = tokio::time::timeout(
                 std::time::Duration::from_secs(agent_loop_timeout_secs),
@@ -3340,6 +3341,10 @@ pub async fn send_agent_message(
         if !response_text.is_empty() {
             let asst_msg_id = uuid::Uuid::new_v4().to_string();
             let now2 = chrono::Utc::now().timestamp_millis();
+            let duration_ms = loop_start.elapsed().as_millis() as i64;
+            let turn_input = ctx.total_input_tokens as i64;
+            let turn_output = ctx.total_output_tokens as i64;
+            let cost_usd = crate::agent::types::calculate_cost(&model, ctx.total_input_tokens, ctx.total_output_tokens);
             // Pull thinking + tool activities from the loop's freshly-added messages.
             // `history` was loaded AFTER the user message was INSERTed into agent_messages
             // (lines ~2622-2625), so it already includes the user turn — and the
@@ -3354,8 +3359,9 @@ pub async fn send_agent_message(
             };
             if let Ok(conn) = db.lock() {
                 let _ = conn.execute(
-                    "INSERT INTO agent_messages (id, session_id, role, content, created_at, reasoning, tool_activities_json) \
-                     VALUES (?1,?2,'assistant',?3,?4,?5,?6)",
+                    "INSERT INTO agent_messages \
+                     (id, session_id, role, content, created_at, reasoning, tool_activities_json, duration_ms, input_tokens, output_tokens, cost_usd) \
+                     VALUES (?1,?2,'assistant',?3,?4,?5,?6,?7,?8,?9,?10)",
                     rusqlite::params![
                         asst_msg_id,
                         session_id,
@@ -3363,6 +3369,10 @@ pub async fn send_agent_message(
                         now2,
                         process_meta.reasoning,
                         process_meta.tool_activities_json,
+                        duration_ms,
+                        turn_input,
+                        turn_output,
+                        cost_usd,
                     ],
                 );
                 let _ = conn.execute(
@@ -3407,10 +3417,15 @@ pub async fn get_agent_session_messages(
         reasoning: Option<String>,
         tool_activities_json: Option<String>,
         model: Option<String>,
+        duration_ms: Option<i64>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        cost_usd: Option<f64>,
     }
     let messages: Vec<MsgRow> = {
         let mut stmt = conn.prepare(
-            "SELECT id, role, content, created_at, reasoning, tool_activities_json, model \
+            "SELECT id, role, content, created_at, reasoning, tool_activities_json, model, \
+                    duration_ms, input_tokens, output_tokens, cost_usd \
              FROM agent_messages WHERE session_id = ?1 ORDER BY created_at ASC"
         ).map_err(Error::Database)?;
         let rows = stmt.query_map(rusqlite::params![session_id], |row| {
@@ -3422,6 +3437,10 @@ pub async fn get_agent_session_messages(
                 reasoning: row.get(4)?,
                 tool_activities_json: row.get(5)?,
                 model: row.get(6)?,
+                duration_ms: row.get(7)?,
+                input_tokens: row.get(8)?,
+                output_tokens: row.get(9)?,
+                cost_usd: row.get(10)?,
             })
         }).map_err(Error::Database)?;
         rows.filter_map(|r| r.ok()).collect()
@@ -3510,6 +3529,16 @@ pub async fn get_agent_session_messages(
             }
         }
 
+        let usage: Option<serde_json::Value> = if msg.role == "assistant" {
+            if let (Some(inp), Some(out)) = (msg.input_tokens, msg.output_tokens) {
+                Some(serde_json::json!({
+                    "inputTokens": inp,
+                    "outputTokens": out,
+                    "costUsd": msg.cost_usd,
+                }))
+            } else { None }
+        } else { None };
+
         let mut obj = serde_json::json!({
             "id": msg.id,
             "role": msg.role,
@@ -3518,6 +3547,8 @@ pub async fn get_agent_session_messages(
             "reasoning": msg.reasoning,
             "toolActivities": tool_activities,
             "model": msg.model,
+            "durationMs": msg.duration_ms,
+            "usage": usage,
         });
         if let Some(blocks) = parsed_blocks.as_ref() {
             if let Some(map) = obj.as_object_mut() {

@@ -879,6 +879,16 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
                     streaming && <AgentRunningIndicator startedAt={startedAt} />
                   )}
                 </MessageContent>
+                {/* 流式完成后显示 token 用量 */}
+                {!streaming && smoothContent && streamState?.inputTokens != null && (
+                  <MessageActions className="pl-[46px] mt-0.5 justify-start gap-2.5">
+                    <TurnCostBar usage={{
+                      inputTokens: streamState.inputTokens,
+                      outputTokens: streamState.outputTokens,
+                      costUsd: streamState.costUsd,
+                    }} />
+                  </MessageActions>
+                )}
               </Message>
             )}
 
