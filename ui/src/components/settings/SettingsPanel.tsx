@@ -18,6 +18,7 @@ import {
   BarChart3,
   ShieldCheck,
   FileCode2,
+  Sparkles,
 } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { GeneralSettings } from './GeneralSettings'
@@ -27,6 +28,7 @@ import { AgentSettings } from './AgentSettings'
 import { ToolSettings } from './ToolSettings'
 import { PermissionsSettings } from './PermissionsSettings'
 import { PromptsSettings } from './PromptsSettings'
+import { SkillsSettings } from './SkillsSettings'
 import { ShortcutSettings } from './ShortcutSettings'
 import { ChannelSettings } from './ChannelSettings'
 import { ModelSettings } from './ModelSettings'
@@ -50,6 +52,7 @@ const TABS: TabItem[] = [
   { id: 'tools', label: '工具', icon: <Wrench size={15} /> },
   { id: 'permissions', label: '工具权限', icon: <ShieldCheck size={15} /> },
   { id: 'prompts', label: '提示词', icon: <FileCode2 size={15} /> },
+  { id: 'skills', label: '已学技能', icon: <Sparkles size={15} /> },
   { id: 'bots', label: 'Bot', icon: <Bot size={15} /> },
   { id: 'shortcuts', label: '快捷键', icon: <Keyboard size={15} /> },
   { id: 'proxy', label: '代理', icon: <Globe size={15} /> },
@@ -76,6 +79,8 @@ function SettingsContent({ tab }: { tab: SettingsTab }) {
       return <PermissionsSettings />
     case 'prompts':
       return <PromptsSettings />
+    case 'skills':
+      return <SkillsSettings />
     case 'bots':
       return <BotDefaultSettings />
     case 'shortcuts':
