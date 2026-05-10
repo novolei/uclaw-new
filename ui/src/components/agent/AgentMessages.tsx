@@ -619,17 +619,56 @@ export function buildUsageTooltip(durationMs: number, usage?: AgentEventUsage): 
   return lines.join('\n')
 }
 
-/** 耗时徽章 — 悬浮显示 token 用量明细 */
+/** 耗时徽章 — 悬浮显示 token 用量明细（SDKMessageRenderer 复用） */
 export function DurationBadge({ durationMs, usage }: { durationMs: number; usage?: AgentEventUsage }): React.ReactElement {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="text-[15px] tabular-nums font-light cursor-default">
+        <span className="text-[12px] text-muted-foreground/50 tabular-nums cursor-default hover:text-muted-foreground/70 transition-colors">
           {formatDuration(durationMs)}
         </span>
       </TooltipTrigger>
       <TooltipContent side="top">
         <p className="whitespace-pre-line text-left">{buildUsageTooltip(durationMs, usage)}</p>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+/** 统一消息元信息栏 — 耗时 + token 用量合并为单行，单一 tooltip */
+function MessageMetaBar({ durationMs, usage }: { durationMs?: number; usage?: AgentEventUsage }): React.ReactElement | null {
+  if (durationMs == null && usage == null) return null
+
+  const parts: string[] = []
+  if (durationMs != null) parts.push(formatDuration(durationMs))
+  if (usage) {
+    const { inputTokens, outputTokens, costUsd } = usage
+    parts.push(`${inputTokens.toLocaleString()} 输入`)
+    parts.push(`${(outputTokens ?? 0).toLocaleString()} 输出`)
+    if (costUsd != null && costUsd > 0) parts.push(`$${costUsd.toFixed(4)}`)
+  }
+
+  const tooltipText = durationMs != null ? buildUsageTooltip(durationMs, usage) : null
+
+  const content = (
+    <span className="inline-flex items-center gap-1 text-[12px] text-muted-foreground/50 tabular-nums cursor-default hover:text-muted-foreground/70 transition-colors animate-in fade-in duration-300">
+      <Zap size={11} strokeWidth={2} className="shrink-0" />
+      {parts.map((p, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && <span className="opacity-40">·</span>}
+          <span>{p}</span>
+        </React.Fragment>
+      ))}
+    </span>
+  )
+
+  if (!tooltipText) return content
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{content}</TooltipTrigger>
+      <TooltipContent side="top">
+        <p className="whitespace-pre-line text-left">{tooltipText}</p>
       </TooltipContent>
     </Tooltip>
   )

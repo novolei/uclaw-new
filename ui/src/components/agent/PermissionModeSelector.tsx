@@ -1,113 +1,94 @@
 /**
- * PermissionModeSelector — Agent 权限模式切换器
+ * PermissionModeSelector — global SafetyMode quick-toggle in the input bar.
  *
- * 集成在 AgentHeader 中，紧凑的三模式切换按钮。
- * 支持循环切换和工作区级别的持久化。
- * 每个会话独立维护自己的权限模式。
+ * Cycles between `supervised` (smart-approval, default) and `yolo`
+ * (auto-approve everything). Backed by the real `SafetyManager` (see
+ * `src-tauri/src/safety/mod.rs`) — clicking actually persists to
+ * `~/.uclaw/safety_policy.json`.
+ *
+ * For per-session overrides + per-command rules + audit log, use
+ * Settings → 工具权限 (P6).
+ *
+ * History: this previously called `get_permission_mode`/`set_permission_mode`
+ * Tauri commands that never existed; the bridge silenced the IPC failures via
+ * `.catch()`. The selector visibly cycled but the backend never received the
+ * value. Now properly wired.
  */
 
 import * as React from 'react'
-import { useAtom, useAtomValue, useSetAtom } from 'jotai'
-import { Zap, Compass, Map as MapIcon } from 'lucide-react'
+import { useAtom } from 'jotai'
+import { Compass, Zap } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { agentPermissionModeMapAtom, agentDefaultPermissionModeAtom, currentAgentWorkspaceIdAtom, agentWorkspacesAtom } from '@/atoms/agent-atoms'
-import type { PromaPermissionMode } from '@/lib/agent-types'
-import { PROMA_PERMISSION_MODE_ORDER } from '@/lib/agent-types'
-import { getPermissionMode, setPermissionMode } from '@/lib/tauri-bridge'
+import { safetyModeAtom } from '@/atoms/safety-atoms'
+import { getSafetyPolicy, setSafetyMode, type SafetyModeWire } from '@/lib/tauri-bridge'
 
-/** 模式配置 */
-const MODE_CONFIG: Partial<Record<PromaPermissionMode, {
+const MODE_CONFIG: Record<SafetyModeWire, {
   icon: React.ComponentType<{ className?: string }>
   label: string
   description: string
-}>> = {
-  auto: {
+}> = {
+  ask: {
+    icon: Compass,
+    label: '逐次确认',
+    description: '所有需要审批的工具调用都弹窗询问',
+  },
+  supervised: {
     icon: Compass,
     label: '自动模式',
-    description: 'SDK 内置审批器自动判断，危险操作才需确认',
+    description: '低风险工具自动通过，高风险弹窗确认',
   },
-  bypassPermissions: {
+  yolo: {
     icon: Zap,
     label: '完全自动',
-    description: '所有工具调用自动允许',
-  },
-  plan: {
-    icon: MapIcon,
-    label: '计划模式',
-    description: '仅规划不执行，查看工具使用计划',
+    description: '所有工具调用自动允许（不推荐）',
   },
 }
 
-interface PermissionModeSelectorProps {
-  sessionId: string
+/**
+ * Cycle order. `ask` is intentionally excluded from the quick-cycle — it's
+ * the strictest mode and rarely needed; users wanting it can pick from the
+ * Settings → 工具权限 tab. The toggle here is the everyday "be careful" /
+ * "trust me" switch.
+ */
+const CYCLE_ORDER: SafetyModeWire[] = ['supervised', 'yolo']
+
+export interface PermissionModeSelectorProps {
+  /** Kept for prop compat with the previous selector; unused — global SafetyMode is workspace-agnostic. */
+  sessionId?: string
 }
 
-export function PermissionModeSelector({ sessionId }: PermissionModeSelectorProps): React.ReactElement | null {
-  const [modeMap, setModeMap] = useAtom(agentPermissionModeMapAtom)
-  const defaultMode = useAtomValue(agentDefaultPermissionModeAtom)
-  const setDefaultMode = useSetAtom(agentDefaultPermissionModeAtom)
-  const mode = modeMap.get(sessionId) ?? defaultMode
-  const currentWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
-  const workspaces = useAtomValue(agentWorkspacesAtom)
+export function PermissionModeSelector(_: PermissionModeSelectorProps): React.ReactElement | null {
+  const [mode, setMode] = useAtom(safetyModeAtom)
+  const [busy, setBusy] = React.useState(false)
 
-  // 获取当前工作区的 slug
-  const workspaceSlug = React.useMemo(() => {
-    if (!currentWorkspaceId) return null
-    const ws = workspaces.find((w) => w.id === currentWorkspaceId)
-    return ws?.slug ?? null
-  }, [currentWorkspaceId, workspaces])
-
-  // 初始化：如果当前 session 不在 Map 中，从默认值写入，确保隔离
+  // Hydrate from backend on mount.
   React.useEffect(() => {
-    if (!modeMap.has(sessionId)) {
-      setModeMap((prev: Map<string, PromaPermissionMode>) => {
-        if (prev.has(sessionId)) return prev
-        const next = new Map(prev)
-        next.set(sessionId, defaultMode)
-        return next
-      })
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅 sessionId 变化时初始化
-  }, [sessionId])
+    getSafetyPolicy()
+      .then((p) => setMode(p.globalMode as SafetyModeWire))
+      .catch((e) => console.error('[PermissionModeSelector] getSafetyPolicy failed:', e))
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once
+  }, [])
 
-  // 加载工作区权限模式（仅值变化时更新，避免切换会话时抖动）
-  React.useEffect(() => {
-    if (!workspaceSlug) return
-
-    getPermissionMode(workspaceSlug)
-      .then((savedMode: string) => {
-        if (savedMode !== defaultMode) setDefaultMode(savedMode as PromaPermissionMode)
-      })
-      .catch((error: unknown) => {
-        console.error('[PermissionModeSelector] 加载权限模式失败:', error)
-      })
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在 workspaceSlug 变化时重新加载
-  }, [workspaceSlug])
-
-  /** 循环切换模式 */
   const cycleMode = React.useCallback(async () => {
-    const currentIndex = PROMA_PERMISSION_MODE_ORDER.indexOf(mode)
-    const nextIndex = (currentIndex + 1) % PROMA_PERMISSION_MODE_ORDER.length
-    const nextMode = PROMA_PERMISSION_MODE_ORDER[nextIndex]!
-
-    // 更新当前 session 的模式
-    setModeMap((prev: Map<string, PromaPermissionMode>) => {
-      const next = new Map(prev)
-      next.set(sessionId, nextMode)
-      return next
-    })
-
-    // 持久化到工作区配置
-    if (workspaceSlug) {
-      try {
-        await setPermissionMode(workspaceSlug, nextMode)
-      } catch (error) {
-        console.error('[PermissionModeSelector] 保存权限模式失败:', error)
-      }
+    if (busy) return
+    const idx = CYCLE_ORDER.indexOf(mode)
+    const next = CYCLE_ORDER[(idx === -1 ? 0 : idx + 1) % CYCLE_ORDER.length]!
+    setBusy(true)
+    try {
+      await setSafetyMode({ mode: next })
+      setMode(next)
+    } catch (err) {
+      console.error('[PermissionModeSelector] setSafetyMode failed:', err)
+    } finally {
+      setBusy(false)
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('.ProseMirror')?.focus())
     }
-  }, [mode, sessionId, workspaceSlug, setModeMap])
+  }, [mode, busy, setMode])
 
-  const config = MODE_CONFIG[mode]!
+  // `ask` is a valid wire value but we display it via supervised's icon if
+  // it ever sneaks in (e.g. set via Settings tab) — defensively map.
+  const displayMode = mode === 'ask' ? 'ask' : mode
+  const config = MODE_CONFIG[displayMode] ?? MODE_CONFIG.supervised
   const Icon = config.icon
 
   return (
@@ -116,17 +97,18 @@ export function PermissionModeSelector({ sessionId }: PermissionModeSelectorProp
         <TooltipTrigger asChild>
           <button
             type="button"
-            onClick={() => { cycleMode(); requestAnimationFrame(() => document.querySelector<HTMLElement>('.ProseMirror')?.focus()) }}
-            className="flex items-center gap-1 px-1.5 py-1 rounded text-xs font-medium transition-colors text-muted-foreground hover:text-foreground"
+            onClick={cycleMode}
+            disabled={busy}
+            className="flex items-center gap-1 px-1.5 py-1 rounded text-xs font-medium transition-colors text-muted-foreground hover:text-foreground disabled:opacity-50"
           >
             <Icon className="size-3.5" />
             <span className="hidden sm:inline">{config.label}</span>
           </button>
         </TooltipTrigger>
-        <TooltipContent side="bottom" className="max-w-[200px]">
-          <p className="font-medium">{config.label}模式</p>
+        <TooltipContent side="bottom" className="max-w-[220px]">
+          <p className="font-medium">{config.label}</p>
           <p className="text-xs text-muted-foreground mt-0.5">{config.description}</p>
-          <p className="text-xs text-muted-foreground mt-1">点击切换模式</p>
+          <p className="text-xs text-muted-foreground mt-1">点击切换 · 详细规则在 设置 → 工具权限</p>
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
