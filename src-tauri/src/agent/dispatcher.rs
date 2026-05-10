@@ -630,6 +630,33 @@ impl LoopDelegate for ChatDelegate {
             ));
             return TextAction::Continue;
         }
+
+        // Plan-aware termination guard: if a plan_write file in this workspace
+        // was touched in the last 5 minutes and still has `- [ ]` (undone)
+        // steps, the LLM probably hasn't actually finished — it just gave a
+        // mid-task narration. Don't terminate; nudge it to keep going.
+        //
+        // 5-minute window prevents stale plans from older sessions from
+        // looping unrelated user replies forever.
+        if let Some(undone) = crate::agent::plan_state::pending_plan_steps(
+            self.workspace_root.as_deref(),
+            300,
+        ) {
+            tracing::info!(
+                undone_steps = undone,
+                "Pending plan steps detected; injecting continuation instead of terminating"
+            );
+            reason_ctx.messages.push(ChatMessage::assistant(text));
+            reason_ctx.messages.push(ChatMessage::user(&format!(
+                "Your most recent plan still has {} step(s) marked `- [ ]` (undone). \
+                 Continue with the next undone step now. \
+                 If the plan is actually complete, call `plan_update` with `done: true` \
+                 on each remaining step to acknowledge them, then reply with a brief summary.",
+                undone
+            )));
+            return TextAction::Continue;
+        }
+
         self.emit_done(text);
         TextAction::Return(LoopOutcome::Response { text: text.to_string(), usage: metadata.usage })
     }
