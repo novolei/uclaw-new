@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use crate::agent::tools::tool::ApprovalRequirement;
 
+pub mod path_policy;
 pub mod permissions;
 
 // ─── Types ──────────────────────────────────────────────────────────────
