@@ -106,10 +106,18 @@ function WorkspaceTooltip({
 }: { workspace: WorkspaceInfo; indexForShortcut: number | null }): React.ReactElement {
   const Icon = getWorkspaceIcon(workspace.icon)
   return (
-    <div className="flex items-center gap-1.5 px-2 py-1 rounded-md
+    <div className="flex items-center gap-1.5 px-2 py-1.5 rounded-md
                     bg-popover/95 backdrop-blur-md border border-border/60
                     shadow-lg text-[12px] font-medium">
-      <Icon className="size-3.5 text-foreground/70" aria-hidden />
+      {/* Tinted icon badge — matches the visual language of the active
+          switcher icon, CreateDialog name-input prefix, and WorkspaceHeader. */}
+      <span
+        className="inline-flex items-center justify-center size-5 rounded
+                   bg-primary/15 text-primary shrink-0"
+        aria-hidden
+      >
+        <Icon className="size-3.5" />
+      </span>
       <span className="text-foreground">{workspace.name}</span>
       {indexForShortcut !== null && indexForShortcut < 9 && (
         <>
@@ -204,6 +212,7 @@ function WorkspaceDot({
   onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd,
   isDragging, dropIndicator,
 }: WorkspaceItemProps): React.ReactElement {
+  const Icon = iconForWorkspace(workspace.icon)
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -218,18 +227,37 @@ function WorkspaceDot({
           onClick={() => void onSelect(workspace.id)}
           aria-label={`工作区: ${workspace.name} (workspace dot)`}
           className={cn(
-            'titlebar-no-drag relative inline-flex items-center justify-center',
+            'group titlebar-no-drag relative inline-flex items-center justify-center',
             // Larger hit target (12px) than visible glyph (6px) for easier
             // clicking — the visible circle is rendered via the inner span.
-            'size-3 rounded-full transition-all',
-            'hover:scale-110',
+            'size-3 rounded-full',
             isDragging && 'opacity-40',
           )}
         >
+          {/* Default dot — fades out when this button is hovered, letting
+              the icon overlay take its place visually. */}
           <span
             aria-hidden
-            className="size-1.5 rounded-full bg-foreground/40 hover:bg-foreground/60 transition-colors"
+            className="size-1.5 rounded-full bg-foreground/40
+                       transition-opacity duration-150
+                       group-hover:opacity-0"
           />
+          {/* Icon overlay — invisible by default, fades in on hover. Sized
+              like the full WorkspaceIcon (size-7 / 28px) so dots visually
+              morph into icons under the cursor. Centered on the dot via
+              absolute positioning so it overflows the 12px button bounds
+              without disturbing layout. */}
+          <span
+            aria-hidden
+            className="pointer-events-none absolute left-1/2 top-1/2
+                       -translate-x-1/2 -translate-y-1/2
+                       inline-flex items-center justify-center size-7 rounded-md
+                       bg-foreground/[0.05] text-foreground
+                       opacity-0 transition-opacity duration-150
+                       group-hover:opacity-100"
+          >
+            <Icon className="size-4" />
+          </span>
           {running && (
             <span
               className="absolute -top-px -right-px size-1 rounded-full
