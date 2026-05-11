@@ -20,6 +20,8 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let app_state = AppState::new(app.handle())?;
 
@@ -499,7 +501,19 @@ fn main() {
             uclaw_core::tauri_commands::get_active_workspace_id,
             uclaw_core::tauri_commands::set_active_workspace_id,
             uclaw_core::tauri_commands::create_workspace,
+            uclaw_core::tauri_commands::update_workspace,
+            uclaw_core::tauri_commands::reorder_workspaces,
+            uclaw_core::tauri_commands::get_workspace_directories,
+            uclaw_core::tauri_commands::attach_workspace_directory,
+            uclaw_core::tauri_commands::detach_workspace_directory,
+            uclaw_core::tauri_commands::list_session_directories,
+            uclaw_core::tauri_commands::attach_session_directory,
+            uclaw_core::tauri_commands::detach_session_directory,
+            uclaw_core::tauri_commands::rename_attached_file,
+            uclaw_core::tauri_commands::move_attached_file,
+            uclaw_core::tauri_commands::read_attached_file,
             uclaw_core::tauri_commands::delete_workspace,
+            uclaw_core::tauri_commands::list_directory_entries,
             uclaw_core::tauri_commands::read_workspace_uclaw_md,
             uclaw_core::tauri_commands::write_workspace_uclaw_md,
             uclaw_core::tauri_commands::read_default_prompts,

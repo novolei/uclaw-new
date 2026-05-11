@@ -131,9 +131,10 @@ pub async fn send_message(
         ));
     }
 
-    // Setup tools
+    // Setup tools — pin to the active workspace's folder, not the global root.
     let mut tools = ToolRegistry::new();
-    let workspace = state.workspace_root.clone();
+    let workspace = active_workspace_root(&state)
+        .unwrap_or_else(|| state.workspace_root.clone());
     tools.register(builtin::file::ReadFileTool::new(workspace.clone()));
     tools.register(builtin::file::WriteFileTool::new(workspace.clone()));
     tools.register(builtin::search::GrepTool::new(workspace.clone()));
@@ -915,15 +916,26 @@ pub async fn create_space(state: State<'_, AppState>, input: CreateSpaceInput) -
     let icon = input.icon.unwrap_or_else(|| "📁".into());
 
     let db = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+
+    // Compute sort_order = MAX(existing) + 1 so new workspace sorts last.
+    let sort_order: i64 = db.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM spaces", [],
+        |r| r.get(0),
+    ).unwrap_or(0);
+
     db.execute(
-        "INSERT INTO spaces (id, name, icon, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![id, input.name, icon, now, now],
+        "INSERT INTO spaces (id, name, icon, sort_order, attached_dirs, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, '[]', ?5, ?5)",
+        rusqlite::params![id, input.name, icon, sort_order, now],
     ).map_err(Error::Database)?;
 
     Ok(SpaceResponse {
         id,
         name: input.name,
         icon,
+        path: None,
+        attached_dirs: vec![],
+        sort_order,
         created_at: now.clone(),
         updated_at: now,
     })
@@ -931,23 +943,69 @@ pub async fn create_space(state: State<'_, AppState>, input: CreateSpaceInput) -
 
 #[tauri::command]
 pub async fn list_spaces(state: State<'_, AppState>) -> Result<Vec<SpaceResponse>, Error> {
+    // Workspaces created before Task 4's auto-mkdir have NULL path. Backfill
+    // them on-the-fly: default workspace → workground root; others → a
+    // per-workspace subdir derived from the name. Create the directory and
+    // persist the path so the frontend FileBrowser has a stable target.
+    let workground_root = state.workspace_root.clone();
     let db = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
 
+    // First pass: read raw rows.
     let mut stmt = db.prepare(
-        "SELECT id, name, icon, created_at, updated_at FROM spaces ORDER BY created_at DESC",
+        "SELECT id, name, icon, path, attached_dirs, sort_order, created_at, updated_at
+         FROM spaces ORDER BY sort_order ASC"
     ).map_err(Error::Database)?;
-
-    let spaces: Vec<SpaceResponse> = stmt.query_map([], |row| {
-        Ok(SpaceResponse {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            icon: row.get::<_, String>(2).unwrap_or_else(|_| "📁".into()),
-            created_at: row.get(3)?,
-            updated_at: row.get(4)?,
-        })
+    type RawRow = (String, String, String, Option<String>, String, i64, String, String);
+    let rows: Vec<RawRow> = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2).unwrap_or_else(|_| "📁".into()),
+            row.get::<_, Option<String>>(3).ok().flatten(),
+            row.get::<_, String>(4).unwrap_or_else(|_| "[]".into()),
+            row.get::<_, i64>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+        ))
     }).map_err(Error::Database)?
     .filter_map(|r| r.ok())
     .collect();
+    drop(stmt);
+
+    let mut spaces = Vec::with_capacity(rows.len());
+    for (id, name, icon, raw_path, attached_json, sort_order, created_at, updated_at) in rows {
+        let trimmed_path = raw_path.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty());
+        let path = if let Some(p) = trimmed_path {
+            p.to_string()
+        } else {
+            // Backfill: default → workground root; others → per-workspace subdir.
+            let resolved = if id == "default" {
+                workground_root.clone()
+            } else {
+                compute_workspace_dir(&workground_root, &name, None, &id)
+                    .unwrap_or_else(|_| workground_root.clone())
+            };
+            // Best-effort mkdir + persist; failures don't block list.
+            let _ = std::fs::create_dir_all(&resolved);
+            let resolved_str = resolved.to_string_lossy().into_owned();
+            let _ = db.execute(
+                "UPDATE spaces SET path = ?1 WHERE id = ?2",
+                rusqlite::params![&resolved_str, &id],
+            );
+            resolved_str
+        };
+        let attached_dirs: Vec<String> = serde_json::from_str(&attached_json).unwrap_or_default();
+        spaces.push(SpaceResponse {
+            id,
+            name,
+            icon,
+            path: Some(path),
+            attached_dirs,
+            sort_order,
+            created_at,
+            updated_at,
+        });
+    }
 
     Ok(spaces)
 }
@@ -3710,28 +3768,32 @@ pub async fn stop_agent_session(
 pub async fn list_agent_sessions(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, Error> {
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
     let mut stmt = conn.prepare(
-        "SELECT id, space_id, title, metadata_json, message_count, pinned, archived, created_at, updated_at
+        "SELECT id, space_id, title, metadata_json, message_count, pinned, archived,
+                attached_dirs, created_at, updated_at
          FROM agent_sessions ORDER BY updated_at DESC"
     ).map_err(|e| Error::Database(e))?;
     let rows = stmt.query_map([], |row| {
         let meta_str: String = row.get(3)?;
+        let attached_dirs_json: String = row.get::<_, String>(7).unwrap_or_else(|_| "[]".into());
         Ok((
-            row.get::<_,String>(0)?,
-            row.get::<_,String>(1)?,
-            row.get::<_,String>(2)?,
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
             meta_str,
-            row.get::<_,i64>(4)?,
-            row.get::<_,i64>(5)?,
-            row.get::<_,i64>(6)?,
-            row.get::<_,i64>(7)?,
-            row.get::<_,i64>(8)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            attached_dirs_json,
+            row.get::<_, i64>(8)?,
+            row.get::<_, i64>(9)?,
         ))
     }).map_err(|e| Error::Database(e))?;
-    let sessions: Vec<serde_json::Value> = rows.filter_map(|r| r.ok()).map(|(id, space_id, title, meta_str, msg_count, pinned, archived, created_at, updated_at)| {
+    let sessions: Vec<serde_json::Value> = rows.filter_map(|r| r.ok()).map(|(id, space_id, title, meta_str, msg_count, pinned, archived, attached_dirs_json, created_at, updated_at)| {
         let meta: serde_json::Value = serde_json::from_str(&meta_str).unwrap_or(serde_json::Value::Object(Default::default()));
         let title_from_meta = meta.get("title").and_then(|v| v.as_str()).unwrap_or(&title).to_string();
         let title_emoji = meta.get("emoji").and_then(|v| v.as_str()).unwrap_or("💬").to_string();
         let title_pending = meta.get("title_pending").and_then(|v| v.as_bool()).unwrap_or(false);
+        let attached_dirs: Vec<String> = serde_json::from_str(&attached_dirs_json).unwrap_or_default();
         serde_json::json!({
             "id": id,
             "workspaceId": space_id,
@@ -3742,6 +3804,7 @@ pub async fn list_agent_sessions(state: State<'_, AppState>) -> Result<Vec<serde
             "messageCount": msg_count,
             "pinned": pinned != 0,
             "archived": archived != 0,
+            "attachedDirs": attached_dirs,
             "createdAt": created_at,
             "updatedAt": updated_at,
         })
@@ -3868,8 +3931,16 @@ pub async fn send_agent_message(
         result
     };
 
-    // Build tool registry
-    let workspace = state.workspace_root.clone();
+    // Build tool registry. Tools must run inside the workspace folder that
+    // *this session belongs to* (lookup by agent_sessions.space_id), NOT
+    // the globally-active workspace id. Switching sessions doesn't update
+    // the global active workspace, so falling back to active_workspace_root
+    // here would leak the previously-clicked workspace's cwd into a
+    // different workspace's session — observed when bouncing between
+    // TEST-session and 2222-session.
+    let workspace = session_workspace_root(&state, &input.session_id)
+        .or_else(|| active_workspace_root(&state))
+        .unwrap_or_else(|| state.workspace_root.clone());
     let mut tools = ToolRegistry::new();
     tools.register(builtin::file::ReadFileTool::new(workspace.clone()));
     tools.register(builtin::file::WriteFileTool::new(workspace.clone()));
@@ -3928,7 +3999,11 @@ pub async fn send_agent_message(
     let trajectory_store = Arc::clone(&state.trajectory_store);
     let tool_budget = Arc::clone(&state.tool_budget);
     let running_sessions = Arc::clone(&state.running_sessions);
-    let workspace_root_for_delegate = active_workspace_root(&state);
+    // Same rule as tool registration above: prefer the session's actual
+    // workspace, fall back to the globally-active workspace only if the
+    // session has no space binding.
+    let workspace_root_for_delegate = session_workspace_root(&state, &input.session_id)
+        .or_else(|| active_workspace_root(&state));
 
     const AGENT_SYSTEM_PROMPT: &str = "You are uClaw, a helpful AI desktop coworker. You help users with tasks using the available tools.";
 
@@ -4499,6 +4574,37 @@ pub(crate) fn rehome_agent_sessions_to_default(
     Ok(())
 }
 
+/// Apply name and/or icon updates to a workspace. Refuses to rename
+/// 'default' (sentinel protection) but allows icon changes on it.
+/// Extracted from `update_workspace` so it's unit-testable without AppState.
+pub(crate) fn do_update_workspace(
+    conn: &rusqlite::Connection,
+    id: &str,
+    name: Option<String>,
+    icon: Option<String>,
+) -> Result<(), Error> {
+    if id == "default" && name.is_some() {
+        return Err(Error::Internal(
+            "cannot rename the 'default' workspace".into(),
+        ));
+    }
+    require_workspace_exists(conn, id)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Some(n) = name.as_ref() {
+        conn.execute(
+            "UPDATE spaces SET name = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![n, &now, id],
+        ).map_err(Error::Database)?;
+    }
+    if let Some(i) = icon.as_ref() {
+        conn.execute(
+            "UPDATE spaces SET icon = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![i, &now, id],
+        ).map_err(Error::Database)?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn create_workspace(
     state: State<'_, AppState>,
@@ -4509,12 +4615,337 @@ pub async fn create_workspace(
     let id = uuid::Uuid::new_v4().to_string();
     let icon = icon.unwrap_or_else(|| "📁".to_string());
     let now = chrono::Utc::now().to_rfc3339();
+
+    // Compute target dir (auto-derived from name if no path supplied) and
+    // mkdir it. create_dir_all is idempotent: existing dir is a no-op.
+    let dir = compute_workspace_dir(&state.workspace_root, &name, path, &id)?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| Error::Internal(format!("mkdir failed for {:?}: {}", &dir, e)))?;
+    let resolved_path = dir.to_string_lossy().into_owned();
+
+    // Compute sort_order = MAX(sort_order) + 1 so the new workspace sorts last.
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let sort_order: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM spaces", [],
+        |r| r.get(0),
+    ).unwrap_or(0);
+
     conn.execute(
-        "INSERT INTO spaces (id, name, icon, path, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6)",
-        rusqlite::params![id, name, icon, path, now, now],
+        "INSERT INTO spaces (id, name, icon, path, sort_order, attached_dirs, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, '[]', ?6, ?6)",
+        rusqlite::params![id, name, icon, &resolved_path, sort_order, now],
     ).map_err(Error::Database)?;
-    Ok(serde_json::json!({ "id": id, "name": name, "icon": icon, "path": path, "createdAt": now }))
+
+    Ok(serde_json::json!({
+        "id": id,
+        "name": name,
+        "icon": icon,
+        "path": resolved_path,
+        "sortOrder": sort_order,
+        "attachedDirs": Vec::<String>::new(),
+        "createdAt": now,
+        "updatedAt": now,
+    }))
+}
+
+#[tauri::command]
+pub async fn update_workspace(
+    state: State<'_, AppState>,
+    id: String,
+    name: Option<String>,
+    icon: Option<String>,
+) -> Result<serde_json::Value, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    do_update_workspace(&conn, &id, name, icon)?;
+    let (id, name, icon, path, sort_order, created_at, updated_at): (String, String, String, Option<String>, i64, String, String) =
+        conn.query_row(
+            "SELECT id, name, icon, path, sort_order, created_at, updated_at FROM spaces WHERE id = ?1",
+            rusqlite::params![&id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+        ).map_err(Error::Database)?;
+    Ok(serde_json::json!({
+        "id": id,
+        "name": name,
+        "icon": icon,
+        "path": path,
+        "sortOrder": sort_order,
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+    }))
+}
+
+/// Apply `sort_order = idx` for each workspace id in the supplied ordered
+/// list. Wraps in a transaction so partial reorders don't leave the DB
+/// inconsistent if a later id is invalid. Validates each id exists first.
+pub(crate) fn do_reorder_workspaces(
+    conn: &rusqlite::Connection,
+    ordered_ids: &[String],
+) -> Result<(), Error> {
+    for id in ordered_ids {
+        require_workspace_exists(conn, id)?;
+    }
+    let tx = conn.unchecked_transaction().map_err(Error::Database)?;
+    for (idx, id) in ordered_ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE spaces SET sort_order = ?1 WHERE id = ?2",
+            rusqlite::params![idx as i64, id],
+        ).map_err(Error::Database)?;
+    }
+    tx.commit().map_err(Error::Database)?;
+    Ok(())
+}
+
+/// Simple ASCII slug: lowercase, non-alphanumeric → '-', collapse repeats,
+/// trim leading/trailing '-', truncate to 32 chars. CJK and other non-ASCII
+/// chars become '-' and get collapsed away, so a pure-Chinese name produces
+/// an empty string — caller's responsibility to fall back.
+pub(crate) fn slugify(name: &str) -> String {
+    let lowered: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    let mut out = String::with_capacity(lowered.len());
+    let mut prev_dash = false;
+    for c in lowered.chars() {
+        if c == '-' {
+            if !prev_dash {
+                out.push('-');
+                prev_dash = true;
+            }
+        } else {
+            out.push(c);
+            prev_dash = false;
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    trimmed.chars().take(32).collect::<String>()
+}
+
+/// Pure function: given the workground root, workspace name, optional
+/// explicit path, and a workspace id, produce the directory the workspace
+/// should live in. Does NOT mkdir — caller does that. Extracted from
+/// `create_workspace` so it's unit-testable without `state.workspace_root`.
+pub(crate) fn compute_workspace_dir(
+    workground_root: &std::path::Path,
+    name: &str,
+    explicit_path: Option<String>,
+    id: &str,
+) -> Result<std::path::PathBuf, Error> {
+    if let Some(p) = explicit_path {
+        if !p.trim().is_empty() {
+            return Ok(std::path::PathBuf::from(p));
+        }
+    }
+    let slug = slugify(name);
+    let dir_name = if slug.is_empty() {
+        format!("workspace-{}", &id.chars().take(8).collect::<String>())
+    } else {
+        slug
+    };
+    Ok(workground_root.join(dir_name))
+}
+
+/// Generic read-modify-write of an `attached_dirs` JSON column. Works for
+/// `spaces` (workspace level) and `agent_sessions` (session level). The
+/// caller's closure receives the current list and returns the new list;
+/// we serialize back to JSON and write. `id_col` is always "id" for both
+/// tables. Returns the new list.
+///
+/// Note: `spaces.updated_at` is RFC3339 TEXT; `agent_sessions.updated_at`
+/// is INTEGER milliseconds. We branch on the table name for the right
+/// timestamp encoding.
+pub(crate) fn do_modify_attached_dirs<F>(
+    conn: &rusqlite::Connection,
+    table: &str,
+    id: &str,
+    f: F,
+) -> Result<Vec<String>, Error>
+where
+    F: FnOnce(Vec<String>) -> Vec<String>,
+{
+    let json: String = conn
+        .query_row(
+            &format!("SELECT attached_dirs FROM {} WHERE id = ?1", table),
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                Error::NotFound(format!("{} '{}'", table, id))
+            }
+            other => Error::Database(other),
+        })?;
+    let dirs: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+    let new_dirs = f(dirs);
+    let new_json = serde_json::to_string(&new_dirs)
+        .map_err(|e| Error::Internal(format!("JSON encode: {}", e)))?;
+
+    // Branch on table for the updated_at type. spaces uses RFC3339 TEXT;
+    // agent_sessions uses INTEGER milliseconds.
+    match table {
+        "agent_sessions" => {
+            conn.execute(
+                "UPDATE agent_sessions SET attached_dirs = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![&new_json, chrono::Utc::now().timestamp_millis(), id],
+            ).map_err(Error::Database)?;
+        }
+        _ => {
+            conn.execute(
+                &format!("UPDATE {} SET attached_dirs = ?1, updated_at = ?2 WHERE id = ?3", table),
+                rusqlite::params![&new_json, chrono::Utc::now().to_rfc3339(), id],
+            ).map_err(Error::Database)?;
+        }
+    }
+    Ok(new_dirs)
+}
+
+#[tauri::command]
+pub async fn reorder_workspaces(
+    state: State<'_, AppState>,
+    ordered_ids: Vec<String>,
+) -> Result<(), Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    do_reorder_workspaces(&conn, &ordered_ids)
+}
+
+#[tauri::command]
+pub async fn get_workspace_directories(
+    state: State<'_, AppState>,
+    workspace_id: String,
+) -> Result<Vec<String>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    require_workspace_exists(&conn, &workspace_id)?;
+    let json: String = conn.query_row(
+        "SELECT attached_dirs FROM spaces WHERE id = ?1",
+        rusqlite::params![&workspace_id], |r| r.get(0),
+    ).map_err(Error::Database)?;
+    serde_json::from_str(&json)
+        .map_err(|e| Error::Internal(format!("JSON parse: {}", e)))
+}
+
+#[tauri::command]
+pub async fn attach_workspace_directory(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    dir_path: String,
+) -> Result<Vec<String>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    require_workspace_exists(&conn, &workspace_id)?;
+    do_modify_attached_dirs(&conn, "spaces", &workspace_id, |mut dirs| {
+        if !dirs.contains(&dir_path) { dirs.push(dir_path.clone()); }
+        dirs
+    })
+}
+
+#[tauri::command]
+pub async fn detach_workspace_directory(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    dir_path: String,
+) -> Result<Vec<String>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    require_workspace_exists(&conn, &workspace_id)?;
+    do_modify_attached_dirs(&conn, "spaces", &workspace_id, |dirs| {
+        dirs.into_iter().filter(|d| d != &dir_path).collect()
+    })
+}
+
+#[tauri::command]
+pub async fn list_session_directories(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<String>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let json: String = conn.query_row(
+        "SELECT attached_dirs FROM agent_sessions WHERE id = ?1",
+        rusqlite::params![&session_id], |r| r.get(0),
+    ).map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("agent_session '{}'", session_id)),
+        other => Error::Database(other),
+    })?;
+    serde_json::from_str(&json)
+        .map_err(|e| Error::Internal(format!("JSON parse: {}", e)))
+}
+
+#[tauri::command]
+pub async fn attach_session_directory(
+    state: State<'_, AppState>,
+    session_id: String,
+    dir_path: String,
+) -> Result<Vec<String>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    do_modify_attached_dirs(&conn, "agent_sessions", &session_id, |mut dirs| {
+        if !dirs.contains(&dir_path) { dirs.push(dir_path.clone()); }
+        dirs
+    })
+}
+
+#[tauri::command]
+pub async fn detach_session_directory(
+    state: State<'_, AppState>,
+    session_id: String,
+    dir_path: String,
+) -> Result<Vec<String>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    do_modify_attached_dirs(&conn, "agent_sessions", &session_id, |dirs| {
+        dirs.into_iter().filter(|d| d != &dir_path).collect()
+    })
+}
+
+/// Rename a file within its parent directory. Returns the new absolute path.
+pub(crate) fn do_rename_attached_file(path: &str, new_name: &str) -> Result<String, Error> {
+    let p = std::path::Path::new(path);
+    let parent = p.parent()
+        .ok_or_else(|| Error::Internal(format!("no parent for {}", path)))?;
+    let new_path = parent.join(new_name);
+    if new_path.exists() {
+        return Err(Error::Internal(format!(
+            "destination already exists: {}", new_path.display()
+        )));
+    }
+    std::fs::rename(p, &new_path)
+        .map_err(|e| Error::Internal(format!("rename {} → {}: {}", path, new_path.display(), e)))?;
+    Ok(new_path.to_string_lossy().into_owned())
+}
+
+/// Move a file into `dest_dir`, keeping the filename. Returns the new path.
+/// Falls back to copy+delete on cross-volume errors.
+pub(crate) fn do_move_attached_file(path: &str, dest_dir: &str) -> Result<String, Error> {
+    let p = std::path::Path::new(path);
+    let fname = p.file_name()
+        .ok_or_else(|| Error::Internal(format!("no filename in {}", path)))?;
+    let new_path = std::path::Path::new(dest_dir).join(fname);
+    if new_path.exists() {
+        return Err(Error::Internal(format!(
+            "destination already exists: {}", new_path.display()
+        )));
+    }
+    match std::fs::rename(p, &new_path) {
+        Ok(()) => Ok(new_path.to_string_lossy().into_owned()),
+        Err(e) if e.raw_os_error() == Some(18) /* EXDEV */ => {
+            std::fs::copy(p, &new_path)
+                .map_err(|e2| Error::Internal(format!("cross-volume copy: {}", e2)))?;
+            std::fs::remove_file(p)
+                .map_err(|e2| Error::Internal(format!("cross-volume remove: {}", e2)))?;
+            Ok(new_path.to_string_lossy().into_owned())
+        }
+        Err(e) => Err(Error::Internal(format!("move: {}", e))),
+    }
+}
+
+#[tauri::command]
+pub async fn rename_attached_file(path: String, new_name: String) -> Result<String, Error> {
+    do_rename_attached_file(&path, &new_name)
+}
+
+#[tauri::command]
+pub async fn move_attached_file(path: String, dest_dir: String) -> Result<String, Error> {
+    do_move_attached_file(&path, &dest_dir)
+}
+
+#[tauri::command]
+pub async fn read_attached_file(path: String) -> Result<Vec<u8>, Error> {
+    std::fs::read(&path).map_err(|e| Error::Internal(format!("read {}: {}", path, e)))
 }
 
 #[tauri::command]
@@ -4585,6 +5016,69 @@ fn active_workspace_root(state: &AppState) -> Option<std::path::PathBuf> {
         raw.filter(|s| !s.trim().is_empty()).map(std::path::PathBuf::from)
     })();
     path_from_db.or_else(|| Some(state.workspace_root.clone()))
+}
+
+/// Resolve the workspace folder for a specific agent session. Sessions are
+/// tied to a workspace by `agent_sessions.space_id`, NOT by the globally
+/// active workspace id (which changes only when the user clicks a workspace
+/// header). Without this lookup, switching from a TEST-workspace session
+/// to a 2222-workspace session while TEST is still globally active would
+/// leave tools pinned to TEST's folder.
+fn session_workspace_root(state: &AppState, session_id: &str) -> Option<std::path::PathBuf> {
+    let conn = state.db.lock().ok()?;
+    let space_id: String = conn.query_row(
+        "SELECT space_id FROM agent_sessions WHERE id = ?1",
+        rusqlite::params![session_id],
+        |row| row.get::<_, String>(0),
+    ).ok()?;
+    let raw: Option<String> = conn.query_row(
+        "SELECT path FROM spaces WHERE id = ?1",
+        rusqlite::params![space_id],
+        |row| row.get::<_, Option<String>>(0),
+    ).ok().flatten();
+    raw.filter(|s| !s.trim().is_empty()).map(std::path::PathBuf::from)
+}
+
+/// Lightweight directory listing for the Files tab. Reads `path` and
+/// returns a flat list of immediate children as FileEntry-shaped objects.
+/// Hidden files (dotfiles) and macOS `.DS_Store` are filtered out so the
+/// panel matches what a user sees in Finder by default.
+#[tauri::command]
+pub async fn list_directory_entries(path: String) -> Result<Vec<serde_json::Value>, Error> {
+    let p = std::path::PathBuf::from(&path);
+    if !p.exists() {
+        return Ok(vec![]);
+    }
+    if !p.is_dir() {
+        return Err(Error::InvalidInput(format!("not a directory: {}", path)));
+    }
+    let mut entries = tokio::fs::read_dir(&p).await.map_err(Error::Io)?;
+    let mut out = Vec::new();
+    while let Some(entry) = entries.next_entry().await.map_err(Error::Io)? {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') { continue; }
+        let entry_path = entry.path();
+        let meta = match entry.metadata().await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let is_dir = meta.is_dir();
+        let size = if is_dir { None } else { Some(meta.len()) };
+        let extension = if is_dir {
+            None
+        } else {
+            entry_path.extension().and_then(|s| s.to_str()).map(|s| s.to_string())
+        };
+        out.push(serde_json::json!({
+            "name": name,
+            "path": entry_path.to_string_lossy(),
+            "isDirectory": is_dir,
+            "isFile": !is_dir,
+            "size": size,
+            "extension": extension,
+        }));
+    }
+    Ok(out)
 }
 
 #[tauri::command]
@@ -5150,7 +5644,10 @@ pub async fn start_agent_teams(
     };
     let llm: Arc<dyn crate::llm::LlmProvider> = llm::create_provider(&llm_cfg)?;
 
-    let workspace = state.workspace_root.clone();
+    // Pin to active workspace folder; fallback to global root only if no
+    // workspace is active (e.g. fresh install before any space selected).
+    let workspace = active_workspace_root(&state)
+        .unwrap_or_else(|| state.workspace_root.clone());
     let workspace_root_for_factory = active_workspace_root(&state);
 
     // Clone everything that needs to move into the spawn
@@ -5561,6 +6058,14 @@ mod workspace_integrity_tests {
         {
             conn.execute(stmt, []).unwrap();
         }
+        // Apply V17 to add sort_order column.
+        for stmt in crate::db::migrations::V17_WORKSPACE_PATH_SORT_ATTACHED
+            .split(';')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            conn.execute(stmt, []).unwrap();
+        }
         conn
     }
 
@@ -5644,5 +6149,303 @@ mod workspace_integrity_tests {
         // No sessions inserted.
         let result = super::rehome_agent_sessions_to_default(&conn, "ws-empty");
         assert!(result.is_ok());
+    }
+
+    // ─── update_workspace ──────────────────────────────────────────────
+
+    fn read_workspace_name(conn: &Connection, id: &str) -> String {
+        conn.query_row(
+            "SELECT name FROM spaces WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        ).unwrap()
+    }
+
+    fn read_workspace_icon(conn: &Connection, id: &str) -> String {
+        conn.query_row(
+            "SELECT icon FROM spaces WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        ).unwrap()
+    }
+
+    #[test]
+    fn update_workspace_changes_name() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-real", "Original");
+        super::do_update_workspace(&conn, "ws-real", Some("Renamed".into()), None).unwrap();
+        assert_eq!(read_workspace_name(&conn, "ws-real"), "Renamed");
+    }
+
+    #[test]
+    fn update_workspace_refuses_to_rename_default() {
+        let conn = fresh_db();
+        let r = super::do_update_workspace(&conn, "default", Some("NotDefault".into()), None);
+        assert!(r.is_err(), "renaming 'default' must return Err");
+        assert_eq!(read_workspace_name(&conn, "default"), "默认工作区");
+    }
+
+    #[test]
+    fn update_workspace_allows_icon_change_on_default() {
+        let conn = fresh_db();
+        super::do_update_workspace(&conn, "default", None, Some("🌟".into())).unwrap();
+        assert_eq!(read_workspace_icon(&conn, "default"), "🌟");
+    }
+
+    // ─── reorder_workspaces ──────────────────────────────────────────────
+
+    fn read_sort_order(conn: &Connection, id: &str) -> i64 {
+        conn.query_row(
+            "SELECT sort_order FROM spaces WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        ).unwrap()
+    }
+
+    #[test]
+    fn reorder_workspaces_sets_sort_order_by_array_index() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-a", "A");
+        insert_workspace(&conn, "ws-b", "B");
+        insert_workspace(&conn, "ws-c", "C");
+        super::do_reorder_workspaces(&conn, &["ws-c".into(), "ws-a".into(), "ws-b".into()]).unwrap();
+        assert_eq!(read_sort_order(&conn, "ws-c"), 0);
+        assert_eq!(read_sort_order(&conn, "ws-a"), 1);
+        assert_eq!(read_sort_order(&conn, "ws-b"), 2);
+    }
+
+    #[test]
+    fn reorder_workspaces_errors_on_unknown_id_no_partial_writes() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-a", "A");
+        let before = read_sort_order(&conn, "ws-a");
+        let result = super::do_reorder_workspaces(&conn, &["ws-a".into(), "ghost".into()]);
+        assert!(result.is_err(), "unknown id must error");
+        assert_eq!(read_sort_order(&conn, "ws-a"), before);
+    }
+
+    // ─── create_workspace auto-mkdir + slugify ──────────────────────────
+
+    #[test]
+    fn slugify_basic_ascii() {
+        assert_eq!(super::slugify("My Project"), "my-project");
+        assert_eq!(super::slugify("test"), "test");
+    }
+
+    #[test]
+    fn slugify_collapses_special_chars() {
+        assert_eq!(super::slugify("foo!!bar"), "foo-bar");
+        assert_eq!(super::slugify("---weird---"), "weird");
+    }
+
+    #[test]
+    fn slugify_chinese_only_falls_back_to_empty() {
+        assert_eq!(super::slugify("我的项目"), "");
+    }
+
+    #[test]
+    fn slugify_truncates_long_input() {
+        let long = "a".repeat(100);
+        assert_eq!(super::slugify(&long).len(), 32);
+    }
+
+    #[test]
+    fn compute_workspace_dir_uses_slug_when_no_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = super::compute_workspace_dir(tmp.path(), "My Project", None, "id-1234567890ab").unwrap();
+        assert_eq!(dir, tmp.path().join("my-project"));
+    }
+
+    #[test]
+    fn compute_workspace_dir_uses_uuid_fallback_when_slug_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = super::compute_workspace_dir(tmp.path(), "我的项目", None, "id-1234567890ab").unwrap();
+        assert_eq!(dir, tmp.path().join("workspace-id-12345"));
+    }
+
+    #[test]
+    fn compute_workspace_dir_respects_explicit_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let custom = tmp.path().join("custom");
+        let dir = super::compute_workspace_dir(
+            tmp.path(),
+            "ignored",
+            Some(custom.to_string_lossy().into_owned()),
+            "id-anything",
+        ).unwrap();
+        assert_eq!(dir, custom);
+    }
+
+    // ─── workspace attached directories ─────────────────────────────────
+
+    fn read_workspace_dirs(conn: &Connection, id: &str) -> Vec<String> {
+        let json: String = conn.query_row(
+            "SELECT attached_dirs FROM spaces WHERE id = ?1",
+            rusqlite::params![id], |r| r.get(0),
+        ).unwrap();
+        serde_json::from_str(&json).unwrap()
+    }
+
+    #[test]
+    fn attach_workspace_directory_appends_to_json() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-x", "X");
+        let after = super::do_modify_attached_dirs(&conn, "spaces", "ws-x", |mut dirs| {
+            dirs.push("/tmp/foo".into());
+            dirs
+        }).unwrap();
+        assert_eq!(after, vec!["/tmp/foo".to_string()]);
+        assert_eq!(read_workspace_dirs(&conn, "ws-x"), vec!["/tmp/foo".to_string()]);
+    }
+
+    #[test]
+    fn attach_workspace_directory_dedupes() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-x", "X");
+        super::do_modify_attached_dirs(&conn, "spaces", "ws-x", |mut dirs| {
+            if !dirs.contains(&"/tmp/foo".to_string()) { dirs.push("/tmp/foo".into()); }
+            dirs
+        }).unwrap();
+        let after = super::do_modify_attached_dirs(&conn, "spaces", "ws-x", |mut dirs| {
+            if !dirs.contains(&"/tmp/foo".to_string()) { dirs.push("/tmp/foo".into()); }
+            dirs
+        }).unwrap();
+        assert_eq!(after, vec!["/tmp/foo".to_string()], "duplicate path not appended");
+    }
+
+    #[test]
+    fn detach_workspace_directory_removes_existing() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-x", "X");
+        super::do_modify_attached_dirs(&conn, "spaces", "ws-x", |_| {
+            vec!["/tmp/foo".into(), "/tmp/bar".into()]
+        }).unwrap();
+        let after = super::do_modify_attached_dirs(&conn, "spaces", "ws-x", |dirs| {
+            dirs.into_iter().filter(|d| d != "/tmp/foo").collect()
+        }).unwrap();
+        assert_eq!(after, vec!["/tmp/bar".to_string()]);
+    }
+
+    #[test]
+    fn detach_workspace_directory_noop_when_missing() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-x", "X");
+        let after = super::do_modify_attached_dirs(&conn, "spaces", "ws-x", |dirs| {
+            dirs.into_iter().filter(|d| d != "/tmp/notthere").collect()
+        }).unwrap();
+        assert_eq!(after, Vec::<String>::new());
+    }
+
+    // ─── session attached directories ───────────────────────────────────
+
+    fn read_session_dirs(conn: &Connection, id: &str) -> Vec<String> {
+        let json: String = conn.query_row(
+            "SELECT attached_dirs FROM agent_sessions WHERE id = ?1",
+            rusqlite::params![id], |r| r.get(0),
+        ).unwrap();
+        serde_json::from_str(&json).unwrap()
+    }
+
+    #[test]
+    fn attach_session_directory_appends() {
+        let conn = fresh_db();
+        insert_session(&conn, "s-1", "default");
+        let after = super::do_modify_attached_dirs(&conn, "agent_sessions", "s-1", |mut dirs| {
+            dirs.push("/tmp/sess-dir".into());
+            dirs
+        }).unwrap();
+        assert_eq!(after, vec!["/tmp/sess-dir".to_string()]);
+        assert_eq!(read_session_dirs(&conn, "s-1"), vec!["/tmp/sess-dir".to_string()]);
+    }
+
+    #[test]
+    fn list_session_directories_returns_attached() {
+        let conn = fresh_db();
+        insert_session(&conn, "s-1", "default");
+        super::do_modify_attached_dirs(&conn, "agent_sessions", "s-1", |_| {
+            vec!["/tmp/a".into(), "/tmp/b".into()]
+        }).unwrap();
+        let json: String = conn.query_row(
+            "SELECT attached_dirs FROM agent_sessions WHERE id = ?1",
+            rusqlite::params!["s-1"], |r| r.get(0),
+        ).unwrap();
+        let dirs: Vec<String> = serde_json::from_str(&json).unwrap();
+        assert_eq!(dirs, vec!["/tmp/a".to_string(), "/tmp/b".to_string()]);
+    }
+
+    // ─── file action commands ───────────────────────────────────────────
+
+    use std::fs;
+    use std::io::Write;
+
+    fn create_tmp_file(dir: &std::path::Path, name: &str, content: &[u8]) -> std::path::PathBuf {
+        let p = dir.join(name);
+        let mut f = fs::File::create(&p).unwrap();
+        f.write_all(content).unwrap();
+        p
+    }
+
+    #[test]
+    fn rename_attached_file_renames_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original = create_tmp_file(tmp.path(), "old.txt", b"hello");
+        let new_path = super::do_rename_attached_file(
+            original.to_string_lossy().as_ref(),
+            "new.txt",
+        ).unwrap();
+        assert!(!original.exists(), "old path should no longer exist");
+        let new_pb = std::path::PathBuf::from(&new_path);
+        assert!(new_pb.exists(), "new path should exist");
+        assert_eq!(fs::read(&new_pb).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn move_attached_file_moves_to_destination() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        let dst_dir = tmp.path().join("dst");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&dst_dir).unwrap();
+        let original = create_tmp_file(&src_dir, "f.txt", b"data");
+        let new_path = super::do_move_attached_file(
+            original.to_string_lossy().as_ref(),
+            dst_dir.to_string_lossy().as_ref(),
+        ).unwrap();
+        assert!(!original.exists());
+        let new_pb = std::path::PathBuf::from(&new_path);
+        assert!(new_pb.starts_with(&dst_dir));
+        assert_eq!(fs::read(&new_pb).unwrap(), b"data");
+    }
+
+    #[test]
+    fn rename_attached_file_refuses_to_clobber_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original = create_tmp_file(tmp.path(), "old.txt", b"original");
+        let _existing = create_tmp_file(tmp.path(), "existing.txt", b"do not lose me");
+        let result = super::do_rename_attached_file(
+            original.to_string_lossy().as_ref(),
+            "existing.txt",
+        );
+        assert!(result.is_err(), "rename onto existing file must error");
+        assert!(original.exists(), "original file untouched after refused rename");
+        assert_eq!(fs::read(tmp.path().join("existing.txt")).unwrap(), b"do not lose me", "existing file preserved");
+    }
+
+    #[test]
+    fn move_attached_file_refuses_to_clobber_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        let dst_dir = tmp.path().join("dst");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&dst_dir).unwrap();
+        let original = create_tmp_file(&src_dir, "f.txt", b"data");
+        let _existing = create_tmp_file(&dst_dir, "f.txt", b"existing data");
+        let result = super::do_move_attached_file(
+            original.to_string_lossy().as_ref(),
+            dst_dir.to_string_lossy().as_ref(),
+        );
+        assert!(result.is_err(), "move onto existing file must error");
+        assert!(original.exists(), "original file untouched after refused move");
+        assert_eq!(fs::read(dst_dir.join("f.txt")).unwrap(), b"existing data", "existing file preserved");
     }
 }

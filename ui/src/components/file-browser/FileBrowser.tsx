@@ -7,13 +7,11 @@
  */
 
 import * as React from 'react'
-import { ChevronRight, RefreshCw, FolderOpen } from 'lucide-react'
+import { ChevronRight, RefreshCw, FolderOpen, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { FileTypeIcon } from './FileTypeIcon'
 import type { FileEntry } from '@/lib/chat-types'
-
-// [PLACEHOLDER] Tauri file system operations
-// import { readDir } from '@tauri-apps/plugin-fs'
+import { listDirectoryEntries } from '@/lib/tauri-bridge'
 
 interface FileBrowserProps {
   /** 根目录路径 */
@@ -46,11 +44,13 @@ function FileTreeNode({
   depth = 0,
   onFileClick,
   onDirectoryClick,
+  onAddToChat,
 }: {
   entry: FileEntry
   depth?: number
   onFileClick?: (entry: FileEntry) => void
   onDirectoryClick?: (entry: FileEntry) => void
+  onAddToChat?: (entry: FileEntry) => void
 }): React.ReactElement {
   const [expanded, setExpanded] = React.useState(false)
 
@@ -58,32 +58,50 @@ function FileTreeNode({
     if (entry.isDirectory) {
       setExpanded((prev) => !prev)
       onDirectoryClick?.(entry)
-    } else {
-      onFileClick?.(entry)
+    } else if (onFileClick) {
+      onFileClick(entry)
+    } else if (onAddToChat) {
+      // No explicit file-click handler: default to add-to-chat so a plain
+      // click on a file in the side panel attaches it.
+      onAddToChat(entry)
     }
-  }, [entry, onFileClick, onDirectoryClick])
+  }, [entry, onFileClick, onDirectoryClick, onAddToChat])
 
   return (
     <div>
-      <button
-        type="button"
+      <div
         className={cn(
-          'flex items-center gap-1 w-full text-left px-2 py-0.5 text-sm hover:bg-accent/50 rounded-sm transition-colors',
+          'group flex items-center gap-1 w-full px-2 py-0.5 text-sm hover:bg-accent/50 rounded-sm transition-colors',
           'text-foreground/80 hover:text-foreground',
         )}
         style={{ paddingLeft: `${depth * 16 + 8}px` }}
-        onClick={handleClick}
       >
-        {entry.isDirectory ? (
-          <ChevronRight
-            className={cn('size-3.5 shrink-0 transition-transform text-muted-foreground/60', expanded && 'rotate-90')}
-          />
-        ) : (
-          <span className="size-3.5 shrink-0" />
+        <button
+          type="button"
+          className="flex items-center gap-1 flex-1 min-w-0 text-left"
+          onClick={handleClick}
+        >
+          {entry.isDirectory ? (
+            <ChevronRight
+              className={cn('size-3.5 shrink-0 transition-transform text-muted-foreground/60', expanded && 'rotate-90')}
+            />
+          ) : (
+            <span className="size-3.5 shrink-0" />
+          )}
+          <FileTypeIcon name={entry.name} isDirectory={entry.isDirectory} isOpen={expanded} size={14} />
+          <span className="truncate text-[13px]">{entry.name}</span>
+        </button>
+        {!entry.isDirectory && onAddToChat && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onAddToChat(entry) }}
+            className="opacity-0 group-hover:opacity-100 shrink-0 p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-foreground/[0.08] transition-opacity"
+            title="添加到聊天"
+          >
+            <Plus className="size-3" />
+          </button>
         )}
-        <FileTypeIcon name={entry.name} isDirectory={entry.isDirectory} isOpen={expanded} size={14} />
-        <span className="truncate text-[13px]">{entry.name}</span>
-      </button>
+      </div>
       {entry.isDirectory && expanded && entry.children && (
         <div>
           {entry.children
@@ -98,6 +116,7 @@ function FileTreeNode({
                 depth={depth + 1}
                 onFileClick={onFileClick}
                 onDirectoryClick={onDirectoryClick}
+                onAddToChat={onAddToChat}
               />
             ))}
         </div>
@@ -108,17 +127,56 @@ function FileTreeNode({
 
 export function FileBrowser({
   rootPath,
-  files = [],
+  files: filesProp,
   onFileClick,
   onDirectoryClick,
   onAddToChat,
   onRefresh,
-  loading = false,
+  loading: loadingProp = false,
   hideToolbar = false,
   embedded = false,
   hideEmpty = false,
   className,
 }: FileBrowserProps): React.ReactElement {
+  // If parent supplies `files`, render those directly (legacy mode).
+  // Otherwise auto-load the immediate children of `rootPath` from disk.
+  const [autoFiles, setAutoFiles] = React.useState<FileEntry[]>([])
+  const [autoLoading, setAutoLoading] = React.useState(false)
+  const [reloadKey, setReloadKey] = React.useState(0)
+
+  React.useEffect(() => {
+    if (filesProp !== undefined) return
+    if (!rootPath) {
+      setAutoFiles([])
+      return
+    }
+    let cancelled = false
+    setAutoLoading(true)
+    listDirectoryEntries(rootPath)
+      .then((rows) => {
+        if (cancelled) return
+        const mapped: FileEntry[] = rows.map((r) => ({
+          name: r.name,
+          path: r.path,
+          isDirectory: r.isDirectory,
+          isFile: r.isFile,
+          size: r.size,
+          extension: r.extension,
+        }))
+        setAutoFiles(mapped)
+      })
+      .catch((err) => {
+        console.error('[FileBrowser] listDirectoryEntries failed', err)
+        if (!cancelled) setAutoFiles([])
+      })
+      .finally(() => { if (!cancelled) setAutoLoading(false) })
+    return () => { cancelled = true }
+  }, [rootPath, filesProp, reloadKey])
+
+  const files = filesProp ?? autoFiles
+  const loading = loadingProp || autoLoading
+  const effectiveOnRefresh = onRefresh ?? (filesProp === undefined ? () => setReloadKey((k) => k + 1) : undefined)
+
   if (loading) {
     return (
       <div className={cn('flex items-center justify-center py-8 text-muted-foreground/60', className)}>
@@ -137,11 +195,11 @@ export function FileBrowser({
       <div className={cn('flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground/60', className)}>
         <FolderOpen className="size-6" />
         <span className="text-xs">暂无文件</span>
-        {onRefresh && (
+        {effectiveOnRefresh && (
           <button
             type="button"
             className="text-xs text-primary/60 hover:text-primary underline"
-            onClick={onRefresh}
+            onClick={effectiveOnRefresh}
           >
             刷新
           </button>
@@ -163,6 +221,7 @@ export function FileBrowser({
             entry={entry}
             onFileClick={onFileClick}
             onDirectoryClick={onDirectoryClick}
+            onAddToChat={onAddToChat}
           />
         ))}
     </div>

@@ -638,6 +638,23 @@ SET space_id = 'default'
 WHERE space_id NOT IN (SELECT id FROM spaces);
 ";
 
+/// V17: per-workspace + per-session attached directory lists (JSON columns),
+/// workspace sort ordering (integer column), and a one-time backfill that
+/// derives sort_order from created_at descending so the existing newest-first
+/// order is preserved after the schema change.
+///
+/// All three ALTERs may fail on re-run with "duplicate column" — handled by
+/// the per-statement tracing::warn! skip in run(), matching V9/V10 idiom.
+pub const V17_WORKSPACE_PATH_SORT_ATTACHED: &str = "
+ALTER TABLE spaces ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE spaces ADD COLUMN attached_dirs TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE agent_sessions ADD COLUMN attached_dirs TEXT NOT NULL DEFAULT '[]';
+
+UPDATE spaces SET sort_order = (
+    SELECT COUNT(*) FROM spaces s2 WHERE s2.created_at > spaces.created_at
+) WHERE (SELECT COUNT(*) FROM spaces WHERE sort_order != 0) = 0;
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -754,6 +771,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             tracing::warn!("V16 stmt skipped: {} :: {}", e, stmt);
         }
     }
+    // V17: workspace sort + attached directories columns + backfill.
+    tracing::debug!("Running migration V17: workspace path/sort/attached_dirs");
+    for stmt in V17_WORKSPACE_PATH_SORT_ATTACHED.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V17 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
     tracing::info!("Database migrations complete");
     Ok(())
 }
@@ -829,5 +853,142 @@ mod tests {
             )
             .unwrap();
         assert_eq!(space_id, "default", "orphan session must be re-homed to 'default'");
+    }
+
+    /// Apply migrations through V16 so V17 has a populated schema to extend.
+    fn db_pre_v17() -> Connection {
+        let conn = db_pre_v16();
+        // V16 needs to run first so 'default' exists, otherwise the
+        // V17 backfill counts can be confused by data that V16 would touch.
+        run_v16(&conn);
+        conn
+    }
+
+    /// Apply V17 statements via .unwrap(). **First-run only** — calling
+    /// this twice on the same connection will panic with "duplicate column"
+    /// because ALTER TABLE ADD COLUMN isn't idempotent in SQLite. The
+    /// production `run()` uses warn-on-error to allow safe re-runs; tests
+    /// that need to verify re-run behavior must inline the loop and
+    /// swallow errors manually (see `v17_adds_sort_order_column_idempotent`).
+    fn run_v17(conn: &Connection) {
+        for stmt in super::V17_WORKSPACE_PATH_SORT_ATTACHED
+            .split(';')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            conn.execute(stmt, []).unwrap();
+        }
+    }
+
+    #[test]
+    fn v17_adds_sort_order_column_idempotent() {
+        let conn = db_pre_v17();
+        run_v17(&conn);
+        let mut stmt = conn.prepare("SELECT sort_order FROM spaces WHERE id = 'default'").unwrap();
+        let val: i64 = stmt.query_row([], |r| r.get(0)).unwrap();
+        assert_eq!(val, 0, "default workspace should be at sort_order 0 (only workspace)");
+
+        for stmt in super::V17_WORKSPACE_PATH_SORT_ATTACHED.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            let _ = conn.execute(stmt, []);
+        }
+        let val2: i64 = conn.query_row("SELECT sort_order FROM spaces WHERE id = 'default'", [], |r| r.get(0)).unwrap();
+        assert_eq!(val2, 0, "sort_order must remain 0 after re-run");
+    }
+
+    #[test]
+    fn v17_adds_workspace_attached_dirs_column() {
+        let conn = db_pre_v17();
+        run_v17(&conn);
+        let val: String = conn.query_row(
+            "SELECT attached_dirs FROM spaces WHERE id = 'default'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(val, "[]", "fresh workspace should have empty attached_dirs JSON");
+    }
+
+    #[test]
+    fn v17_adds_session_attached_dirs_column() {
+        let conn = db_pre_v17();
+        conn.execute(
+            "INSERT INTO agent_sessions (id, space_id, title, created_at, updated_at)
+             VALUES ('s-1', 'default', 'test', 0, 0)",
+            [],
+        ).unwrap();
+        run_v17(&conn);
+        let val: String = conn.query_row(
+            "SELECT attached_dirs FROM agent_sessions WHERE id = 's-1'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(val, "[]", "fresh session should have empty attached_dirs JSON");
+    }
+
+    #[test]
+    fn v17_backfills_sort_order_from_created_at() {
+        let conn = db_pre_v17();
+        conn.execute(
+            "INSERT INTO spaces (id, name, icon, path, created_at, updated_at)
+             VALUES ('ws-a', 'A', '📁', NULL, '2026-05-01 00:00:00', '2026-05-01 00:00:00')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO spaces (id, name, icon, path, created_at, updated_at)
+             VALUES ('ws-b', 'B', '📁', NULL, '2099-01-01 00:00:00', '2099-01-01 00:00:00')",
+            [],
+        ).unwrap();
+        run_v17(&conn);
+
+        let mut stmt = conn.prepare(
+            "SELECT id, sort_order FROM spaces ORDER BY sort_order ASC"
+        ).unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        let ws_b_order = rows.iter().find(|(id, _)| id == "ws-b").map(|(_, o)| *o).unwrap();
+        let ws_a_order = rows.iter().find(|(id, _)| id == "ws-a").map(|(_, o)| *o).unwrap();
+        assert_eq!(ws_b_order, 0, "newest workspace ws-b should have sort_order 0");
+        assert_eq!(ws_a_order, 2, "oldest workspace ws-a should have sort_order 2");
+    }
+
+    #[test]
+    fn v17_backfill_skips_after_user_reorder() {
+        let conn = db_pre_v17();
+        // Insert 3 workspaces with non-trivial created_at ordering.
+        conn.execute(
+            "INSERT INTO spaces (id, name, icon, path, created_at, updated_at)
+             VALUES ('ws-a', 'A', '📁', NULL, '2026-05-01 00:00:00', '2026-05-01 00:00:00')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO spaces (id, name, icon, path, created_at, updated_at)
+             VALUES ('ws-b', 'B', '📁', NULL, '2026-05-11 00:00:00', '2026-05-11 00:00:00')",
+            [],
+        ).unwrap();
+
+        // First V17 run does the initial backfill.
+        run_v17(&conn);
+
+        // Simulate user reorder: put ws-a at sort_order 0, ws-b at sort_order 5.
+        conn.execute("UPDATE spaces SET sort_order = 0 WHERE id = 'ws-a'", []).unwrap();
+        conn.execute("UPDATE spaces SET sort_order = 5 WHERE id = 'ws-b'", []).unwrap();
+
+        // Re-run V17 (simulating app reboot). The backfill UPDATE should be a no-op
+        // because at least one row has sort_order != 0.
+        // Manually inline the V17 SQL with error-swallowing (run_v17 unwraps would
+        // panic on the ALTERs because columns already exist).
+        for stmt in super::V17_WORKSPACE_PATH_SORT_ATTACHED
+            .split(';').map(|s| s.trim()).filter(|s| !s.is_empty())
+        {
+            let _ = conn.execute(stmt, []);
+        }
+
+        // User's reorder values should be preserved.
+        let a_order: i64 = conn.query_row(
+            "SELECT sort_order FROM spaces WHERE id = 'ws-a'", [], |r| r.get(0)
+        ).unwrap();
+        let b_order: i64 = conn.query_row(
+            "SELECT sort_order FROM spaces WHERE id = 'ws-b'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(a_order, 0, "user-set sort_order=0 preserved across re-run");
+        assert_eq!(b_order, 5, "user-set sort_order=5 preserved across re-run");
     }
 }

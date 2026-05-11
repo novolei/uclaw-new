@@ -46,6 +46,8 @@ import {
   agentWorkspacesAtom,
   workspaceCapabilitiesVersionAtom,
   agentSidePanelOpenMapAtom,
+  agentSessionAttachedDirsMapAtom,
+  workspaceAttachedDirsMapAtom,
 } from '@/atoms/agent-atoms'
 import type { SessionIndicatorStatus } from '@/atoms/agent-atoms'
 import {
@@ -65,10 +67,9 @@ import { hasEnvironmentIssuesAtom } from '@/atoms/environment'
 import { promptConfigAtom, selectedPromptIdAtom, conversationPromptIdAtom } from '@/atoms/system-prompt-atoms'
 import { useOpenSession } from '@/hooks/useOpenSession'
 import { useSyncActiveTabSideEffects } from '@/hooks/useSyncActiveTabSideEffects'
-import { WorkspaceSelector } from '@/components/agent/WorkspaceSelector'
 import { WorkspaceRail } from '@/components/workspace/WorkspaceRail'
 import { AutomationHub as AutomationHubComponent } from '@/components/automation/AutomationHub'
-import { syncWorkspaceSessionsAtom, refreshWorkspacesAtom, activeWorkspaceIdAtom } from '@/atoms/workspace'
+import { syncWorkspaceSessionsAtom, refreshWorkspacesAtom, activeWorkspaceIdAtom, workspacesAtom } from '@/atoms/workspace'
 import { MoveSessionDialog } from '@/components/agent/MoveSessionDialog'
 import {
   AlertDialog,
@@ -195,6 +196,9 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   const setSessionModelMap = useSetAtom(agentSessionModelMapAtom)
   const currentWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
   const workspaces = useAtomValue(agentWorkspacesAtom)
+  const wsList = useAtomValue(workspacesAtom)
+  const setSessionAttachedDirsMap = useSetAtom(agentSessionAttachedDirsMapAtom)
+  const setWsAttachedDirsMap = useSetAtom(workspaceAttachedDirsMapAtom)
   const [capabilities, setCapabilities] = React.useState<WorkspaceCapabilities | null>(null)
   const capabilitiesVersion = useAtomValue(workspaceCapabilitiesVersionAtom)
 
@@ -328,8 +332,30 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   React.useEffect(() => {
     listConversationsIPC().then((list: any) => setConversations(list as any)).catch(console.error)
     getUserProfile().then(setUserProfile).catch(console.error)
-    listAgentSessions().then(setAgentSessions).catch(console.error)
-  }, [setConversations, setUserProfile, setAgentSessions])
+    listAgentSessions().then((sessions) => {
+      setAgentSessions(sessions)
+      // Phase 2: hydrate agentSessionAttachedDirsMapAtom from session data
+      const map = new Map<string, string[]>()
+      for (const s of sessions) {
+        if (Array.isArray(s.attachedDirs) && s.attachedDirs.length > 0) {
+          map.set(s.id, s.attachedDirs as string[])
+        }
+      }
+      if (map.size > 0) setSessionAttachedDirsMap(map)
+    }).catch(console.error)
+  }, [setConversations, setUserProfile, setAgentSessions, setSessionAttachedDirsMap])
+
+  // Phase 2: hydrate workspaceAttachedDirsMapAtom whenever workspacesAtom changes
+  React.useEffect(() => {
+    if (wsList.length === 0) return
+    const map = new Map<string, string[]>()
+    for (const w of wsList) {
+      if (Array.isArray(w.attachedDirs) && w.attachedDirs.length > 0) {
+        map.set(w.id, w.attachedDirs)
+      }
+    }
+    setWsAttachedDirsMap(map)
+  }, [wsList, setWsAttachedDirsMap])
 
   React.useEffect(() => {
     const handleFocus = (): void => {
@@ -656,8 +682,6 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
           </Tooltip>
         </div>
       </div>
-
-      {mode === 'agent' && <div className="px-3 pt-2"><WorkspaceSelector /></div>}
 
       <div className="px-3 pt-2 flex items-center gap-1.5">
         <button onClick={mode === 'agent' ? handleNewAgentSession : handleNewConversation} className="flex-1 flex items-center gap-2 px-3 py-2 rounded-[10px] text-[13px] font-medium text-foreground/70 bg-primary/5 hover:bg-primary/10 transition-colors duration-100 titlebar-no-drag border border-dashed border-[hsl(var(--dashed-border))] hover:border-[hsl(var(--dashed-border-hover))]">

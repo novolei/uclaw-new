@@ -72,10 +72,13 @@ import {
   allPendingAskUserRequestsAtom,
   allPendingExitPlanRequestsAtom,
   finalizeStreamingActivities,
+  workspaceAttachedDirsMapAtom,
+  agentSessionAttachedDirsMapAtom,
 } from '@/atoms/agent-atoms'
 import type { AgentContextStatus } from '@/atoms/agent-atoms'
 import { activeProviderModelAtom } from '@/atoms/active-model'
 import { channelsAtom, thinkingExpandedAtom } from '@/atoms/chat-atoms'
+import { workspacesAtom } from '@/atoms/workspace'
 import { useOpenSession } from '@/hooks/useOpenSession'
 import { AgentSessionProvider } from '@/contexts/session-context'
 import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
@@ -97,6 +100,7 @@ import {
   saveFilesToAgentSession,
   queueAgentMessage,
   onStreamComplete,
+  attachSessionDirectory,
 } from '@/lib/tauri-bridge'
 
 // ===== 思考模式 Hover Popover =====
@@ -264,11 +268,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const setPromptSuggestions = useSetAtom(agentPromptSuggestionsAtom)
   const setAgentSessions = useSetAtom(agentSessionsAtom)
   const openSession = useOpenSession()
-  // Attached directories feature is gone in Phase 1 (phantom backend).
-  // These constants keep prop-passing compiling without restructuring the
-  // child component APIs. Phase 2 restores the data flow.
-  const attachedDirs: string[] = []
-  const wsAttachedDirs: string[] = []
+  // Phase 2: real atom subscriptions for attached dirs (workspace + session levels).
+  const wsAttachedMap = useAtomValue(workspaceAttachedDirsMapAtom)
+  const sessionAttachedMap = useAtomValue(agentSessionAttachedDirsMapAtom)
+  const setSessionAttachedMap = useSetAtom(agentSessionAttachedDirsMapAtom)
+  const attachedDirs = sessionAttachedMap.get(sessionId) ?? []
+  const wsAttachedDirs = currentWorkspaceId ? (wsAttachedMap.get(currentWorkspaceId) ?? []) : []
 
   const draftsMap = useAtomValue(agentSessionDraftsAtom)
   const setDraftsMap = useSetAtom(agentSessionDraftsAtom)
@@ -374,14 +379,15 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       })
   }, [sessionId, currentWorkspaceId, setSessionPathMap])
 
-  // Workspace shared files path: not reachable in Phase 1 (getWorkspaceFilesPath
-  // is phantom; AgentWorkspace doesn't carry path). Stub to null; Phase 2 will
-  // wire this up properly when AgentWorkspace gains a path field.
+  // Phase 2: derived from workspacesAtom (Task 4 auto-mkdir fills .path).
+  const wsList = useAtomValue(workspacesAtom)
+  const workspaceFilesPath = React.useMemo(() => {
+    const ws = wsList.find((w) => w.id === currentWorkspaceId)
+    return ws?.path ?? null
+  }, [wsList, currentWorkspaceId])
+  // workspaceSlug is no longer used (slug removed from AgentWorkspace in Phase 1).
   const workspaceSlug: string | null = null
-  const workspaceFilesPath: string | null = null
 
-  // Phase 1: all attached-dir sources are stubbed to [] / null, so this is
-  // always []. Kept as a memo so child prop signatures are unchanged.
   const allAttachedDirs = React.useMemo(() => {
     const dirs = [...attachedDirs]
     for (const d of wsAttachedDirs) {
@@ -391,8 +397,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       dirs.unshift(workspaceFilesPath)
     }
     return dirs
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [attachedDirs, wsAttachedDirs, workspaceFilesPath])
 
   // 监听消息刷新版本号
   const refreshMap = useAtomValue(agentMessageRefreshAtom)
@@ -672,11 +677,20 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         // 通过主进程检测目录 vs 文件
         const { directories, files: filePaths } = await checkPathsType(paths)
 
-        // Phase 1: dropping folders is a no-op until Phase 2 implements
-        // attach_directory. Show a toast so users aren't confused.
+        // Phase 2: real attach_session_directory.
         for (const dirPath of directories) {
-          const dirName = dirPath.split('/').pop() || dirPath
-          toast.message(`Folder drag is disabled in Phase 1: ${dirName}`)
+          try {
+            const updated = await attachSessionDirectory(sessionId, dirPath)
+            setSessionAttachedMap((prev) => {
+              const map = new Map(prev)
+              map.set(sessionId, updated)
+              return map
+            })
+            const dirName = dirPath.split('/').pop() || dirPath
+            toast.success(`已附加目录: ${dirName}`)
+          } catch (err) {
+            console.error('[AgentView] attach directory failed', err)
+          }
         }
 
         // 普通文件作为附件
@@ -900,6 +914,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       modelId: activeProviderModel?.modelId || agentModelId || undefined,
       workspaceId: currentWorkspaceId || undefined,
       startedAt: streamStartedAt,
+      ...(attachedDirs.length > 0 && { additionalDirectories: attachedDirs }),
       // 解析用户消息中的 Skill/MCP 引用，传递结构化元数据给后端
       ...(() => {
         const skills = [...effectiveText.matchAll(/\/skill:(\S+)/g)].map(m => m[1]).filter(Boolean) as string[]

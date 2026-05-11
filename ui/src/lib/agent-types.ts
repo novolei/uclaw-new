@@ -92,6 +92,10 @@ export interface AgentEvent {
 export interface AgentWorkspace {
   id: string
   name: string
+  icon: string
+  path: string | null
+  attachedDirs?: string[]
+  sortOrder?: number
   createdAt: number
   updatedAt: number
 }

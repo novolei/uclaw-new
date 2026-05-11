@@ -6,6 +6,8 @@ export interface WorkspaceInfo {
   name: string
   icon: string
   path: string | null
+  attachedDirs: string[]
+  sortOrder: number
   createdAt: string
   updatedAt: string
 }
@@ -39,6 +41,51 @@ export const refreshWorkspacesAtom = atom(
       if (activeId) set(activeWorkspaceIdAtom, activeId)
     } catch (e) {
       console.error('[workspace] failed to refresh workspaces', e)
+    }
+  }
+)
+
+// Action: update a workspace's name or icon
+export const updateWorkspaceAtom = atom(
+  null,
+  async (_get, set, input: { id: string; name?: string; icon?: string }) => {
+    await bridge.updateWorkspace(input)
+    // Re-sync from backend rather than maintain optimistic state.
+    const spaces = await bridge.listSpaces()
+    set(workspacesAtom, spaces as WorkspaceInfo[])
+  }
+)
+
+// Action: persist a new workspace order. Optimistic local update so the
+// UI reflects the new order immediately on drop; reverts on backend
+// failure to keep state honest.
+export const reorderWorkspacesAtom = atom(
+  null,
+  async (get, set, orderedIds: string[]) => {
+    const current = get(workspacesAtom)
+    // Build optimistic reordered list: map ids → current entries, preserving
+    // workspaces not in the orderedIds list (defensive; should be 1:1 normally).
+    const lookup = new Map(current.map((w) => [w.id, w]))
+    const reordered: WorkspaceInfo[] = []
+    for (const id of orderedIds) {
+      const w = lookup.get(id)
+      if (w) reordered.push(w)
+    }
+    // Append any workspace not in orderedIds (shouldn't happen, but defensive).
+    for (const w of current) {
+      if (!orderedIds.includes(w.id)) reordered.push(w)
+    }
+    set(workspacesAtom, reordered)
+    try {
+      await bridge.reorderWorkspaces(orderedIds)
+      // Re-sync from backend to get the authoritative state (also picks up
+      // any concurrent changes another caller may have made).
+      const spaces = await bridge.listSpaces()
+      set(workspacesAtom, spaces as WorkspaceInfo[])
+    } catch (err) {
+      // Revert on failure.
+      set(workspacesAtom, current)
+      throw err
     }
   }
 )

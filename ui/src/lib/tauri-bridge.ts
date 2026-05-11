@@ -10,6 +10,8 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { open as openShell } from '@tauri-apps/plugin-shell';
 import type {
   Settings,
   PatchSettingsInput,
@@ -232,6 +234,40 @@ export const createWorkspace = (name: string, path?: string, icon?: string): Pro
 export const deleteWorkspace = (id: string): Promise<void> =>
   invoke('delete_workspace', { id })
 
+export const updateWorkspace = (input: { id: string; name?: string; icon?: string }): Promise<{
+  id: string; name: string; icon: string; path: string | null; sortOrder: number; createdAt: string; updatedAt: string
+}> => invoke('update_workspace', input)
+
+export const reorderWorkspaces = (orderedIds: string[]): Promise<void> =>
+  invoke('reorder_workspaces', { orderedIds })
+
+export const getWorkspaceDirectories = (workspaceId: string): Promise<string[]> =>
+  invoke('get_workspace_directories', { workspaceId })
+
+export const attachWorkspaceDirectory = (workspaceId: string, dirPath: string): Promise<string[]> =>
+  invoke('attach_workspace_directory', { workspaceId, dirPath })
+
+export const detachWorkspaceDirectory = (workspaceId: string, dirPath: string): Promise<string[]> =>
+  invoke('detach_workspace_directory', { workspaceId, dirPath })
+
+export const listSessionDirectories = (sessionId: string): Promise<string[]> =>
+  invoke('list_session_directories', { sessionId })
+
+export const attachSessionDirectory = (sessionId: string, dirPath: string): Promise<string[]> =>
+  invoke('attach_session_directory', { sessionId, dirPath })
+
+export const detachSessionDirectory = (sessionId: string, dirPath: string): Promise<string[]> =>
+  invoke('detach_session_directory', { sessionId, dirPath })
+
+export const renameAttachedFile = (path: string, newName: string): Promise<string> =>
+  invoke('rename_attached_file', { path, newName })
+
+export const moveAttachedFile = (path: string, destDir: string): Promise<string> =>
+  invoke('move_attached_file', { path, destDir })
+
+export const readAttachedFile = (path: string): Promise<number[]> =>
+  invoke('read_attached_file', { path })
+
 // ─── Session title ────────────────────────────────────────────────────
 
 export const generateSessionTitle = (sessionId: string, firstMessage: string): Promise<void> =>
@@ -276,6 +312,18 @@ export const listArtifactsTree = (input: ListArtifactTreeInput): Promise<Artifac
 
 export const loadArtifactChildren = (input: LoadArtifactChildrenInput): Promise<ArtifactTreeNodeResponse[]> =>
   invoke('load_artifact_children', { input });
+
+/** List immediate children of an arbitrary directory path. Used by the
+ * Files tab's FileBrowser to show real disk contents under the workspace
+ * folder. Hidden files filtered server-side. */
+export const listDirectoryEntries = (path: string): Promise<Array<{
+  name: string
+  path: string
+  isDirectory: boolean
+  isFile: boolean
+  size?: number
+  extension?: string
+}>> => invoke('list_directory_entries', { path });
 
 export const createArtifact = (input: CreateArtifactInput): Promise<ArtifactTreeNodeResponse> =>
   invoke('create_artifact', { input });
@@ -824,8 +872,25 @@ export const getWorkspaceCapabilities = (slug: string): Promise<{ mcpServers: an
 export const saveImageAs = (path: string, filename: string): Promise<void> =>
   invoke<void>('save_image_as', { path, filename }).catch(() => {})
 
-export const openExternal = (url: string): Promise<void> =>
-  invoke<void>('open_external', { url }).catch(() => {})
+// --- File / dialog actions (Tauri plugin-backed) ---
+
+export const openFolderDialog = async (): Promise<{ path: string; name: string } | null> => {
+  const selected = await openDialog({ directory: true, multiple: false })
+  if (!selected || typeof selected !== 'string') return null
+  const name = selected.split('/').pop() ?? selected
+  return { path: selected, name }
+}
+
+export const openFile = (path: string): Promise<void> => openShell(path)
+
+export const openExternal = (url: string): Promise<void> => openShell(url)
+
+export const showInFinder = (path: string): Promise<void> => {
+  // tauri-plugin-shell v2 doesn't expose revealItemInDir in stable;
+  // fall back to opening the containing folder.
+  const parent = path.substring(0, path.lastIndexOf('/'))
+  return openShell(parent || '/')
+}
 
 export const getPathForFile = (_file: File): string | null => {
   // Electron 的 webUtils.getPathForFile 无法在 Tauri 中使用
