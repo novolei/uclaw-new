@@ -4687,6 +4687,60 @@ pub(crate) fn compute_workspace_dir(
     Ok(workground_root.join(dir_name))
 }
 
+/// Generic read-modify-write of an `attached_dirs` JSON column. Works for
+/// `spaces` (workspace level) and `agent_sessions` (session level). The
+/// caller's closure receives the current list and returns the new list;
+/// we serialize back to JSON and write. `id_col` is always "id" for both
+/// tables. Returns the new list.
+///
+/// Note: `spaces.updated_at` is RFC3339 TEXT; `agent_sessions.updated_at`
+/// is INTEGER milliseconds. We branch on the table name for the right
+/// timestamp encoding.
+pub(crate) fn do_modify_attached_dirs<F>(
+    conn: &rusqlite::Connection,
+    table: &str,
+    id: &str,
+    f: F,
+) -> Result<Vec<String>, Error>
+where
+    F: FnOnce(Vec<String>) -> Vec<String>,
+{
+    let json: String = conn
+        .query_row(
+            &format!("SELECT attached_dirs FROM {} WHERE id = ?1", table),
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                Error::NotFound(format!("{} '{}'", table, id))
+            }
+            other => Error::Database(other),
+        })?;
+    let dirs: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+    let new_dirs = f(dirs);
+    let new_json = serde_json::to_string(&new_dirs)
+        .map_err(|e| Error::Internal(format!("JSON encode: {}", e)))?;
+
+    // Branch on table for the updated_at type. spaces uses RFC3339 TEXT;
+    // agent_sessions uses INTEGER milliseconds.
+    match table {
+        "agent_sessions" => {
+            conn.execute(
+                "UPDATE agent_sessions SET attached_dirs = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![&new_json, chrono::Utc::now().timestamp_millis(), id],
+            ).map_err(Error::Database)?;
+        }
+        _ => {
+            conn.execute(
+                &format!("UPDATE {} SET attached_dirs = ?1, updated_at = ?2 WHERE id = ?3", table),
+                rusqlite::params![&new_json, chrono::Utc::now().to_rfc3339(), id],
+            ).map_err(Error::Database)?;
+        }
+    }
+    Ok(new_dirs)
+}
+
 #[tauri::command]
 pub async fn reorder_workspaces(
     state: State<'_, AppState>,
@@ -4694,6 +4748,48 @@ pub async fn reorder_workspaces(
 ) -> Result<(), Error> {
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
     do_reorder_workspaces(&conn, &ordered_ids)
+}
+
+#[tauri::command]
+pub async fn get_workspace_directories(
+    state: State<'_, AppState>,
+    workspace_id: String,
+) -> Result<Vec<String>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    require_workspace_exists(&conn, &workspace_id)?;
+    let json: String = conn.query_row(
+        "SELECT attached_dirs FROM spaces WHERE id = ?1",
+        rusqlite::params![&workspace_id], |r| r.get(0),
+    ).map_err(Error::Database)?;
+    serde_json::from_str(&json)
+        .map_err(|e| Error::Internal(format!("JSON parse: {}", e)))
+}
+
+#[tauri::command]
+pub async fn attach_workspace_directory(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    dir_path: String,
+) -> Result<Vec<String>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    require_workspace_exists(&conn, &workspace_id)?;
+    do_modify_attached_dirs(&conn, "spaces", &workspace_id, |mut dirs| {
+        if !dirs.contains(&dir_path) { dirs.push(dir_path.clone()); }
+        dirs
+    })
+}
+
+#[tauri::command]
+pub async fn detach_workspace_directory(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    dir_path: String,
+) -> Result<Vec<String>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    require_workspace_exists(&conn, &workspace_id)?;
+    do_modify_attached_dirs(&conn, "spaces", &workspace_id, |dirs| {
+        dirs.into_iter().filter(|d| d != &dir_path).collect()
+    })
 }
 
 #[tauri::command]
@@ -5956,5 +6052,65 @@ mod workspace_integrity_tests {
             "id-anything",
         ).unwrap();
         assert_eq!(dir, custom);
+    }
+
+    // ─── workspace attached directories ─────────────────────────────────
+
+    fn read_workspace_dirs(conn: &Connection, id: &str) -> Vec<String> {
+        let json: String = conn.query_row(
+            "SELECT attached_dirs FROM spaces WHERE id = ?1",
+            rusqlite::params![id], |r| r.get(0),
+        ).unwrap();
+        serde_json::from_str(&json).unwrap()
+    }
+
+    #[test]
+    fn attach_workspace_directory_appends_to_json() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-x", "X");
+        let after = super::do_modify_attached_dirs(&conn, "spaces", "ws-x", |mut dirs| {
+            dirs.push("/tmp/foo".into());
+            dirs
+        }).unwrap();
+        assert_eq!(after, vec!["/tmp/foo".to_string()]);
+        assert_eq!(read_workspace_dirs(&conn, "ws-x"), vec!["/tmp/foo".to_string()]);
+    }
+
+    #[test]
+    fn attach_workspace_directory_dedupes() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-x", "X");
+        super::do_modify_attached_dirs(&conn, "spaces", "ws-x", |mut dirs| {
+            if !dirs.contains(&"/tmp/foo".to_string()) { dirs.push("/tmp/foo".into()); }
+            dirs
+        }).unwrap();
+        let after = super::do_modify_attached_dirs(&conn, "spaces", "ws-x", |mut dirs| {
+            if !dirs.contains(&"/tmp/foo".to_string()) { dirs.push("/tmp/foo".into()); }
+            dirs
+        }).unwrap();
+        assert_eq!(after, vec!["/tmp/foo".to_string()], "duplicate path not appended");
+    }
+
+    #[test]
+    fn detach_workspace_directory_removes_existing() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-x", "X");
+        super::do_modify_attached_dirs(&conn, "spaces", "ws-x", |_| {
+            vec!["/tmp/foo".into(), "/tmp/bar".into()]
+        }).unwrap();
+        let after = super::do_modify_attached_dirs(&conn, "spaces", "ws-x", |dirs| {
+            dirs.into_iter().filter(|d| d != "/tmp/foo").collect()
+        }).unwrap();
+        assert_eq!(after, vec!["/tmp/bar".to_string()]);
+    }
+
+    #[test]
+    fn detach_workspace_directory_noop_when_missing() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-x", "X");
+        let after = super::do_modify_attached_dirs(&conn, "spaces", "ws-x", |dirs| {
+            dirs.into_iter().filter(|d| d != "/tmp/notthere").collect()
+        }).unwrap();
+        assert_eq!(after, Vec::<String>::new());
     }
 }

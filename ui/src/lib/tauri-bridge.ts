@@ -239,6 +239,15 @@ export const updateWorkspace = (input: { id: string; name?: string; icon?: strin
 export const reorderWorkspaces = (orderedIds: string[]): Promise<void> =>
   invoke('reorder_workspaces', { orderedIds })
 
+export const getWorkspaceDirectories = (workspaceId: string): Promise<string[]> =>
+  invoke('get_workspace_directories', { workspaceId })
+
+export const attachWorkspaceDirectory = (workspaceId: string, dirPath: string): Promise<string[]> =>
+  invoke('attach_workspace_directory', { workspaceId, dirPath })
+
+export const detachWorkspaceDirectory = (workspaceId: string, dirPath: string): Promise<string[]> =>
+  invoke('detach_workspace_directory', { workspaceId, dirPath })
+
 // ─── Session title ────────────────────────────────────────────────────
 
 export const generateSessionTitle = (sessionId: string, firstMessage: string): Promise<void> =>
