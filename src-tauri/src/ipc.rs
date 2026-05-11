@@ -163,6 +163,9 @@ pub struct SpaceResponse {
     pub id: String,
     pub name: String,
     pub icon: String,
+    pub path: Option<String>,
+    pub attached_dirs: Vec<String>,
+    pub sort_order: i64,
     pub created_at: String,
     pub updated_at: String,
 }

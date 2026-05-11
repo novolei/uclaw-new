@@ -124,6 +124,8 @@ export function WorkspaceSelector(): React.ReactElement {
       const workspace: AgentWorkspace = {
         id: created.id,
         name: created.name,
+        icon: created.icon,
+        path: created.path,
         createdAt: Date.parse(created.createdAt) || Date.now(),
         updatedAt: Date.parse(created.createdAt) || Date.now(),
       }

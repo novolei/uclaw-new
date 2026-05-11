@@ -6,6 +6,8 @@ export interface WorkspaceInfo {
   name: string
   icon: string
   path: string | null
+  attachedDirs: string[]
+  sortOrder: number
   createdAt: string
   updatedAt: string
 }

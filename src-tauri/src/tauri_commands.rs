@@ -924,6 +924,9 @@ pub async fn create_space(state: State<'_, AppState>, input: CreateSpaceInput) -
         id,
         name: input.name,
         icon,
+        path: None,
+        attached_dirs: vec![],
+        sort_order: 0,
         created_at: now.clone(),
         updated_at: now,
     })
@@ -934,16 +937,22 @@ pub async fn list_spaces(state: State<'_, AppState>) -> Result<Vec<SpaceResponse
     let db = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
 
     let mut stmt = db.prepare(
-        "SELECT id, name, icon, created_at, updated_at FROM spaces ORDER BY created_at DESC",
+        "SELECT id, name, icon, path, attached_dirs, sort_order, created_at, updated_at
+         FROM spaces ORDER BY sort_order ASC"
     ).map_err(Error::Database)?;
 
     let spaces: Vec<SpaceResponse> = stmt.query_map([], |row| {
+        let attached_dirs_json: String = row.get::<_, String>(4).unwrap_or_else(|_| "[]".into());
+        let attached_dirs: Vec<String> = serde_json::from_str(&attached_dirs_json).unwrap_or_default();
         Ok(SpaceResponse {
             id: row.get(0)?,
             name: row.get(1)?,
             icon: row.get::<_, String>(2).unwrap_or_else(|_| "📁".into()),
-            created_at: row.get(3)?,
-            updated_at: row.get(4)?,
+            path: row.get(3).ok(),
+            attached_dirs,
+            sort_order: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
         })
     }).map_err(Error::Database)?
     .filter_map(|r| r.ok())
