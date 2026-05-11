@@ -144,10 +144,6 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
     setFilesVersion((v) => v + 1)
   }, [currentWorkspaceId, setFilesVersion])
 
-  const handleFilesUploaded = React.useCallback(() => {
-    setFilesVersion((prev) => prev + 1)
-  }, [setFilesVersion])
-
   const handleRefresh = React.useCallback(() => {
     setFilesVersion((prev) => prev + 1)
   }, [setFilesVersion])
@@ -294,11 +290,8 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
                   onAddToChat={handleAddToChat}
                 />
                 <FileDropZone
-                  sessionId={sessionId}
-                  target="session"
                   hint="拖入会话目录"
                   onDrop={handleFilesDropped}
-                  onFilesUploaded={handleFilesUploaded}
                 />
               </div>
               <div className="mx-3 my-3 border-t border-muted-foreground/20" />
@@ -348,10 +341,8 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
                 />
               )}
               <FileDropZone
-                target="workspace"
                 hint="拖入工作区文件 / 文件夹"
                 onDrop={handleFilesDropped}
-                onFilesUploaded={handleFilesUploaded}
               />
             </div>
           </div>
