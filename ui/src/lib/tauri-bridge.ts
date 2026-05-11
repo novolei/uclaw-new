@@ -277,6 +277,22 @@ export const uploadWorkspaceFile = (
 export const pathIsDirectory = (path: string): Promise<boolean> =>
   invoke('path_is_directory', { path })
 
+// Path policy (Phase 3)
+export const listAlwaysAllowedPaths = (): Promise<string[]> =>
+  invoke('list_always_allowed_paths')
+
+export const addAlwaysAllowedPath = (path: string): Promise<void> =>
+  invoke('add_always_allowed_path', { path })
+
+export const removeAlwaysAllowedPath = (path: string): Promise<void> =>
+  invoke('remove_always_allowed_path', { path })
+
+export const listSessionAllowedPaths = (sessionId: string): Promise<string[]> =>
+  invoke('list_session_allowed_paths', { sessionId })
+
+export const promoteSessionPathToGlobal = (sessionId: string, path: string): Promise<void> =>
+  invoke('promote_session_path_to_global', { sessionId, path })
+
 // ─── Session title ────────────────────────────────────────────────────
 
 export const generateSessionTitle = (sessionId: string, firstMessage: string): Promise<void> =>

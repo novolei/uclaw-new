@@ -5207,6 +5207,44 @@ pub async fn upload_workspace_file(
     Ok(target.to_string_lossy().into_owned())
 }
 
+// ─── Path policy IPCs (Phase 3) ───────────────────────────────────────
+
+#[tauri::command]
+pub async fn list_always_allowed_paths(state: State<'_, AppState>) -> Result<Vec<String>, Error> {
+    let mgr = state.safety_manager.read().await;
+    Ok(mgr.list_always_allowed_paths().iter().map(|p| p.display().to_string()).collect())
+}
+
+#[tauri::command]
+pub async fn add_always_allowed_path(state: State<'_, AppState>, path: String) -> Result<(), Error> {
+    let p = std::path::PathBuf::from(&path);
+    if !p.is_absolute() {
+        return Err(Error::InvalidInput("path must be absolute".into()));
+    }
+    let mut mgr = state.safety_manager.write().await;
+    mgr.add_always_allowed_path(p)
+}
+
+#[tauri::command]
+pub async fn remove_always_allowed_path(state: State<'_, AppState>, path: String) -> Result<(), Error> {
+    let p = std::path::PathBuf::from(&path);
+    let mut mgr = state.safety_manager.write().await;
+    mgr.remove_always_allowed_path(&p)
+}
+
+#[tauri::command]
+pub async fn list_session_allowed_paths(state: State<'_, AppState>, session_id: String) -> Result<Vec<String>, Error> {
+    let mgr = state.safety_manager.read().await;
+    Ok(mgr.list_session_allowed_paths(&session_id).iter().map(|p| p.display().to_string()).collect())
+}
+
+#[tauri::command]
+pub async fn promote_session_path_to_global(state: State<'_, AppState>, session_id: String, path: String) -> Result<(), Error> {
+    let p = std::path::PathBuf::from(&path);
+    let mut mgr = state.safety_manager.write().await;
+    mgr.promote_session_path_to_global(&session_id, &p)
+}
+
 /// Lightweight type-of-path probe. Used by the frontend to decide
 /// whether a native drag-drop event payload is a folder (→
 /// attach_workspace_directory) or a file (→ upload_workspace_file).
@@ -6602,5 +6640,33 @@ mod workspace_integrity_tests {
         std::fs::write(dir.path().join("README"), b"a").unwrap();
         let p = super::next_available_path(dir.path(), "README").unwrap();
         assert_eq!(p.file_name().unwrap(), "README (2)");
+    }
+}
+
+// ─── path policy IPCs (Phase 3) ─────────────────────────────────
+
+#[cfg(test)]
+mod path_policy_ipc_tests {
+    #[test]
+    fn path_policy_ipc_add_remove_round_trip() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut mgr = crate::safety::SafetyManager::new(tmp.path());
+        let outside = tempfile::TempDir::new().unwrap().path().to_path_buf();
+        mgr.add_always_allowed_path(outside.clone()).unwrap();
+        assert!(mgr.list_always_allowed_paths().contains(&outside));
+        mgr.remove_always_allowed_path(&outside).unwrap();
+        assert!(!mgr.list_always_allowed_paths().contains(&outside));
+    }
+
+    #[test]
+    fn path_policy_ipc_promote_clears_session_adds_global() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut mgr = crate::safety::SafetyManager::new(tmp.path());
+        let outside = tempfile::TempDir::new().unwrap().path().to_path_buf();
+        mgr.allow_path_for_session("sess1", outside.clone());
+        assert_eq!(mgr.list_session_allowed_paths("sess1"), vec![outside.clone()]);
+        mgr.promote_session_path_to_global("sess1", &outside).unwrap();
+        assert!(mgr.list_session_allowed_paths("sess1").is_empty());
+        assert!(mgr.list_always_allowed_paths().contains(&outside));
     }
 }
