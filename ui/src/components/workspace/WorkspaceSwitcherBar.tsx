@@ -242,21 +242,21 @@ function WorkspaceDot({
                        transition-opacity duration-150
                        group-hover:opacity-0"
           />
-          {/* Icon overlay — invisible by default, fades in on hover. Sized
-              like the full WorkspaceIcon (size-7 / 28px) so dots visually
-              morph into icons under the cursor. Centered on the dot via
-              absolute positioning so it overflows the 12px button bounds
-              without disturbing layout. */}
+          {/* Icon overlay — invisible by default, fades in on hover.
+              Sized smaller than the full WorkspaceIcon (size-5 / 20px vs
+              size-7) so dots at the bar's left/right edges don't get
+              clipped by the container when the icon overflows the 12px
+              button bounds. Centered on the dot via absolute positioning. */}
           <span
             aria-hidden
             className="pointer-events-none absolute left-1/2 top-1/2
                        -translate-x-1/2 -translate-y-1/2
-                       inline-flex items-center justify-center size-7 rounded-md
+                       inline-flex items-center justify-center size-5 rounded-md
                        bg-foreground/[0.05] text-foreground
                        opacity-0 transition-opacity duration-150
                        group-hover:opacity-100"
           >
-            <Icon className="size-4" />
+            <Icon className="size-3" />
           </span>
           {running && (
             <span
