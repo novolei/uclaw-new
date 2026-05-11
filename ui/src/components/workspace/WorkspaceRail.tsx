@@ -113,15 +113,10 @@ export function WorkspaceRail({
 
   return (
     <>
-      {/* `key={activeWorkspaceId}` forces a remount when the workspace
-          switches, retriggering the one-shot `animate-in fade-in` so the
-          new workspace's session list slides into view rather than
-          snapping in. Subtle (180ms slide-from-bottom-1) — enough to
-          read as "new context" without feeling theatrical. */}
-      <div
-        key={activeWorkspaceId ?? 'no-workspace'}
-        className="flex-1 overflow-y-auto px-3 pt-1 pb-1 scrollbar-none animate-in fade-in-0 slide-in-from-bottom-1 duration-180 ease-out"
-      >
+      {/* Workspace-switch animation is owned by LeftSidebar — it wraps
+          this rail + WorkspaceHeader in a single ARC-style horizontal
+          slide so they move as one piece. Keep this container plain. */}
+      <div className="flex-1 overflow-y-auto px-3 pt-1 pb-1 scrollbar-none">
         {sessions.length === 0 && (
           <p className="text-[11px] text-muted-foreground px-2 py-3 italic">
             尚无会话。点击上方"新会话"开始。

@@ -24,7 +24,8 @@ import {
   currentAgentWorkspaceIdAtom,
   unviewedCompletedSessionIdsAtom,
 } from '@/atoms/agent-atoms'
-import { activeWorkspaceIdAtom } from '@/atoms/workspace'
+import { activeWorkspaceIdAtom, workspaceSwitchDirectionAtom } from '@/atoms/workspace'
+import { cn } from '@/lib/utils'
 import { appModeAtom } from '@/atoms/app-mode'
 import { TabBarItem } from './TabBarItem'
 import { TabBarWorkspaceChip } from './TabBarWorkspaceChip'
@@ -36,9 +37,11 @@ export function TabBar(): React.ReactElement {
   const [activeTabId, setActiveTabId] = useAtom(activeTabIdAtom)
   const indicatorMap = useAtomValue(tabIndicatorMapAtom)
   // Used as the React `key` on TabBarInner so workspace switches retrigger
-  // the inner content's animate-in (fade + slide). Doesn't affect tab
-  // identity within a workspace.
+  // the inner content's animate-in. Direction comes from selectWorkspaceAtom
+  // so forward / backward switches slide from opposite sides — matches
+  // LeftSidebar's ARC-style transition.
   const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
+  const switchDirection = useAtomValue(workspaceSwitchDirectionAtom)
 
   // Tab 切换时同步 sidebar 状态
   const setAppMode = useSetAtom(appModeAtom)
@@ -93,6 +96,7 @@ export function TabBar(): React.ReactElement {
         onActivate={handleActivate}
         onClose={requestClose}
         workspaceKey={activeWorkspaceId ?? 'no-workspace'}
+        switchDirection={switchDirection}
       />
       <TabCloseConfirmDialog />
     </>
@@ -107,6 +111,7 @@ function TabBarInner({
   onActivate,
   onClose,
   workspaceKey,
+  switchDirection,
 }: {
   tabs: TabItem[]
   activeTabId: string | null
@@ -116,6 +121,9 @@ function TabBarInner({
   /** Workspace id used as React key on the content wrapper — retriggers
    *  animate-in on workspace switch so the tab strip slides in. */
   workspaceKey: string
+  /** Direction of the most-recent workspace switch (forward → slide in
+   *  from right; backward → slide in from left). Matches LeftSidebar. */
+  switchDirection: 'forward' | 'backward'
 }): React.ReactElement {
   const [hoveredTabId, setHoveredTabId] = React.useState<string | null>(null)
   const [isLeaving, setIsLeaving] = React.useState(false)
@@ -174,7 +182,13 @@ function TabBarInner({
     <div className="flex items-end h-[34px] tabbar-bg relative titlebar-drag-region">
       <div
         key={workspaceKey}
-        className="relative flex items-end flex-1 min-w-0 overflow-x-clip animate-in fade-in-0 slide-in-from-left-1 duration-180 ease-out"
+        className={cn(
+          'relative flex items-end flex-1 min-w-0 overflow-x-clip',
+          'animate-in fade-in-0 duration-280 ease-out',
+          switchDirection === 'forward'
+            ? 'slide-in-from-right-8'
+            : 'slide-in-from-left-8',
+        )}
       >
         <div className="flex items-center px-1 py-1 shrink-0 self-stretch">
           <TabBarWorkspaceChip />

@@ -70,7 +70,7 @@ import { WorkspaceRail } from '@/components/workspace/WorkspaceRail'
 import { WorkspaceHeader } from '@/components/workspace/WorkspaceHeader'
 import { WorkspaceSwitcherBar } from '@/components/workspace/WorkspaceSwitcherBar'
 import { AutomationHub as AutomationHubComponent } from '@/components/automation/AutomationHub'
-import { syncWorkspaceSessionsAtom, refreshWorkspacesAtom, activeWorkspaceIdAtom, workspacesAtom } from '@/atoms/workspace'
+import { syncWorkspaceSessionsAtom, refreshWorkspacesAtom, activeWorkspaceIdAtom, workspacesAtom, workspaceSwitchDirectionAtom } from '@/atoms/workspace'
 import { MoveSessionDialog } from '@/components/agent/MoveSessionDialog'
 import {
   AlertDialog,
@@ -249,6 +249,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   const syncWorkspaceSessions = useSetAtom(syncWorkspaceSessionsAtom)
   const refreshWorkspaces = useSetAtom(refreshWorkspacesAtom)
   const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
+  const switchDirection = useAtomValue(workspaceSwitchDirectionAtom)
   const setCurrentAgentWorkspaceId = useSetAtom(currentAgentWorkspaceIdAtom)
 
   const cleanupMapAtoms = React.useCallback((id: string) => {
@@ -774,7 +775,24 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
 
       {/* 主内容区：对话/会话列表 */}
       {mode === 'agent' ? (
-        <>
+        // ARC-browser-style horizontal slide on workspace switch. The
+        // WHOLE workspace block (Header + Rail) animates as one unit:
+        //   forward (move to a later workspace in sortOrder)  → slide IN from right
+        //   backward (move to an earlier workspace)           → slide IN from left
+        // `key={activeWorkspaceId}` forces remount which retriggers the
+        // one-shot animate-in. Outgoing content snaps out (no exit
+        // animation) — Tailwind's animate-in is single-direction; doing a
+        // true cross-fade swap would need framer-motion or similar.
+        <div
+          key={activeWorkspaceId ?? 'no-ws'}
+          className={cn(
+            'flex flex-col flex-1 min-h-0',
+            'animate-in fade-in-0 duration-280 ease-out',
+            switchDirection === 'forward'
+              ? 'slide-in-from-right-8'
+              : 'slide-in-from-left-8',
+          )}
+        >
           <WorkspaceHeader />
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
             <WorkspaceRail
@@ -786,7 +804,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
               onDeleteSession={(id) => handleRequestDelete(id)}
             />
           </div>
-        </>
+        </div>
       ) : (
         <div className="flex-1 overflow-y-auto px-3 pt-2 pb-3 scrollbar-none">
           {conversationGroups.map((group) => (
