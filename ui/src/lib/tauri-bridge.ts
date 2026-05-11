@@ -277,6 +277,9 @@ export const uploadWorkspaceFile = (
 export const pathIsDirectory = (path: string): Promise<boolean> =>
   invoke('path_is_directory', { path })
 
+export const copyFileIntoWorkspace = (workspaceId: string, sourcePath: string): Promise<string> =>
+  invoke('copy_file_into_workspace', { workspaceId, sourcePath })
+
 // Path policy (Phase 3)
 export const listAlwaysAllowedPaths = (): Promise<string[]> =>
   invoke('list_always_allowed_paths')

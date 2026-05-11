@@ -8,6 +8,7 @@
 
 import * as React from 'react'
 import { useAtomValue, useAtom, useSetAtom } from 'jotai'
+import { getDefaultStore } from 'jotai'
 import { LeftSidebar } from './LeftSidebar'
 import { RightSidePanel } from './RightSidePanel'
 import { MainArea } from '@/components/tabs/MainArea'
@@ -32,6 +33,10 @@ import { tabsAtom, activeTabIdAtom, openTab } from '@/atoms/tab-atoms'
 import { SearchPalette } from '@/components/search/SearchPalette'
 import { cn } from '@/lib/utils'
 import { installScrollToMessage } from '@/lib/scroll-to-message'
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import { toast } from 'sonner'
+import { attachWorkspaceDirectory, pathIsDirectory, copyFileIntoWorkspace } from '@/lib/tauri-bridge'
+import { workspaceFilesVersionAtom, workspaceAttachedDirsMapAtom } from '@/atoms/agent-atoms'
 
 export interface AppShellProps {
   /** Context 值，用于传递给子组件 */
@@ -71,6 +76,57 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
     installExitPlanListener((updater) => setAllPendingExitPlanRequests(updater)).then((d) => { dispose = d })
     return () => { dispose?.() }
   }, [setAllPendingExitPlanRequests])
+
+  // Phase 3: single window-level native drag-drop listener at app root.
+  // Tabs each mount their own AgentView, but only one listener should
+  // process OS drops. Routes folders → attach to active workspace;
+  // files → copy bytes into active workspace folder.
+  React.useEffect(() => {
+    const win = getCurrentWindow()
+    let unlisten: (() => void) | undefined
+    void win.onDragDropEvent(async (evt) => {
+      const payload = evt.payload as { type?: string; paths?: string[] }
+      if (payload.type !== 'drop' || !Array.isArray(payload.paths) || payload.paths.length === 0) return
+
+      // Resolve current workspace at drop time (not at register time) so
+      // workspace switching mid-session lands files in the right place.
+      const ws = getDefaultStore().get(currentAgentWorkspaceIdAtom)
+      if (!ws) {
+        toast.error('请先选择工作区')
+        return
+      }
+
+      const folderResults: string[][] = []
+      for (const p of payload.paths) {
+        try {
+          const isDir = await pathIsDirectory(p)
+          if (isDir) {
+            const updated = await attachWorkspaceDirectory(ws, p)
+            folderResults.push(updated)
+            toast.success(`已附加目录: ${p}`)
+          } else {
+            const writtenPath = await copyFileIntoWorkspace(ws, p)
+            console.debug('[drop] copied file', p, '→', writtenPath)
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          toast.error(`处理 ${p} 失败: ${msg}`)
+        }
+      }
+      // Push the most-recent attached_dirs list to the atom so the
+      // SidePanel 附加目录 section reflects the change without restart.
+      if (folderResults.length > 0) {
+        const latest = folderResults[folderResults.length - 1]
+        getDefaultStore().set(workspaceAttachedDirsMapAtom, (prev) => {
+          const m = new Map(prev)
+          m.set(ws, latest)
+          return m
+        })
+      }
+      getDefaultStore().set(workspaceFilesVersionAtom, (v) => v + 1)
+    }).then((u) => { unlisten = u })
+    return () => { unlisten?.() }
+  }, [])
 
   const handleSearchResultSelect = React.useCallback((payload:
     | { kind: 'thread'; thread: { id: string; kind: 'chat' | 'agent'; workspaceId: string } }

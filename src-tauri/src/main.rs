@@ -515,6 +515,7 @@ fn main() {
             uclaw_core::tauri_commands::delete_workspace,
             uclaw_core::tauri_commands::list_directory_entries,
             uclaw_core::tauri_commands::upload_workspace_file,
+            uclaw_core::tauri_commands::copy_file_into_workspace,
             uclaw_core::tauri_commands::list_always_allowed_paths,
             uclaw_core::tauri_commands::add_always_allowed_path,
             uclaw_core::tauri_commands::remove_always_allowed_path,

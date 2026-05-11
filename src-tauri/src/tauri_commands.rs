@@ -5207,6 +5207,53 @@ pub async fn upload_workspace_file(
     Ok(target.to_string_lossy().into_owned())
 }
 
+/// Native-drop variant of `upload_workspace_file`: read bytes from
+/// `source_path` on disk, then sanitize / dedupe / write into the
+/// workspace folder. Avoids roundtripping multi-MB files through IPC
+/// when the OS already handed us a real path via onDragDropEvent.
+#[tauri::command]
+pub async fn copy_file_into_workspace(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    source_path: String,
+) -> Result<String, Error> {
+    let src = std::path::PathBuf::from(&source_path);
+    if !src.exists() {
+        return Err(Error::NotFound(format!("source file '{}'", source_path)));
+    }
+    let bytes = tokio::fs::read(&src).await.map_err(Error::Io)?;
+    let raw_name = src
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| Error::InvalidInput(format!("invalid filename in '{}'", source_path)))?;
+
+    // Look up workspace path.
+    let ws_path = {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT path FROM spaces WHERE id = ?1",
+                rusqlite::params![workspace_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    Error::NotFound(format!("workspace '{}'", workspace_id))
+                }
+                other => Error::Database(other),
+            })?;
+        raw.filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| Error::InvalidInput(format!("workspace '{}' has no path", workspace_id)))?
+    };
+    let ws_path = std::path::PathBuf::from(ws_path);
+    tokio::fs::create_dir_all(&ws_path).await.map_err(Error::Io)?;
+
+    let clean = sanitize_upload_filename(raw_name)?;
+    let target = next_available_path(&ws_path, &clean)?;
+    tokio::fs::write(&target, &bytes).await.map_err(Error::Io)?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
 // ─── Path policy IPCs (Phase 3) ───────────────────────────────────────
 
 #[tauri::command]
