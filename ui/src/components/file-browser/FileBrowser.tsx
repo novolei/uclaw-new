@@ -7,7 +7,7 @@
  */
 
 import * as React from 'react'
-import { ChevronRight, RefreshCw, FolderOpen } from 'lucide-react'
+import { ChevronRight, RefreshCw, FolderOpen, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { FileTypeIcon } from './FileTypeIcon'
 import type { FileEntry } from '@/lib/chat-types'
@@ -44,11 +44,13 @@ function FileTreeNode({
   depth = 0,
   onFileClick,
   onDirectoryClick,
+  onAddToChat,
 }: {
   entry: FileEntry
   depth?: number
   onFileClick?: (entry: FileEntry) => void
   onDirectoryClick?: (entry: FileEntry) => void
+  onAddToChat?: (entry: FileEntry) => void
 }): React.ReactElement {
   const [expanded, setExpanded] = React.useState(false)
 
@@ -56,32 +58,50 @@ function FileTreeNode({
     if (entry.isDirectory) {
       setExpanded((prev) => !prev)
       onDirectoryClick?.(entry)
-    } else {
-      onFileClick?.(entry)
+    } else if (onFileClick) {
+      onFileClick(entry)
+    } else if (onAddToChat) {
+      // No explicit file-click handler: default to add-to-chat so a plain
+      // click on a file in the side panel attaches it.
+      onAddToChat(entry)
     }
-  }, [entry, onFileClick, onDirectoryClick])
+  }, [entry, onFileClick, onDirectoryClick, onAddToChat])
 
   return (
     <div>
-      <button
-        type="button"
+      <div
         className={cn(
-          'flex items-center gap-1 w-full text-left px-2 py-0.5 text-sm hover:bg-accent/50 rounded-sm transition-colors',
+          'group flex items-center gap-1 w-full px-2 py-0.5 text-sm hover:bg-accent/50 rounded-sm transition-colors',
           'text-foreground/80 hover:text-foreground',
         )}
         style={{ paddingLeft: `${depth * 16 + 8}px` }}
-        onClick={handleClick}
       >
-        {entry.isDirectory ? (
-          <ChevronRight
-            className={cn('size-3.5 shrink-0 transition-transform text-muted-foreground/60', expanded && 'rotate-90')}
-          />
-        ) : (
-          <span className="size-3.5 shrink-0" />
+        <button
+          type="button"
+          className="flex items-center gap-1 flex-1 min-w-0 text-left"
+          onClick={handleClick}
+        >
+          {entry.isDirectory ? (
+            <ChevronRight
+              className={cn('size-3.5 shrink-0 transition-transform text-muted-foreground/60', expanded && 'rotate-90')}
+            />
+          ) : (
+            <span className="size-3.5 shrink-0" />
+          )}
+          <FileTypeIcon name={entry.name} isDirectory={entry.isDirectory} isOpen={expanded} size={14} />
+          <span className="truncate text-[13px]">{entry.name}</span>
+        </button>
+        {!entry.isDirectory && onAddToChat && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onAddToChat(entry) }}
+            className="opacity-0 group-hover:opacity-100 shrink-0 p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-foreground/[0.08] transition-opacity"
+            title="添加到聊天"
+          >
+            <Plus className="size-3" />
+          </button>
         )}
-        <FileTypeIcon name={entry.name} isDirectory={entry.isDirectory} isOpen={expanded} size={14} />
-        <span className="truncate text-[13px]">{entry.name}</span>
-      </button>
+      </div>
       {entry.isDirectory && expanded && entry.children && (
         <div>
           {entry.children
@@ -96,6 +116,7 @@ function FileTreeNode({
                 depth={depth + 1}
                 onFileClick={onFileClick}
                 onDirectoryClick={onDirectoryClick}
+                onAddToChat={onAddToChat}
               />
             ))}
         </div>
@@ -200,6 +221,7 @@ export function FileBrowser({
             entry={entry}
             onFileClick={onFileClick}
             onDirectoryClick={onDirectoryClick}
+            onAddToChat={onAddToChat}
           />
         ))}
     </div>
