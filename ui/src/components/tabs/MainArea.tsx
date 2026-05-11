@@ -41,8 +41,15 @@ export function MainArea(): React.ReactElement {
         className="bg-content-area rounded-2xl shadow-xl"
       >
         <TabBar />
+        {/* Both body branches sit inside their own titlebar-no-drag so
+            clicks land on chat/agent/welcome UI; the TabBar above stays
+            in the drag region. We removed the previous broad
+            titlebar-no-drag wrapper at AppShell-level because WKWebView
+            won't subtract a child drag-region from a parent no-drag. */}
         {tabs.length === 0 ? (
-          <WelcomeView />
+          <div className="flex-1 min-h-0 titlebar-no-drag">
+            <WelcomeView />
+          </div>
         ) : activeTabId ? (
           <div className="flex-1 min-h-0 titlebar-no-drag">
             <TabContent tabId={activeTabId} />

@@ -239,13 +239,18 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
           <LeftSidebar />
         </div>
 
-        {/* 中间容器：主内容区域。wrapper 自身可拖拽（8px padding 区域生效），
-            内部 z-10 内容显式 no-drag 退出，TabBar 自身已有 drag class 自然覆盖回 drag。 */}
+        {/* 中间容器：主内容区域。Wrapper 自身可拖拽 (8px padding 区域)，
+            TabBar 行也在 drag 区域内 (空白处可拖动窗口)。Click targets
+            (TabBarItem, TabContent, WelcomeView) 各自带 titlebar-no-drag
+            在子层退出 drag 区域 — 不再用一个 broad 的 no-drag wrapper,
+            因为 WKWebView 的 drag-region 几何在父-no-drag/子-drag 的
+            嵌套下不可靠 (子的 drag 区域被父的 no-drag 吞掉)。 */}
         <div data-tauri-drag-region className="main-panel titlebar-drag-region flex-1 min-w-0 p-2 relative z-[60]">
           {/* 主题背景图层（仅特殊主题如 THE FINALS 使用，其他主题下为空） */}
           <div aria-hidden="true" className="main-panel-bg pointer-events-none absolute inset-0 z-0" />
-          {/* 主内容区域（TabBar + TabContent） */}
-          <div className="titlebar-no-drag relative z-10 flex flex-col h-full min-h-0 min-w-0">
+          {/* 主内容区域（ModeBanner + MainArea — 没有 titlebar-no-drag 包裹,
+              让 TabBar 的 drag 区域不被父级 no-drag 吞掉) */}
+          <div className="relative z-10 flex flex-col h-full min-h-0 min-w-0">
             <ModeBanner />
             <MainArea />
           </div>

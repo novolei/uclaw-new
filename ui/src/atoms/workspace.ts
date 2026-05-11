@@ -29,6 +29,18 @@ export const workspacesAtom = atom<WorkspaceInfo[]>([])
 // Currently selected workspace ID
 export const activeWorkspaceIdAtom = atom<string | null>(null)
 
+/**
+ * Direction of the most-recent workspace switch — used by the UI to
+ * pick which side an iOS-style slide animation enters from.
+ * - `forward`  = moved to a later workspace in sortOrder → slide IN from right
+ * - `backward` = moved to an earlier workspace          → slide IN from left
+ *
+ * Set inside `selectWorkspaceAtom` before flipping `activeWorkspaceIdAtom`
+ * so consumers (LeftSidebar, TabBar, RightSidePanel) read the correct
+ * direction on the same render where the new workspace becomes active.
+ */
+export const workspaceSwitchDirectionAtom = atom<'forward' | 'backward'>('forward')
+
 // Sessions grouped by workspace id: { [workspaceId]: WorkspaceSession[] }
 export const workspaceSessionsAtom = atom<Record<string, WorkspaceSession[]>>({})
 
@@ -93,9 +105,20 @@ export const reorderWorkspacesAtom = atom(
 )
 
 // Action: select a workspace and persist to backend
+// Also computes the slide direction (forward vs backward) BEFORE the
+// active workspace flips, so the UI animates from the correct side.
 export const selectWorkspaceAtom = atom(
   null,
-  async (_get, set, id: string) => {
+  async (get, set, id: string) => {
+    const prevId = get(activeWorkspaceIdAtom)
+    if (prevId !== id) {
+      const list = get(workspacesAtom)
+      const prevIdx = list.findIndex((w) => w.id === prevId)
+      const currIdx = list.findIndex((w) => w.id === id)
+      if (prevIdx !== -1 && currIdx !== -1) {
+        set(workspaceSwitchDirectionAtom, currIdx > prevIdx ? 'forward' : 'backward')
+      }
+    }
     set(activeWorkspaceIdAtom, id)
     try {
       await bridge.setActiveWorkspaceId(id)

@@ -70,7 +70,7 @@ import { WorkspaceRail } from '@/components/workspace/WorkspaceRail'
 import { WorkspaceHeader } from '@/components/workspace/WorkspaceHeader'
 import { WorkspaceSwitcherBar } from '@/components/workspace/WorkspaceSwitcherBar'
 import { AutomationHub as AutomationHubComponent } from '@/components/automation/AutomationHub'
-import { syncWorkspaceSessionsAtom, refreshWorkspacesAtom, activeWorkspaceIdAtom, workspacesAtom } from '@/atoms/workspace'
+import { syncWorkspaceSessionsAtom, refreshWorkspacesAtom, activeWorkspaceIdAtom, workspacesAtom, workspaceSwitchDirectionAtom } from '@/atoms/workspace'
 import { MoveSessionDialog } from '@/components/agent/MoveSessionDialog'
 import {
   AlertDialog,
@@ -82,6 +82,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { Button } from '@/components/ui/button'
 import type { ActiveView } from '@/atoms/active-view'
 import type { ConversationMeta } from '@/lib/chat-types'
 import type { AgentSessionMeta, WorkspaceCapabilities } from '@/lib/agent-types'
@@ -248,6 +249,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   const syncWorkspaceSessions = useSetAtom(syncWorkspaceSessionsAtom)
   const refreshWorkspaces = useSetAtom(refreshWorkspacesAtom)
   const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
+  const switchDirection = useAtomValue(workspaceSwitchDirectionAtom)
   const setCurrentAgentWorkspaceId = useSetAtom(currentAgentWorkspaceIdAtom)
 
   const cleanupMapAtoms = React.useCallback((id: string) => {
@@ -600,18 +602,115 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
     agentTopResizeCleanup.current = onUp
   }, [agentTopHeight, setAgentTopHeight])
 
-  // 删除确认弹窗
+  // ===== Delete-confirmation modal =====
+  // Visual language mirrors the approval modal (PR #85): rounded-2xl
+  // dialog with a hero header (colored disc icon + title + supporting
+  // line + risk-tinted pill) over a detail card that previews exactly
+  // what's being deleted. The previous flat 2-line text dialog gave the
+  // user no way to verify they were about to delete the right session.
+  //
+  // Detail card content depends on mode:
+  //   - 'agent' → look up the session in agentSessions; show emoji,
+  //     title, workspace name (if known), message count, last-updated
+  //   - 'chat'  → look up in conversations; show title, last-updated
+  // Falls back to a bare "确认删除" if the row is missing (race after
+  // a refetch — still allows the user to confirm rather than blocking).
+  const pendingDeleteAgentSession = pendingDeleteId
+    ? agentSessions.find((s) => s.id === pendingDeleteId)
+    : undefined
+  const pendingDeleteConversation = pendingDeleteId
+    ? conversations.find((c) => c.id === pendingDeleteId)
+    : undefined
+  const pendingDeleteWorkspace = pendingDeleteAgentSession?.workspaceId
+    ? workspaces.find((w) => w.id === pendingDeleteAgentSession.workspaceId)
+    : undefined
+
   const deleteDialog = (
     <AlertDialog open={pendingDeleteId !== null} onOpenChange={(open) => { if (!open) setPendingDeleteId(null) }}>
-      <AlertDialogContent onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleConfirmDelete() } }}>
-        <AlertDialogHeader>
-          <AlertDialogTitle>确认删除对话</AlertDialogTitle>
-          <AlertDialogDescription>删除后将无法恢复，确定要删除这个对话吗？</AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>取消</AlertDialogCancel>
-          <AlertDialogAction onClick={handleConfirmDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">删除</AlertDialogAction>
-        </AlertDialogFooter>
+      <AlertDialogContent
+        className="sm:max-w-md overflow-hidden p-0 rounded-2xl sm:rounded-2xl [&>*]:min-w-0"
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleConfirmDelete() } }}
+      >
+        <div className="p-5 space-y-4">
+          <AlertDialogHeader>
+            <div className="flex items-start gap-3">
+              <div
+                className="shrink-0 inline-flex items-center justify-center size-10 rounded-xl bg-danger-bg text-danger"
+                aria-hidden
+              >
+                <Trash2 className="size-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <AlertDialogTitle className="text-base font-semibold leading-tight text-foreground">
+                  {mode === 'agent' ? '删除会话' : '删除对话'}
+                </AlertDialogTitle>
+                <AlertDialogDescription className="text-[12.5px] mt-0.5 text-muted-foreground">
+                  此操作无法撤销。该{mode === 'agent' ? '会话' : '对话'}及其所有消息将被永久删除。
+                </AlertDialogDescription>
+              </div>
+              <span
+                className="shrink-0 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-wide bg-danger-bg text-danger"
+              >
+                <span className="size-1.5 rounded-full bg-danger" aria-hidden />
+                危险
+              </span>
+            </div>
+          </AlertDialogHeader>
+
+          {/* Detail card — shows which row is being deleted. */}
+          {(pendingDeleteAgentSession || pendingDeleteConversation) && (
+            <div className="relative rounded-lg border border-border/60 bg-muted/30 overflow-hidden">
+              <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-danger" aria-hidden />
+              <div className="pl-4 pr-3 py-3 space-y-1.5">
+                {/* Title row */}
+                <div className="flex items-center gap-2">
+                  {pendingDeleteAgentSession ? (
+                    <span className="text-[14px] leading-none shrink-0" style={{ fontFamily: "'Noto Emoji', sans-serif" }}>
+                      {pendingDeleteAgentSession.titleEmoji || '💬'}
+                    </span>
+                  ) : null}
+                  <span className="text-[13px] font-medium text-foreground truncate">
+                    {pendingDeleteAgentSession?.title ?? pendingDeleteConversation?.title ?? '未命名'}
+                  </span>
+                </div>
+                {/* Metadata rows */}
+                <div className="space-y-0.5 text-[11.5px] text-muted-foreground/85 font-mono">
+                  {pendingDeleteWorkspace && (
+                    <div className="flex gap-2">
+                      <span className="text-muted-foreground/60 shrink-0 min-w-[4rem]">工作区</span>
+                      <span className="truncate">{pendingDeleteWorkspace.name}</span>
+                    </div>
+                  )}
+                  {pendingDeleteAgentSession && (
+                    <div className="flex gap-2">
+                      <span className="text-muted-foreground/60 shrink-0 min-w-[4rem]">消息数</span>
+                      <span>{pendingDeleteAgentSession.messageCount}</span>
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <span className="text-muted-foreground/60 shrink-0 min-w-[4rem]">会话 ID</span>
+                    <span className="truncate" title={pendingDeleteId ?? ''}>{pendingDeleteId ?? ''}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <AlertDialogFooter className="flex-row gap-2 sm:justify-end">
+            <AlertDialogCancel asChild>
+              <Button variant="ghost" disabled={false}>
+                取消
+              </Button>
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmDelete}
+              className="bg-danger text-white hover:bg-danger/90"
+            >
+              <Trash2 className="size-3.5 mr-1" />
+              删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </div>
       </AlertDialogContent>
     </AlertDialog>
   )
@@ -676,7 +775,24 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
 
       {/* 主内容区：对话/会话列表 */}
       {mode === 'agent' ? (
-        <>
+        // ARC-browser-style horizontal slide on workspace switch. The
+        // WHOLE workspace block (Header + Rail) animates as one unit:
+        //   forward (move to a later workspace in sortOrder)  → slide IN from right
+        //   backward (move to an earlier workspace)           → slide IN from left
+        // `key={activeWorkspaceId}` forces remount which retriggers the
+        // one-shot animate-in. Outgoing content snaps out (no exit
+        // animation) — Tailwind's animate-in is single-direction; doing a
+        // true cross-fade swap would need framer-motion or similar.
+        <div
+          key={activeWorkspaceId ?? 'no-ws'}
+          className={cn(
+            'flex flex-col flex-1 min-h-0',
+            'animate-in fade-in-0 duration-280 ease-out',
+            switchDirection === 'forward'
+              ? 'slide-in-from-right-8'
+              : 'slide-in-from-left-8',
+          )}
+        >
           <WorkspaceHeader />
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
             <WorkspaceRail
@@ -688,7 +804,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
               onDeleteSession={(id) => handleRequestDelete(id)}
             />
           </div>
-        </>
+        </div>
       ) : (
         <div className="flex-1 overflow-y-auto px-3 pt-2 pb-3 scrollbar-none">
           {conversationGroups.map((group) => (

@@ -19,6 +19,10 @@ interface SessionItemProps {
   /** True when the session has a non-null pinned_at; drives menu label
    *  and (eventually) any visual pin indicator the rail wants to show. */
   isPinned?: boolean
+  /** True when this session has at least one open tab. Renders a subtle
+   *  left-edge marker (Mail.app-style) so users can see at a glance
+   *  which rows in the rail are already loaded in the tab bar. */
+  isOpen?: boolean
   onClick: () => void
   onDelete?: () => void
   onMove?: () => void
@@ -33,6 +37,7 @@ export function SessionItem({
   isActive,
   running,
   isPinned,
+  isOpen,
   onClick,
   onDelete,
   onMove,
@@ -43,13 +48,24 @@ export function SessionItem({
     <div
       onClick={onClick}
       className={cn(
-        'group flex items-center gap-2 rounded-md px-2 py-1.5 cursor-pointer',
+        'group relative flex items-center gap-2 rounded-md px-2 py-1.5 cursor-pointer',
         'text-[13px] transition-colors duration-100',
         isActive
           ? 'bg-sidebar-accent text-sidebar-primary font-medium'
           : 'text-muted-foreground hover:bg-muted hover:text-foreground'
       )}
     >
+      {/* Open-tab indicator — 2px primary-tinted stripe on the left edge.
+          Mail.app-style "this thread is open" affordance. Shows on every
+          open row (including the active one — `isActive` says "currently
+          focused tab", `isOpen` says "loaded as a tab somewhere", which
+          are independent facts the user wants to see together). */}
+      {isOpen && (
+        <span
+          aria-hidden
+          className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-primary/60"
+        />
+      )}
       <span className="shrink-0 inline-flex items-center justify-center text-primary" style={{ width: '18px' }}>
         {titlePending ? (
           <LoaderCircle size={14} strokeWidth={2} className="animate-spin" />
@@ -78,11 +94,21 @@ export function SessionItem({
         // events on the 3-dot stay scoped here and never reach the
         // parent div's onClick (which would open the session as a side
         // effect of choosing "delete" / "move" from the menu).
+        //
+        // Visible only when the row is hovered / has focus inside it /
+        // the dropdown is open — keeps the rail visually quiet.
+        // `[&:has([data-state=open])]:opacity-100` ensures the button
+        // stays visible while the menu is open even if the cursor
+        // leaves the row (Radix portals the menu items elsewhere).
         <div
           onClick={(e) => e.stopPropagation()}
           onPointerDown={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
-          className="shrink-0"
+          className={cn(
+            'shrink-0 transition-opacity duration-150',
+            'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100',
+            '[&:has([data-state=open])]:opacity-100',
+          )}
         >
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

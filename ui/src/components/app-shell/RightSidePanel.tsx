@@ -11,7 +11,8 @@ import { listen } from '@tauri-apps/api/event'
 import { FolderOpen, Users, ListChecks, History, Globe } from 'lucide-react'
 import { appModeAtom } from '@/atoms/app-mode'
 import { currentAgentSessionIdAtom, agentSessionPathMapAtom, workspaceActiveRightPanelTabMapAtom } from '@/atoms/agent-atoms'
-import { activeWorkspaceIdAtom } from '@/atoms/workspace'
+import { activeWorkspaceIdAtom, workspaceSwitchDirectionAtom } from '@/atoms/workspace'
+import { cn } from '@/lib/utils'
 import { activePlanAtom } from '@/atoms/agent-teams'
 import { WorkspaceFilesView } from '@/components/agent/SidePanel'
 import { AgentTeamsPanel } from '@/components/agent/AgentTeamsPanel'
@@ -62,6 +63,7 @@ export function RightSidePanel(): React.ReactElement | null {
   const setActivePlan = useSetAtom(activePlanAtom)
 
   const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
+  const switchDirection = useAtomValue(workspaceSwitchDirectionAtom)
   const tabMap = useAtomValue(workspaceActiveRightPanelTabMapAtom)
   const setTabMap = useSetAtom(workspaceActiveRightPanelTabMapAtom)
 
@@ -153,8 +155,23 @@ export function RightSidePanel(): React.ReactElement | null {
         />
       </div>
 
-      {/* Tab content */}
-      <div className="flex-1 min-h-0 overflow-auto titlebar-no-drag">
+      {/* Tab content — `key` combines workspace + active tab so:
+          - Workspace switch (different activeWorkspaceId) → remount + animate-in
+          - Tab change (Files → Teams etc) → remount + animate-in
+          Same workspace + same tab → no remount (heavy children like
+          WorkspaceFilesView keep their internal state).
+          Slide direction follows the workspace-switch direction so this
+          panel moves in sync with LeftSidebar + TabBar. */}
+      <div
+        key={`${activeWorkspaceId ?? 'no-ws'}:${activeTab}`}
+        className={cn(
+          'flex-1 min-h-0 overflow-auto titlebar-no-drag',
+          'animate-in fade-in-0 duration-280 ease-out',
+          switchDirection === 'forward'
+            ? 'slide-in-from-right-8'
+            : 'slide-in-from-left-8',
+        )}
+      >
         {activeTab === 'files' && (
           <WorkspaceFilesView sessionId={currentSessionId} sessionPath={sessionPath} />
         )}

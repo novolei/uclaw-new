@@ -140,20 +140,26 @@ interface WorkspaceItemProps {
    *  focused index changes via keyboard navigation. */
   buttonRef: (el: HTMLButtonElement | null) => void
   onSelect: (id: string) => void
-  onDragStart: (e: React.DragEvent, id: string) => void
-  onDragOver: (e: React.DragEvent, id: string) => void
-  onDragLeave: (e: React.DragEvent) => void
-  onDrop: (e: React.DragEvent, id: string) => void
-  onDragEnd: () => void
-  isDragging: boolean
-  dropIndicator: 'before' | 'after' | null
+  /** Pointer-event drag-reorder (replaced HTML5 drag — see useDragReorder). */
+  onPointerDown: (id: string, index: number, e: React.PointerEvent) => void
+  /** Visual state from the parent's drag controller. */
+  dragOffsetX: number      // 0 unless this is the dragged item
+  shiftX: number           // signed px shift for items between source and target
+  isDragging: boolean      // true on the dragged item
 }
 
 function WorkspaceIcon({
   workspace, index, active, running, tabIndex, buttonRef, onSelect,
-  onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd,
-  isDragging, dropIndicator,
+  onPointerDown, dragOffsetX, shiftX, isDragging,
 }: WorkspaceItemProps): React.ReactElement {
+  // Transform: the dragged icon follows the cursor instantly (no transition);
+  // every other icon glides to its shifted position via CSS transition. The
+  // combination produces the iOS-style "icons part to make room" animation.
+  const transform = isDragging
+    ? `translate3d(${dragOffsetX}px, 0, 0)`
+    : shiftX !== 0
+      ? `translate3d(${shiftX}px, 0, 0)`
+      : undefined
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -161,25 +167,35 @@ function WorkspaceIcon({
           ref={buttonRef}
           type="button"
           tabIndex={tabIndex}
-          draggable
-          onDragStart={(e) => onDragStart(e, workspace.id)}
-          onDragOver={(e) => onDragOver(e, workspace.id)}
-          onDragLeave={onDragLeave}
-          onDrop={(e) => onDrop(e, workspace.id)}
-          onDragEnd={onDragEnd}
+          onPointerDown={(e) => onPointerDown(workspace.id, index, e)}
           onClick={() => void onSelect(workspace.id)}
           aria-label={`工作区: ${workspace.name}`}
           aria-current={active ? 'true' : undefined}
+          style={{
+            transform,
+            // Dragged item: no transition so it tracks the cursor 1:1.
+            // Others: ease-out glide as they shift into the dragged item's
+            // vacated slot.
+            transition: isDragging ? 'none' : 'transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1)',
+            zIndex: isDragging ? 10 : undefined,
+            // Override any inherited user-select:none so click + pointer
+            // events stay clean.
+            userSelect: 'auto',
+            WebkitUserSelect: 'auto',
+            touchAction: 'none',
+          } as React.CSSProperties}
           className={cn(
             'titlebar-no-drag relative inline-flex items-center justify-center',
             'size-7 rounded-md transition-colors',
-            // ARC-style active state: soft filled background tint + tinted
-            // icon. No ring/offset — those produced bracket-like artifacts
-            // around the 24px button.
+            // Default button cursor on hover (pointer); only switch to
+            // grabbing once an actual drag is in flight. Earlier versions
+            // showed cursor-grab on every hover, which signaled "drag me"
+            // too aggressively for what's primarily a click target.
+            isDragging && 'cursor-grabbing scale-[1.08] shadow-md',
+            // ARC-style active state: soft filled background tint + tinted icon.
             active
               ? 'bg-primary/15 text-primary'
               : 'text-foreground/55 hover:text-foreground hover:bg-foreground/[0.05]',
-            isDragging && 'opacity-40',
           )}
         >
           {React.createElement(iconForWorkspace(workspace.icon), {
@@ -194,12 +210,6 @@ function WorkspaceIcon({
               aria-label="该工作区有任务执行中"
             />
           )}
-          {dropIndicator === 'before' && (
-            <span className="absolute -left-1 top-0 bottom-0 w-0.5 bg-primary rounded-full" />
-          )}
-          {dropIndicator === 'after' && (
-            <span className="absolute -right-1 top-0 bottom-0 w-0.5 bg-primary rounded-full" />
-          )}
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" sideOffset={6}>
@@ -211,10 +221,14 @@ function WorkspaceIcon({
 
 function WorkspaceDot({
   workspace, index, running, tabIndex, buttonRef, onSelect,
-  onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd,
-  isDragging, dropIndicator,
+  onPointerDown, dragOffsetX, shiftX, isDragging,
 }: WorkspaceItemProps): React.ReactElement {
   const Icon = iconForWorkspace(workspace.icon)
+  const transform = isDragging
+    ? `translate3d(${dragOffsetX}px, 0, 0)`
+    : shiftX !== 0
+      ? `translate3d(${shiftX}px, 0, 0)`
+      : undefined
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -222,20 +236,24 @@ function WorkspaceDot({
           ref={buttonRef}
           type="button"
           tabIndex={tabIndex}
-          draggable
-          onDragStart={(e) => onDragStart(e, workspace.id)}
-          onDragOver={(e) => onDragOver(e, workspace.id)}
-          onDragLeave={onDragLeave}
-          onDrop={(e) => onDrop(e, workspace.id)}
-          onDragEnd={onDragEnd}
+          onPointerDown={(e) => onPointerDown(workspace.id, index, e)}
           onClick={() => void onSelect(workspace.id)}
           aria-label={`工作区: ${workspace.name} (workspace dot)`}
+          style={{
+            transform,
+            transition: isDragging ? 'none' : 'transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1)',
+            zIndex: isDragging ? 10 : undefined,
+            userSelect: 'auto',
+            WebkitUserSelect: 'auto',
+            touchAction: 'none',
+          } as React.CSSProperties}
           className={cn(
             'group titlebar-no-drag relative inline-flex items-center justify-center',
             // Larger hit target (12px) than visible glyph (6px) for easier
             // clicking — the visible circle is rendered via the inner span.
             'size-3 rounded-full',
-            isDragging && 'opacity-40',
+            // Default hover cursor; grabbing only while a drag is in flight.
+            isDragging && 'cursor-grabbing scale-[1.4]',
           )}
         >
           {/* Default dot — shrinks + fades out when this button is hovered,
@@ -274,12 +292,6 @@ function WorkspaceDot({
               aria-label="该工作区有任务执行中"
             />
           )}
-          {dropIndicator === 'before' && (
-            <span className="absolute -left-1 top-0 bottom-0 w-0.5 bg-primary rounded-full" />
-          )}
-          {dropIndicator === 'after' && (
-            <span className="absolute -right-1 top-0 bottom-0 w-0.5 bg-primary rounded-full" />
-          )}
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" sideOffset={6}>
@@ -299,11 +311,93 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
   const indicatorMap = useAtomValue(agentSessionIndicatorMapAtom)
 
   const [createOpen, setCreateOpen] = React.useState(false)
-  const [dragId, setDragId] = React.useState<string | null>(null)
-  const [dropIndicator, setDropIndicator] = React.useState<{
+
+  // ===== Pointer-based drag-reorder with iOS-style "icons part to make room"
+  //
+  // We don't use HTML5 drag-and-drop because WebKit / WKWebView refuses to
+  // start a drag on a descendant of any user-select:none ancestor — a
+  // documented quirk that broke after PR #89 added user-select:none to
+  // .titlebar-drag-region. The pointer-events approach also gives us the
+  // iOS-style sliding animation, which HTML5 drag-and-drop can't.
+  //
+  // Algorithm:
+  // - On pointerdown, record the source index + starting cursor X. Don't
+  //   set drag state yet (small mouse movements during click shouldn't
+  //   trigger a drag).
+  // - On pointermove, once movement exceeds DRAG_THRESHOLD, enter drag
+  //   state. Compute targetIndex from cursor delta vs. measured item
+  //   stride (button width + flex gap).
+  // - On pointerup, commit the reorder if source !== target, and
+  //   suppress the upcoming click via capture-phase click listener.
+  //
+  // Render: the dragged icon translates instantly with the cursor (no
+  // transition); every other icon glides to its shifted position via
+  // CSS transition. The combination is the iOS Springboard feel.
+  interface DragState {
     id: string
-    position: 'before' | 'after'
-  } | null>(null)
+    sourceIdx: number
+    targetIdx: number
+    deltaX: number
+    stride: number   // button center-to-center distance, measured at drag-start
+  }
+  const [drag, setDrag] = React.useState<DragState | null>(null)
+  const DRAG_THRESHOLD = 5  // px before mousedown becomes a drag
+
+  const startDrag = React.useCallback((id: string, idx: number, e: React.PointerEvent) => {
+    if (e.button !== 0) return  // primary mouse only
+
+    const startX = e.clientX
+    const target = e.currentTarget as HTMLElement
+    const sibling = (target.nextElementSibling ?? target.previousElementSibling) as HTMLElement | null
+    const stride = sibling
+      ? Math.abs(sibling.getBoundingClientRect().left - target.getBoundingClientRect().left)
+      : target.getBoundingClientRect().width + 4
+
+    let dragStarted = false
+
+    const onMove = (me: PointerEvent): void => {
+      const dx = me.clientX - startX
+      if (!dragStarted) {
+        if (Math.abs(dx) < DRAG_THRESHOLD) return
+        dragStarted = true
+      }
+      const newTargetIdx = Math.max(
+        0,
+        Math.min(workspaces.length - 1, idx + Math.round(dx / stride)),
+      )
+      setDrag({ id, sourceIdx: idx, targetIdx: newTargetIdx, deltaX: dx, stride })
+    }
+
+    const onUp = async (): Promise<void> => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      if (!dragStarted) return
+
+      // Suppress the click event that follows pointerup — we DON'T want
+      // the workspace to also activate after the user drags it.
+      const blockClick = (ev: Event): void => {
+        ev.preventDefault()
+        ev.stopPropagation()
+      }
+      window.addEventListener('click', blockClick, { once: true, capture: true })
+
+      // Commit reorder using the latest state.
+      setDrag((curr) => {
+        if (curr && curr.sourceIdx !== curr.targetIdx) {
+          const reordered = [...workspaces]
+          const [moved] = reordered.splice(curr.sourceIdx, 1)
+          reordered.splice(curr.targetIdx, 0, moved!)
+          void reorderWorkspaces(reordered.map((w) => w.id)).catch((err) =>
+            console.error('[workspace-switcher] reorder failed', err),
+          )
+        }
+        return null
+      })
+    }
+
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }, [workspaces, reorderWorkspaces])
 
   // Roving tabindex — see https://w3c.github.io/aria-practices/#kbd_roving_tabindex
   // `focusedIndex` is the index of the workspace currently in the tab order.
@@ -344,63 +438,6 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
     }
     return set
   }, [agentSessions, indicatorMap])
-
-  // Drag-reorder handlers (horizontal axis variant of Phase 2 pattern).
-  const handleDragStart = (e: React.DragEvent, id: string): void => {
-    setDragId(id)
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', id)
-  }
-
-  const handleDragOver = (e: React.DragEvent, targetId: string): void => {
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
-    if (!dragId || dragId === targetId) {
-      setDropIndicator(null)
-      return
-    }
-    const rect = e.currentTarget.getBoundingClientRect()
-    const ratio = (e.clientX - rect.left) / rect.width
-    const position: 'before' | 'after' = ratio < 0.5 ? 'before' : 'after'
-    if (dropIndicator?.id === targetId && dropIndicator.position === position) return
-    setDropIndicator({ id: targetId, position })
-  }
-
-  const handleDragLeave = (e: React.DragEvent): void => {
-    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-      setDropIndicator(null)
-    }
-  }
-
-  const handleDrop = async (e: React.DragEvent, targetId: string): Promise<void> => {
-    e.preventDefault()
-    e.stopPropagation()
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    const ratio = (e.clientX - rect.left) / rect.width
-    const position: 'before' | 'after' = ratio < 0.5 ? 'before' : 'after'
-    const sourceId = dragId ?? e.dataTransfer.getData('text/plain') ?? ''
-    setDragId(null)
-    setDropIndicator(null)
-    if (!sourceId || sourceId === targetId) return
-    const fromIdx = workspaces.findIndex((w) => w.id === sourceId)
-    const toIdx = workspaces.findIndex((w) => w.id === targetId)
-    if (fromIdx === -1 || toIdx === -1) return
-    const reordered = [...workspaces]
-    const [moved] = reordered.splice(fromIdx, 1)
-    const adjustedToIdx = fromIdx < toIdx ? toIdx - 1 : toIdx
-    const insertIdx = position === 'after' ? adjustedToIdx + 1 : adjustedToIdx
-    reordered.splice(insertIdx, 0, moved!)
-    try {
-      await reorderWorkspaces(reordered.map((w) => w.id))
-    } catch (err) {
-      console.error('[workspace-switcher] reorder failed', err)
-    }
-  }
-
-  const handleDragEnd = (): void => {
-    setDragId(null)
-    setDropIndicator(null)
-  }
 
   const handleSelect = React.useCallback((id: string) => {
     void selectWorkspace(id)
@@ -468,8 +505,22 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
             {workspaces.map((w, i) => {
               const active = w.id === activeId
               const running = runningWorkspaceIds.has(w.id)
-              const isDragging = dragId === w.id
-              const dropPos = dropIndicator?.id === w.id ? dropIndicator.position : null
+              const isDragging = drag?.id === w.id
+
+              // Compute the shift for non-dragged icons. When dragging from
+              // source → target, items strictly between (source, target]
+              // shift LEFT by one stride (source < target case) or right
+              // (source > target case). The dragged icon overlays them; on
+              // release the actual list reorders.
+              let shiftX = 0
+              if (drag && !isDragging) {
+                const { sourceIdx, targetIdx, stride } = drag
+                if (sourceIdx < targetIdx && i > sourceIdx && i <= targetIdx) {
+                  shiftX = -stride
+                } else if (sourceIdx > targetIdx && i >= targetIdx && i < sourceIdx) {
+                  shiftX = stride
+                }
+              }
 
               const shouldRenderAsDot = collapsed && !active
 
@@ -480,12 +531,10 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
                   buttonRefs.current[i] = el
                 },
                 onSelect: handleSelect,
-                onDragStart: handleDragStart,
-                onDragOver: handleDragOver,
-                onDragLeave: handleDragLeave,
-                onDrop: handleDrop,
-                onDragEnd: handleDragEnd,
-                isDragging, dropIndicator: dropPos,
+                onPointerDown: startDrag,
+                dragOffsetX: isDragging ? (drag?.deltaX ?? 0) : 0,
+                shiftX,
+                isDragging,
               }
 
               return shouldRenderAsDot

@@ -25,6 +25,7 @@ import {
   agentSessionIndicatorMapAtom,
   togglePinAgentSessionAtom,
 } from '@/atoms/agent-atoms'
+import { tabsAtom } from '@/atoms/tab-atoms'
 import type { AgentWorkspace } from '@/lib/agent-types'
 import { toast } from 'sonner'
 
@@ -80,6 +81,15 @@ export function WorkspaceRail({
 
   const togglePin = useSetAtom(togglePinAgentSessionAtom)
 
+  // Open-tab indicator — derive the set of session ids that currently have
+  // a tab in the global pool. Read tabsAtom (not visibleTabsAtom) so the
+  // indicator works even before workspace switch settles the visible slice.
+  const tabs = useAtomValue(tabsAtom)
+  const openSessionIds = React.useMemo(
+    () => new Set(tabs.map((t) => t.sessionId)),
+    [tabs],
+  )
+
   const sessions = activeWorkspaceId
     ? (workspaceSessions[activeWorkspaceId] ?? [])
     : []
@@ -103,6 +113,9 @@ export function WorkspaceRail({
 
   return (
     <>
+      {/* Workspace-switch animation is owned by LeftSidebar — it wraps
+          this rail + WorkspaceHeader in a single ARC-style horizontal
+          slide so they move as one piece. Keep this container plain. */}
       <div className="flex-1 overflow-y-auto px-3 pt-1 pb-1 scrollbar-none">
         {sessions.length === 0 && (
           <p className="text-[11px] text-muted-foreground px-2 py-3 italic">
@@ -123,6 +136,7 @@ export function WorkspaceRail({
                 isActive={activeSessionId === s.id}
                 running={indicatorMap.get(s.id) === 'running'}
                 isPinned
+                isOpen={openSessionIds.has(s.id)}
                 onClick={() => onSelectSession(s.id)}
                 onDelete={onDeleteSession ? () => onDeleteSession(s.id) : undefined}
                 onMove={() => setMoveTargetSessionId(s.id)}
@@ -146,6 +160,7 @@ export function WorkspaceRail({
             isActive={activeSessionId === s.id}
             running={indicatorMap.get(s.id) === 'running'}
             isPinned={false}
+            isOpen={openSessionIds.has(s.id)}
             onClick={() => onSelectSession(s.id)}
             onDelete={onDeleteSession ? () => onDeleteSession(s.id) : undefined}
             onMove={() => setMoveTargetSessionId(s.id)}
