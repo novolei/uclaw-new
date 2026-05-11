@@ -3847,6 +3847,38 @@ pub async fn create_agent_session(
     }))
 }
 
+/// Delete an agent session and all of its derived rows. Returns true when
+/// the row was removed, false when no such session existed.
+///
+/// `agent_messages` cascades automatically via the V8 ON DELETE CASCADE FK.
+/// `agent_turns` and `cost_records` have no FK constraint (turns table
+/// predates the FK convention; cost_records is intentionally session-scoped
+/// for analytics), so we clear them explicitly here. All four deletes run
+/// in a single transaction so a partial cleanup never leaves orphan rows.
+#[tauri::command]
+pub async fn delete_agent_session(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<bool, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    let tx = conn.unchecked_transaction().map_err(|e| Error::Database(e))?;
+    // cost_records and agent_turns are not FK-bound to agent_sessions.
+    let _ = tx.execute(
+        "DELETE FROM cost_records WHERE session_id = ?1",
+        rusqlite::params![&id],
+    ).map_err(|e| Error::Database(e))?;
+    let _ = tx.execute(
+        "DELETE FROM agent_turns WHERE session_id = ?1",
+        rusqlite::params![&id],
+    ).map_err(|e| Error::Database(e))?;
+    let deleted = tx.execute(
+        "DELETE FROM agent_sessions WHERE id = ?1",
+        rusqlite::params![&id],
+    ).map_err(|e| Error::Database(e))?;
+    tx.commit().map_err(|e| Error::Database(e))?;
+    Ok(deleted > 0)
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendAgentMessageInput {

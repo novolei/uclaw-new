@@ -1005,8 +1005,15 @@ export const onExitPlanRequest = (cb: (payload: ExitPlanModeRequest) => void): P
 export const moveAgentSessionToWorkspace = (input: any): Promise<any> =>
   invoke('move_agent_session_to_workspace', { input })
 
-export const deleteAgentSession = (id: string): Promise<void> =>
-  invoke<void>('delete_agent_session', { id }).catch(() => {})
+/**
+ * Delete an agent session and its derived rows. Surfaces backend errors —
+ * the previous `.catch(() => {})` silenced "command not found" so the
+ * delete UI optimistically closed the tab while the session lingered in
+ * the DB. Callers should toast on rejection. Returns true when a row
+ * was actually deleted.
+ */
+export const deleteAgentSession = (id: string): Promise<boolean> =>
+  invoke<boolean>('delete_agent_session', { id })
 
 export const updateAgentSessionTitle = (id: string, title: string): Promise<any> =>
   invoke('update_agent_session_title', { id, title }).catch(() => ({ id, title, updatedAt: Date.now() }))

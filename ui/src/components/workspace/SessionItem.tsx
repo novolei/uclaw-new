@@ -67,46 +67,47 @@ export function SessionItem({
         />
       )}
       {hasMenu && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => e.stopPropagation()}
-              className="shrink-0 opacity-60 hover:opacity-100 text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-foreground/[0.08]"
-              title="更多"
-            >
-              <MoreHorizontal className="size-3.5" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" side="bottom" sideOffset={4} className="w-40 min-w-0 p-0.5 z-[100]">
-            {onMove && (
-              <DropdownMenuItem
-                className="text-xs py-1 [&>svg]:size-3.5"
-                onSelect={(e) => {
-                  console.debug('[session-menu] move clicked')
-                  e.preventDefault()
-                  onMove()
-                }}
+        // Wrap the trigger in a click-eater so click + focus + pointer
+        // events on the 3-dot stay scoped here and never reach the
+        // parent div's onClick (which would open the session as a side
+        // effect of choosing "delete" / "move" from the menu).
+        <div
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          className="shrink-0"
+        >
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="shrink-0 opacity-60 hover:opacity-100 text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-foreground/[0.08]"
+                title="更多"
               >
-                <FolderInput />
-                移动到...
-              </DropdownMenuItem>
-            )}
-            {onDelete && (
-              <DropdownMenuItem
-                className="text-xs py-1 [&>svg]:size-3.5 text-destructive focus:text-destructive"
-                onSelect={(e) => {
-                  console.debug('[session-menu] delete clicked')
-                  e.preventDefault()
-                  onDelete()
-                }}
-              >
-                <Trash2 />
-                删除
-              </DropdownMenuItem>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
+                <MoreHorizontal className="size-3.5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" side="bottom" sideOffset={4} className="w-40 min-w-0 p-0.5 z-[100]">
+              {onMove && (
+                <DropdownMenuItem
+                  className="text-xs py-1 [&>svg]:size-3.5"
+                  onSelect={() => { onMove() }}
+                >
+                  <FolderInput />
+                  移动到...
+                </DropdownMenuItem>
+              )}
+              {onDelete && (
+                <DropdownMenuItem
+                  className="text-xs py-1 [&>svg]:size-3.5 text-destructive focus:text-destructive"
+                  onSelect={() => { onDelete() }}
+                >
+                  <Trash2 />
+                  删除
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       )}
     </div>
   )

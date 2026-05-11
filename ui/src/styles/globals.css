@@ -813,13 +813,46 @@
 }
 
 /* ===== TabBar 背景 ===== */
-/* 默认背景：提高对比度，并在底部加 1px 边线把 TabBar 与下面的内容卡片分开。
-   原先 muted/0.5 在浅色主题（暖纸、晨曦）下几乎与 content-area 融为一体，
-   导致 tab 栏看起来没有边界。提到 0.7 + 主题感知的底部边线后，
-   chrome 和卡片之间的层次关系更清晰，所有主题都能受益。 */
+/* 默认背景：用满不透明度 muted 让 TabBar 从 content-area 卡片中浮现。
+   早期版本使用 muted/0.5 + inset 底边阴影：
+   - 浅色主题下三层 (background / muted / content-area) 亮度差只有 2-5
+     个单位,半透明 muted 与 content-area 几乎同色。
+   - inset 底边阴影会在 active tab 下方漏出一条 1px 横线（active tab 的
+     bg-content-area 在 WebKit 下没能完全覆盖父元素的 inset shadow）。
+   现在默认满不透明,大多数主题 muted 与 content-area 相差 5-6 个亮度单
+   位,够用;浅色主题（暖纸、晨曦、林麓、莫兰迪日）下三色都贴得太近,
+   单独再压低 8-12 单位以拉开层次。 */
 .tabbar-bg {
-  background-color: hsl(var(--muted) / 0.7);
-  box-shadow: inset 0 -1px 0 0 hsl(var(--border) / 0.8);
+  background-color: hsl(var(--muted));
+}
+
+/* ===== 浅色主题：进一步加深 TabBar 让 chrome 从 content-area 中独立出来 ===== */
+
+/* 暖纸：content-area=#fcfaf5(97% L), muted=#f1ede3(91% L)。把 chrome
+   再压到 ~85% L,与卡片拉开 12 个单位，明显的层次。 */
+.theme-warm-paper .tabbar-bg {
+  background-color: hsl(44 25% 87%);
+}
+
+/* 晨曦：cool blue 浅色 — 沿用同样的策略,降到 ~86% L。 */
+.theme-ocean-light .tabbar-bg {
+  background-color: hsl(205 30% 85%);
+}
+
+/* 林麓日：fresh green 浅色 — 降到 ~85% L。 */
+.theme-forest-light .tabbar-bg {
+  background-color: hsl(140 18% 84%);
+}
+
+/* 莫兰迪日：neutral slate 浅色 — 降到 ~86% L。 */
+.theme-slate-light .tabbar-bg {
+  background-color: hsl(220 12% 86%);
+}
+
+/* light（系统默认浅色）：纯灰 — 降到 92% → 86%。 */
+:root:not([class*="theme-"]):not(.dark) .tabbar-bg,
+.light .tabbar-bg {
+  background-color: hsl(0 0% 88%);
 }
 
 /* 苍穹暮色：底部浅色阴影勾勒轮廓 */
