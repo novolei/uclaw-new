@@ -128,7 +128,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <RootErrorBoundary>
       <ThemeInitializer />
       <App />
-      <Toaster position="top-right" />
+      <Toaster />
     </RootErrorBoundary>
   </React.StrictMode>
 )
