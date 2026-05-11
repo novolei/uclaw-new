@@ -11,6 +11,7 @@ import * as React from 'react'
 import { render, type RenderOptions, type RenderResult } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createStore, Provider as JotaiProvider } from 'jotai'
+import { MotionConfig } from 'motion/react'
 import { TooltipProvider } from '@/components/ui/tooltip'
 
 type JotaiStore = ReturnType<typeof createStore>
@@ -34,7 +35,13 @@ export function renderWithProviders(
   const { store = createStore(), ...rtlOptions } = options
   const Wrapper = ({ children }: { children: React.ReactNode }) => (
     <JotaiProvider store={store}>
-      <TooltipProvider>{children}</TooltipProvider>
+      {/* `reducedMotion="always"` makes motion's animations resolve
+          synchronously — initial=animate, no enter/exit. Critical for
+          tests that assert post-state-change DOM immediately after
+          atom writes (no `await waitFor` needed). */}
+      <MotionConfig reducedMotion="always">
+        <TooltipProvider>{children}</TooltipProvider>
+      </MotionConfig>
     </JotaiProvider>
   )
   const result = render(ui, { wrapper: Wrapper, ...rtlOptions })

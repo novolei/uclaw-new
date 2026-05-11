@@ -12,7 +12,19 @@ import { FolderOpen, Users, ListChecks, History, Globe } from 'lucide-react'
 import { appModeAtom } from '@/atoms/app-mode'
 import { currentAgentSessionIdAtom, agentSessionPathMapAtom, workspaceActiveRightPanelTabMapAtom } from '@/atoms/agent-atoms'
 import { activeWorkspaceIdAtom, workspaceSwitchDirectionAtom } from '@/atoms/workspace'
-import { cn } from '@/lib/utils'
+import { motion, AnimatePresence, type Variants } from 'motion/react'
+
+const rightPanelSlideVariants: Variants = {
+  enter: (dir: 'forward' | 'backward') => ({
+    opacity: 0,
+    x: dir === 'forward' ? 32 : -32,
+  }),
+  center: { opacity: 1, x: 0 },
+  exit: (dir: 'forward' | 'backward') => ({
+    opacity: 0,
+    x: dir === 'forward' ? -32 : 32,
+  }),
+}
 import { activePlanAtom } from '@/atoms/agent-teams'
 import { WorkspaceFilesView } from '@/components/agent/SidePanel'
 import { AgentTeamsPanel } from '@/components/agent/AgentTeamsPanel'
@@ -156,44 +168,45 @@ export function RightSidePanel(): React.ReactElement | null {
       </div>
 
       {/* Tab content — `key` combines workspace + active tab so:
-          - Workspace switch (different activeWorkspaceId) → remount + animate-in
-          - Tab change (Files → Teams etc) → remount + animate-in
+          - Workspace switch → motion exit-then-enter with the same
+            directional variants as LeftSidebar + TabBar (in sync)
+          - Tab change (Files → Teams etc) → motion exit-then-enter
           Same workspace + same tab → no remount (heavy children like
-          WorkspaceFilesView keep their internal state).
-          Slide direction follows the workspace-switch direction so this
-          panel moves in sync with LeftSidebar + TabBar. */}
-      <div
-        key={`${activeWorkspaceId ?? 'no-ws'}:${activeTab}`}
-        className={cn(
-          'flex-1 min-h-0 overflow-auto titlebar-no-drag',
-          'animate-in fade-in-0 duration-280 ease-out',
-          switchDirection === 'forward'
-            ? 'slide-in-from-right-8'
-            : 'slide-in-from-left-8',
-        )}
-      >
-        {activeTab === 'files' && (
-          <WorkspaceFilesView sessionId={currentSessionId} sessionPath={sessionPath} />
-        )}
-        {activeTab === 'teams' && (
-          <AgentTeamsPanel />
-        )}
-        {activeTab === 'plan' && (
-          plan ? (
-            <PlanViewer planContent={plan.content} planFilename={plan.filename} />
-          ) : (
-            <div className="p-3 text-[12px] text-muted-foreground">
-              No active plan. The agent will create one using plan_write.
-            </div>
-          )
-        )}
-        {activeTab === 'trajectory' && (
-          <TrajectoryReel sessionId={currentSessionId} />
-        )}
-        {activeTab === 'browser' && (
-          <BrowserViewer />
-        )}
-      </div>
+          WorkspaceFilesView keep their internal state). */}
+      <AnimatePresence mode="wait" custom={switchDirection} initial={false}>
+        <motion.div
+          key={`${activeWorkspaceId ?? 'no-ws'}:${activeTab}`}
+          custom={switchDirection}
+          variants={rightPanelSlideVariants}
+          initial="enter"
+          animate="center"
+          exit="exit"
+          transition={{ duration: 0.26, ease: [0.32, 0.72, 0, 1] }}
+          className="flex-1 min-h-0 overflow-auto titlebar-no-drag"
+        >
+          {activeTab === 'files' && (
+            <WorkspaceFilesView sessionId={currentSessionId} sessionPath={sessionPath} />
+          )}
+          {activeTab === 'teams' && (
+            <AgentTeamsPanel />
+          )}
+          {activeTab === 'plan' && (
+            plan ? (
+              <PlanViewer planContent={plan.content} planFilename={plan.filename} />
+            ) : (
+              <div className="p-3 text-[12px] text-muted-foreground">
+                No active plan. The agent will create one using plan_write.
+              </div>
+            )
+          )}
+          {activeTab === 'trajectory' && (
+            <TrajectoryReel sessionId={currentSessionId} />
+          )}
+          {activeTab === 'browser' && (
+            <BrowserViewer />
+          )}
+        </motion.div>
+      </AnimatePresence>
     </div>
   )
 }
