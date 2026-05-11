@@ -4508,6 +4508,37 @@ pub(crate) fn rehome_agent_sessions_to_default(
     Ok(())
 }
 
+/// Apply name and/or icon updates to a workspace. Refuses to rename
+/// 'default' (sentinel protection) but allows icon changes on it.
+/// Extracted from `update_workspace` so it's unit-testable without AppState.
+pub(crate) fn do_update_workspace(
+    conn: &rusqlite::Connection,
+    id: &str,
+    name: Option<String>,
+    icon: Option<String>,
+) -> Result<(), Error> {
+    if id == "default" && name.is_some() {
+        return Err(Error::Internal(
+            "cannot rename the 'default' workspace".into(),
+        ));
+    }
+    require_workspace_exists(conn, id)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Some(n) = name.as_ref() {
+        conn.execute(
+            "UPDATE spaces SET name = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![n, &now, id],
+        ).map_err(Error::Database)?;
+    }
+    if let Some(i) = icon.as_ref() {
+        conn.execute(
+            "UPDATE spaces SET icon = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![i, &now, id],
+        ).map_err(Error::Database)?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn create_workspace(
     state: State<'_, AppState>,
@@ -4524,6 +4555,32 @@ pub async fn create_workspace(
         rusqlite::params![id, name, icon, path, now, now],
     ).map_err(Error::Database)?;
     Ok(serde_json::json!({ "id": id, "name": name, "icon": icon, "path": path, "createdAt": now }))
+}
+
+#[tauri::command]
+pub async fn update_workspace(
+    state: State<'_, AppState>,
+    id: String,
+    name: Option<String>,
+    icon: Option<String>,
+) -> Result<serde_json::Value, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    do_update_workspace(&conn, &id, name, icon)?;
+    let (id, name, icon, path, sort_order, created_at, updated_at): (String, String, String, Option<String>, i64, String, String) =
+        conn.query_row(
+            "SELECT id, name, icon, path, sort_order, created_at, updated_at FROM spaces WHERE id = ?1",
+            rusqlite::params![&id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+        ).map_err(Error::Database)?;
+    Ok(serde_json::json!({
+        "id": id,
+        "name": name,
+        "icon": icon,
+        "path": path,
+        "sortOrder": sort_order,
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+    }))
 }
 
 #[tauri::command]
@@ -5653,5 +5710,46 @@ mod workspace_integrity_tests {
         // No sessions inserted.
         let result = super::rehome_agent_sessions_to_default(&conn, "ws-empty");
         assert!(result.is_ok());
+    }
+
+    // ─── update_workspace ──────────────────────────────────────────────
+
+    fn read_workspace_name(conn: &Connection, id: &str) -> String {
+        conn.query_row(
+            "SELECT name FROM spaces WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        ).unwrap()
+    }
+
+    fn read_workspace_icon(conn: &Connection, id: &str) -> String {
+        conn.query_row(
+            "SELECT icon FROM spaces WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        ).unwrap()
+    }
+
+    #[test]
+    fn update_workspace_changes_name() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-real", "Original");
+        super::do_update_workspace(&conn, "ws-real", Some("Renamed".into()), None).unwrap();
+        assert_eq!(read_workspace_name(&conn, "ws-real"), "Renamed");
+    }
+
+    #[test]
+    fn update_workspace_refuses_to_rename_default() {
+        let conn = fresh_db();
+        let r = super::do_update_workspace(&conn, "default", Some("NotDefault".into()), None);
+        assert!(r.is_err(), "renaming 'default' must return Err");
+        assert_eq!(read_workspace_name(&conn, "default"), "默认工作区");
+    }
+
+    #[test]
+    fn update_workspace_allows_icon_change_on_default() {
+        let conn = fresh_db();
+        super::do_update_workspace(&conn, "default", None, Some("🌟".into())).unwrap();
+        assert_eq!(read_workspace_icon(&conn, "default"), "🌟");
     }
 }

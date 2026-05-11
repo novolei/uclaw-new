@@ -232,6 +232,10 @@ export const createWorkspace = (name: string, path?: string, icon?: string): Pro
 export const deleteWorkspace = (id: string): Promise<void> =>
   invoke('delete_workspace', { id })
 
+export const updateWorkspace = (input: { id: string; name?: string; icon?: string }): Promise<{
+  id: string; name: string; icon: string; path: string | null; sortOrder: number; createdAt: string; updatedAt: string
+}> => invoke('update_workspace', input)
+
 // ─── Session title ────────────────────────────────────────────────────
 
 export const generateSessionTitle = (sessionId: string, firstMessage: string): Promise<void> =>

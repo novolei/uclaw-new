@@ -499,6 +499,7 @@ fn main() {
             uclaw_core::tauri_commands::get_active_workspace_id,
             uclaw_core::tauri_commands::set_active_workspace_id,
             uclaw_core::tauri_commands::create_workspace,
+            uclaw_core::tauri_commands::update_workspace,
             uclaw_core::tauri_commands::delete_workspace,
             uclaw_core::tauri_commands::read_workspace_uclaw_md,
             uclaw_core::tauri_commands::write_workspace_uclaw_md,
