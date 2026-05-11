@@ -813,13 +813,15 @@
 }
 
 /* ===== TabBar 背景 ===== */
-/* 默认背景：提高对比度，并在底部加 1px 边线把 TabBar 与下面的内容卡片分开。
-   原先 muted/0.5 在浅色主题（暖纸、晨曦）下几乎与 content-area 融为一体，
-   导致 tab 栏看起来没有边界。提到 0.7 + 主题感知的底部边线后，
-   chrome 和卡片之间的层次关系更清晰，所有主题都能受益。 */
+/* 默认背景：用 muted 满不透明度 + secondary 渐变让 TabBar 明显从外部
+   workbench 背景中浮现。原先半透明 muted/0.7 在 warm-paper、light
+   等亮色主题下与 content-area 几乎同色（背景 #f8f5ed、卡片 #fcfaf5、
+   muted #f1ede3，三者只有 2-5 个亮度单位差），所以即便加了底边线
+   也只有微弱差异。改为满不透明 muted 直接把 chrome 和卡片拉开。
+   *不要* 再加 inset 底边阴影 —— 当 active tab 的 bg-content-area 与
+   阴影同层渲染时,会从 active tab 底部漏出一条细线（图二红框所示）。 */
 .tabbar-bg {
-  background-color: hsl(var(--muted) / 0.7);
-  box-shadow: inset 0 -1px 0 0 hsl(var(--border) / 0.8);
+  background-color: hsl(var(--muted));
 }
 
 /* 苍穹暮色：底部浅色阴影勾勒轮廓 */
