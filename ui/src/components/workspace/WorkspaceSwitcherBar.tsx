@@ -61,15 +61,16 @@ const modGlyph = isMac ? '⌘' : 'Ctrl'
  */
 const iconForWorkspace = (icon: string): LucideIcon => getWorkspaceIcon(icon)
 
-/** Tooltip pill — workspace name on left, ⌘ + digit chips on right (first 9). */
+/** Tooltip pill — workspace icon glyph + name on left, ⌘ + digit chips on right (first 9). */
 function WorkspaceTooltip({
   workspace, indexForShortcut,
 }: { workspace: WorkspaceInfo; indexForShortcut: number | null }): React.ReactElement {
+  const Icon = getWorkspaceIcon(workspace.icon)
   return (
     <div className="flex items-center gap-1.5 px-2 py-1 rounded-md
                     bg-popover/95 backdrop-blur-md border border-border/60
                     shadow-lg text-[12px] font-medium">
-      <span className="leading-none text-[13px]">{workspace.icon}</span>
+      <Icon className="size-3.5 text-foreground/70" aria-hidden />
       <span className="text-foreground">{workspace.name}</span>
       {indexForShortcut !== null && indexForShortcut < 9 && (
         <>
