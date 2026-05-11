@@ -387,11 +387,7 @@ export function ApprovalModal(): React.ReactElement {
   if (request && request.kind === 'path') {
     return (
       <AlertDialog open={!!request} onOpenChange={(open) => { if (!open) setRequest(null) }}>
-        <AlertDialogContent className="sm:max-w-lg overflow-hidden p-0">
-          {/* Risk accent bar — 2px stripe across the top of the dialog
-              ties the chrome to the request's risk severity. */}
-          <div className={cn('h-[2px] w-full', risk.bar)} aria-hidden />
-
+        <AlertDialogContent className="sm:max-w-lg overflow-hidden p-0 rounded-2xl sm:rounded-2xl">
           <div className="p-5 space-y-4">
             <AlertDialogHeader>
               <Hero
@@ -486,10 +482,7 @@ export function ApprovalModal(): React.ReactElement {
 
   return (
     <AlertDialog open={!!request} onOpenChange={(open) => { if (!open) setRequest(null) }}>
-      <AlertDialogContent className="sm:max-w-lg overflow-hidden p-0">
-        {/* Risk accent bar — same treatment as the path variant. */}
-        <div className={cn('h-[2px] w-full', risk.bar)} aria-hidden />
-
+      <AlertDialogContent className="sm:max-w-lg overflow-hidden p-0 rounded-2xl sm:rounded-2xl">
         <div className="p-5 space-y-4">
           <AlertDialogHeader>
             <Hero
