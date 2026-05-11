@@ -23,13 +23,26 @@ import { MoveSessionDialog } from '@/components/agent/MoveSessionDialog'
 import {
   agentSessionsAtom,
   agentSessionIndicatorMapAtom,
+  togglePinAgentSessionAtom,
 } from '@/atoms/agent-atoms'
 import type { AgentWorkspace } from '@/lib/agent-types'
+import { toast } from 'sonner'
 
 interface WorkspaceRailProps {
   activeSessionId: string | null
   onSelectSession: (sessionId: string) => void
   onDeleteSession?: (sessionId: string) => void
+}
+
+/** Section label inside WorkspaceRail. Matches the OVERVIEW labels
+ *  used in the approval modal (text-[10px], uppercase, tracking-wider). */
+function SegmentHeader({ children }: { children: React.ReactNode }): React.ReactElement {
+  return (
+    <p className="text-[10px] font-semibold uppercase tracking-wider
+                  text-muted-foreground/70 mt-2 mb-1 px-2">
+      {children}
+    </p>
+  )
 }
 
 export function WorkspaceRail({
@@ -65,9 +78,28 @@ export function WorkspaceRail({
     refreshWorkspaces()
   }, [refreshWorkspaces])
 
+  const togglePin = useSetAtom(togglePinAgentSessionAtom)
+
   const sessions = activeWorkspaceId
     ? (workspaceSessions[activeWorkspaceId] ?? [])
     : []
+
+  // Two-segment split: pinned (sorted by pinnedAt DESC — most recently
+  // pinned at the top) and unpinned (preserves the source atom's
+  // updatedAt DESC order).
+  const pinned = sessions
+    .filter((s) => s.pinnedAt !== null)
+    .sort((a, b) => (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0))
+  const unpinned = sessions.filter((s) => s.pinnedAt === null)
+
+  const handleTogglePin = async (id: string): Promise<void> => {
+    try {
+      await togglePin(id)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(`固定失败：${msg}`)
+    }
+  }
 
   return (
     <>
@@ -77,7 +109,34 @@ export function WorkspaceRail({
             尚无会话。点击上方"新会话"开始。
           </p>
         )}
-        {sessions.map((s) => (
+
+        {pinned.length > 0 && (
+          <>
+            <SegmentHeader>📌 固定</SegmentHeader>
+            {pinned.map((s) => (
+              <SessionItem
+                key={s.id}
+                id={s.id}
+                title={s.title}
+                titleEmoji={s.titleEmoji}
+                titlePending={s.titlePending}
+                isActive={activeSessionId === s.id}
+                running={indicatorMap.get(s.id) === 'running'}
+                isPinned
+                onClick={() => onSelectSession(s.id)}
+                onDelete={onDeleteSession ? () => onDeleteSession(s.id) : undefined}
+                onMove={() => setMoveTargetSessionId(s.id)}
+                onTogglePin={() => void handleTogglePin(s.id)}
+              />
+            ))}
+          </>
+        )}
+
+        {pinned.length > 0 && unpinned.length > 0 && (
+          <SegmentHeader>会话</SegmentHeader>
+        )}
+
+        {unpinned.map((s) => (
           <SessionItem
             key={s.id}
             id={s.id}
@@ -86,9 +145,11 @@ export function WorkspaceRail({
             titlePending={s.titlePending}
             isActive={activeSessionId === s.id}
             running={indicatorMap.get(s.id) === 'running'}
+            isPinned={false}
             onClick={() => onSelectSession(s.id)}
             onDelete={onDeleteSession ? () => onDeleteSession(s.id) : undefined}
             onMove={() => setMoveTargetSessionId(s.id)}
+            onTogglePin={() => void handleTogglePin(s.id)}
           />
         ))}
       </div>

@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { LoaderCircle, MoreHorizontal, FolderInput, Trash2 } from 'lucide-react'
+import { LoaderCircle, MoreHorizontal, FolderInput, Trash2, Pin, PinOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   DropdownMenu,
@@ -16,9 +16,14 @@ interface SessionItemProps {
   isActive: boolean
   /** Whether the agent loop is currently running for this session. */
   running?: boolean
+  /** True when the session has a non-null pinned_at; drives menu label
+   *  and (eventually) any visual pin indicator the rail wants to show. */
+  isPinned?: boolean
   onClick: () => void
   onDelete?: () => void
   onMove?: () => void
+  /** Toggle the session's pin state. Omitted = menu item hidden. */
+  onTogglePin?: () => void
 }
 
 export function SessionItem({
@@ -27,11 +32,13 @@ export function SessionItem({
   titlePending,
   isActive,
   running,
+  isPinned,
   onClick,
   onDelete,
   onMove,
+  onTogglePin,
 }: SessionItemProps): React.ReactElement {
-  const hasMenu = Boolean(onDelete || onMove)
+  const hasMenu = Boolean(onDelete || onMove || onTogglePin)
   return (
     <div
       onClick={onClick}
@@ -87,6 +94,15 @@ export function SessionItem({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" side="bottom" sideOffset={4} className="w-40 min-w-0 p-0.5 z-[100]">
+              {onTogglePin && (
+                <DropdownMenuItem
+                  className="text-xs py-1 [&>svg]:size-3.5"
+                  onSelect={() => { onTogglePin() }}
+                >
+                  {isPinned ? <PinOff /> : <Pin />}
+                  {isPinned ? '取消固定' : '固定'}
+                </DropdownMenuItem>
+              )}
               {onMove && (
                 <DropdownMenuItem
                   className="text-xs py-1 [&>svg]:size-3.5"
