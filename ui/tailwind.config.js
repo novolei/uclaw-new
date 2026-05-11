@@ -50,6 +50,22 @@ export default {
           muted: 'hsl(var(--tooltip-muted) / <alpha-value>)',
         },
         'content-area': 'hsl(var(--content-area) / <alpha-value>)',
+        // Semantic tokens already defined per-theme in globals.css — exposed
+        // here so components (approval modal, toasts, status badges) can
+        // reach them without hardcoding bg-yellow-500 / text-red-500 etc.,
+        // which break under warm-paper / qingye / forest-* themes.
+        success: {
+          DEFAULT: 'hsl(var(--success))',
+          bg: 'hsl(var(--success-bg))',
+        },
+        warning: {
+          DEFAULT: 'hsl(var(--warning))',
+          bg: 'hsl(var(--warning-bg))',
+        },
+        danger: {
+          DEFAULT: 'hsl(var(--danger))',
+          bg: 'hsl(var(--danger-bg))',
+        },
       },
       fontFamily: {
         // CSS 变量驱动 — 切换主题时自动跟随
