@@ -970,6 +970,11 @@ impl LoopDelegate for ChatDelegate {
                                     &format!("Error: {}", reason),
                                     true,
                                 ));
+                                let _ = self.app_handle.emit("agent:tool-rejected", serde_json::json!({
+                                    "toolName": tc.name,
+                                    "toolCallId": tc.id,
+                                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                                }));
                                 continue;
                             }
                             PathDecision::Prompt { reason } => {
@@ -996,11 +1001,20 @@ impl LoopDelegate for ChatDelegate {
                                     }
                                 });
                                 if !path_result.approved {
+                                    let paths_str = candidate_paths.iter()
+                                        .map(|p| p.display().to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(", ");
                                     reason_ctx.messages.push(ChatMessage::user_tool_result(
                                         &tc.id,
-                                        "Error: User denied access to out-of-workspace path.",
+                                        &format!("Error: User denied access to path(s): {}", paths_str),
                                         true,
                                     ));
+                                    let _ = self.app_handle.emit("agent:tool-rejected", serde_json::json!({
+                                        "toolName": tc.name,
+                                        "toolCallId": tc.id,
+                                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                                    }));
                                     continue;
                                 }
                                 if path_result.path_scope.as_deref() == Some("session") {
