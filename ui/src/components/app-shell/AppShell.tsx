@@ -106,7 +106,8 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
             toast.success(`已附加目录: ${p}`)
           } else {
             const writtenPath = await copyFileIntoWorkspace(ws, p)
-            console.debug('[drop] copied file', p, '→', writtenPath)
+            const basename = writtenPath.split('/').pop() ?? writtenPath
+            toast.success(`已上传文件: ${basename}`)
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)

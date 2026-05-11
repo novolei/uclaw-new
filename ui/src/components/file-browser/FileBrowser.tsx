@@ -36,6 +36,9 @@ interface FileBrowserProps {
   hideEmpty?: boolean
   /** 自定义类名 */
   className?: string
+  /** External refresh signal — bumping this re-fetches from disk
+   *  (only meaningful when `files` prop is not supplied — i.e. auto-load mode). */
+  version?: number
 }
 
 /** 单个文件/目录节点 */
@@ -137,6 +140,7 @@ export function FileBrowser({
   embedded = false,
   hideEmpty = false,
   className,
+  version,
 }: FileBrowserProps): React.ReactElement {
   // If parent supplies `files`, render those directly (legacy mode).
   // Otherwise auto-load the immediate children of `rootPath` from disk.
@@ -171,7 +175,7 @@ export function FileBrowser({
       })
       .finally(() => { if (!cancelled) setAutoLoading(false) })
     return () => { cancelled = true }
-  }, [rootPath, filesProp, reloadKey])
+  }, [rootPath, filesProp, reloadKey, version])
 
   const files = filesProp ?? autoFiles
   const loading = loadingProp || autoLoading

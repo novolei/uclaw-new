@@ -285,6 +285,7 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
               <div className="flex-1 min-h-0 overflow-y-auto">
                 <FileBrowser
                   rootPath={sessionPath}
+                  version={filesVersion}
                   hideToolbar
                   embedded
                   onAddToChat={handleAddToChat}
@@ -335,6 +336,7 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
               {workspaceFilesPath && (
                 <FileBrowser
                   rootPath={workspaceFilesPath}
+                  version={filesVersion}
                   hideToolbar
                   embedded
                   onAddToChat={handleAddToChat}
