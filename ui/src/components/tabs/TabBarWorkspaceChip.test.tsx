@@ -21,13 +21,17 @@ function makeWs(id: string, name: string, icon = '📁'): WorkspaceInfo {
 describe('TabBarWorkspaceChip (passive label)', () => {
   beforeEach(() => { document.body.innerHTML = '' })
 
-  it('renders active workspace emoji + name', () => {
+  it('renders active workspace icon + name', () => {
     const store = createStore()
     store.set(workspacesAtom, [makeWs('w1', '2222', '📁')])
     store.set(activeWorkspaceIdAtom, 'w1')
     render(<Provider store={store}><TabBarWorkspaceChip /></Provider>)
     expect(screen.getByText('2222')).toBeInTheDocument()
-    expect(screen.getByText('📁')).toBeInTheDocument()
+    // Phase 4b icon-picker switch: workspace.icon is resolved through
+    // getWorkspaceIcon → a lucide component (legacy '📁' still maps to
+    // the Folder glyph). Assert via title attribute, since the icon
+    // itself is an SVG with no text content.
+    expect(screen.getByTitle(/工作区: 2222/)).toBeInTheDocument()
   })
 
   it('truncates names longer than 12 chars', () => {
