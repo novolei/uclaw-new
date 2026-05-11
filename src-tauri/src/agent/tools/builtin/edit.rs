@@ -158,6 +158,10 @@ impl Tool for EditTool {
         ApprovalRequirement::UnlessAutoApproved
     }
 
+    fn path_args<'a>(&self, args: &'a serde_json::Value) -> Vec<&'a str> {
+        args["path"].as_str().map(|s| vec![s]).unwrap_or_default()
+    }
+
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
 
@@ -220,5 +224,18 @@ impl Tool for EditTool {
 
         info!(path = %full_path.display(), applied, "Edits applied successfully");
         Ok(ToolOutput::success(&summary, start.elapsed().as_millis() as u64))
+    }
+}
+
+#[cfg(test)]
+mod path_args_tests {
+    use super::*;
+    use crate::agent::tools::tool::Tool;
+
+    #[test]
+    fn edit_path_args_returns_path() {
+        let tool = EditTool::new(std::path::PathBuf::from("/tmp"));
+        let args = serde_json::json!({"path": "lib.rs", "edits": []});
+        assert_eq!(tool.path_args(&args), vec!["lib.rs"]);
     }
 }

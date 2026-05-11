@@ -348,6 +348,10 @@ impl Tool for BashTool {
         }
     }
 
+    fn path_args<'a>(&self, args: &'a serde_json::Value) -> Vec<&'a str> {
+        args["working_dir"].as_str().map(|s| vec![s]).unwrap_or_default()
+    }
+
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
 
@@ -597,5 +601,25 @@ mod tests {
         let truncated = BashTool::truncate_output(long);
         assert!(truncated.contains("OUTPUT TRUNCATED"));
         assert!(truncated.len() < MAX_OUTPUT_SIZE + 200);
+    }
+}
+
+#[cfg(test)]
+mod path_args_tests {
+    use super::*;
+    use crate::agent::tools::tool::Tool;
+
+    #[test]
+    fn bash_path_args_returns_working_dir_when_present() {
+        let tool = BashTool::new(PathBuf::from("/tmp"));
+        let args = serde_json::json!({"command": "ls", "working_dir": "/var/log"});
+        assert_eq!(tool.path_args(&args), vec!["/var/log"]);
+    }
+
+    #[test]
+    fn bash_path_args_empty_when_no_working_dir() {
+        let tool = BashTool::new(PathBuf::from("/tmp"));
+        let args = serde_json::json!({"command": "ls"});
+        assert!(tool.path_args(&args).is_empty());
     }
 }

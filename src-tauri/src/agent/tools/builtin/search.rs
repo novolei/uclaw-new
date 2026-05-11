@@ -29,6 +29,10 @@ impl Tool for GrepTool {
         ApprovalRequirement::Never
     }
 
+    fn path_args<'a>(&self, args: &'a serde_json::Value) -> Vec<&'a str> {
+        args["path"].as_str().map(|s| vec![s]).unwrap_or_default()
+    }
+
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
         let pattern = params["pattern"].as_str().ok_or_else(|| ToolError::InvalidParams("pattern is required".into()))?;
@@ -119,6 +123,10 @@ impl Tool for GlobTool {
         ApprovalRequirement::Never
     }
 
+    fn path_args<'a>(&self, args: &'a serde_json::Value) -> Vec<&'a str> {
+        args["path"].as_str().map(|s| vec![s]).unwrap_or_default()
+    }
+
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
         let pattern = params["pattern"].as_str().ok_or_else(|| ToolError::InvalidParams("pattern is required".into()))?;
@@ -188,5 +196,32 @@ impl GlobTool {
             return path.ends_with(suffix);
         }
         path.contains(pattern) || path == pattern
+    }
+}
+
+#[cfg(test)]
+mod path_args_tests {
+    use super::*;
+    use crate::agent::tools::tool::Tool;
+
+    #[test]
+    fn grep_path_args_returns_path_when_present() {
+        let tool = GrepTool::new(std::path::PathBuf::from("/tmp"));
+        let args = serde_json::json!({"pattern": "TODO", "path": "src/"});
+        assert_eq!(tool.path_args(&args), vec!["src/"]);
+    }
+
+    #[test]
+    fn grep_path_args_empty_when_absent() {
+        let tool = GrepTool::new(std::path::PathBuf::from("/tmp"));
+        let args = serde_json::json!({"pattern": "TODO"});
+        assert!(tool.path_args(&args).is_empty());
+    }
+
+    #[test]
+    fn glob_path_args_returns_path_when_present() {
+        let tool = GlobTool::new(std::path::PathBuf::from("/tmp"));
+        let args = serde_json::json!({"pattern": "**/*.rs", "path": "src/"});
+        assert_eq!(tool.path_args(&args), vec!["src/"]);
     }
 }

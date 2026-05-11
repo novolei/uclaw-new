@@ -70,6 +70,14 @@ pub trait Tool: Send + Sync {
     fn estimated_cost(&self, _params: &serde_json::Value) -> Option<f64> { None }
     fn estimated_duration(&self, _params: &serde_json::Value) -> Option<Duration> { None }
     fn requires_approval(&self, _params: &serde_json::Value) -> ApprovalRequirement { ApprovalRequirement::default() }
+
+    /// Return the argument keys that name filesystem paths. The dispatcher
+    /// uses these to consult the SafetyManager's PathPolicy before invoking
+    /// `execute`. Default impl returns empty — tools without path args (web,
+    /// plan, exit_plan_mode, etc.) inherit this.
+    fn path_args<'a>(&self, _arguments: &'a serde_json::Value) -> Vec<&'a str> {
+        Vec::new()
+    }
 }
 
 /// Tool registry
