@@ -669,7 +669,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
       {mode === 'agent' ? (
         <>
           <WorkspaceHeader />
-          <div className="flex-1 overflow-hidden">
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
             <WorkspaceRail
               activeSessionId={activeTabId ?? null}
               onSelectSession={(id) => {
