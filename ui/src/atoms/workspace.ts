@@ -19,6 +19,8 @@ export interface WorkspaceSession {
   titlePending: boolean
   spaceId: string
   updatedAt: string
+  /** ms timestamp; null means unpinned. */
+  pinnedAt: number | null
 }
 
 // All workspaces from backend
@@ -143,6 +145,7 @@ export const syncWorkspaceSessionsAtom = atom(
         titlePending: s.titlePending ?? meta.title_pending ?? false,
         spaceId,
         updatedAt: s.updatedAt ?? '',
+        pinnedAt: typeof s.pinnedAt === 'number' ? s.pinnedAt : null,
       })
     }
     set(workspaceSessionsAtom, grouped)

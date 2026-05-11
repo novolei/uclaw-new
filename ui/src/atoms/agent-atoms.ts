@@ -222,6 +222,26 @@ export const agentSessionChannelMapAtom = atom<Map<string, string>>(new Map())
 export const agentSessionModelMapAtom = atom<Map<string, string>>(new Map())
 export const currentAgentSessionIdAtom = atom<string | null>(null)
 export const currentAgentMessagesAtom = atom<AgentMessage[]>([])
+
+/**
+ * Toggle the pin state on an agent session. Calls the backend then
+ * optimistically updates `agentSessionsAtom` so the UI reflects the
+ * new state without a refetch. Errors propagate to the caller for
+ * toast surfacing.
+ */
+export const togglePinAgentSessionAtom = atom(
+  null,
+  async (_get, set, sessionId: string) => {
+    const { togglePinAgentSession } = await import('@/lib/tauri-bridge')
+    const newPinnedAt = await togglePinAgentSession(sessionId)
+    set(agentSessionsAtom, (prev) =>
+      prev.map((s) =>
+        s.id === sessionId ? { ...s, pinnedAt: newPinnedAt } : s
+      ) as typeof prev
+    )
+    return newPinnedAt
+  }
+)
 export const agentStreamingStatesAtom = atom<Map<string, AgentStreamState>>(new Map())
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

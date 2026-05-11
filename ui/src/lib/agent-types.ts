@@ -23,10 +23,13 @@ export interface AgentSessionMeta {
   channelId?: string
   modelId?: string
   sdkSessionId?: string
-  /** 是否置顶 */
+  /** 是否置顶 (legacy, chat-only) */
   pinned?: boolean
   /** 是否已归档 */
   archived?: boolean
+  /** Pin timestamp (ms). Null means unpinned. Canonical agent-UI pin state
+   *  — distinct from the legacy `pinned?: boolean` which is chat-only. */
+  pinnedAt?: number | null
   /** 手动标记为工作中 */
   manualWorking?: boolean
   /** 附加的额外目录 */

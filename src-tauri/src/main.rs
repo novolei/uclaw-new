@@ -478,6 +478,7 @@ fn main() {
             uclaw_core::tauri_commands::stop_agent_session,
             uclaw_core::tauri_commands::create_agent_session,
             uclaw_core::tauri_commands::delete_agent_session,
+            uclaw_core::tauri_commands::toggle_pin_agent_session,
             uclaw_core::tauri_commands::list_agent_sessions,
             uclaw_core::tauri_commands::get_agent_session_messages,
             uclaw_core::tauri_commands::send_agent_message,
