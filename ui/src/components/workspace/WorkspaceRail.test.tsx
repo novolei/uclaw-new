@@ -15,12 +15,20 @@ vi.mock('@/lib/tauri-bridge', () => ({
   setActiveWorkspaceId: vi.fn(),
   listSpaces: vi.fn().mockResolvedValue([]),
   getActiveWorkspaceId: vi.fn().mockResolvedValue(null),
+  togglePinAgentSession: vi.fn().mockResolvedValue(1_700_000_000_000),
 }))
 
 function makeWs(id: string, name: string): WorkspaceInfo {
   return {
     id, name, icon: '📁', path: '/tmp', attachedDirs: [], sortOrder: 0,
     createdAt: '2026-05-11T00:00:00Z', updatedAt: '2026-05-11T00:00:00Z',
+  }
+}
+
+function session(id: string, pinnedAt: number | null, updatedAt = '2026-05-11T00:00:00Z') {
+  return {
+    id, title: id, titleEmoji: '💬', titlePending: false,
+    spaceId: 'w1', updatedAt, pinnedAt,
   }
 }
 
@@ -84,5 +92,73 @@ describe('WorkspaceRail (active workspace only)', () => {
     )
     fireEvent.click(screen.getByText('Pick me'))
     expect(onSelect).toHaveBeenCalledWith('s-click')
+  })
+
+  it('hides the pinned segment header when no sessions are pinned', () => {
+    const store = createStore()
+    store.set(workspacesAtom, [makeWs('w1', 'A')])
+    store.set(activeWorkspaceIdAtom, 'w1')
+    store.set(workspaceSessionsAtom, {
+      w1: [session('a', null), session('b', null)],
+    })
+    store.set(agentSessionsAtom, [])
+    render(
+      <Provider store={store}>
+        <WorkspaceRail activeSessionId={null} onSelectSession={() => {}} />
+      </Provider>
+    )
+    expect(screen.queryByText('📌 固定')).not.toBeInTheDocument()
+    expect(screen.queryByText('会话')).not.toBeInTheDocument()
+  })
+
+  it('renders pinned segment above unpinned when at least one is pinned', () => {
+    const store = createStore()
+    store.set(workspacesAtom, [makeWs('w1', 'A')])
+    store.set(activeWorkspaceIdAtom, 'w1')
+    store.set(workspaceSessionsAtom, {
+      w1: [
+        session('a', null),
+        session('b', 1_700_000_000_000),
+        session('c', null),
+      ],
+    })
+    store.set(agentSessionsAtom, [])
+    render(
+      <Provider store={store}>
+        <WorkspaceRail activeSessionId={null} onSelectSession={() => {}} />
+      </Provider>
+    )
+    const pinnedHeader = screen.getByText('📌 固定')
+    const unpinnedHeader = screen.getByText('会话')
+    expect(pinnedHeader).toBeInTheDocument()
+    expect(unpinnedHeader).toBeInTheDocument()
+
+    // DOM order: pinned header appears before unpinned header.
+    const pinnedPos = pinnedHeader.compareDocumentPosition(unpinnedHeader)
+    expect(pinnedPos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('sorts the pinned segment by pinnedAt DESC (most recent first)', () => {
+    const store = createStore()
+    store.set(workspacesAtom, [makeWs('w1', 'A')])
+    store.set(activeWorkspaceIdAtom, 'w1')
+    store.set(workspaceSessionsAtom, {
+      w1: [
+        session('older', 1_000),
+        session('newer', 2_000),
+        session('middle', 1_500),
+      ],
+    })
+    store.set(agentSessionsAtom, [])
+    render(
+      <Provider store={store}>
+        <WorkspaceRail activeSessionId={null} onSelectSession={() => {}} />
+      </Provider>
+    )
+    const newer = screen.getByText('newer')
+    const middle = screen.getByText('middle')
+    const older = screen.getByText('older')
+    expect(newer.compareDocumentPosition(middle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(middle.compareDocumentPosition(older) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 })
