@@ -82,6 +82,15 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     win: 'Ctrl+K Ctrl+S',
   },
 
+  // ─── 工作区切换 ───
+  ...Array.from({ length: 9 }, (_, i) => ({
+    id: `switch-workspace-${i + 1}`,
+    label: `切换到第 ${i + 1} 个工作区`,
+    group: '导航',
+    mac: `Cmd+${i + 1}`,
+    win: `Ctrl+${i + 1}`,
+  })),
+
   // ─── 搜索 ───
   {
     id: 'global-search',
