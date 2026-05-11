@@ -74,6 +74,7 @@ interface WorkspaceItemProps {
   index: number
   active: boolean
   running: boolean
+  onSelect: (id: string) => void
   onDragStart: (e: React.DragEvent, id: string) => void
   onDragOver: (e: React.DragEvent, id: string) => void
   onDragLeave: (e: React.DragEvent) => void
@@ -84,106 +85,100 @@ interface WorkspaceItemProps {
 }
 
 function WorkspaceIcon({
-  workspace, index, active, running,
+  workspace, index, active, running, onSelect,
   onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd,
   isDragging, dropIndicator,
 }: WorkspaceItemProps): React.ReactElement {
-  const selectWorkspace = useSetAtom(selectWorkspaceAtom)
   return (
-    <TooltipProvider delayDuration={0}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            draggable
-            onDragStart={(e) => onDragStart(e, workspace.id)}
-            onDragOver={(e) => onDragOver(e, workspace.id)}
-            onDragLeave={onDragLeave}
-            onDrop={(e) => onDrop(e, workspace.id)}
-            onDragEnd={onDragEnd}
-            onClick={() => void selectWorkspace(workspace.id)}
-            aria-label={`工作区: ${workspace.name}`}
-            className={cn(
-              'titlebar-no-drag relative inline-flex items-center justify-center',
-              'size-6 rounded-md transition-colors',
-              active
-                ? 'bg-primary/10 ring-2 ring-primary ring-offset-1 ring-offset-background'
-                : 'hover:bg-foreground/[0.06]',
-              isDragging && 'opacity-40',
-            )}
-          >
-            <span className="leading-none text-[14px]">{workspace.icon}</span>
-            {running && (
-              <span
-                className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full
-                           bg-primary animate-pulse
-                           shadow-[0_0_4px_hsl(var(--primary))]"
-                aria-label="该工作区有任务执行中"
-              />
-            )}
-            {dropIndicator === 'before' && (
-              <span className="absolute -left-1 top-0 bottom-0 w-0.5 bg-primary rounded-full" />
-            )}
-            {dropIndicator === 'after' && (
-              <span className="absolute -right-1 top-0 bottom-0 w-0.5 bg-primary rounded-full" />
-            )}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="top" sideOffset={6} className="p-0 border-0 bg-transparent shadow-none">
-          <WorkspaceTooltip workspace={workspace} indexForShortcut={index} />
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          draggable
+          onDragStart={(e) => onDragStart(e, workspace.id)}
+          onDragOver={(e) => onDragOver(e, workspace.id)}
+          onDragLeave={onDragLeave}
+          onDrop={(e) => onDrop(e, workspace.id)}
+          onDragEnd={onDragEnd}
+          onClick={() => void onSelect(workspace.id)}
+          aria-label={`工作区: ${workspace.name}`}
+          className={cn(
+            'titlebar-no-drag relative inline-flex items-center justify-center',
+            'size-6 rounded-md transition-colors',
+            active
+              ? 'bg-primary/10 ring-2 ring-primary ring-offset-1 ring-offset-background'
+              : 'hover:bg-foreground/[0.06]',
+            isDragging && 'opacity-40',
+          )}
+        >
+          <span className="leading-none text-[14px]">{workspace.icon}</span>
+          {running && (
+            <span
+              className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full
+                         bg-primary animate-pulse
+                         shadow-[0_0_4px_hsl(var(--primary))]"
+              aria-label="该工作区有任务执行中"
+            />
+          )}
+          {dropIndicator === 'before' && (
+            <span className="absolute -left-1 top-0 bottom-0 w-0.5 bg-primary rounded-full" />
+          )}
+          {dropIndicator === 'after' && (
+            <span className="absolute -right-1 top-0 bottom-0 w-0.5 bg-primary rounded-full" />
+          )}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6} className="p-0 border-0 bg-transparent shadow-none">
+        <WorkspaceTooltip workspace={workspace} indexForShortcut={index} />
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
 function WorkspaceDot({
-  workspace, index, running,
+  workspace, index, running, onSelect,
   onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd,
   isDragging, dropIndicator,
 }: WorkspaceItemProps): React.ReactElement {
-  const selectWorkspace = useSetAtom(selectWorkspaceAtom)
   return (
-    <TooltipProvider delayDuration={0}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            draggable
-            onDragStart={(e) => onDragStart(e, workspace.id)}
-            onDragOver={(e) => onDragOver(e, workspace.id)}
-            onDragLeave={onDragLeave}
-            onDrop={(e) => onDrop(e, workspace.id)}
-            onDragEnd={onDragEnd}
-            onClick={() => void selectWorkspace(workspace.id)}
-            aria-label={`工作区: ${workspace.name} (workspace dot)`}
-            className={cn(
-              'titlebar-no-drag relative inline-flex items-center justify-center',
-              'size-3 rounded-full transition-colors',
-              'bg-foreground/30 hover:bg-foreground/50',
-              isDragging && 'opacity-40',
-            )}
-          >
-            {running && (
-              <span
-                className="absolute -top-px -right-px size-1 rounded-full
-                           bg-primary animate-pulse"
-                aria-label="该工作区有任务执行中"
-              />
-            )}
-            {dropIndicator === 'before' && (
-              <span className="absolute -left-1 top-0 bottom-0 w-0.5 bg-primary rounded-full" />
-            )}
-            {dropIndicator === 'after' && (
-              <span className="absolute -right-1 top-0 bottom-0 w-0.5 bg-primary rounded-full" />
-            )}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="top" sideOffset={6} className="p-0 border-0 bg-transparent shadow-none">
-          <WorkspaceTooltip workspace={workspace} indexForShortcut={index} />
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          draggable
+          onDragStart={(e) => onDragStart(e, workspace.id)}
+          onDragOver={(e) => onDragOver(e, workspace.id)}
+          onDragLeave={onDragLeave}
+          onDrop={(e) => onDrop(e, workspace.id)}
+          onDragEnd={onDragEnd}
+          onClick={() => void onSelect(workspace.id)}
+          aria-label={`工作区: ${workspace.name} (workspace dot)`}
+          className={cn(
+            'titlebar-no-drag relative inline-flex items-center justify-center',
+            'size-3 rounded-full transition-colors',
+            'bg-foreground/30 hover:bg-foreground/50',
+            isDragging && 'opacity-40',
+          )}
+        >
+          {running && (
+            <span
+              className="absolute -top-px -right-px size-1 rounded-full
+                         bg-primary animate-pulse"
+              aria-label="该工作区有任务执行中"
+            />
+          )}
+          {dropIndicator === 'before' && (
+            <span className="absolute -left-1 top-0 bottom-0 w-0.5 bg-primary rounded-full" />
+          )}
+          {dropIndicator === 'after' && (
+            <span className="absolute -right-1 top-0 bottom-0 w-0.5 bg-primary rounded-full" />
+          )}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6} className="p-0 border-0 bg-transparent shadow-none">
+        <WorkspaceTooltip workspace={workspace} indexForShortcut={index} />
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -280,6 +275,10 @@ export function WorkspaceSwitcherBar({
 
   const collapsed = workspaces.length > FULL_THRESHOLD
 
+  const handleSelect = React.useCallback((id: string) => {
+    void selectWorkspace(id)
+  }, [selectWorkspace])
+
   return (
     <>
       <div className="flex items-center gap-1 px-2 py-1.5 border-t border-border/40">
@@ -299,30 +298,33 @@ export function WorkspaceSwitcherBar({
         <div className="w-px h-5 bg-border/40 mx-1" />
 
         {/* Zone 2: workspace icons or dots */}
-        <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto scrollbar-none">
-          {workspaces.map((w, i) => {
-            const active = w.id === activeId
-            const running = runningWorkspaceIds.has(w.id)
-            const isDragging = dragId === w.id
-            const dropPos = dropIndicator?.id === w.id ? dropIndicator.position : null
+        <TooltipProvider delayDuration={0}>
+          <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto scrollbar-none">
+            {workspaces.map((w, i) => {
+              const active = w.id === activeId
+              const running = runningWorkspaceIds.has(w.id)
+              const isDragging = dragId === w.id
+              const dropPos = dropIndicator?.id === w.id ? dropIndicator.position : null
 
-            const shouldRenderAsDot = collapsed && !active
+              const shouldRenderAsDot = collapsed && !active
 
-            const commonProps = {
-              workspace: w, index: i, active, running,
-              onDragStart: handleDragStart,
-              onDragOver: handleDragOver,
-              onDragLeave: handleDragLeave,
-              onDrop: handleDrop,
-              onDragEnd: handleDragEnd,
-              isDragging, dropIndicator: dropPos,
-            }
+              const commonProps = {
+                workspace: w, index: i, active, running,
+                onSelect: handleSelect,
+                onDragStart: handleDragStart,
+                onDragOver: handleDragOver,
+                onDragLeave: handleDragLeave,
+                onDrop: handleDrop,
+                onDragEnd: handleDragEnd,
+                isDragging, dropIndicator: dropPos,
+              }
 
-            return shouldRenderAsDot
-              ? <WorkspaceDot key={w.id} {...commonProps} />
-              : <WorkspaceIcon key={w.id} {...commonProps} />
-          })}
-        </div>
+              return shouldRenderAsDot
+                ? <WorkspaceDot key={w.id} {...commonProps} />
+                : <WorkspaceIcon key={w.id} {...commonProps} />
+            })}
+          </div>
+        </TooltipProvider>
 
         <div className="w-px h-5 bg-border/40 mx-1" />
 
