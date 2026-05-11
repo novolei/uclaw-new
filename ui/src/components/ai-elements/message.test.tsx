@@ -56,13 +56,18 @@ describe('MessageResponse — tables', () => {
     expect(wrapper!.className).toContain('border')
   })
 
-  it('renders thead with muted background', () => {
+  it('renders thead with a muted/tinted background', () => {
     const { container } = renderWithProviders(
       <MessageResponse>{tableMd}</MessageResponse>,
     )
     const thead = container.querySelector('thead')
     expect(thead).not.toBeNull()
-    expect(thead!.className).toContain('bg-muted')
+    // PR #70/#72/#73 switched from bg-muted to bg-foreground/[0.05] —
+    // the muted token rendered invisible under several themes, while a
+    // foreground tint at 5% alpha is visible everywhere. Assert via the
+    // foreground prefix rather than the exact tint so future tweaks
+    // (e.g. 0.04 / 0.06) don't re-break the test.
+    expect(thead!.className).toContain('bg-foreground')
   })
 
   it('renders th with uppercase + tracking + muted-foreground', () => {

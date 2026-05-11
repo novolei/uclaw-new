@@ -207,7 +207,6 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         else setCurrentConversationId(h.sourceId)
         if (session?.workspaceId) {
           setCurrentAgentWorkspaceId(session.workspaceId)
-          localStorage.setItem(`uclaw:workspace:${h.sourceId}`, session.workspaceId)
         }
         if (h.messageId) {
           setTimeout(() => {

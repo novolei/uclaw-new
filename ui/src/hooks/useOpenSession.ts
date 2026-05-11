@@ -76,7 +76,6 @@ export function useOpenSession(): OpenSessionFn {
         // 同步 workspaceId，确保与 TabBar 切换行为一致
         if (session?.workspaceId) {
           setCurrentAgentWorkspaceId(session.workspaceId)
-          localStorage.setItem(`uclaw:workspace:${sessionId}`, session.workspaceId)
         }
       }
     },
