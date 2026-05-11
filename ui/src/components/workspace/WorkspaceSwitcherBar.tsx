@@ -381,7 +381,11 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
           <div
             ref={iconsContainerRef}
             className={cn(
-              'flex items-center gap-1 flex-1 min-w-0 overflow-x-auto scrollbar-none',
+              // overflow-x-clip (not -auto) so we can keep overflow-y-visible
+              // — `auto` on the x-axis forces y to also clip per CSS spec,
+              // which was cutting off the running-indicator badge's
+              // -top-0.5 overflow at the bar's top edge.
+              'flex items-center gap-1 flex-1 min-w-0 overflow-x-clip overflow-y-visible',
               // Compact mode: spread items to occupy the full bar width.
               // gap-1 stays the minimum; justify-between only adds extra
               // spacing when there's leftover room (items + min-gaps <
