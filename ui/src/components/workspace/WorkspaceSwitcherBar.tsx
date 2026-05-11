@@ -375,9 +375,9 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
 
   return (
     <>
-      <div className="flex items-center gap-1.5 px-3 py-2 border-t border-border/40">
-        {/* Workspace icons or dots */}
-        <TooltipProvider delayDuration={0}>
+      <TooltipProvider delayDuration={0}>
+        <div className="flex items-center gap-1.5 px-3 py-2 border-t border-border/40">
+          {/* Workspace icons or dots */}
           <div
             ref={iconsContainerRef}
             className={cn(
@@ -413,21 +413,27 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
                 : <WorkspaceIcon key={w.id} {...commonProps} />
             })}
           </div>
-        </TooltipProvider>
 
-        {/* + create new workspace */}
-        <button
-          type="button"
-          onClick={() => setCreateOpen(true)}
-          aria-label="新建工作区"
-          title="新建工作区"
-          className="titlebar-no-drag inline-flex items-center justify-center
-                     size-7 rounded-md text-foreground/55 hover:text-foreground
-                     hover:bg-foreground/[0.05] transition-colors shrink-0"
-        >
-          <Plus className="size-4" />
-        </button>
-      </div>
+          {/* + create new workspace */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => setCreateOpen(true)}
+                aria-label="新建工作区"
+                className="titlebar-no-drag inline-flex items-center justify-center
+                           size-7 rounded-md text-foreground/55 hover:text-foreground
+                           hover:bg-foreground/[0.05] transition-colors shrink-0"
+              >
+                <Plus className="size-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={6}>
+              <div className="font-medium">新建工作区</div>
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </TooltipProvider>
 
       <WorkspaceCreateDialog
         open={createOpen}
