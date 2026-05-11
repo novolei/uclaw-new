@@ -30,7 +30,7 @@ import {
 } from '@/atoms/agent-atoms'
 import { currentConversationIdAtom } from '@/atoms/chat-atoms'
 import { tabsAtom, activeTabIdAtom, openTab } from '@/atoms/tab-atoms'
-import { activeWorkspaceIdAtom } from '@/atoms/workspace'
+import { activeWorkspaceIdAtom, selectWorkspaceAtom } from '@/atoms/workspace'
 import { SearchPalette } from '@/components/search/SearchPalette'
 import { cn } from '@/lib/utils'
 import { installScrollToMessage } from '@/lib/scroll-to-message'
@@ -70,6 +70,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const setCurrentAgentWorkspaceId = useSetAtom(currentAgentWorkspaceIdAtom)
   const setAllPendingAskUserRequests = useSetAtom(allPendingAskUserRequestsAtom)
   const setAllPendingExitPlanRequests = useSetAtom(allPendingExitPlanRequestsAtom)
+  const selectWorkspace = useSetAtom(selectWorkspaceAtom)
 
   React.useEffect(() => {
     const dispose = installScrollToMessage()
@@ -183,6 +184,11 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         if (t.kind === 'agent') setCurrentAgentSessionId(t.id)
         else setCurrentConversationId(t.id)
         setCurrentAgentWorkspaceId(t.workspaceId)
+        // Same rationale as 'search_hit': flip activeWorkspaceIdAtom when
+        // the recent thread lives in a different workspace.
+        if (ws !== activeWorkspaceId) {
+          void selectWorkspace(ws)
+        }
         break
       }
       case 'workspace': {
@@ -215,6 +221,14 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         if (session?.workspaceId) {
           setCurrentAgentWorkspaceId(session.workspaceId)
         }
+        // Phase 6-B: auto-switch the active workspace when the user clicks a
+        // cross-workspace hit. The tab is already tagged with `ws` via openTab
+        // above (PR #83), but visibleTabsAtom for the *current* active
+        // workspace filters it out — we need to flip activeWorkspaceIdAtom
+        // too so the new tab actually appears.
+        if (ws && ws !== activeWorkspaceId) {
+          void selectWorkspace(ws)
+        }
         if (h.messageId) {
           setTimeout(() => {
             window.dispatchEvent(new CustomEvent('uclaw:scroll-to-message', {
@@ -225,7 +239,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         break
       }
     }
-  }, [tabs, setTabs, setActiveTabId, setAppMode, setCurrentConversationId, setCurrentAgentSessionId, agentSessions, setCurrentAgentWorkspaceId, activeWorkspaceId])
+  }, [tabs, setTabs, setActiveTabId, setAppMode, setCurrentConversationId, setCurrentAgentSessionId, agentSessions, setCurrentAgentWorkspaceId, activeWorkspaceId, selectWorkspace])
 
   return (
     <AppShellProvider value={contextValue}>
