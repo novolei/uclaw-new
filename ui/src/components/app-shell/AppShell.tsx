@@ -30,6 +30,7 @@ import {
 } from '@/atoms/agent-atoms'
 import { currentConversationIdAtom } from '@/atoms/chat-atoms'
 import { tabsAtom, activeTabIdAtom, openTab } from '@/atoms/tab-atoms'
+import { activeWorkspaceIdAtom } from '@/atoms/workspace'
 import { SearchPalette } from '@/components/search/SearchPalette'
 import { cn } from '@/lib/utils'
 import { installScrollToMessage } from '@/lib/scroll-to-message'
@@ -47,6 +48,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const appMode = useAtomValue(appModeAtom)
   const currentSessionId = useAtomValue(currentAgentSessionIdAtom)
   const isPanelOpen = useAtomValue(currentSessionSidePanelOpenAtom)
+  const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
   const showRightPanel = appMode === 'agent' && !!currentSessionId
 
   // Tab navigation atoms — used by handleSearchResultSelect
@@ -158,7 +160,8 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         const t = payload.thread
         // Open the right tab type — chat or agent
         const tabType = t.kind === 'agent' ? 'agent' : 'chat'
-        const result = openTab(tabs, { type: tabType, sessionId: t.id, title: '' })
+        const ws = activeWorkspaceId ?? 'default'
+        const result = openTab(tabs, { type: tabType, sessionId: t.id, title: '', workspaceId: ws })
         setTabs(result.tabs)
         setActiveTabId(result.activeTabId)
         // Update the per-domain "current" atoms so the view focuses correctly.
@@ -185,7 +188,8 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         const h = payload.hit
         // existing PR #29 behavior — open the session and scroll to the message
         const tabType = (h.source === 'agent_turn' || h.source === 'agent_message') ? 'agent' : 'chat'
-        const result = openTab(tabs, { type: tabType, sessionId: h.sourceId, title: '' })
+        const ws = activeWorkspaceId ?? 'default'
+        const result = openTab(tabs, { type: tabType, sessionId: h.sourceId, title: '', workspaceId: ws })
         setTabs(result.tabs)
         setActiveTabId(result.activeTabId)
         setAppMode((h.source === 'agent_turn' || h.source === 'agent_message') ? 'agent' : 'chat')

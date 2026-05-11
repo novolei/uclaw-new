@@ -22,6 +22,7 @@ import {
 import { activeViewAtom } from '@/atoms/active-view'
 import { appModeAtom } from '@/atoms/app-mode'
 import { tabsAtom, activeTabIdAtom, openTab } from '@/atoms/tab-atoms'
+import { activeWorkspaceIdAtom } from '@/atoms/workspace'
 import { createAgentSession, migrateChatToAgent, listAgentSessions, updateSettings } from '@/lib/tauri-bridge'
 
 export function AgentRecommendBanner(): React.ReactElement | null {
@@ -75,10 +76,12 @@ export function AgentRecommendBanner(): React.ReactElement | null {
 
       const sessionTitle = session.title ?? '新 Agent 会话'
       const tabs = store.get(tabsAtom)
+      const ws = store.get(activeWorkspaceIdAtom) ?? 'default'
       const result = openTab(tabs, {
         type: 'agent',
         sessionId: session.id,
         title: sessionTitle,
+        workspaceId: ws,
       })
       store.set(tabsAtom, result.tabs)
       store.set(activeTabIdAtom, result.activeTabId)
