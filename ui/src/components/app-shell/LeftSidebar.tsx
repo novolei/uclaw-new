@@ -67,7 +67,6 @@ import { hasEnvironmentIssuesAtom } from '@/atoms/environment'
 import { promptConfigAtom, selectedPromptIdAtom, conversationPromptIdAtom } from '@/atoms/system-prompt-atoms'
 import { useOpenSession } from '@/hooks/useOpenSession'
 import { useSyncActiveTabSideEffects } from '@/hooks/useSyncActiveTabSideEffects'
-import { WorkspaceSelector } from '@/components/agent/WorkspaceSelector'
 import { WorkspaceRail } from '@/components/workspace/WorkspaceRail'
 import { AutomationHub as AutomationHubComponent } from '@/components/automation/AutomationHub'
 import { syncWorkspaceSessionsAtom, refreshWorkspacesAtom, activeWorkspaceIdAtom, workspacesAtom } from '@/atoms/workspace'
@@ -683,8 +682,6 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
           </Tooltip>
         </div>
       </div>
-
-      {mode === 'agent' && <div className="px-3 pt-2"><WorkspaceSelector /></div>}
 
       <div className="px-3 pt-2 flex items-center gap-1.5">
         <button onClick={mode === 'agent' ? handleNewAgentSession : handleNewConversation} className="flex-1 flex items-center gap-2 px-3 py-2 rounded-[10px] text-[13px] font-medium text-foreground/70 bg-primary/5 hover:bg-primary/10 transition-colors duration-100 titlebar-no-drag border border-dashed border-[hsl(var(--dashed-border))] hover:border-[hsl(var(--dashed-border-hover))]">
