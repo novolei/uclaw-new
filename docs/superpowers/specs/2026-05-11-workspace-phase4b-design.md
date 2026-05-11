@@ -24,15 +24,16 @@ This is the final phase of the workspace remediation series. Phases 1-3 fixed th
 
 ## 2. Goals
 
-1. **`WorkspaceSwitcherBar`**: new bottom-of-sidebar bar `[automation] | [workspace icons OR dots] | [+]` with 1px dividers between zones. ≤5 workspaces show full emoji icons; >5 collapses non-active workspaces to 6px dots; only the active workspace keeps its full icon. Drag-reorder works on both icons and dots. Each icon/dot has a running-session pulse indicator when sessions in that workspace are executing.
+1. **`WorkspaceSwitcherBar`**: new bottom-of-sidebar bar `[automation] | [workspace icons OR dots] | [+]` with 1px dividers between zones. ≤5 workspaces show full emoji icons; >5 collapses non-active workspaces to 6px dots; only the active workspace keeps its full icon. Drag-reorder works on both icons and dots. Each icon/dot has a running-session pulse indicator when sessions in that workspace are executing. Hover tooltip uses ARC-style pill chips for `name + ⌘ + digit` (not plain text).
 2. **`WorkspaceHeader`**: new top-of-sidebar element showing active workspace's emoji + name + truncated path with hover ✏ rename and 🗑 delete buttons. Default workspace shows the read-only view (no buttons).
 3. **`WorkspaceRail` rewrite**: renders ONLY the active workspace's sessions as a flat list. Deletes the per-workspace tree iteration and the standalone "+ 新建工作区" button (moved to `WorkspaceSwitcherBar`'s `+`).
 4. **`TabBarWorkspaceChip` downgrade** (Phase 4a → 4b): becomes a passive label (emoji + truncated name, no chevron, no dropdown). Still useful as the only workspace indicator when the sidebar is collapsed.
 5. **Per-workspace right-panel tab memory**: new `workspaceActiveRightPanelTabMapAtom: Map<workspaceId, ActiveTab>` so each workspace remembers its last viewed Files/Teams/Plan/Trajectory/Browser tab.
 6. **User+Settings row stays at bottom**, BELOW the switcher bar — workspace switcher is per-app context; user/settings is cross-workspace global identity.
-7. **Backend untouched**. Reuses Phase 1-3 IPCs. No migrations.
-8. **Build green at every commit** — 5 commits, single PR.
-9. **Tests**: ~20 Vitest cases across 4 new/updated test files; ~5 deleted with `WorkspaceGroup`.
+7. **Remove the sidebar collapse feature entirely**: delete the `sidebarCollapsedAtom`, the `toggle-sidebar` (Cmd+B) shortcut, the collapse button UI, and the entire collapsed-mode render branch in `LeftSidebar.tsx`. Sidebar is always expanded. With the new switcher bar fitting at bottom, vertical space loss is minimal; the collapse mode was vestigial.
+8. **Backend untouched**. Reuses Phase 1-3 IPCs. No migrations.
+9. **Build green at every commit** — 5 commits, single PR.
+10. **Tests**: ~20 Vitest cases across 4 new/updated test files; ~5 deleted with `WorkspaceGroup`.
 
 ## 3. Non-Goals (deferred / out of scope)
 
@@ -41,7 +42,7 @@ This is the final phase of the workspace remediation series. Phases 1-3 fixed th
 - **Per-workspace last-active-session memory**: would persist "when I return to workspace A, restore the session I was last viewing". Out of scope; relies on existing per-session active-tab atoms already in place.
 - **Disk persistence of `workspaceActiveRightPanelTabMapAtom`**: in-memory only. App restart defaults all workspaces to Files tab. Adding disk persistence is straightforward but not Phase 4b scope.
 - **Background-session notification badges**: a count of completed/failed tool calls per workspace. The pulse-dot indicator only signals "something is running"; not history. Defer.
-- **Auto-collapse switcher bar when sidebar narrow**: if the sidebar gets narrower than icon-row width, the bar should compress or scroll. Phase 4b implementation: just hide the bar in collapsed-sidebar mode (sidebarCollapsed = true), since ⌘1..9 still works. Smarter behavior is Phase 5+ if it ever comes.
+- **Sidebar collapse mode**: deleted entirely (Goal #7). No "narrow sidebar with switcher bar" interaction to design.
 - **Workspace search input in switcher**: an input field inside the switcher dropdown to filter workspaces by name. Not needed for <20 workspaces; defer.
 - **Per-workspace icon picker beyond emoji**: ARC supports custom upload. We stay with the 8 default emojis from Phase 4a.
 
@@ -78,16 +79,50 @@ if (workspaces.length <= FULL_THRESHOLD) {
 - Active: `ring-2 ring-primary ring-offset-1 bg-primary/10`.
 - Hover: `bg-foreground/[0.06]`.
 - Running indicator: absolute top-right 6px pulse dot `bg-primary animate-pulse shadow-[0_0_4px_hsl(var(--primary))]`.
-- Tooltip (Radix Tooltip side="top"): `{emoji} {name}  ⌘{index+1}` for first 9; `{emoji} {name}` for 10+.
 - onClick → `selectWorkspaceAtom(w.id)`.
 - draggable=true.
 
 **`WorkspaceDot`** (collapsed mode only):
 - Button 12×12 hit area, visually 6px circle, `bg-foreground/30`.
-- Same hover/tooltip pattern as `WorkspaceIcon`.
+- Active: not applicable (active workspace always renders as full icon).
+- Hover: `bg-foreground/50` + slight size scale.
 - Running indicator: smaller 3px dot, no glow.
-- Tooltip is critical (only identifier).
 - Same drag behavior.
+
+**Shared tooltip — `WorkspaceTooltip` sub-component** (ARC-style):
+
+```tsx
+function WorkspaceTooltip({
+  workspace, indexForShortcut,
+}: { workspace: WorkspaceInfo; indexForShortcut: number | null }) {
+  return (
+    <div className="flex items-center gap-1.5 px-2 py-1 rounded-md
+                    bg-popover/95 backdrop-blur-md border border-border/60
+                    shadow-lg text-[12px] font-medium">
+      <span className="leading-none text-[13px]">{workspace.icon}</span>
+      <span className="text-foreground">{workspace.name}</span>
+      {indexForShortcut !== null && indexForShortcut < 9 && (
+        <>
+          <span className="px-1.5 py-0.5 rounded bg-primary/15 text-primary
+                           text-[10px] font-mono leading-none">
+            {isMac ? '⌘' : 'Ctrl'}
+          </span>
+          <span className="px-1.5 py-0.5 rounded bg-primary/15 text-primary
+                           text-[10px] font-mono leading-none">
+            {indexForShortcut + 1}
+          </span>
+        </>
+      )}
+    </div>
+  )
+}
+```
+
+Used inside Radix `<Tooltip>` for both `WorkspaceIcon` and `WorkspaceDot`. Sits `side="top"` with `sideOffset={6}`. The pill style matches the ARC reference visually:
+- Workspace name as plain text on left.
+- Two small pills on right: modifier (`⌘` or `Ctrl`) + digit, each with `bg-primary/15` background and `text-primary` foreground.
+- For workspaces beyond #9 (no shortcut), the right-side pills are omitted; tooltip shows only emoji + name.
+- Theme tokens throughout (`bg-popover`, `text-foreground`, `text-primary`) so the tooltip survives all 11 themes.
 
 **Automation button (zone 1)**: extracted from existing `LeftSidebar.tsx:790-815` logic. Reuses `setAutomationPanelOpen` and `AutomationSlideOver`.
 
@@ -397,7 +432,17 @@ Final layout (Agent mode, expanded):
 
 Chat mode: no `WorkspaceHeader`, no `WorkspaceSwitcherBar`. The workspace concepts don't apply in chat mode (sessions are workspace-scoped, conversations aren't).
 
-Sidebar-collapsed state: hide both `WorkspaceHeader` and `WorkspaceSwitcherBar`. The `TabBarWorkspaceChip` is the only workspace indicator. Users can still switch via ⌘1..9.
+**Sidebar collapse removal**: the existing collapsed-sidebar branch (`LeftSidebar.tsx:622-664`) is deleted entirely. Specifically:
+
+- `sidebarCollapsedAtom` in `@/atoms/tab-atoms` either deleted or kept as a permanent `false` (deletion preferred — no consumers remain after this change).
+- `toggle-sidebar` definition removed from `SHORTCUT_DEFINITIONS` (`shortcut-defaults.ts`). `Cmd+B` becomes unused; users who relied on it can be informed via release notes.
+- The corresponding `toggle-sidebar` handler in `GlobalShortcuts.tsx` deleted.
+- The collapse button in the sidebar UI (`PanelLeftClose` icon) is removed.
+- The 48-px collapsed branch of `LeftSidebar.tsx` is removed; the component returns the expanded layout unconditionally.
+
+This simplifies LeftSidebar from ~999 lines to ~700 lines net (after factoring in the new `WorkspaceHeader` + `WorkspaceSwitcherBar` mounts).
+
+**TabBarWorkspaceChip role**: with sidebar always expanded, the chip becomes purely supplementary (the WorkspaceHeader is the primary identity anchor). Still useful as a context cue in the TabBar chrome. Kept as the passive label per Goal #4.
 
 ## 5. Persistence
 
@@ -422,7 +467,7 @@ Sidebar-collapsed state: hide both `WorkspaceHeader` and `WorkspaceSwitcherBar`.
 
 | File | Cases |
 |---|---|
-| `WorkspaceSwitcherBar.test.tsx` | renders all icons for ≤5; collapses to dots for >5 with only active full; click icon → setActiveWorkspaceId; tooltip shows emoji + name + ⌘N; running indicator appears when any session in workspace is running; `+` opens CreateDialog; automation button opens slide-over; horizontal drag-reorder calls reorderWorkspaces |
+| `WorkspaceSwitcherBar.test.tsx` | renders all icons for ≤5; collapses to dots for >5 with only active full; click icon → setActiveWorkspaceId; tooltip renders pill-style chips (workspace name on left, `⌘` + digit pills on right) for first 9; tooltip omits shortcut pills for 10+; running indicator appears when any session in workspace is running; `+` opens CreateDialog; automation button opens slide-over; horizontal drag-reorder calls reorderWorkspaces |
 | `WorkspaceHeader.test.tsx` | renders active workspace name + emoji + truncated path; ✏ inline rename → Enter commits via updateWorkspace, Esc cancels; 🗑 opens AlertDialog → confirm calls deleteWorkspace + selectWorkspaceAtom('default'); rename + delete buttons absent when active = 'default' |
 | `WorkspaceRail.test.tsx` (replace existing) | renders ONLY active workspace's sessions; empty state shows hint; clicking session calls onSelectSession; three-dot menu → 移动到... opens MoveSessionDialog |
 | `RightSidePanel.test.tsx` (new) | active tab follows workspaceActiveRightPanelTabMapAtom per workspace; switching workspace restores its previous tab; plan:updated sets 'plan' only for active workspace |
@@ -434,7 +479,7 @@ Total: ~20 new/updated cases. Deleted: ~5 cases from `WorkspaceGroup.test.tsx`.
 
 1. **Switcher bar render**: bottom shows `[🤖] | [📁 📁 📁] | [+]` with dividers.
 2. **≤5 vs >5 collapse**: create workspaces; at 5 all full, at 6 non-active collapse to dots.
-3. **Tooltip**: hover any → `emoji name ⌘N` for first 9, `emoji name` for 10+.
+3. **Tooltip pill style**: hover any icon/dot → tooltip shows workspace name on left + `⌘` pill + digit pill on right (matching ARC's design) for first 9; 10+ shows only name + emoji.
 4. **Click switch**: click icon/dot → workspace switches; sessions tree refreshes; right panel restores last tab for that workspace.
 5. **Per-workspace tab memory**: switch to A, select Plan tab; switch to B; switch back to A → Plan tab restored.
 6. **Workspace header**: top of sidebar shows active workspace name + path; hover ✏ → inline rename works; 🗑 → confirm → workspace deletes, sessions re-homed.
@@ -445,6 +490,7 @@ Total: ~20 new/updated cases. Deleted: ~5 cases from `WorkspaceGroup.test.tsx`.
 11. **User + Settings row**: stays below switcher bar.
 12. **TabBar chip**: passive label, no dropdown.
 13. **⌘1..9 regression**: Phase 4a shortcuts still work.
+14. **No collapse**: confirm no collapse button visible in sidebar header area; pressing `Cmd+B` does nothing (no longer mapped).
 
 ## 8. PR Shape (bisectable commits)
 
@@ -454,15 +500,15 @@ Total: ~20 new/updated cases. Deleted: ~5 cases from `WorkspaceGroup.test.tsx`.
 | 2 | `feat(workspace): WorkspaceHeader — top-of-sidebar name + rename/delete` | ~180 |
 | 3 | `feat(workspace): WorkspaceSwitcherBar — icons / dots / drag-reorder / running indicator` | ~400 |
 | 4 | `refactor(workspace): WorkspaceRail renders only active workspace; delete WorkspaceGroup` | ~250 |
-| 5 | `refactor(tabs): downgrade TabBarWorkspaceChip to passive label + LeftSidebar layout` | ~150 |
+| 5 | `refactor(layout): TabBarWorkspaceChip → passive label + LeftSidebar layout + remove sidebar collapse` | ~250 |
 
-Total: ~1100 LOC additions + ~200 LOC deletions = net +900 LOC. Build green at every commit:
+Total: ~1200 LOC additions + ~300 LOC deletions = net +900 LOC. Build green at every commit:
 
 - Commit 1: new atom + RightSidePanel — existing UI untouched.
 - Commit 2: WorkspaceHeader renders ABOVE the existing tree (cosmetic redundancy until commit 4).
 - Commit 3: switcher bar renders ABOVE the existing "+ 新建工作区" button (cosmetic redundancy).
 - Commit 4: tree collapses to active-only; old WorkspaceGroup + "+ 新建工作区" deleted.
-- Commit 5: TabBarWorkspaceChip downgrade + final LeftSidebar layout polish.
+- Commit 5: TabBarWorkspaceChip downgrade + LeftSidebar layout polish + sidebar-collapse removal (`sidebarCollapsedAtom` / `Cmd+B` shortcut / collapsed-mode render branch).
 
 Commit 4 is the load-bearing user-visible change. Commits 1-3 are infrastructure; commit 5 is cleanup.
 
@@ -471,6 +517,5 @@ Commit 4 is the load-bearing user-visible change. Commits 1-3 are infrastructure
 - **`WorkspaceGroup.tsx` deletion**: confirmed only `WorkspaceRail` and tests consume it. Removing won't cascade.
 - **Drag visual feedback on 6px dots**: the 2px drop-line is taller than the dot but renders cleanly in the ~6px gap between dots. Mentally verified; will polish during implementation if it looks odd.
 - **Reactivity load**: `runningWorkspaceIds` recomputes on every `agentSessionsAtom` or `indicatorMap` change. With 50 sessions across workspaces and frequent tool firing, O(n) Set build per indicator change. Acceptable; no memoization needed in Phase 4b.
-- **Collapsed sidebar**: simplest behavior is to hide the switcher bar entirely. ⌘1..9 still works in collapsed mode (the GlobalShortcuts hook is mounted at root). Polished collapsed-mode layout deferred.
-- **TabBarWorkspaceChip in collapsed sidebar**: still mounts; serves as the only workspace indicator. Behavior unchanged.
+- **Sidebar collapse removal risk**: anyone with `Cmd+B` muscle memory loses the shortcut. Mitigated via release notes. If user feedback demands it back, the chord can be remapped to something else (e.g. toggle right panel) without restoring the collapse mode.
 - **Theme compatibility**: 11 themes (Phase 1-3). The switcher bar uses theme tokens (`bg-primary/10`, `bg-foreground/[0.06]`, `border-border/40`) — should survive all themes. Will verify warm-paper, qingye, forest-dark during manual smoke.
