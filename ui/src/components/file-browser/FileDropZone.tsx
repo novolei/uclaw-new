@@ -12,20 +12,6 @@ import { cn } from '@/lib/utils'
 interface FileDropZoneProps {
   /** 拖拽完成回调 */
   onDrop?: (files: File[]) => void
-  /** 拖拽路径回调（Tauri 原生拖拽） */
-  onDropPaths?: (paths: string[]) => void
-  /** 文件上传完成回调 */
-  onFilesUploaded?: () => void
-  /** 附加文件夹回调 */
-  onAttachFolder?: () => void
-  /** 文件夹拖放回调 */
-  onFoldersDropped?: (folderPaths: string[]) => void
-  /** 工作区 slug */
-  workspaceSlug?: string
-  /** 会话 ID */
-  sessionId?: string
-  /** 目标类型 */
-  target?: string
   /** 是否禁用 */
   disabled?: boolean
   /** 自定义类名 */
@@ -38,7 +24,6 @@ interface FileDropZoneProps {
 
 export function FileDropZone({
   onDrop,
-  onDropPaths,
   disabled = false,
   className,
   children,

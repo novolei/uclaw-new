@@ -736,6 +736,12 @@ pub struct ApproveToolCallInput {
     /// Tool name needed to add to auto-approved whitelist when always_allow=true
     pub tool_name: Option<String>,
     pub reason: Option<String>,
+    /// Path approval: "once" | "session" | "deny" (only set when kind=="path")
+    #[serde(default)]
+    pub path_scope: Option<String>,
+    /// Path approval: which absolute paths to grant (only when path_scope="session")
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

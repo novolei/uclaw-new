@@ -74,6 +74,7 @@ import {
   finalizeStreamingActivities,
   workspaceAttachedDirsMapAtom,
   agentSessionAttachedDirsMapAtom,
+  workspaceFilesVersionAtom,
 } from '@/atoms/agent-atoms'
 import type { AgentContextStatus } from '@/atoms/agent-atoms'
 import { activeProviderModelAtom } from '@/atoms/active-model'
@@ -274,6 +275,8 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const setSessionAttachedMap = useSetAtom(agentSessionAttachedDirsMapAtom)
   const attachedDirs = sessionAttachedMap.get(sessionId) ?? []
   const wsAttachedDirs = currentWorkspaceId ? (wsAttachedMap.get(currentWorkspaceId) ?? []) : []
+  // Phase 3 (Task 7): file version bump for SidePanel refresh after native drops.
+  const setFilesVersion = useSetAtom(workspaceFilesVersionAtom)
 
   const draftsMap = useAtomValue(agentSessionDraftsAtom)
   const setDraftsMap = useSetAtom(agentSessionDraftsAtom)
@@ -398,6 +401,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     }
     return dirs
   }, [attachedDirs, wsAttachedDirs, workspaceFilesPath])
+
+  // NOTE: native OS drag-drop listener was here (Phase 3 Task 7) but has been
+  // moved to AppShell (singleton) to avoid N-tab duplication. See AppShell.tsx.
 
   // 监听消息刷新版本号
   const refreshMap = useAtomValue(agentMessageRefreshAtom)

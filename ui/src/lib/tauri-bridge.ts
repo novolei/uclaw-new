@@ -268,6 +268,38 @@ export const moveAttachedFile = (path: string, destDir: string): Promise<string>
 export const readAttachedFile = (path: string): Promise<number[]> =>
   invoke('read_attached_file', { path })
 
+export const uploadWorkspaceFile = (
+  workspaceId: string,
+  filename: string,
+  content: number[],
+): Promise<string> => invoke('upload_workspace_file', { workspaceId, filename, content })
+
+export const pathIsDirectory = (path: string): Promise<boolean> =>
+  invoke('path_is_directory', { path })
+
+export const copyFileIntoWorkspace = (workspaceId: string, sourcePath: string): Promise<string> =>
+  invoke('copy_file_into_workspace', { workspaceId, sourcePath })
+
+/** Delete a single file by absolute path. Backend rejects directories. */
+export const deleteWorkspaceFile = (path: string): Promise<void> =>
+  invoke('delete_workspace_file', { path })
+
+// Path policy (Phase 3)
+export const listAlwaysAllowedPaths = (): Promise<string[]> =>
+  invoke('list_always_allowed_paths')
+
+export const addAlwaysAllowedPath = (path: string): Promise<void> =>
+  invoke('add_always_allowed_path', { path })
+
+export const removeAlwaysAllowedPath = (path: string): Promise<void> =>
+  invoke('remove_always_allowed_path', { path })
+
+export const listSessionAllowedPaths = (sessionId: string): Promise<string[]> =>
+  invoke('list_session_allowed_paths', { sessionId })
+
+export const promoteSessionPathToGlobal = (sessionId: string, path: string): Promise<void> =>
+  invoke('promote_session_path_to_global', { sessionId, path })
+
 // ─── Session title ────────────────────────────────────────────────────
 
 export const generateSessionTitle = (sessionId: string, firstMessage: string): Promise<void> =>
@@ -886,10 +918,13 @@ export const openFile = (path: string): Promise<void> => openShell(path)
 export const openExternal = (url: string): Promise<void> => openShell(url)
 
 export const showInFinder = (path: string): Promise<void> => {
-  // tauri-plugin-shell v2 doesn't expose revealItemInDir in stable;
-  // fall back to opening the containing folder.
-  const parent = path.substring(0, path.lastIndexOf('/'))
-  return openShell(parent || '/')
+  // tauri-plugin-shell v2 doesn't expose `open -R` (reveal-in-Finder).
+  // Open the path directly: macOS `open <path>` resolves to:
+  //   - directory → opens in Finder ✓ (the workspace-folder use case)
+  //   - file      → opens in its default app (best we can do without -R)
+  // Previously this returned `openShell(parent)` which opened the
+  // grandparent when the caller passed a workspace folder — wrong UX.
+  return openShell(path)
 }
 
 export const getPathForFile = (_file: File): string | null => {

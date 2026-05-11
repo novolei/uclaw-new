@@ -23,6 +23,7 @@ import {
   agentSessionAttachedDirsMapAtom,
 } from '@/atoms/agent-atoms'
 import { workspacesAtom } from '@/atoms/workspace'
+import { toast } from 'sonner'
 import {
   attachWorkspaceDirectory,
   detachWorkspaceDirectory,
@@ -30,6 +31,8 @@ import {
   detachSessionDirectory,
   openFolderDialog,
   showInFinder,
+  uploadWorkspaceFile,
+  deleteWorkspaceFile,
 } from '@/lib/tauri-bridge'
 import type { FileEntry } from '@/lib/chat-types'
 import type { AgentPendingFile } from '@/lib/agent-types'
@@ -123,9 +126,24 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
     }
   }, [sessionId, setSessionAttachedMap])
 
-  const handleFilesUploaded = React.useCallback(() => {
-    setFilesVersion((prev) => prev + 1)
-  }, [setFilesVersion])
+  const handleFilesDropped = React.useCallback(async (files: File[]) => {
+    if (!currentWorkspaceId) {
+      toast.error('请先选择工作区')
+      return
+    }
+    for (const file of files) {
+      try {
+        const buf = await file.arrayBuffer()
+        const bytes = Array.from(new Uint8Array(buf))
+        const writtenPath = await uploadWorkspaceFile(currentWorkspaceId, file.name, bytes)
+        console.debug('[upload] wrote', writtenPath)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        toast.error(`上传 ${file.name} 失败: ${msg}`)
+      }
+    }
+    setFilesVersion((v) => v + 1)
+  }, [currentWorkspaceId, setFilesVersion])
 
   const handleRefresh = React.useCallback(() => {
     setFilesVersion((prev) => prev + 1)
@@ -153,6 +171,19 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
 
     setPendingFiles((prev) => [...prev, pending])
   }, [pendingFiles, setPendingFiles])
+
+  // Per-file delete from the Files tab. Calls the workspace_file delete
+  // IPC and bumps filesVersion so FileBrowser re-fetches from disk.
+  const handleDeleteFile = React.useCallback(async (entry: FileEntry) => {
+    try {
+      await deleteWorkspaceFile(entry.path)
+      toast.success(`已删除: ${entry.name}`)
+      setFilesVersion((v) => v + 1)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(`删除失败: ${msg}`)
+    }
+  }, [setFilesVersion])
 
   const breadcrumb = React.useMemo(() => {
     if (!sessionPath) return ''
@@ -268,14 +299,15 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
               <div className="flex-1 min-h-0 overflow-y-auto">
                 <FileBrowser
                   rootPath={sessionPath}
+                  version={filesVersion}
                   hideToolbar
                   embedded
                   onAddToChat={handleAddToChat}
+                  onDelete={handleDeleteFile}
                 />
                 <FileDropZone
-                  sessionId={sessionId}
-                  target="session"
-                  onFilesUploaded={handleFilesUploaded}
+                  hint="拖入会话目录"
+                  onDrop={handleFilesDropped}
                 />
               </div>
               <div className="mx-3 my-3 border-t border-muted-foreground/20" />
@@ -319,14 +351,16 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
               {workspaceFilesPath && (
                 <FileBrowser
                   rootPath={workspaceFilesPath}
+                  version={filesVersion}
                   hideToolbar
                   embedded
                   onAddToChat={handleAddToChat}
+                  onDelete={handleDeleteFile}
                 />
               )}
               <FileDropZone
-                target="workspace"
-                onFilesUploaded={handleFilesUploaded}
+                hint="拖入工作区文件 / 文件夹"
+                onDrop={handleFilesDropped}
               />
             </div>
           </div>

@@ -28,6 +28,10 @@ impl Tool for ReadFileTool {
         ApprovalRequirement::Never
     }
 
+    fn path_args<'a>(&self, args: &'a serde_json::Value) -> Vec<&'a str> {
+        args["path"].as_str().map(|s| vec![s]).unwrap_or_default()
+    }
+
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
         let path = params["path"].as_str().ok_or_else(|| ToolError::InvalidParams("path is required".into()))?;
@@ -67,6 +71,10 @@ impl Tool for WriteFileTool {
         ApprovalRequirement::UnlessAutoApproved
     }
 
+    fn path_args<'a>(&self, args: &'a serde_json::Value) -> Vec<&'a str> {
+        args["path"].as_str().map(|s| vec![s]).unwrap_or_default()
+    }
+
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
         let path = params["path"].as_str().ok_or_else(|| ToolError::InvalidParams("path is required".into()))?;
@@ -79,5 +87,32 @@ impl Tool for WriteFileTool {
         fs::write(&full_path, content).await.map_err(|e| ToolError::Execution(format!("Cannot write {}: {}", full_path.display(), e)))?;
 
         Ok(ToolOutput::success(&format!("Successfully wrote {} bytes to {}", content.len(), full_path.display()), start.elapsed().as_millis() as u64))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::tools::tool::Tool;
+
+    #[test]
+    fn read_file_path_args_returns_path() {
+        let tool = ReadFileTool::new(std::path::PathBuf::from("/tmp"));
+        let args = serde_json::json!({"path": "src/main.rs"});
+        assert_eq!(tool.path_args(&args), vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn write_file_path_args_returns_path() {
+        let tool = WriteFileTool::new(std::path::PathBuf::from("/tmp"));
+        let args = serde_json::json!({"path": "out.txt", "content": "x"});
+        assert_eq!(tool.path_args(&args), vec!["out.txt"]);
+    }
+
+    #[test]
+    fn read_file_path_args_missing_path_returns_empty() {
+        let tool = ReadFileTool::new(std::path::PathBuf::from("/tmp"));
+        let args = serde_json::json!({});
+        assert!(tool.path_args(&args).is_empty());
     }
 }

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use crate::agent::tools::tool::ApprovalRequirement;
 
+pub mod path_policy;
 pub mod permissions;
 
 // ─── Types ──────────────────────────────────────────────────────────────
@@ -95,19 +96,42 @@ impl Default for SafetyPolicy {
 pub struct SafetyManager {
     policy: SafetyPolicy,
     config_path: PathBuf,
+    path_policy: path_policy::PathPolicy,
+    path_policy_path: PathBuf,
 }
 
 impl SafetyManager {
     pub fn new(data_dir: &std::path::Path) -> Self {
         let config_path = data_dir.join("safety_policy.json");
         let policy = Self::load_policy(&config_path).unwrap_or_default();
+
+        let path_policy_path = data_dir.join("path_policy.json");
+        let path_policy = Self::load_path_policy(&path_policy_path)
+            .map(path_policy::PathPolicy::from_persisted)
+            .unwrap_or_else(path_policy::PathPolicy::empty);
+
         tracing::info!("SafetyManager initialized with mode: {:?}", policy.global_mode);
-        Self { policy, config_path }
+        Self { policy, config_path, path_policy, path_policy_path }
     }
 
     fn load_policy(path: &std::path::Path) -> Option<SafetyPolicy> {
         let content = std::fs::read_to_string(path).ok()?;
         serde_json::from_str(&content).ok()
+    }
+
+    fn load_path_policy(path: &std::path::Path) -> Option<path_policy::PathPolicyPersisted> {
+        let content = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    fn save_path_policy(&self) -> Result<(), crate::error::Error> {
+        if let Some(parent) = self.path_policy_path.parent() {
+            std::fs::create_dir_all(parent).map_err(crate::error::Error::Io)?;
+        }
+        let content = serde_json::to_string_pretty(&self.path_policy.to_persisted())
+            .map_err(crate::error::Error::Serde)?;
+        std::fs::write(&self.path_policy_path, content).map_err(crate::error::Error::Io)?;
+        Ok(())
     }
 
     pub fn save_policy(&self) -> Result<(), crate::error::Error> {
@@ -406,5 +430,136 @@ impl SafetyManager {
             reasons,
             suggested_action,
         }
+    }
+
+    // ─── PathPolicy proxy ─────────────────────────────────────────────
+
+    /// Decide whether the given candidate paths can be accessed without a prompt.
+    /// `mode_override` of `Yolo` short-circuits to Allow (matches existing
+    /// should_approve semantics).
+    pub fn check_paths(
+        &self,
+        session_id: &str,
+        workspace_root: &std::path::Path,
+        workspace_attached: &[PathBuf],
+        session_attached: &[PathBuf],
+        candidates: &[PathBuf],
+        mode_override: Option<&SafetyMode>,
+    ) -> path_policy::PathDecision {
+        if matches!(mode_override, Some(SafetyMode::Yolo)) || matches!(self.policy.global_mode, SafetyMode::Yolo) {
+            return path_policy::PathDecision::Allow;
+        }
+        for c in candidates {
+            match self.path_policy.check(
+                session_id,
+                workspace_root,
+                workspace_attached,
+                session_attached,
+                c,
+            ) {
+                path_policy::PathDecision::Allow => continue,
+                other => return other,
+            }
+        }
+        path_policy::PathDecision::Allow
+    }
+
+    pub fn list_always_allowed_paths(&self) -> &[PathBuf] {
+        self.path_policy.list_global()
+    }
+
+    pub fn add_always_allowed_path(&mut self, p: PathBuf) -> Result<(), crate::error::Error> {
+        self.path_policy.add_global(p);
+        self.save_path_policy()
+    }
+
+    pub fn remove_always_allowed_path(&mut self, p: &std::path::Path) -> Result<(), crate::error::Error> {
+        self.path_policy.remove_global(p);
+        self.save_path_policy()
+    }
+
+    pub fn list_session_allowed_paths(&self, sid: &str) -> Vec<PathBuf> {
+        self.path_policy.list_for_session(sid)
+    }
+
+    pub fn allow_path_for_session(&mut self, sid: &str, p: PathBuf) {
+        // Session grants are in-memory only — no save.
+        self.path_policy.allow_for_session(sid, p);
+    }
+
+    pub fn promote_session_path_to_global(&mut self, sid: &str, p: &std::path::Path) -> Result<(), crate::error::Error> {
+        self.path_policy.promote_session_to_global(sid, p);
+        self.save_path_policy()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_policy_persists_round_trip() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        {
+            let mut mgr = SafetyManager::new(tmp.path());
+            mgr.add_always_allowed_path(outside.path().to_path_buf()).unwrap();
+            assert_eq!(mgr.list_always_allowed_paths(), &[outside.path().to_path_buf()]);
+        }
+        // Re-open: the file at <tmp>/path_policy.json should round-trip.
+        let mgr2 = SafetyManager::new(tmp.path());
+        assert_eq!(mgr2.list_always_allowed_paths(), &[outside.path().to_path_buf()]);
+    }
+
+    #[test]
+    fn check_paths_inside_workspace_allows() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mgr = SafetyManager::new(tmp.path());
+        let ws = tempfile::TempDir::new().unwrap();
+        let target = ws.path().join("a.txt");
+        std::fs::write(&target, "x").unwrap();
+        let decision = mgr.check_paths(
+            "sess1",
+            ws.path(),
+            &[],
+            &[],
+            &[target],
+            None,
+        );
+        assert_eq!(decision, crate::safety::path_policy::PathDecision::Allow);
+    }
+
+    #[test]
+    fn check_paths_yolo_mode_short_circuits() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mgr = SafetyManager::new(tmp.path());
+        let ws = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap().path().join("b.txt");
+        let decision = mgr.check_paths(
+            "sess1",
+            ws.path(),
+            &[],
+            &[],
+            &[outside],
+            Some(&SafetyMode::Yolo),
+        );
+        assert_eq!(decision, crate::safety::path_policy::PathDecision::Allow);
+    }
+
+    #[test]
+    fn check_paths_outside_prompts() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mgr = SafetyManager::new(tmp.path());
+        let ws = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap().path().join("c.txt");
+        let decision = mgr.check_paths(
+            "sess1",
+            ws.path(),
+            &[],
+            &[],
+            &[outside],
+            None,
+        );
+        assert!(matches!(decision, crate::safety::path_policy::PathDecision::Prompt { .. }));
     }
 }

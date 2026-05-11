@@ -15,6 +15,7 @@
 
 import * as React from 'react'
 import { Trash2, Plus, RefreshCw, ShieldCheck, ShieldOff } from 'lucide-react'
+import { WorkspaceSandboxSettings } from './WorkspaceSandboxSettings'
 import {
   listPermissionRules,
   createPermissionRule,
@@ -317,6 +318,11 @@ export function PermissionsSettings(): React.ReactElement {
           )}
         </div>
       </section>
+
+      <div className="mt-8 pt-6 border-t">
+        <h2 className="text-base font-semibold mb-3">工作区沙箱</h2>
+        <WorkspaceSandboxSettings />
+      </div>
     </div>
   )
 }

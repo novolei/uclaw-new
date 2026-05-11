@@ -399,6 +399,12 @@ export interface ApprovalRequest {
   arguments?: Record<string, unknown>;
   riskLevel?: string;
   sessionId: string;
+  /** Phase 3: kind="path" payload carries this for the path-variant modal. */
+  kind?: 'tool' | 'bash_command' | 'path';
+  /** Phase 3: absolute paths the agent is trying to access (kind=="path"). */
+  paths?: string[];
+  /** Phase 3: human-readable reason from PathPolicy (kind=="path"). */
+  reason?: string;
 }
 
 /** Approval response to backend */
@@ -407,6 +413,8 @@ export interface ApproveToolCallInput {
   toolId: string;
   approved: boolean;
   alwaysAllow?: boolean;
+  pathScope?: 'once' | 'session' | 'deny';
+  paths?: string[];
 }
 
 /** Reflection detail */
