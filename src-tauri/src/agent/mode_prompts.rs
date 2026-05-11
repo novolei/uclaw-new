@@ -48,9 +48,21 @@ pub fn compose_system_prompt(
 ) -> String {
     let workspace_md = read_uclaw_md(workspace_root);
     let mode_part = mode_addition(mode);
+    // Tell the agent its real cwd so it doesn't hallucinate paths when the
+    // user asks "where am I" / "what's my workspace". Without this, the
+    // agent has no signal about the actual filesystem location and either
+    // makes one up or asks to run `pwd`. The shell, read_file, glob, etc.
+    // tools are all already pinned to this directory at registration time.
+    let workspace_path_block = workspace_root.map(|p| {
+        format!(
+            "[WORKSPACE]\nYour current working directory is: {}\nAll relative paths in shell, file, and glob tools resolve from this directory. When the user asks where files live or what the cwd is, answer with this path — do not guess. Run `pwd` only if you need to verify, never invent paths.",
+            p.display()
+        )
+    }).unwrap_or_default();
     let parts: Vec<&str> = [
         user_global_base.trim(),
         workspace_md.as_str(),
+        workspace_path_block.as_str(),
         KARPATHY_BASELINE.trim(),
         mode_part,
     ]
