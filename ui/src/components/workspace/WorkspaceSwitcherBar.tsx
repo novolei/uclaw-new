@@ -234,27 +234,28 @@ function WorkspaceDot({
             isDragging && 'opacity-40',
           )}
         >
-          {/* Default dot — fades out when this button is hovered, letting
-              the icon overlay take its place visually. */}
+          {/* Default dot — shrinks + fades out when this button is hovered,
+              so the morph into the icon feels continuous instead of a
+              hard opacity swap. */}
           <span
             aria-hidden
             className="size-1.5 rounded-full bg-foreground/40
-                       transition-opacity duration-150
-                       group-hover:opacity-0"
+                       transition-all duration-200 ease-out
+                       group-hover:scale-50 group-hover:opacity-0"
           />
-          {/* Icon overlay — invisible by default, fades in on hover.
-              Sized smaller than the full WorkspaceIcon (size-5 / 20px vs
-              size-7) so dots at the bar's left/right edges don't get
-              clipped by the container when the icon overflows the 12px
-              button bounds. Centered on the dot via absolute positioning. */}
+          {/* Icon overlay — grows + fades in on hover. Combined with the
+              dot's shrink-and-fade above, the two transitions cross-fade
+              into a single morph. Sized smaller than the full WorkspaceIcon
+              (size-5 / 20px) so dots at the bar's left/right edges don't
+              clip when their overlay overflows the 12px button bounds. */}
           <span
             aria-hidden
             className="pointer-events-none absolute left-1/2 top-1/2
-                       -translate-x-1/2 -translate-y-1/2
                        inline-flex items-center justify-center size-5 rounded-md
                        bg-foreground/[0.05] text-foreground
-                       opacity-0 transition-opacity duration-150
-                       group-hover:opacity-100"
+                       -translate-x-1/2 -translate-y-1/2 scale-50 opacity-0
+                       transition-all duration-200 ease-out
+                       group-hover:scale-100 group-hover:opacity-100"
           >
             <Icon className="size-3" />
           </span>
