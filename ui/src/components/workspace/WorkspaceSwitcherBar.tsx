@@ -247,12 +247,16 @@ function WorkspaceDot({
               dot's shrink-and-fade above, the two transitions cross-fade
               into a single morph. Sized smaller than the full WorkspaceIcon
               (size-5 / 20px) so dots at the bar's left/right edges don't
-              clip when their overlay overflows the 12px button bounds. */}
+              clip when their overlay overflows the 12px button bounds.
+              Color tone — text-foreground/60 — matches the muted weight
+              of the unhovered dot (bg-foreground/40), so the morph reads
+              as a continuous change in shape rather than a jump from
+              quiet to loud. */}
           <span
             aria-hidden
             className="pointer-events-none absolute left-1/2 top-1/2
                        inline-flex items-center justify-center size-5 rounded-md
-                       bg-foreground/[0.05] text-foreground
+                       text-foreground/60
                        -translate-x-1/2 -translate-y-1/2 scale-50 opacity-0
                        transition-all duration-200 ease-out
                        group-hover:scale-100 group-hover:opacity-100"
