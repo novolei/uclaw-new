@@ -886,7 +886,7 @@ impl LoopDelegate for ChatDelegate {
                                 Err(_) => {
                                     // Channel dropped — treat as rejection
                                     tracing::warn!(tool = %tc.name, "Approval channel dropped, treating as rejected");
-                                    crate::app::ApprovalResult { approved: false, always_allow: false, tool_name: None }
+                                    crate::app::ApprovalResult { approved: false, always_allow: false, tool_name: None, path_scope: None, paths: None }
                                 }
                             };
 
@@ -923,6 +923,99 @@ impl LoopDelegate for ChatDelegate {
                     // Emit tool start
                     self.emit_tool_start(&tc.name, &tc.id, &tc.arguments);
                     tracing::info!(tool = %tc.name, id = %tc.id, "Executing tool");
+
+                    // ─── Path-aware sandbox (Phase 3) ───────────────────
+                    // Resolve candidate paths from the tool's path_args, ask
+                    // SafetyManager. Prompt → reuse the same approval
+                    // modal/oneshot pattern with kind: "path".
+                    let candidate_paths: Vec<std::path::PathBuf> = tool
+                        .path_args(&tc.arguments)
+                        .into_iter()
+                        .map(|p| {
+                            let pb = std::path::PathBuf::from(p);
+                            if pb.is_absolute() {
+                                pb
+                            } else if let Some(root) = self.workspace_root.as_deref() {
+                                root.join(pb)
+                            } else {
+                                pb
+                            }
+                        })
+                        .collect();
+
+                    if !candidate_paths.is_empty() && self.workspace_root.is_some() {
+                        use crate::safety::path_policy::PathDecision;
+                        let workspace_root = self.workspace_root.clone().unwrap();
+                        let (ws_attached, sess_attached) = load_attached_dirs_for_session(
+                            &self.app_handle,
+                            &self.conversation_id,
+                        );
+                        let path_decision = {
+                            let mgr = self.safety_manager.read().await;
+                            mgr.check_paths(
+                                &self.conversation_id,
+                                &workspace_root,
+                                &ws_attached,
+                                &sess_attached,
+                                &candidate_paths,
+                                self.safety_mode.as_ref(),
+                            )
+                        };
+                        match path_decision {
+                            PathDecision::Allow => {}
+                            PathDecision::Block { reason } => {
+                                tracing::warn!(tool = %tc.name, reason = %reason, "Path blocked by sandbox");
+                                reason_ctx.messages.push(ChatMessage::user_tool_result(
+                                    &tc.id,
+                                    &format!("Error: {}", reason),
+                                    true,
+                                ));
+                                continue;
+                            }
+                            PathDecision::Prompt { reason } => {
+                                tracing::info!(tool = %tc.name, reason = %reason, "Path requires approval");
+                                let approval_id = format!("{}::path", tc.id);
+                                let rx = self.pending_approvals.register(approval_id.clone());
+                                let _ = self.app_handle.emit("agent:need_approval", serde_json::json!({
+                                    "kind": "path",
+                                    "toolName": tc.name,
+                                    "toolId": approval_id,
+                                    "arguments": tc.arguments,
+                                    "paths": candidate_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                                    "reason": reason,
+                                    "sessionId": self.conversation_id,
+                                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                                }));
+                                let path_result = rx.await.unwrap_or_else(|_| {
+                                    crate::app::ApprovalResult {
+                                        approved: false,
+                                        always_allow: false,
+                                        tool_name: None,
+                                        path_scope: Some("deny".into()),
+                                        paths: None,
+                                    }
+                                });
+                                if !path_result.approved {
+                                    reason_ctx.messages.push(ChatMessage::user_tool_result(
+                                        &tc.id,
+                                        "Error: User denied access to out-of-workspace path.",
+                                        true,
+                                    ));
+                                    continue;
+                                }
+                                if path_result.path_scope.as_deref() == Some("session") {
+                                    let paths_to_grant = path_result.paths.clone()
+                                        .unwrap_or_else(|| candidate_paths.iter().map(|p| p.display().to_string()).collect());
+                                    let mut mgr = self.safety_manager.write().await;
+                                    for p in paths_to_grant {
+                                        mgr.allow_path_for_session(&self.conversation_id, std::path::PathBuf::from(p));
+                                    }
+                                }
+                                // "once" falls through without persisting
+                            }
+                        }
+                    }
+
                     let tool_start = std::time::Instant::now();
 
                     // Execute tool
@@ -1142,4 +1235,46 @@ fn truncate_utf8(s: &str, max_chars: usize) -> String {
         result.push_str("...");
         result
     }
+}
+
+/// Load workspace.attached_dirs and session.attached_dirs for the given
+/// session. Returns empty vecs on any error (missing rows, malformed JSON).
+fn load_attached_dirs_for_session(
+    app_handle: &tauri::AppHandle,
+    session_id: &str,
+) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
+    use tauri::Manager;
+    let Some(state) = app_handle.try_state::<crate::app::AppState>() else {
+        return (Vec::new(), Vec::new());
+    };
+    let Ok(conn) = state.db.lock() else {
+        return (Vec::new(), Vec::new());
+    };
+    let parse = |json: String| -> Vec<std::path::PathBuf> {
+        serde_json::from_str::<Vec<String>>(&json)
+            .ok()
+            .unwrap_or_default()
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .collect()
+    };
+    let ws_attached = conn
+        .query_row(
+            "SELECT attached_dirs FROM spaces WHERE id = (SELECT space_id FROM agent_sessions WHERE id = ?1)",
+            rusqlite::params![session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .map(parse)
+        .unwrap_or_default();
+    let sess_attached = conn
+        .query_row(
+            "SELECT attached_dirs FROM agent_sessions WHERE id = ?1",
+            rusqlite::params![session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .map(parse)
+        .unwrap_or_default();
+    (ws_attached, sess_attached)
 }

@@ -26,11 +26,15 @@ use crate::memubot_config::MemubotConfig;
 // ─── Pending Approvals ──────────────────────────────────────────────────
 
 /// Result of an approval decision from the user.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ApprovalResult {
     pub approved: bool,
     pub always_allow: bool,
     pub tool_name: Option<String>,
+    /// Path approval: "once" | "session" | "deny" (only set when payload kind=="path")
+    pub path_scope: Option<String>,
+    /// Path approval: which absolute paths to grant for "session" scope
+    pub paths: Option<Vec<String>>,
 }
 
 /// Manages pending tool approval requests using oneshot channels.

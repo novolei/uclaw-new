@@ -117,6 +117,25 @@ export function ApprovalModal(): React.ReactElement {
     }
   }
 
+  const respondPath = async (scope: 'once' | 'session' | 'deny'): Promise<void> => {
+    if (!request || loading) return
+    setLoading(true)
+    try {
+      await approveToolCall({
+        sessionId: request.sessionId,
+        toolId: request.toolId,
+        approved: scope !== 'deny',
+        pathScope: scope,
+        paths: scope === 'session' ? request.paths : undefined,
+      })
+    } catch (err) {
+      console.error('[ApprovalModal] path-approval failed:', err)
+    } finally {
+      setLoading(false)
+      setRequest(null)
+    }
+  }
+
   /**
    * "始终允许" handler — chooses between pattern rule (when the call has a
    * command, like bash) and legacy whole-tool whitelist (everything else).
@@ -164,6 +183,61 @@ export function ApprovalModal(): React.ReactElement {
   const RiskIcon = risk.icon
 
   const argsEntries = request?.arguments ? Object.entries(request.arguments) : []
+
+  if (request && request.kind === 'path') {
+    return (
+      <AlertDialog open={!!request} onOpenChange={(open) => { if (!open) setRequest(null) }}>
+        <AlertDialogContent className="sm:max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <ShieldAlert className="size-5 text-amber-500" />
+              外部路径访问请求
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {request.reason ?? '工具请求访问工作区以外的路径。'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <div className="my-3 space-y-1">
+            <p className="text-xs font-medium text-muted-foreground">请求的路径</p>
+            <ScrollArea className="max-h-40">
+              <div className="rounded-md border bg-muted/30 p-2 space-y-1">
+                {(request.paths ?? []).map((p) => (
+                  <div key={p} className="font-mono text-xs truncate" title={p}>{p}</div>
+                ))}
+              </div>
+            </ScrollArea>
+          </div>
+
+          <AlertDialogFooter className="flex-col sm:flex-row gap-2 flex-wrap">
+            <AlertDialogCancel asChild>
+              <Button
+                variant="outline"
+                onClick={() => respondPath('deny')}
+                disabled={loading}
+                className="border-red-500/30 text-red-500 hover:bg-red-500/10"
+              >
+                拒绝
+              </Button>
+            </AlertDialogCancel>
+            <Button
+              variant="outline"
+              onClick={() => respondPath('session')}
+              disabled={loading}
+              title="本会话内,这些路径不再提示"
+            >
+              本会话允许
+            </Button>
+            <AlertDialogAction asChild>
+              <Button onClick={() => respondPath('once')} disabled={loading}>
+                仅此一次
+              </Button>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    )
+  }
 
   return (
     <AlertDialog open={!!request} onOpenChange={(open) => { if (!open) setRequest(null) }}>

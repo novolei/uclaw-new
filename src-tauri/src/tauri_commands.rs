@@ -2583,7 +2583,9 @@ pub async fn approve_tool_call(
     let result = crate::app::ApprovalResult {
         approved: input.approved,
         always_allow: input.always_allow.unwrap_or(false),
-        tool_name: input.tool_name,
+        tool_name: input.tool_name.clone(),
+        path_scope: input.path_scope.clone(),
+        paths: input.paths.clone(),
     };
 
     let resolved = state.pending_approvals.resolve(&input.tool_id, result);
