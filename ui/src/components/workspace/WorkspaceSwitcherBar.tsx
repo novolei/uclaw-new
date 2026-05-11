@@ -170,9 +170,25 @@ function WorkspaceIcon({
           onClick={() => void onSelect(workspace.id)}
           aria-label={`工作区: ${workspace.name}`}
           aria-current={active ? 'true' : undefined}
+          // Explicit user-select:auto + -webkit-user-drag:element re-enable
+          // HTML5 drag on WebKit when any ancestor has user-select:none
+          // (PR #89 added that to .titlebar-drag-region, and Safari/WKWebView
+          // refuses to start a drag on a descendant of a user-select:none
+          // element regardless of the descendant's own draggable=true).
+          style={{
+            userSelect: 'auto',
+            WebkitUserSelect: 'auto',
+            WebkitUserDrag: 'element',
+          } as React.CSSProperties}
           className={cn(
             'titlebar-no-drag relative inline-flex items-center justify-center',
             'size-7 rounded-md transition-colors',
+            // Cursor: grab on hover, grabbing while a drag is in flight.
+            // Gives the user a visible affordance that the icon is
+            // re-orderable. `active:` doesn't fire during HTML5 drag in
+            // every browser, so we also force grabbing when isDragging.
+            'cursor-grab active:cursor-grabbing',
+            isDragging && 'cursor-grabbing',
             // ARC-style active state: soft filled background tint + tinted
             // icon. No ring/offset — those produced bracket-like artifacts
             // around the 24px button.
@@ -230,12 +246,19 @@ function WorkspaceDot({
           onDragEnd={onDragEnd}
           onClick={() => void onSelect(workspace.id)}
           aria-label={`工作区: ${workspace.name} (workspace dot)`}
+          // See WorkspaceIcon — same fix for HTML5 drag under WebKit.
+          style={{
+            userSelect: 'auto',
+            WebkitUserSelect: 'auto',
+            WebkitUserDrag: 'element',
+          } as React.CSSProperties}
           className={cn(
             'group titlebar-no-drag relative inline-flex items-center justify-center',
             // Larger hit target (12px) than visible glyph (6px) for easier
             // clicking — the visible circle is rendered via the inner span.
             'size-3 rounded-full',
-            isDragging && 'opacity-40',
+            'cursor-grab active:cursor-grabbing',
+            isDragging && 'cursor-grabbing opacity-40',
           )}
         >
           {/* Default dot — shrinks + fades out when this button is hovered,

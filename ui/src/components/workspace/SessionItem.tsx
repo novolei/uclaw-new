@@ -78,11 +78,21 @@ export function SessionItem({
         // events on the 3-dot stay scoped here and never reach the
         // parent div's onClick (which would open the session as a side
         // effect of choosing "delete" / "move" from the menu).
+        //
+        // Visible only when the row is hovered / has focus inside it /
+        // the dropdown is open — keeps the rail visually quiet.
+        // `[&:has([data-state=open])]:opacity-100` ensures the button
+        // stays visible while the menu is open even if the cursor
+        // leaves the row (Radix portals the menu items elsewhere).
         <div
           onClick={(e) => e.stopPropagation()}
           onPointerDown={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
-          className="shrink-0"
+          className={cn(
+            'shrink-0 transition-opacity duration-150',
+            'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100',
+            '[&:has([data-state=open])]:opacity-100',
+          )}
         >
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
