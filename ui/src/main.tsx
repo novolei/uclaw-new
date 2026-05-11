@@ -23,6 +23,7 @@ import {
   initializeTheme,
 } from './atoms/theme'
 import { Toaster } from './components/ui/sonner'
+import { GlobalShortcuts } from './components/shortcuts/GlobalShortcuts'
 import './styles/globals.css'
 import 'katex/dist/katex.min.css'
 
@@ -127,6 +128,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <RootErrorBoundary>
       <ThemeInitializer />
+      <GlobalShortcuts />
       <App />
       <Toaster />
     </RootErrorBoundary>

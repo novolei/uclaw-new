@@ -6,7 +6,7 @@ import { WorkspaceCreateDialog } from './WorkspaceCreateDialog'
 
 vi.mock('@/lib/tauri-bridge', async () => {
   return {
-    createWorkspace: vi.fn().mockResolvedValue({ id: 'new-id', name: 'x', icon: '📁' }),
+    createWorkspace: vi.fn().mockResolvedValue({ id: 'new-id', name: 'x', icon: 'Folder' }),
     openFolderDialog: vi.fn().mockResolvedValue({ path: '/custom/picked', name: 'picked' }),
   }
 })
@@ -60,7 +60,7 @@ describe('WorkspaceCreateDialog', () => {
     fireEvent.change(screen.getByPlaceholderText('Workspace name'), { target: { value: 'plain' } })
     fireEvent.click(screen.getByText('Create'))
     await waitFor(() => {
-      expect(createWorkspace).toHaveBeenCalledWith('plain', undefined, '📁')
+      expect(createWorkspace).toHaveBeenCalledWith('plain', undefined, 'Folder')
     })
     unmount()
     vi.clearAllMocks()
@@ -73,7 +73,7 @@ describe('WorkspaceCreateDialog', () => {
     await waitFor(() => expect(screen.getByText('/custom/picked')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Create'))
     await waitFor(() => {
-      expect(createWorkspace).toHaveBeenCalledWith('plain', '/custom/picked', '📁')
+      expect(createWorkspace).toHaveBeenCalledWith('plain', '/custom/picked', 'Folder')
     })
   })
 })

@@ -10,7 +10,8 @@ import { useAtomValue, useSetAtom } from 'jotai'
 import { listen } from '@tauri-apps/api/event'
 import { FolderOpen, Users, ListChecks, History, Globe } from 'lucide-react'
 import { appModeAtom } from '@/atoms/app-mode'
-import { currentAgentSessionIdAtom, agentSessionPathMapAtom } from '@/atoms/agent-atoms'
+import { currentAgentSessionIdAtom, agentSessionPathMapAtom, workspaceActiveRightPanelTabMapAtom } from '@/atoms/agent-atoms'
+import { activeWorkspaceIdAtom } from '@/atoms/workspace'
 import { activePlanAtom } from '@/atoms/agent-teams'
 import { WorkspaceFilesView } from '@/components/agent/SidePanel'
 import { AgentTeamsPanel } from '@/components/agent/AgentTeamsPanel'
@@ -18,7 +19,7 @@ import { PlanViewer } from '@/components/agent/PlanViewer'
 import { TrajectoryReel } from '@/components/agent/TrajectoryReel'
 import { BrowserViewer } from '@/components/agent/BrowserViewer'
 
-type ActiveTab = 'files' | 'teams' | 'plan' | 'trajectory' | 'browser'
+export type ActiveTab = 'files' | 'teams' | 'plan' | 'trajectory' | 'browser'
 
 interface TabButtonProps {
   isActive: boolean
@@ -60,16 +61,38 @@ export function RightSidePanel(): React.ReactElement | null {
   const plan = useAtomValue(activePlanAtom)
   const setActivePlan = useSetAtom(activePlanAtom)
 
-  const [activeTab, setActiveTab] = React.useState<ActiveTab>('files')
+  const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
+  const tabMap = useAtomValue(workspaceActiveRightPanelTabMapAtom)
+  const setTabMap = useSetAtom(workspaceActiveRightPanelTabMapAtom)
 
-  // Subscribe to plan:updated events (global, not session-specific)
+  const activeTab: ActiveTab = activeWorkspaceId
+    ? (tabMap.get(activeWorkspaceId) ?? 'files')
+    : 'files'
+
+  const setActiveTab = React.useCallback((tab: ActiveTab) => {
+    if (!activeWorkspaceId) return
+    setTabMap((prev) => {
+      const next = new Map(prev)
+      next.set(activeWorkspaceId, tab)
+      return next
+    })
+  }, [activeWorkspaceId, setTabMap])
+
+  // Subscribe to plan:updated events. Only auto-switch the tab for the
+  // currently-active workspace (which owns the agent firing the event).
   React.useEffect(() => {
     let cancelled = false
     let unlisten: (() => void) | null = null
 
     listen<PlanUpdatedPayload>('plan:updated', ({ payload }) => {
       setActivePlan({ filename: payload.filename, content: payload.content })
-      setActiveTab('plan')
+      if (activeWorkspaceId) {
+        setTabMap((prev) => {
+          const next = new Map(prev)
+          next.set(activeWorkspaceId, 'plan')
+          return next
+        })
+      }
     }).then((fn) => {
       if (cancelled) fn()
       else unlisten = fn
@@ -79,9 +102,11 @@ export function RightSidePanel(): React.ReactElement | null {
       cancelled = true
       unlisten?.()
     }
-    // setActivePlan is a stable Jotai write-atom setter — safe to omit
+    // setActivePlan and setTabMap are stable Jotai write-atom setters.
+    // activeWorkspaceId is intentionally a dep so the closure captures
+    // the current workspace at registration time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [activeWorkspaceId])
 
   // Only show in agent mode with an active session
   if (appMode !== 'agent' || !currentSessionId) {

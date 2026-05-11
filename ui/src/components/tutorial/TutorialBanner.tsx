@@ -47,8 +47,7 @@ export function TutorialBanner({ className }: TutorialBannerProps): React.ReactE
       <GraduationCap className="size-4 text-primary/60 shrink-0" />
       <p className="text-xs text-foreground/70 flex-1">
         <strong className="font-medium">新手指南：</strong>
-        使用 <kbd className="px-1 py-0.5 rounded bg-muted/80 text-[10px] font-mono mx-0.5">Cmd+N</kbd> 创建新对话，
-        <kbd className="px-1 py-0.5 rounded bg-muted/80 text-[10px] font-mono mx-0.5">Cmd+B</kbd> 切换侧边栏。
+        使用 <kbd className="px-1 py-0.5 rounded bg-muted/80 text-[10px] font-mono mx-0.5">Cmd+N</kbd> 创建新对话。
       </p>
       <Button
         variant="ghost"

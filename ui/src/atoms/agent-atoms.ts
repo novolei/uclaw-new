@@ -267,6 +267,20 @@ export const agentPendingFilesAtom = atom<
 export const workspaceCapabilitiesVersionAtom = atom(0)
 export const workspaceFilesVersionAtom = atom(0)
 
+/**
+ * Phase 4b: per-workspace right-panel tab memory.
+ *
+ * RightSidePanel reads/writes this map keyed by the current
+ * activeWorkspaceId. Switching workspace restores that workspace's
+ * last viewed tab; new workspaces (no entry) default to 'files'.
+ * In-memory only — app restart resets all entries.
+ *
+ * The ActiveTab type lives in RightSidePanel.tsx (exported) so it
+ * stays co-located with the tab-list source of truth.
+ */
+export const workspaceActiveRightPanelTabMapAtom =
+  atom<Map<string, import('@/components/app-shell/RightSidePanel').ActiveTab>>(new Map())
+
 // ===== 侧面板 Atoms =====
 
 export const agentSidePanelOpenMapAtom = atom<Map<string, boolean>>(new Map())

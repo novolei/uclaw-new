@@ -13,7 +13,7 @@
 import * as React from 'react'
 import { useAtom, useSetAtom, useAtomValue } from 'jotai'
 import { toast } from 'sonner'
-import { Pin, PinOff, Settings, Plus, Trash2, Pencil, ChevronDown, ChevronRight, Plug, Zap, PanelLeftClose, PanelLeftOpen, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, Hammer, CalendarClock, LoaderCircle } from 'lucide-react'
+import { Pin, PinOff, Settings, Plus, Trash2, Pencil, ChevronDown, ChevronRight, Plug, Zap, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, Hammer, LoaderCircle, Bot } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { ModeSwitcher } from './ModeSwitcher'
@@ -53,7 +53,6 @@ import type { SessionIndicatorStatus } from '@/atoms/agent-atoms'
 import {
   tabsAtom,
   activeTabIdAtom,
-  sidebarCollapsedAtom,
   closeTab,
   updateTabTitle,
 } from '@/atoms/tab-atoms'
@@ -68,6 +67,8 @@ import { promptConfigAtom, selectedPromptIdAtom, conversationPromptIdAtom } from
 import { useOpenSession } from '@/hooks/useOpenSession'
 import { useSyncActiveTabSideEffects } from '@/hooks/useSyncActiveTabSideEffects'
 import { WorkspaceRail } from '@/components/workspace/WorkspaceRail'
+import { WorkspaceHeader } from '@/components/workspace/WorkspaceHeader'
+import { WorkspaceSwitcherBar } from '@/components/workspace/WorkspaceSwitcherBar'
 import { AutomationHub as AutomationHubComponent } from '@/components/automation/AutomationHub'
 import { syncWorkspaceSessionsAtom, refreshWorkspacesAtom, activeWorkspaceIdAtom, workspacesAtom } from '@/atoms/workspace'
 import { MoveSessionDialog } from '@/components/agent/MoveSessionDialog'
@@ -204,7 +205,6 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
 
   const [tabs, setTabs] = useAtom(tabsAtom)
   const [activeTabId, setActiveTabId] = useAtom(activeTabIdAtom)
-  const [sidebarCollapsed, setSidebarCollapsed] = useAtom(sidebarCollapsedAtom)
   const openSession = useOpenSession()
   const syncActiveTabSideEffects = useSyncActiveTabSideEffects()
 
@@ -618,51 +618,6 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
     />
   )
 
-  // ===== 折叠状态 =====
-  if (sidebarCollapsed) {
-    return (
-      <div className="h-full flex flex-col items-center bg-background rounded-2xl shadow-xl transition-[width] duration-300" style={{ width: 48, flexShrink: 0 }}>
-        {/* 顶部独立拖拽条 + 红绿灯空间 */}
-        <div data-tauri-drag-region className="w-full h-[50px] flex-shrink-0 titlebar-drag-region" />
-        <div className="pt-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button onClick={() => setSidebarCollapsed(false)} className="p-2 rounded-[10px] text-foreground/60 hover:bg-foreground/[0.04] hover:text-foreground transition-colors titlebar-no-drag">
-                <PanelLeftOpen size={18} />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">展开侧边栏</TooltipContent>
-          </Tooltip>
-        </div>
-        <div className="pt-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button onClick={mode === 'agent' ? handleNewAgentSession : handleNewConversation} className="p-2 rounded-[10px] text-foreground/70 bg-primary/5 hover:bg-primary/10 transition-colors titlebar-no-drag border border-dashed border-[hsl(var(--dashed-border))] hover:border-[hsl(var(--dashed-border-hover))]">
-                <Plus size={16} />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">{mode === 'agent' ? '新会话' : '新对话'}</TooltipContent>
-          </Tooltip>
-        </div>
-        <div className="flex-1" />
-        <div className="pb-3">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button onClick={() => setSettingsOpen(true)} className="relative p-1 rounded-[10px] transition-colors titlebar-no-drag hover:bg-foreground/5">
-                <UserAvatar avatar={userProfile.avatar} size={28} />
-                {(hasUpdate || hasEnvironmentIssues) && <span className="absolute top-0 right-0 w-2 h-2 rounded-full bg-red-500" />}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">设置</TooltipContent>
-          </Tooltip>
-        </div>
-        {deleteDialog}
-        {moveDialog}
-        <SearchDialog />
-      </div>
-    )
-  }
-
   // ===== 展开状态 =====
   return (
     <div className="h-full flex flex-col bg-background rounded-2xl shadow-xl transition-[width] duration-300" style={{ width: width ?? 280, minWidth: 180, flexShrink: 1 }}>
@@ -672,14 +627,6 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
       <div>
         <div className="flex items-start gap-1.5 px-3">
           <div className="flex-1 min-w-0"><ModeSwitcher /></div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button onClick={() => setSidebarCollapsed(true)} className="mt-2 size-[36px] flex-shrink-0 flex items-center justify-center rounded-[10px] bg-muted text-foreground/40 hover:bg-foreground/[0.08] hover:text-foreground/60 transition-colors titlebar-no-drag">
-                <PanelLeftClose size={14} />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">收起侧边栏</TooltipContent>
-          </Tooltip>
         </div>
       </div>
 
@@ -720,16 +667,19 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
 
       {/* 主内容区：对话/会话列表 */}
       {mode === 'agent' ? (
-        <div className="flex-1 overflow-hidden">
-          <WorkspaceRail
-            activeSessionId={activeTabId ?? null}
-            onSelectSession={(id) => {
-              const session = agentSessions.find((s) => s.id === id)
-              handleSelectAgentSession(id, session?.title ?? '')
-            }}
-            onDeleteSession={(id) => handleRequestDelete(id)}
-          />
-        </div>
+        <>
+          <WorkspaceHeader />
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+            <WorkspaceRail
+              activeSessionId={activeTabId ?? null}
+              onSelectSession={(id) => {
+                const session = agentSessions.find((s) => s.id === id)
+                handleSelectAgentSession(id, session?.title ?? '')
+              }}
+              onDeleteSession={(id) => handleRequestDelete(id)}
+            />
+          </div>
+        </>
       ) : (
         <div className="flex-1 overflow-y-auto px-3 pt-2 pb-3 scrollbar-none">
           {conversationGroups.map((group) => (
@@ -787,21 +737,33 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
         </div>
       )}
 
-      {/* Agent 模式：Automation 入口 */}
+      {/* Per-workspace Automations entry. Visually grouped with the active
+          workspace's content (above the cross-workspace switcher bar) to
+          imply "this workspace's automations". */}
       {mode === 'agent' && (
         <div className="px-3 pb-1">
           <button
+            type="button"
             onClick={() => setAutomationPanelOpen(true)}
-            className="w-full flex items-center gap-3 px-3 py-2 rounded-[10px] text-[12px] text-foreground/50 hover:bg-foreground/[0.04] hover:text-foreground/70 transition-colors titlebar-no-drag"
+            className="w-full flex items-center gap-2 px-3 py-1.5 rounded-md
+                       text-[12px] text-foreground/60 hover:text-foreground
+                       hover:bg-foreground/[0.04] transition-colors titlebar-no-drag"
+            title="Automations"
           >
-            <CalendarClock size={13} className="text-foreground/40 flex-shrink-0" />
-            <span>Automations</span>
+            <Bot className="size-3.5 shrink-0" />
+            <span className="flex-1 text-left">Automations</span>
           </button>
         </div>
       )}
 
+      {/* Phase 4b: workspace switcher bar sits ABOVE the user/settings row.
+          Per spec §4.8 — workspace switcher is per-app context; user/settings
+          is cross-workspace global identity (Apple Mail / macOS convention
+          anchors global identity at the absolute bottom). */}
+      {mode === 'agent' && <WorkspaceSwitcherBar />}
+
       {/* 底部：用户资料 + 设置入口 */}
-      <div className="px-3 pb-3">
+      <div className="px-3 pb-3 pt-2">
         <button onClick={() => setSettingsOpen(true)} className="w-full flex items-center gap-3 px-3 py-2 rounded-[10px] transition-colors titlebar-no-drag text-foreground/70 hover:bg-foreground/[0.04] hover:text-foreground">
           <UserAvatar avatar={userProfile.avatar} size={28} />
           <span className="flex-1 text-sm truncate text-left">{userProfile.userName}</span>
