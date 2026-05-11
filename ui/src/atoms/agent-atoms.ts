@@ -228,7 +228,42 @@ export const agentStreamingStatesAtom = atom<Map<string, AgentStreamState>>(new 
 export const liveMessagesMapAtom = atom<Map<string, any[]>>(new Map())
 
 export const agentPendingPromptAtom = atom<AgentPendingPrompt | null>(null)
-export const agentPendingFilesAtom = atom<AgentPendingFile[]>([])
+
+// Per-session pending files. Switching sessions must not leak attachments
+// across — the user attaches in session A, switches to session B, B should
+// have its own (possibly empty) attachment list.
+export const agentPendingFilesMapAtom = atom<Map<string, AgentPendingFile[]>>(new Map())
+
+/** Read/write the current session's pending files. Backed by
+ *  `agentPendingFilesMapAtom` keyed by `currentAgentSessionIdAtom`. Reads
+ *  return [] when no session is active. Writes are silently dropped when
+ *  no session is active (matches old behavior of working on a global list
+ *  but without the cross-session leak). */
+export const agentPendingFilesAtom = atom<
+  AgentPendingFile[],
+  [AgentPendingFile[] | ((prev: AgentPendingFile[]) => AgentPendingFile[])],
+  void
+>(
+  (get) => {
+    const sid = get(currentAgentSessionIdAtom)
+    if (!sid) return []
+    return get(agentPendingFilesMapAtom).get(sid) ?? []
+  },
+  (get, set, next) => {
+    const sid = get(currentAgentSessionIdAtom)
+    if (!sid) return
+    const map = get(agentPendingFilesMapAtom)
+    const prev = map.get(sid) ?? []
+    const value = typeof next === 'function' ? next(prev) : next
+    const newMap = new Map(map)
+    if (value.length === 0) {
+      newMap.delete(sid)
+    } else {
+      newMap.set(sid, value)
+    }
+    set(agentPendingFilesMapAtom, newMap)
+  }
+)
 export const workspaceCapabilitiesVersionAtom = atom(0)
 export const workspaceFilesVersionAtom = atom(0)
 
