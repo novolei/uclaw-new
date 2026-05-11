@@ -162,7 +162,12 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         const t = payload.thread
         // Open the right tab type — chat or agent
         const tabType = t.kind === 'agent' ? 'agent' : 'chat'
-        const ws = activeWorkspaceId ?? 'default'
+        // Tag the tab with the thread's own workspaceId — search/recents
+        // are cross-workspace, so the user may be viewing workspace A
+        // while clicking a thread that lives in B. Without this the tab
+        // gets tagged A but visibleTabsAtom for A filters it out (the
+        // thread isn't an A session), surfacing as "标签页不存在".
+        const ws = t.workspaceId ?? activeWorkspaceId ?? 'default'
         const result = openTab(tabs, { type: tabType, sessionId: t.id, title: '', workspaceId: ws })
         setTabs(result.tabs)
         setActiveTabId(result.activeTabId)
@@ -190,15 +195,16 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         const h = payload.hit
         // existing PR #29 behavior — open the session and scroll to the message
         const tabType = (h.source === 'agent_turn' || h.source === 'agent_message') ? 'agent' : 'chat'
-        const ws = activeWorkspaceId ?? 'default'
+        // Look up workspace from agent sessions (search hits are
+        // cross-workspace). Same rationale as the 'thread' case.
+        const session = agentSessions.find((s) => s.id === h.sourceId)
+        const ws = session?.workspaceId ?? activeWorkspaceId ?? 'default'
         const result = openTab(tabs, { type: tabType, sessionId: h.sourceId, title: '', workspaceId: ws })
         setTabs(result.tabs)
         setActiveTabId(result.activeTabId)
         setAppMode((h.source === 'agent_turn' || h.source === 'agent_message') ? 'agent' : 'chat')
         if ((h.source === 'agent_turn' || h.source === 'agent_message')) setCurrentAgentSessionId(h.sourceId)
         else setCurrentConversationId(h.sourceId)
-        // Look up workspace from agent sessions if available
-        const session = agentSessions.find((s) => s.id === h.sourceId)
         if (session?.workspaceId) {
           setCurrentAgentWorkspaceId(session.workspaceId)
           localStorage.setItem(`uclaw:workspace:${h.sourceId}`, session.workspaceId)
@@ -213,7 +219,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         break
       }
     }
-  }, [tabs, setTabs, setActiveTabId, setAppMode, setCurrentConversationId, setCurrentAgentSessionId, agentSessions, setCurrentAgentWorkspaceId])
+  }, [tabs, setTabs, setActiveTabId, setAppMode, setCurrentConversationId, setCurrentAgentSessionId, agentSessions, setCurrentAgentWorkspaceId, activeWorkspaceId])
 
   return (
     <AppShellProvider value={contextValue}>

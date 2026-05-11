@@ -34,14 +34,23 @@ export function useOpenSession(): OpenSessionFn {
     (type: TabType, sessionId: string, title: string): void => {
       // For agent tabs, prepend the session emoji (if any) to the tab title
       let displayTitle = title
-      if (type === 'agent') {
-        const session = agentSessions.find((s) => s.id === sessionId)
-        const emoji = session?.titleEmoji
+      const session = type === 'agent'
+        ? agentSessions.find((s) => s.id === sessionId)
+        : undefined
+      if (type === 'agent' && session) {
+        const emoji = session.titleEmoji
         if (emoji && emoji !== '💬') {
           displayTitle = `${emoji} ${title}`
         }
       }
-      const ws = activeWorkspaceId ?? 'default'
+      // Tab's workspaceId: prefer the session's authoritative workspace
+      // (sessions know where they live) over the user's current view —
+      // this matters when opening a session from a context that shows
+      // cross-workspace results (search, deep-link, recent). Falls back
+      // to the active workspace for chat / browser tabs where no
+      // per-session workspace exists.
+      const ws =
+        session?.workspaceId ?? activeWorkspaceId ?? 'default'
       const result = openTab(tabs, { type, sessionId, title: displayTitle, workspaceId: ws })
       setTabs(result.tabs)
       setActiveTabId(result.activeTabId)
@@ -65,13 +74,12 @@ export function useOpenSession(): OpenSessionFn {
         })
 
         // 同步 workspaceId，确保与 TabBar 切换行为一致
-        const session = agentSessions.find((s) => s.id === sessionId)
         if (session?.workspaceId) {
           setCurrentAgentWorkspaceId(session.workspaceId)
           localStorage.setItem(`uclaw:workspace:${sessionId}`, session.workspaceId)
         }
       }
     },
-    [tabs, setTabs, setActiveTabId, setAppMode, setCurrentConversationId, setCurrentAgentSessionId, agentSessions, setCurrentAgentWorkspaceId, setUnviewedCompleted],
+    [tabs, setTabs, setActiveTabId, setAppMode, setCurrentConversationId, setCurrentAgentSessionId, agentSessions, setCurrentAgentWorkspaceId, setUnviewedCompleted, activeWorkspaceId],
   )
 }
