@@ -655,6 +655,18 @@ UPDATE spaces SET sort_order = (
 ) WHERE (SELECT COUNT(*) FROM spaces WHERE sort_order != 0) = 0;
 ";
 
+/// V18: pin state for agent sessions. Nullable INTEGER stores the ms
+/// timestamp when the session was pinned; NULL means unpinned. Defaults
+/// to NULL for new + existing rows. The pre-existing `pinned` INTEGER
+/// column is unrelated (used by chat conversations) and left untouched.
+///
+/// ALTER may fail on re-run with "duplicate column" — handled by the
+/// per-statement tracing::warn! skip in run(), matching V9/V10/V17 idiom.
+pub const V18_AGENT_SESSIONS_PINNED_AT: &str = "
+ALTER TABLE agent_sessions ADD COLUMN pinned_at INTEGER NULL;
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_pinned_at ON agent_sessions(pinned_at);
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -776,6 +788,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V17_WORKSPACE_PATH_SORT_ATTACHED.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V17 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V18: agent_sessions.pinned_at — canonical pin state for the agent UI.
+    tracing::debug!("Running migration V18: agent_sessions.pinned_at");
+    for stmt in V18_AGENT_SESSIONS_PINNED_AT.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V18 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -990,5 +1009,51 @@ mod tests {
         ).unwrap();
         assert_eq!(a_order, 0, "user-set sort_order=0 preserved across re-run");
         assert_eq!(b_order, 5, "user-set sort_order=5 preserved across re-run");
+    }
+
+    /// V18 adds a nullable pinned_at column to agent_sessions. Verifies:
+    /// (1) column exists after migration, (2) existing rows default to NULL,
+    /// (3) re-running the migration is idempotent.
+    #[test]
+    fn v18_adds_pinned_at_column_nullable_with_null_default() {
+        let conn = db_pre_v16();
+        // Pre-V18: insert a session row to make sure backfill is non-destructive.
+        conn.execute(
+            "INSERT INTO agent_sessions (id, space_id, title, metadata_json,
+                                          message_count, pinned, archived,
+                                          created_at, updated_at)
+             VALUES ('s1', 'default', 't', '{}', 0, 0, 0, 0, 0)",
+            [],
+        ).unwrap();
+
+        // Drive V18.
+        for stmt in super::V18_AGENT_SESSIONS_PINNED_AT
+            .split(';').map(|s| s.trim()).filter(|s| !s.is_empty())
+        {
+            // Match the run() per-stmt skip pattern.
+            let _ = conn.execute(stmt, []);
+        }
+
+        // Column exists + pre-existing row has NULL.
+        let pinned_at: Option<i64> = conn.query_row(
+            "SELECT pinned_at FROM agent_sessions WHERE id = 's1'",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        ).unwrap();
+        assert!(pinned_at.is_none());
+
+        // Idempotent re-run (duplicate column ALTER fails per-stmt; ignored).
+        for stmt in super::V18_AGENT_SESSIONS_PINNED_AT
+            .split(';').map(|s| s.trim()).filter(|s| !s.is_empty())
+        {
+            let _ = conn.execute(stmt, []);
+        }
+        // Row still present, still NULL.
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_sessions",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
     }
 }
