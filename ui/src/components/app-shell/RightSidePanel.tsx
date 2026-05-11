@@ -32,10 +32,13 @@ function TabButton({ isActive, onClick, icon, label }: TabButtonProps): React.Re
     <button
       onClick={onClick}
       className={[
-        'flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors',
+        // titlebar-no-drag is required because the panel container is
+        // a Tauri drag region — without this, clicks become window drags.
+        'titlebar-no-drag flex items-center gap-1.5 px-2.5 py-1.5 rounded-md',
+        'text-[12px] font-medium transition-colors',
         isActive
-          ? 'bg-accent text-foreground'
-          : 'text-muted-foreground hover:text-foreground',
+          ? 'bg-primary/10 text-foreground shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.2)]'
+          : 'text-muted-foreground hover:text-foreground hover:bg-foreground/[0.04]',
       ].join(' ')}
       title={label}
     >
@@ -88,9 +91,11 @@ export function RightSidePanel(): React.ReactElement | null {
   const sessionPath = sessionPathMap.get(currentSessionId) ?? null
 
   return (
-    <div className="relative h-full w-[380px] flex-shrink-0 overflow-hidden titlebar-drag-region bg-content-area rounded-2xl shadow-xl">
-      {/* Tab bar */}
-      <div className="flex items-center gap-0.5 px-2 pt-[38px] pb-1 border-b border-border/50 flex-shrink-0">
+    <div className="relative h-full w-[380px] flex-shrink-0 overflow-hidden titlebar-drag-region bg-content-area rounded-2xl shadow-xl flex flex-col">
+      {/* Tab bar — sits at the top with a small drag-only strip above
+          so users can still drag the window from the panel's top edge. */}
+      <div data-tauri-drag-region className="h-[8px] flex-shrink-0 titlebar-drag-region" />
+      <div className="titlebar-no-drag flex items-center gap-1 px-2 pb-1.5 border-b border-border/40 flex-shrink-0">
         <TabButton
           isActive={activeTab === 'files'}
           onClick={() => setActiveTab('files')}
@@ -124,7 +129,7 @@ export function RightSidePanel(): React.ReactElement | null {
       </div>
 
       {/* Tab content */}
-      <div className="flex-1 overflow-auto h-[calc(100%-72px)]">
+      <div className="flex-1 min-h-0 overflow-auto titlebar-no-drag">
         {activeTab === 'files' && (
           <WorkspaceFilesView sessionId={currentSessionId} sessionPath={sessionPath} />
         )}

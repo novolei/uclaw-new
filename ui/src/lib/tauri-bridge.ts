@@ -918,10 +918,13 @@ export const openFile = (path: string): Promise<void> => openShell(path)
 export const openExternal = (url: string): Promise<void> => openShell(url)
 
 export const showInFinder = (path: string): Promise<void> => {
-  // tauri-plugin-shell v2 doesn't expose revealItemInDir in stable;
-  // fall back to opening the containing folder.
-  const parent = path.substring(0, path.lastIndexOf('/'))
-  return openShell(parent || '/')
+  // tauri-plugin-shell v2 doesn't expose `open -R` (reveal-in-Finder).
+  // Open the path directly: macOS `open <path>` resolves to:
+  //   - directory → opens in Finder ✓ (the workspace-folder use case)
+  //   - file      → opens in its default app (best we can do without -R)
+  // Previously this returned `openShell(parent)` which opened the
+  // grandparent when the caller passed a workspace folder — wrong UX.
+  return openShell(path)
 }
 
 export const getPathForFile = (_file: File): string | null => {
