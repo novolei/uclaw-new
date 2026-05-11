@@ -737,8 +737,18 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
         </div>
       )}
 
+      {/* Phase 4b: workspace switcher bar sits ABOVE the user/settings row.
+          Per spec §4.8 — workspace switcher is per-app context; user/settings
+          is cross-workspace global identity (Apple Mail / macOS convention
+          anchors global identity at the absolute bottom). */}
+      {mode === 'agent' && (
+        <WorkspaceSwitcherBar
+          onAutomationClick={() => setAutomationPanelOpen(true)}
+        />
+      )}
+
       {/* 底部：用户资料 + 设置入口 */}
-      <div className="px-3 pb-3">
+      <div className="px-3 pb-3 pt-2">
         <button onClick={() => setSettingsOpen(true)} className="w-full flex items-center gap-3 px-3 py-2 rounded-[10px] transition-colors titlebar-no-drag text-foreground/70 hover:bg-foreground/[0.04] hover:text-foreground">
           <UserAvatar avatar={userProfile.avatar} size={28} />
           <span className="flex-1 text-sm truncate text-left">{userProfile.userName}</span>
@@ -748,12 +758,6 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
           </div>
         </button>
       </div>
-
-      {mode === 'agent' && (
-        <WorkspaceSwitcherBar
-          onAutomationClick={() => setAutomationPanelOpen(true)}
-        />
-      )}
 
       {deleteDialog}
       {moveDialog}
