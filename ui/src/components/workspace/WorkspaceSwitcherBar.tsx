@@ -137,21 +137,24 @@ function WorkspaceIcon({
           aria-label={`工作区: ${workspace.name}`}
           className={cn(
             'titlebar-no-drag relative inline-flex items-center justify-center',
-            'size-6 rounded-md transition-colors',
+            'size-7 rounded-md transition-colors',
+            // ARC-style active state: soft filled background tint + tinted
+            // icon. No ring/offset — those produced bracket-like artifacts
+            // around the 24px button.
             active
-              ? 'bg-primary/10 ring-2 ring-primary ring-offset-1 ring-offset-background'
-              : 'hover:bg-foreground/[0.06]',
+              ? 'bg-primary/15 text-primary'
+              : 'text-foreground/55 hover:text-foreground hover:bg-foreground/[0.05]',
             isDragging && 'opacity-40',
           )}
         >
           {React.createElement(iconForWorkspace(workspace.icon), {
-            className: 'size-3.5',
+            className: 'size-4',
             'aria-hidden': true,
           } as React.ComponentProps<LucideIcon>)}
           {running && (
             <span
               className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full
-                         bg-primary animate-pulse
+                         bg-primary animate-pulse ring-1 ring-background
                          shadow-[0_0_4px_hsl(var(--primary))]"
               aria-label="该工作区有任务执行中"
             />
@@ -191,11 +194,17 @@ function WorkspaceDot({
           aria-label={`工作区: ${workspace.name} (workspace dot)`}
           className={cn(
             'titlebar-no-drag relative inline-flex items-center justify-center',
-            'size-3 rounded-full transition-colors',
-            'bg-foreground/30 hover:bg-foreground/50',
+            // Larger hit target (12px) than visible glyph (6px) for easier
+            // clicking — the visible circle is rendered via the inner span.
+            'size-3 rounded-full transition-all',
+            'hover:scale-110',
             isDragging && 'opacity-40',
           )}
         >
+          <span
+            aria-hidden
+            className="size-1.5 rounded-full bg-foreground/40 hover:bg-foreground/60 transition-colors"
+          />
           {running && (
             <span
               className="absolute -top-px -right-px size-1 rounded-full
@@ -310,7 +319,7 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
 
   return (
     <>
-      <div className="flex items-center gap-1 px-2 py-1.5 border-t border-border/40">
+      <div className="flex items-center gap-1.5 px-3 py-2 border-t border-border/40">
         {/* Workspace icons or dots */}
         <TooltipProvider delayDuration={0}>
           <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto scrollbar-none">
@@ -340,19 +349,17 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
           </div>
         </TooltipProvider>
 
-        <div className="w-px h-5 bg-border/40 mx-1" />
-
-        {/* Zone 3: + create new workspace */}
+        {/* + create new workspace */}
         <button
           type="button"
           onClick={() => setCreateOpen(true)}
           aria-label="新建工作区"
           title="新建工作区"
           className="titlebar-no-drag inline-flex items-center justify-center
-                     size-6 rounded-md text-foreground/60 hover:text-foreground
-                     hover:bg-foreground/[0.06] transition-colors"
+                     size-7 rounded-md text-foreground/55 hover:text-foreground
+                     hover:bg-foreground/[0.05] transition-colors shrink-0"
         >
-          <Plus className="size-3.5" />
+          <Plus className="size-4" />
         </button>
       </div>
 
