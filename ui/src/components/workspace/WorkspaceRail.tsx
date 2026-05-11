@@ -94,25 +94,27 @@ export function WorkspaceRail({
   const handleDrop = async (e: React.DragEvent, targetId: string): Promise<void> => {
     e.preventDefault()
     e.stopPropagation()
-    if (!dragId || dragId === targetId || !dropIndicator) {
-      setDragId(null)
-      setDropIndicator(null)
-      return
-    }
-    const fromIdx = workspaces.findIndex((w) => w.id === dragId)
+    // Recompute position from cursor at drop time. Relying on `dropIndicator`
+    // state is fragile because `dragleave` (fired between dragover and drop
+    // when the cursor crosses internal child boundaries) can null it out
+    // before drop runs.
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const ratio = (e.clientY - rect.top) / rect.height
+    const position: 'before' | 'after' = ratio < 0.5 ? 'before' : 'after'
+    // Read the dragged id from dataTransfer as a fallback if React state was
+    // cleared by a stray dragend.
+    const sourceId = dragId ?? e.dataTransfer.getData('text/plain') ?? ''
+    setDragId(null)
+    setDropIndicator(null)
+    if (!sourceId || sourceId === targetId) return
+    const fromIdx = workspaces.findIndex((w) => w.id === sourceId)
     const toIdx = workspaces.findIndex((w) => w.id === targetId)
-    if (fromIdx === -1 || toIdx === -1) {
-      setDragId(null)
-      setDropIndicator(null)
-      return
-    }
+    if (fromIdx === -1 || toIdx === -1) return
     const reordered = [...workspaces]
     const [moved] = reordered.splice(fromIdx, 1)
     const adjustedToIdx = fromIdx < toIdx ? toIdx - 1 : toIdx
-    const insertIdx = dropIndicator.position === 'after' ? adjustedToIdx + 1 : adjustedToIdx
+    const insertIdx = position === 'after' ? adjustedToIdx + 1 : adjustedToIdx
     reordered.splice(insertIdx, 0, moved!)
-    setDragId(null)
-    setDropIndicator(null)
     try {
       await reorderWorkspaces(reordered.map((w) => w.id))
     } catch (err) {

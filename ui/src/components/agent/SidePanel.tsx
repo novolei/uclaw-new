@@ -286,21 +286,29 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
           <div className="flex-1 min-h-0 flex flex-col mx-2 mb-2">
             <div className="flex items-center gap-1 px-2 h-[32px] flex-shrink-0">
               <FolderHeart className="size-3 text-muted-foreground" />
-              <span className="text-[11px] font-medium text-muted-foreground">工作区文件</span>
+              <span className="text-[11px] font-medium text-muted-foreground shrink-0">工作区文件</span>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Info className="size-3 text-muted-foreground/50 cursor-help" />
+                  <Info className="size-3 text-muted-foreground/50 cursor-help shrink-0" />
                 </TooltipTrigger>
                 <TooltipContent side="bottom" className="max-w-[220px]">
                   <p>工作区内所有会话可访问的文件和文件夹,每个新对话都可以自动读取</p>
                 </TooltipContent>
               </Tooltip>
-              <div className="flex-1" />
+              {workspaceFilesPath && (
+                <span
+                  className="text-[10px] text-muted-foreground/60 truncate flex-1 min-w-0"
+                  title={workspaceFilesPath}
+                >
+                  {workspaceFilesPath.split('/').pop() || workspaceFilesPath}
+                </span>
+              )}
+              {!workspaceFilesPath && <div className="flex-1" />}
               {workspaceFilesPath && (
                 <button
                   type="button"
                   onClick={() => showInFinder(workspaceFilesPath)}
-                  className="h-5 w-5 inline-flex items-center justify-center rounded hover:bg-foreground/[0.06] text-foreground/40 hover:text-foreground/70 transition-colors"
+                  className="h-5 w-5 inline-flex items-center justify-center rounded hover:bg-foreground/[0.06] text-foreground/40 hover:text-foreground/70 transition-colors shrink-0"
                   title="在 Finder 打开"
                 >
                   <ExternalLink className="size-2.5" />
