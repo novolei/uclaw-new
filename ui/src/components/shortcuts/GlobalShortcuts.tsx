@@ -8,11 +8,9 @@
 
 import { useAtomValue, useSetAtom } from 'jotai'
 import { useShortcuts } from '@/hooks/useShortcut'
-import { sidebarCollapsedAtom } from '@/atoms/tab-atoms'
 import { workspacesAtom, selectWorkspaceAtom } from '@/atoms/workspace'
 
 export function GlobalShortcuts(): null {
-  const setSidebarCollapsed = useSetAtom(sidebarCollapsedAtom)
   const workspaces = useAtomValue(workspacesAtom)
   const selectWorkspace = useSetAtom(selectWorkspaceAtom)
 
@@ -38,12 +36,6 @@ export function GlobalShortcuts(): null {
       handler: () => {
         // [PLACEHOLDER] 新建 Agent 会话
         console.log('[GlobalShortcuts] new-agent-session triggered')
-      },
-    },
-    {
-      id: 'toggle-sidebar',
-      handler: () => {
-        setSidebarCollapsed((prev) => !prev)
       },
     },
     {

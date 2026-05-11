@@ -61,13 +61,6 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     win: 'Ctrl+Shift+Tab',
   },
   {
-    id: 'toggle-sidebar',
-    label: '切换侧边栏',
-    group: '导航',
-    mac: 'Cmd+B',
-    win: 'Ctrl+B',
-  },
-  {
     id: 'open-settings',
     label: '打开设置',
     group: '导航',

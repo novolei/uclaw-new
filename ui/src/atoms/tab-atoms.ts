@@ -6,7 +6,6 @@
  */
 
 import { atom } from 'jotai'
-import { atomWithStorage } from 'jotai/utils'
 import {
   streamingConversationIdsAtom,
 } from './chat-atoms'
@@ -38,11 +37,6 @@ export interface PersistedTabState {
 export const tabsAtom = atom<TabItem[]>([])
 export const activeTabIdAtom = atom<string | null>(null)
 export const tabMruAtom = atom<string[]>([])
-
-export const sidebarCollapsedAtom = atomWithStorage<boolean>(
-  'uclaw-sidebar-collapsed',
-  false,
-)
 
 export interface TabMinimapItem {
   id: string
