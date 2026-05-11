@@ -2,7 +2,12 @@
  * WorkspaceSwitcherBar — ARC-style horizontal bar at the bottom of the
  * left sidebar.
  *
- * Layout: [automation] | [workspace icons or dots] | [+]
+ * Layout: [workspace icons or dots] | [+]
+ *
+ * Icons are lucide-react glyphs mapped from the workspace's stored
+ * emoji (workspace.icon). The compact bar prefers glyphs for visual
+ * density; the human-readable emoji is preserved in the
+ * WorkspaceHeader (top of sidebar) and in the hover tooltip.
  *
  * ≤5 workspaces → all show as full 24px icon buttons.
  * >5 workspaces → only the active one renders as full icon; others
@@ -15,11 +20,19 @@
  * - Drag-reorder (horizontal, via Phase 2/3 reorderWorkspacesAtom)
  * - Running indicator (pulse dot when sessions in this workspace are
  *   executing)
+ *
+ * Note: The automation entry that lived in this bar's zone 1 in earlier
+ * iterations was hoisted to its own row above the bar in LeftSidebar.tsx —
+ * it's per-workspace context, not cross-workspace navigation.
  */
 
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { Bot, Plus } from 'lucide-react'
+import {
+  Plus, Folder, Briefcase, Rocket, Microscope, PenTool,
+  Target, Home, Wrench,
+  type LucideIcon,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   Tooltip, TooltipContent, TooltipProvider, TooltipTrigger,
@@ -42,6 +55,26 @@ const FULL_THRESHOLD = 5
 const isMac = typeof navigator !== 'undefined'
   && /Mac|iPod|iPhone|iPad/.test(navigator.userAgent)
 const modGlyph = isMac ? '⌘' : 'Ctrl'
+
+/**
+ * Map the workspace's stored emoji glyph to a lucide icon for the
+ * compact switcher bar. Covers the EMOJI_CHOICES set from
+ * WorkspaceCreateDialog. Unknown glyphs fall back to Folder.
+ */
+const EMOJI_ICON_MAP: Record<string, LucideIcon> = {
+  '📁': Folder,
+  '💼': Briefcase,
+  '🚀': Rocket,
+  '🔬': Microscope,
+  '✍️': PenTool,
+  '🎯': Target,
+  '🏠': Home,
+  '⚙️': Wrench,
+}
+
+function iconForWorkspace(icon: string): LucideIcon {
+  return EMOJI_ICON_MAP[icon] ?? Folder
+}
 
 /** Tooltip pill — workspace name on left, ⌘ + digit chips on right (first 9). */
 function WorkspaceTooltip({
@@ -111,7 +144,10 @@ function WorkspaceIcon({
             isDragging && 'opacity-40',
           )}
         >
-          <span className="leading-none text-[14px]">{workspace.icon}</span>
+          {React.createElement(iconForWorkspace(workspace.icon), {
+            className: 'size-3.5',
+            'aria-hidden': true,
+          } as React.ComponentProps<LucideIcon>)}
           {running && (
             <span
               className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full
@@ -182,14 +218,7 @@ function WorkspaceDot({
   )
 }
 
-interface WorkspaceSwitcherBarProps {
-  /** Hook into the existing AutomationSlideOver toggle from LeftSidebar. */
-  onAutomationClick?: () => void
-}
-
-export function WorkspaceSwitcherBar({
-  onAutomationClick,
-}: WorkspaceSwitcherBarProps = {}): React.ReactElement {
+export function WorkspaceSwitcherBar(): React.ReactElement {
   const workspaces = useAtomValue(workspacesAtom)
   const activeId = useAtomValue(activeWorkspaceIdAtom)
   const selectWorkspace = useSetAtom(selectWorkspaceAtom)
@@ -282,22 +311,7 @@ export function WorkspaceSwitcherBar({
   return (
     <>
       <div className="flex items-center gap-1 px-2 py-1.5 border-t border-border/40">
-        {/* Zone 1: automation */}
-        <button
-          type="button"
-          onClick={onAutomationClick}
-          aria-label="Automations"
-          title="Automations"
-          className="titlebar-no-drag inline-flex items-center justify-center
-                     size-6 rounded-md text-foreground/60 hover:text-foreground
-                     hover:bg-foreground/[0.06] transition-colors"
-        >
-          <Bot className="size-3.5" />
-        </button>
-
-        <div className="w-px h-5 bg-border/40 mx-1" />
-
-        {/* Zone 2: workspace icons or dots */}
+        {/* Workspace icons or dots */}
         <TooltipProvider delayDuration={0}>
           <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto scrollbar-none">
             {workspaces.map((w, i) => {

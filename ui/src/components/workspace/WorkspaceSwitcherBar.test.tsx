@@ -41,9 +41,11 @@ describe('WorkspaceSwitcherBar', () => {
     ])
     store.set(activeWorkspaceIdAtom, 'w2')
     renderWithStore(store)
-    expect(screen.getByText('📁')).toBeInTheDocument()
-    expect(screen.getByText('💼')).toBeInTheDocument()
-    expect(screen.getByText('🚀')).toBeInTheDocument()
+    // After emoji→lucide-icon switch: assert the three workspace buttons
+    // are present via aria-label rather than checking emoji text.
+    expect(screen.getByLabelText(/工作区: A/)).toBeInTheDocument()
+    expect(screen.getByLabelText(/工作区: B/)).toBeInTheDocument()
+    expect(screen.getByLabelText(/工作区: C/)).toBeInTheDocument()
   })
 
   it('collapses non-active to dots when workspaces.length > 5', () => {
@@ -53,11 +55,12 @@ describe('WorkspaceSwitcherBar', () => {
     ))
     store.set(activeWorkspaceIdAtom, 'w3')
     renderWithStore(store)
-    // Only the active workspace's emoji renders as full icon (1 emoji visible).
-    const emojis = screen.queryAllByText('📁')
-    expect(emojis.length).toBe(1)
-    // Other workspaces render as dots — count via aria-label substring.
+    // After emoji→lucide-icon switch: count workspace-icon buttons (full)
+    // vs dot buttons (collapsed). With 7 workspaces and 1 active, we
+    // expect 1 full icon and 6 dots.
+    const fullIcons = screen.queryAllByLabelText(/^工作区: name\d+$/)
     const dots = screen.getAllByLabelText(/workspace dot/)
+    expect(fullIcons.length).toBe(1)
     expect(dots.length).toBe(6)
   })
 

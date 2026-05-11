@@ -13,7 +13,7 @@
 import * as React from 'react'
 import { useAtom, useSetAtom, useAtomValue } from 'jotai'
 import { toast } from 'sonner'
-import { Pin, PinOff, Settings, Plus, Trash2, Pencil, ChevronDown, ChevronRight, Plug, Zap, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, Hammer, LoaderCircle } from 'lucide-react'
+import { Pin, PinOff, Settings, Plus, Trash2, Pencil, ChevronDown, ChevronRight, Plug, Zap, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, Hammer, LoaderCircle, Bot } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { ModeSwitcher } from './ModeSwitcher'
@@ -737,15 +737,30 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
         </div>
       )}
 
+      {/* Per-workspace Automations entry. Visually grouped with the active
+          workspace's content (above the cross-workspace switcher bar) to
+          imply "this workspace's automations". */}
+      {mode === 'agent' && (
+        <div className="px-3 pb-1">
+          <button
+            type="button"
+            onClick={() => setAutomationPanelOpen(true)}
+            className="w-full flex items-center gap-2 px-3 py-1.5 rounded-md
+                       text-[12px] text-foreground/60 hover:text-foreground
+                       hover:bg-foreground/[0.04] transition-colors titlebar-no-drag"
+            title="Automations"
+          >
+            <Bot className="size-3.5 shrink-0" />
+            <span className="flex-1 text-left">Automations</span>
+          </button>
+        </div>
+      )}
+
       {/* Phase 4b: workspace switcher bar sits ABOVE the user/settings row.
           Per spec §4.8 — workspace switcher is per-app context; user/settings
           is cross-workspace global identity (Apple Mail / macOS convention
           anchors global identity at the absolute bottom). */}
-      {mode === 'agent' && (
-        <WorkspaceSwitcherBar
-          onAutomationClick={() => setAutomationPanelOpen(true)}
-        />
-      )}
+      {mode === 'agent' && <WorkspaceSwitcherBar />}
 
       {/* 底部：用户资料 + 设置入口 */}
       <div className="px-3 pb-3 pt-2">
