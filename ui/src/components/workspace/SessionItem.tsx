@@ -56,9 +56,11 @@ export function SessionItem({
       )}
     >
       {/* Open-tab indicator — 2px primary-tinted stripe on the left edge.
-          Mail.app-style "this thread is open" affordance. Hidden on the
-          active row because the filled background already signals state. */}
-      {isOpen && !isActive && (
+          Mail.app-style "this thread is open" affordance. Shows on every
+          open row (including the active one — `isActive` says "currently
+          focused tab", `isOpen` says "loaded as a tab somewhere", which
+          are independent facts the user wants to see together). */}
+      {isOpen && (
         <span
           aria-hidden
           className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-primary/60"
