@@ -19,6 +19,10 @@ interface SessionItemProps {
   /** True when the session has a non-null pinned_at; drives menu label
    *  and (eventually) any visual pin indicator the rail wants to show. */
   isPinned?: boolean
+  /** True when this session has at least one open tab. Renders a subtle
+   *  left-edge marker (Mail.app-style) so users can see at a glance
+   *  which rows in the rail are already loaded in the tab bar. */
+  isOpen?: boolean
   onClick: () => void
   onDelete?: () => void
   onMove?: () => void
@@ -33,6 +37,7 @@ export function SessionItem({
   isActive,
   running,
   isPinned,
+  isOpen,
   onClick,
   onDelete,
   onMove,
@@ -43,13 +48,22 @@ export function SessionItem({
     <div
       onClick={onClick}
       className={cn(
-        'group flex items-center gap-2 rounded-md px-2 py-1.5 cursor-pointer',
+        'group relative flex items-center gap-2 rounded-md px-2 py-1.5 cursor-pointer',
         'text-[13px] transition-colors duration-100',
         isActive
           ? 'bg-sidebar-accent text-sidebar-primary font-medium'
           : 'text-muted-foreground hover:bg-muted hover:text-foreground'
       )}
     >
+      {/* Open-tab indicator — 2px primary-tinted stripe on the left edge.
+          Mail.app-style "this thread is open" affordance. Hidden on the
+          active row because the filled background already signals state. */}
+      {isOpen && !isActive && (
+        <span
+          aria-hidden
+          className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-primary/60"
+        />
+      )}
       <span className="shrink-0 inline-flex items-center justify-center text-primary" style={{ width: '18px' }}>
         {titlePending ? (
           <LoaderCircle size={14} strokeWidth={2} className="animate-spin" />
