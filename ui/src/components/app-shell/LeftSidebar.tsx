@@ -445,12 +445,23 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
 
     if (mode === 'agent') {
       try {
-        await deleteAgentSession(pendingDeleteId)
+        const deleted = await deleteAgentSession(pendingDeleteId)
+        if (!deleted) {
+          toast.error('删除失败：未找到该会话')
+        }
         const sessions = await listAgentSessions()
         setAgentSessions(sessions)
       } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
         console.error('[侧边栏] 删除 Agent 会话失败:', error)
-        setAgentSessions((prev: any) => prev.filter((s: any) => s.id !== pendingDeleteId))
+        toast.error(`删除失败：${msg}`)
+        // Backend failed — refresh from disk so the (still-present) session
+        // reappears in the list. Otherwise the user is left thinking the
+        // delete worked because the local list was optimistically cleared.
+        try {
+          const sessions = await listAgentSessions()
+          setAgentSessions(sessions)
+        } catch { /* ignore */ }
       } finally { setPendingDeleteId(null) }
       return
     }
