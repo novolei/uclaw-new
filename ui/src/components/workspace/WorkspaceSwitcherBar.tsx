@@ -1,0 +1,353 @@
+/**
+ * WorkspaceSwitcherBar — ARC-style horizontal bar at the bottom of the
+ * left sidebar.
+ *
+ * Layout: [automation] | [workspace icons or dots] | [+]
+ *
+ * ≤5 workspaces → all show as full 24px icon buttons.
+ * >5 workspaces → only the active one renders as full icon; others
+ *   collapse to 6px dots (hover tooltip remains the only way to
+ *   identify them visually).
+ *
+ * Each icon/dot supports:
+ * - Hover tooltip (ARC-style pill: name + ⌘ + digit chips)
+ * - Click → selectWorkspaceAtom
+ * - Drag-reorder (horizontal, via Phase 2/3 reorderWorkspacesAtom)
+ * - Running indicator (pulse dot when sessions in this workspace are
+ *   executing)
+ */
+
+import * as React from 'react'
+import { useAtomValue, useSetAtom } from 'jotai'
+import { Bot, Plus } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import {
+  Tooltip, TooltipContent, TooltipProvider, TooltipTrigger,
+} from '@/components/ui/tooltip'
+import {
+  workspacesAtom,
+  activeWorkspaceIdAtom,
+  selectWorkspaceAtom,
+  reorderWorkspacesAtom,
+  refreshWorkspacesAtom,
+  type WorkspaceInfo,
+} from '@/atoms/workspace'
+import {
+  agentSessionsAtom,
+  agentSessionIndicatorMapAtom,
+} from '@/atoms/agent-atoms'
+import { WorkspaceCreateDialog } from './WorkspaceCreateDialog'
+
+const FULL_THRESHOLD = 5
+const isMac = typeof navigator !== 'undefined'
+  && /Mac|iPod|iPhone|iPad/.test(navigator.userAgent)
+const modGlyph = isMac ? '⌘' : 'Ctrl'
+
+/** Tooltip pill — workspace name on left, ⌘ + digit chips on right (first 9). */
+function WorkspaceTooltip({
+  workspace, indexForShortcut,
+}: { workspace: WorkspaceInfo; indexForShortcut: number | null }): React.ReactElement {
+  return (
+    <div className="flex items-center gap-1.5 px-2 py-1 rounded-md
+                    bg-popover/95 backdrop-blur-md border border-border/60
+                    shadow-lg text-[12px] font-medium">
+      <span className="leading-none text-[13px]">{workspace.icon}</span>
+      <span className="text-foreground">{workspace.name}</span>
+      {indexForShortcut !== null && indexForShortcut < 9 && (
+        <>
+          <span className="px-1.5 py-0.5 rounded bg-primary/15 text-primary
+                           text-[10px] font-mono leading-none">
+            {modGlyph}
+          </span>
+          <span className="px-1.5 py-0.5 rounded bg-primary/15 text-primary
+                           text-[10px] font-mono leading-none">
+            {indexForShortcut + 1}
+          </span>
+        </>
+      )}
+    </div>
+  )
+}
+
+interface WorkspaceItemProps {
+  workspace: WorkspaceInfo
+  index: number
+  active: boolean
+  running: boolean
+  onDragStart: (e: React.DragEvent, id: string) => void
+  onDragOver: (e: React.DragEvent, id: string) => void
+  onDragLeave: (e: React.DragEvent) => void
+  onDrop: (e: React.DragEvent, id: string) => void
+  onDragEnd: () => void
+  isDragging: boolean
+  dropIndicator: 'before' | 'after' | null
+}
+
+function WorkspaceIcon({
+  workspace, index, active, running,
+  onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd,
+  isDragging, dropIndicator,
+}: WorkspaceItemProps): React.ReactElement {
+  const selectWorkspace = useSetAtom(selectWorkspaceAtom)
+  return (
+    <TooltipProvider delayDuration={0}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            draggable
+            onDragStart={(e) => onDragStart(e, workspace.id)}
+            onDragOver={(e) => onDragOver(e, workspace.id)}
+            onDragLeave={onDragLeave}
+            onDrop={(e) => onDrop(e, workspace.id)}
+            onDragEnd={onDragEnd}
+            onClick={() => void selectWorkspace(workspace.id)}
+            aria-label={`工作区: ${workspace.name}`}
+            className={cn(
+              'titlebar-no-drag relative inline-flex items-center justify-center',
+              'size-6 rounded-md transition-colors',
+              active
+                ? 'bg-primary/10 ring-2 ring-primary ring-offset-1 ring-offset-background'
+                : 'hover:bg-foreground/[0.06]',
+              isDragging && 'opacity-40',
+            )}
+          >
+            <span className="leading-none text-[14px]">{workspace.icon}</span>
+            {running && (
+              <span
+                className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full
+                           bg-primary animate-pulse
+                           shadow-[0_0_4px_hsl(var(--primary))]"
+                aria-label="该工作区有任务执行中"
+              />
+            )}
+            {dropIndicator === 'before' && (
+              <span className="absolute -left-1 top-0 bottom-0 w-0.5 bg-primary rounded-full" />
+            )}
+            {dropIndicator === 'after' && (
+              <span className="absolute -right-1 top-0 bottom-0 w-0.5 bg-primary rounded-full" />
+            )}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" sideOffset={6} className="p-0 border-0 bg-transparent shadow-none">
+          <WorkspaceTooltip workspace={workspace} indexForShortcut={index} />
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
+function WorkspaceDot({
+  workspace, index, running,
+  onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd,
+  isDragging, dropIndicator,
+}: WorkspaceItemProps): React.ReactElement {
+  const selectWorkspace = useSetAtom(selectWorkspaceAtom)
+  return (
+    <TooltipProvider delayDuration={0}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            draggable
+            onDragStart={(e) => onDragStart(e, workspace.id)}
+            onDragOver={(e) => onDragOver(e, workspace.id)}
+            onDragLeave={onDragLeave}
+            onDrop={(e) => onDrop(e, workspace.id)}
+            onDragEnd={onDragEnd}
+            onClick={() => void selectWorkspace(workspace.id)}
+            aria-label={`工作区: ${workspace.name} (workspace dot)`}
+            className={cn(
+              'titlebar-no-drag relative inline-flex items-center justify-center',
+              'size-3 rounded-full transition-colors',
+              'bg-foreground/30 hover:bg-foreground/50',
+              isDragging && 'opacity-40',
+            )}
+          >
+            {running && (
+              <span
+                className="absolute -top-px -right-px size-1 rounded-full
+                           bg-primary animate-pulse"
+                aria-label="该工作区有任务执行中"
+              />
+            )}
+            {dropIndicator === 'before' && (
+              <span className="absolute -left-1 top-0 bottom-0 w-0.5 bg-primary rounded-full" />
+            )}
+            {dropIndicator === 'after' && (
+              <span className="absolute -right-1 top-0 bottom-0 w-0.5 bg-primary rounded-full" />
+            )}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" sideOffset={6} className="p-0 border-0 bg-transparent shadow-none">
+          <WorkspaceTooltip workspace={workspace} indexForShortcut={index} />
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
+interface WorkspaceSwitcherBarProps {
+  /** Hook into the existing AutomationSlideOver toggle from LeftSidebar. */
+  onAutomationClick?: () => void
+}
+
+export function WorkspaceSwitcherBar({
+  onAutomationClick,
+}: WorkspaceSwitcherBarProps = {}): React.ReactElement {
+  const workspaces = useAtomValue(workspacesAtom)
+  const activeId = useAtomValue(activeWorkspaceIdAtom)
+  const selectWorkspace = useSetAtom(selectWorkspaceAtom)
+  const reorderWorkspaces = useSetAtom(reorderWorkspacesAtom)
+  const refresh = useSetAtom(refreshWorkspacesAtom)
+  const agentSessions = useAtomValue(agentSessionsAtom)
+  const indicatorMap = useAtomValue(agentSessionIndicatorMapAtom)
+
+  const [createOpen, setCreateOpen] = React.useState(false)
+  const [dragId, setDragId] = React.useState<string | null>(null)
+  const [dropIndicator, setDropIndicator] = React.useState<{
+    id: string
+    position: 'before' | 'after'
+  } | null>(null)
+
+  /** Set of workspace ids that have at least one running session. */
+  const runningWorkspaceIds = React.useMemo(() => {
+    const set = new Set<string>()
+    for (const s of agentSessions) {
+      if (indicatorMap.get(s.id) === 'running' && s.workspaceId) {
+        set.add(s.workspaceId)
+      }
+    }
+    return set
+  }, [agentSessions, indicatorMap])
+
+  // Drag-reorder handlers (horizontal axis variant of Phase 2 pattern).
+  const handleDragStart = (e: React.DragEvent, id: string): void => {
+    setDragId(id)
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', id)
+  }
+
+  const handleDragOver = (e: React.DragEvent, targetId: string): void => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    if (!dragId || dragId === targetId) {
+      setDropIndicator(null)
+      return
+    }
+    const rect = e.currentTarget.getBoundingClientRect()
+    const ratio = (e.clientX - rect.left) / rect.width
+    const position: 'before' | 'after' = ratio < 0.5 ? 'before' : 'after'
+    if (dropIndicator?.id === targetId && dropIndicator.position === position) return
+    setDropIndicator({ id: targetId, position })
+  }
+
+  const handleDragLeave = (e: React.DragEvent): void => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDropIndicator(null)
+    }
+  }
+
+  const handleDrop = async (e: React.DragEvent, targetId: string): Promise<void> => {
+    e.preventDefault()
+    e.stopPropagation()
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const ratio = (e.clientX - rect.left) / rect.width
+    const position: 'before' | 'after' = ratio < 0.5 ? 'before' : 'after'
+    const sourceId = dragId ?? e.dataTransfer.getData('text/plain') ?? ''
+    setDragId(null)
+    setDropIndicator(null)
+    if (!sourceId || sourceId === targetId) return
+    const fromIdx = workspaces.findIndex((w) => w.id === sourceId)
+    const toIdx = workspaces.findIndex((w) => w.id === targetId)
+    if (fromIdx === -1 || toIdx === -1) return
+    const reordered = [...workspaces]
+    const [moved] = reordered.splice(fromIdx, 1)
+    const adjustedToIdx = fromIdx < toIdx ? toIdx - 1 : toIdx
+    const insertIdx = position === 'after' ? adjustedToIdx + 1 : adjustedToIdx
+    reordered.splice(insertIdx, 0, moved!)
+    try {
+      await reorderWorkspaces(reordered.map((w) => w.id))
+    } catch (err) {
+      console.error('[workspace-switcher] reorder failed', err)
+    }
+  }
+
+  const handleDragEnd = (): void => {
+    setDragId(null)
+    setDropIndicator(null)
+  }
+
+  const collapsed = workspaces.length > FULL_THRESHOLD
+
+  return (
+    <>
+      <div className="flex items-center gap-1 px-2 py-1.5 border-t border-border/40">
+        {/* Zone 1: automation */}
+        <button
+          type="button"
+          onClick={onAutomationClick}
+          aria-label="Automations"
+          title="Automations"
+          className="titlebar-no-drag inline-flex items-center justify-center
+                     size-6 rounded-md text-foreground/60 hover:text-foreground
+                     hover:bg-foreground/[0.06] transition-colors"
+        >
+          <Bot className="size-3.5" />
+        </button>
+
+        <div className="w-px h-5 bg-border/40 mx-1" />
+
+        {/* Zone 2: workspace icons or dots */}
+        <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto scrollbar-none">
+          {workspaces.map((w, i) => {
+            const active = w.id === activeId
+            const running = runningWorkspaceIds.has(w.id)
+            const isDragging = dragId === w.id
+            const dropPos = dropIndicator?.id === w.id ? dropIndicator.position : null
+
+            const shouldRenderAsDot = collapsed && !active
+
+            const commonProps = {
+              workspace: w, index: i, active, running,
+              onDragStart: handleDragStart,
+              onDragOver: handleDragOver,
+              onDragLeave: handleDragLeave,
+              onDrop: handleDrop,
+              onDragEnd: handleDragEnd,
+              isDragging, dropIndicator: dropPos,
+            }
+
+            return shouldRenderAsDot
+              ? <WorkspaceDot key={w.id} {...commonProps} />
+              : <WorkspaceIcon key={w.id} {...commonProps} />
+          })}
+        </div>
+
+        <div className="w-px h-5 bg-border/40 mx-1" />
+
+        {/* Zone 3: + create new workspace */}
+        <button
+          type="button"
+          onClick={() => setCreateOpen(true)}
+          aria-label="新建工作区"
+          title="新建工作区"
+          className="titlebar-no-drag inline-flex items-center justify-center
+                     size-6 rounded-md text-foreground/60 hover:text-foreground
+                     hover:bg-foreground/[0.06] transition-colors"
+        >
+          <Plus className="size-3.5" />
+        </button>
+      </div>
+
+      <WorkspaceCreateDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={async (ws) => {
+          await refresh()
+          void selectWorkspace(ws.id)
+        }}
+      />
+    </>
+  )
+}
