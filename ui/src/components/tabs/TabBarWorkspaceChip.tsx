@@ -34,7 +34,10 @@ export function TabBarWorkspaceChip(): React.ReactElement | null {
   const Icon = getWorkspaceIcon(active.icon)
 
   return (
-    <div className="relative titlebar-no-drag shrink-0">
+    // The chip is a purely passive label — no click target, no menu.
+    // Leaving it WITHOUT titlebar-no-drag so its area participates in
+    // the TabBar's window-drag region (parent: titlebar-drag-region).
+    <div className="relative shrink-0">
       <div
         className="flex items-center gap-1.5 px-2 py-1 rounded-md
                    text-[12px] text-foreground/75"
