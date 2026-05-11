@@ -942,6 +942,10 @@ pub async fn create_space(state: State<'_, AppState>, input: CreateSpaceInput) -
 
 #[tauri::command]
 pub async fn list_spaces(state: State<'_, AppState>) -> Result<Vec<SpaceResponse>, Error> {
+    // Workspaces created before Task 4's auto-mkdir have NULL path. Fall back
+    // to the global workground root so frontend FileBrowser has something to
+    // render. New workspaces (Task 4+) have a real per-workspace path stored.
+    let workground_default = state.workspace_root.to_string_lossy().into_owned();
     let db = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
 
     let mut stmt = db.prepare(
@@ -952,11 +956,15 @@ pub async fn list_spaces(state: State<'_, AppState>) -> Result<Vec<SpaceResponse
     let spaces: Vec<SpaceResponse> = stmt.query_map([], |row| {
         let attached_dirs_json: String = row.get::<_, String>(4).unwrap_or_else(|_| "[]".into());
         let attached_dirs: Vec<String> = serde_json::from_str(&attached_dirs_json).unwrap_or_default();
+        let raw_path: Option<String> = row.get::<_, Option<String>>(3).ok().flatten();
+        let path = raw_path
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| Some(workground_default.clone()));
         Ok(SpaceResponse {
             id: row.get(0)?,
             name: row.get(1)?,
             icon: row.get::<_, String>(2).unwrap_or_else(|_| "📁".into()),
-            path: row.get(3).ok(),
+            path,
             attached_dirs,
             sort_order: row.get(5)?,
             created_at: row.get(6)?,

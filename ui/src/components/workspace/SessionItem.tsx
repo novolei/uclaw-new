@@ -77,7 +77,7 @@ export function SessionItem({
               <MoreHorizontal className="size-3.5" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-40 min-w-0 p-0.5">
+          <DropdownMenuContent align="end" side="bottom" sideOffset={4} className="w-40 min-w-0 p-0.5">
             {onMove && (
               <DropdownMenuItem
                 className="text-xs py-1 [&>svg]:size-3.5"
