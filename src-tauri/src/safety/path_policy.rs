@@ -129,41 +129,59 @@ impl PathPolicy {
 }
 
 /// Return true if `candidate` equals `root` or is contained inside it.
-/// Canonicalize both sides when they exist on disk (this follows symlinks,
-/// preventing in-workspace symlinks to /etc from bypassing the check).
-/// Fall back to lexical normalization that resolves `..` segments when
-/// either side doesn't exist yet (e.g. `write_file` to a new path).
+///
+/// Strategy: canonicalize `root`; canonicalize the deepest existing
+/// ancestor of `candidate` and re-attach the non-existent suffix. This
+/// (a) handles macOS `/var` → `/private/var` symlink prefix when the leaf
+/// doesn't exist yet, and (b) blocks bypass via in-workspace symlinks
+/// (e.g. agent creates `<root>/escape → /etc` then writes
+/// `<root>/escape/passwd`): the existing `escape` ancestor canonicalizes
+/// out to `/etc`, the synthetic candidate `/etc/passwd` no longer starts
+/// with the canonical root.
 pub(crate) fn is_under(candidate: &Path, root: &Path) -> bool {
-    let r_canonical = root.canonicalize();
-    let cand_canonical = candidate.canonicalize();
-
-    // If both exist and are canonicalizable, use canonical forms
-    if let (Ok(r_c), Ok(c_c)) = (&r_canonical, &cand_canonical) {
-        return c_c.starts_with(r_c);
-    }
-
-    // If root exists but candidate doesn't, check the normalized versions
-    if let Ok(_) = r_canonical {
-        let cand_norm = normalize(candidate);
-        let r_norm = normalize(root);
-
-        // Check if the normalized paths match
-        if cand_norm.starts_with(&r_norm) {
-            return true;
-        }
-
-        // If not, they don't match
-        return false;
-    }
-
-    // If root doesn't exist, just lexically normalize both
-    let r_norm = normalize(root);
-    let cand_norm = normalize(candidate);
-    cand_norm.starts_with(&r_norm)
+    let r = canonicalize_existing_prefix(root);
+    let c = canonicalize_existing_prefix(candidate);
+    c.starts_with(&r)
 }
 
-fn normalize(p: &Path) -> PathBuf {
-    // Lexical normalize: resolve `.` and `..` without touching disk.
+/// Canonicalize the deepest existing ancestor of `p` and re-attach the
+/// non-existent leaf segments (in their original order). If no ancestor
+/// exists, falls back to pure lexical normalization (resolves `.` / `..`).
+fn canonicalize_existing_prefix(p: &Path) -> PathBuf {
+    if let Ok(c) = p.canonicalize() {
+        return c;
+    }
+    let mut current = p.to_path_buf();
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if current.exists() {
+            break;
+        }
+        match current.file_name() {
+            Some(n) => {
+                suffix.push(n.to_os_string());
+                if !current.pop() {
+                    break;
+                }
+            }
+            None => break,
+        }
+    }
+    let mut base = if current.as_os_str().is_empty() {
+        // No existing prefix at all — fall back to lexical normalize.
+        return normalize_lexical(p);
+    } else {
+        current.canonicalize().unwrap_or_else(|_| normalize_lexical(&current))
+    };
+    for n in suffix.into_iter().rev() {
+        base.push(n);
+    }
+    base
+}
+
+/// Pure lexical `.`/`..` resolution. Used only when the path has no
+/// existing ancestor at all (e.g. a totally synthetic test path).
+fn normalize_lexical(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for comp in p.components() {
         use std::path::Component::*;
@@ -296,5 +314,32 @@ mod tests {
             p.check("sess2", ws.path(), &[], &[], &candidate),
             PathDecision::Allow,
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_under_inworkspace_symlink_escape_blocks_nonexistent_leaf() {
+        // Agent creates an in-workspace symlink that points outside, then
+        // tries to write through it via a non-existent leaf. Even though
+        // the candidate's leaf doesn't exist (so naive lexical check would
+        // pass), canonicalizing the *existing* parent reveals the escape.
+        let workspace = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let escape_link = workspace.path().join("escape");
+        std::os::unix::fs::symlink(outside.path(), &escape_link).unwrap();
+        let candidate = escape_link.join("passwd");
+        // candidate's leaf "passwd" doesn't exist, but "escape" (its parent)
+        // does and resolves outside the workspace.
+        assert!(!is_under(&candidate, workspace.path()));
+    }
+
+    #[test]
+    fn is_under_nonexistent_leaf_under_real_root_allows() {
+        // The macOS /var → /private/var quirk case: workspace is real but
+        // candidate doesn't exist yet. Should still match by canonicalizing
+        // the existing parent.
+        let workspace = TempDir::new().unwrap();
+        let candidate = workspace.path().join("newfile.txt");
+        assert!(is_under(&candidate, workspace.path()));
     }
 }
