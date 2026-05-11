@@ -915,9 +915,17 @@ pub async fn create_space(state: State<'_, AppState>, input: CreateSpaceInput) -
     let icon = input.icon.unwrap_or_else(|| "📁".into());
 
     let db = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+
+    // Compute sort_order = MAX(existing) + 1 so new workspace sorts last.
+    let sort_order: i64 = db.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM spaces", [],
+        |r| r.get(0),
+    ).unwrap_or(0);
+
     db.execute(
-        "INSERT INTO spaces (id, name, icon, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![id, input.name, icon, now, now],
+        "INSERT INTO spaces (id, name, icon, sort_order, attached_dirs, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, '[]', ?5, ?5)",
+        rusqlite::params![id, input.name, icon, sort_order, now],
     ).map_err(Error::Database)?;
 
     Ok(SpaceResponse {
@@ -926,7 +934,7 @@ pub async fn create_space(state: State<'_, AppState>, input: CreateSpaceInput) -
         icon,
         path: None,
         attached_dirs: vec![],
-        sort_order: 0,
+        sort_order,
         created_at: now.clone(),
         updated_at: now,
     })
@@ -4549,12 +4557,37 @@ pub async fn create_workspace(
     let id = uuid::Uuid::new_v4().to_string();
     let icon = icon.unwrap_or_else(|| "📁".to_string());
     let now = chrono::Utc::now().to_rfc3339();
+
+    // Compute target dir (auto-derived from name if no path supplied) and
+    // mkdir it. create_dir_all is idempotent: existing dir is a no-op.
+    let dir = compute_workspace_dir(&state.workspace_root, &name, path, &id)?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| Error::Internal(format!("mkdir failed for {:?}: {}", &dir, e)))?;
+    let resolved_path = dir.to_string_lossy().into_owned();
+
+    // Compute sort_order = MAX(sort_order) + 1 so the new workspace sorts last.
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let sort_order: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM spaces", [],
+        |r| r.get(0),
+    ).unwrap_or(0);
+
     conn.execute(
-        "INSERT INTO spaces (id, name, icon, path, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6)",
-        rusqlite::params![id, name, icon, path, now, now],
+        "INSERT INTO spaces (id, name, icon, path, sort_order, attached_dirs, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, '[]', ?6, ?6)",
+        rusqlite::params![id, name, icon, &resolved_path, sort_order, now],
     ).map_err(Error::Database)?;
-    Ok(serde_json::json!({ "id": id, "name": name, "icon": icon, "path": path, "createdAt": now }))
+
+    Ok(serde_json::json!({
+        "id": id,
+        "name": name,
+        "icon": icon,
+        "path": resolved_path,
+        "sortOrder": sort_order,
+        "attachedDirs": Vec::<String>::new(),
+        "createdAt": now,
+        "updatedAt": now,
+    }))
 }
 
 #[tauri::command]
@@ -4602,6 +4635,56 @@ pub(crate) fn do_reorder_workspaces(
     }
     tx.commit().map_err(Error::Database)?;
     Ok(())
+}
+
+/// Simple ASCII slug: lowercase, non-alphanumeric → '-', collapse repeats,
+/// trim leading/trailing '-', truncate to 32 chars. CJK and other non-ASCII
+/// chars become '-' and get collapsed away, so a pure-Chinese name produces
+/// an empty string — caller's responsibility to fall back.
+pub(crate) fn slugify(name: &str) -> String {
+    let lowered: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    let mut out = String::with_capacity(lowered.len());
+    let mut prev_dash = false;
+    for c in lowered.chars() {
+        if c == '-' {
+            if !prev_dash {
+                out.push('-');
+                prev_dash = true;
+            }
+        } else {
+            out.push(c);
+            prev_dash = false;
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    trimmed.chars().take(32).collect::<String>()
+}
+
+/// Pure function: given the workground root, workspace name, optional
+/// explicit path, and a workspace id, produce the directory the workspace
+/// should live in. Does NOT mkdir — caller does that. Extracted from
+/// `create_workspace` so it's unit-testable without `state.workspace_root`.
+pub(crate) fn compute_workspace_dir(
+    workground_root: &std::path::Path,
+    name: &str,
+    explicit_path: Option<String>,
+    id: &str,
+) -> Result<std::path::PathBuf, Error> {
+    if let Some(p) = explicit_path {
+        if !p.trim().is_empty() {
+            return Ok(std::path::PathBuf::from(p));
+        }
+    }
+    let slug = slugify(name);
+    let dir_name = if slug.is_empty() {
+        format!("workspace-{}", &id.chars().take(8).collect::<String>())
+    } else {
+        slug
+    };
+    Ok(workground_root.join(dir_name))
 }
 
 #[tauri::command]
@@ -5821,5 +5904,57 @@ mod workspace_integrity_tests {
         let result = super::do_reorder_workspaces(&conn, &["ws-a".into(), "ghost".into()]);
         assert!(result.is_err(), "unknown id must error");
         assert_eq!(read_sort_order(&conn, "ws-a"), before);
+    }
+
+    // ─── create_workspace auto-mkdir + slugify ──────────────────────────
+
+    #[test]
+    fn slugify_basic_ascii() {
+        assert_eq!(super::slugify("My Project"), "my-project");
+        assert_eq!(super::slugify("test"), "test");
+    }
+
+    #[test]
+    fn slugify_collapses_special_chars() {
+        assert_eq!(super::slugify("foo!!bar"), "foo-bar");
+        assert_eq!(super::slugify("---weird---"), "weird");
+    }
+
+    #[test]
+    fn slugify_chinese_only_falls_back_to_empty() {
+        assert_eq!(super::slugify("我的项目"), "");
+    }
+
+    #[test]
+    fn slugify_truncates_long_input() {
+        let long = "a".repeat(100);
+        assert_eq!(super::slugify(&long).len(), 32);
+    }
+
+    #[test]
+    fn compute_workspace_dir_uses_slug_when_no_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = super::compute_workspace_dir(tmp.path(), "My Project", None, "id-1234567890ab").unwrap();
+        assert_eq!(dir, tmp.path().join("my-project"));
+    }
+
+    #[test]
+    fn compute_workspace_dir_uses_uuid_fallback_when_slug_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = super::compute_workspace_dir(tmp.path(), "我的项目", None, "id-1234567890ab").unwrap();
+        assert_eq!(dir, tmp.path().join("workspace-id-12345"));
+    }
+
+    #[test]
+    fn compute_workspace_dir_respects_explicit_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let custom = tmp.path().join("custom");
+        let dir = super::compute_workspace_dir(
+            tmp.path(),
+            "ignored",
+            Some(custom.to_string_lossy().into_owned()),
+            "id-anything",
+        ).unwrap();
+        assert_eq!(dir, custom);
     }
 }
