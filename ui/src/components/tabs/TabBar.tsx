@@ -11,11 +11,9 @@
 import * as React from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import {
-  tabsAtom,
+  visibleTabsAtom,
   activeTabIdAtom,
   tabIndicatorMapAtom,
-  openTab,
-  reorderTabs,
 } from '@/atoms/tab-atoms'
 import type { TabItem } from '@/atoms/tab-atoms'
 import type { SessionIndicatorStatus } from '@/atoms/agent-atoms'
@@ -33,7 +31,7 @@ import { TabCloseConfirmDialog } from './TabCloseConfirmDialog'
 import { useCloseTab } from '@/hooks/useCloseTab'
 
 export function TabBar(): React.ReactElement {
-  const tabs = useAtomValue(tabsAtom)
+  const tabs = useAtomValue(visibleTabsAtom)
   const [activeTabId, setActiveTabId] = useAtom(activeTabIdAtom)
   const indicatorMap = useAtomValue(tabIndicatorMapAtom)
 

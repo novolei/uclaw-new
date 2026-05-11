@@ -7,6 +7,8 @@ import {
   workspaceActiveTabIdMapAtom,
   openTab,
   closeTab,
+  reorderTabs,
+  mergeReorderedVisible,
   type TabItem,
 } from './tab-atoms'
 import { activeWorkspaceIdAtom } from './workspace'
@@ -67,5 +69,33 @@ describe('tab-atoms — per-workspace memory', () => {
     store.set(activeTabIdAtom, 'a1')
     expect(store.get(workspaceActiveTabIdMapAtom).size).toBe(0)
     expect(store.get(activeTabIdAtom)).toBeNull()
+  })
+})
+
+describe('mergeReorderedVisible', () => {
+  it('splices the reordered visible slice back without disturbing other workspaces', () => {
+    const all: TabItem[] = [
+      tab('a1', 'ws-1'),
+      tab('b1', 'ws-2'),
+      tab('a2', 'ws-1'),
+      tab('b2', 'ws-2'),
+    ]
+    // Reorder ws-1 tabs: a2 before a1
+    const reorderedVisible = [tab('a2', 'ws-1'), tab('a1', 'ws-1')]
+    const merged = mergeReorderedVisible(all, reorderedVisible)
+
+    // ws-1 tabs are reordered in place
+    expect(merged[0]!.id).toBe('a2')
+    expect(merged[2]!.id).toBe('a1')
+    // ws-2 tabs are untouched
+    expect(merged[1]!.id).toBe('b1')
+    expect(merged[3]!.id).toBe('b2')
+  })
+
+  it('is identity when there is only one workspace', () => {
+    const all: TabItem[] = [tab('a1', 'ws-1'), tab('a2', 'ws-1'), tab('a3', 'ws-1')]
+    const reordered = reorderTabs(all, 0, 2)
+    const merged = mergeReorderedVisible(all, reordered)
+    expect(merged.map((t) => t.id)).toEqual(['a2', 'a3', 'a1'])
   })
 })

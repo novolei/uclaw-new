@@ -13,7 +13,7 @@ import { useAtom, useAtomValue } from 'jotai'
 import { appModeAtom, type AppMode } from '@/atoms/app-mode'
 import { conversationsAtom, currentConversationIdAtom } from '@/atoms/chat-atoms'
 import { agentSessionsAtom, currentAgentSessionIdAtom } from '@/atoms/agent-atoms'
-import { tabsAtom } from '@/atoms/tab-atoms'
+import { visibleTabsAtom } from '@/atoms/tab-atoms'
 import { useOpenSession } from '@/hooks/useOpenSession'
 import { Bot, MessageSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -30,7 +30,7 @@ export function ModeSwitcher(): React.ReactElement {
   const agentSessions = useAtomValue(agentSessionsAtom)
   const currentConversationId = useAtomValue(currentConversationIdAtom)
   const currentAgentSessionId = useAtomValue(currentAgentSessionIdAtom)
-  const tabs = useAtomValue(tabsAtom)
+  const tabs = useAtomValue(visibleTabsAtom)
 
   /** 尝试恢复目标模式下的上一个对话/会话，按优先级 fallback */
   const restoreSession = React.useCallback((targetMode: AppMode) => {

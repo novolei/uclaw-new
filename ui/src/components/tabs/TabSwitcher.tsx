@@ -12,7 +12,7 @@ import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { MessageSquare, Bot, Globe } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
-  tabsAtom,
+  visibleTabsAtom,
   activeTabIdAtom,
   tabMruAtom,
   tabIndicatorMapAtom,
@@ -30,7 +30,7 @@ import {
 import type { SessionIndicatorStatus } from '@/atoms/agent-atoms'
 
 export function TabSwitcher(): React.ReactElement | null {
-  const tabs = useAtomValue(tabsAtom)
+  const tabs = useAtomValue(visibleTabsAtom)
   const setActiveTabId = useSetAtom(activeTabIdAtom)
   const activeTabId = useAtomValue(activeTabIdAtom)
   const [mruOrder, setMruOrder] = useAtom(tabMruAtom)
