@@ -236,6 +236,9 @@ export const updateWorkspace = (input: { id: string; name?: string; icon?: strin
   id: string; name: string; icon: string; path: string | null; sortOrder: number; createdAt: string; updatedAt: string
 }> => invoke('update_workspace', input)
 
+export const reorderWorkspaces = (orderedIds: string[]): Promise<void> =>
+  invoke('reorder_workspaces', { orderedIds })
+
 // ─── Session title ────────────────────────────────────────────────────
 
 export const generateSessionTitle = (sessionId: string, firstMessage: string): Promise<void> =>

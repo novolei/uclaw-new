@@ -4583,6 +4583,36 @@ pub async fn update_workspace(
     }))
 }
 
+/// Apply `sort_order = idx` for each workspace id in the supplied ordered
+/// list. Wraps in a transaction so partial reorders don't leave the DB
+/// inconsistent if a later id is invalid. Validates each id exists first.
+pub(crate) fn do_reorder_workspaces(
+    conn: &rusqlite::Connection,
+    ordered_ids: &[String],
+) -> Result<(), Error> {
+    for id in ordered_ids {
+        require_workspace_exists(conn, id)?;
+    }
+    let tx = conn.unchecked_transaction().map_err(Error::Database)?;
+    for (idx, id) in ordered_ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE spaces SET sort_order = ?1 WHERE id = ?2",
+            rusqlite::params![idx as i64, id],
+        ).map_err(Error::Database)?;
+    }
+    tx.commit().map_err(Error::Database)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reorder_workspaces(
+    state: State<'_, AppState>,
+    ordered_ids: Vec<String>,
+) -> Result<(), Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    do_reorder_workspaces(&conn, &ordered_ids)
+}
+
 #[tauri::command]
 pub async fn delete_workspace(
     state: State<'_, AppState>,
@@ -5627,6 +5657,14 @@ mod workspace_integrity_tests {
         {
             conn.execute(stmt, []).unwrap();
         }
+        // Apply V17 to add sort_order column.
+        for stmt in crate::db::migrations::V17_WORKSPACE_PATH_SORT_ATTACHED
+            .split(';')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            conn.execute(stmt, []).unwrap();
+        }
         conn
     }
 
@@ -5751,5 +5789,37 @@ mod workspace_integrity_tests {
         let conn = fresh_db();
         super::do_update_workspace(&conn, "default", None, Some("🌟".into())).unwrap();
         assert_eq!(read_workspace_icon(&conn, "default"), "🌟");
+    }
+
+    // ─── reorder_workspaces ──────────────────────────────────────────────
+
+    fn read_sort_order(conn: &Connection, id: &str) -> i64 {
+        conn.query_row(
+            "SELECT sort_order FROM spaces WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        ).unwrap()
+    }
+
+    #[test]
+    fn reorder_workspaces_sets_sort_order_by_array_index() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-a", "A");
+        insert_workspace(&conn, "ws-b", "B");
+        insert_workspace(&conn, "ws-c", "C");
+        super::do_reorder_workspaces(&conn, &["ws-c".into(), "ws-a".into(), "ws-b".into()]).unwrap();
+        assert_eq!(read_sort_order(&conn, "ws-c"), 0);
+        assert_eq!(read_sort_order(&conn, "ws-a"), 1);
+        assert_eq!(read_sort_order(&conn, "ws-b"), 2);
+    }
+
+    #[test]
+    fn reorder_workspaces_errors_on_unknown_id_no_partial_writes() {
+        let conn = fresh_db();
+        insert_workspace(&conn, "ws-a", "A");
+        let before = read_sort_order(&conn, "ws-a");
+        let result = super::do_reorder_workspaces(&conn, &["ws-a".into(), "ghost".into()]);
+        assert!(result.is_err(), "unknown id must error");
+        assert_eq!(read_sort_order(&conn, "ws-a"), before);
     }
 }
