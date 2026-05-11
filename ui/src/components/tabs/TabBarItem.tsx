@@ -105,6 +105,20 @@ export function TabBarItem({
       onMouseEnter={onHoverEnter}
       onMouseLeave={onHoverLeave}
     >
+      {/* Right-edge separator between adjacent tabs. Hidden when this
+          tab is active (its border-r serves as the divider) or when
+          this tab is hovered (the hover background absorbs it).
+          Adjacent-to-active reads as a slightly thicker boundary at
+          1px / 50% opacity — acceptable for the visual cost of a
+          simpler implementation. */}
+      <span
+        aria-hidden
+        className={cn(
+          'pointer-events-none absolute right-0 top-2 bottom-2 w-px bg-border/60',
+          'transition-opacity duration-150',
+          (isActive || isHovered) && 'opacity-0',
+        )}
+      />
       <button
         ref={buttonRef}
         type="button"
@@ -114,7 +128,7 @@ export function TabBarItem({
           'border-t border-l border-r border-transparent',
           isActive
             ? 'bg-content-area text-foreground border-border/50'
-            : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
+            : 'text-muted-foreground hover:text-foreground hover:bg-muted/40',
         )}
         onClick={onActivate}
         onMouseDown={handleMouseDown}

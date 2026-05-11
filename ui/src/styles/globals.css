@@ -813,9 +813,13 @@
 }
 
 /* ===== TabBar 背景 ===== */
-/* 默认背景 */
+/* 默认背景：提高对比度，并在底部加 1px 边线把 TabBar 与下面的内容卡片分开。
+   原先 muted/0.5 在浅色主题（暖纸、晨曦）下几乎与 content-area 融为一体，
+   导致 tab 栏看起来没有边界。提到 0.7 + 主题感知的底部边线后，
+   chrome 和卡片之间的层次关系更清晰，所有主题都能受益。 */
 .tabbar-bg {
-  background-color: hsl(var(--muted) / 0.5);
+  background-color: hsl(var(--muted) / 0.7);
+  box-shadow: inset 0 -1px 0 0 hsl(var(--border) / 0.8);
 }
 
 /* 苍穹暮色：底部浅色阴影勾勒轮廓 */
