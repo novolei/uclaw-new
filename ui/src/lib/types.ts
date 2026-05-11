@@ -274,6 +274,8 @@ export interface SearchResult {
   snippet: string;
   source: string; // "conversation" | "file" | "message"
   sourceId: string;
+  messageId?: string;
+  workspaceId?: string;
   createdAt: string;
 }
 
