@@ -522,6 +522,7 @@ fn main() {
             uclaw_core::tauri_commands::list_session_allowed_paths,
             uclaw_core::tauri_commands::promote_session_path_to_global,
             uclaw_core::tauri_commands::path_is_directory,
+            uclaw_core::tauri_commands::delete_workspace_file,
             uclaw_core::tauri_commands::read_workspace_uclaw_md,
             uclaw_core::tauri_commands::write_workspace_uclaw_md,
             uclaw_core::tauri_commands::read_default_prompts,

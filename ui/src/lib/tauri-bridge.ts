@@ -280,6 +280,10 @@ export const pathIsDirectory = (path: string): Promise<boolean> =>
 export const copyFileIntoWorkspace = (workspaceId: string, sourcePath: string): Promise<string> =>
   invoke('copy_file_into_workspace', { workspaceId, sourcePath })
 
+/** Delete a single file by absolute path. Backend rejects directories. */
+export const deleteWorkspaceFile = (path: string): Promise<void> =>
+  invoke('delete_workspace_file', { path })
+
 // Path policy (Phase 3)
 export const listAlwaysAllowedPaths = (): Promise<string[]> =>
   invoke('list_always_allowed_paths')

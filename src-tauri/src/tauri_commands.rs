@@ -5292,6 +5292,27 @@ pub async fn promote_session_path_to_global(state: State<'_, AppState>, session_
     mgr.promote_session_path_to_global(&session_id, &p)
 }
 
+/// Delete a single file by absolute path. Used by the Files tab's
+/// per-entry trash button. Rejects relative paths and directories so a
+/// stray click can't recursively wipe a folder. The caller is responsible
+/// for confirming with the user first.
+#[tauri::command]
+pub async fn delete_workspace_file(path: String) -> Result<(), Error> {
+    let p = std::path::PathBuf::from(&path);
+    if !p.is_absolute() {
+        return Err(Error::InvalidInput("path must be absolute".into()));
+    }
+    let meta = tokio::fs::metadata(&p).await.map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => Error::NotFound(format!("file '{}'", path)),
+        _ => Error::Io(e),
+    })?;
+    if meta.is_dir() {
+        return Err(Error::InvalidInput(format!("'{}' is a directory; this command only deletes files", path)));
+    }
+    tokio::fs::remove_file(&p).await.map_err(Error::Io)?;
+    Ok(())
+}
+
 /// Lightweight type-of-path probe. Used by the frontend to decide
 /// whether a native drag-drop event payload is a folder (→
 /// attach_workspace_directory) or a file (→ upload_workspace_file).

@@ -32,6 +32,7 @@ import {
   openFolderDialog,
   showInFinder,
   uploadWorkspaceFile,
+  deleteWorkspaceFile,
 } from '@/lib/tauri-bridge'
 import type { FileEntry } from '@/lib/chat-types'
 import type { AgentPendingFile } from '@/lib/agent-types'
@@ -171,6 +172,19 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
     setPendingFiles((prev) => [...prev, pending])
   }, [pendingFiles, setPendingFiles])
 
+  // Per-file delete from the Files tab. Calls the workspace_file delete
+  // IPC and bumps filesVersion so FileBrowser re-fetches from disk.
+  const handleDeleteFile = React.useCallback(async (entry: FileEntry) => {
+    try {
+      await deleteWorkspaceFile(entry.path)
+      toast.success(`已删除: ${entry.name}`)
+      setFilesVersion((v) => v + 1)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(`删除失败: ${msg}`)
+    }
+  }, [setFilesVersion])
+
   const breadcrumb = React.useMemo(() => {
     if (!sessionPath) return ''
     const parts = sessionPath.split('/').filter(Boolean)
@@ -289,6 +303,7 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
                   hideToolbar
                   embedded
                   onAddToChat={handleAddToChat}
+                  onDelete={handleDeleteFile}
                 />
                 <FileDropZone
                   hint="拖入会话目录"
@@ -340,6 +355,7 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
                   hideToolbar
                   embedded
                   onAddToChat={handleAddToChat}
+                  onDelete={handleDeleteFile}
                 />
               )}
               <FileDropZone

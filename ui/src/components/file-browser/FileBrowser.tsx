@@ -7,7 +7,7 @@
  */
 
 import * as React from 'react'
-import { ChevronRight, RefreshCw, FolderOpen, Plus } from 'lucide-react'
+import { ChevronRight, RefreshCw, FolderOpen, Plus, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { FileTypeIcon } from './FileTypeIcon'
 import type { FileEntry } from '@/lib/chat-types'
@@ -24,6 +24,8 @@ interface FileBrowserProps {
   onDirectoryClick?: (entry: FileEntry) => void
   /** 添加到聊天回调 */
   onAddToChat?: (entry: FileEntry) => void
+  /** 删除文件回调 */
+  onDelete?: (entry: FileEntry) => void
   /** 刷新回调 */
   onRefresh?: () => void
   /** 是否正在加载 */
@@ -48,27 +50,28 @@ function FileTreeNode({
   onFileClick,
   onDirectoryClick,
   onAddToChat,
+  onDelete,
 }: {
   entry: FileEntry
   depth?: number
   onFileClick?: (entry: FileEntry) => void
   onDirectoryClick?: (entry: FileEntry) => void
   onAddToChat?: (entry: FileEntry) => void
+  onDelete?: (entry: FileEntry) => void
 }): React.ReactElement {
   const [expanded, setExpanded] = React.useState(false)
 
   const handleClick = React.useCallback(() => {
+    // Directories: expand/collapse on click. Files: no-op by default —
+    // attaching requires the explicit + button, deletion the trash button.
+    // Consumers can still opt into file-click behavior via onFileClick.
     if (entry.isDirectory) {
       setExpanded((prev) => !prev)
       onDirectoryClick?.(entry)
     } else if (onFileClick) {
       onFileClick(entry)
-    } else if (onAddToChat) {
-      // No explicit file-click handler: default to add-to-chat so a plain
-      // click on a file in the side panel attaches it.
-      onAddToChat(entry)
     }
-  }, [entry, onFileClick, onDirectoryClick, onAddToChat])
+  }, [entry, onFileClick, onDirectoryClick])
 
   return (
     <div>
@@ -94,15 +97,29 @@ function FileTreeNode({
           <FileTypeIcon name={entry.name} isDirectory={entry.isDirectory} isOpen={expanded} size={14} />
           <span className="truncate text-[13px]">{entry.name}</span>
         </button>
-        {!entry.isDirectory && onAddToChat && (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onAddToChat(entry) }}
-            className="opacity-0 group-hover:opacity-100 shrink-0 p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-foreground/[0.08] transition-opacity"
-            title="添加到聊天"
-          >
-            <Plus className="size-3" />
-          </button>
+        {!entry.isDirectory && (onAddToChat || onDelete) && (
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+            {onAddToChat && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onAddToChat(entry) }}
+                className="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-foreground/[0.08]"
+                title="添加到聊天"
+              >
+                <Plus className="size-3" />
+              </button>
+            )}
+            {onDelete && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onDelete(entry) }}
+                className="p-0.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                title="删除文件"
+              >
+                <Trash2 className="size-3" />
+              </button>
+            )}
+          </div>
         )}
       </div>
       {entry.isDirectory && expanded && entry.children && (
@@ -120,6 +137,7 @@ function FileTreeNode({
                 onFileClick={onFileClick}
                 onDirectoryClick={onDirectoryClick}
                 onAddToChat={onAddToChat}
+                onDelete={onDelete}
               />
             ))}
         </div>
@@ -134,6 +152,7 @@ export function FileBrowser({
   onFileClick,
   onDirectoryClick,
   onAddToChat,
+  onDelete,
   onRefresh,
   loading: loadingProp = false,
   hideToolbar = false,
@@ -226,6 +245,7 @@ export function FileBrowser({
             onFileClick={onFileClick}
             onDirectoryClick={onDirectoryClick}
             onAddToChat={onAddToChat}
+            onDelete={onDelete}
           />
         ))}
     </div>
