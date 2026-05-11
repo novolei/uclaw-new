@@ -3931,10 +3931,15 @@ pub async fn send_agent_message(
         result
     };
 
-    // Build tool registry. Tools must run inside the *active workspace's*
-    // folder (e.g. ~/Documents/workground/2222), not the global workground
-    // root. Otherwise `pwd`, `read_file`, `glob`, etc. all see the wrong cwd.
-    let workspace = active_workspace_root(&state)
+    // Build tool registry. Tools must run inside the workspace folder that
+    // *this session belongs to* (lookup by agent_sessions.space_id), NOT
+    // the globally-active workspace id. Switching sessions doesn't update
+    // the global active workspace, so falling back to active_workspace_root
+    // here would leak the previously-clicked workspace's cwd into a
+    // different workspace's session — observed when bouncing between
+    // TEST-session and 2222-session.
+    let workspace = session_workspace_root(&state, &input.session_id)
+        .or_else(|| active_workspace_root(&state))
         .unwrap_or_else(|| state.workspace_root.clone());
     let mut tools = ToolRegistry::new();
     tools.register(builtin::file::ReadFileTool::new(workspace.clone()));
@@ -3994,7 +3999,11 @@ pub async fn send_agent_message(
     let trajectory_store = Arc::clone(&state.trajectory_store);
     let tool_budget = Arc::clone(&state.tool_budget);
     let running_sessions = Arc::clone(&state.running_sessions);
-    let workspace_root_for_delegate = active_workspace_root(&state);
+    // Same rule as tool registration above: prefer the session's actual
+    // workspace, fall back to the globally-active workspace only if the
+    // session has no space binding.
+    let workspace_root_for_delegate = session_workspace_root(&state, &input.session_id)
+        .or_else(|| active_workspace_root(&state));
 
     const AGENT_SYSTEM_PROMPT: &str = "You are uClaw, a helpful AI desktop coworker. You help users with tasks using the available tools.";
 
@@ -5007,6 +5016,27 @@ fn active_workspace_root(state: &AppState) -> Option<std::path::PathBuf> {
         raw.filter(|s| !s.trim().is_empty()).map(std::path::PathBuf::from)
     })();
     path_from_db.or_else(|| Some(state.workspace_root.clone()))
+}
+
+/// Resolve the workspace folder for a specific agent session. Sessions are
+/// tied to a workspace by `agent_sessions.space_id`, NOT by the globally
+/// active workspace id (which changes only when the user clicks a workspace
+/// header). Without this lookup, switching from a TEST-workspace session
+/// to a 2222-workspace session while TEST is still globally active would
+/// leave tools pinned to TEST's folder.
+fn session_workspace_root(state: &AppState, session_id: &str) -> Option<std::path::PathBuf> {
+    let conn = state.db.lock().ok()?;
+    let space_id: String = conn.query_row(
+        "SELECT space_id FROM agent_sessions WHERE id = ?1",
+        rusqlite::params![session_id],
+        |row| row.get::<_, String>(0),
+    ).ok()?;
+    let raw: Option<String> = conn.query_row(
+        "SELECT path FROM spaces WHERE id = ?1",
+        rusqlite::params![space_id],
+        |row| row.get::<_, Option<String>>(0),
+    ).ok().flatten();
+    raw.filter(|s| !s.trim().is_empty()).map(std::path::PathBuf::from)
 }
 
 /// Lightweight directory listing for the Files tab. Reads `path` and
