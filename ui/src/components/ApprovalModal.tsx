@@ -28,14 +28,13 @@ import {
   AlertDialogAction,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   ShieldAlert, ShieldCheck, ShieldOff, AlertTriangle, ChevronRight,
   Wrench, Terminal, Sliders, Globe, FileText, FileCog, Cpu,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { approveToolCall, onNeedApproval, createPermissionRule } from '@/lib/tauri-bridge'
-import type { ApprovalRequest } from '@/lib/types'
+import { approveToolCall, onNeedApproval, createPermissionRule, listPermissionAudit } from '@/lib/tauri-bridge'
+import type { ApprovalRequest, PermissionAuditEntry } from '@/lib/types'
 import { appModeAtom } from '@/atoms/app-mode'
 import { currentAgentSessionIdAtom } from '@/atoms/agent-atoms'
 import { currentConversationIdAtom } from '@/atoms/chat-atoms'
@@ -134,9 +133,45 @@ function getEffectSummary(toolName: string, hasCommand: boolean): string {
   return '只读操作'
 }
 
+/**
+ * Format an audit timestamp (ms) as a coarse Chinese relative string.
+ * Audit log entries are session-scoped — most are minutes/hours old, so
+ * minute / hour / day granularity is enough. Falls back to a date stamp
+ * for entries older than a day.
+ */
+function formatAuditTime(ms: number): string {
+  const diff = Date.now() - ms
+  if (diff < 0) return '刚刚'
+  const sec = Math.floor(diff / 1000)
+  if (sec < 60) return '刚刚'
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min} 分钟前`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr} 小时前`
+  const day = Math.floor(hr / 24)
+  if (day < 7) return `${day} 天前`
+  const d = new Date(ms)
+  return `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/**
+ * Audit-decision visual config — maps the 4 backend decision values
+ * to a theme-aware pill. Same semantic-token approach as RISK_CONFIG.
+ */
+const DECISION_CONFIG: Record<
+  PermissionAuditEntry['decision'],
+  { label: string; tint: string; text: string }
+> = {
+  auto_approve: { label: '自动通过', tint: 'bg-success-bg', text: 'text-success' },
+  user_approve: { label: '已批准',   tint: 'bg-primary/15',  text: 'text-primary' },
+  user_deny:    { label: '已拒绝',   tint: 'bg-destructive/15', text: 'text-destructive' },
+  blocked:      { label: '已拦截',   tint: 'bg-danger-bg',   text: 'text-danger' },
+}
+
 export function ApprovalModal(): React.ReactElement {
   const [request, setRequest] = React.useState<ApprovalRequest | null>(null)
   const [loading, setLoading] = React.useState(false)
+  const [auditHistory, setAuditHistory] = React.useState<PermissionAuditEntry[]>([])
 
   const appMode = useAtomValue(appModeAtom)
   const currentAgentSessionId = useAtomValue(currentAgentSessionIdAtom)
@@ -153,6 +188,34 @@ export function ApprovalModal(): React.ReactElement {
     })
     return () => unlisten?.()
   }, [])
+
+  // When a new request opens, pull the last few audit entries for this
+  // tool in the active session — gives the user context on past decisions
+  // ("oh I already approved web_fetch 3 minutes ago, this is normal").
+  // Filtered client-side because list_permission_audit doesn't accept a
+  // toolName filter and session-scoped queries already shrink the set.
+  React.useEffect(() => {
+    if (!request || !activeSessionId) {
+      setAuditHistory([])
+      return
+    }
+    let cancelled = false
+    const toolName = request.toolName
+    listPermissionAudit(activeSessionId, 50)
+      .then((entries) => {
+        if (cancelled) return
+        const filtered = entries
+          .filter((e) => e.toolName === toolName)
+          .slice(0, 3)
+        setAuditHistory(filtered)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        console.warn('[ApprovalModal] audit history fetch failed:', err)
+        setAuditHistory([])
+      })
+    return () => { cancelled = true }
+  }, [request, activeSessionId])
 
   const respondWithSessionRule = async (): Promise<void> => {
     if (!request || loading || !activeSessionId) return
@@ -343,7 +406,7 @@ export function ApprovalModal(): React.ReactElement {
             </span>
           )}
         </div>
-        <div className="text-[12.5px] text-foreground/85">{children}</div>
+        <div className="text-[12.5px] text-foreground/85 min-w-0 max-w-full">{children}</div>
       </div>
     </div>
   )
@@ -387,7 +450,7 @@ export function ApprovalModal(): React.ReactElement {
   if (request && request.kind === 'path') {
     return (
       <AlertDialog open={!!request} onOpenChange={(open) => { if (!open) setRequest(null) }}>
-        <AlertDialogContent className="sm:max-w-lg overflow-hidden p-0 rounded-2xl sm:rounded-2xl">
+        <AlertDialogContent className="sm:max-w-lg overflow-hidden p-0 rounded-2xl sm:rounded-2xl [&>*]:min-w-0">
           <div className="p-5 space-y-4">
             <AlertDialogHeader>
               <Hero
@@ -404,19 +467,23 @@ export function ApprovalModal(): React.ReactElement {
                 pillTint={risk.tint}
                 pillText={risk.text}
               >
-                <ScrollArea className="max-h-40">
-                  <div className="rounded-md border border-border/40 bg-foreground/[0.04] p-2 space-y-0.5">
-                    {(request.paths ?? []).map((p) => (
-                      <div
-                        key={p}
-                        className="font-mono text-[12px] text-foreground/90 truncate px-1"
-                        title={p}
-                      >
-                        {p}
-                      </div>
-                    ))}
-                  </div>
-                </ScrollArea>
+                {/* Plain max-h scroller — Radix ScrollArea's viewport has
+                    a `display: table` quirk that doesn't propagate the
+                    parent's width constraint to its children, so long
+                    unbroken paths (UUIDs etc.) would push the dialog
+                    wider than max-w-lg. A bare max-h-40 overflow-y-auto
+                    inherits width correctly. */}
+                <div className="max-h-40 overflow-y-auto rounded-md border border-border/40 bg-foreground/[0.04] p-2 space-y-0.5 scrollbar-thin">
+                  {(request.paths ?? []).map((p) => (
+                    <div
+                      key={p}
+                      className="font-mono text-[12px] text-foreground/90 break-all px-1"
+                      title={p}
+                    >
+                      {p}
+                    </div>
+                  ))}
+                </div>
               </Row>
             </div>
 
@@ -447,6 +514,8 @@ export function ApprovalModal(): React.ReactElement {
                 />
               </div>
             </div>
+
+            {auditHistory.length > 0 && <AuditHistory entries={auditHistory} />}
 
             <AlertDialogFooter className="flex-row gap-2 flex-wrap sm:justify-end">
               <AlertDialogCancel asChild>
@@ -528,20 +597,19 @@ export function ApprovalModal(): React.ReactElement {
                       label="参数"
                       pill={`${argsEntries.length} 项`}
                     >
-                      <ScrollArea className="max-h-40">
-                        <div className="font-mono text-[12px] space-y-0.5 pr-2">
-                          {argsEntries.map(([key, val]) => (
-                            <div key={key} className="flex gap-2 leading-relaxed">
-                              <span className="text-muted-foreground/70 shrink-0 min-w-[5rem]">
-                                {key}
-                              </span>
-                              <span className="text-foreground/90 break-all flex-1">
-                                {typeof val === 'string' ? val : JSON.stringify(val)}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </ScrollArea>
+                      {/* Bare max-h scroller (see note on path-approval). */}
+                      <div className="max-h-40 overflow-y-auto font-mono text-[12px] space-y-0.5 pr-2 scrollbar-thin">
+                        {argsEntries.map(([key, val]) => (
+                          <div key={key} className="flex gap-2 leading-relaxed">
+                            <span className="text-muted-foreground/70 shrink-0 min-w-[5rem]">
+                              {key}
+                            </span>
+                            <span className="text-foreground/90 break-all flex-1 min-w-0">
+                              {typeof val === 'string' ? val : JSON.stringify(val)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
                     </Row>
                   )}
                 </div>
@@ -572,6 +640,9 @@ export function ApprovalModal(): React.ReactElement {
                     />
                   </div>
                 </div>
+
+                {/* ===== Audit history (when there's relevant context) ===== */}
+                {auditHistory.length > 0 && <AuditHistory entries={auditHistory} />}
               </>
             )
           })()}
@@ -617,5 +688,47 @@ export function ApprovalModal(): React.ReactElement {
         </div>
       </AlertDialogContent>
     </AlertDialog>
+  )
+}
+
+/**
+ * AuditHistory — shows the last 3 audit-log decisions for this tool in
+ * this session. Helps the user recognize "I already approved this 2 min
+ * ago" patterns and decide quickly whether to grant a session-wide
+ * allowlist rule on the next click.
+ *
+ * Hidden when there are no past decisions for this tool (first call).
+ */
+function AuditHistory({ entries }: { entries: PermissionAuditEntry[] }): React.ReactElement {
+  return (
+    <div className="pt-2 border-t border-border/40">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 mb-2">
+        最近决策 · {entries.length} 条
+      </p>
+      <div className="space-y-1">
+        {entries.map((e) => {
+          const cfg = DECISION_CONFIG[e.decision]
+          return (
+            <div
+              key={e.id}
+              className="flex items-center justify-between gap-2 text-[12px] py-0.5"
+            >
+              <span className="text-muted-foreground/80 font-mono">
+                {formatAuditTime(e.createdAt)}
+              </span>
+              <span
+                className={cn(
+                  'inline-flex items-center rounded-full px-2 py-0.5',
+                  'text-[10px] font-semibold uppercase tracking-wide',
+                  cfg.tint, cfg.text,
+                )}
+              >
+                {cfg.label}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
   )
 }
