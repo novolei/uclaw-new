@@ -33,6 +33,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { IconPicker } from './IconPicker'
+import { getWorkspaceIcon } from '@/lib/workspace-icons'
 
 /**
  * Replace the leading /Users/<name> or /home/<name> with ~ for display.
@@ -123,11 +126,48 @@ export function WorkspaceHeader(): React.ReactElement | null {
     }
   }
 
+  const ActiveIcon = getWorkspaceIcon(active.icon)
+  const handlePickIcon = async (iconName: string): Promise<void> => {
+    if (iconName === active.icon) return
+    try {
+      await updateWs({ id: active.id, icon: iconName })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '更换图标失败'
+      toast.error(msg)
+    }
+  }
+
   return (
     <>
       <div className="group flex items-center gap-2 px-3 py-2 mx-3 mt-1 rounded-md
                       hover:bg-foreground/[0.03] transition-colors">
-        <span className="text-base leading-none flex-shrink-0">{active.icon}</span>
+        {canMutate ? (
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                aria-label="更换图标"
+                title="更换图标"
+                className="flex-shrink-0 inline-flex items-center justify-center
+                           size-7 rounded-md bg-primary/10 text-primary
+                           hover:bg-primary/20 transition-colors"
+              >
+                <ActiveIcon className="size-4" aria-hidden />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" sideOffset={6} className="w-auto p-2 z-[100]">
+              <IconPicker value={active.icon} onChange={(v) => void handlePickIcon(v)} />
+            </PopoverContent>
+          </Popover>
+        ) : (
+          <div
+            className="flex-shrink-0 inline-flex items-center justify-center
+                       size-7 rounded-md bg-primary/10 text-primary"
+            aria-label={`图标: ${active.icon}`}
+          >
+            <ActiveIcon className="size-4" aria-hidden />
+          </div>
+        )}
         <div className="flex-1 min-w-0">
           {renaming ? (
             <input

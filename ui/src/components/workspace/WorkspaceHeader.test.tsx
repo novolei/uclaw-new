@@ -36,7 +36,10 @@ describe('WorkspaceHeader', () => {
     store.set(activeWorkspaceIdAtom, 'w1')
     renderWithStore(store)
     expect(screen.getByText('2222')).toBeInTheDocument()
-    expect(screen.getByText('📁')).toBeInTheDocument()
+    // After Phase 4b icon-picker switch: workspace.icon is rendered as a
+    // lucide component (legacy '📁' still resolves via getWorkspaceIcon).
+    // Assert presence of the icon button by aria-label.
+    expect(screen.getByLabelText(/更换图标|图标:/)).toBeInTheDocument()
     expect(screen.getByText(/workground\/2222/)).toBeInTheDocument()
   })
 

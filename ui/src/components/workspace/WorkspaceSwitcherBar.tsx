@@ -28,12 +28,9 @@
 
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import {
-  Plus, Folder, Briefcase, Rocket, Microscope, PenTool,
-  Target, Home, Wrench,
-  type LucideIcon,
-} from 'lucide-react'
+import { Plus, type LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { getWorkspaceIcon } from '@/lib/workspace-icons'
 import {
   Tooltip, TooltipContent, TooltipProvider, TooltipTrigger,
 } from '@/components/ui/tooltip'
@@ -57,24 +54,12 @@ const isMac = typeof navigator !== 'undefined'
 const modGlyph = isMac ? '⌘' : 'Ctrl'
 
 /**
- * Map the workspace's stored emoji glyph to a lucide icon for the
- * compact switcher bar. Covers the EMOJI_CHOICES set from
- * WorkspaceCreateDialog. Unknown glyphs fall back to Folder.
+ * Resolve a workspace's stored icon value to a lucide component. Handles
+ * both new-style icon names ('Folder', 'Star', ...) and legacy emoji
+ * values from before Phase 4b's icon-picker switch. Defined in the
+ * shared catalog so the WorkspaceHeader + IconPicker stay aligned.
  */
-const EMOJI_ICON_MAP: Record<string, LucideIcon> = {
-  '📁': Folder,
-  '💼': Briefcase,
-  '🚀': Rocket,
-  '🔬': Microscope,
-  '✍️': PenTool,
-  '🎯': Target,
-  '🏠': Home,
-  '⚙️': Wrench,
-}
-
-function iconForWorkspace(icon: string): LucideIcon {
-  return EMOJI_ICON_MAP[icon] ?? Folder
-}
+const iconForWorkspace = (icon: string): LucideIcon => getWorkspaceIcon(icon)
 
 /** Tooltip pill — workspace name on left, ⌘ + digit chips on right (first 9). */
 function WorkspaceTooltip({

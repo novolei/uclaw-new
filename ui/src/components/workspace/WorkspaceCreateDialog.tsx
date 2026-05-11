@@ -7,14 +7,14 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import * as bridge from '@/lib/tauri-bridge'
+import { IconPicker } from './IconPicker'
+import { DEFAULT_WORKSPACE_ICON, getWorkspaceIcon } from '@/lib/workspace-icons'
 
 interface WorkspaceCreateDialogProps {
   open: boolean
   onClose: () => void
   onCreated: (ws: { id: string; name: string; icon: string }) => void
 }
-
-const EMOJI_CHOICES = ['📁', '💼', '🚀', '🔬', '✍️', '🎯', '🏠', '⚙️']
 
 /**
  * Best-effort client-side slug preview matching the backend's slugify():
@@ -34,17 +34,19 @@ export function WorkspaceCreateDialog({
   onCreated,
 }: WorkspaceCreateDialogProps): React.ReactElement {
   const [name, setName] = React.useState('')
-  const [icon, setIcon] = React.useState('📁')
+  const [icon, setIcon] = React.useState(DEFAULT_WORKSPACE_ICON)
   const [overridePath, setOverridePath] = React.useState<string | null>(null)
   const [loading, setLoading] = React.useState(false)
 
   // Reset all dialog state on close.
   const resetAndClose = React.useCallback(() => {
     setName('')
-    setIcon('📁')
+    setIcon(DEFAULT_WORKSPACE_ICON)
     setOverridePath(null)
     onClose()
   }, [onClose])
+
+  const SelectedIcon = getWorkspaceIcon(icon)
 
   const computedPath = React.useMemo(() => {
     if (overridePath) return overridePath
@@ -83,24 +85,30 @@ export function WorkspaceCreateDialog({
           <DialogTitle>New Workspace</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-3 py-2">
-          <div className="flex gap-2 flex-wrap">
-            {EMOJI_CHOICES.map((e) => (
-              <button
-                key={e}
-                onClick={() => setIcon(e)}
-                className={`text-xl p-1 rounded ${icon === e ? 'ring-2 ring-primary' : ''}`}
-              >
-                {e}
-              </button>
-            ))}
+          {/* Name input with the selected icon inline as a visual prefix. */}
+          <div className="flex items-center gap-2">
+            <div
+              className="flex items-center justify-center size-8 rounded-md
+                         bg-primary/15 text-primary shrink-0"
+              aria-label="当前选中的图标"
+            >
+              <SelectedIcon className="size-4" aria-hidden />
+            </div>
+            <Input
+              placeholder="Workspace name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+              autoFocus
+              className="flex-1"
+            />
           </div>
-          <Input
-            placeholder="Workspace name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-            autoFocus
-          />
+
+          {/* Icon picker grid. */}
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs text-muted-foreground">图标</label>
+            <IconPicker value={icon} onChange={setIcon} />
+          </div>
           <div className="flex flex-col gap-1.5">
             <label className="text-xs text-muted-foreground">目录</label>
             <div className="font-mono text-xs text-muted-foreground/80 truncate" title={computedPath}>
