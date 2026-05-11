@@ -191,7 +191,8 @@ Track which V-number is claimed by which open PR before starting schema work:
 | V13 | cost_records + indexes | merged (PR #39) |
 | V14 | tool_permission_rules + permission_audit_log | merged (PR #41) |
 | V15 | agent_messages metrics columns (duration_ms, token counts, cost) | merged |
-| V16 | persist 'default' workspace + heal orphan agent_sessions | **claude/workspace-phase1** (open) |
+| V16 | persist 'default' workspace + heal orphan agent_sessions | merged (PR #75) |
+| V17 | spaces.sort_order + spaces.attached_dirs + agent_sessions.attached_dirs | **claude/workspace-phase2** (open) |
 
 If you're adding a migration: pick the next number after both merged AND open PRs to avoid conflicts. Update this table in your PR.
 

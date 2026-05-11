@@ -864,6 +864,12 @@ mod tests {
         conn
     }
 
+    /// Apply V17 statements via .unwrap(). **First-run only** — calling
+    /// this twice on the same connection will panic with "duplicate column"
+    /// because ALTER TABLE ADD COLUMN isn't idempotent in SQLite. The
+    /// production `run()` uses warn-on-error to allow safe re-runs; tests
+    /// that need to verify re-run behavior must inline the loop and
+    /// swallow errors manually (see `v17_adds_sort_order_column_idempotent`).
     fn run_v17(conn: &Connection) {
         for stmt in super::V17_WORKSPACE_PATH_SORT_ATTACHED
             .split(';')
