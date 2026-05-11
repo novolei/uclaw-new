@@ -45,6 +45,27 @@ export const refreshWorkspacesAtom = atom(
   }
 )
 
+// Action: update a workspace's name or icon
+export const updateWorkspaceAtom = atom(
+  null,
+  async (_get, set, input: { id: string; name?: string; icon?: string }) => {
+    await bridge.updateWorkspace(input)
+    // Re-sync from backend rather than maintain optimistic state.
+    const spaces = await bridge.listSpaces()
+    set(workspacesAtom, spaces as WorkspaceInfo[])
+  }
+)
+
+// Action: persist a new workspace order
+export const reorderWorkspacesAtom = atom(
+  null,
+  async (_get, set, orderedIds: string[]) => {
+    await bridge.reorderWorkspaces(orderedIds)
+    const spaces = await bridge.listSpaces()
+    set(workspacesAtom, spaces as WorkspaceInfo[])
+  }
+)
+
 // Action: select a workspace and persist to backend
 export const selectWorkspaceAtom = atom(
   null,
