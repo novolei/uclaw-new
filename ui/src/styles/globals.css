@@ -550,10 +550,21 @@
   }
 }
 
-/* Draggable title bar region for Tauri window */
+/* Draggable title bar region for Tauri window.
+ *
+ * `app-region: drag` alone isn't enough — WKWebView's text-selection
+ * handler races the OS drag handler on mousedown. If user-select isn't
+ * disabled, the browser starts a text selection (showing the I-beam
+ * cursor) and the OS drag never fires. This was visible in the TabBar's
+ * empty area between/after tabs: cursor switched to I-beam on mousedown
+ * and the window couldn't be dragged. Forcing `user-select: none` +
+ * `cursor: default` removes the ambiguity. */
 .titlebar-drag-region {
   -webkit-app-region: drag;
   app-region: drag;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
 }
 
 /* 深色特殊主题 dialog 光晕效果 */
