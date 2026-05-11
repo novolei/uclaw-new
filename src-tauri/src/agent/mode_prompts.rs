@@ -115,9 +115,12 @@ mod tests {
     fn compose_skips_missing_uclaw_md() {
         let dir = TempDir::new().unwrap(); // no uclaw.md inside
         let out = compose_system_prompt("base", Some(dir.path()), &SafetyMode::Supervised);
-        // Should be exactly: base + sep + baseline (Auto mode adds no extra)
+        // No uclaw.md, so parts are: base + [WORKSPACE] + baseline (Auto mode adds no extra)
+        // → exactly 2 separators between the 3 parts.
         let sep_count = out.matches("\n\n---\n\n").count();
-        assert_eq!(sep_count, 1, "Expected exactly one separator (base|baseline), got {}", sep_count);
+        assert_eq!(sep_count, 2, "Expected base|workspace|baseline, got {} separators", sep_count);
+        assert!(out.contains("[WORKSPACE]"), "workspace block missing");
+        assert!(out.contains(&dir.path().display().to_string()), "workspace path missing");
     }
 
     #[test]
