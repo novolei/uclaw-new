@@ -8,6 +8,7 @@
 import * as React from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { tabsAtom, activeTabIdAtom, openTab, type TabType } from '@/atoms/tab-atoms'
+import { activeWorkspaceIdAtom } from '@/atoms/workspace'
 import { appModeAtom } from '@/atoms/app-mode'
 import { currentConversationIdAtom } from '@/atoms/chat-atoms'
 import {
@@ -27,6 +28,7 @@ export function useOpenSession(): OpenSessionFn {
   const agentSessions = useAtomValue(agentSessionsAtom)
   const setCurrentAgentWorkspaceId = useSetAtom(currentAgentWorkspaceIdAtom)
   const setUnviewedCompleted = useSetAtom(unviewedCompletedSessionIdsAtom)
+  const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
 
   return React.useCallback(
     (type: TabType, sessionId: string, title: string): void => {
@@ -39,7 +41,8 @@ export function useOpenSession(): OpenSessionFn {
           displayTitle = `${emoji} ${title}`
         }
       }
-      const result = openTab(tabs, { type, sessionId, title: displayTitle })
+      const ws = activeWorkspaceId ?? 'default'
+      const result = openTab(tabs, { type, sessionId, title: displayTitle, workspaceId: ws })
       setTabs(result.tabs)
       setActiveTabId(result.activeTabId)
 

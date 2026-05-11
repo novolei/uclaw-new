@@ -7,7 +7,7 @@
 
 import * as React from 'react'
 import { useAtomValue } from 'jotai'
-import { tabsAtom } from '@/atoms/tab-atoms'
+import { visibleTabsAtom } from '@/atoms/tab-atoms'
 import { ChatView } from '@/components/chat/ChatView'
 import { AgentView } from '@/components/agent/AgentView'
 import { BrowserViewer } from '@/components/canvas/BrowserViewer'
@@ -18,7 +18,7 @@ export interface TabContentProps {
 }
 
 export function TabContent({ tabId }: TabContentProps): React.ReactElement {
-  const tabs = useAtomValue(tabsAtom)
+  const tabs = useAtomValue(visibleTabsAtom)
   const tab = tabs.find((t) => t.id === tabId)
 
   // [FLASH-DEBUG] 监控 tab 查找失败（说明 tabId 指向了不存在的标签）

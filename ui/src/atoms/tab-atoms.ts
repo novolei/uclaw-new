@@ -1,11 +1,19 @@
 /**
  * Tab Atoms — 标签页状态管理
  *
- * 支持浏览器风格的多标签页。
- * 通过桥接 atom 与现有 currentConversationIdAtom / currentAgentSessionIdAtom 同步。
+ * Tabs are tagged with a workspaceId. The flat `tabsAtom` is the pool;
+ * `visibleTabsAtom` is the derived per-workspace filter that the
+ * TabBar / MainArea render from. The active-tab pointer is held in
+ * `workspaceActiveTabIdMapAtom` (one slot per workspace) and exposed
+ * via the read-write `activeTabIdAtom` that reads/writes the slot for
+ * the currently-active workspace.
+ *
+ * In-memory only — no persistence across app restarts (today's
+ * behavior; not regressing).
  */
 
 import { atom } from 'jotai'
+import { activeWorkspaceIdAtom } from './workspace'
 import {
   streamingConversationIdsAtom,
 } from './chat-atoms'
@@ -25,6 +33,7 @@ export interface TabItem {
   type: TabType
   sessionId: string
   title: string
+  workspaceId: string
 }
 
 export interface PersistedTabState {
@@ -34,8 +43,46 @@ export interface PersistedTabState {
 
 // ===== 核心 Atoms =====
 
+/** Pool of every open tab across all workspaces. */
 export const tabsAtom = atom<TabItem[]>([])
-export const activeTabIdAtom = atom<string | null>(null)
+
+/** Per-workspace active-tab pointer. Map<workspaceId, tabId | null>. */
+export const workspaceActiveTabIdMapAtom =
+  atom<Map<string, string | null>>(new Map())
+
+/** Tabs visible in the currently-active workspace. Derived filter. */
+export const visibleTabsAtom = atom<TabItem[]>((get) => {
+  const wsId = get(activeWorkspaceIdAtom)
+  if (!wsId) return []
+  return get(tabsAtom).filter((t) => t.workspaceId === wsId)
+})
+
+/**
+ * Read/write the active workspace's active-tab id. Reads return the
+ * slot for the currently-active workspace; writes update that slot
+ * (and only that slot) in workspaceActiveTabIdMapAtom.
+ *
+ * Writing `null` removes the slot entry entirely (clears the
+ * workspace's active-tab pointer). Writing when no workspace is
+ * active is a silent no-op. Returns null when no workspace is active
+ * or the workspace has no active tab on record.
+ */
+export const activeTabIdAtom = atom<string | null, [string | null], void>(
+  (get) => {
+    const wsId = get(activeWorkspaceIdAtom)
+    if (!wsId) return null
+    return get(workspaceActiveTabIdMapAtom).get(wsId) ?? null
+  },
+  (get, set, next) => {
+    const wsId = get(activeWorkspaceIdAtom)
+    if (!wsId) return
+    const m = new Map(get(workspaceActiveTabIdMapAtom))
+    if (next === null) m.delete(wsId)
+    else m.set(wsId, next)
+    set(workspaceActiveTabIdMapAtom, m)
+  },
+)
+
 export const tabMruAtom = atom<string[]>([])
 
 export interface TabMinimapItem {
@@ -96,9 +143,11 @@ export const tabIndicatorMapAtom = atom<Map<string, SessionIndicatorStatus>>((ge
 
 export function openTab(
   tabs: TabItem[],
-  item: { type: TabType; sessionId: string; title: string },
+  item: { type: TabType; sessionId: string; title: string; workspaceId: string },
 ): { tabs: TabItem[]; activeTabId: string } {
-  const existingTab = tabs.find((t) => t.sessionId === item.sessionId && t.type === item.type)
+  const existingTab = tabs.find(
+    (t) => t.sessionId === item.sessionId && t.type === item.type,
+  )
   if (existingTab) {
     return { tabs, activeTabId: existingTab.id }
   }
@@ -107,6 +156,7 @@ export function openTab(
     type: item.type,
     sessionId: item.sessionId,
     title: item.title,
+    workspaceId: item.workspaceId,
   }
   return {
     tabs: [...tabs, newTab],
@@ -146,12 +196,34 @@ export function reorderTabs(
   return newTabs
 }
 
+/**
+ * Merge a reordered visible slice back into the global tab pool.
+ * Tabs that belong to other workspaces keep their original positions;
+ * the visible-workspace slots are replaced in order with reorderedVisible.
+ *
+ * Precondition: caller must ensure `reorderedVisible` is a permutation
+ * of the same-workspace tabs currently in `allTabs`. The helper does
+ * not verify membership — passing a stale slice (e.g. containing a tab
+ * that was concurrently closed) will reinsert that closed tab into
+ * the pool.
+ */
+export function mergeReorderedVisible(
+  allTabs: TabItem[],
+  reorderedVisible: TabItem[],
+): TabItem[] {
+  const visibleIds = new Set(reorderedVisible.map((t) => t.id))
+  let visIdx = 0
+  return allTabs.map((t) =>
+    visibleIds.has(t.id) ? reorderedVisible[visIdx++]! : t,
+  )
+}
+
 export function updateTabTitle(
   tabs: TabItem[],
   sessionId: string,
   title: string,
 ): TabItem[] {
   return tabs.map((t) =>
-    t.sessionId === sessionId ? { ...t, title } : t
+    t.sessionId === sessionId ? { ...t, title } : t,
   )
 }

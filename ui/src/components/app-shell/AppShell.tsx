@@ -30,6 +30,7 @@ import {
 } from '@/atoms/agent-atoms'
 import { currentConversationIdAtom } from '@/atoms/chat-atoms'
 import { tabsAtom, activeTabIdAtom, openTab } from '@/atoms/tab-atoms'
+import { activeWorkspaceIdAtom } from '@/atoms/workspace'
 import { SearchPalette } from '@/components/search/SearchPalette'
 import { cn } from '@/lib/utils'
 import { installScrollToMessage } from '@/lib/scroll-to-message'
@@ -37,6 +38,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { toast } from 'sonner'
 import { attachWorkspaceDirectory, pathIsDirectory, copyFileIntoWorkspace } from '@/lib/tauri-bridge'
 import { workspaceFilesVersionAtom, workspaceAttachedDirsMapAtom } from '@/atoms/agent-atoms'
+import { TabSessionSyncer } from './TabSessionSyncer'
+import { WorkspaceTabCleaner } from './WorkspaceTabCleaner'
 
 export interface AppShellProps {
   /** Context 值，用于传递给子组件 */
@@ -47,6 +50,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const appMode = useAtomValue(appModeAtom)
   const currentSessionId = useAtomValue(currentAgentSessionIdAtom)
   const isPanelOpen = useAtomValue(currentSessionSidePanelOpenAtom)
+  const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
   const showRightPanel = appMode === 'agent' && !!currentSessionId
 
   // Tab navigation atoms — used by handleSearchResultSelect
@@ -158,7 +162,8 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         const t = payload.thread
         // Open the right tab type — chat or agent
         const tabType = t.kind === 'agent' ? 'agent' : 'chat'
-        const result = openTab(tabs, { type: tabType, sessionId: t.id, title: '' })
+        const ws = activeWorkspaceId ?? 'default'
+        const result = openTab(tabs, { type: tabType, sessionId: t.id, title: '', workspaceId: ws })
         setTabs(result.tabs)
         setActiveTabId(result.activeTabId)
         // Update the per-domain "current" atoms so the view focuses correctly.
@@ -185,7 +190,8 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         const h = payload.hit
         // existing PR #29 behavior — open the session and scroll to the message
         const tabType = (h.source === 'agent_turn' || h.source === 'agent_message') ? 'agent' : 'chat'
-        const result = openTab(tabs, { type: tabType, sessionId: h.sourceId, title: '' })
+        const ws = activeWorkspaceId ?? 'default'
+        const result = openTab(tabs, { type: tabType, sessionId: h.sourceId, title: '', workspaceId: ws })
         setTabs(result.tabs)
         setActiveTabId(result.activeTabId)
         setAppMode((h.source === 'agent_turn' || h.source === 'agent_message') ? 'agent' : 'chat')
@@ -211,6 +217,13 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
 
   return (
     <AppShellProvider value={contextValue}>
+      {/* Effect-only: keeps currentAgentSessionIdAtom / currentConversationIdAtom /
+          appModeAtom in sync with the active workspace's active tab on workspace switch. */}
+      <TabSessionSyncer />
+
+      {/* Effect-only: drops orphan tabs when a workspace is deleted. */}
+      <WorkspaceTabCleaner />
+
       {/* macOS 全宽标题栏拖拽区（z-50）：覆盖窗口顶部 50px，让面板间隙也可拖动。
           各 panel 以 z-[60] 叠在其上，拖动只在 panel 之外的可见间隙生效。 */}
       <div className="titlebar-drag-region fixed top-0 left-0 right-0 h-[50px] z-50" />

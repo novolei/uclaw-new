@@ -6,7 +6,7 @@
 
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { tabsAtom, activeTabIdAtom } from '@/atoms/tab-atoms'
+import { visibleTabsAtom, activeTabIdAtom } from '@/atoms/tab-atoms'
 import { Panel } from '@/components/app-shell/Panel'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import WelcomeView from '@/views/WelcomeView'
@@ -14,7 +14,7 @@ import { TabBar } from './TabBar'
 import { TabContent } from './TabContent'
 
 export function MainArea(): React.ReactElement {
-  const tabs = useAtomValue(tabsAtom)
+  const tabs = useAtomValue(visibleTabsAtom)
   const activeTabId = useAtomValue(activeTabIdAtom)
   const setActiveTabId = useSetAtom(activeTabIdAtom)
 

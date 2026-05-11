@@ -18,12 +18,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { tabsAtom } from '@/atoms/tab-atoms'
+import { visibleTabsAtom } from '@/atoms/tab-atoms'
 import { pendingCloseTabIdAtom, useCloseTab } from '@/hooks/useCloseTab'
 
 export function TabCloseConfirmDialog(): React.ReactElement {
   const [pendingId, setPendingId] = useAtom(pendingCloseTabIdAtom)
-  const tabs = useAtomValue(tabsAtom)
+  const tabs = useAtomValue(visibleTabsAtom)
   const { executeClose } = useCloseTab()
 
   const tabTitle = pendingId
