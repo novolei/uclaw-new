@@ -29,7 +29,6 @@ export interface TabBarItemProps {
   onActivate: () => void
   onClose: () => void
   onMiddleClick: () => void
-  onDragStart: (e: React.PointerEvent) => void
   /** hover 进入 Tab */
   onHoverEnter: () => void
   /** hover 离开 Tab */
@@ -51,7 +50,6 @@ export function TabBarItem({
   onActivate,
   onClose,
   onMiddleClick,
-  onDragStart,
   onHoverEnter,
   onHoverLeave,
   onPanelHoverEnter,
@@ -132,7 +130,6 @@ export function TabBarItem({
         )}
         onClick={onActivate}
         onMouseDown={handleMouseDown}
-        onPointerDown={onDragStart}
       >
         {/* 类型图标（agent tab 用 emoji 标题作为视觉标识，不需要额外图标） */}
         {type !== 'agent' && (

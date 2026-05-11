@@ -47,14 +47,6 @@ export function TabBar(): React.ReactElement {
   // 详见 useCloseTab，修复 Issue #357 的 UI→IPC 断链
   const { requestClose } = useCloseTab()
 
-  // 拖拽状态
-  const dragState = React.useRef<{
-    dragging: boolean
-    tabId: string
-    startX: number
-    startIndex: number
-  } | null>(null)
-
   const handleActivate = React.useCallback((tabId: string) => {
     setActiveTabId(tabId)
 
@@ -85,34 +77,6 @@ export function TabBar(): React.ReactElement {
     }
   }, [setActiveTabId, tabs, agentSessions, setAppMode, setCurrentConversationId, setCurrentAgentSessionId, setCurrentAgentWorkspaceId, setUnviewedCompleted])
 
-  const handleDragStart = React.useCallback((tabId: string, e: React.PointerEvent) => {
-    if (e.button !== 0) return // 只处理左键
-    const idx = tabs.findIndex((t) => t.id === tabId)
-    if (idx === -1) return
-
-    dragState.current = {
-      dragging: false,
-      tabId,
-      startX: e.clientX,
-      startIndex: idx,
-    }
-
-    const handleMove = (me: PointerEvent): void => {
-      if (!dragState.current) return
-      const dx = Math.abs(me.clientX - dragState.current.startX)
-      if (dx > 5) dragState.current.dragging = true
-    }
-
-    const handleUp = (): void => {
-      document.removeEventListener('pointermove', handleMove)
-      document.removeEventListener('pointerup', handleUp)
-      dragState.current = null
-    }
-
-    document.addEventListener('pointermove', handleMove)
-    document.addEventListener('pointerup', handleUp)
-  }, [tabs])
-
   if (tabs.length === 0) return <div data-tauri-drag-region className="h-[34px] titlebar-drag-region" />
 
   return (
@@ -123,7 +87,6 @@ export function TabBar(): React.ReactElement {
         streamingMap={indicatorMap}
         onActivate={handleActivate}
         onClose={requestClose}
-        onDragStart={handleDragStart}
       />
       <TabCloseConfirmDialog />
     </>
@@ -137,14 +100,12 @@ function TabBarInner({
   streamingMap,
   onActivate,
   onClose,
-  onDragStart,
 }: {
   tabs: TabItem[]
   activeTabId: string | null
   streamingMap: Map<string, SessionIndicatorStatus>
   onActivate: (tabId: string) => void
   onClose: (tabId: string) => void
-  onDragStart: (tabId: string, e: React.PointerEvent) => void
 }): React.ReactElement {
   const [hoveredTabId, setHoveredTabId] = React.useState<string | null>(null)
   const [isLeaving, setIsLeaving] = React.useState(false)
@@ -194,12 +155,14 @@ function TabBarInner({
   }, [])
 
   return (
-    <div className="flex items-end h-[34px] tabbar-bg relative">
-      {/* 绝对定位的 drag 层全覆盖 TabBar 区域；内容层显式 no-drag 让 tab 可点。
-          这样空白处(tab 之间/右侧)落在内容层的非 tab 区,WebKit 仍按 drag 处理。 */}
-      <div className="absolute inset-0 titlebar-drag-region" />
-
-      <div className="relative flex items-end flex-1 min-w-0 overflow-x-clip titlebar-no-drag">
+    // The TabBar row IS the OS title-bar drag region — `app-region: drag`
+    // is set on this flex container directly (was previously an absolute
+    // overlay that the inner `titlebar-no-drag` content layer blocked).
+    // Each child element (chip, tab buttons, close icon) carries
+    // `titlebar-no-drag` itself so clicks land on them, while empty
+    // space between/after tabs falls through to the OS for window drag.
+    <div className="flex items-end h-[34px] tabbar-bg relative titlebar-drag-region">
+      <div className="relative flex items-end flex-1 min-w-0 overflow-x-clip">
         <div className="flex items-center px-1 py-1 shrink-0 self-stretch">
           <TabBarWorkspaceChip />
         </div>
@@ -216,7 +179,6 @@ function TabBarInner({
             onActivate={() => onActivate(tab.id)}
             onClose={() => onClose(tab.id)}
             onMiddleClick={() => onClose(tab.id)}
-            onDragStart={(e) => onDragStart(tab.id, e)}
             onHoverEnter={() => handleTabHoverEnter(tab.id)}
             onHoverLeave={handleTabHoverLeave}
             onPanelHoverEnter={handlePanelHoverEnter}

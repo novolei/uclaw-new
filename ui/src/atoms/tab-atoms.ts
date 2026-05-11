@@ -184,18 +184,6 @@ export function closeTab(
   return { tabs: newTabs, activeTabId: newActiveTabId }
 }
 
-export function reorderTabs(
-  tabs: TabItem[],
-  fromIndex: number,
-  toIndex: number,
-): TabItem[] {
-  if (fromIndex === toIndex) return tabs
-  const newTabs = [...tabs]
-  const [moved] = newTabs.splice(fromIndex, 1)
-  newTabs.splice(toIndex, 0, moved!)
-  return newTabs
-}
-
 export function updateTabTitle(
   tabs: TabItem[],
   sessionId: string,

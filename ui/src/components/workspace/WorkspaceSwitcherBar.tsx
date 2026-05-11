@@ -133,6 +133,12 @@ interface WorkspaceItemProps {
   index: number
   active: boolean
   running: boolean
+  /** Roving tabindex — 0 on the currently-focused item, -1 elsewhere.
+   *  Lets the user Tab into the bar then Arrow between icons.  */
+  tabIndex: number
+  /** Callback ref so the parent can imperatively focus an icon when the
+   *  focused index changes via keyboard navigation. */
+  buttonRef: (el: HTMLButtonElement | null) => void
   onSelect: (id: string) => void
   onDragStart: (e: React.DragEvent, id: string) => void
   onDragOver: (e: React.DragEvent, id: string) => void
@@ -144,7 +150,7 @@ interface WorkspaceItemProps {
 }
 
 function WorkspaceIcon({
-  workspace, index, active, running, onSelect,
+  workspace, index, active, running, tabIndex, buttonRef, onSelect,
   onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd,
   isDragging, dropIndicator,
 }: WorkspaceItemProps): React.ReactElement {
@@ -152,7 +158,9 @@ function WorkspaceIcon({
     <Tooltip>
       <TooltipTrigger asChild>
         <button
+          ref={buttonRef}
           type="button"
+          tabIndex={tabIndex}
           draggable
           onDragStart={(e) => onDragStart(e, workspace.id)}
           onDragOver={(e) => onDragOver(e, workspace.id)}
@@ -161,6 +169,7 @@ function WorkspaceIcon({
           onDragEnd={onDragEnd}
           onClick={() => void onSelect(workspace.id)}
           aria-label={`工作区: ${workspace.name}`}
+          aria-current={active ? 'true' : undefined}
           className={cn(
             'titlebar-no-drag relative inline-flex items-center justify-center',
             'size-7 rounded-md transition-colors',
@@ -201,7 +210,7 @@ function WorkspaceIcon({
 }
 
 function WorkspaceDot({
-  workspace, index, running, onSelect,
+  workspace, index, running, tabIndex, buttonRef, onSelect,
   onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd,
   isDragging, dropIndicator,
 }: WorkspaceItemProps): React.ReactElement {
@@ -210,7 +219,9 @@ function WorkspaceDot({
     <Tooltip>
       <TooltipTrigger asChild>
         <button
+          ref={buttonRef}
           type="button"
+          tabIndex={tabIndex}
           draggable
           onDragStart={(e) => onDragStart(e, workspace.id)}
           onDragOver={(e) => onDragOver(e, workspace.id)}
@@ -294,6 +305,35 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
     position: 'before' | 'after'
   } | null>(null)
 
+  // Roving tabindex — see https://w3c.github.io/aria-practices/#kbd_roving_tabindex
+  // `focusedIndex` is the index of the workspace currently in the tab order.
+  // Default = active workspace (so Tab into the bar lands on the user's
+  // current context). Arrow keys move it; pressing Enter activates the
+  // focused icon.
+  const buttonRefs = React.useRef<Array<HTMLButtonElement | null>>([])
+  const [focusedIndex, setFocusedIndex] = React.useState(0)
+  // Distinguishes keyboard-driven focus changes (where we want to imperatively
+  // refocus the new element) from index updates caused by active workspace
+  // switching via mouse (don't steal focus from wherever the user is).
+  const shouldFocusRef = React.useRef(false)
+
+  // Keep focusedIndex pointing at the active workspace by default. Skipped
+  // when the user is keyboard-navigating (shouldFocusRef would have just
+  // set focusedIndex independently).
+  React.useEffect(() => {
+    const activeIdx = workspaces.findIndex((w) => w.id === activeId)
+    if (activeIdx !== -1) setFocusedIndex(activeIdx)
+  }, [activeId, workspaces])
+
+  // After focusedIndex changes from keyboard nav, move actual DOM focus
+  // to the now-tabbable button. The ref toggle prevents stealing focus
+  // when activeId changes via mouse click.
+  React.useLayoutEffect(() => {
+    if (!shouldFocusRef.current) return
+    shouldFocusRef.current = false
+    buttonRefs.current[focusedIndex]?.focus()
+  }, [focusedIndex])
+
   /** Set of workspace ids that have at least one running session. */
   const runningWorkspaceIds = React.useMemo(() => {
     const set = new Set<string>()
@@ -366,6 +406,34 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
     void selectWorkspace(id)
   }, [selectWorkspace])
 
+  // Arrow / Home / End move the roving focus; Enter or Space activates
+  // the focused workspace. Listening on the toolbar container so each
+  // icon button stays simple. Tooltip clicks won't reach here (they're
+  // portaled out of the DOM tree).
+  const handleToolbarKeyDown = React.useCallback((e: React.KeyboardEvent): void => {
+    if (workspaces.length === 0) return
+    let next: number | null = null
+    if (e.key === 'ArrowRight') {
+      next = (focusedIndex + 1) % workspaces.length
+    } else if (e.key === 'ArrowLeft') {
+      next = (focusedIndex - 1 + workspaces.length) % workspaces.length
+    } else if (e.key === 'Home') {
+      next = 0
+    } else if (e.key === 'End') {
+      next = workspaces.length - 1
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      const w = workspaces[focusedIndex]
+      if (w) handleSelect(w.id)
+      return
+    }
+    if (next !== null) {
+      e.preventDefault()
+      shouldFocusRef.current = true
+      setFocusedIndex(next)
+    }
+  }, [focusedIndex, workspaces, handleSelect])
+
   // Measure the icons container to pick comfortable vs compact mode.
   // `null` before first measurement → default to comfortable so the
   // initial paint isn't dots-then-icons.
@@ -380,6 +448,10 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
           {/* Workspace icons or dots */}
           <div
             ref={iconsContainerRef}
+            role="toolbar"
+            aria-label="工作区切换"
+            aria-orientation="horizontal"
+            onKeyDown={handleToolbarKeyDown}
             className={cn(
               // overflow-x-clip (not -auto) so we can keep overflow-y-visible
               // — `auto` on the x-axis forces y to also clip per CSS spec,
@@ -403,6 +475,10 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
 
               const commonProps = {
                 workspace: w, index: i, active, running,
+                tabIndex: i === focusedIndex ? 0 : -1,
+                buttonRef: (el: HTMLButtonElement | null) => {
+                  buttonRefs.current[i] = el
+                },
                 onSelect: handleSelect,
                 onDragStart: handleDragStart,
                 onDragOver: handleDragOver,

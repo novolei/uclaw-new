@@ -128,4 +128,46 @@ describe('WorkspaceSwitcherBar', () => {
       expect(screen.getByText('New Workspace')).toBeInTheDocument()
     })
   })
+
+  it('keyboard: only the active workspace icon is in the tab order (roving tabindex)', () => {
+    const store = createStore()
+    store.set(workspacesAtom, [
+      makeWs('w1', 'A', 0),
+      makeWs('w2', 'B', 1),
+      makeWs('w3', 'C', 2),
+    ])
+    store.set(activeWorkspaceIdAtom, 'w2')
+    renderWithStore(store)
+    expect(screen.getByLabelText(/工作区: A/).tabIndex).toBe(-1)
+    expect(screen.getByLabelText(/工作区: B/).tabIndex).toBe(0)
+    expect(screen.getByLabelText(/工作区: C/).tabIndex).toBe(-1)
+  })
+
+  it('keyboard: ArrowRight moves roving focus + makes that icon tabbable', () => {
+    const store = createStore()
+    store.set(workspacesAtom, [
+      makeWs('w1', 'A', 0),
+      makeWs('w2', 'B', 1),
+      makeWs('w3', 'C', 2),
+    ])
+    store.set(activeWorkspaceIdAtom, 'w1')
+    renderWithStore(store)
+    const toolbar = screen.getByRole('toolbar', { name: /工作区切换/ })
+    // Initially A is the active + focused workspace
+    expect(screen.getByLabelText(/工作区: A/).tabIndex).toBe(0)
+    fireEvent.keyDown(toolbar, { key: 'ArrowRight' })
+    // After ArrowRight, B should be tabbable; A should be -1.
+    expect(screen.getByLabelText(/工作区: A/).tabIndex).toBe(-1)
+    expect(screen.getByLabelText(/工作区: B/).tabIndex).toBe(0)
+  })
+
+  it('keyboard: ArrowLeft wraps from first to last', () => {
+    const store = createStore()
+    store.set(workspacesAtom, [makeWs('w1', 'A', 0), makeWs('w2', 'B', 1)])
+    store.set(activeWorkspaceIdAtom, 'w1')
+    renderWithStore(store)
+    const toolbar = screen.getByRole('toolbar', { name: /工作区切换/ })
+    fireEvent.keyDown(toolbar, { key: 'ArrowLeft' })
+    expect(screen.getByLabelText(/工作区: B/).tabIndex).toBe(0)
+  })
 })
