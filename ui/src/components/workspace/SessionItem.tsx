@@ -82,7 +82,11 @@ export function SessionItem({
             {onMove && (
               <DropdownMenuItem
                 className="text-xs py-1 [&>svg]:size-3.5"
-                onSelect={onMove}
+                onSelect={(e) => {
+                  console.debug('[session-menu] move clicked')
+                  e.preventDefault()
+                  onMove()
+                }}
               >
                 <FolderInput />
                 移动到...
@@ -91,7 +95,11 @@ export function SessionItem({
             {onDelete && (
               <DropdownMenuItem
                 className="text-xs py-1 [&>svg]:size-3.5 text-destructive focus:text-destructive"
-                onSelect={onDelete}
+                onSelect={(e) => {
+                  console.debug('[session-menu] delete clicked')
+                  e.preventDefault()
+                  onDelete()
+                }}
               >
                 <Trash2 />
                 删除

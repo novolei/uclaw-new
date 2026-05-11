@@ -66,6 +66,7 @@ export function WorkspaceRail({
   }
 
   const handleDragStart = (e: React.DragEvent, id: string): void => {
+    console.debug('[workspace-dnd] dragstart', { id })
     setDragId(id)
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/plain', id)
@@ -94,31 +95,35 @@ export function WorkspaceRail({
   const handleDrop = async (e: React.DragEvent, targetId: string): Promise<void> => {
     e.preventDefault()
     e.stopPropagation()
-    // Recompute position from cursor at drop time. Relying on `dropIndicator`
-    // state is fragile because `dragleave` (fired between dragover and drop
-    // when the cursor crosses internal child boundaries) can null it out
-    // before drop runs.
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
     const ratio = (e.clientY - rect.top) / rect.height
     const position: 'before' | 'after' = ratio < 0.5 ? 'before' : 'after'
-    // Read the dragged id from dataTransfer as a fallback if React state was
-    // cleared by a stray dragend.
     const sourceId = dragId ?? e.dataTransfer.getData('text/plain') ?? ''
+    console.debug('[workspace-dnd] drop', { sourceId, targetId, position, dragIdState: dragId })
     setDragId(null)
     setDropIndicator(null)
-    if (!sourceId || sourceId === targetId) return
+    if (!sourceId || sourceId === targetId) {
+      console.debug('[workspace-dnd] drop bailed', { sourceId, targetId })
+      return
+    }
     const fromIdx = workspaces.findIndex((w) => w.id === sourceId)
     const toIdx = workspaces.findIndex((w) => w.id === targetId)
-    if (fromIdx === -1 || toIdx === -1) return
+    if (fromIdx === -1 || toIdx === -1) {
+      console.warn('[workspace-dnd] index lookup failed', { fromIdx, toIdx, sourceId, targetId })
+      return
+    }
     const reordered = [...workspaces]
     const [moved] = reordered.splice(fromIdx, 1)
     const adjustedToIdx = fromIdx < toIdx ? toIdx - 1 : toIdx
     const insertIdx = position === 'after' ? adjustedToIdx + 1 : adjustedToIdx
     reordered.splice(insertIdx, 0, moved!)
+    const newOrder = reordered.map((w) => w.id)
+    console.debug('[workspace-dnd] calling reorderWorkspaces', { newOrder })
     try {
-      await reorderWorkspaces(reordered.map((w) => w.id))
+      await reorderWorkspaces(newOrder)
+      console.debug('[workspace-dnd] reorderWorkspaces succeeded')
     } catch (err) {
-      console.error('[workspace] reorder failed', err)
+      console.error('[workspace-dnd] reorder failed', err)
     }
   }
 

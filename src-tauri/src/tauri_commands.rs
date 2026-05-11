@@ -131,9 +131,10 @@ pub async fn send_message(
         ));
     }
 
-    // Setup tools
+    // Setup tools — pin to the active workspace's folder, not the global root.
     let mut tools = ToolRegistry::new();
-    let workspace = state.workspace_root.clone();
+    let workspace = active_workspace_root(&state)
+        .unwrap_or_else(|| state.workspace_root.clone());
     tools.register(builtin::file::ReadFileTool::new(workspace.clone()));
     tools.register(builtin::file::WriteFileTool::new(workspace.clone()));
     tools.register(builtin::search::GrepTool::new(workspace.clone()));
@@ -3930,8 +3931,11 @@ pub async fn send_agent_message(
         result
     };
 
-    // Build tool registry
-    let workspace = state.workspace_root.clone();
+    // Build tool registry. Tools must run inside the *active workspace's*
+    // folder (e.g. ~/Documents/workground/2222), not the global workground
+    // root. Otherwise `pwd`, `read_file`, `glob`, etc. all see the wrong cwd.
+    let workspace = active_workspace_root(&state)
+        .unwrap_or_else(|| state.workspace_root.clone());
     let mut tools = ToolRegistry::new();
     tools.register(builtin::file::ReadFileTool::new(workspace.clone()));
     tools.register(builtin::file::WriteFileTool::new(workspace.clone()));
@@ -5005,6 +5009,48 @@ fn active_workspace_root(state: &AppState) -> Option<std::path::PathBuf> {
     path_from_db.or_else(|| Some(state.workspace_root.clone()))
 }
 
+/// Lightweight directory listing for the Files tab. Reads `path` and
+/// returns a flat list of immediate children as FileEntry-shaped objects.
+/// Hidden files (dotfiles) and macOS `.DS_Store` are filtered out so the
+/// panel matches what a user sees in Finder by default.
+#[tauri::command]
+pub async fn list_directory_entries(path: String) -> Result<Vec<serde_json::Value>, Error> {
+    let p = std::path::PathBuf::from(&path);
+    if !p.exists() {
+        return Ok(vec![]);
+    }
+    if !p.is_dir() {
+        return Err(Error::InvalidInput(format!("not a directory: {}", path)));
+    }
+    let mut entries = tokio::fs::read_dir(&p).await.map_err(Error::Io)?;
+    let mut out = Vec::new();
+    while let Some(entry) = entries.next_entry().await.map_err(Error::Io)? {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') { continue; }
+        let entry_path = entry.path();
+        let meta = match entry.metadata().await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let is_dir = meta.is_dir();
+        let size = if is_dir { None } else { Some(meta.len()) };
+        let extension = if is_dir {
+            None
+        } else {
+            entry_path.extension().and_then(|s| s.to_str()).map(|s| s.to_string())
+        };
+        out.push(serde_json::json!({
+            "name": name,
+            "path": entry_path.to_string_lossy(),
+            "isDirectory": is_dir,
+            "isFile": !is_dir,
+            "size": size,
+            "extension": extension,
+        }));
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 pub async fn read_workspace_uclaw_md(state: State<'_, AppState>) -> Result<String, Error> {
     let Some(root) = active_workspace_root(&state) else {
@@ -5568,7 +5614,10 @@ pub async fn start_agent_teams(
     };
     let llm: Arc<dyn crate::llm::LlmProvider> = llm::create_provider(&llm_cfg)?;
 
-    let workspace = state.workspace_root.clone();
+    // Pin to active workspace folder; fallback to global root only if no
+    // workspace is active (e.g. fresh install before any space selected).
+    let workspace = active_workspace_root(&state)
+        .unwrap_or_else(|| state.workspace_root.clone());
     let workspace_root_for_factory = active_workspace_root(&state);
 
     // Clone everything that needs to move into the spawn

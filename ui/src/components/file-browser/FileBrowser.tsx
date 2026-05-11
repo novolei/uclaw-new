@@ -11,9 +11,7 @@ import { ChevronRight, RefreshCw, FolderOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { FileTypeIcon } from './FileTypeIcon'
 import type { FileEntry } from '@/lib/chat-types'
-
-// [PLACEHOLDER] Tauri file system operations
-// import { readDir } from '@tauri-apps/plugin-fs'
+import { listDirectoryEntries } from '@/lib/tauri-bridge'
 
 interface FileBrowserProps {
   /** 根目录路径 */
@@ -108,17 +106,56 @@ function FileTreeNode({
 
 export function FileBrowser({
   rootPath,
-  files = [],
+  files: filesProp,
   onFileClick,
   onDirectoryClick,
   onAddToChat,
   onRefresh,
-  loading = false,
+  loading: loadingProp = false,
   hideToolbar = false,
   embedded = false,
   hideEmpty = false,
   className,
 }: FileBrowserProps): React.ReactElement {
+  // If parent supplies `files`, render those directly (legacy mode).
+  // Otherwise auto-load the immediate children of `rootPath` from disk.
+  const [autoFiles, setAutoFiles] = React.useState<FileEntry[]>([])
+  const [autoLoading, setAutoLoading] = React.useState(false)
+  const [reloadKey, setReloadKey] = React.useState(0)
+
+  React.useEffect(() => {
+    if (filesProp !== undefined) return
+    if (!rootPath) {
+      setAutoFiles([])
+      return
+    }
+    let cancelled = false
+    setAutoLoading(true)
+    listDirectoryEntries(rootPath)
+      .then((rows) => {
+        if (cancelled) return
+        const mapped: FileEntry[] = rows.map((r) => ({
+          name: r.name,
+          path: r.path,
+          isDirectory: r.isDirectory,
+          isFile: r.isFile,
+          size: r.size,
+          extension: r.extension,
+        }))
+        setAutoFiles(mapped)
+      })
+      .catch((err) => {
+        console.error('[FileBrowser] listDirectoryEntries failed', err)
+        if (!cancelled) setAutoFiles([])
+      })
+      .finally(() => { if (!cancelled) setAutoLoading(false) })
+    return () => { cancelled = true }
+  }, [rootPath, filesProp, reloadKey])
+
+  const files = filesProp ?? autoFiles
+  const loading = loadingProp || autoLoading
+  const effectiveOnRefresh = onRefresh ?? (filesProp === undefined ? () => setReloadKey((k) => k + 1) : undefined)
+
   if (loading) {
     return (
       <div className={cn('flex items-center justify-center py-8 text-muted-foreground/60', className)}>
@@ -137,11 +174,11 @@ export function FileBrowser({
       <div className={cn('flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground/60', className)}>
         <FolderOpen className="size-6" />
         <span className="text-xs">暂无文件</span>
-        {onRefresh && (
+        {effectiveOnRefresh && (
           <button
             type="button"
             className="text-xs text-primary/60 hover:text-primary underline"
-            onClick={onRefresh}
+            onClick={effectiveOnRefresh}
           >
             刷新
           </button>

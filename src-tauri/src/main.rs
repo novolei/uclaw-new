@@ -513,6 +513,7 @@ fn main() {
             uclaw_core::tauri_commands::move_attached_file,
             uclaw_core::tauri_commands::read_attached_file,
             uclaw_core::tauri_commands::delete_workspace,
+            uclaw_core::tauri_commands::list_directory_entries,
             uclaw_core::tauri_commands::read_workspace_uclaw_md,
             uclaw_core::tauri_commands::write_workspace_uclaw_md,
             uclaw_core::tauri_commands::read_default_prompts,

@@ -313,6 +313,18 @@ export const listArtifactsTree = (input: ListArtifactTreeInput): Promise<Artifac
 export const loadArtifactChildren = (input: LoadArtifactChildrenInput): Promise<ArtifactTreeNodeResponse[]> =>
   invoke('load_artifact_children', { input });
 
+/** List immediate children of an arbitrary directory path. Used by the
+ * Files tab's FileBrowser to show real disk contents under the workspace
+ * folder. Hidden files filtered server-side. */
+export const listDirectoryEntries = (path: string): Promise<Array<{
+  name: string
+  path: string
+  isDirectory: boolean
+  isFile: boolean
+  size?: number
+  extension?: string
+}>> => invoke('list_directory_entries', { path });
+
 export const createArtifact = (input: CreateArtifactInput): Promise<ArtifactTreeNodeResponse> =>
   invoke('create_artifact', { input });
 
