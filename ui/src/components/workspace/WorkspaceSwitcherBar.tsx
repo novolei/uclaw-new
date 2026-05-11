@@ -48,10 +48,49 @@ import {
 } from '@/atoms/agent-atoms'
 import { WorkspaceCreateDialog } from './WorkspaceCreateDialog'
 
-const FULL_THRESHOLD = 5
 const isMac = typeof navigator !== 'undefined'
   && /Mac|iPod|iPhone|iPad/.test(navigator.userAgent)
 const modGlyph = isMac ? '⌘' : 'Ctrl'
+
+/**
+ * Per-icon width budget for capacity computation. `size-7` icon button
+ * (28px) + `gap-1` (4px) = 32px per slot. The first icon doesn't pay
+ * for the leading gap, so we subtract one gap from the budget once.
+ */
+const ICON_SLOT_WIDTH = 32
+const ICON_LEADING_GAP = 4
+
+/**
+ * Measure the workspace-icons container width and return whether all
+ * workspaces fit at full icon size. Uses ResizeObserver so the mode
+ * flips smoothly when the user widens / narrows the sidebar.
+ *
+ * Returns `null` until the first measurement lands — callers default
+ * to comfortable mode on first paint to avoid a dots-then-icons flash
+ * on initial render.
+ */
+function useFitsComfortably(
+  ref: React.RefObject<HTMLDivElement>,
+  count: number,
+): boolean | null {
+  const [fits, setFits] = React.useState<boolean | null>(null)
+
+  React.useEffect(() => {
+    const node = ref.current
+    if (!node) return
+    const measure = (): void => {
+      const budget = node.clientWidth + ICON_LEADING_GAP // first icon has no leading gap
+      const capacity = Math.max(0, Math.floor(budget / ICON_SLOT_WIDTH))
+      setFits(capacity >= count)
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(node)
+    return () => ro.disconnect()
+  }, [ref, count])
+
+  return fits
+}
 
 /**
  * Resolve a workspace's stored icon value to a lucide component. Handles
@@ -297,18 +336,26 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
     setDropIndicator(null)
   }
 
-  const collapsed = workspaces.length > FULL_THRESHOLD
-
   const handleSelect = React.useCallback((id: string) => {
     void selectWorkspace(id)
   }, [selectWorkspace])
+
+  // Measure the icons container to pick comfortable vs compact mode.
+  // `null` before first measurement → default to comfortable so the
+  // initial paint isn't dots-then-icons.
+  const iconsContainerRef = React.useRef<HTMLDivElement>(null)
+  const fitsComfortably = useFitsComfortably(iconsContainerRef, workspaces.length)
+  const collapsed = fitsComfortably === false
 
   return (
     <>
       <div className="flex items-center gap-1.5 px-3 py-2 border-t border-border/40">
         {/* Workspace icons or dots */}
         <TooltipProvider delayDuration={0}>
-          <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto scrollbar-none">
+          <div
+            ref={iconsContainerRef}
+            className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto scrollbar-none"
+          >
             {workspaces.map((w, i) => {
               const active = w.id === activeId
               const running = runningWorkspaceIds.has(w.id)
