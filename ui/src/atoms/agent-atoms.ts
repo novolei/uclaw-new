@@ -203,6 +203,17 @@ export interface AgentPendingPrompt {
 export const agentSessionsAtom = atom<AgentSessionMeta[]>([])
 export const agentWorkspacesAtom = atom<AgentWorkspace[]>([])
 export const currentAgentWorkspaceIdAtom = atom<string | null>(null)
+
+/** Map workspace.id → attached dir paths. Hydrated at startup from
+ *  list_spaces (each WorkspaceInfo carries attachedDirs); kept in sync
+ *  by attach/detach mutations.
+ */
+export const workspaceAttachedDirsMapAtom = atom<Map<string, string[]>>(new Map())
+
+/** Map agent_session.id → attached dir paths. Hydrated at startup from
+ *  list_agent_sessions (each session carries attachedDirs in its JSON).
+ */
+export const agentSessionAttachedDirsMapAtom = atom<Map<string, string[]>>(new Map())
 export const agentChannelIdAtom = atom<string | null>(null)
 export const agentModelIdAtom = atom<string | null>(null)
 export const agentChannelIdsAtom = atom<string[]>([])

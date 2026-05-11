@@ -3727,28 +3727,32 @@ pub async fn stop_agent_session(
 pub async fn list_agent_sessions(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, Error> {
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
     let mut stmt = conn.prepare(
-        "SELECT id, space_id, title, metadata_json, message_count, pinned, archived, created_at, updated_at
+        "SELECT id, space_id, title, metadata_json, message_count, pinned, archived,
+                attached_dirs, created_at, updated_at
          FROM agent_sessions ORDER BY updated_at DESC"
     ).map_err(|e| Error::Database(e))?;
     let rows = stmt.query_map([], |row| {
         let meta_str: String = row.get(3)?;
+        let attached_dirs_json: String = row.get::<_, String>(7).unwrap_or_else(|_| "[]".into());
         Ok((
-            row.get::<_,String>(0)?,
-            row.get::<_,String>(1)?,
-            row.get::<_,String>(2)?,
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
             meta_str,
-            row.get::<_,i64>(4)?,
-            row.get::<_,i64>(5)?,
-            row.get::<_,i64>(6)?,
-            row.get::<_,i64>(7)?,
-            row.get::<_,i64>(8)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            attached_dirs_json,
+            row.get::<_, i64>(8)?,
+            row.get::<_, i64>(9)?,
         ))
     }).map_err(|e| Error::Database(e))?;
-    let sessions: Vec<serde_json::Value> = rows.filter_map(|r| r.ok()).map(|(id, space_id, title, meta_str, msg_count, pinned, archived, created_at, updated_at)| {
+    let sessions: Vec<serde_json::Value> = rows.filter_map(|r| r.ok()).map(|(id, space_id, title, meta_str, msg_count, pinned, archived, attached_dirs_json, created_at, updated_at)| {
         let meta: serde_json::Value = serde_json::from_str(&meta_str).unwrap_or(serde_json::Value::Object(Default::default()));
         let title_from_meta = meta.get("title").and_then(|v| v.as_str()).unwrap_or(&title).to_string();
         let title_emoji = meta.get("emoji").and_then(|v| v.as_str()).unwrap_or("💬").to_string();
         let title_pending = meta.get("title_pending").and_then(|v| v.as_bool()).unwrap_or(false);
+        let attached_dirs: Vec<String> = serde_json::from_str(&attached_dirs_json).unwrap_or_default();
         serde_json::json!({
             "id": id,
             "workspaceId": space_id,
@@ -3759,6 +3763,7 @@ pub async fn list_agent_sessions(state: State<'_, AppState>) -> Result<Vec<serde
             "messageCount": msg_count,
             "pinned": pinned != 0,
             "archived": archived != 0,
+            "attachedDirs": attached_dirs,
             "createdAt": created_at,
             "updatedAt": updated_at,
         })
@@ -4788,6 +4793,48 @@ pub async fn detach_workspace_directory(
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
     require_workspace_exists(&conn, &workspace_id)?;
     do_modify_attached_dirs(&conn, "spaces", &workspace_id, |dirs| {
+        dirs.into_iter().filter(|d| d != &dir_path).collect()
+    })
+}
+
+#[tauri::command]
+pub async fn list_session_directories(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<String>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let json: String = conn.query_row(
+        "SELECT attached_dirs FROM agent_sessions WHERE id = ?1",
+        rusqlite::params![&session_id], |r| r.get(0),
+    ).map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("agent_session '{}'", session_id)),
+        other => Error::Database(other),
+    })?;
+    serde_json::from_str(&json)
+        .map_err(|e| Error::Internal(format!("JSON parse: {}", e)))
+}
+
+#[tauri::command]
+pub async fn attach_session_directory(
+    state: State<'_, AppState>,
+    session_id: String,
+    dir_path: String,
+) -> Result<Vec<String>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    do_modify_attached_dirs(&conn, "agent_sessions", &session_id, |mut dirs| {
+        if !dirs.contains(&dir_path) { dirs.push(dir_path.clone()); }
+        dirs
+    })
+}
+
+#[tauri::command]
+pub async fn detach_session_directory(
+    state: State<'_, AppState>,
+    session_id: String,
+    dir_path: String,
+) -> Result<Vec<String>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    do_modify_attached_dirs(&conn, "agent_sessions", &session_id, |dirs| {
         dirs.into_iter().filter(|d| d != &dir_path).collect()
     })
 }
@@ -6112,5 +6159,42 @@ mod workspace_integrity_tests {
             dirs.into_iter().filter(|d| d != "/tmp/notthere").collect()
         }).unwrap();
         assert_eq!(after, Vec::<String>::new());
+    }
+
+    // ─── session attached directories ───────────────────────────────────
+
+    fn read_session_dirs(conn: &Connection, id: &str) -> Vec<String> {
+        let json: String = conn.query_row(
+            "SELECT attached_dirs FROM agent_sessions WHERE id = ?1",
+            rusqlite::params![id], |r| r.get(0),
+        ).unwrap();
+        serde_json::from_str(&json).unwrap()
+    }
+
+    #[test]
+    fn attach_session_directory_appends() {
+        let conn = fresh_db();
+        insert_session(&conn, "s-1", "default");
+        let after = super::do_modify_attached_dirs(&conn, "agent_sessions", "s-1", |mut dirs| {
+            dirs.push("/tmp/sess-dir".into());
+            dirs
+        }).unwrap();
+        assert_eq!(after, vec!["/tmp/sess-dir".to_string()]);
+        assert_eq!(read_session_dirs(&conn, "s-1"), vec!["/tmp/sess-dir".to_string()]);
+    }
+
+    #[test]
+    fn list_session_directories_returns_attached() {
+        let conn = fresh_db();
+        insert_session(&conn, "s-1", "default");
+        super::do_modify_attached_dirs(&conn, "agent_sessions", "s-1", |_| {
+            vec!["/tmp/a".into(), "/tmp/b".into()]
+        }).unwrap();
+        let json: String = conn.query_row(
+            "SELECT attached_dirs FROM agent_sessions WHERE id = ?1",
+            rusqlite::params!["s-1"], |r| r.get(0),
+        ).unwrap();
+        let dirs: Vec<String> = serde_json::from_str(&json).unwrap();
+        assert_eq!(dirs, vec!["/tmp/a".to_string(), "/tmp/b".to_string()]);
     }
 }

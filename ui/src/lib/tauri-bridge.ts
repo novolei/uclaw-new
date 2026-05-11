@@ -248,6 +248,15 @@ export const attachWorkspaceDirectory = (workspaceId: string, dirPath: string): 
 export const detachWorkspaceDirectory = (workspaceId: string, dirPath: string): Promise<string[]> =>
   invoke('detach_workspace_directory', { workspaceId, dirPath })
 
+export const listSessionDirectories = (sessionId: string): Promise<string[]> =>
+  invoke('list_session_directories', { sessionId })
+
+export const attachSessionDirectory = (sessionId: string, dirPath: string): Promise<string[]> =>
+  invoke('attach_session_directory', { sessionId, dirPath })
+
+export const detachSessionDirectory = (sessionId: string, dirPath: string): Promise<string[]> =>
+  invoke('detach_session_directory', { sessionId, dirPath })
+
 // ─── Session title ────────────────────────────────────────────────────
 
 export const generateSessionTitle = (sessionId: string, firstMessage: string): Promise<void> =>
