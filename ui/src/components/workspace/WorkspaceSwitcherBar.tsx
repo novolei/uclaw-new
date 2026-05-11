@@ -100,36 +100,29 @@ function useFitsComfortably(
  */
 const iconForWorkspace = (icon: string): LucideIcon => getWorkspaceIcon(icon)
 
-/** Tooltip pill — workspace icon glyph + name on left, ⌘ + digit chips on right (first 9). */
+/** Tooltip body — rendered inside the theme's standard TooltipContent
+ *  surface (bg-tooltip/90, tooltip-foreground text). Icon glyph + name
+ *  on the left, ⌘ + digit chips on the right (first 9). Uses tooltip-*
+ *  tokens so every theme's tooltip surface stays consistent. */
 function WorkspaceTooltip({
   workspace, indexForShortcut,
 }: { workspace: WorkspaceInfo; indexForShortcut: number | null }): React.ReactElement {
   const Icon = getWorkspaceIcon(workspace.icon)
   return (
-    <div className="flex items-center gap-1.5 px-2 py-1.5 rounded-md
-                    bg-popover/95 backdrop-blur-md border border-border/60
-                    shadow-lg text-[12px] font-medium">
-      {/* Tinted icon badge — matches the visual language of the active
-          switcher icon, CreateDialog name-input prefix, and WorkspaceHeader. */}
-      <span
-        className="inline-flex items-center justify-center size-5 rounded
-                   bg-primary/15 text-primary shrink-0"
-        aria-hidden
-      >
-        <Icon className="size-3.5" />
-      </span>
-      <span className="text-foreground">{workspace.name}</span>
+    <div className="flex items-center gap-1.5 font-medium">
+      <Icon className="size-3.5 shrink-0 text-tooltip-muted" aria-hidden />
+      <span>{workspace.name}</span>
       {indexForShortcut !== null && indexForShortcut < 9 && (
-        <>
-          <span className="px-1.5 py-0.5 rounded bg-primary/15 text-primary
-                           text-[10px] font-mono leading-none">
+        <span className="ml-1 flex items-center gap-0.5">
+          <kbd className="px-1.5 py-0.5 rounded bg-tooltip-foreground/10
+                          text-tooltip-foreground text-[10px] font-mono leading-none">
             {modGlyph}
-          </span>
-          <span className="px-1.5 py-0.5 rounded bg-primary/15 text-primary
-                           text-[10px] font-mono leading-none">
+          </kbd>
+          <kbd className="px-1.5 py-0.5 rounded bg-tooltip-foreground/10
+                          text-tooltip-foreground text-[10px] font-mono leading-none">
             {indexForShortcut + 1}
-          </span>
-        </>
+          </kbd>
+        </span>
       )}
     </div>
   )
@@ -200,7 +193,7 @@ function WorkspaceIcon({
           )}
         </button>
       </TooltipTrigger>
-      <TooltipContent side="top" sideOffset={6} className="p-0 border-0 bg-transparent shadow-none">
+      <TooltipContent side="top" sideOffset={6}>
         <WorkspaceTooltip workspace={workspace} indexForShortcut={index} />
       </TooltipContent>
     </Tooltip>
@@ -278,7 +271,7 @@ function WorkspaceDot({
           )}
         </button>
       </TooltipTrigger>
-      <TooltipContent side="top" sideOffset={6} className="p-0 border-0 bg-transparent shadow-none">
+      <TooltipContent side="top" sideOffset={6}>
         <WorkspaceTooltip workspace={workspace} indexForShortcut={index} />
       </TooltipContent>
     </Tooltip>
