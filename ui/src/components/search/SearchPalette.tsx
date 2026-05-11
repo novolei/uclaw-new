@@ -38,6 +38,9 @@ import { searchPaletteOpenAtom, searchPaletteScopeAtom } from '@/atoms/search-at
 import { appModeAtom } from '@/atoms/app-mode'
 import { currentConversationIdAtom } from '@/atoms/chat-atoms'
 import { currentAgentSessionIdAtom } from '@/atoms/agent-atoms'
+import { workspacesAtom, activeWorkspaceIdAtom } from '@/atoms/workspace'
+import { getWorkspaceIcon } from '@/lib/workspace-icons'
+import { groupHitsByWorkspace } from '@/lib/group-search-hits'
 import { listRecentThreads, listSpaces } from '@/lib/tauri-bridge'
 import type { RecentThread } from '@/lib/agent-types'
 import type { SpaceSummary } from '@/lib/types'
@@ -51,6 +54,7 @@ interface SearchHit {
   source: 'conversation' | 'chat_message' | 'agent_turn' | 'agent_message' | 'file'
   sourceId: string
   messageId?: string
+  workspaceId?: string
   createdAt: string
 }
 
@@ -259,13 +263,21 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
     )
   }, [q])
 
+  const workspaceList = useAtomValue(workspacesAtom)
+  const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
+
+  const hitGroups = React.useMemo(
+    () => groupHitsByWorkspace(hits, workspaceList, activeWorkspaceId),
+    [hits, workspaceList, activeWorkspaceId],
+  )
+
   if (!open) return null
 
   const totalRendered =
     filteredRecents.length +
     filteredSettings.length +
     filteredWorkspaces.length +
-    hits.length
+    hitGroups.reduce((sum, g) => sum + g.visibleHits.length, 0)
 
   const handle = (
     payload: Parameters<NonNullable<SearchPaletteProps['onSelect']>>[0],
@@ -423,39 +435,54 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
               </Command.Group>
             )}
 
-            {hits.length > 0 && (filteredRecents.length > 0 || filteredSettings.length > 0 || filteredWorkspaces.length > 0) && (
+            {hitGroups.length > 0 && (filteredRecents.length > 0 || filteredSettings.length > 0 || filteredWorkspaces.length > 0) && (
               <div className="mx-2 my-1 h-px bg-border/40" />
             )}
 
-            {/* 4. Server-side FTS hits */}
-            {hits.length > 0 && (
-              <Command.Group heading="搜索结果">
-                {hits.map((h) => (
-                  <Command.Item
-                    key={`hit:${h.id}`}
-                    value={`hit-${h.id}`}
-                    onSelect={() => handle({ kind: 'search_hit', hit: h })}
-                    className="relative flex cursor-pointer select-none items-start gap-2.5 rounded-lg px-2.5 py-2 text-[12.5px] text-foreground/80 outline-none transition-colors aria-selected:bg-accent aria-selected:text-accent-foreground aria-selected:ring-1 aria-selected:ring-border/40"
-                  >
-                    {h.source === 'agent_turn' || h.source === 'agent_message' ? (
-                      <Bot className="size-4 shrink-0 mt-0.5 text-muted-foreground/75" />
-                    ) : (
-                      <MessageSquare className="size-4 shrink-0 mt-0.5 text-muted-foreground/75" />
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <div className="truncate font-medium text-foreground/85">
-                        {h.title || '(untitled)'}
+            {/* 4. Server-side FTS hits — grouped by workspace */}
+            {hitGroups.map((group) => {
+              const Icon = getWorkspaceIcon(group.workspaceIcon)
+              return (
+                <Command.Group
+                  key={`ws-group-${group.workspaceId}`}
+                  heading={`${group.workspaceName} · ${group.hits.length}`}
+                >
+                  <div className="flex items-center gap-1.5 px-2.5 pt-1 pb-0.5" aria-hidden="true">
+                    <span className="inline-flex items-center justify-center size-4 rounded bg-primary/15 text-primary">
+                      <Icon className="size-3" />
+                    </span>
+                  </div>
+                  {group.visibleHits.map((h) => (
+                    <Command.Item
+                      key={`hit:${h.id}`}
+                      value={`hit-${h.id}`}
+                      onSelect={() => handle({ kind: 'search_hit', hit: h as SearchHit })}
+                      className="relative flex cursor-pointer select-none items-start gap-2.5 rounded-lg px-2.5 py-2 text-[12.5px] text-foreground/80 outline-none transition-colors aria-selected:bg-accent aria-selected:text-accent-foreground aria-selected:ring-1 aria-selected:ring-border/40"
+                    >
+                      {h.source === 'agent_turn' || h.source === 'agent_message' ? (
+                        <Bot className="size-4 shrink-0 mt-0.5 text-muted-foreground/75" />
+                      ) : (
+                        <MessageSquare className="size-4 shrink-0 mt-0.5 text-muted-foreground/75" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="truncate font-medium text-foreground/85">
+                          {h.title || '(untitled)'}
+                        </div>
+                        <div
+                          className="truncate text-[11.5px] text-muted-foreground/65"
+                          dangerouslySetInnerHTML={{ __html: h.snippet }}
+                        />
                       </div>
-                      <div
-                        className="truncate text-[11.5px] text-muted-foreground/65"
-                        // FTS5 returns <b>...</b>; backend escapes user input
-                        dangerouslySetInnerHTML={{ __html: h.snippet }}
-                      />
+                    </Command.Item>
+                  ))}
+                  {group.overflowCount > 0 && (
+                    <div className="px-2.5 py-1 text-[10.5px] text-muted-foreground/60 italic">
+                      在该工作区内还有 {group.overflowCount} 条
                     </div>
-                  </Command.Item>
-                ))}
-              </Command.Group>
-            )}
+                  )}
+                </Command.Group>
+              )
+            })}
           </Command.List>
 
           {/* Footer */}

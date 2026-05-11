@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import * as React from 'react'
+import { Provider, createStore } from 'jotai'
+import { TooltipProvider } from '@/components/ui/tooltip'
+import { render, fireEvent } from '@testing-library/react'
 import { SearchPalette } from './SearchPalette'
 import { renderWithProviders, screen, waitFor } from '@/test-utils/render'
 import { searchPaletteOpenAtom, searchPaletteScopeAtom } from '@/atoms/search-atoms'
 import { appModeAtom } from '@/atoms/app-mode'
 import { currentConversationIdAtom } from '@/atoms/chat-atoms'
+import { workspacesAtom, activeWorkspaceIdAtom, type WorkspaceInfo } from '@/atoms/workspace'
+import { invoke } from '@tauri-apps/api/core'
 
 // cmdk uses scrollIntoView for keyboard nav; jsdom doesn't implement it.
 if (!Element.prototype.scrollIntoView) {
@@ -146,7 +151,8 @@ describe('SearchPalette', () => {
     await user.type(input, 'gomoku')
     await waitFor(
       () => {
-        expect(screen.getByText('搜索结果')).toBeInTheDocument()
+        // Hits with no workspaceId render under the fallback "默认工作区" group
+        expect(screen.getByText(/默认工作区 · 1/)).toBeInTheDocument()
         expect(screen.getByText('Game session')).toBeInTheDocument()
       },
       { timeout: 1000 },
@@ -209,5 +215,97 @@ describe('SearchPalette', () => {
     expect(store.get(searchPaletteOpenAtom)).toBe(true)
     await user.keyboard('{Escape}')
     await waitFor(() => expect(store.get(searchPaletteOpenAtom)).toBe(false))
+  })
+})
+
+// ===== Cross-workspace grouped render =====
+
+function ws(id: string, name: string): WorkspaceInfo {
+  return {
+    id, name, icon: 'Folder', path: `/${id}`, attachedDirs: [],
+    sortOrder: 0, createdAt: '', updatedAt: '',
+  }
+}
+
+function renderWithStore(store: ReturnType<typeof createStore>) {
+  return render(
+    <Provider store={store}>
+      <TooltipProvider>
+        <SearchPalette />
+      </TooltipProvider>
+    </Provider>
+  )
+}
+
+describe('SearchPalette — cross-workspace grouped render', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset()
+    document.body.innerHTML = ''
+  })
+
+  it('renders per-workspace section headers with workspace name + hit count', async () => {
+    vi.mocked(invoke).mockResolvedValue([
+      { id: 'h1', title: 'A1', snippet: 's1', source: 'agent_message',
+        sourceId: 's1', workspaceId: 'ws-a', createdAt: '0' },
+      { id: 'h2', title: 'A2', snippet: 's2', source: 'agent_message',
+        sourceId: 's2', workspaceId: 'ws-a', createdAt: '0' },
+      { id: 'h3', title: 'B1', snippet: 's3', source: 'agent_message',
+        sourceId: 's3', workspaceId: 'ws-b', createdAt: '0' },
+    ])
+    const store = createStore()
+    store.set(workspacesAtom, [ws('ws-a', 'Alpha'), ws('ws-b', 'Beta')])
+    store.set(activeWorkspaceIdAtom, 'ws-a')
+    store.set(searchPaletteOpenAtom, true)
+    renderWithStore(store)
+
+    const input = screen.getByPlaceholderText('搜索线程、项目...')
+    fireEvent.change(input, { target: { value: 'hello' } })
+
+    await waitFor(() => expect(screen.getByText(/Alpha · 2/)).toBeInTheDocument())
+    expect(screen.getByText(/Beta · 1/)).toBeInTheDocument()
+  })
+
+  it('puts the active workspace section first', async () => {
+    vi.mocked(invoke).mockResolvedValue([
+      { id: 'h1', title: 'A1', snippet: '', source: 'agent_message',
+        sourceId: 's1', workspaceId: 'ws-a', createdAt: '0' },
+      { id: 'h2', title: 'B1', snippet: '', source: 'agent_message',
+        sourceId: 's2', workspaceId: 'ws-b', createdAt: '0' },
+    ])
+    const store = createStore()
+    store.set(workspacesAtom, [ws('ws-a', 'Alpha'), ws('ws-b', 'Beta')])
+    store.set(activeWorkspaceIdAtom, 'ws-b')
+    store.set(searchPaletteOpenAtom, true)
+    renderWithStore(store)
+
+    fireEvent.change(screen.getByPlaceholderText('搜索线程、项目...'),
+      { target: { value: 'hello' } })
+
+    await waitFor(() => expect(screen.getByText(/Beta · 1/)).toBeInTheDocument())
+    const headers = screen.getAllByText(/(Alpha|Beta) · /)
+    expect(headers[0].textContent).toMatch(/Beta/)
+    expect(headers[1].textContent).toMatch(/Alpha/)
+  })
+
+  it('shows an overflow chip when a group has more than 5 hits', async () => {
+    const hits = Array.from({ length: 8 }, (_, i) => ({
+      id: `h${i}`, title: `T${i}`, snippet: '', source: 'agent_message',
+      sourceId: `s${i}`, workspaceId: 'ws-a', createdAt: '0',
+    }))
+    vi.mocked(invoke).mockResolvedValue(hits)
+    const store = createStore()
+    store.set(workspacesAtom, [ws('ws-a', 'Alpha')])
+    store.set(activeWorkspaceIdAtom, 'ws-a')
+    store.set(searchPaletteOpenAtom, true)
+    renderWithStore(store)
+
+    fireEvent.change(screen.getByPlaceholderText('搜索线程、项目...'),
+      { target: { value: 'hello' } })
+
+    await waitFor(() => expect(screen.getByText(/Alpha · 8/)).toBeInTheDocument())
+    expect(screen.getByText('T0')).toBeInTheDocument()
+    expect(screen.getByText('T4')).toBeInTheDocument()
+    expect(screen.queryByText('T5')).not.toBeInTheDocument()
+    expect(screen.getByText(/还有 3 条/)).toBeInTheDocument()
   })
 })
