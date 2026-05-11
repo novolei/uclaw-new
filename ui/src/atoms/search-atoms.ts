@@ -1,13 +1,10 @@
 /**
- * 搜索 Dialog 状态 Atoms
+ * 搜索 Palette 状态 Atoms
  *
- * 管理全局搜索 Dialog 的开关、查询词和搜索结果。
+ * 管理全局搜索 Palette 的开关、范围和查询词。
  */
 
 import { atom } from 'jotai'
-
-/** 搜索 Dialog 是否打开 */
-export const searchDialogOpenAtom = atom(false)
 
 /** Whether the global search palette is currently open. */
 export const searchPaletteOpenAtom = atom<boolean>(false)

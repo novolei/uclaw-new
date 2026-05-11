@@ -17,7 +17,6 @@ import { Pin, PinOff, Settings, Plus, Trash2, Pencil, ChevronDown, ChevronRight,
 import { cn } from '@/lib/utils'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { ModeSwitcher } from './ModeSwitcher'
-import { SearchDialog } from './SearchDialog'
 import { UserAvatar } from '@/components/chat/UserAvatar'
 import { activeViewAtom } from '@/atoms/active-view'
 import { appModeAtom } from '@/atoms/app-mode'
@@ -58,7 +57,7 @@ import {
 } from '@/atoms/tab-atoms'
 import { userProfileAtom } from '@/atoms/user-profile'
 import { sidebarViewModeAtom, agentSidebarTopHeightAtom } from '@/atoms/sidebar-atoms'
-import { searchDialogOpenAtom } from '@/atoms/search-atoms'
+import { searchPaletteOpenAtom } from '@/atoms/search-atoms'
 import { hasUpdateAtom } from '@/atoms/updater'
 import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { workingSessionGroupsAtom, workingSessionIdsSetAtom } from '@/atoms/working-atoms'
@@ -229,7 +228,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   const syncActiveTabSideEffects = useSyncActiveTabSideEffects()
 
   const [viewMode, setViewMode] = useAtom(sidebarViewModeAtom)
-  const setSearchDialogOpen = useSetAtom(searchDialogOpenAtom)
+  const setSearchPaletteOpen = useSetAtom(searchPaletteOpenAtom)
   const [agentTopHeight, setAgentTopHeight] = useAtom(agentSidebarTopHeightAtom)
   const agentSplitContainerRef = React.useRef<HTMLDivElement>(null)
   const agentTopResizing = React.useRef(false)
@@ -764,11 +763,11 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
         </button>
         <Tooltip>
           <TooltipTrigger asChild>
-            <button onClick={() => setSearchDialogOpen(true)} className="flex-shrink-0 size-[36px] flex items-center justify-center rounded-[10px] text-foreground/40 bg-primary/5 hover:bg-primary/10 hover:text-foreground/60 transition-colors duration-100 titlebar-no-drag border border-dashed border-[hsl(var(--dashed-border))] hover:border-[hsl(var(--dashed-border-hover))]">
+            <button onClick={() => setSearchPaletteOpen(true)} className="flex-shrink-0 size-[36px] flex items-center justify-center rounded-[10px] text-foreground/40 bg-primary/5 hover:bg-primary/10 hover:text-foreground/60 transition-colors duration-100 titlebar-no-drag border border-dashed border-[hsl(var(--dashed-border))] hover:border-[hsl(var(--dashed-border-hover))]">
               <Search size={14} />
             </button>
           </TooltipTrigger>
-          <TooltipContent side="bottom">搜索 (⌘F)</TooltipContent>
+          <TooltipContent side="bottom">搜索 (⌘K)</TooltipContent>
         </Tooltip>
       </div>
 
@@ -927,7 +926,6 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
 
       {deleteDialog}
       {moveDialog}
-      <SearchDialog />
 
       {/* Automation Hub slide-over */}
       {automationPanelOpen && (
