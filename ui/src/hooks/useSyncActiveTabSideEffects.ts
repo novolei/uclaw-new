@@ -61,7 +61,6 @@ export function useSyncActiveTabSideEffects(): SyncActiveTabSideEffects {
       const session = agentSessions.find((s) => s.id === newActiveTab.sessionId)
       if (session?.workspaceId) {
         setCurrentAgentWorkspaceId(session.workspaceId)
-        localStorage.setItem(`uclaw:workspace:${newActiveTab.sessionId}`, session.workspaceId)
       }
     },
     [

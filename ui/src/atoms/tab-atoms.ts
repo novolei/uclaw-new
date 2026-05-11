@@ -196,28 +196,6 @@ export function reorderTabs(
   return newTabs
 }
 
-/**
- * Merge a reordered visible slice back into the global tab pool.
- * Tabs that belong to other workspaces keep their original positions;
- * the visible-workspace slots are replaced in order with reorderedVisible.
- *
- * Precondition: caller must ensure `reorderedVisible` is a permutation
- * of the same-workspace tabs currently in `allTabs`. The helper does
- * not verify membership — passing a stale slice (e.g. containing a tab
- * that was concurrently closed) will reinsert that closed tab into
- * the pool.
- */
-export function mergeReorderedVisible(
-  allTabs: TabItem[],
-  reorderedVisible: TabItem[],
-): TabItem[] {
-  const visibleIds = new Set(reorderedVisible.map((t) => t.id))
-  let visIdx = 0
-  return allTabs.map((t) =>
-    visibleIds.has(t.id) ? reorderedVisible[visIdx++]! : t,
-  )
-}
-
 export function updateTabTitle(
   tabs: TabItem[],
   sessionId: string,

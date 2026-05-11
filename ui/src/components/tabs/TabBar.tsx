@@ -79,7 +79,6 @@ export function TabBar(): React.ReactElement {
       const session = agentSessions.find((s) => s.id === tab.sessionId)
       if (session?.workspaceId) {
         setCurrentAgentWorkspaceId(session.workspaceId)
-        localStorage.setItem(`uclaw:workspace:${tab.sessionId}`, session.workspaceId)
       }
     } else if (tab.type === 'browser') {
       // Browser tabs don't change app mode, just set active tab
