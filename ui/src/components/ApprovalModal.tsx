@@ -29,7 +29,10 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { ShieldAlert, ShieldCheck, ShieldOff, AlertTriangle, ChevronRight } from 'lucide-react'
+import {
+  ShieldAlert, ShieldCheck, ShieldOff, AlertTriangle, ChevronRight,
+  Wrench, Terminal, Sliders, Globe, FileText, FileCog, Cpu,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { approveToolCall, onNeedApproval, createPermissionRule } from '@/lib/tauri-bridge'
 import type { ApprovalRequest } from '@/lib/types'
@@ -93,6 +96,42 @@ const RISK_CONFIG: Record<string, {
 
 function getRiskConfig(level?: string) {
   return RISK_CONFIG[level ?? 'medium'] ?? RISK_CONFIG.medium
+}
+
+/**
+ * Tool category — used for the OVERVIEW stat cards at the bottom of the
+ * modal. Pure-presentation classification by tool name; no backend
+ * dependency. Falls back to "工具" / Wrench for unknown tools.
+ */
+function getToolCategory(toolName: string): { label: string; icon: React.ElementType } {
+  const n = toolName.toLowerCase()
+  if (n.includes('bash') || n.includes('shell') || n === 'exec') {
+    return { label: 'Shell', icon: Terminal }
+  }
+  if (n.includes('web') || n.includes('fetch') || n.includes('http')) {
+    return { label: '网络请求', icon: Globe }
+  }
+  if (n.includes('write') || n.includes('edit') || n.includes('create')) {
+    return { label: '文件写入', icon: FileCog }
+  }
+  if (n.includes('read') || n.includes('grep') || n.includes('glob') || n.includes('list')) {
+    return { label: '文件读取', icon: FileText }
+  }
+  if (n.includes('python') || n.includes('eval') || n.includes('run')) {
+    return { label: '代码执行', icon: Cpu }
+  }
+  return { label: '工具调用', icon: Wrench }
+}
+
+/**
+ * Effect summary — derived presentation hint for the third OVERVIEW card.
+ * Surfaces whether this call reads, mutates, or reaches outside the box.
+ */
+function getEffectSummary(toolName: string, hasCommand: boolean): string {
+  const n = toolName.toLowerCase()
+  if (n.includes('write') || n.includes('edit') || hasCommand) return '可变副作用'
+  if (n.includes('web') || n.includes('fetch') || n.includes('http')) return '外部资源'
+  return '只读操作'
 }
 
 export function ApprovalModal(): React.ReactElement {
@@ -231,9 +270,10 @@ export function ApprovalModal(): React.ReactElement {
   const argsEntries = request?.arguments ? Object.entries(request.arguments) : []
 
   // Shared hero header — risk-tinted icon disc + title + supporting line.
-  // Used by both the path-approval and tool-call variants.
+  // Pattern: bold left, status pill right (matches the "Delivery timeline"
+  // reference's header bar).
   const Hero = ({ title, subtitle }: { title: string; subtitle: string }) => (
-    <div className="flex items-start gap-3 mb-1">
+    <div className="flex items-start gap-3">
       <div
         className={cn(
           'shrink-0 inline-flex items-center justify-center size-10 rounded-xl',
@@ -244,7 +284,7 @@ export function ApprovalModal(): React.ReactElement {
         <RiskIcon className="size-5" />
       </div>
       <div className="min-w-0 flex-1">
-        <AlertDialogTitle className="text-base font-semibold leading-tight">
+        <AlertDialogTitle className="text-base font-semibold leading-tight text-foreground">
           {title}
         </AlertDialogTitle>
         <AlertDialogDescription className="text-[12.5px] mt-0.5 text-muted-foreground">
@@ -253,12 +293,94 @@ export function ApprovalModal(): React.ReactElement {
       </div>
       <span
         className={cn(
-          'shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
-          'border', risk.border, risk.tint, risk.text,
+          'shrink-0 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-wide',
+          risk.tint, risk.text,
         )}
       >
+        <span className={cn('size-1.5 rounded-full', risk.bar)} aria-hidden />
         {risk.label}
       </span>
+    </div>
+  )
+
+  /**
+   * Body row — left bullet + label + tiny status pill + value content.
+   * Style adapted from the reference timeline's per-step rhythm: small
+   * colored circle on the left, bold label, uppercase status pill, then
+   * the data on the next line.
+   */
+  const Row = ({
+    bullet, label, pill, pillTint, pillText, children,
+  }: {
+    bullet: 'risk' | 'neutral'
+    label: string
+    pill?: string
+    pillTint?: string
+    pillText?: string
+    children: React.ReactNode
+  }) => (
+    <div className="flex items-start gap-3">
+      <div className="relative shrink-0 pt-1">
+        <span
+          className={cn(
+            'block size-2.5 rounded-full',
+            bullet === 'risk' ? risk.bar : 'bg-muted-foreground/40',
+          )}
+          aria-hidden
+        />
+      </div>
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[12px] font-semibold text-foreground">{label}</span>
+          {pill && (
+            <span className={cn(
+              'inline-flex items-center rounded-full px-1.5 py-0.5',
+              'text-[10px] font-semibold uppercase tracking-wide',
+              pillTint ?? 'bg-muted',
+              pillText ?? 'text-muted-foreground',
+            )}>
+              {pill}
+            </span>
+          )}
+        </div>
+        <div className="text-[12.5px] text-foreground/85">{children}</div>
+      </div>
+    </div>
+  )
+
+  /**
+   * Overview stat card — borrowed from the reference's bottom-summary
+   * cards. Three of them in a row summarize: risk class / tool category
+   * / effect. Each card is color-tinted only when it carries semantic
+   * meaning (risk uses the risk palette; others stay neutral so they
+   * don't compete).
+   */
+  const StatCard = ({
+    label, value, icon: Icon, tone,
+  }: {
+    label: string
+    value: string
+    icon: React.ElementType
+    tone: 'risk' | 'neutral'
+  }) => (
+    <div className={cn(
+      'flex-1 rounded-lg border px-3 py-2.5',
+      tone === 'risk'
+        ? cn(risk.tint, risk.border)
+        : 'bg-muted/40 border-border/60',
+    )}>
+      <div className="flex items-center gap-1.5">
+        <Icon className={cn('size-3', tone === 'risk' ? risk.text : 'text-muted-foreground')} />
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          {label}
+        </span>
+      </div>
+      <div className={cn(
+        'mt-1 text-[13px] font-semibold',
+        tone === 'risk' ? risk.text : 'text-foreground',
+      )}>
+        {value}
+      </div>
     </div>
   )
 
@@ -278,23 +400,56 @@ export function ApprovalModal(): React.ReactElement {
               />
             </AlertDialogHeader>
 
-            <div className="space-y-1.5">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
-                请求的路径 · {(request.paths ?? []).length} 项
+            <div className="space-y-3">
+              <Row
+                bullet="risk"
+                label="请求的路径"
+                pill={`${(request.paths ?? []).length} 项`}
+                pillTint={risk.tint}
+                pillText={risk.text}
+              >
+                <ScrollArea className="max-h-40">
+                  <div className="rounded-md border border-border/40 bg-foreground/[0.04] p-2 space-y-0.5">
+                    {(request.paths ?? []).map((p) => (
+                      <div
+                        key={p}
+                        className="font-mono text-[12px] text-foreground/90 truncate px-1"
+                        title={p}
+                      >
+                        {p}
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </Row>
+            </div>
+
+            {/* OVERVIEW for path-approval — only 2 cards since there's no
+                tool/command context, just the scope of the request. */}
+            <div className="pt-2 border-t border-border/40">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 mb-2">
+                概览
               </p>
-              <ScrollArea className="max-h-40">
-                <div className="rounded-md border border-border/60 bg-muted/40 p-2 space-y-0.5">
-                  {(request.paths ?? []).map((p) => (
-                    <div
-                      key={p}
-                      className="font-mono text-[12px] text-foreground/85 truncate px-1"
-                      title={p}
-                    >
-                      {p}
-                    </div>
-                  ))}
-                </div>
-              </ScrollArea>
+              <div className="flex gap-2">
+                <StatCard
+                  label="风险等级"
+                  value={risk.label}
+                  icon={RiskIcon}
+                  tone="risk"
+                />
+                <StatCard
+                  label="类型"
+                  value="路径访问"
+                  icon={FileText}
+                  tone="neutral"
+                />
+                <StatCard
+                  label="影响"
+                  value={`${(request.paths ?? []).length} 条路径`}
+                  icon={Sliders}
+                  tone="neutral"
+                />
+              </div>
             </div>
 
             <AlertDialogFooter className="flex-row gap-2 flex-wrap sm:justify-end">
@@ -343,45 +498,45 @@ export function ApprovalModal(): React.ReactElement {
             />
           </AlertDialogHeader>
 
-          {request && (
-            <div className="space-y-3">
-              {/* Request detail card — risk-tinted left bar + tool name + */}
-              {/* optional command/parameters in a unified surface. */}
-              <div className={cn(
-                'relative rounded-lg border border-border/60 bg-muted/30',
-                'overflow-hidden',
-              )}>
-                {/* Left accent bar tied to risk severity */}
-                <div className={cn('absolute left-0 top-0 bottom-0 w-[3px]', risk.bar)} aria-hidden />
-
-                <div className="pl-4 pr-3 py-3 space-y-3">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] uppercase tracking-wide text-muted-foreground/80 shrink-0">
-                      工具
-                    </span>
-                    <code className="text-[13px] font-mono font-medium text-foreground bg-foreground/[0.06] px-1.5 py-0.5 rounded">
+          {request && (() => {
+            const toolCat = getToolCategory(request.toolName)
+            const effect = getEffectSummary(request.toolName, !!request.command)
+            return (
+              <>
+                {/* ===== Detail rows ===== */}
+                <div className="space-y-3">
+                  <Row
+                    bullet="risk"
+                    label="工具"
+                    pill={toolCat.label}
+                    pillTint={risk.tint}
+                    pillText={risk.text}
+                  >
+                    <code className="font-mono font-medium text-[13px] text-foreground">
                       {request.toolName}
                     </code>
-                  </div>
+                  </Row>
 
                   {request.command && (
-                    <div className="space-y-1">
-                      <p className="text-[11px] uppercase tracking-wide text-muted-foreground/80">
-                        命令
-                      </p>
-                      <pre className="text-[12px] font-mono bg-foreground/[0.04] border border-border/40 rounded-md px-2.5 py-2 overflow-x-auto whitespace-pre-wrap break-all text-foreground/90">
+                    <Row
+                      bullet="neutral"
+                      label="命令"
+                      pill="Shell"
+                    >
+                      <pre className="font-mono text-[12px] bg-foreground/[0.04] border border-border/40 rounded-md px-2.5 py-2 overflow-x-auto whitespace-pre-wrap break-all text-foreground/90">
                         {request.command}
                       </pre>
-                    </div>
+                    </Row>
                   )}
 
                   {argsEntries.length > 0 && (
-                    <div className="space-y-1">
-                      <p className="text-[11px] uppercase tracking-wide text-muted-foreground/80">
-                        参数 · {argsEntries.length} 项
-                      </p>
+                    <Row
+                      bullet="neutral"
+                      label="参数"
+                      pill={`${argsEntries.length} 项`}
+                    >
                       <ScrollArea className="max-h-40">
-                        <div className="space-y-1 font-mono text-[12px]">
+                        <div className="font-mono text-[12px] space-y-0.5 pr-2">
                           {argsEntries.map(([key, val]) => (
                             <div key={key} className="flex gap-2 leading-relaxed">
                               <span className="text-muted-foreground/70 shrink-0 min-w-[5rem]">
@@ -394,12 +549,39 @@ export function ApprovalModal(): React.ReactElement {
                           ))}
                         </div>
                       </ScrollArea>
-                    </div>
+                    </Row>
                   )}
                 </div>
-              </div>
-            </div>
-          )}
+
+                {/* ===== OVERVIEW stat row ===== */}
+                <div className="pt-2 border-t border-border/40">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 mb-2">
+                    概览
+                  </p>
+                  <div className="flex gap-2">
+                    <StatCard
+                      label="风险等级"
+                      value={risk.label}
+                      icon={RiskIcon}
+                      tone="risk"
+                    />
+                    <StatCard
+                      label="类型"
+                      value={toolCat.label}
+                      icon={toolCat.icon}
+                      tone="neutral"
+                    />
+                    <StatCard
+                      label="影响"
+                      value={effect}
+                      icon={Sliders}
+                      tone="neutral"
+                    />
+                  </div>
+                </div>
+              </>
+            )
+          })()}
 
           <AlertDialogFooter className="flex-row gap-2 flex-wrap sm:justify-end">
             <AlertDialogCancel asChild>
