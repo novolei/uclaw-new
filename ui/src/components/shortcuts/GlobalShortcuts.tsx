@@ -6,12 +6,24 @@
  * 从 Proma 迁移。
  */
 
-import { useSetAtom } from 'jotai'
+import { useAtomValue, useSetAtom } from 'jotai'
 import { useShortcuts } from '@/hooks/useShortcut'
 import { sidebarCollapsedAtom } from '@/atoms/tab-atoms'
+import { workspacesAtom, selectWorkspaceAtom } from '@/atoms/workspace'
 
 export function GlobalShortcuts(): null {
   const setSidebarCollapsed = useSetAtom(sidebarCollapsedAtom)
+  const workspaces = useAtomValue(workspacesAtom)
+  const selectWorkspace = useSetAtom(selectWorkspaceAtom)
+
+  const workspaceShortcuts = Array.from({ length: 9 }, (_, i) => ({
+    id: `switch-workspace-${i + 1}`,
+    handler: () => {
+      const ws = workspaces[i]
+      if (!ws) return
+      void selectWorkspace(ws.id)
+    },
+  }))
 
   useShortcuts([
     {
@@ -56,6 +68,7 @@ export function GlobalShortcuts(): null {
         input?.focus()
       },
     },
+    ...workspaceShortcuts,
   ])
 
   return null

@@ -28,6 +28,7 @@ import {
 } from '@/atoms/agent-atoms'
 import { appModeAtom } from '@/atoms/app-mode'
 import { TabBarItem } from './TabBarItem'
+import { TabBarWorkspaceChip } from './TabBarWorkspaceChip'
 import { TabCloseConfirmDialog } from './TabCloseConfirmDialog'
 import { useCloseTab } from '@/hooks/useCloseTab'
 
@@ -202,6 +203,9 @@ function TabBarInner({
       <div className="absolute inset-0 titlebar-drag-region" />
 
       <div className="relative flex items-end flex-1 min-w-0 overflow-x-clip titlebar-no-drag">
+        <div className="flex items-center px-1 py-1 shrink-0 self-stretch">
+          <TabBarWorkspaceChip />
+        </div>
         {tabs.map((tab) => (
           <TabBarItem
             key={tab.id}
