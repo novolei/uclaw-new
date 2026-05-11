@@ -187,8 +187,10 @@ function WorkspaceIcon({
           className={cn(
             'titlebar-no-drag relative inline-flex items-center justify-center',
             'size-7 rounded-md transition-colors',
-            // Cursor: grab on hover; grabbing while dragging.
-            'cursor-grab active:cursor-grabbing',
+            // Default button cursor on hover (pointer); only switch to
+            // grabbing once an actual drag is in flight. Earlier versions
+            // showed cursor-grab on every hover, which signaled "drag me"
+            // too aggressively for what's primarily a click target.
             isDragging && 'cursor-grabbing scale-[1.08] shadow-md',
             // ARC-style active state: soft filled background tint + tinted icon.
             active
@@ -250,7 +252,7 @@ function WorkspaceDot({
             // Larger hit target (12px) than visible glyph (6px) for easier
             // clicking — the visible circle is rendered via the inner span.
             'size-3 rounded-full',
-            'cursor-grab active:cursor-grabbing',
+            // Default hover cursor; grabbing only while a drag is in flight.
             isDragging && 'cursor-grabbing scale-[1.4]',
           )}
         >
