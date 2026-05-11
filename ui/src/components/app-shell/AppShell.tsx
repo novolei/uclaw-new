@@ -81,8 +81,14 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   // Tabs each mount their own AgentView, but only one listener should
   // process OS drops. Routes folders → attach to active workspace;
   // files → copy bytes into active workspace folder.
+  //
+  // StrictMode safety: onDragDropEvent returns a Promise; if cleanup
+  // runs before the Promise resolves (which happens on the first mount
+  // in StrictMode), we'd miss the unlisten handle and end up with two
+  // listeners stacked. The `cancelled` flag closes that gap.
   React.useEffect(() => {
     const win = getCurrentWindow()
+    let cancelled = false
     let unlisten: (() => void) | undefined
     void win.onDragDropEvent(async (evt) => {
       const payload = evt.payload as { type?: string; paths?: string[] }
@@ -125,8 +131,20 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         })
       }
       getDefaultStore().set(workspaceFilesVersionAtom, (v) => v + 1)
-    }).then((u) => { unlisten = u })
-    return () => { unlisten?.() }
+    }).then((u) => {
+      // If the effect already cleaned up while the Promise was pending,
+      // immediately remove the listener we just registered. Otherwise
+      // keep the handle for the real cleanup.
+      if (cancelled) {
+        u()
+      } else {
+        unlisten = u
+      }
+    })
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
   }, [])
 
   const handleSearchResultSelect = React.useCallback((payload:

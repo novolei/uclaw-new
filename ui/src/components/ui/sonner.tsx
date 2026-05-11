@@ -48,7 +48,7 @@ const Toaster = (props: ToasterProps) => {
             'group-[.toaster]:text-popover-foreground group-[.toaster]:border',
             'group-[.toaster]:border-border/60 group-[.toaster]:shadow-xl',
             // Shape — generous padding, rounded, left accent stripe
-            'group-[.toaster]:rounded-lg group-[.toaster]:px-4 group-[.toaster]:py-3',
+            'group-[.toaster]:rounded-lg group-[.toaster]:pl-4 group-[.toaster]:pr-8 group-[.toaster]:py-3',
             'group-[.toaster]:gap-3 group-[.toaster]:min-w-[280px]',
             'group-[.toaster]:max-w-[420px]',
             // Type accents — left border stripe via data-type
@@ -72,10 +72,18 @@ const Toaster = (props: ToasterProps) => {
             'group-[.toast]:hover:bg-muted/80 group-[.toast]:transition-colors',
           ].join(' '),
           closeButton: [
-            'group-[.toast]:bg-transparent group-[.toast]:border-0',
+            // Override sonner's default `position:absolute; left:0; top:0;
+            // transform: translate(-35%, -35%)` (which floats the button
+            // outside the toast bounds). Pin it inside the top-right corner
+            // with !important so the inline styles can't win.
+            'group-[.toast]:!left-auto group-[.toast]:!right-2 group-[.toast]:!top-2',
+            'group-[.toast]:!translate-x-0 group-[.toast]:!translate-y-0',
+            'group-[.toast]:!bg-transparent group-[.toast]:!border-0',
             'group-[.toast]:text-muted-foreground/60 group-[.toast]:hover:text-foreground',
-            'group-[.toast]:hover:bg-foreground/[0.06] group-[.toast]:rounded-md',
+            'group-[.toast]:hover:bg-foreground/[0.08] group-[.toast]:rounded-md',
             'group-[.toast]:size-5 group-[.toast]:transition-colors',
+            'group-[.toast]:flex group-[.toast]:items-center group-[.toast]:justify-center',
+            'group-[.toast]:opacity-0 group-[.toast]:group-hover:opacity-100',
           ].join(' '),
           icon: 'group-[.toast]:flex group-[.toast]:items-center group-[.toast]:shrink-0',
         },
