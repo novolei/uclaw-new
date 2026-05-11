@@ -153,8 +153,15 @@ export function RightSidePanel(): React.ReactElement | null {
         />
       </div>
 
-      {/* Tab content */}
-      <div className="flex-1 min-h-0 overflow-auto titlebar-no-drag">
+      {/* Tab content — `key` combines workspace + active tab so:
+          - Workspace switch (different activeWorkspaceId) → remount + animate-in
+          - Tab change (Files → Teams etc) → remount + animate-in
+          Same workspace + same tab → no remount (heavy children like
+          WorkspaceFilesView keep their internal state). */}
+      <div
+        key={`${activeWorkspaceId ?? 'no-ws'}:${activeTab}`}
+        className="flex-1 min-h-0 overflow-auto titlebar-no-drag animate-in fade-in-0 slide-in-from-right-1 duration-180 ease-out"
+      >
         {activeTab === 'files' && (
           <WorkspaceFilesView sessionId={currentSessionId} sessionPath={sessionPath} />
         )}
