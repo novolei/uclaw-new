@@ -46,6 +46,8 @@ import {
   agentWorkspacesAtom,
   workspaceCapabilitiesVersionAtom,
   agentSidePanelOpenMapAtom,
+  agentSessionAttachedDirsMapAtom,
+  workspaceAttachedDirsMapAtom,
 } from '@/atoms/agent-atoms'
 import type { SessionIndicatorStatus } from '@/atoms/agent-atoms'
 import {
@@ -68,7 +70,7 @@ import { useSyncActiveTabSideEffects } from '@/hooks/useSyncActiveTabSideEffects
 import { WorkspaceSelector } from '@/components/agent/WorkspaceSelector'
 import { WorkspaceRail } from '@/components/workspace/WorkspaceRail'
 import { AutomationHub as AutomationHubComponent } from '@/components/automation/AutomationHub'
-import { syncWorkspaceSessionsAtom, refreshWorkspacesAtom, activeWorkspaceIdAtom } from '@/atoms/workspace'
+import { syncWorkspaceSessionsAtom, refreshWorkspacesAtom, activeWorkspaceIdAtom, workspacesAtom } from '@/atoms/workspace'
 import { MoveSessionDialog } from '@/components/agent/MoveSessionDialog'
 import {
   AlertDialog,
@@ -195,6 +197,9 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   const setSessionModelMap = useSetAtom(agentSessionModelMapAtom)
   const currentWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
   const workspaces = useAtomValue(agentWorkspacesAtom)
+  const wsList = useAtomValue(workspacesAtom)
+  const setSessionAttachedDirsMap = useSetAtom(agentSessionAttachedDirsMapAtom)
+  const setWsAttachedDirsMap = useSetAtom(workspaceAttachedDirsMapAtom)
   const [capabilities, setCapabilities] = React.useState<WorkspaceCapabilities | null>(null)
   const capabilitiesVersion = useAtomValue(workspaceCapabilitiesVersionAtom)
 
@@ -328,8 +333,30 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   React.useEffect(() => {
     listConversationsIPC().then((list: any) => setConversations(list as any)).catch(console.error)
     getUserProfile().then(setUserProfile).catch(console.error)
-    listAgentSessions().then(setAgentSessions).catch(console.error)
-  }, [setConversations, setUserProfile, setAgentSessions])
+    listAgentSessions().then((sessions) => {
+      setAgentSessions(sessions)
+      // Phase 2: hydrate agentSessionAttachedDirsMapAtom from session data
+      const map = new Map<string, string[]>()
+      for (const s of sessions) {
+        if (Array.isArray(s.attachedDirs) && s.attachedDirs.length > 0) {
+          map.set(s.id, s.attachedDirs as string[])
+        }
+      }
+      if (map.size > 0) setSessionAttachedDirsMap(map)
+    }).catch(console.error)
+  }, [setConversations, setUserProfile, setAgentSessions, setSessionAttachedDirsMap])
+
+  // Phase 2: hydrate workspaceAttachedDirsMapAtom whenever workspacesAtom changes
+  React.useEffect(() => {
+    if (wsList.length === 0) return
+    const map = new Map<string, string[]>()
+    for (const w of wsList) {
+      if (Array.isArray(w.attachedDirs) && w.attachedDirs.length > 0) {
+        map.set(w.id, w.attachedDirs)
+      }
+    }
+    setWsAttachedDirsMap(map)
+  }, [wsList, setWsAttachedDirsMap])
 
   React.useEffect(() => {
     const handleFocus = (): void => {
