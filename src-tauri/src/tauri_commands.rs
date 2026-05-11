@@ -942,37 +942,69 @@ pub async fn create_space(state: State<'_, AppState>, input: CreateSpaceInput) -
 
 #[tauri::command]
 pub async fn list_spaces(state: State<'_, AppState>) -> Result<Vec<SpaceResponse>, Error> {
-    // Workspaces created before Task 4's auto-mkdir have NULL path. Fall back
-    // to the global workground root so frontend FileBrowser has something to
-    // render. New workspaces (Task 4+) have a real per-workspace path stored.
-    let workground_default = state.workspace_root.to_string_lossy().into_owned();
+    // Workspaces created before Task 4's auto-mkdir have NULL path. Backfill
+    // them on-the-fly: default workspace → workground root; others → a
+    // per-workspace subdir derived from the name. Create the directory and
+    // persist the path so the frontend FileBrowser has a stable target.
+    let workground_root = state.workspace_root.clone();
     let db = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
 
+    // First pass: read raw rows.
     let mut stmt = db.prepare(
         "SELECT id, name, icon, path, attached_dirs, sort_order, created_at, updated_at
          FROM spaces ORDER BY sort_order ASC"
     ).map_err(Error::Database)?;
-
-    let spaces: Vec<SpaceResponse> = stmt.query_map([], |row| {
-        let attached_dirs_json: String = row.get::<_, String>(4).unwrap_or_else(|_| "[]".into());
-        let attached_dirs: Vec<String> = serde_json::from_str(&attached_dirs_json).unwrap_or_default();
-        let raw_path: Option<String> = row.get::<_, Option<String>>(3).ok().flatten();
-        let path = raw_path
-            .filter(|s| !s.trim().is_empty())
-            .or_else(|| Some(workground_default.clone()));
-        Ok(SpaceResponse {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            icon: row.get::<_, String>(2).unwrap_or_else(|_| "📁".into()),
-            path,
-            attached_dirs,
-            sort_order: row.get(5)?,
-            created_at: row.get(6)?,
-            updated_at: row.get(7)?,
-        })
+    type RawRow = (String, String, String, Option<String>, String, i64, String, String);
+    let rows: Vec<RawRow> = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2).unwrap_or_else(|_| "📁".into()),
+            row.get::<_, Option<String>>(3).ok().flatten(),
+            row.get::<_, String>(4).unwrap_or_else(|_| "[]".into()),
+            row.get::<_, i64>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+        ))
     }).map_err(Error::Database)?
     .filter_map(|r| r.ok())
     .collect();
+    drop(stmt);
+
+    let mut spaces = Vec::with_capacity(rows.len());
+    for (id, name, icon, raw_path, attached_json, sort_order, created_at, updated_at) in rows {
+        let trimmed_path = raw_path.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty());
+        let path = if let Some(p) = trimmed_path {
+            p.to_string()
+        } else {
+            // Backfill: default → workground root; others → per-workspace subdir.
+            let resolved = if id == "default" {
+                workground_root.clone()
+            } else {
+                compute_workspace_dir(&workground_root, &name, None, &id)
+                    .unwrap_or_else(|_| workground_root.clone())
+            };
+            // Best-effort mkdir + persist; failures don't block list.
+            let _ = std::fs::create_dir_all(&resolved);
+            let resolved_str = resolved.to_string_lossy().into_owned();
+            let _ = db.execute(
+                "UPDATE spaces SET path = ?1 WHERE id = ?2",
+                rusqlite::params![&resolved_str, &id],
+            );
+            resolved_str
+        };
+        let attached_dirs: Vec<String> = serde_json::from_str(&attached_json).unwrap_or_default();
+        spaces.push(SpaceResponse {
+            id,
+            name,
+            icon,
+            path: Some(path),
+            attached_dirs,
+            sort_order,
+            created_at,
+            updated_at,
+        });
+    }
 
     Ok(spaces)
 }

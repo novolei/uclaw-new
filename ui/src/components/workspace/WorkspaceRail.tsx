@@ -91,7 +91,9 @@ export function WorkspaceRail({
     }
   }
 
-  const handleDrop = async (_e: React.DragEvent, targetId: string): Promise<void> => {
+  const handleDrop = async (e: React.DragEvent, targetId: string): Promise<void> => {
+    e.preventDefault()
+    e.stopPropagation()
     if (!dragId || dragId === targetId || !dropIndicator) {
       setDragId(null)
       setDropIndicator(null)

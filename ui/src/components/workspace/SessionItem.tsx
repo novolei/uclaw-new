@@ -70,8 +70,9 @@ export function SessionItem({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
+              onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => e.stopPropagation()}
-              className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground p-0.5 rounded"
+              className="shrink-0 opacity-60 hover:opacity-100 text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-foreground/[0.08]"
               title="更多"
             >
               <MoreHorizontal className="size-3.5" />
