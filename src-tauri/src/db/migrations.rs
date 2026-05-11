@@ -652,7 +652,7 @@ ALTER TABLE agent_sessions ADD COLUMN attached_dirs TEXT NOT NULL DEFAULT '[]';
 
 UPDATE spaces SET sort_order = (
     SELECT COUNT(*) FROM spaces s2 WHERE s2.created_at > spaces.created_at
-);
+) WHERE (SELECT COUNT(*) FROM spaces WHERE sort_order != 0) = 0;
 ";
 
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
@@ -947,5 +947,48 @@ mod tests {
         let ws_a_order = rows.iter().find(|(id, _)| id == "ws-a").map(|(_, o)| *o).unwrap();
         assert_eq!(ws_b_order, 0, "newest workspace ws-b should have sort_order 0");
         assert_eq!(ws_a_order, 2, "oldest workspace ws-a should have sort_order 2");
+    }
+
+    #[test]
+    fn v17_backfill_skips_after_user_reorder() {
+        let conn = db_pre_v17();
+        // Insert 3 workspaces with non-trivial created_at ordering.
+        conn.execute(
+            "INSERT INTO spaces (id, name, icon, path, created_at, updated_at)
+             VALUES ('ws-a', 'A', '📁', NULL, '2026-05-01 00:00:00', '2026-05-01 00:00:00')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO spaces (id, name, icon, path, created_at, updated_at)
+             VALUES ('ws-b', 'B', '📁', NULL, '2026-05-11 00:00:00', '2026-05-11 00:00:00')",
+            [],
+        ).unwrap();
+
+        // First V17 run does the initial backfill.
+        run_v17(&conn);
+
+        // Simulate user reorder: put ws-a at sort_order 0, ws-b at sort_order 5.
+        conn.execute("UPDATE spaces SET sort_order = 0 WHERE id = 'ws-a'", []).unwrap();
+        conn.execute("UPDATE spaces SET sort_order = 5 WHERE id = 'ws-b'", []).unwrap();
+
+        // Re-run V17 (simulating app reboot). The backfill UPDATE should be a no-op
+        // because at least one row has sort_order != 0.
+        // Manually inline the V17 SQL with error-swallowing (run_v17 unwraps would
+        // panic on the ALTERs because columns already exist).
+        for stmt in super::V17_WORKSPACE_PATH_SORT_ATTACHED
+            .split(';').map(|s| s.trim()).filter(|s| !s.is_empty())
+        {
+            let _ = conn.execute(stmt, []);
+        }
+
+        // User's reorder values should be preserved.
+        let a_order: i64 = conn.query_row(
+            "SELECT sort_order FROM spaces WHERE id = 'ws-a'", [], |r| r.get(0)
+        ).unwrap();
+        let b_order: i64 = conn.query_row(
+            "SELECT sort_order FROM spaces WHERE id = 'ws-b'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(a_order, 0, "user-set sort_order=0 preserved across re-run");
+        assert_eq!(b_order, 5, "user-set sort_order=5 preserved across re-run");
     }
 }

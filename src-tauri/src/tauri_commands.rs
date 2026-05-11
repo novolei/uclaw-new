@@ -4845,6 +4845,11 @@ pub(crate) fn do_rename_attached_file(path: &str, new_name: &str) -> Result<Stri
     let parent = p.parent()
         .ok_or_else(|| Error::Internal(format!("no parent for {}", path)))?;
     let new_path = parent.join(new_name);
+    if new_path.exists() {
+        return Err(Error::Internal(format!(
+            "destination already exists: {}", new_path.display()
+        )));
+    }
     std::fs::rename(p, &new_path)
         .map_err(|e| Error::Internal(format!("rename {} → {}: {}", path, new_path.display(), e)))?;
     Ok(new_path.to_string_lossy().into_owned())
@@ -4857,6 +4862,11 @@ pub(crate) fn do_move_attached_file(path: &str, dest_dir: &str) -> Result<String
     let fname = p.file_name()
         .ok_or_else(|| Error::Internal(format!("no filename in {}", path)))?;
     let new_path = std::path::Path::new(dest_dir).join(fname);
+    if new_path.exists() {
+        return Err(Error::Internal(format!(
+            "destination already exists: {}", new_path.display()
+        )));
+    }
     match std::fs::rename(p, &new_path) {
         Ok(()) => Ok(new_path.to_string_lossy().into_owned()),
         Err(e) if e.raw_os_error() == Some(18) /* EXDEV */ => {
@@ -6286,5 +6296,37 @@ mod workspace_integrity_tests {
         let new_pb = std::path::PathBuf::from(&new_path);
         assert!(new_pb.starts_with(&dst_dir));
         assert_eq!(fs::read(&new_pb).unwrap(), b"data");
+    }
+
+    #[test]
+    fn rename_attached_file_refuses_to_clobber_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original = create_tmp_file(tmp.path(), "old.txt", b"original");
+        let _existing = create_tmp_file(tmp.path(), "existing.txt", b"do not lose me");
+        let result = super::do_rename_attached_file(
+            original.to_string_lossy().as_ref(),
+            "existing.txt",
+        );
+        assert!(result.is_err(), "rename onto existing file must error");
+        assert!(original.exists(), "original file untouched after refused rename");
+        assert_eq!(fs::read(tmp.path().join("existing.txt")).unwrap(), b"do not lose me", "existing file preserved");
+    }
+
+    #[test]
+    fn move_attached_file_refuses_to_clobber_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        let dst_dir = tmp.path().join("dst");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&dst_dir).unwrap();
+        let original = create_tmp_file(&src_dir, "f.txt", b"data");
+        let _existing = create_tmp_file(&dst_dir, "f.txt", b"existing data");
+        let result = super::do_move_attached_file(
+            original.to_string_lossy().as_ref(),
+            dst_dir.to_string_lossy().as_ref(),
+        );
+        assert!(result.is_err(), "move onto existing file must error");
+        assert!(original.exists(), "original file untouched after refused move");
+        assert_eq!(fs::read(dst_dir.join("f.txt")).unwrap(), b"existing data", "existing file preserved");
     }
 }

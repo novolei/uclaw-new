@@ -61,7 +61,7 @@ tower-http = { version = "0.6", features = ["trace", "cors", "catch-panic", "fs"
 rig-core = { version = "0.30", default-features = false, features = ["reqwest-rustls"] }
 
 # Desktop (Tauri)
-tauri = { version = "2.0.0", features = ["macos-private-api", "tray-icon"] }
+tauri = { version = "2.0.0", features = ["macos-private-api", "tray-icon", "protocol-asset"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 
