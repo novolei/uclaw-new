@@ -39,6 +39,7 @@ import { toast } from 'sonner'
 import { attachWorkspaceDirectory, pathIsDirectory, copyFileIntoWorkspace } from '@/lib/tauri-bridge'
 import { workspaceFilesVersionAtom, workspaceAttachedDirsMapAtom } from '@/atoms/agent-atoms'
 import { TabSessionSyncer } from './TabSessionSyncer'
+import { WorkspaceTabCleaner } from './WorkspaceTabCleaner'
 
 export interface AppShellProps {
   /** Context 值，用于传递给子组件 */
@@ -219,6 +220,9 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
       {/* Effect-only: keeps currentAgentSessionIdAtom / currentConversationIdAtom /
           appModeAtom in sync with the active workspace's active tab on workspace switch. */}
       <TabSessionSyncer />
+
+      {/* Effect-only: drops orphan tabs when a workspace is deleted. */}
+      <WorkspaceTabCleaner />
 
       {/* macOS 全宽标题栏拖拽区（z-50）：覆盖窗口顶部 50px，让面板间隙也可拖动。
           各 panel 以 z-[60] 叠在其上，拖动只在 panel 之外的可见间隙生效。 */}
