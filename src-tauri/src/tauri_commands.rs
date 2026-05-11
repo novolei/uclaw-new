@@ -4839,6 +4839,52 @@ pub async fn detach_session_directory(
     })
 }
 
+/// Rename a file within its parent directory. Returns the new absolute path.
+pub(crate) fn do_rename_attached_file(path: &str, new_name: &str) -> Result<String, Error> {
+    let p = std::path::Path::new(path);
+    let parent = p.parent()
+        .ok_or_else(|| Error::Internal(format!("no parent for {}", path)))?;
+    let new_path = parent.join(new_name);
+    std::fs::rename(p, &new_path)
+        .map_err(|e| Error::Internal(format!("rename {} → {}: {}", path, new_path.display(), e)))?;
+    Ok(new_path.to_string_lossy().into_owned())
+}
+
+/// Move a file into `dest_dir`, keeping the filename. Returns the new path.
+/// Falls back to copy+delete on cross-volume errors.
+pub(crate) fn do_move_attached_file(path: &str, dest_dir: &str) -> Result<String, Error> {
+    let p = std::path::Path::new(path);
+    let fname = p.file_name()
+        .ok_or_else(|| Error::Internal(format!("no filename in {}", path)))?;
+    let new_path = std::path::Path::new(dest_dir).join(fname);
+    match std::fs::rename(p, &new_path) {
+        Ok(()) => Ok(new_path.to_string_lossy().into_owned()),
+        Err(e) if e.raw_os_error() == Some(18) /* EXDEV */ => {
+            std::fs::copy(p, &new_path)
+                .map_err(|e2| Error::Internal(format!("cross-volume copy: {}", e2)))?;
+            std::fs::remove_file(p)
+                .map_err(|e2| Error::Internal(format!("cross-volume remove: {}", e2)))?;
+            Ok(new_path.to_string_lossy().into_owned())
+        }
+        Err(e) => Err(Error::Internal(format!("move: {}", e))),
+    }
+}
+
+#[tauri::command]
+pub async fn rename_attached_file(path: String, new_name: String) -> Result<String, Error> {
+    do_rename_attached_file(&path, &new_name)
+}
+
+#[tauri::command]
+pub async fn move_attached_file(path: String, dest_dir: String) -> Result<String, Error> {
+    do_move_attached_file(&path, &dest_dir)
+}
+
+#[tauri::command]
+pub async fn read_attached_file(path: String) -> Result<Vec<u8>, Error> {
+    std::fs::read(&path).map_err(|e| Error::Internal(format!("read {}: {}", path, e)))
+}
+
 #[tauri::command]
 pub async fn delete_workspace(
     state: State<'_, AppState>,
@@ -6196,5 +6242,49 @@ mod workspace_integrity_tests {
         ).unwrap();
         let dirs: Vec<String> = serde_json::from_str(&json).unwrap();
         assert_eq!(dirs, vec!["/tmp/a".to_string(), "/tmp/b".to_string()]);
+    }
+
+    // ─── file action commands ───────────────────────────────────────────
+
+    use std::fs;
+    use std::io::Write;
+
+    fn create_tmp_file(dir: &std::path::Path, name: &str, content: &[u8]) -> std::path::PathBuf {
+        let p = dir.join(name);
+        let mut f = fs::File::create(&p).unwrap();
+        f.write_all(content).unwrap();
+        p
+    }
+
+    #[test]
+    fn rename_attached_file_renames_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original = create_tmp_file(tmp.path(), "old.txt", b"hello");
+        let new_path = super::do_rename_attached_file(
+            original.to_string_lossy().as_ref(),
+            "new.txt",
+        ).unwrap();
+        assert!(!original.exists(), "old path should no longer exist");
+        let new_pb = std::path::PathBuf::from(&new_path);
+        assert!(new_pb.exists(), "new path should exist");
+        assert_eq!(fs::read(&new_pb).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn move_attached_file_moves_to_destination() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        let dst_dir = tmp.path().join("dst");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&dst_dir).unwrap();
+        let original = create_tmp_file(&src_dir, "f.txt", b"data");
+        let new_path = super::do_move_attached_file(
+            original.to_string_lossy().as_ref(),
+            dst_dir.to_string_lossy().as_ref(),
+        ).unwrap();
+        assert!(!original.exists());
+        let new_pb = std::path::PathBuf::from(&new_path);
+        assert!(new_pb.starts_with(&dst_dir));
+        assert_eq!(fs::read(&new_pb).unwrap(), b"data");
     }
 }

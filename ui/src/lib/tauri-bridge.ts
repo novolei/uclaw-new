@@ -259,6 +259,15 @@ export const attachSessionDirectory = (sessionId: string, dirPath: string): Prom
 export const detachSessionDirectory = (sessionId: string, dirPath: string): Promise<string[]> =>
   invoke('detach_session_directory', { sessionId, dirPath })
 
+export const renameAttachedFile = (path: string, newName: string): Promise<string> =>
+  invoke('rename_attached_file', { path, newName })
+
+export const moveAttachedFile = (path: string, destDir: string): Promise<string> =>
+  invoke('move_attached_file', { path, destDir })
+
+export const readAttachedFile = (path: string): Promise<number[]> =>
+  invoke('read_attached_file', { path })
+
 // ─── Session title ────────────────────────────────────────────────────
 
 export const generateSessionTitle = (sessionId: string, firstMessage: string): Promise<void> =>
