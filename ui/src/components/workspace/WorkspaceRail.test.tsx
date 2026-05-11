@@ -36,10 +36,10 @@ describe('WorkspaceRail (active workspace only)', () => {
     store.set(activeWorkspaceIdAtom, 'w1')
     store.set(workspaceSessionsAtom, {
       w1: [
-        { id: 's1', title: 'In w1', titleEmoji: '💬', titlePending: false, spaceId: 'w1', updatedAt: '2026-05-11T00:00:00Z' },
+        { id: 's1', title: 'In w1', titleEmoji: '💬', titlePending: false, spaceId: 'w1', updatedAt: '2026-05-11T00:00:00Z', pinnedAt: null },
       ],
       w2: [
-        { id: 's2', title: 'In w2', titleEmoji: '💬', titlePending: false, spaceId: 'w2', updatedAt: '2026-05-11T00:00:00Z' },
+        { id: 's2', title: 'In w2', titleEmoji: '💬', titlePending: false, spaceId: 'w2', updatedAt: '2026-05-11T00:00:00Z', pinnedAt: null },
       ],
     })
     store.set(agentSessionsAtom, [])
@@ -72,7 +72,7 @@ describe('WorkspaceRail (active workspace only)', () => {
     store.set(activeWorkspaceIdAtom, 'w1')
     store.set(workspaceSessionsAtom, {
       w1: [
-        { id: 's-click', title: 'Pick me', titleEmoji: '💬', titlePending: false, spaceId: 'w1', updatedAt: '2026-05-11T00:00:00Z' },
+        { id: 's-click', title: 'Pick me', titleEmoji: '💬', titlePending: false, spaceId: 'w1', updatedAt: '2026-05-11T00:00:00Z', pinnedAt: null },
       ],
     })
     store.set(agentSessionsAtom, [])

@@ -1018,8 +1018,15 @@ export const deleteAgentSession = (id: string): Promise<boolean> =>
 export const updateAgentSessionTitle = (id: string, title: string): Promise<any> =>
   invoke('update_agent_session_title', { id, title }).catch(() => ({ id, title, updatedAt: Date.now() }))
 
-export const togglePinAgentSession = (id: string): Promise<any> =>
-  invoke('toggle_pin_agent_session', { id }).catch(() => ({ id, pinned: true, updatedAt: Date.now() }))
+/**
+ * Toggle pin state on an agent session. Returns the new pinnedAt:
+ * number (ms) when pinned, null when unpinned. Surfaces backend errors —
+ * the previous `.catch(() => fake)` masked a missing Tauri command and
+ * pretended every toggle succeeded. The Rust command now exists
+ * (Phase 6-A Task 2).
+ */
+export const togglePinAgentSession = (id: string): Promise<number | null> =>
+  invoke<number | null>('toggle_pin_agent_session', { id })
 
 export const toggleManualWorkingAgentSession = (id: string): Promise<any> =>
   invoke('toggle_manual_working_agent_session', { id }).catch(() => ({ id, manualWorking: true, updatedAt: Date.now() }))

@@ -504,10 +504,8 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
 
   const handleTogglePinAgent = async (id: string): Promise<void> => {
     try {
-      const original = agentSessions.find((s) => s.id === id)
-      const updated = await togglePinAgentSession(id)
-      setAgentSessions((prev: any) => prev.map((s: any) => (s.id === updated.id ? updated : s)))
-      if (original?.archived && updated.pinned && !updated.archived) toast.success('已取消归档并置顶')
+      const newPinnedAt = await togglePinAgentSession(id)
+      setAgentSessions((prev: any) => prev.map((s: any) => (s.id === id ? { ...s, pinnedAt: newPinnedAt } : s)))
     } catch (error) { console.error('[侧边栏] 切换 Agent 会话置顶失败:', error) }
   }
 
