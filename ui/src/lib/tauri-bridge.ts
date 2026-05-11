@@ -274,6 +274,9 @@ export const uploadWorkspaceFile = (
   content: number[],
 ): Promise<string> => invoke('upload_workspace_file', { workspaceId, filename, content })
 
+export const pathIsDirectory = (path: string): Promise<boolean> =>
+  invoke('path_is_directory', { path })
+
 // ─── Session title ────────────────────────────────────────────────────
 
 export const generateSessionTitle = (sessionId: string, firstMessage: string): Promise<void> =>

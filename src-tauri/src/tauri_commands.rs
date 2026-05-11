@@ -5207,6 +5207,20 @@ pub async fn upload_workspace_file(
     Ok(target.to_string_lossy().into_owned())
 }
 
+/// Lightweight type-of-path probe. Used by the frontend to decide
+/// whether a native drag-drop event payload is a folder (→
+/// attach_workspace_directory) or a file (→ upload_workspace_file).
+/// Returns false on missing path or any IO error.
+#[tauri::command]
+pub async fn path_is_directory(path: String) -> Result<bool, Error> {
+    let p = std::path::PathBuf::from(&path);
+    let meta = match tokio::fs::metadata(&p).await {
+        Ok(m) => m,
+        Err(_) => return Ok(false),
+    };
+    Ok(meta.is_dir())
+}
+
 /// Open the active workspace's `uclaw.md` in the OS-native default
 /// application (file manager / text editor). Used by the Settings →
 /// 提示词 tab "在外部编辑器打开" button. Creates the file if it doesn't
