@@ -10,6 +10,8 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { open as openShell } from '@tauri-apps/plugin-shell';
 import type {
   Settings,
   PatchSettingsInput,
@@ -849,8 +851,25 @@ export const getWorkspaceCapabilities = (slug: string): Promise<{ mcpServers: an
 export const saveImageAs = (path: string, filename: string): Promise<void> =>
   invoke<void>('save_image_as', { path, filename }).catch(() => {})
 
-export const openExternal = (url: string): Promise<void> =>
-  invoke<void>('open_external', { url }).catch(() => {})
+// --- File / dialog actions (Tauri plugin-backed) ---
+
+export const openFolderDialog = async (): Promise<{ path: string; name: string } | null> => {
+  const selected = await openDialog({ directory: true, multiple: false })
+  if (!selected || typeof selected !== 'string') return null
+  const name = selected.split('/').pop() ?? selected
+  return { path: selected, name }
+}
+
+export const openFile = (path: string): Promise<void> => openShell(path)
+
+export const openExternal = (url: string): Promise<void> => openShell(url)
+
+export const showInFinder = (path: string): Promise<void> => {
+  // tauri-plugin-shell v2 doesn't expose revealItemInDir in stable;
+  // fall back to opening the containing folder.
+  const parent = path.substring(0, path.lastIndexOf('/'))
+  return openShell(parent || '/')
+}
 
 export const getPathForFile = (_file: File): string | null => {
   // Electron 的 webUtils.getPathForFile 无法在 Tauri 中使用
