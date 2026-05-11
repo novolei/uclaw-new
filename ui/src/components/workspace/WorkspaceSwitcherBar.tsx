@@ -354,7 +354,14 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
         <TooltipProvider delayDuration={0}>
           <div
             ref={iconsContainerRef}
-            className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto scrollbar-none"
+            className={cn(
+              'flex items-center gap-1 flex-1 min-w-0 overflow-x-auto scrollbar-none',
+              // Compact mode: spread items to occupy the full bar width.
+              // gap-1 stays the minimum; justify-between only adds extra
+              // spacing when there's leftover room (items + min-gaps <
+              // container). Items don't shrink — they just space out.
+              collapsed && 'justify-between',
+            )}
           >
             {workspaces.map((w, i) => {
               const active = w.id === activeId
