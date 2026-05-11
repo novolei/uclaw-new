@@ -268,6 +268,12 @@ export const moveAttachedFile = (path: string, destDir: string): Promise<string>
 export const readAttachedFile = (path: string): Promise<number[]> =>
   invoke('read_attached_file', { path })
 
+export const uploadWorkspaceFile = (
+  workspaceId: string,
+  filename: string,
+  content: number[],
+): Promise<string> => invoke('upload_workspace_file', { workspaceId, filename, content })
+
 // ─── Session title ────────────────────────────────────────────────────
 
 export const generateSessionTitle = (sessionId: string, firstMessage: string): Promise<void> =>

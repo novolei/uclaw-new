@@ -5111,6 +5111,102 @@ pub async fn write_workspace_uclaw_md(
     Ok(())
 }
 
+/// Sanitize a user-provided filename so it can't escape the target dir or
+/// hide as a dotfile. Returns the cleaned name. Truncates total length
+/// (incl. extension) to 200 chars; preserves the extension on truncation.
+pub(crate) fn sanitize_upload_filename(raw: &str) -> Result<String, Error> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(Error::InvalidInput("filename is empty".into()));
+    }
+    if trimmed.contains("..") {
+        return Err(Error::InvalidInput("filename contains '..'".into()));
+    }
+    let base = std::path::Path::new(trimmed)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| Error::InvalidInput("filename has no basename".into()))?;
+    if base.starts_with('.') {
+        return Err(Error::InvalidInput("dotfiles are not allowed".into()));
+    }
+    if base.len() <= 200 {
+        return Ok(base.to_string());
+    }
+    // Truncate keeping the extension.
+    let p = std::path::Path::new(base);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let ext = p.extension().and_then(|s| s.to_str());
+    let ext_part = ext.map(|e| format!(".{}", e)).unwrap_or_default();
+    let max_stem = 200usize.saturating_sub(ext_part.len());
+    let truncated_stem: String = stem.chars().take(max_stem).collect();
+    Ok(format!("{}{}", truncated_stem, ext_part))
+}
+
+/// Given a target dir + sanitized filename, return a path that doesn't
+/// collide with anything on disk. Appends " (2)", " (3)", … before the
+/// extension. Errors after 99 attempts.
+pub(crate) fn next_available_path(
+    dir: &std::path::Path,
+    filename: &str,
+) -> Result<std::path::PathBuf, Error> {
+    let initial = dir.join(filename);
+    if !initial.exists() {
+        return Ok(initial);
+    }
+    let p = std::path::Path::new(filename);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let ext = p.extension().and_then(|s| s.to_str());
+    for n in 2..=99u32 {
+        let new_name = match ext {
+            Some(e) => format!("{} ({}).{}", stem, n, e),
+            None => format!("{} ({})", stem, n),
+        };
+        let candidate = dir.join(new_name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(Error::Internal(format!(
+        "could not find a free filename for '{}' after 99 attempts",
+        filename
+    )))
+}
+
+#[tauri::command]
+pub async fn upload_workspace_file(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    filename: String,
+    content: Vec<u8>,
+) -> Result<String, Error> {
+    // Look up workspace path.
+    let path_raw: Option<String> = {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+        conn.query_row(
+            "SELECT path FROM spaces WHERE id = ?1",
+            rusqlite::params![workspace_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                Error::NotFound(format!("workspace '{}'", workspace_id))
+            }
+            other => Error::Database(other),
+        })?
+    };
+    let ws_path = path_raw
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| Error::InvalidInput(format!("workspace '{}' has no path", workspace_id)))?;
+    let ws_path = std::path::PathBuf::from(ws_path);
+
+    tokio::fs::create_dir_all(&ws_path).await.map_err(Error::Io)?;
+
+    let clean = sanitize_upload_filename(&filename)?;
+    let target = next_available_path(&ws_path, &clean)?;
+    tokio::fs::write(&target, &content).await.map_err(Error::Io)?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
 /// Open the active workspace's `uclaw.md` in the OS-native default
 /// application (file manager / text editor). Used by the Settings →
 /// 提示词 tab "在外部编辑器打开" button. Creates the file if it doesn't
@@ -6449,5 +6545,48 @@ mod workspace_integrity_tests {
         assert!(result.is_err(), "move onto existing file must error");
         assert!(original.exists(), "original file untouched after refused move");
         assert_eq!(fs::read(dst_dir.join("f.txt")).unwrap(), b"existing data", "existing file preserved");
+    }
+
+    // ─── upload_workspace_file ──────────────────────────────────────
+
+    #[test]
+    fn upload_workspace_file_sanitizes_filename() {
+        assert!(super::sanitize_upload_filename("hello.txt").is_ok());
+        let result = super::sanitize_upload_filename("hello.txt").unwrap();
+        assert_eq!(result, "hello.txt".to_string());
+
+        let result2 = super::sanitize_upload_filename("a/b/c.txt").unwrap();
+        assert_eq!(result2, "c.txt".to_string());
+
+        assert!(matches!(super::sanitize_upload_filename("../escape.txt"), Err(super::Error::InvalidInput(_))));
+        assert!(matches!(super::sanitize_upload_filename(".hidden"), Err(super::Error::InvalidInput(_))));
+        assert!(matches!(super::sanitize_upload_filename(""), Err(super::Error::InvalidInput(_))));
+        // Truncation: 250 chars + .png → 200 chars max
+        let long = "a".repeat(250) + ".png";
+        let out = super::sanitize_upload_filename(&long).unwrap();
+        assert!(out.len() <= 200);
+        assert!(out.ends_with(".png"));
+    }
+
+    #[test]
+    fn upload_workspace_file_dedupes_on_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        // Pre-create the original.
+        std::fs::write(dir.path().join("logo.png"), b"a").unwrap();
+        let p2 = super::next_available_path(dir.path(), "logo.png").unwrap();
+        assert_eq!(p2.file_name().unwrap(), "logo (2).png");
+
+        // Pre-create the (2) variant.
+        std::fs::write(dir.path().join("logo (2).png"), b"b").unwrap();
+        let p3 = super::next_available_path(dir.path(), "logo.png").unwrap();
+        assert_eq!(p3.file_name().unwrap(), "logo (3).png");
+    }
+
+    #[test]
+    fn upload_workspace_file_no_extension_still_dedupes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("README"), b"a").unwrap();
+        let p = super::next_available_path(dir.path(), "README").unwrap();
+        assert_eq!(p.file_name().unwrap(), "README (2)");
     }
 }
