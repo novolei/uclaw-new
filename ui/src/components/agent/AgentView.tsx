@@ -74,6 +74,7 @@ import {
   finalizeStreamingActivities,
   workspaceAttachedDirsMapAtom,
   agentSessionAttachedDirsMapAtom,
+  workspaceFilesVersionAtom,
 } from '@/atoms/agent-atoms'
 import type { AgentContextStatus } from '@/atoms/agent-atoms'
 import { activeProviderModelAtom } from '@/atoms/active-model'
@@ -85,6 +86,7 @@ import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { sendWithCmdEnterAtom } from '@/atoms/shortcut-atoms'
 import type { AgentSendInput, AgentMessage, AgentPendingFile } from '@/lib/agent-types'
 import { fileToBase64 } from '@/lib/file-utils'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
   updateSettings,
   getAgentSessionPath,
@@ -101,6 +103,8 @@ import {
   queueAgentMessage,
   onStreamComplete,
   attachSessionDirectory,
+  attachWorkspaceDirectory,
+  pathIsDirectory,
 } from '@/lib/tauri-bridge'
 
 // ===== 思考模式 Hover Popover =====
@@ -274,6 +278,8 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const setSessionAttachedMap = useSetAtom(agentSessionAttachedDirsMapAtom)
   const attachedDirs = sessionAttachedMap.get(sessionId) ?? []
   const wsAttachedDirs = currentWorkspaceId ? (wsAttachedMap.get(currentWorkspaceId) ?? []) : []
+  // Phase 3 (Task 7): file version bump for SidePanel refresh after native drops.
+  const setFilesVersion = useSetAtom(workspaceFilesVersionAtom)
 
   const draftsMap = useAtomValue(agentSessionDraftsAtom)
   const setDraftsMap = useSetAtom(agentSessionDraftsAtom)
@@ -398,6 +404,35 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     }
     return dirs
   }, [attachedDirs, wsAttachedDirs, workspaceFilesPath])
+
+  // Phase 3 (Task 7): listen for native OS folder drops via Tauri window events.
+  // The Tauri drag-drop event fires at window level and carries real OS paths —
+  // use it to attachWorkspaceDirectory for any dropped folder. Regular file drops
+  // are handled by the React onDrop handler on the input box; this only handles dirs.
+  React.useEffect(() => {
+    if (!currentWorkspaceId) return
+    const win = getCurrentWindow()
+    let unlisten: (() => void) | undefined
+    void win.onDragDropEvent((evt) => {
+      const payload = evt.payload as { type?: string; paths?: string[] }
+      if (payload.type !== 'drop' || !Array.isArray(payload.paths)) return
+      const paths = payload.paths
+      void Promise.all(paths.map(async (p) => {
+        try {
+          const isDir = await pathIsDirectory(p)
+          if (!isDir) return  // files handled by the React-event branch
+          await attachWorkspaceDirectory(currentWorkspaceId, p)
+          toast.success(`已附加目录: ${p}`)
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          toast.error(`附加 ${p} 失败: ${msg}`)
+        }
+      })).then(() => {
+        setFilesVersion((v) => v + 1)
+      })
+    }).then((u) => { unlisten = u })
+    return () => { unlisten?.() }
+  }, [currentWorkspaceId, setFilesVersion])
 
   // 监听消息刷新版本号
   const refreshMap = useAtomValue(agentMessageRefreshAtom)

@@ -23,6 +23,7 @@ import {
   agentSessionAttachedDirsMapAtom,
 } from '@/atoms/agent-atoms'
 import { workspacesAtom } from '@/atoms/workspace'
+import { toast } from 'sonner'
 import {
   attachWorkspaceDirectory,
   detachWorkspaceDirectory,
@@ -30,6 +31,7 @@ import {
   detachSessionDirectory,
   openFolderDialog,
   showInFinder,
+  uploadWorkspaceFile,
 } from '@/lib/tauri-bridge'
 import type { FileEntry } from '@/lib/chat-types'
 import type { AgentPendingFile } from '@/lib/agent-types'
@@ -122,6 +124,25 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
       console.error('[WorkspaceFilesView] detach session dir failed', err)
     }
   }, [sessionId, setSessionAttachedMap])
+
+  const handleFilesDropped = React.useCallback(async (files: File[]) => {
+    if (!currentWorkspaceId) {
+      toast.error('请先选择工作区')
+      return
+    }
+    for (const file of files) {
+      try {
+        const buf = await file.arrayBuffer()
+        const bytes = Array.from(new Uint8Array(buf))
+        const writtenPath = await uploadWorkspaceFile(currentWorkspaceId, file.name, bytes)
+        console.debug('[upload] wrote', writtenPath)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        toast.error(`上传 ${file.name} 失败: ${msg}`)
+      }
+    }
+    setFilesVersion((v) => v + 1)
+  }, [currentWorkspaceId, setFilesVersion])
 
   const handleFilesUploaded = React.useCallback(() => {
     setFilesVersion((prev) => prev + 1)
@@ -275,6 +296,8 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
                 <FileDropZone
                   sessionId={sessionId}
                   target="session"
+                  hint="拖入会话目录"
+                  onDrop={handleFilesDropped}
                   onFilesUploaded={handleFilesUploaded}
                 />
               </div>
@@ -326,6 +349,8 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
               )}
               <FileDropZone
                 target="workspace"
+                hint="拖入工作区文件 / 文件夹"
+                onDrop={handleFilesDropped}
                 onFilesUploaded={handleFilesUploaded}
               />
             </div>
