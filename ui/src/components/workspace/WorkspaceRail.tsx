@@ -11,6 +11,9 @@ import {
 } from '@/atoms/workspace'
 import { WorkspaceGroup } from './WorkspaceGroup'
 import { WorkspaceCreateDialog } from './WorkspaceCreateDialog'
+import { MoveSessionDialog } from '@/components/agent/MoveSessionDialog'
+import { agentSessionsAtom } from '@/atoms/agent-atoms'
+import type { AgentWorkspace } from '@/lib/agent-types'
 import { cn } from '@/lib/utils'
 
 interface WorkspaceRailProps {
@@ -34,6 +37,24 @@ export function WorkspaceRail({
 
   const [dragId, setDragId] = React.useState<string | null>(null)
   const [dropIndicator, setDropIndicator] = React.useState<{ id: string; position: 'before' | 'after' } | null>(null)
+
+  // Move-session dialog state.
+  const [moveTargetSessionId, setMoveTargetSessionId] = React.useState<string | null>(null)
+  const agentSessions = useAtomValue(agentSessionsAtom)
+  const moveTargetSession = moveTargetSessionId
+    ? agentSessions.find((s) => s.id === moveTargetSessionId)
+    : null
+  const agentWorkspaces: AgentWorkspace[] = React.useMemo(
+    () => workspaces.map((w) => ({
+      id: w.id,
+      name: w.name,
+      icon: w.icon,
+      path: w.path,
+      createdAt: Date.parse(w.createdAt) || Date.now(),
+      updatedAt: Date.parse(w.updatedAt) || Date.now(),
+    })),
+    [workspaces],
+  )
 
   React.useEffect(() => {
     refreshWorkspaces()
@@ -116,6 +137,7 @@ export function WorkspaceRail({
             activeSessionId={activeSessionId}
             onSelectSession={onSelectSession}
             onDeleteSession={onDeleteSession}
+            onMoveSession={(sid) => setMoveTargetSessionId(sid)}
             onSelectWorkspace={() => selectWorkspace(ws.id)}
             isDragging={dragId === ws.id}
             dropIndicator={dropIndicator?.id === ws.id ? dropIndicator.position : null}
@@ -145,6 +167,19 @@ export function WorkspaceRail({
         onClose={() => setCreateOpen(false)}
         onCreated={handleCreated}
       />
+      {moveTargetSession && (
+        <MoveSessionDialog
+          open={moveTargetSessionId !== null}
+          onOpenChange={(open) => { if (!open) setMoveTargetSessionId(null) }}
+          sessionId={moveTargetSession.id}
+          currentWorkspaceId={moveTargetSession.workspaceId}
+          workspaces={agentWorkspaces}
+          onMoved={() => {
+            setMoveTargetSessionId(null)
+            void refreshWorkspaces()
+          }}
+        />
+      )}
     </div>
   )
 }

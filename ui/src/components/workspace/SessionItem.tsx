@@ -1,6 +1,12 @@
 import * as React from 'react'
-import { LoaderCircle } from 'lucide-react'
+import { LoaderCircle, MoreHorizontal, FolderInput, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 
 interface SessionItemProps {
   id: string
@@ -12,6 +18,7 @@ interface SessionItemProps {
   running?: boolean
   onClick: () => void
   onDelete?: () => void
+  onMove?: () => void
 }
 
 export function SessionItem({
@@ -22,7 +29,9 @@ export function SessionItem({
   running,
   onClick,
   onDelete,
+  onMove,
 }: SessionItemProps): React.ReactElement {
+  const hasMenu = Boolean(onDelete || onMove)
   return (
     <div
       onClick={onClick}
@@ -57,13 +66,38 @@ export function SessionItem({
           title="任务执行中"
         />
       )}
-      {onDelete && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive p-0.5 rounded"
-        >
-          ×
-        </button>
+      {hasMenu && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              onClick={(e) => e.stopPropagation()}
+              className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground p-0.5 rounded"
+              title="更多"
+            >
+              <MoreHorizontal className="size-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-40 min-w-0 p-0.5">
+            {onMove && (
+              <DropdownMenuItem
+                className="text-xs py-1 [&>svg]:size-3.5"
+                onSelect={onMove}
+              >
+                <FolderInput />
+                移动到...
+              </DropdownMenuItem>
+            )}
+            {onDelete && (
+              <DropdownMenuItem
+                className="text-xs py-1 [&>svg]:size-3.5 text-destructive focus:text-destructive"
+                onSelect={onDelete}
+              >
+                <Trash2 />
+                删除
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       )}
     </div>
   )

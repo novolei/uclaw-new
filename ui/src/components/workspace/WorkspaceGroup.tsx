@@ -31,6 +31,7 @@ interface WorkspaceGroupProps {
   activeSessionId: string | null
   onSelectSession: (sessionId: string) => void
   onDeleteSession?: (sessionId: string) => void
+  onMoveSession?: (sessionId: string) => void
   onSelectWorkspace: () => void
   /** Whether this row is currently being dragged. */
   isDragging?: boolean
@@ -53,6 +54,7 @@ export function WorkspaceGroup({
   activeSessionId,
   onSelectSession,
   onDeleteSession,
+  onMoveSession,
   onSelectWorkspace,
   isDragging,
   dropIndicator,
@@ -223,6 +225,7 @@ export function WorkspaceGroup({
               running={indicatorMap.get(s.id) === 'running'}
               onClick={() => onSelectSession(s.id)}
               onDelete={onDeleteSession ? () => onDeleteSession(s.id) : undefined}
+              onMove={onMoveSession ? () => onMoveSession(s.id) : undefined}
             />
           ))}
         </div>
