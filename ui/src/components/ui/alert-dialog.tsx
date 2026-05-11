@@ -2,57 +2,109 @@
 
 import * as React from "react"
 import * as AlertDialogPrimitive from "@radix-ui/react-alert-dialog"
+import { motion, AnimatePresence } from "motion/react"
 
 import { cn } from "@/lib/utils"
 import { buttonVariants } from "@/components/ui/button"
 
-const AlertDialog = AlertDialogPrimitive.Root
+/**
+ * Shared open-state context for the motion-orchestrated AlertDialog.
+ *
+ * Why a custom context: Radix's `Root` controls mount/unmount of its
+ * Content via the `open` prop. With pure CSS animations, that's fine,
+ * but the unmount happens as soon as `open` flips false — Radix waits
+ * for `animationend`, which gets cut short under some conditions and
+ * makes the exit animation feel abrupt.
+ *
+ * The motion approach: read `open` from context, gate AnimatePresence
+ * on it, and use `forceMount` on Radix primitives so they stay in the
+ * DOM until motion's exit animation completes. Keeps the existing
+ * `<AlertDialog open={..} onOpenChange={..}>` callsite API.
+ */
+const AlertDialogOpenContext = React.createContext<boolean>(false)
+
+interface AlertDialogProps extends React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Root> {}
+
+function AlertDialog({ open, onOpenChange, children, ...rest }: AlertDialogProps) {
+  return (
+    <AlertDialogOpenContext.Provider value={open ?? false}>
+      <AlertDialogPrimitive.Root open={open} onOpenChange={onOpenChange} {...rest}>
+        {children}
+      </AlertDialogPrimitive.Root>
+    </AlertDialogOpenContext.Provider>
+  )
+}
 
 const AlertDialogTrigger = AlertDialogPrimitive.Trigger
 
 const AlertDialogPortal = AlertDialogPrimitive.Portal
 
-const AlertDialogOverlay = React.forwardRef<
-  React.ElementRef<typeof AlertDialogPrimitive.Overlay>,
-  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Overlay>
->(({ className, ...props }, ref) => (
-  <AlertDialogPrimitive.Overlay
-    className={cn(
-      // Pure fade — no slide, no zoom. Just opacity in/out.
-      "fixed inset-0 z-[100] bg-black/20 titlebar-no-drag",
-      "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:duration-200 data-[state=open]:ease-out",
-      "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:duration-150 data-[state=closed]:ease-in",
-      className
-    )}
-    {...props}
-    ref={ref}
-  />
-))
-AlertDialogOverlay.displayName = AlertDialogPrimitive.Overlay.displayName
+// Tuned smooth-out curve — Apple-flavored ease for modals. Identical
+// curve on entry and exit so the round-trip feels symmetric.
+const DIALOG_EASE: [number, number, number, number] = [0.32, 0.72, 0, 1]
 
 const AlertDialogContent = React.forwardRef<
-  React.ElementRef<typeof AlertDialogPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Content>
->(({ className, ...props }, ref) => (
-  <AlertDialogPortal>
-    <AlertDialogOverlay />
-    <AlertDialogPrimitive.Content
-      ref={ref}
-      className={cn(
-        // Pure fade — no zoom, no slide. The slide/zoom combination
-        // read as "expanding from the right" rather than a clean
-        // modal appearance. Just opacity transitions match the
-        // overlay's fade for a single coherent motion.
-        "fixed left-[50%] top-[50%] z-[100] grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg titlebar-no-drag sm:rounded-lg",
-        "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:duration-200 data-[state=open]:ease-out",
-        "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:duration-150 data-[state=closed]:ease-in",
-        className
+  HTMLDivElement,
+  Omit<React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Content>, "asChild"> & {
+    /** Optional `className` is applied to the motion.div wrapper. */
+    className?: string
+  }
+>(({ className, children, ...props }, ref) => {
+  const open = React.useContext(AlertDialogOpenContext)
+  return (
+    <AnimatePresence>
+      {open && (
+        <AlertDialogPrimitive.Portal forceMount>
+          {/* Overlay — Radix renders the outer fixed-position wrapper;
+              motion.div inside drives the opacity fade. Avoiding
+              `asChild` on Radix primitives sidesteps a known
+              React.Children.only incompatibility with motion.div when
+              `forceMount` is also set. */}
+          <AlertDialogPrimitive.Overlay
+            forceMount
+            className="fixed inset-0 z-[100] titlebar-no-drag"
+          >
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: DIALOG_EASE }}
+              className="absolute inset-0 bg-black/25 backdrop-blur-[1px]"
+            />
+          </AlertDialogPrimitive.Overlay>
+          {/* Content — Radix handles outer positioning + focus mgmt;
+              motion.div handles the visible card + animation. */}
+          <AlertDialogPrimitive.Content
+            ref={ref}
+            forceMount
+            className="fixed left-[50%] top-[50%] z-[100] w-full max-w-lg translate-x-[-50%] translate-y-[-50%] titlebar-no-drag"
+            {...props}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.992 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.992 }}
+              transition={{ duration: 0.22, ease: DIALOG_EASE }}
+              className={cn(
+                "grid gap-4 border bg-background p-6 shadow-lg sm:rounded-lg",
+                className,
+              )}
+            >
+              {children}
+            </motion.div>
+          </AlertDialogPrimitive.Content>
+        </AlertDialogPrimitive.Portal>
       )}
-      {...props}
-    />
-  </AlertDialogPortal>
-))
-AlertDialogContent.displayName = AlertDialogPrimitive.Content.displayName
+    </AnimatePresence>
+  )
+})
+AlertDialogContent.displayName = "AlertDialogContent"
+
+// The old AlertDialogOverlay export was rarely used directly (Content
+// already renders the overlay internally). Re-export the Radix primitive
+// for any holdout callsite — they get the Radix default behavior, which
+// is still good enough for non-orchestrated cases.
+const AlertDialogOverlay = AlertDialogPrimitive.Overlay
 
 const AlertDialogHeader = ({
   className,

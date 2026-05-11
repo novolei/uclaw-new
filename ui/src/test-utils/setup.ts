@@ -16,10 +16,14 @@ afterEach(() => {
 })
 
 // jsdom doesn't implement matchMedia; stub it so theme / responsive code doesn't crash.
+// Also: report `prefers-reduced-motion: reduce` so the `motion` library
+// skips animations globally in tests — without this, AnimatePresence's
+// mode="wait" defers re-renders past synchronous test assertions and
+// every workspace-switch / dialog test goes flaky.
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
   value: (query: string) => ({
-    matches: false,
+    matches: query.includes('prefers-reduced-motion') && query.includes('reduce'),
     media: query,
     onchange: null,
     addEventListener: () => {},

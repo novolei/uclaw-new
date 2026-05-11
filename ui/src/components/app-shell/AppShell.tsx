@@ -39,6 +39,7 @@ import { toast } from 'sonner'
 import { attachWorkspaceDirectory, pathIsDirectory, copyFileIntoWorkspace } from '@/lib/tauri-bridge'
 import { workspaceFilesVersionAtom, workspaceAttachedDirsMapAtom } from '@/atoms/agent-atoms'
 import { TabSessionSyncer } from './TabSessionSyncer'
+import { useWorkspaceSwipe } from '@/hooks/useWorkspaceSwipe'
 import { WorkspaceTabCleaner } from './WorkspaceTabCleaner'
 
 export interface AppShellProps {
@@ -52,6 +53,12 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const isPanelOpen = useAtomValue(currentSessionSidePanelOpenAtom)
   const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
   const showRightPanel = appMode === 'agent' && !!currentSessionId
+
+  // Magic Mouse / trackpad horizontal swipe → switch workspace.
+  // Mounted at root so the gesture is recognized anywhere except inside
+  // editable text surfaces (chat input, code editor). See hook for
+  // threshold / cooldown details.
+  useWorkspaceSwipe()
 
   // Tab navigation atoms — used by handleSearchResultSelect
   const [tabs, setTabs] = useAtom(tabsAtom)

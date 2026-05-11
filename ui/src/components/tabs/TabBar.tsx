@@ -25,12 +25,24 @@ import {
   unviewedCompletedSessionIdsAtom,
 } from '@/atoms/agent-atoms'
 import { activeWorkspaceIdAtom, workspaceSwitchDirectionAtom } from '@/atoms/workspace'
-import { cn } from '@/lib/utils'
+import { motion, AnimatePresence, type Variants } from 'motion/react'
 import { appModeAtom } from '@/atoms/app-mode'
 import { TabBarItem } from './TabBarItem'
 import { TabBarWorkspaceChip } from './TabBarWorkspaceChip'
 import { TabCloseConfirmDialog } from './TabCloseConfirmDialog'
 import { useCloseTab } from '@/hooks/useCloseTab'
+
+const tabStripSlideVariants: Variants = {
+  enter: (dir: 'forward' | 'backward') => ({
+    opacity: 0,
+    x: dir === 'forward' ? 32 : -32,
+  }),
+  center: { opacity: 1, x: 0 },
+  exit: (dir: 'forward' | 'backward') => ({
+    opacity: 0,
+    x: dir === 'forward' ? -32 : 32,
+  }),
+}
 
 export function TabBar(): React.ReactElement {
   const tabs = useAtomValue(visibleTabsAtom)
@@ -180,16 +192,17 @@ function TabBarInner({
     // `titlebar-no-drag` itself so clicks land on them, while empty
     // space between/after tabs falls through to the OS for window drag.
     <div className="flex items-end h-[34px] tabbar-bg relative titlebar-drag-region">
-      <div
-        key={workspaceKey}
-        className={cn(
-          'relative flex items-end flex-1 min-w-0 overflow-x-clip',
-          'animate-in fade-in-0 duration-280 ease-out',
-          switchDirection === 'forward'
-            ? 'slide-in-from-right-8'
-            : 'slide-in-from-left-8',
-        )}
-      >
+      <AnimatePresence mode="wait" custom={switchDirection} initial={false}>
+        <motion.div
+          key={workspaceKey}
+          custom={switchDirection}
+          variants={tabStripSlideVariants}
+          initial="enter"
+          animate="center"
+          exit="exit"
+          transition={{ duration: 0.26, ease: [0.32, 0.72, 0, 1] }}
+          className="relative flex items-end flex-1 min-w-0 overflow-x-clip"
+        >
         <div className="flex items-center px-1 py-1 shrink-0 self-stretch">
           <TabBarWorkspaceChip />
         </div>
@@ -212,7 +225,8 @@ function TabBarInner({
             onPanelHoverLeave={handleTabHoverLeave}
           />
         ))}
-      </div>
+        </motion.div>
+      </AnimatePresence>
     </div>
   )
 }

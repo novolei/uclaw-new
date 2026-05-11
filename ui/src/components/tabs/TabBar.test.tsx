@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import * as React from 'react'
 import { Provider, createStore } from 'jotai'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { TabBar } from './TabBar'
 import { tabsAtom, workspaceActiveTabIdMapAtom, type TabItem } from '@/atoms/tab-atoms'
 import { activeWorkspaceIdAtom, workspacesAtom, type WorkspaceInfo } from '@/atoms/workspace'
@@ -35,7 +35,7 @@ function renderWith(store: ReturnType<typeof createStore>) {
 describe('TabBar — per-workspace visibility', () => {
   beforeEach(() => { document.body.innerHTML = '' })
 
-  it('renders only the active workspace\'s tabs', () => {
+  it('renders only the active workspace\'s tabs', async () => {
     const store = createStore()
     store.set(tabsAtom, [mk('a1', 'ws-1'), mk('a2', 'ws-1'), mk('b1', 'ws-2')])
     store.set(workspaceActiveTabIdMapAtom, new Map([['ws-1', 'a1'], ['ws-2', 'b1']]))
@@ -54,12 +54,14 @@ describe('TabBar — per-workspace visibility', () => {
         </TooltipProvider>
       </Provider>
     )
-    expect(screen.queryByText('a1')).not.toBeInTheDocument()
+    // Workspace switch transitions are async (AnimatePresence handles
+    // exit-then-enter via motion). Wait for the new content to settle.
+    await waitFor(() => expect(screen.getByText('b1')).toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByText('a1')).not.toBeInTheDocument())
     expect(screen.queryByText('a2')).not.toBeInTheDocument()
-    expect(screen.getByText('b1')).toBeInTheDocument()
   })
 
-  it('switching workspace flips both visible tabs AND active-tab indicator', () => {
+  it('switching workspace flips both visible tabs AND active-tab indicator', async () => {
     const store = createStore()
     store.set(tabsAtom, [mk('a1', 'ws-1'), mk('a2', 'ws-1'), mk('b1', 'ws-2')])
     store.set(workspaceActiveTabIdMapAtom, new Map([
@@ -85,11 +87,10 @@ describe('TabBar — per-workspace visibility', () => {
         </TooltipProvider>
       </Provider>
     )
-    // ws-1's tabs should no longer be visible
-    expect(screen.queryByText('a1')).not.toBeInTheDocument()
+    // Wait for the AnimatePresence transition.
+    await waitFor(() => expect(screen.getByText('b1')).toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByText('a1')).not.toBeInTheDocument())
     expect(screen.queryByText('a2')).not.toBeInTheDocument()
-    // ws-2's tab should be visible and active
-    expect(screen.getByText('b1')).toBeInTheDocument()
     const b1Button = screen.getByText('b1').closest('button')
     expect(b1Button?.className).toContain('bg-content-area')
   })

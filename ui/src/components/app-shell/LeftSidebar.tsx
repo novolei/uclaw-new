@@ -83,6 +83,25 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import { motion, AnimatePresence, type Variants } from 'motion/react'
+
+/**
+ * Variants for the LeftSidebar workspace block's ARC-style slide.
+ * `custom` carries the switch direction so the EXIT variant (which
+ * runs after the element is removed from React) still knows which way
+ * to slide out.
+ */
+const workspaceSlideVariants: Variants = {
+  enter: (dir: 'forward' | 'backward') => ({
+    opacity: 0,
+    x: dir === 'forward' ? 32 : -32,
+  }),
+  center: { opacity: 1, x: 0 },
+  exit: (dir: 'forward' | 'backward') => ({
+    opacity: 0,
+    x: dir === 'forward' ? -32 : 32,
+  }),
+}
 import type { ActiveView } from '@/atoms/active-view'
 import type { ConversationMeta } from '@/lib/chat-types'
 import type { AgentSessionMeta, WorkspaceCapabilities } from '@/lib/agent-types'
@@ -775,36 +794,43 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
 
       {/* 主内容区：对话/会话列表 */}
       {mode === 'agent' ? (
-        // ARC-browser-style horizontal slide on workspace switch. The
-        // WHOLE workspace block (Header + Rail) animates as one unit:
-        //   forward (move to a later workspace in sortOrder)  → slide IN from right
-        //   backward (move to an earlier workspace)           → slide IN from left
-        // `key={activeWorkspaceId}` forces remount which retriggers the
-        // one-shot animate-in. Outgoing content snaps out (no exit
-        // animation) — Tailwind's animate-in is single-direction; doing a
-        // true cross-fade swap would need framer-motion or similar.
-        <div
-          key={activeWorkspaceId ?? 'no-ws'}
-          className={cn(
-            'flex flex-col flex-1 min-h-0',
-            'animate-in fade-in-0 duration-280 ease-out',
-            switchDirection === 'forward'
-              ? 'slide-in-from-right-8'
-              : 'slide-in-from-left-8',
-          )}
-        >
-          <WorkspaceHeader />
-          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-            <WorkspaceRail
-              activeSessionId={activeTabId ?? null}
-              onSelectSession={(id) => {
-                const session = agentSessions.find((s) => s.id === id)
-                handleSelectAgentSession(id, session?.title ?? '')
-              }}
-              onDeleteSession={(id) => handleRequestDelete(id)}
-            />
-          </div>
-        </div>
+        // ARC-browser-style horizontal slide on workspace switch.
+        // motion's AnimatePresence (mode="wait") fully animates the
+        // OUTGOING content out before the new content slides in,
+        // unlike the previous tailwindcss-animate one-shot which only
+        // animated the enter (the outgoing snapped out abruptly).
+        //
+        //   forward (later workspace in sortOrder) → out to left,  in from right
+        //   backward (earlier workspace)           → out to right, in from left
+        //
+        // `custom={switchDirection}` makes the direction available to
+        // `exit` variants too (a motion-specific affordance — exit
+        // variants run after the child has been removed from React, so
+        // they can't read props directly).
+        <AnimatePresence mode="wait" custom={switchDirection} initial={false}>
+          <motion.div
+            key={activeWorkspaceId ?? 'no-ws'}
+            custom={switchDirection}
+            variants={workspaceSlideVariants}
+            initial="enter"
+            animate="center"
+            exit="exit"
+            transition={{ duration: 0.26, ease: [0.32, 0.72, 0, 1] }}
+            className="flex flex-col flex-1 min-h-0"
+          >
+            <WorkspaceHeader />
+            <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+              <WorkspaceRail
+                activeSessionId={activeTabId ?? null}
+                onSelectSession={(id) => {
+                  const session = agentSessions.find((s) => s.id === id)
+                  handleSelectAgentSession(id, session?.title ?? '')
+                }}
+                onDeleteSession={(id) => handleRequestDelete(id)}
+              />
+            </div>
+          </motion.div>
+        </AnimatePresence>
       ) : (
         <div className="flex-1 overflow-y-auto px-3 pt-2 pb-3 scrollbar-none">
           {conversationGroups.map((group) => (

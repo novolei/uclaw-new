@@ -2,64 +2,89 @@
 
 import * as React from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
+import { motion, AnimatePresence } from "motion/react"
 import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
-const Dialog = DialogPrimitive.Root
+/** Shared open-state context — same trick as alert-dialog.tsx, see
+ *  that file for full rationale. */
+const DialogOpenContext = React.createContext<boolean>(false)
+
+interface DialogProps extends React.ComponentPropsWithoutRef<typeof DialogPrimitive.Root> {}
+
+function Dialog({ open, onOpenChange, children, ...rest }: DialogProps) {
+  return (
+    <DialogOpenContext.Provider value={open ?? false}>
+      <DialogPrimitive.Root open={open} onOpenChange={onOpenChange} {...rest}>
+        {children}
+      </DialogPrimitive.Root>
+    </DialogOpenContext.Provider>
+  )
+}
 
 const DialogTrigger = DialogPrimitive.Trigger
-
 const DialogPortal = DialogPrimitive.Portal
-
 const DialogClose = DialogPrimitive.Close
+const DialogOverlay = DialogPrimitive.Overlay
 
-const DialogOverlay = React.forwardRef<
-  React.ElementRef<typeof DialogPrimitive.Overlay>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Overlay>
->(({ className, ...props }, ref) => (
-  <DialogPrimitive.Overlay
-    ref={ref}
-    className={cn(
-      // Pure fade — see alert-dialog.tsx.
-      "fixed inset-0 z-[100] bg-black/20 titlebar-no-drag",
-      "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:duration-200 data-[state=open]:ease-out",
-      "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:duration-150 data-[state=closed]:ease-in",
-      className
-    )}
-    {...props}
-  />
-))
-DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
+const DIALOG_EASE: [number, number, number, number] = [0.32, 0.72, 0, 1]
 
 const DialogContent = React.forwardRef<
-  React.ElementRef<typeof DialogPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & { hideClose?: boolean }
->(({ className, children, hideClose, ...props }, ref) => (
-  <DialogPortal>
-    <DialogOverlay />
-    <DialogPrimitive.Content
-      ref={ref}
-      className={cn(
-        // Pure fade — see alert-dialog.tsx.
-        "fixed left-[50%] top-[50%] z-[100] grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg titlebar-no-drag sm:rounded-lg",
-        "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:duration-200 data-[state=open]:ease-out",
-        "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:duration-150 data-[state=closed]:ease-in",
-        className
+  HTMLDivElement,
+  Omit<React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>, "asChild"> & {
+    hideClose?: boolean
+    className?: string
+  }
+>(({ className, children, hideClose, ...props }, ref) => {
+  const open = React.useContext(DialogOpenContext)
+  return (
+    <AnimatePresence>
+      {open && (
+        <DialogPrimitive.Portal forceMount>
+          <DialogPrimitive.Overlay
+            forceMount
+            className="fixed inset-0 z-[100] titlebar-no-drag"
+          >
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: DIALOG_EASE }}
+              className="absolute inset-0 bg-black/25 backdrop-blur-[1px]"
+            />
+          </DialogPrimitive.Overlay>
+          <DialogPrimitive.Content
+            ref={ref}
+            forceMount
+            className="fixed left-[50%] top-[50%] z-[100] w-full max-w-lg translate-x-[-50%] translate-y-[-50%] titlebar-no-drag"
+            {...props}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.992 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.992 }}
+              transition={{ duration: 0.22, ease: DIALOG_EASE }}
+              className={cn(
+                "grid gap-4 border bg-background p-6 shadow-lg sm:rounded-lg",
+                className,
+              )}
+            >
+              {children}
+              {!hideClose && (
+                <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
+                  <X className="h-4 w-4" />
+                  <span className="sr-only">Close</span>
+                </DialogPrimitive.Close>
+              )}
+            </motion.div>
+          </DialogPrimitive.Content>
+        </DialogPrimitive.Portal>
       )}
-      {...props}
-    >
-      {children}
-      {!hideClose && (
-        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
-          <X className="h-4 w-4" />
-          <span className="sr-only">Close</span>
-        </DialogPrimitive.Close>
-      )}
-    </DialogPrimitive.Content>
-  </DialogPortal>
-))
-DialogContent.displayName = DialogPrimitive.Content.displayName
+    </AnimatePresence>
+  )
+})
+DialogContent.displayName = "DialogContent"
 
 const DialogHeader = ({
   className,
