@@ -75,11 +75,26 @@ function parentDir(p: string): string {
   return normalized.slice(0, idx)
 }
 
+/**
+ * Middle-truncate so both the leading marker (`~`, drive letter) and the
+ * trailing parent folder stay visible. The previous `dir="rtl"` approach
+ * fed the Unicode bidi algorithm an LTR string in an RTL paragraph and
+ * mangled neutral characters — the leading `~/` rendered at the visual
+ * end ("Documents/.../w4d-test/~"). Plain string truncation avoids bidi
+ * entirely.
+ */
+function middleTruncate(s: string, max: number = 42): string {
+  if (s.length <= max) return s
+  const keepEnd = Math.floor((max - 1) * 0.7)
+  const keepStart = max - 1 - keepEnd
+  return `${s.slice(0, keepStart)}…${s.slice(s.length - keepEnd)}`
+}
+
 export function PreviewHeader({ target }: PreviewHeaderProps): React.ReactElement {
   const closePreview = useSetAtom(closePreviewAction)
   const absolutePath = target?.absolutePath ?? ''
   const parent = parentDir(absolutePath)
-  const prettyParent = prettifyPath(parent)
+  const prettyParent = middleTruncate(prettifyPath(parent), 48)
   const [copied, setCopied] = React.useState(false)
   const copyResetTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -135,7 +150,6 @@ export function PreviewHeader({ target }: PreviewHeaderProps): React.ReactElemen
         {prettyParent && (
           <div
             className="text-[10.5px] text-muted-foreground/75 truncate font-mono tabular-nums"
-            dir="rtl"
             title={absolutePath}
           >
             {prettyParent}
