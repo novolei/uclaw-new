@@ -4153,6 +4153,12 @@ pub async fn send_agent_message(
         let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
             "conversationId": input.session_id,
             "text": text,
+            // 结构化字段供前端 toast 使用（不依赖 text 文本解析）
+            "compact": {
+                "removed": removed,
+                "remaining": after_count,
+                "before": before_count,
+            },
         }));
         tracing::info!(
             session_id = %input.session_id,

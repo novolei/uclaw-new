@@ -4,6 +4,7 @@ import { useStore } from 'jotai'
 /** Jotai 没有公开导出 Store 类型，这里通过 useStore 的返回类型推导 */
 type Store = ReturnType<typeof useStore>
 import { listen } from '@tauri-apps/api/event'
+import { toast } from 'sonner'
 import {
   agentStreamingStatesAtom,
   unviewedCompletedSessionIdsAtom,
@@ -14,7 +15,6 @@ import {
   agentSessionsAtom,
   proactiveLearningEventsAtom,
   sessionBrowserPreviewMapAtom,
-  liveMessagesMapAtom,
   type AgentStreamState,
   type ProactiveLearningEvent,
   type AgentStreamErrorPayload,
@@ -108,14 +108,12 @@ function startAgentListeners(store: Store): void {
 
   // chat:stream-complete → mark session done, finalize stuck activities
   reg(
-    listen<{ conversationId: string; text: string }>('chat:stream-complete', ({ payload }) => {
+    listen<{
+      conversationId: string
+      text: string
+      compact?: { removed: number; remaining: number; before: number }
+    }>('chat:stream-complete', ({ payload }) => {
       const sid = payload.conversationId
-      // Snapshot isCompacting BEFORE clearing — used below to decide if we
-      // should append the "上下文已压缩" divider. The compact_boundary
-      // SDK subtype is the only way the renderer paints that pill, and
-      // no Rust backend code emits one — it was Proma-SDK leftover. So
-      // the frontend synthesizes the marker the moment the stream that
-      // had isCompacting:true reaches completion.
       const wasCompacting = store.get(agentStreamingStatesAtom).get(sid)?.isCompacting === true
       store.set(agentStreamingStatesAtom, (prev) => {
         const existing = prev.get(sid)
@@ -134,19 +132,18 @@ function startAgentListeners(store: Store): void {
         })
         return next
       })
-      if (wasCompacting) {
-        store.set(liveMessagesMapAtom, (prev) => {
-          const map = new Map(prev)
-          const current = map.get(sid) ?? []
-          const marker = {
-            type: 'system',
-            subtype: 'compact_boundary',
-            uuid: `compact-boundary-${Date.now()}`,
-            _createdAt: Date.now(),
-          }
-          map.set(sid, [...current, marker])
-          return map
+      // 压缩完成 → 弹 toast。优先用后端 payload.compact 的结构化数据，
+      // 退化到 wasCompacting 仅有时的简短提示。
+      if (payload.compact) {
+        const { removed, remaining } = payload.compact
+        toast.success('上下文已压缩', {
+          description: removed > 0
+            ? `已移除 ${removed} 条早期消息，保留 ${remaining} 条`
+            : `已是最简上下文，当前保留 ${remaining} 条`,
+          duration: 3500,
         })
+      } else if (wasCompacting) {
+        toast.success('上下文已压缩', { duration: 3500 })
       }
       const currentSid = store.get(currentAgentSessionIdAtom)
       if (sid !== currentSid) {
