@@ -297,6 +297,7 @@ mod tests {
             lowercased_keywords: vec![],
             lowercased_exclude_keywords: vec![],
             lowercased_tags: vec![],
+            provenance: crate::skills::SkillProvenance::Bundled,
         };
         registry.register(skill);
         let registry = Arc::new(RwLock::new(registry));

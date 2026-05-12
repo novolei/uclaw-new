@@ -396,6 +396,7 @@ mod tests {
             lowercased_keywords: vec![],
             lowercased_exclude_keywords: vec![],
             lowercased_tags: vec![],
+            provenance: crate::skills::SkillProvenance::Bundled,
         };
         registry.register(mk_skill("z-builtin", "Z builtin"));
         registry.register(mk_skill("a-builtin", "A builtin"));

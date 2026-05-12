@@ -261,18 +261,55 @@ impl AppState {
         let memory_store = Arc::new(MemoryStore::new(db.clone()));
         memory_store.ensure_table();
 
+        // Resolve the Tauri resource dir up front — it's used to wire the
+        // Bundled skills tier below, and (later in B-Stage) to find the
+        // embedded Python runtime.
+        let resource_dir = app_handle.path().resource_dir().ok();
+
         // B2: Skills registry
+        //
+        // Tier order matters: Bundled → User → Project. Later tiers
+        // **shadow** earlier ones on name collision — that's the
+        // intentional Fork affordance. A user-authored `tdd` in
+        // `~/.uclaw/skills/tdd/SKILL.md` overrides the bundled `tdd` of
+        // the same name without the user having to disable the bundled
+        // copy first.
         let mut skills_reg = SkillsRegistry::new();
-        // Add default scan directories
+
+        // Bundled — comes from the Tauri resource dir, which `tauri.conf.json`
+        // populates from the repo's top-level `skills/` directory. In dev
+        // mode (`cargo tauri dev`) Tauri mirrors the dir into
+        // `target/debug/skills/` so it works without a release bundle.
+        if let Some(rd) = resource_dir.as_ref() {
+            let bundled_skills = rd.join("skills");
+            if bundled_skills.exists() {
+                tracing::info!(
+                    bundled_skills = %bundled_skills.display(),
+                    "Registering bundled skills scan dir"
+                );
+                skills_reg.add_scan_dir(bundled_skills, crate::skills::SkillProvenance::Bundled);
+            } else {
+                tracing::debug!(
+                    expected = %bundled_skills.display(),
+                    "No bundled skills dir found in resource dir (running outside a bundle?)"
+                );
+            }
+        }
+
+        // User — survives uClaw upgrades, holds forks and user-authored skills.
         let user_skills_dir = data_dir.join("skills");
         std::fs::create_dir_all(&user_skills_dir).ok();
-        skills_reg.add_scan_dir(user_skills_dir);
-        // Also scan project-level skills/ if it exists
+        skills_reg.add_scan_dir(user_skills_dir, crate::skills::SkillProvenance::User);
+
+        // Project — dev-mode-only fallback. In a bundled app `current_dir()`
+        // is the launch dir which won't contain a skills tree, so this is
+        // effectively a no-op in production. The Bundled tier covers the
+        // production case.
         let project_skills = std::env::current_dir()
             .map(|d| d.join("skills"))
             .unwrap_or_default();
         if project_skills.exists() {
-            skills_reg.add_scan_dir(project_skills);
+            skills_reg.add_scan_dir(project_skills, crate::skills::SkillProvenance::Project);
         }
         // Initial discovery
         let discovered = skills_reg.discover();
@@ -304,9 +341,8 @@ impl AppState {
         // exit_plan_mode pending requests
         let pending_exit_plans = Arc::new(PendingExitPlans::new());
 
-        // memU integration (degraded mode if Python unavailable)
-        // Get Tauri resource directory for embedded Python detection
-        let resource_dir = app_handle.path().resource_dir().ok();
+        // memU integration (degraded mode if Python unavailable). The Tauri
+        // resource dir was already resolved above for the Bundled skills tier.
         let memu_client = Self::try_init_memu(&data_dir, resource_dir.as_deref());
 
         // Eagerly start the memU bridge in a background thread

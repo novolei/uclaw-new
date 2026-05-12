@@ -202,6 +202,34 @@ fn default_enabled() -> bool {
     true
 }
 
+// ─── Provenance ─────────────────────────────────────────────────────────
+
+/// Where a static skill came from on disk.
+///
+/// Drives the "Fork to my skills" affordance in Settings: only `Bundled`
+/// skills offer it (they're read-only — forking copies them into `User`),
+/// while `User` and `Project` ones are already directly editable. The
+/// frontend renders a small badge using this value so users know which
+/// tier a skill belongs to.
+///
+/// Learned skills (kind=Procedure rows in memory_graph) are *not* covered
+/// by this enum — their provenance is fixed (`"learned"`) and tracked
+/// separately by `InvocableSkill.provenance` in tauri_commands.rs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SkillProvenance {
+    /// Shipped with the app (read-only). Lives under `resource_dir/skills/`.
+    /// Includes vendored upstream skills like `skills/borrowed/*` and any
+    /// curated defaults uClaw bundles.
+    Bundled,
+    /// User-owned in `~/.uclaw/skills/`. Persists across uClaw upgrades.
+    /// Created by "Fork to my skills" or by writing files directly.
+    User,
+    /// In-repo `<cwd>/skills/` directory. Only populated during
+    /// `cargo tauri dev` — production builds never see this tier.
+    Project,
+}
+
 // ─── Loaded Skill ───────────────────────────────────────────────────────
 
 /// A fully loaded skill ready for activation.
@@ -218,12 +246,22 @@ pub struct LoadedSkill {
     pub lowercased_exclude_keywords: Vec<String>,
     /// Pre-computed lowercased tags for scoring.
     pub lowercased_tags: Vec<String>,
+    /// Disk-tier provenance — drives the Settings UI fork affordance.
+    pub provenance: SkillProvenance,
 }
 
 // ─── SKILL.md Parser ────────────────────────────────────────────────────
 
 /// Parse a SKILL.md file from its raw content string.
-pub fn parse_skill_md(content: &str, path: PathBuf) -> Result<LoadedSkill, SkillParseError> {
+///
+/// `provenance` is set by the discovery layer based on which scan dir the
+/// file came from. Tests that exercise the parser in isolation can pass
+/// any value (parser doesn't read it).
+pub fn parse_skill_md(
+    content: &str,
+    path: PathBuf,
+    provenance: SkillProvenance,
+) -> Result<LoadedSkill, SkillParseError> {
     // Strip optional UTF-8 BOM
     let content = content.strip_prefix('\u{feff}').unwrap_or(content);
 
@@ -282,6 +320,7 @@ pub fn parse_skill_md(content: &str, path: PathBuf) -> Result<LoadedSkill, Skill
         lowercased_keywords,
         lowercased_exclude_keywords,
         lowercased_tags,
+        provenance,
     })
 }
 
@@ -430,8 +469,12 @@ pub struct SkillsRegistry {
     skills: HashMap<String, LoadedSkill>,
     /// Manually disabled skill names.
     disabled: std::collections::HashSet<String>,
-    /// Directories to scan for skills.
-    scan_dirs: Vec<PathBuf>,
+    /// Directories to scan for skills, paired with the provenance that
+    /// applies to anything found inside them. Scanned in order — later
+    /// dirs **shadow** earlier ones on name collision, so the conventional
+    /// ordering is `[Bundled, User, Project]` so a user-authored skill of
+    /// the same name as a bundled one wins.
+    scan_dirs: Vec<(PathBuf, SkillProvenance)>,
     /// Maximum recursion depth for directory scanning.
     max_scan_depth: usize,
     /// Maximum active skills for injection.
@@ -452,10 +495,16 @@ impl SkillsRegistry {
         }
     }
 
-    /// Add a directory to scan for skills.
-    pub fn add_scan_dir(&mut self, dir: PathBuf) {
-        if !self.scan_dirs.contains(&dir) {
-            self.scan_dirs.push(dir);
+    /// Add a directory to scan for skills, with the provenance tier that
+    /// applies to every SKILL.md found inside it.
+    ///
+    /// Add in the order you want shadowing to resolve: later additions
+    /// win on name collision. The conventional ordering is `Bundled` →
+    /// `User` → `Project` (user shadowing bundled is the expected fork-and-
+    /// override flow).
+    pub fn add_scan_dir(&mut self, dir: PathBuf, provenance: SkillProvenance) {
+        if !self.scan_dirs.iter().any(|(d, _)| d == &dir) {
+            self.scan_dirs.push((dir, provenance));
         }
     }
 
@@ -640,12 +689,17 @@ impl SkillsRegistry {
     }
 
     /// Discover skills from all scan directories.
+    ///
+    /// Tiers are walked in `scan_dirs` order; later tiers **overwrite**
+    /// earlier ones on name collision so user-authored skills shadow
+    /// bundled ones with the same name. Returns the names of newly-added
+    /// or replaced skills.
     pub fn discover(&mut self) -> Vec<String> {
         let mut discovered_names = Vec::new();
         let mut total_count = 0;
 
         let dirs = self.scan_dirs.clone();
-        for dir in &dirs {
+        for (dir, provenance) in &dirs {
             if total_count >= MAX_DISCOVERED_SKILLS {
                 tracing::warn!("Skill discovery cap reached ({})", MAX_DISCOVERED_SKILLS);
                 break;
@@ -655,19 +709,35 @@ impl SkillsRegistry {
                 MAX_DISCOVERED_SKILLS - total_count,
                 0,
                 self.max_scan_depth,
+                *provenance,
             );
             for (name, loaded) in found {
-                if !self.skills.contains_key(&name) {
+                // Later scan dirs override earlier ones (shadowing): a
+                // User skill named `tdd` replaces a Bundled `tdd` in the
+                // registry. The original Bundled skill is still on disk
+                // and can be restored by deleting the user copy.
+                let is_new = !self.skills.contains_key(&name);
+                if !is_new {
+                    let prev = self.skills.get(&name).map(|s| s.provenance);
+                    tracing::info!(
+                        skill = %name,
+                        prev_provenance = ?prev,
+                        new_provenance = ?loaded.provenance,
+                        "Shadowing existing skill — later scan dir wins"
+                    );
+                } else {
                     tracing::info!("Discovered skill: {} ({})", name, loaded.manifest.version);
-                    self.skills.insert(name.clone(), loaded);
-                    discovered_names.push(name);
+                }
+                self.skills.insert(name.clone(), loaded);
+                discovered_names.push(name);
+                if is_new {
                     total_count += 1;
                 }
             }
         }
 
         tracing::info!(
-            "Skill discovery complete: {} new, {} total",
+            "Skill discovery complete: {} discovered/replaced, {} total",
             discovered_names.len(),
             self.skills.len()
         );
@@ -690,6 +760,7 @@ impl SkillsRegistry {
         remaining_cap: usize,
         current_depth: usize,
         max_depth: usize,
+        provenance: SkillProvenance,
     ) -> Vec<(String, LoadedSkill)> {
         let mut results = Vec::new();
 
@@ -708,7 +779,7 @@ impl SkillsRegistry {
         // Check for SKILL.md directly in this directory (flat layout)
         let direct_skill = dir.join("SKILL.md");
         if direct_skill.exists() && direct_skill.is_file() {
-            if let Some(loaded) = load_skill_file(&direct_skill, dir) {
+            if let Some(loaded) = load_skill_file(&direct_skill, dir, provenance) {
                 let name = loaded.manifest.name.clone();
                 results.push((name, loaded));
             }
@@ -734,17 +805,20 @@ impl SkillsRegistry {
                 let skill_md = path.join("SKILL.md");
                 if skill_md.exists() && skill_md.is_file() {
                     // Subdirectory layout: dir/<name>/SKILL.md
-                    if let Some(loaded) = load_skill_file(&skill_md, &path) {
+                    if let Some(loaded) = load_skill_file(&skill_md, &path, provenance) {
                         let skill_name = loaded.manifest.name.clone();
                         results.push((skill_name, loaded));
                     }
                 } else if current_depth < max_depth {
-                    // Bundle directory: recurse
+                    // Bundle directory: recurse — children inherit the
+                    // parent dir's provenance (e.g. bundled/borrowed/*
+                    // is still Bundled).
                     let sub_results = Self::discover_from_dir(
                         &path,
                         remaining_cap - results.len(),
                         current_depth + 1,
                         max_depth,
+                        provenance,
                     );
                     results.extend(sub_results);
                 }
@@ -818,7 +892,11 @@ impl Default for SkillsRegistry {
 // ─── Helpers ────────────────────────────────────────────────────────────
 
 /// Load and parse a single SKILL.md file.
-fn load_skill_file(skill_md_path: &Path, skill_dir: &Path) -> Option<LoadedSkill> {
+fn load_skill_file(
+    skill_md_path: &Path,
+    skill_dir: &Path,
+    provenance: SkillProvenance,
+) -> Option<LoadedSkill> {
     // Check file size
     match std::fs::metadata(skill_md_path) {
         Ok(meta) => {
@@ -845,7 +923,7 @@ fn load_skill_file(skill_md_path: &Path, skill_dir: &Path) -> Option<LoadedSkill
         }
     };
 
-    match parse_skill_md(&content, skill_dir.to_path_buf()) {
+    match parse_skill_md(&content, skill_dir.to_path_buf(), provenance) {
         Ok(loaded) => Some(loaded),
         Err(e) => {
             tracing::warn!("Failed to parse {:?}: {}", skill_md_path, e);
@@ -876,6 +954,7 @@ fn load_skill_file(skill_md_path: &Path, skill_dir: &Path) -> Option<LoadedSkill
                     lowercased_keywords: vec![],
                     lowercased_exclude_keywords: vec![],
                     lowercased_tags: vec![],
+                    provenance,
                 })
             } else {
                 None
@@ -933,7 +1012,7 @@ You are a professional writing assistant. Help the user write, edit, and proofre
 
     #[test]
     fn test_parse_valid_skill() {
-        let loaded = parse_skill_md(sample_skill_md(), PathBuf::from("/tmp/test")).unwrap();
+        let loaded = parse_skill_md(sample_skill_md(), PathBuf::from("/tmp/test"), SkillProvenance::Project).unwrap();
         assert_eq!(loaded.manifest.name, "writing-assistant");
         assert_eq!(loaded.manifest.version, "1.0.0");
         assert_eq!(loaded.manifest.activation.keywords.len(), 3);
@@ -944,7 +1023,7 @@ You are a professional writing assistant. Help the user write, edit, and proofre
     #[test]
     fn test_parse_minimal() {
         let content = "---\nname: minimal\n---\n\nHello world.\n";
-        let loaded = parse_skill_md(content, PathBuf::from("/tmp")).unwrap();
+        let loaded = parse_skill_md(content, PathBuf::from("/tmp"), SkillProvenance::Project).unwrap();
         assert_eq!(loaded.manifest.name, "minimal");
         assert_eq!(loaded.manifest.version, "0.1.0");
     }
@@ -952,12 +1031,12 @@ You are a professional writing assistant. Help the user write, edit, and proofre
     #[test]
     fn test_parse_missing_frontmatter() {
         let content = "Just some text without frontmatter.";
-        assert!(parse_skill_md(content, PathBuf::from("/tmp")).is_err());
+        assert!(parse_skill_md(content, PathBuf::from("/tmp"), SkillProvenance::Project).is_err());
     }
 
     #[test]
     fn test_score_keyword_exact() {
-        let skill = parse_skill_md(sample_skill_md(), PathBuf::from("/tmp")).unwrap();
+        let skill = parse_skill_md(sample_skill_md(), PathBuf::from("/tmp"), SkillProvenance::Project).unwrap();
         let score = score_skill(&skill, "Please write an email");
         assert!(score > 0);
     }
@@ -973,14 +1052,14 @@ activation:
 
 Test prompt.
 "#;
-        let skill = parse_skill_md(content, PathBuf::from("/tmp")).unwrap();
+        let skill = parse_skill_md(content, PathBuf::from("/tmp"), SkillProvenance::Project).unwrap();
         let score = score_skill(&skill, "write but ignore this");
         assert_eq!(score, 0);
     }
 
     #[test]
     fn test_validate_params_required_missing() {
-        let loaded = parse_skill_md(sample_skill_md(), PathBuf::from("/tmp")).unwrap();
+        let loaded = parse_skill_md(sample_skill_md(), PathBuf::from("/tmp"), SkillProvenance::Project).unwrap();
         let params: HashMap<String, String> = HashMap::new();
         let errors = validate_params(&loaded.manifest, &params);
         assert!(errors.iter().any(|e| e.param_name == "language"));
@@ -998,7 +1077,7 @@ parameters:
 
 Test.
 "#;
-        let skill = parse_skill_md(content, PathBuf::from("/tmp")).unwrap();
+        let skill = parse_skill_md(content, PathBuf::from("/tmp"), SkillProvenance::Project).unwrap();
         let mut params = HashMap::new();
         params.insert("count".into(), "not-a-number".into());
         let errors = validate_params(&skill.manifest, &params);
@@ -1020,7 +1099,7 @@ parameters:
 
 Test.
 "#;
-        let skill = parse_skill_md(content, PathBuf::from("/tmp")).unwrap();
+        let skill = parse_skill_md(content, PathBuf::from("/tmp"), SkillProvenance::Project).unwrap();
         let params = SkillsRegistry::extract_params(&skill.manifest, "/test myfile.txt --mode=fast");
         assert_eq!(params.get("file").map(|s| s.as_str()), Some("myfile.txt"));
         assert_eq!(params.get("mode").map(|s| s.as_str()), Some("fast"));
@@ -1029,7 +1108,7 @@ Test.
     #[test]
     fn test_slash_command_matching() {
         let mut registry = SkillsRegistry::new();
-        let skill = parse_skill_md(sample_skill_md(), PathBuf::from("/tmp")).unwrap();
+        let skill = parse_skill_md(sample_skill_md(), PathBuf::from("/tmp"), SkillProvenance::Project).unwrap();
         registry.register(skill);
         assert!(registry.match_slash_command("/writing-assistant").is_some());
         assert!(registry.match_slash_command("/nonexistent").is_none());
@@ -1081,12 +1160,69 @@ Test.
             assert!(path.exists(),
                 "missing borrowed skill: {}", path.display());
             let content = std::fs::read_to_string(&path).unwrap();
-            let loaded = parse_skill_md(&content, path.clone())
+            let loaded = parse_skill_md(&content, path.clone(), SkillProvenance::Bundled)
                 .unwrap_or_else(|e| panic!("borrowed skill {} failed to parse: {:?}", name, e));
             assert_eq!(loaded.manifest.name, name,
                 "name in frontmatter must match directory name");
             assert!(!loaded.manifest.description.is_empty(),
                 "borrowed skill {} must have a description (mattpocock convention)", name);
         }
+    }
+
+    /// Later scan dirs must shadow earlier ones on name collision. This is
+    /// the core Fork affordance — a user-authored `tdd` in `~/.uclaw/skills/`
+    /// must override a bundled `tdd` of the same name without the user
+    /// needing to disable the bundled copy first.
+    #[test]
+    fn user_skill_shadows_bundled_with_same_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bundled_root = tmp.path().join("bundled");
+        let user_root = tmp.path().join("user");
+        std::fs::create_dir_all(bundled_root.join("tdd")).unwrap();
+        std::fs::create_dir_all(user_root.join("tdd")).unwrap();
+
+        std::fs::write(
+            bundled_root.join("tdd/SKILL.md"),
+            "---\nname: tdd\nversion: \"1.0.0\"\ndescription: Bundled TDD\n---\n# bundled body",
+        ).unwrap();
+        std::fs::write(
+            user_root.join("tdd/SKILL.md"),
+            "---\nname: tdd\nversion: \"2.0.0\"\ndescription: User-forked TDD\n---\n# user body",
+        ).unwrap();
+
+        let mut reg = SkillsRegistry::new();
+        // Bundled added first → user must shadow.
+        reg.add_scan_dir(bundled_root, SkillProvenance::Bundled);
+        reg.add_scan_dir(user_root, SkillProvenance::User);
+        reg.discover();
+
+        let loaded = reg.get_loaded("tdd").expect("tdd should be registered");
+        assert_eq!(loaded.provenance, SkillProvenance::User,
+            "user copy must win on name collision");
+        assert_eq!(loaded.manifest.version, "2.0.0",
+            "manifest fields must come from the user copy after shadowing");
+        assert!(loaded.prompt_content.contains("user body"),
+            "prompt body must come from the user copy");
+    }
+
+    /// Provenance survives parse → discover round-trip. Guards against
+    /// future refactors that drop the field somewhere in the pipeline.
+    #[test]
+    fn provenance_propagates_from_scan_dir_to_loaded_skill() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bundled = tmp.path().join("bundled/borrowed/tdd");
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::write(
+            bundled.join("SKILL.md"),
+            "---\nname: tdd\ndescription: x\n---\nbody",
+        ).unwrap();
+
+        let mut reg = SkillsRegistry::new();
+        reg.add_scan_dir(tmp.path().join("bundled"), SkillProvenance::Bundled);
+        reg.discover();
+
+        let loaded = reg.get_loaded("tdd").expect("registered");
+        assert_eq!(loaded.provenance, SkillProvenance::Bundled,
+            "recursed children inherit parent scan dir's provenance");
     }
 }

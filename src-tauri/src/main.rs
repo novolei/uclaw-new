@@ -405,6 +405,7 @@ fn main() {
             uclaw_core::tauri_commands::toggle_skill,
             uclaw_core::tauri_commands::discover_skills,
             uclaw_core::tauri_commands::reload_skills,
+            uclaw_core::tauri_commands::fork_skill_to_user,
             uclaw_core::tauri_commands::get_skill_detail,
             uclaw_core::tauri_commands::match_skills,
             // Channels
