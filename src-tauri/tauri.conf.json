@@ -51,7 +51,8 @@
         ],
         "resources": {
             "pyembed/python": "python",
-            "src/memu/memu_bridge.py": "memu_bridge.py"
+            "src/memu/memu_bridge.py": "memu_bridge.py",
+            "../skills": "skills"
         }
     }
 }
