@@ -242,13 +242,22 @@ pub struct SearchResult {
     pub id: String,
     pub title: String,
     pub snippet: String,
-    /// One of: "conversation" (title hit), "chat_message", "agent_turn", "file".
+    /// One of: "conversation" (title hit), "chat_message", "agent_turn",
+    /// "agent_message", "file".
     pub source: String,
     /// The session/conversation id we should navigate to.
     pub source_id: String,
-    /// Optional message id to scroll to inside the session. None for title-only hits.
+    /// Optional message id to scroll to inside the session. None for
+    /// title-only hits.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
+    /// Workspace this hit originated in. Resolved server-side via
+    /// `agent_sessions.space_id` (agent domain) or
+    /// `conversations.workspace_id` (chat domain). `None` only when the
+    /// row hasn't been re-homed yet (legacy data) — the frontend treats
+    /// `None` as 'default'.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     pub created_at: String,
 }
 
