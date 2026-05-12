@@ -1266,3 +1266,44 @@ export async function filesRailWatchStart(
 export async function filesRailWatchStop(mountId: string): Promise<void> {
   await invoke<void>('files_rail_watch_stop', { mountId })
 }
+
+// ============================================================================
+// Preview (W4a)
+// ============================================================================
+
+interface BackendPreviewBytes {
+  resolved_path: string
+  /** Tauri serializes Vec<u8> as a number[] by default. */
+  bytes: number[]
+  size: number
+  truncated: boolean
+  mtime_ms: number
+}
+
+export interface PreviewBytes {
+  resolvedPath: string
+  /** Owned byte buffer for the file content. */
+  bytes: Uint8Array
+  size: number
+  truncated: boolean
+  mtimeMs: number
+}
+
+export async function previewReadBytes(
+  mountId: string,
+  relPath: string,
+  sessionId: string | null = null,
+): Promise<PreviewBytes> {
+  const raw = await invoke<BackendPreviewBytes>('preview_read_bytes', {
+    mountId,
+    relPath,
+    sessionId,
+  })
+  return {
+    resolvedPath: raw.resolved_path,
+    bytes: new Uint8Array(raw.bytes),
+    size: raw.size,
+    truncated: raw.truncated,
+    mtimeMs: raw.mtime_ms,
+  }
+}
