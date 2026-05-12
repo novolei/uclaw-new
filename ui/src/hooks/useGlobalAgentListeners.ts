@@ -16,6 +16,7 @@ import {
   proactiveLearningEventsAtom,
   sessionBrowserPreviewMapAtom,
   liveMessagesMapAtom,
+  skillRecallsMapAtom,
   type AgentStreamState,
   type ProactiveLearningEvent,
   type AgentStreamErrorPayload,
@@ -362,6 +363,46 @@ function startAgentListeners(store: Store): void {
           )
         updateScreenshot(1200).then(() => updateScreenshot(3500))
       }
+    })
+  )
+
+  // agent:skill-recalled → push into skillRecallsMapAtom (dedup by toolCallId)
+  reg(
+    listen<{
+      conversationId: string
+      toolCallId: string
+      kind: 'search' | 'load'
+      timestamp: string
+      query?: string
+      results?: Array<{ name: string; summary: string; score: number; provenance: 'learned' | 'builtin'; cited_count?: number }>
+      name?: string
+      reason?: string
+      provenance?: 'learned' | 'builtin'
+    }>('agent:skill-recalled', ({ payload }) => {
+      const sid = payload.conversationId
+      store.set(skillRecallsMapAtom, (prev) => {
+        const current = prev.get(sid) ?? []
+        // Dedup by toolCallId. Note: until Task 5 (dispatcher wire-up) injects
+        // tc.id into tc.arguments before tool.execute(), the Rust skill_search /
+        // load_skill tools emit toolCallId="" — meaning every recall after the
+        // first one in a session will be silently dropped here. The component
+        // dedup is correct; the empty IDs are the bug, addressed by Task 5.
+        if (current.some((r) => r.toolCallId === payload.toolCallId)) {
+          return prev
+        }
+        const next = new Map(prev)
+        next.set(sid, [...current, {
+          toolCallId: payload.toolCallId,
+          kind: payload.kind,
+          timestamp: payload.timestamp,
+          query: payload.query,
+          results: payload.results,
+          name: payload.name,
+          reason: payload.reason,
+          provenance: payload.provenance,
+        }])
+        return next
+      })
     })
   )
 
