@@ -11,11 +11,7 @@ use crate::llm::stream_error::{classify_stream_error, StreamErrorKind};
 use crate::error::Error;
 use crate::safety::{SafetyManager, SafetyMode, ApprovalDecision};
 
-/// Maximum number of stream retries before surfacing the error.
-/// Each retry only fires after a real stall or transient network error,
-/// not on every iteration — so the worst-case wall time is bounded by
-/// (stall_timeout + retry_overhead) × this many.
-const MAX_STREAM_RETRIES: u32 = 2;
+use crate::agent::retry::{AgentRetryEvent, BudgetDecision, RetryBudget};
 
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
 /// It assembles the conversation context, delegates LLM calls, and executes tools.
@@ -423,6 +419,32 @@ impl ChatDelegate {
             "timestamp": chrono::Utc::now().to_rfc3339(),
         }));
     }
+
+    /// Emit the `agent:retry` IPC event. Failures are non-fatal — we only
+    /// log, so the retry loop is never blocked by a Tauri emit error.
+    fn emit_retry_event(&self, event: AgentRetryEvent) {
+        if let Err(e) = self.app_handle.emit(AgentRetryEvent::CHANNEL, &event) {
+            tracing::debug!(error = %e, "Failed to emit agent:retry event");
+        }
+    }
+
+    /// Sleep for `duration`, but wake up early if the session's stop flag
+    /// flips. Returns `true` if the wake was triggered by the stop flag
+    /// (caller should bail), `false` if the full duration elapsed.
+    async fn sleep_or_abort(&self, duration: std::time::Duration) -> bool {
+        let stop = self.stop_flag.clone();
+        tokio::select! {
+            _ = tokio::time::sleep(duration) => false,
+            _ = async {
+                loop {
+                    if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            } => true,
+        }
+    }
 }
 
 #[async_trait]
@@ -502,7 +524,7 @@ impl LoopDelegate for ChatDelegate {
 
         use futures::StreamExt;
 
-        let mut stream_retries: u32 = 0;
+        let mut retry_budget = RetryBudget::for_agent_loop();
         'stream_attempt: loop {
             match self.llm.stream(messages.clone(), tools.clone(), &config).await {
                 Ok(mut stream) => {
@@ -615,32 +637,53 @@ impl LoopDelegate for ChatDelegate {
                                 // Decide how to recover.
                                 let kind = classify_stream_error(&e);
                                 match kind {
-                                    StreamErrorKind::Stalled | StreamErrorKind::TransientNetwork
-                                        if stream_retries < MAX_STREAM_RETRIES =>
-                                    {
-                                        tracing::warn!(
-                                            error = %e,
-                                            kind = ?kind,
-                                            attempt = stream_retries + 1,
-                                            max = MAX_STREAM_RETRIES,
-                                            "Stream interrupted, retrying with a fresh stream"
-                                        );
-                                        self.emit_stream_reset();
-                                        stream_retries += 1;
-                                        // Brief backoff before retry
-                                        tokio::time::sleep(std::time::Duration::from_millis(
-                                            500 * 2u64.pow(stream_retries - 1),
-                                        )).await;
-                                        continue 'stream_attempt;
-                                    }
                                     StreamErrorKind::Stalled | StreamErrorKind::TransientNetwork => {
-                                        tracing::error!(
-                                            error = %e,
-                                            retries = stream_retries,
-                                            "Stream failed after exhausting retries"
-                                        );
-                                        self.emit_stream_reset();
-                                        return Err(e);
+                                        let decision = retry_budget.next_delay();
+                                        match decision {
+                                            BudgetDecision::Sleep(delay) => {
+                                                let reason = format!("{:?}: {}", kind, e);
+                                                tracing::warn!(
+                                                    error = %e,
+                                                    kind = ?kind,
+                                                    attempt = retry_budget.attempts(),
+                                                    max = retry_budget.max_attempts(),
+                                                    delay_ms = delay.as_millis() as u64,
+                                                    "Stream interrupted, retrying with a fresh stream"
+                                                );
+                                                self.emit_stream_reset();
+                                                self.emit_retry_event(AgentRetryEvent::Starting {
+                                                    attempt: retry_budget.attempts(),
+                                                    max_attempts: retry_budget.max_attempts(),
+                                                    delay_seconds: delay.as_secs_f64(),
+                                                    reason: reason.clone(),
+                                                });
+
+                                                if self.sleep_or_abort(delay).await {
+                                                    return Err(e);
+                                                }
+
+                                                self.emit_retry_event(AgentRetryEvent::Attempt {
+                                                    attempt: retry_budget.attempts(),
+                                                    timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                                                    reason,
+                                                });
+                                                continue 'stream_attempt;
+                                            }
+                                            BudgetDecision::Exhausted => {
+                                                tracing::error!(
+                                                    error = %e,
+                                                    attempts = retry_budget.attempts(),
+                                                    elapsed_wait_ms = retry_budget.elapsed_wait().as_millis() as u64,
+                                                    "Stream failed after exhausting retry budget"
+                                                );
+                                                self.emit_stream_reset();
+                                                self.emit_retry_event(AgentRetryEvent::Exhausted {
+                                                    total_attempts: retry_budget.attempts(),
+                                                    total_wait_ms: retry_budget.elapsed_wait().as_millis() as u64,
+                                                });
+                                                return Err(e);
+                                            }
+                                        }
                                     }
                                     StreamErrorKind::Fatal => {
                                         tracing::error!(error = %e, "Stream failed with fatal error");
@@ -679,21 +722,50 @@ impl LoopDelegate for ChatDelegate {
                     // the user to see the real error, not a workaround.
                     let kind = classify_stream_error(&e);
                     match kind {
-                        StreamErrorKind::TransientNetwork
-                            if stream_retries < MAX_STREAM_RETRIES =>
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                attempt = stream_retries + 1,
-                                "Stream setup failed transiently, retrying"
-                            );
-                            stream_retries += 1;
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                500 * 2u64.pow(stream_retries - 1),
-                            )).await;
-                            continue 'stream_attempt;
+                        StreamErrorKind::Stalled | StreamErrorKind::TransientNetwork => {
+                            let decision = retry_budget.next_delay();
+                            match decision {
+                                BudgetDecision::Sleep(delay) => {
+                                    let reason = format!("setup {:?}: {}", kind, e);
+                                    tracing::warn!(
+                                        error = %e,
+                                        kind = ?kind,
+                                        attempt = retry_budget.attempts(),
+                                        max = retry_budget.max_attempts(),
+                                        delay_ms = delay.as_millis() as u64,
+                                        "Stream setup failed transiently, retrying"
+                                    );
+                                    self.emit_retry_event(AgentRetryEvent::Starting {
+                                        attempt: retry_budget.attempts(),
+                                        max_attempts: retry_budget.max_attempts(),
+                                        delay_seconds: delay.as_secs_f64(),
+                                        reason: reason.clone(),
+                                    });
+                                    if self.sleep_or_abort(delay).await {
+                                        return Err(e);
+                                    }
+                                    self.emit_retry_event(AgentRetryEvent::Attempt {
+                                        attempt: retry_budget.attempts(),
+                                        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                                        reason,
+                                    });
+                                    continue 'stream_attempt;
+                                }
+                                BudgetDecision::Exhausted => {
+                                    tracing::error!(
+                                        error = %e,
+                                        attempts = retry_budget.attempts(),
+                                        "Stream setup failed after exhausting retry budget"
+                                    );
+                                    self.emit_retry_event(AgentRetryEvent::Exhausted {
+                                        total_attempts: retry_budget.attempts(),
+                                        total_wait_ms: retry_budget.elapsed_wait().as_millis() as u64,
+                                    });
+                                    return Err(e);
+                                }
+                            }
                         }
-                        _ => {
+                        StreamErrorKind::Fatal => {
                             tracing::error!(error = %e, "Stream setup failed, surfacing error");
                             return Err(e);
                         }
