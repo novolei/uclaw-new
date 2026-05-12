@@ -3057,6 +3057,222 @@ pub async fn memory_graph_delete_node(
     Ok(serde_json::json!({ "success": true, "nodeId": input.node_id }))
 }
 
+// ─── Slash Command Helpers (PR-mattpocock-4a) ────────────────────────────────
+
+/// Extract the bareword after a leading `/` from a user message.
+///
+/// Returns `Some("name")` for `/name`, `/name args`, or `  /name\n…`.
+/// Returns `None` if the message doesn't lead with `/`, if the slash is bare,
+/// or if it's a built-in command like `/compact` (handled separately upstream).
+fn extract_slash_command_name(msg: &str) -> Option<String> {
+    let trimmed = msg.trim_start();
+    let rest = trimmed.strip_prefix('/')?;
+    let first = rest.split_whitespace().next()?;
+    if first.is_empty() || first == "compact" {
+        return None;
+    }
+    Some(first.to_string())
+}
+
+/// Look up a slash command name against the static registry first, then the
+/// learned-skill store keyed by normalized title.
+///
+/// On a learned-skill hit, records a citation via the same path as
+/// `record_skill_cited` so cited_count bumps and draft→promoted auto-promotion
+/// fire. Failures inside the citation bump are logged but never block the
+/// invocation — the LLM call should still proceed with the skill prompt
+/// injected even if the bookkeeping write hits an error.
+async fn resolve_slash_skill(
+    state: &AppState,
+    session_id: &str,
+    name: &str,
+) -> Option<String> {
+    // Pass 1: static / borrowed skills (the registry).
+    {
+        let registry = state.skills_registry.read().await;
+        if let Some(prompt) = registry.format_for_injection(name) {
+            tracing::info!(skill = %name, "slash command: matched static skill");
+            return Some(prompt);
+        }
+    }
+
+    // Pass 2: learned skills, keyed by normalized title.
+    // Resolve the session's space_id so we look in the right scope.
+    let space_id: String = {
+        let conn = state.db.lock().ok()?;
+        conn.query_row(
+            "SELECT space_id FROM agent_sessions WHERE id = ?1",
+            rusqlite::params![session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap_or_else(|_| "default".to_string())
+    };
+
+    let normalized = crate::proactive::skill_parser::normalize_title_for_dedup(name);
+    let store = &state.memory_graph_store;
+    let node = store
+        .find_learned_skill_by_normalized_title(&space_id, &normalized)
+        .ok()
+        .flatten()?;
+
+    // Bump cited_count + auto-promote draft→promoted at threshold. Mirrors
+    // record_skill_cited so users get the same accounting whether they cite
+    // via slash command or via the agent's natural skill_search → use loop.
+    if let Some(mut meta) = node.metadata.clone() {
+        const PROMOTION_THRESHOLD: u64 = 3;
+        if let Some(obj) = meta.as_object_mut() {
+            let prev = obj
+                .get("cited_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let next = prev + 1;
+            obj.insert(
+                "cited_count".to_string(),
+                serde_json::Value::Number(serde_json::Number::from(next)),
+            );
+            obj.insert(
+                "last_cited_at".to_string(),
+                serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+            );
+            let current = obj
+                .get("lifecycle")
+                .and_then(|v| v.as_str())
+                .unwrap_or("promoted");
+            if current == "draft" && next >= PROMOTION_THRESHOLD {
+                obj.insert(
+                    "lifecycle".to_string(),
+                    serde_json::Value::String("promoted".to_string()),
+                );
+                tracing::info!(
+                    node_id = %node.id, title = %node.title,
+                    "slash command: auto-promoted draft → promoted"
+                );
+            }
+        }
+        if let Err(e) = store.update_node(&node.id, None, None, Some(&meta)) {
+            tracing::warn!(
+                node_id = %node.id, err = %e,
+                "slash command: bump cited_count failed (non-fatal)"
+            );
+        }
+    }
+
+    // Build the prompt body for injection. Use the same XML wrapping shape as
+    // static skills (`<skill name=... version=...>…</skill>`) so the LLM sees
+    // a consistent surface regardless of provenance.
+    let meta = node.metadata.as_ref()?;
+    let context = meta.get("context").and_then(|v| v.as_str()).unwrap_or("");
+    let principles = meta.get("principles").and_then(|v| v.as_str()).unwrap_or("");
+    let steps = meta.get("steps").and_then(|v| v.as_str()).unwrap_or("");
+    let pitfalls = meta.get("pitfalls").and_then(|v| v.as_str()).unwrap_or("");
+    let anti_patterns = meta.get("anti_patterns").and_then(|v| v.as_str()).unwrap_or("");
+    let validation_hint = meta.get("validation_hint").and_then(|v| v.as_str()).unwrap_or("");
+
+    let mut body = format!(
+        "<skill name=\"{}\" version=\"learned\">\n# {}\n",
+        node.title, node.title
+    );
+    if !context.is_empty()        { body.push_str(&format!("\n## 适用场景\n{}\n", context)); }
+    if !principles.is_empty()     { body.push_str(&format!("\n## 核心原则\n{}\n", principles)); }
+    if !steps.is_empty()          { body.push_str(&format!("\n## 实现步骤\n{}\n", steps)); }
+    if !anti_patterns.is_empty()  { body.push_str(&format!("\n## 反模式（绝对不要做）\n{}\n", anti_patterns)); }
+    if !pitfalls.is_empty()       { body.push_str(&format!("\n## 常见陷阱\n{}\n", pitfalls)); }
+    if !validation_hint.is_empty(){ body.push_str(&format!("\n## 验证方式\n{}\n", validation_hint)); }
+    body.push_str("</skill>");
+
+    tracing::info!(
+        node_id = %node.id, title = %node.title,
+        "slash command: matched learned skill"
+    );
+    Some(body)
+}
+
+/// One row in the slash-command autocomplete payload returned by
+/// [`list_invocable_skills`]. Frontend renders `name` + `description` and
+/// uses `provenance` for a small badge.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InvocableSkill {
+    pub name: String,
+    pub description: String,
+    /// "static" (project skills/), "borrowed" (skills/borrowed/), or "learned".
+    pub provenance: String,
+    /// Only present for `provenance == "learned"`: "draft" | "promoted" | "deprecated".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<String>,
+}
+
+/// List every skill the user can invoke via `/<name>` from the agent or chat
+/// input box. Returns static + borrowed entries from the SkillsRegistry plus
+/// learned entries from the memory graph (all lifecycle stages — the frontend
+/// dropdown wants to show drafts too so users can promote them by use).
+#[tauri::command]
+pub async fn list_invocable_skills(
+    state: State<'_, AppState>,
+    space_id: Option<String>,
+) -> Result<Vec<InvocableSkill>, String> {
+    let mut out: Vec<InvocableSkill> = Vec::new();
+
+    // Static / borrowed skills.
+    {
+        let registry = state.skills_registry.read().await;
+        for m in registry.list_enabled() {
+            // Borrowed skills are vendored under skills/borrowed/<name>/ —
+            // detect via path so the frontend can render a different badge.
+            let provenance = if m.path.to_string_lossy().contains("/borrowed/") {
+                "borrowed".to_string()
+            } else {
+                "static".to_string()
+            };
+            out.push(InvocableSkill {
+                name: m.name.clone(),
+                description: m.description.clone(),
+                provenance,
+                lifecycle: None,
+            });
+        }
+    }
+
+    // Learned skills (all lifecycle stages so drafts show up too).
+    let sid = space_id.unwrap_or_else(|| "default".into());
+    let store = &state.memory_graph_store;
+    let nodes = store
+        .list_nodes_by_kind(&sid, crate::memory_graph::models::MemoryNodeKind::Procedure, 500)
+        .map_err(|e| format!("list_nodes_by_kind failed: {}", e))?;
+    for node in nodes {
+        let Some(meta) = node.metadata.as_ref() else { continue };
+        if meta.get("skill_type").and_then(|v| v.as_str()) != Some("learned") {
+            continue;
+        }
+        if !meta.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true) {
+            continue;
+        }
+        let description = meta
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                meta.get("context")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default();
+        let lifecycle = meta
+            .get("lifecycle")
+            .and_then(|v| v.as_str())
+            .unwrap_or("promoted")
+            .to_string();
+        out.push(InvocableSkill {
+            name: node.title.clone(),
+            description,
+            provenance: "learned".to_string(),
+            lifecycle: Some(lifecycle),
+        });
+    }
+
+    Ok(out)
+}
+
 // ─── Learned Skills Commands ─────────────────────────────────────────────────
 
 /// 列出所有学到的技能（Procedure 节点 + metadata.skill_type == "learned"）
@@ -4253,6 +4469,28 @@ pub async fn send_agent_message(
         return Ok(());
     }
 
+    // ── /<skill-name> slash command intercept ───────────────────────
+    // PR-mattpocock-4a: extract a leading `/<name>` from the user message
+    // and, if it matches a static, borrowed, or learned skill, persist a
+    // `system` row with the skill prompt **before** the user row. The LLM
+    // then sees the skill instructions just before the user request on the
+    // next turn. The user message is preserved verbatim so the chat
+    // transcript still shows the `/<name>` invocation; the skill prompt is
+    // the system note that explains *why* the agent is following those
+    // instructions.
+    //
+    // Resolution order: static/borrowed registry first, then learned skills
+    // by normalized title. Learned-skill invocations bump cited_count and
+    // may auto-promote draft → promoted (see PR #117). No-op if the leading
+    // token isn't a known skill — the message continues as a plain prompt.
+    let slash_skill_prompt: Option<String> = if let Some(cmd_name) =
+        extract_slash_command_name(&input.user_message)
+    {
+        resolve_slash_skill(&state, &input.session_id, &cmd_name).await
+    } else {
+        None
+    };
+
     // Resolve LLM config
     let legacy_config = state.llm_config.read().await;
     let max_tokens = legacy_config.max_tokens.unwrap_or(8192);
@@ -4272,18 +4510,28 @@ pub async fn send_agent_message(
     let model = llm_config.model.clone();
     let llm = Arc::new(llm::create_provider(&llm_config)?);
 
-    // Persist user message
+    // Persist user message (and, if a /<skill-name> resolved, the skill
+    // prompt as a `system` row inserted with created_at = now - 1 so it
+    // sorts before the user message on the next history load).
     let user_msg_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
     {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        if let Some(skill_prompt) = slash_skill_prompt.as_ref() {
+            let skill_msg_id = uuid::Uuid::new_v4().to_string();
+            let _ = conn.execute(
+                "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'system',?3,?4)",
+                rusqlite::params![skill_msg_id, input.session_id, skill_prompt, now - 1],
+            );
+        }
         let _ = conn.execute(
             "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'user',?3,?4)",
             rusqlite::params![user_msg_id, input.session_id, input.user_message, now],
         );
+        let bump = if slash_skill_prompt.is_some() { 2 } else { 1 };
         let _ = conn.execute(
-            "UPDATE agent_sessions SET message_count = message_count + 1, updated_at = ?1 WHERE id = ?2",
-            rusqlite::params![now, input.session_id],
+            "UPDATE agent_sessions SET message_count = message_count + ?2, updated_at = ?1 WHERE id = ?3",
+            rusqlite::params![now, bump, input.session_id],
         );
     }
 
@@ -7467,5 +7715,61 @@ mod workspace_cost_rollup_tests {
             [800i64], |r| r.get(0),
         ).unwrap();
         assert!((total - 3.0).abs() < 0.01);
+    }
+}
+
+#[cfg(test)]
+mod slash_command_tests {
+    use super::extract_slash_command_name;
+
+    #[test]
+    fn extracts_simple_slash_command() {
+        assert_eq!(extract_slash_command_name("/grill-me"), Some("grill-me".into()));
+        assert_eq!(extract_slash_command_name("/tdd"), Some("tdd".into()));
+    }
+
+    #[test]
+    fn extracts_with_args() {
+        assert_eq!(
+            extract_slash_command_name("/zoom-out the agent loop"),
+            Some("zoom-out".into())
+        );
+    }
+
+    #[test]
+    fn tolerates_leading_whitespace() {
+        assert_eq!(extract_slash_command_name("   /diagnose"), Some("diagnose".into()));
+    }
+
+    #[test]
+    fn rejects_non_slash_input() {
+        assert!(extract_slash_command_name("not a command").is_none());
+        assert!(extract_slash_command_name("hello /skill").is_none(),
+            "slash must be the first non-whitespace char");
+    }
+
+    #[test]
+    fn rejects_bare_slash() {
+        assert!(extract_slash_command_name("/").is_none());
+        assert!(extract_slash_command_name("/ ").is_none());
+    }
+
+    #[test]
+    fn skips_compact_reserved_word() {
+        // /compact has its own intercept upstream; the resolver must not
+        // shadow it by trying to look it up as a skill.
+        assert!(extract_slash_command_name("/compact").is_none());
+    }
+
+    #[test]
+    fn extracts_chinese_skill_name_token() {
+        // Chinese skill titles can't be slash-typed today (PR 4a falls back
+        // to normalize_title_for_dedup for learned skills, which works on
+        // ASCII slugs). But the extractor itself shouldn't choke on any
+        // unicode in the bareword — that's the resolver's job to handle.
+        assert_eq!(
+            extract_slash_command_name("/swift-data-项目分析"),
+            Some("swift-data-项目分析".into())
+        );
     }
 }
