@@ -331,10 +331,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const [errorCopied, setErrorCopied] = React.useState(false)
 
   // Composer `/` and `@` autocomplete plumbing — the controller renders
-  // the popup; the textareaRef lets it watch caret position; the
-  // controllerRef gives RichTextInput a way to intercept ↑↓ Enter Esc
-  // when the popup is open.
-  const composerTextareaRef = React.useRef<HTMLTextAreaElement | null>(null)
+  // the popup; the editorRef lets it watch the TipTap selection state;
+  // the controllerRef gives RichTextInput a way to intercept ↑↓ Enter
+  // Esc when the popup is open.
+  const composerEditorRef = React.useRef<import('@tiptap/core').Editor | null>(null)
   const mentionControllerRef = React.useRef<ComposerMentionControllerHandle | null>(null)
 
   // pendingFiles ref（供 addFilesAsAttachments 读取最新列表，避免闭包旧值）
@@ -1480,13 +1480,13 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                 htmlValue={inputHtmlContent}
                 onHtmlChange={setInputHtmlContent}
                 sendWithCmdEnter={sendWithCmdEnter}
-                textareaRef={composerTextareaRef}
+                editorRef={composerEditorRef}
                 onKeyDownIntercept={(e) =>
                   mentionControllerRef.current?.handleKeyDown(e) ?? false}
               />
               <ComposerMentionController
                 ref={mentionControllerRef}
-                textareaRef={composerTextareaRef}
+                editorRef={composerEditorRef}
                 value={inputContent}
                 setValue={setInputContent}
                 sessionId={sessionId}
