@@ -19,6 +19,10 @@ pub struct ParsedSkill {
     /// 这是 signals[] 的经验对应版：「该技能是从哪类失败中被提炼出来的」。
     /// 若提取时无失败日志，则为空 Vec（向后兼容）。
     pub signals_seen: Vec<String>,
+    /// 应用该技能后如何验证它真的有效（一句话，可选）。
+    /// LLM 在 <validation_hint>…</validation_hint> 标签里输出；agent 看到后自行决定要不要验证。
+    /// 若 LLM 未输出该标签，则为 None（向后兼容）。
+    pub validation_hint: Option<String>,
 }
 
 /// 解析 <skill_report> XML 中的 <skill> 标签
@@ -77,6 +81,10 @@ pub fn parse_skill_report(xml_text: &str) -> Vec<ParsedSkill> {
             Vec::new()
         };
 
+        let validation_hint = extract_tag_content(&skill_content, "validation_hint")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         skills.push(ParsedSkill {
             name,
             context,
@@ -85,6 +93,7 @@ pub fn parse_skill_report(xml_text: &str) -> Vec<ParsedSkill> {
             pitfalls,
             signals,
             signals_seen: Vec::new(), // populated by service layer from execution logs
+            validation_hint,
         });
     }
 
@@ -243,6 +252,10 @@ pub fn store_skill_as_procedure(
                 .map(|s| serde_json::Value::String(s.clone()))
                 .collect(),
         );
+    }
+
+    if let Some(hint) = skill.validation_hint.as_ref() {
+        metadata["validation_hint"] = serde_json::Value::String(hint.clone());
     }
 
     let node = MemoryNode {
@@ -417,9 +430,11 @@ fn upgrade_existing_skill(
     // existing trigger phrases — that's worse than keeping stale ones).
     // Same rule applies to signals_seen — batch both updates into one
     // metadata write to avoid two separate round-trips.
+    // validation_hint: only update if re-extraction provided one (None keeps old).
     let need_signals_update = !skill.signals.is_empty();
     let need_signals_seen_update = !skill.signals_seen.is_empty();
-    if need_signals_update || need_signals_seen_update {
+    let need_hint_update = skill.validation_hint.is_some();
+    if need_signals_update || need_signals_seen_update || need_hint_update {
         let mut metadata = existing.metadata.clone().unwrap_or_else(|| serde_json::json!({}));
         if let Some(obj) = metadata.as_object_mut() {
             if need_signals_update {
@@ -438,12 +453,18 @@ fn upgrade_existing_skill(
                     ),
                 );
             }
+            if let Some(hint) = skill.validation_hint.as_ref() {
+                obj.insert(
+                    "validation_hint".to_string(),
+                    serde_json::Value::String(hint.clone()),
+                );
+            }
         }
         if let Err(e) = store.update_node(&existing.id, None, None, Some(&metadata)) {
             tracing::warn!(
                 node_id = %existing.id,
                 err = %e,
-                "skill_parser: signals/signals_seen update failed (continuing)"
+                "skill_parser: signals/signals_seen/validation_hint update failed (continuing)"
             );
         }
     }
@@ -762,6 +783,7 @@ mod tests {
             pitfalls: "测试陷阱".to_string(),
             signals: vec![],
             signals_seen: vec![],
+            validation_hint: None,
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -873,6 +895,7 @@ mod tests {
             pitfalls: "v1".into(),
             signals: vec![],
             signals_seen: vec![],
+            validation_hint: None,
         };
         let s2 = ParsedSkill {
             name: "处理 edit 工具文本匹配错误的备选插入策略".into(), // +1 word prefix
@@ -882,6 +905,7 @@ mod tests {
             pitfalls: "v2".into(),
             signals: vec![],
             signals_seen: vec![],
+            validation_hint: None,
         };
 
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
@@ -915,6 +939,7 @@ mod tests {
             pitfalls: "v1 pitfalls".into(),
             signals: vec![],
             signals_seen: vec![],
+            validation_hint: None,
         };
         let s2 = ParsedSkill {
             name: "  前端游戏开发项目工作流  ".into(), // same after normalize
@@ -924,6 +949,7 @@ mod tests {
             pitfalls: "v2 pitfalls".into(),
             signals: vec![],
             signals_seen: vec![],
+            validation_hint: None,
         };
 
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
@@ -1024,6 +1050,7 @@ mod tests {
                 "authentication failed".into(),
             ],
             signals_seen: vec![],
+            validation_hint: None,
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -1059,6 +1086,7 @@ mod tests {
             pitfalls: "pt".into(),
             signals: vec![],
             signals_seen: vec![],
+            validation_hint: None,
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -1090,6 +1118,7 @@ mod tests {
             pitfalls: "don't loop".into(),
             signals: vec!["old-signal".into()],
             signals_seen: vec![],
+            validation_hint: None,
         };
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
 
@@ -1111,6 +1140,7 @@ mod tests {
             pitfalls: "don't loop".into(),
             signals: vec!["new1".into(), "new2".into()],
             signals_seen: vec![],
+            validation_hint: None,
         };
         let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
 
@@ -1150,6 +1180,7 @@ mod tests {
             pitfalls: "pt".into(),
             signals: vec!["keep-me".into()],
             signals_seen: vec![],
+            validation_hint: None,
         };
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
 
@@ -1162,6 +1193,7 @@ mod tests {
             pitfalls: "pt".into(),
             signals: vec![],  // empty — should NOT wipe existing signals
             signals_seen: vec![],
+            validation_hint: None,
         };
         let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
 
@@ -1175,5 +1207,105 @@ mod tests {
             .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<_>>())
             .unwrap_or_default();
         assert_eq!(signals, vec!["keep-me"], "old signals must not be wiped by empty re-extraction");
+    }
+
+    // ─── Task 3: validation_hint tests ───────────────────────────────────
+
+    #[test]
+    fn parses_validation_hint_when_present() {
+        let xml = r#"<skill_report><new_skills><skill>
+<name>x</name><context>c</context><principles>p</principles>
+<steps>s</steps><pitfalls>w</pitfalls>
+<validation_hint>Run the command again and confirm exit 0.</validation_hint>
+</skill></new_skills></skill_report>"#;
+        let parsed = parse_skill_report(xml);
+        assert_eq!(parsed[0].validation_hint.as_deref(),
+            Some("Run the command again and confirm exit 0."));
+    }
+
+    #[test]
+    fn validation_hint_absent_yields_none() {
+        let xml = r#"<skill_report><new_skills><skill>
+<name>y</name><context>c</context><principles>p</principles>
+<steps>s</steps><pitfalls>w</pitfalls>
+</skill></new_skills></skill_report>"#;
+        let parsed = parse_skill_report(xml);
+        assert!(parsed[0].validation_hint.is_none());
+    }
+
+    #[test]
+    fn validation_hint_persists_on_upgrade() {
+        use crate::memory_graph::store::MemoryGraphStore;
+        use rusqlite::Connection;
+        use std::sync::{Arc, Mutex};
+
+        let conn = Connection::open_in_memory().unwrap();
+        let store = MemoryGraphStore::new(Arc::new(Mutex::new(conn)));
+        store.ensure_tables();
+        let space = "default";
+
+        // First extraction: skill with a hint.
+        let s1 = ParsedSkill {
+            name: "verify-skill".into(),
+            context: "ctx".into(),
+            principles: "p".into(),
+            steps: "s".into(),
+            pitfalls: "pt".into(),
+            signals: vec![],
+            signals_seen: vec![],
+            validation_hint: Some("Re-run and check exit 0.".into()),
+        };
+        let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
+
+        // Confirm initial hint stored.
+        let stored = store.get_node(&n1.id).unwrap().unwrap();
+        let init_hint = stored.metadata.as_ref()
+            .and_then(|m| m.get("validation_hint"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        assert_eq!(init_hint.as_deref(), Some("Re-run and check exit 0."));
+
+        // Second extraction (same skill, dedup hit): new hint replaces old one.
+        let s2 = ParsedSkill {
+            name: "verify-skill".into(),
+            context: "ctx v2".into(),
+            principles: "p".into(),
+            steps: "s".into(),
+            pitfalls: "pt".into(),
+            signals: vec![],
+            signals_seen: vec![],
+            validation_hint: Some("Check the log output for 'success'.".into()),
+        };
+        let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
+        assert_eq!(n1.id, n2.id, "expected dedup to reuse node id");
+
+        let updated = store.get_node(&n1.id).unwrap().unwrap();
+        let hint = updated.metadata.as_ref()
+            .and_then(|m| m.get("validation_hint"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        assert_eq!(hint.as_deref(), Some("Check the log output for 'success'."));
+
+        // Third extraction: no hint — should NOT wipe existing.
+        let s3 = ParsedSkill {
+            name: "verify-skill".into(),
+            context: "ctx v3".into(),
+            principles: "p".into(),
+            steps: "s".into(),
+            pitfalls: "pt".into(),
+            signals: vec![],
+            signals_seen: vec![],
+            validation_hint: None,
+        };
+        let n3 = store_skill_as_procedure(&store, &s3, space).unwrap();
+        assert_eq!(n1.id, n3.id);
+
+        let final_node = store.get_node(&n1.id).unwrap().unwrap();
+        let final_hint = final_node.metadata.as_ref()
+            .and_then(|m| m.get("validation_hint"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        assert_eq!(final_hint.as_deref(), Some("Check the log output for 'success'."),
+            "None re-extraction must not wipe existing validation_hint");
     }
 }
