@@ -18,7 +18,9 @@ pub use crate::files_rail::commands::{
 
 // ─── Preview Commands (re-exported from preview::commands) ────────────────
 
-pub use crate::preview::commands::{preview_read_bytes, preview_resolve_chips};
+pub use crate::preview::commands::{
+    preview_read_bytes, preview_resolve_chips, preview_write_text, approve_preview_write,
+};
 
 // ─── Git Commands (re-exported from tauri_commands_git) ──────────────
 

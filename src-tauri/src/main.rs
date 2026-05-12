@@ -511,6 +511,8 @@ fn main() {
             // Preview Commands
             uclaw_core::preview::commands::preview_read_bytes,
             uclaw_core::preview::commands::preview_resolve_chips,
+            uclaw_core::preview::commands::preview_write_text,
+            uclaw_core::preview::commands::approve_preview_write,
             // ─── Git Commands ───
             uclaw_core::tauri_commands_git::gh_available,
             uclaw_core::tauri_commands_git::gh_create_issue,
