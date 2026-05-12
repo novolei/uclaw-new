@@ -101,6 +101,55 @@ pub async fn send_message(
     app_handle: tauri::AppHandle,
     input: SendMessageInput,
 ) -> Result<SendMessageResponse, Error> {
+    // ── /compact intercept ─────────────────────────────────────────
+    // User-triggered context compaction. Skips the entire LLM pipeline:
+    // drains the session down to the last 10 turns + prepends a summary
+    // placeholder, then returns immediately. No tokens spent, no agent
+    // turn started — just frees context budget for the next real message.
+    if input.content.trim() == "/compact" {
+        const COMPACT_KEEP_TURNS: usize = 10;
+        let before_count: usize;
+        let after_count: usize;
+        {
+            let mut session_mgr = state.session_manager.write().await;
+            if let Some(session) = session_mgr.get_mut(&input.conversation_id) {
+                before_count = session.messages.len();
+                // Reuse the same compression that the auto-trigger uses.
+                let mut tmp_ctx = crate::agent::types::ReasoningContext::new(String::new());
+                tmp_ctx.messages = std::mem::take(&mut session.messages);
+                crate::agent::agentic_loop::force_compact(&mut tmp_ctx, COMPACT_KEEP_TURNS);
+                session.messages = tmp_ctx.messages;
+                after_count = session.messages.len();
+            } else {
+                return Err(Error::InvalidInput(
+                    format!("Conversation {} not found", input.conversation_id),
+                ));
+            }
+        }
+        // Emit a system notice so the UI can render a "context compacted"
+        // marker in the conversation flow without persisting a real message.
+        let _ = app_handle.emit("chat:context-compacted", serde_json::json!({
+            "conversationId": input.conversation_id,
+            "removed": before_count.saturating_sub(after_count),
+            "remaining": after_count,
+        }));
+        tracing::info!(
+            conversation_id = %input.conversation_id,
+            removed = before_count.saturating_sub(after_count),
+            remaining = after_count,
+            "/compact: user-triggered compaction",
+        );
+        return Ok(SendMessageResponse {
+            message_id: format!("compact-{}", chrono::Utc::now().timestamp_millis()),
+            conversation_id: input.conversation_id.clone(),
+            response: format!(
+                "Compacted: removed {} earlier messages, {} remain.",
+                before_count.saturating_sub(after_count),
+                after_count,
+            ),
+        });
+    }
+
     // ── Resolve LLM config ──────────────────────────────────────────
     // Prefer the active model from the multi-provider system.
     // Fall back to the legacy LlmConfig if no active model is set.
