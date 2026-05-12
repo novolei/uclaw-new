@@ -3173,16 +3173,7 @@ pub async fn record_skill_cited(
 
     // Normalize the same way skill_parser does so capitalization /
     // trailing punctuation differences don't break the lookup.
-    let normalized = title
-        .trim()
-        .to_lowercase()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim_end_matches(|c: char| {
-            matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | '。' | '，' | '；' | '：' | '！' | '？')
-        })
-        .to_string();
+    let normalized = crate::skills::normalize_skill_title(&title);
     if normalized.is_empty() {
         return Ok(None);
     }

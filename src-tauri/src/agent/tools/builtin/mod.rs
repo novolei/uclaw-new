@@ -2,6 +2,7 @@ pub mod ask_user;
 pub mod edit;
 pub mod exit_plan_mode;
 pub mod file;
+pub mod load_skill;
 pub mod plan;
 pub mod search;
 pub mod self_eval;
