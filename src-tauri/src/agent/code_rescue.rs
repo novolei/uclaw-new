@@ -104,8 +104,17 @@ fn parse_code_blocks(text: &str) -> Vec<(String, String, String)> {
 /// Scan the last 800 characters of `text` for the last filename-like token
 /// (nearest context wins).
 fn find_filename_near(text: &str) -> Option<String> {
-    let search = if text.len() > 800 {
-        &text[text.len() - 800..]
+    // 用 char-aware 切片避开 UTF-8 边界 panic：当 text 含 CJK / emoji 时，
+    // text.len() - 800 这个**字节**索引落在多字节字符中间会导致
+    // "byte index N is not a char boundary" panic。注释也写的是"800 characters"
+    // 而非"800 bytes"，所以按字符计数才是真意图。
+    let total_chars = text.chars().count();
+    let search = if total_chars > 800 {
+        let skip = total_chars - 800;
+        text.char_indices()
+            .nth(skip)
+            .map(|(byte_idx, _)| &text[byte_idx..])
+            .unwrap_or(text)
     } else {
         text
     };
@@ -316,5 +325,20 @@ mod tests {
         let calls = extract_write_file_calls(&text, None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].arguments["path"], "game.js");
+    }
+
+    #[test]
+    fn find_filename_near_handles_cjk_at_window_edge() {
+        // Regression: byte-index slicing at text.len() - 800 used to panic
+        // when the 800-from-end position fell inside a CJK or emoji byte
+        // sequence (e.g. "指" — 3 bytes UTF-8). Real-world panic site:
+        //   panicked at src/agent/code_rescue.rs:108:
+        //   start byte index 6867 is not a char boundary; it is inside '指'
+        // Build a payload that puts a multi-byte char near the slice point.
+        // Each "数" is 3 bytes; pad with enough copies so total > 800 chars.
+        let mut text = "数".repeat(900);
+        text.push_str(" final.js content here");
+        // Must not panic.
+        let _ = find_filename_near(&text);
     }
 }
