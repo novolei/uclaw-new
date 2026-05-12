@@ -44,5 +44,8 @@ pub mod browser;
 // Phase 3: Automation
 pub mod automation;
 
+// Phase 3: Files Rail
+pub mod files_rail;
+
 // Evaluation harness
 pub mod harness;
