@@ -31,6 +31,7 @@ pub(crate) mod repo;
 pub(crate) mod branch;
 pub(crate) mod status;
 pub(crate) mod commit;
+pub(crate) mod github;
 // Subsequent tasks add their own `pub(crate) mod <name>;` lines below
 // so each commit's build stays green and bisectable.
 
