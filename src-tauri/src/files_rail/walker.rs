@@ -112,10 +112,16 @@ mod tests {
 
     #[test]
     fn read_dir_layer_computes_relative_path() {
+        // Add a file to src/ so we can assert its rel_path is forward-slashed
+        // and prefixed by the subdir name.
         let fx = fixture();
+        std::fs::write(fx.path().join("src").join("main.rs"), b"fn main() {}").unwrap();
+
         let entries = read_dir_layer(&fx.path().join("src"), fx.path()).unwrap();
-        // empty dir
-        assert!(entries.is_empty());
+        assert_eq!(entries.len(), 1);
+        let node = &entries[0];
+        assert_eq!(node.name, "main.rs");
+        assert_eq!(node.rel_path, "src/main.rs", "rel_path must be forward-slashed and prefixed by 'src/'");
     }
 
     #[test]
