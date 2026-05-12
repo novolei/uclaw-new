@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde::de::Deserializer;
 
 /// Common IPC result type
 pub type IpcResult<T> = Result<T, crate::error::Error>;
@@ -12,6 +13,8 @@ pub struct GetSettingsResponse {
     pub theme: String,
     pub config_path: String,
     pub data_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monthly_budget_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +22,17 @@ pub struct GetSettingsResponse {
 pub struct PatchSettingsInput {
     pub language: Option<String>,
     pub theme: Option<String>,
+    /// When provided, sets the monthly budget. To CLEAR the budget, send `Some(None)` —
+    /// represented on the wire as `monthlyBudgetUsd: null`. To leave unchanged, omit the
+    /// field entirely.
+    #[serde(default, deserialize_with = "deserialize_option_option_f64")]
+    pub monthly_budget_usd: Option<Option<f64>>,
+}
+
+fn deserialize_option_option_f64<'de, D>(d: D) -> Result<Option<Option<f64>>, D::Error>
+where D: Deserializer<'de>
+{
+    Ok(Some(Option::<f64>::deserialize(d)?))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

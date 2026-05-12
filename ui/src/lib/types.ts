@@ -21,11 +21,14 @@ export interface Settings {
   theme: string;
   configPath: string;
   dataPath: string;
+  monthlyBudgetUsd?: number | null;
 }
 
 export interface PatchSettingsInput {
   language?: string;
   theme?: string;
+  /** Send `null` to clear; omit to leave unchanged. */
+  monthlyBudgetUsd?: number | null;
 }
 
 export type View = "home" | "chat" | "settings" | "onboarding" | "apps";

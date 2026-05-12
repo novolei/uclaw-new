@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 pub struct UserSettings {
     pub language: String,
     pub theme: String,
+    /// Optional monthly budget in USD. None disables budget alerts.
+    /// Persisted in `config.json`. Default: None.
+    #[serde(default)]
+    pub monthly_budget_usd: Option<f64>,
 }
 
 impl Default for UserSettings {
@@ -14,6 +18,7 @@ impl Default for UserSettings {
         Self {
             language: "en".to_string(),
             theme: "light".to_string(),
+            monthly_budget_usd: None,
         }
     }
 }

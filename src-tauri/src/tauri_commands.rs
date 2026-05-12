@@ -42,6 +42,7 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<GetSettingsRespo
         theme: settings.theme.clone(),
         config_path: state.config_path.to_string_lossy().into(),
         data_path: state.data_dir.to_string_lossy().into(),
+        monthly_budget_usd: settings.monthly_budget_usd,
     })
 }
 
@@ -53,6 +54,11 @@ pub async fn patch_settings(state: State<'_, AppState>, input: PatchSettingsInpu
     }
     if let Some(theme) = input.theme {
         settings.theme = theme;
+    }
+    // Outer Some = field was present in the JSON; inner is the new value (or None to clear).
+    if let Some(budget) = input.monthly_budget_usd {
+        // Clamp negatives/zero to None — belt-and-suspenders for IPC robustness.
+        settings.monthly_budget_usd = budget.filter(|&b| b > 0.0);
     }
     settings.save(&state.config_path)?;
     drop(settings);
@@ -6978,4 +6984,34 @@ mod search_workspace_tests {
     // TODO(phase6b): No AppState test helper exists, so end-to-end integration
     // tests of search_conversations() as a Tauri command are skipped. The two
     // schema-level tests above cover JOIN correctness for all 5 SQL branches.
+}
+
+#[cfg(test)]
+mod settings_budget_tests {
+    use crate::settings::UserSettings;
+
+    #[test]
+    fn user_settings_default_has_no_budget() {
+        let s = UserSettings::default();
+        assert_eq!(s.monthly_budget_usd, None);
+    }
+
+    #[test]
+    fn user_settings_roundtrips_through_json() {
+        let s = UserSettings {
+            language: "en".into(),
+            theme: "light".into(),
+            monthly_budget_usd: Some(50.0),
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let s2: UserSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(s2.monthly_budget_usd, Some(50.0));
+    }
+
+    #[test]
+    fn user_settings_loads_legacy_config_without_field() {
+        let legacy = r#"{"language":"en","theme":"light"}"#;
+        let s: UserSettings = serde_json::from_str(legacy).unwrap();
+        assert_eq!(s.monthly_budget_usd, None);
+    }
 }
