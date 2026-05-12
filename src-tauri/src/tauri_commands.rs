@@ -2388,9 +2388,33 @@ pub async fn list_active_manifest_skills(
     let sid = space_id.unwrap_or_else(|| "default".into());
     let limit = max_entries.unwrap_or(30);
 
+    // Resolve workspace tags (V19+) so the debug panel reflects the
+    // filtered set, not the raw global manifest. Empty / missing column
+    // = no filter (matches send_agent_message's behavior).
+    let workspace_tags: Vec<String> = {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT skill_tags FROM spaces WHERE id = ?1",
+                rusqlite::params![&sid],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .unwrap_or(None);
+        raw.as_deref()
+            .and_then(|j| serde_json::from_str::<Vec<String>>(j).ok())
+            .unwrap_or_default()
+    };
+
     let registry = state.skills_registry.read().await;
     let store = &state.memory_graph_store;
-    let entries = compute_active_manifest_entries(&registry, store, &sid, limit, bias);
+    let entries = compute_active_manifest_entries(
+        &registry,
+        store,
+        &sid,
+        limit,
+        bias,
+        if workspace_tags.is_empty() { None } else { Some(workspace_tags.as_slice()) },
+    );
 
     // Enrich "builtin" provenance to the real disk tier using the registry's
     // LoadedSkill data. "learned" passes through unchanged.
@@ -4917,6 +4941,31 @@ pub async fn send_agent_message(
 
     const AGENT_SYSTEM_PROMPT: &str = "You are uClaw, a helpful AI desktop coworker. You help users with tasks using the available tools.";
 
+    // V19+: resolve the session's workspace skill_tags before the
+    // spawn, because state.db.lock() borrows from `state: State<'_>` and
+    // can't escape into the 'static spawn closure. Failure to read →
+    // empty (no filter, identical to pre-V19 behavior).
+    let workspace_tags: Vec<String> = match state.db.lock() {
+        Ok(conn) => {
+            let raw: Option<String> = conn
+                .query_row(
+                    "SELECT s.skill_tags FROM agent_sessions a \
+                     JOIN spaces s ON s.id = a.space_id \
+                     WHERE a.id = ?1",
+                    rusqlite::params![input.session_id],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .unwrap_or(None);
+            raw.as_deref()
+                .and_then(|j| serde_json::from_str::<Vec<String>>(j).ok())
+                .unwrap_or_default()
+        }
+        Err(e) => {
+            tracing::warn!(err = %e, "Workspace skill_tags lookup failed; manifest unfiltered");
+            Vec::new()
+        }
+    };
+
     tokio::spawn(async move {
         // Build reasoning context from history
         let mut ctx = ReasoningContext::new(AGENT_SYSTEM_PROMPT.to_string());
@@ -4954,6 +5003,7 @@ pub async fn send_agent_message(
                 Some("innovate") => StrategyBias::Innovate,
                 _                => StrategyBias::Balanced,
             };
+
             let registry = skills_registry_for_manifest.read().await;
             let manifest = crate::skills_manifest::build_skills_manifest(
                 &registry,
@@ -4962,6 +5012,7 @@ pub async fn send_agent_message(
                 30,
                 1500,
                 strategy_bias,
+                if workspace_tags.is_empty() { None } else { Some(workspace_tags.as_slice()) },
             );
             delegate.set_skills_manifest_block(manifest);
         }

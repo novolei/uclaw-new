@@ -42,8 +42,9 @@ pub fn build_skills_manifest(
     max_entries: usize,
     max_tokens: usize,
     bias: StrategyBias,
+    workspace_tags: Option<&[String]>,
 ) -> String {
-    let entries = collect_entries(registry, store, space_id, max_entries, &bias);
+    let entries = collect_entries(registry, store, space_id, max_entries, &bias, workspace_tags);
     if entries.is_empty() {
         return String::new();
     }
@@ -61,8 +62,31 @@ pub fn compute_active_manifest_entries(
     space_id: &str,
     max_entries: usize,
     bias: StrategyBias,
+    workspace_tags: Option<&[String]>,
 ) -> Vec<ManifestEntry> {
-    collect_entries(registry, store, space_id, max_entries, &bias)
+    collect_entries(registry, store, space_id, max_entries, &bias, workspace_tags)
+}
+
+/// Manifest filter rule for per-workspace skill tag scoping (V19+).
+///
+/// Returns true iff the skill should be included given the workspace's
+/// tag set. The semantic is **"opt-in scoping with global fallback"**:
+///
+///   - workspace has no tags (None or empty) → always include (default)
+///   - workspace has tags AND skill has no tags → include (untagged =
+///     global, like a fresh-extracted learned skill before tagging)
+///   - workspace has tags AND skill has tags → include iff intersection
+///
+/// Tag comparison is case-sensitive — normalization happened at write
+/// time via `normalize_skill_tags`.
+pub fn skill_matches_workspace(
+    skill_tags: &[String],
+    workspace_tags: Option<&[String]>,
+) -> bool {
+    let Some(ws) = workspace_tags else { return true };
+    if ws.is_empty() { return true; }
+    if skill_tags.is_empty() { return true; }
+    skill_tags.iter().any(|t| ws.iter().any(|w| w == t))
 }
 
 /// Single row in the manifest. Public for the debug panel IPC.
@@ -86,13 +110,19 @@ fn collect_entries(
     space_id: &str,
     max_entries: usize,
     bias: &StrategyBias,
+    workspace_tags: Option<&[String]>,
 ) -> Vec<ManifestEntry> {
     let mut entries = Vec::new();
 
     // Builtin: alphabetical (list_enabled is already alpha-sorted),
     // honors runtime disable via SkillsRegistry::disable.
+    // V19+: workspace tag filter applied via skill_matches_workspace().
+    // Skills with no activation.tags are global (included regardless).
     let builtin: Vec<_> = registry.list_enabled().into_iter().collect();
     for info in builtin {
+        if !skill_matches_workspace(&info.activation.tags, workspace_tags) {
+            continue;
+        }
         entries.push(ManifestEntry {
             name: info.name.clone(),
             summary: truncate_summary(&info.description, 100),
@@ -140,7 +170,28 @@ fn collect_entries(
         entry: ManifestEntry,
         bonus: f32,
     }
-    let mut candidates: Vec<Candidate> = learned.into_iter().map(|detail| {
+    let mut candidates: Vec<Candidate> = learned.into_iter().filter_map(|detail| {
+        // V19+ workspace tag filter for learned skills. Tags live in
+        // `metadata.tags` (JSON array of strings) when populated, or
+        // are missing entirely on legacy/untagged skills. Missing or
+        // empty → global (always included if the workspace has no
+        // filter or the skill is untagged).
+        let skill_tags: Vec<String> = detail
+            .node
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("tags"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !skill_matches_workspace(&skill_tags, workspace_tags) {
+            return None;
+        }
+
         let summary = detail
             .node
             .metadata
@@ -168,7 +219,7 @@ fn collect_entries(
         } else {
             0.0
         };
-        Candidate {
+        Some(Candidate {
             entry: ManifestEntry {
                 name: detail.node.title.clone(),
                 summary: truncate_summary(&summary, 100),
@@ -176,7 +227,7 @@ fn collect_entries(
                 cited_count,
             },
             bonus,
-        }
+        })
     }).collect();
 
     // Stable sort by bonus descending (E3 order preserved within ties).
@@ -253,6 +304,59 @@ fn truncate_summary(s: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
 
+    // ─── Pure filter helper: covers all four branches of the rule ────────
+
+    #[test]
+    fn skill_matches_workspace_no_filter_when_workspace_tags_missing() {
+        // None == "this workspace was loaded with no filter info" — must
+        // never exclude anything (graceful degradation).
+        assert!(skill_matches_workspace(&[], None));
+        assert!(skill_matches_workspace(&["engineering".into()], None));
+    }
+
+    #[test]
+    fn skill_matches_workspace_no_filter_when_workspace_tags_empty() {
+        // Empty == "user explicitly opted out of scoping" — same effect
+        // as None: include everything.
+        let empty: &[String] = &[];
+        assert!(skill_matches_workspace(&[], Some(empty)));
+        assert!(skill_matches_workspace(&["engineering".into()], Some(empty)));
+    }
+
+    #[test]
+    fn skill_matches_workspace_untagged_skill_is_global() {
+        // The "untagged = global" rule: a skill with no tags appears in
+        // every workspace, even tag-scoped ones. Protects fresh-extracted
+        // learned skills from being silently hidden.
+        let ws = ["engineering".to_string()];
+        assert!(skill_matches_workspace(&[], Some(&ws)));
+    }
+
+    #[test]
+    fn skill_matches_workspace_intersection_required() {
+        let ws = ["engineering".to_string(), "process".to_string()];
+
+        // Skill `["engineering", "tdd"]` matches via `engineering`.
+        let skill1 = ["engineering".to_string(), "tdd".to_string()];
+        assert!(skill_matches_workspace(&skill1, Some(&ws)));
+
+        // Skill `["research"]` has no overlap — excluded.
+        let skill2 = ["research".to_string()];
+        assert!(!skill_matches_workspace(&skill2, Some(&ws)));
+    }
+
+    #[test]
+    fn skill_matches_workspace_case_sensitive() {
+        // Normalization happens at write time. The filter does bare
+        // comparison so we don't pay per-call lowercase costs.
+        let ws = ["engineering".to_string()];
+        let skill_upper = ["Engineering".to_string()];
+        assert!(!skill_matches_workspace(&skill_upper, Some(&ws)),
+            "filter is case-sensitive — caller must normalize before write");
+    }
+
+    // ─── Existing tests below ────────────────────────────────────────────
+
     #[test]
     fn empty_registry_and_store_returns_empty_string() {
         // Will need a way to construct an empty MemoryGraphStore — use the
@@ -267,7 +371,7 @@ mod tests {
         let store = MemoryGraphStore::new(conn);
         let registry = SkillsRegistry::new();
 
-        let manifest = build_skills_manifest(&registry, &store, "default", 30, 1500, StrategyBias::Balanced);
+        let manifest = build_skills_manifest(&registry, &store, "default", 30, 1500, StrategyBias::Balanced, None);
         assert!(manifest.is_empty(), "expected empty manifest, got: {}", manifest);
     }
 
@@ -327,7 +431,7 @@ mod tests {
         make_learned_node(&store, "stock-research", "Cross-validate stock financials", 7, 12);
 
         let registry = SkillsRegistry::new();
-        let manifest = build_skills_manifest(&registry, &store, "default", 30, 1500, StrategyBias::Balanced);
+        let manifest = build_skills_manifest(&registry, &store, "default", 30, 1500, StrategyBias::Balanced, None);
 
         assert!(manifest.contains("## 你已学习到的技能"), "missing header");
         assert!(manifest.contains("**stock-research**"), "missing skill name");
@@ -341,7 +445,7 @@ mod tests {
         make_learned_node(&store, "newly-extracted", "Just extracted, never cited yet", 0, 1);
 
         let registry = SkillsRegistry::new();
-        let manifest = build_skills_manifest(&registry, &store, "default", 30, 1500, StrategyBias::Balanced);
+        let manifest = build_skills_manifest(&registry, &store, "default", 30, 1500, StrategyBias::Balanced, None);
 
         assert!(manifest.contains("[learned]"), "expected bare [learned] when cited=0; got:\n{}", manifest);
         assert!(!manifest.contains("cited 0"), "must not say 'cited 0'");
@@ -354,7 +458,7 @@ mod tests {
             make_learned_node(&store, &format!("skill-{}", i), "blah", 0, 0);
         }
         let registry = SkillsRegistry::new();
-        let manifest = build_skills_manifest(&registry, &store, "default", 2, 1500, StrategyBias::Balanced);
+        let manifest = build_skills_manifest(&registry, &store, "default", 2, 1500, StrategyBias::Balanced, None);
 
         let lines = manifest.matches("\n- **").count();
         assert_eq!(lines, 2, "expected exactly 2 entries; got:\n{}", manifest);
@@ -366,7 +470,7 @@ mod tests {
         let store = fresh_store();
         make_learned_node(&store, "long-skill", summary, 0, 0);
         let registry = SkillsRegistry::new();
-        let manifest = build_skills_manifest(&registry, &store, "default", 30, 1500, StrategyBias::Balanced);
+        let manifest = build_skills_manifest(&registry, &store, "default", 30, 1500, StrategyBias::Balanced, None);
 
         // Should be truncated with "…"
         assert!(manifest.contains("…"), "expected truncation marker; got:\n{}", manifest);
@@ -381,7 +485,7 @@ mod tests {
             make_learned_node(&store, &format!("skill-{}", i), "some summary text", 0, 0);
         }
         let registry = SkillsRegistry::new();
-        let manifest = build_skills_manifest(&registry, &store, "default", 30, 100, StrategyBias::Balanced);
+        let manifest = build_skills_manifest(&registry, &store, "default", 30, 100, StrategyBias::Balanced, None);
 
         let lines = manifest.matches("\n- **").count();
         assert!(lines < 30, "expected token budget to drop entries; got {} lines", lines);
@@ -423,7 +527,7 @@ mod tests {
         registry.register(mk_skill("z-builtin", "Z builtin"));
         registry.register(mk_skill("a-builtin", "A builtin"));
 
-        let manifest = build_skills_manifest(&registry, &store, "default", 30, 4000, StrategyBias::Balanced);
+        let manifest = build_skills_manifest(&registry, &store, "default", 30, 4000, StrategyBias::Balanced, None);
 
         // Find positions of each skill name in the manifest body
         let a_builtin_pos = manifest.find("**a-builtin**").expect("a-builtin missing");
@@ -442,7 +546,7 @@ mod tests {
 
         // Runtime disable removes a builtin from the manifest
         registry.disable("a-builtin");
-        let manifest2 = build_skills_manifest(&registry, &store, "default", 30, 4000, StrategyBias::Balanced);
+        let manifest2 = build_skills_manifest(&registry, &store, "default", 30, 4000, StrategyBias::Balanced, None);
         assert!(
             !manifest2.contains("**a-builtin**"),
             "runtime-disabled skill should not appear; got:\n{}",
@@ -508,13 +612,13 @@ mod tests {
         let registry = SkillsRegistry::new();
 
         // Balanced: optimize-skill (cited=10) comes before repair-skill (cited=1)
-        let balanced = build_skills_manifest(&registry, &store, "default", 30, 4000, StrategyBias::Balanced);
+        let balanced = build_skills_manifest(&registry, &store, "default", 30, 4000, StrategyBias::Balanced, None);
         let opt_pos = balanced.find("**optimize-skill**").expect("optimize-skill missing");
         let rep_pos = balanced.find("**repair-skill**").expect("repair-skill missing");
         assert!(opt_pos < rep_pos, "balanced: higher-cited skill should appear first");
 
         // Repair bias: repair-skill should float to the top of the learned block
-        let biased = build_skills_manifest(&registry, &store, "default", 30, 4000, StrategyBias::Repair);
+        let biased = build_skills_manifest(&registry, &store, "default", 30, 4000, StrategyBias::Repair, None);
         let opt_biased = biased.find("**optimize-skill**").expect("optimize-skill missing in biased");
         let rep_biased = biased.find("**repair-skill**").expect("repair-skill missing in biased");
         assert!(rep_biased < opt_biased, "repair bias: repair-tagged skill must precede unmatched skill");
