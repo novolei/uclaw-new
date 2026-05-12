@@ -18,7 +18,7 @@ pub use crate::files_rail::commands::{
 
 // ─── Preview Commands (re-exported from preview::commands) ────────────────
 
-pub use crate::preview::commands::preview_read_bytes;
+pub use crate::preview::commands::{preview_read_bytes, preview_resolve_chips};
 
 const TITLE_GEN_SYSTEM_PROMPT: &str = "You are a title generator. Given a user's first message, return ONLY a JSON object with two fields: \"title\" (max 5 words, imperative or noun phrase) and \"emoji\" (single relevant emoji). No explanation.";
 

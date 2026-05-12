@@ -62,3 +62,40 @@ fn read_capped_rejects_directory() {
 // up-front in the function itself and are covered by the manual smoke test
 // in the PR plan. The pure-Rust read_capped tests above cover the boundary
 // behavior unit-tests should pin.
+
+#[cfg(test)]
+mod chip_tests {
+    use super::super::resolver::strip_line_col;
+
+    #[test]
+    fn strips_line_only() {
+        let (p, line, col) = strip_line_col("src/main.rs:42");
+        assert_eq!(p, "src/main.rs");
+        assert_eq!(line, Some(42));
+        assert_eq!(col, None);
+    }
+
+    #[test]
+    fn strips_line_and_col() {
+        let (p, line, col) = strip_line_col("src/main.rs:42:15");
+        assert_eq!(p, "src/main.rs");
+        assert_eq!(line, Some(42));
+        assert_eq!(col, Some(15));
+    }
+
+    #[test]
+    fn leaves_input_when_no_suffix() {
+        let (p, line, col) = strip_line_col("src/main.rs");
+        assert_eq!(p, "src/main.rs");
+        assert_eq!(line, None);
+        assert_eq!(col, None);
+    }
+
+    #[test]
+    fn leaves_input_when_suffix_non_numeric() {
+        let (p, line, col) = strip_line_col("src/main.rs:foo");
+        assert_eq!(p, "src/main.rs:foo");
+        assert_eq!(line, None);
+        assert_eq!(col, None);
+    }
+}

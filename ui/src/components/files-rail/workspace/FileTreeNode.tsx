@@ -9,7 +9,7 @@ interface FileTreeNodeProps {
   depth: number
   isExpanded: (rel: string) => boolean
   onToggle: (rel: string, isDir: boolean) => Promise<void>
-  onFileClick: (node: TreeNode) => void
+  onFileClick: (node: TreeNode, event: React.MouseEvent<HTMLButtonElement>) => void
 }
 
 export const FileTreeNode = React.memo(function FileTreeNode({
@@ -22,10 +22,13 @@ export const FileTreeNode = React.memo(function FileTreeNode({
   const expanded = isExpanded(node.relPath)
   const isDir = node.kind === 'directory'
 
-  const handleClick = React.useCallback(() => {
-    if (isDir) void onToggle(node.relPath, true)
-    else onFileClick(node)
-  }, [isDir, node, onToggle, onFileClick])
+  const handleClick = React.useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      if (isDir) void onToggle(node.relPath, true)
+      else onFileClick(node, event)
+    },
+    [isDir, node, onToggle, onFileClick],
+  )
 
   const indent = depth * 12
 
@@ -33,7 +36,7 @@ export const FileTreeNode = React.memo(function FileTreeNode({
     <>
       <button
         type="button"
-        onClick={handleClick}
+        onClick={(e) => handleClick(e)}
         className={cn(
           'flex items-center w-full h-[22px] px-2 gap-1 text-[12px] text-left',
           'text-foreground/85 hover:bg-foreground/[0.04] transition-colors',

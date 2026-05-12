@@ -24,3 +24,18 @@ pub struct PreviewBytes {
     /// Modification time, milliseconds since epoch.
     pub mtime_ms: i64,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChipResolution {
+    /// The raw input string, unchanged (so the frontend can key its cache).
+    pub input: String,
+    /// `true` if the resolved path exists and is a regular file.
+    pub exists: bool,
+    /// Mount id when the path resolved through a mount. `None` for absolute paths.
+    pub mount_id: Option<String>,
+    /// Path inside the mount (forward-slash). `None` for absolute paths or misses.
+    pub rel_path: Option<String>,
+    /// Canonicalised absolute path when resolved; `None` otherwise.
+    pub absolute_path: Option<String>,
+}
