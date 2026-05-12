@@ -107,6 +107,8 @@ import type {
   DailyCostRollup,
   ModelCostRollup,
   SessionCostRollup,
+  WorkspaceCostRollup,
+  BudgetThresholdPayload,
   // Permission rules
   PermissionRule,
   PermissionAuditEntry,
@@ -772,6 +774,15 @@ export const getModelCosts = (daysBack = 30): Promise<ModelCostRollup[]> =>
 
 export const getSessionCosts = (daysBack = 30, limit = 50): Promise<SessionCostRollup[]> =>
   invoke<SessionCostRollup[]>('get_session_costs', { daysBack, limit });
+
+export const listWorkspaceCostRollup = (sinceMs: number): Promise<WorkspaceCostRollup[]> =>
+  invoke<WorkspaceCostRollup[]>('list_workspace_cost_rollup', { sinceMs });
+
+export const getMonthCostTotal = (sinceMs: number): Promise<number> =>
+  invoke<number>('get_month_cost_total', { sinceMs });
+
+export const onBudgetThreshold = (cb: (payload: BudgetThresholdPayload) => void): Promise<UnlistenFn> =>
+  listen('budget:threshold', (e) => cb(e.payload as BudgetThresholdPayload));
 
 export const onContextStats = (cb: (payload: ContextStats) => void): Promise<UnlistenFn> =>
   listen('agent:context_stats', (e) => cb(e.payload as ContextStats));

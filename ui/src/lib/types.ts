@@ -1057,6 +1057,20 @@ export interface SessionCostRollup {
   lastUsedAt: number
 }
 
+export interface WorkspaceCostRollup {
+  workspaceId: string
+  workspaceName: string
+  workspaceIcon: string
+  totalCostUsd: number
+  totalTokens: number
+}
+
+export interface BudgetThresholdPayload {
+  threshold: 80 | 100
+  current: number
+  budget: number
+}
+
 // ===== Permission rules =====
 
 export interface PermissionRule {
