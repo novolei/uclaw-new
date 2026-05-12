@@ -889,6 +889,17 @@ pub struct WorkspaceCostRollup {
     pub total_tokens: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetThresholdPayload {
+    /// 80 or 100. The threshold percentage that was crossed on this turn.
+    pub threshold: u8,
+    /// Current monthly total in USD (after this turn's cost).
+    pub current: f64,
+    /// Configured monthly budget in USD.
+    pub budget: f64,
+}
+
 // ─── Permission rules ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -253,6 +253,29 @@ impl ChatDelegate {
                 usage.input_tokens,
                 usage.output_tokens,
             );
+
+            // Phase 6-C: budget threshold check. Best-effort — failures don't propagate.
+            let budget_opt: Option<f64> = match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    let s = handle.block_on(state.settings.read());
+                    s.monthly_budget_usd
+                }
+                Err(_) => None,
+            };
+            if let Some(budget) = budget_opt {
+                if budget > 0.0 {
+                    let month_start = crate::cost_store::current_month_start_ms();
+                    let total_after = crate::cost_store::monthly_total(&state, month_start);
+                    let total_before = (total_after - cost).max(0.0);
+                    if let Some(threshold) = crate::cost_store::fired_threshold(total_before, total_after, budget) {
+                        let _ = self.app_handle.emit("budget:threshold", crate::ipc::BudgetThresholdPayload {
+                            threshold,
+                            current: total_after,
+                            budget,
+                        });
+                    }
+                }
+            }
         }
 
         let _ = self.app_handle.emit("agent:turn_cost", serde_json::json!({
