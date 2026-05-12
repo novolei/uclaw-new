@@ -51,6 +51,13 @@ export function GitChipsRow({ className }: Props): React.ReactElement | null {
 
   if (!cwd) return null
 
+  // When the directory is not yet a git repo, the BranchPicker chip handles
+  // initialization on its own (amber "无 Git 仓库 · 点击初始化" affordance →
+  // sonner confirmation toast → gitInitRepo). Showing GitActionsPicker
+  // alongside would surface a redundant "初始化 Git" action whose only
+  // value is the same init flow. Hide it until isGitRepo flips to true.
+  const showActions = isGitRepo === true
+
   return (
     <div className={cn('flex items-center gap-1.5', className)}>
       <BranchPicker
@@ -60,12 +67,14 @@ export function GitChipsRow({ className }: Props): React.ReactElement | null {
         onChanged={setCurrentBranch}
         onInitRepo={() => setIsGitRepo(true)}
       />
-      <GitActionsPicker
-        cwd={cwd}
-        isGitRepo={isGitRepo}
-        onBranchChange={setCurrentBranch}
-        onOpenWorkbench={() => setWorkbenchOpen(true)}
-      />
+      {showActions && (
+        <GitActionsPicker
+          cwd={cwd}
+          isGitRepo={isGitRepo}
+          onBranchChange={setCurrentBranch}
+          onOpenWorkbench={() => setWorkbenchOpen(true)}
+        />
+      )}
       <GitWorkbenchDialog
         open={workbenchOpen}
         onOpenChange={setWorkbenchOpen}

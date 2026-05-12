@@ -95,10 +95,15 @@ pub(crate) fn git_ok(cwd: &Path, args: &[&str]) -> GitResult<()> {
 
 /// Run `git args...` with `--no-optional-locks` injected so that read-only
 /// inspection (status / diff) cannot interfere with concurrent IDE git
-/// activity.  Used by the prompt-injection helpers and by `/diff`.
+/// activity. Also disables `core.quotePath` so non-ASCII filenames (CJK,
+/// emoji, accented chars) render literally instead of as `\xxx` octal
+/// escapes — the workbench dialog renders the raw output as text, and
+/// octal-escaped paths are unreadable for the user.
 pub(crate) fn git_stdout_no_locks(cwd: &Path, args: &[&str]) -> GitResult<String> {
-    let mut all = Vec::with_capacity(args.len() + 1);
+    let mut all = Vec::with_capacity(args.len() + 3);
     all.push("--no-optional-locks");
+    all.push("-c");
+    all.push("core.quotePath=false");
     all.extend_from_slice(args);
     git_stdout(cwd, &all)
 }
