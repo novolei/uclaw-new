@@ -222,6 +222,24 @@ impl ChatDelegate {
         }));
     }
 
+    /// Emit a hard-error tool result so the frontend can flip the activity
+    /// to "failed" state immediately, instead of letting it spin until the
+    /// whole turn completes.
+    fn emit_tool_error(&self, name: &str, id: &str, err_msg: &str, duration_ms: u64) {
+        let _ = self.app_handle.emit("chat:stream-tool-activity", serde_json::json!({
+            "conversationId": self.conversation_id,
+            "activity": {
+                "type": "tool_result",
+                "toolName": name,
+                "toolCallId": id,
+                "result": { "ok": false, "error": err_msg },
+                "durationMs": duration_ms,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "isError": true,
+            }
+        }));
+    }
+
     /// Emit a completion event to the frontend
     fn emit_done(&self, text: &str) {
         let _ = self.app_handle.emit("chat:stream-complete", serde_json::json!({
@@ -1235,6 +1253,11 @@ impl LoopDelegate for ChatDelegate {
                         Err(e) => {
                             let duration_ms = tool_start.elapsed().as_millis() as u64;
                             tracing::error!("Tool {} execution failed: {}", tc.name, e);
+                            // Mark the tool activity as failed in the UI immediately —
+                            // before this, only emit_error fired (which raises a toast
+                            // but doesn't update the tool row), so the spinner kept
+                            // running until end-of-turn final cleanup.
+                            self.emit_tool_error(&tc.name, &tc.id, &e.to_string(), duration_ms);
                             self.emit_error(&e.to_string());
 
                             let error_result_str = format!("Error: {}", e);
