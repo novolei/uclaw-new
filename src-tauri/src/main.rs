@@ -504,6 +504,8 @@ fn main() {
             uclaw_core::files_rail::commands::files_rail_read_dir,
             uclaw_core::files_rail::commands::files_rail_watch_start,
             uclaw_core::files_rail::commands::files_rail_watch_stop,
+            // Preview Commands
+            uclaw_core::preview::commands::preview_read_bytes,
             // Workspace Commands
             uclaw_core::tauri_commands::get_active_workspace_id,
             uclaw_core::tauri_commands::set_active_workspace_id,
