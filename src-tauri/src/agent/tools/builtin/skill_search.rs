@@ -50,6 +50,10 @@ struct SearchHit {
     cited_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     node_id: Option<String>,
+    /// Which signals (if any) matched this query — surfaced to the LLM
+    /// so it can explain why this skill was recalled.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    matched_signals: Vec<String>,
 }
 
 #[async_trait]
@@ -104,6 +108,7 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
                 provenance: "builtin",
                 cited_count: None,
                 node_id: None,
+                matched_signals: vec![],
             });
         }
         drop(registry);
@@ -136,6 +141,7 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
         }
 
         // Build learned hits — node already in hand, no extra DB call needed.
+        let query_lower = query.to_lowercase();
         for (node_id, (kw_hits, node)) in node_score {
             let cited = node
                 .metadata
@@ -156,7 +162,31 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| node.title.clone());
-            let score = (kw_hits as f64) + (cited as f64 * 0.5) + (usage as f64 * 0.2);
+
+            // Signal scoring: +1.5 per signal phrase that appears as a
+            // substring in the lowercased query.
+            let signals: Vec<String> = node
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("signals"))
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let matched_signals: Vec<String> = signals
+                .iter()
+                .filter(|sig| query_lower.contains(sig.as_str()))
+                .cloned()
+                .collect();
+            let signal_match_count = matched_signals.len() as f64;
+
+            let score = (kw_hits as f64)
+                + signal_match_count * 1.5
+                + (cited as f64 * 0.5)
+                + (usage as f64 * 0.2);
             hits.push(SearchHit {
                 name: node.title,
                 summary: truncate_summary(&summary, 200),
@@ -164,6 +194,7 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
                 provenance: "learned",
                 cited_count: Some(cited),
                 node_id: Some(node_id),
+                matched_signals,
             });
         }
 
@@ -346,5 +377,89 @@ mod tests {
 
         let out = tool.execute(json!({ "query": "nonexistent_xyz_query" })).await.unwrap();
         assert_eq!(out.result, json!([]));
+    }
+
+    /// Helper: create a learned node with explicit metadata (including signals).
+    fn make_learned_node_with_signals(
+        store: &MemoryGraphStore,
+        title: &str,
+        keywords: &[&str],
+        signals: &[&str],
+    ) -> String {
+        let now = chrono::Utc::now().to_rfc3339();
+        let id = uuid::Uuid::new_v4().to_string();
+        let signals_value: serde_json::Value = signals
+            .iter()
+            .map(|s| serde_json::Value::String(s.to_string()))
+            .collect::<Vec<_>>()
+            .into();
+        let node = MemoryNode {
+            id: id.clone(),
+            space_id: "default".into(),
+            kind: crate::memory_graph::models::MemoryNodeKind::Procedure,
+            title: title.into(),
+            metadata: Some(json!({
+                "skill_type": "learned",
+                "enabled": true,
+                "summary": format!("Summary for {}", title),
+                "cited_count": 0u64,
+                "usage_count": 0u64,
+                "signals": signals_value,
+            })),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        store.create_node(&node).unwrap();
+        for kw in keywords {
+            store.create_keyword(&MemoryKeyword {
+                id: uuid::Uuid::new_v4().to_string(),
+                space_id: "default".into(),
+                node_id: id.clone(),
+                keyword: kw.to_string(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+            }).unwrap();
+        }
+        id
+    }
+
+    #[tokio::test]
+    async fn signal_match_boosts_score_over_keyword_only() {
+        let store = fresh_store();
+        // Skill A: keyword "api" only, no signals
+        let _id_a = make_learned_node_with_keywords(&store, "skill-a", &["api"], 0);
+        // Skill B: keyword "api" + signal "401 unauthorized"
+        let _id_b = make_learned_node_with_signals(&store, "skill-b", &["api"], &["401 unauthorized"]);
+
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        let tool = SkillSearchTool::new(
+            registry,
+            Arc::clone(&store),
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
+        );
+
+        // Query includes both keyword token AND the signal phrase
+        let out = tool.execute(json!({ "query": "api 401 unauthorized" })).await.unwrap();
+        let hits = out.result.as_array().unwrap();
+        assert!(!hits.is_empty(), "expected at least one hit");
+
+        let pos_a = hits.iter().position(|h| h["name"] == "skill-a");
+        let pos_b = hits.iter().position(|h| h["name"] == "skill-b");
+
+        assert!(pos_a.is_some(), "skill-a should appear in results");
+        assert!(pos_b.is_some(), "skill-b should appear in results");
+        assert!(
+            pos_b.unwrap() < pos_a.unwrap(),
+            "expected skill-b (signal+keyword match) before skill-a (keyword only); hits: {:#?}",
+            hits
+        );
+
+        // Also verify matched_signals is populated for skill-b
+        let b_hit = &hits[pos_b.unwrap()];
+        let matched = b_hit["matched_signals"].as_array().unwrap();
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0], "401 unauthorized");
     }
 }

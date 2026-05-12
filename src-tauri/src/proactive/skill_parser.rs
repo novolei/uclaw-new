@@ -11,6 +11,10 @@ pub struct ParsedSkill {
     pub principles: String,
     pub steps: String,
     pub pitfalls: String,
+    /// 触发短语列表：LLM 在 <signals><signal>…</signal></signals> 里生成，
+    /// 描述「哪类用户提问或错误消息」应该触发本技能。
+    /// 若 LLM 未输出该块，则为空 Vec（向后兼容）。
+    pub signals: Vec<String>,
 }
 
 /// 解析 <skill_report> XML 中的 <skill> 标签
@@ -58,16 +62,53 @@ pub fn parse_skill_report(xml_text: &str) -> Vec<ParsedSkill> {
         let steps = extract_tag_content(&skill_content, "steps").unwrap_or_default();
         let pitfalls = extract_tag_content(&skill_content, "pitfalls").unwrap_or_default();
 
+        // 提取可选的 <signals><signal>…</signal></signals> 块
+        let signals: Vec<String> = if let Some(sigs_block) = extract_tag_content(&skill_content, "signals") {
+            extract_repeated_tag_content(&sigs_block, "signal")
+                .into_iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         skills.push(ParsedSkill {
             name,
             context,
             principles,
             steps,
             pitfalls,
+            signals,
         });
     }
 
     skills
+}
+
+/// 辅助函数：提取同名 XML 标签的所有内容（返回列表）
+///
+/// 用于提取 <signals> 块内的多个 <signal> 子标签等场景。
+fn extract_repeated_tag_content(text: &str, tag: &str) -> Vec<String> {
+    let mut results = Vec::new();
+    let mut search_start = 0;
+    loop {
+        let remaining = &text[search_start..];
+        match extract_tag_content(remaining, tag) {
+            Some(content) => {
+                results.push(content);
+                // 推进到下一个同名标签结束位置
+                let close = format!("</{}>", tag);
+                if let Some(pos) = remaining.find(&close) {
+                    search_start += pos + close.len();
+                } else {
+                    break;
+                }
+            }
+            None => break,
+        }
+    }
+    results
 }
 
 /// 辅助函数：提取 XML 标签内容
@@ -172,7 +213,7 @@ pub fn store_skill_as_procedure(
 
     let node_id = uuid::Uuid::new_v4().to_string();
 
-    let metadata = serde_json::json!({
+    let mut metadata = serde_json::json!({
         "skill_type": "learned",
         "context": skill.context,
         "principles": skill.principles,
@@ -182,6 +223,14 @@ pub fn store_skill_as_procedure(
         "enabled": true,
         "usage_count": 0
     });
+
+    if !skill.signals.is_empty() {
+        metadata["signals"] = serde_json::Value::Array(
+            skill.signals.iter()
+                .map(|s| serde_json::Value::String(s.clone()))
+                .collect(),
+        );
+    }
 
     let node = MemoryNode {
         id: node_id.clone(),
@@ -349,6 +398,28 @@ fn upgrade_existing_skill(
         created_at: now.to_string(),
     };
     store.create_version(&new_version)?;
+
+    // Update signals if the re-extraction produced any. Empty re-extraction
+    // keeps the old signals (a re-extraction without signals shouldn't wipe
+    // existing trigger phrases — that's worse than keeping stale ones).
+    if !skill.signals.is_empty() {
+        let mut metadata = existing.metadata.clone().unwrap_or_else(|| serde_json::json!({}));
+        if let Some(obj) = metadata.as_object_mut() {
+            obj.insert(
+                "signals".to_string(),
+                serde_json::Value::Array(
+                    skill.signals.iter().map(|s| serde_json::Value::String(s.clone())).collect(),
+                ),
+            );
+        }
+        if let Err(e) = store.update_node(&existing.id, None, None, Some(&metadata)) {
+            tracing::warn!(
+                node_id = %existing.id,
+                err = %e,
+                "skill_parser: signals update failed (continuing)"
+            );
+        }
+    }
 
     // Bump usage_count — the LLM re-derived this skill from a fresh
     // session, which is itself a vote of confidence. Best-effort.
@@ -662,6 +733,7 @@ mod tests {
             principles: "测试原则".to_string(),
             steps: "测试步骤".to_string(),
             pitfalls: "测试陷阱".to_string(),
+            signals: vec![],
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -771,6 +843,7 @@ mod tests {
             principles: "v1".into(),
             steps: "v1".into(),
             pitfalls: "v1".into(),
+            signals: vec![],
         };
         let s2 = ParsedSkill {
             name: "处理 edit 工具文本匹配错误的备选插入策略".into(), // +1 word prefix
@@ -778,6 +851,7 @@ mod tests {
             principles: "v2".into(),
             steps: "v2".into(),
             pitfalls: "v2".into(),
+            signals: vec![],
         };
 
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
@@ -809,6 +883,7 @@ mod tests {
             principles: "v1 principles".into(),
             steps: "v1 steps".into(),
             pitfalls: "v1 pitfalls".into(),
+            signals: vec![],
         };
         let s2 = ParsedSkill {
             name: "  前端游戏开发项目工作流  ".into(), // same after normalize
@@ -816,6 +891,7 @@ mod tests {
             principles: "v2 principles".into(),
             steps: "v2 steps".into(),
             pitfalls: "v2 pitfalls".into(),
+            signals: vec![],
         };
 
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
@@ -853,5 +929,213 @@ mod tests {
             assert!(!k.starts_with(':'));
             assert!(!k.ends_with('。'));
         }
+    }
+
+    // ─── Task 1: signals[] extraction tests ──────────────────────────────
+
+    #[test]
+    fn parses_signals_array_from_skill_xml() {
+        let xml = r#"<skill_report><new_skills><skill>
+<name>api-key-rotation</name>
+<context>API key auth failures</context>
+<principles>Rotate keys when 401 persists</principles>
+<steps>1. detect 401
+2. swap key</steps>
+<pitfalls>Don't retry indefinitely</pitfalls>
+<signals>
+<signal>401 unauthorized</signal>
+<signal>token expired</signal>
+<signal>authentication failed</signal>
+</signals>
+</skill></new_skills></skill_report>"#;
+        let parsed = parse_skill_report(xml);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(
+            parsed[0].signals,
+            vec!["401 unauthorized", "token expired", "authentication failed"]
+        );
+    }
+
+    #[test]
+    fn parses_skill_without_signals_block() {
+        let xml = r#"<skill_report><new_skills><skill>
+<name>basic-skill</name>
+<context>x</context>
+<principles>y</principles>
+<steps>z</steps>
+<pitfalls>w</pitfalls>
+</skill></new_skills></skill_report>"#;
+        let parsed = parse_skill_report(xml);
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0].signals.is_empty());
+    }
+
+    #[test]
+    fn signals_persist_to_metadata_on_extraction() {
+        use crate::memory_graph::store::MemoryGraphStore;
+        use rusqlite::Connection;
+        use std::sync::{Arc, Mutex};
+
+        let conn = Connection::open_in_memory().unwrap();
+        let store = MemoryGraphStore::new(Arc::new(Mutex::new(conn)));
+        store.ensure_tables();
+
+        let skill = ParsedSkill {
+            name: "api-key-rotation".into(),
+            context: "auth failures".into(),
+            principles: "rotate on 401".into(),
+            steps: "1. detect\n2. swap".into(),
+            pitfalls: "don't loop".into(),
+            signals: vec![
+                "401 unauthorized".into(),
+                "token expired".into(),
+                "authentication failed".into(),
+            ],
+        };
+
+        let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
+        let stored = store.get_node(&node.id).unwrap().unwrap();
+        let signals_val = stored.metadata.as_ref()
+            .and_then(|m| m.get("signals"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        assert_eq!(signals_val, vec!["401 unauthorized", "token expired", "authentication failed"]);
+    }
+
+    #[test]
+    fn empty_signals_not_written_to_metadata() {
+        use crate::memory_graph::store::MemoryGraphStore;
+        use rusqlite::Connection;
+        use std::sync::{Arc, Mutex};
+
+        let conn = Connection::open_in_memory().unwrap();
+        let store = MemoryGraphStore::new(Arc::new(Mutex::new(conn)));
+        store.ensure_tables();
+
+        let skill = ParsedSkill {
+            name: "no-signals-skill".into(),
+            context: "ctx".into(),
+            principles: "p".into(),
+            steps: "s".into(),
+            pitfalls: "pt".into(),
+            signals: vec![],
+        };
+
+        let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
+        let stored = store.get_node(&node.id).unwrap().unwrap();
+        let has_signals_key = stored.metadata.as_ref()
+            .map(|m| m.get("signals").is_some())
+            .unwrap_or(false);
+        assert!(!has_signals_key, "signals key should be absent when signals is empty");
+    }
+
+    #[test]
+    fn signals_persist_on_skill_upgrade() {
+        use crate::memory_graph::store::MemoryGraphStore;
+        use rusqlite::Connection;
+        use std::sync::{Arc, Mutex};
+
+        let conn = Connection::open_in_memory().unwrap();
+        let store = MemoryGraphStore::new(Arc::new(Mutex::new(conn)));
+        store.ensure_tables();
+
+        let space = "default";
+
+        // First extraction: skill with old signal.
+        let s1 = ParsedSkill {
+            name: "api-key-rotation".into(),
+            context: "auth failures".into(),
+            principles: "rotate on 401".into(),
+            steps: "1. detect\n2. swap".into(),
+            pitfalls: "don't loop".into(),
+            signals: vec!["old-signal".into()],
+        };
+        let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
+
+        // Confirm initial signals stored.
+        let stored = store.get_node(&n1.id).unwrap().unwrap();
+        let init_signals = stored.metadata.as_ref()
+            .and_then(|m| m.get("signals"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert_eq!(init_signals, vec!["old-signal"]);
+
+        // Second extraction: same skill (exact dedup), richer signals.
+        let s2 = ParsedSkill {
+            name: "api-key-rotation".into(),
+            context: "auth failures v2".into(),
+            principles: "rotate on 401".into(),
+            steps: "1. detect\n2. swap".into(),
+            pitfalls: "don't loop".into(),
+            signals: vec!["new1".into(), "new2".into()],
+        };
+        let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
+
+        // Must fold into the same node.
+        assert_eq!(n1.id, n2.id, "expected dedup to reuse node id");
+
+        // Signals should be replaced with the new ones.
+        let updated = store.get_node(&n1.id).unwrap().unwrap();
+        let signals = updated.metadata.as_ref()
+            .and_then(|m| m.get("signals"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert_eq!(signals.len(), 2);
+        assert_eq!(signals[0], "new1");
+        assert_eq!(signals[1], "new2");
+    }
+
+    #[test]
+    fn empty_signals_on_upgrade_keeps_old() {
+        use crate::memory_graph::store::MemoryGraphStore;
+        use rusqlite::Connection;
+        use std::sync::{Arc, Mutex};
+
+        let conn = Connection::open_in_memory().unwrap();
+        let store = MemoryGraphStore::new(Arc::new(Mutex::new(conn)));
+        store.ensure_tables();
+
+        let space = "default";
+
+        // First extraction: skill with existing signals.
+        let s1 = ParsedSkill {
+            name: "keep-signals-skill".into(),
+            context: "ctx".into(),
+            principles: "p".into(),
+            steps: "s".into(),
+            pitfalls: "pt".into(),
+            signals: vec!["keep-me".into()],
+        };
+        let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
+
+        // Second extraction: same skill, but re-extraction produced no signals.
+        let s2 = ParsedSkill {
+            name: "keep-signals-skill".into(),
+            context: "ctx v2".into(),
+            principles: "p".into(),
+            steps: "s".into(),
+            pitfalls: "pt".into(),
+            signals: vec![],  // empty — should NOT wipe existing signals
+        };
+        let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
+
+        assert_eq!(n1.id, n2.id, "expected dedup to reuse node id");
+
+        // Old signals should be preserved.
+        let updated = store.get_node(&n1.id).unwrap().unwrap();
+        let signals = updated.metadata.as_ref()
+            .and_then(|m| m.get("signals"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert_eq!(signals, vec!["keep-me"], "old signals must not be wiped by empty re-extraction");
     }
 }
