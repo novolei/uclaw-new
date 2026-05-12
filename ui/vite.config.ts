@@ -25,6 +25,13 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id: string) {
+          // PDF and office parsers — bundle separately to reduce initial bundle size
+          if (id.includes('pdfjs-dist/build/pdf.worker')) return 'pdfjs-worker'
+          if (
+            id.includes('node_modules/jszip') ||
+            id.includes('node_modules/@xmldom') ||
+            id.includes('node_modules/mammoth')
+          ) return 'office-parsers'
           // Existing vendor splits — preserve
           if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) {
             return 'react'

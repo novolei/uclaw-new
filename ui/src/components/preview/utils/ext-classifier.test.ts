@@ -62,6 +62,28 @@ describe('ext-classifier', () => {
       expect(classifyExtension('Makefile').kind).toBe('binary')
     })
 
+    it('routes pdf', () => {
+      expect(classifyExtension('a.pdf').kind).toBe('pdf')
+    })
+
+    it('routes docx / xlsx / pptx', () => {
+      expect(classifyExtension('a.docx').kind).toBe('docx')
+      expect(classifyExtension('a.xlsx').kind).toBe('xlsx')
+      expect(classifyExtension('a.pptx').kind).toBe('pptx')
+    })
+
+    it('routes legacy office (.doc / .xls / .ppt) to legacyOffice', () => {
+      expect(classifyExtension('a.doc').kind).toBe('legacyOffice')
+      expect(classifyExtension('a.xls').kind).toBe('legacyOffice')
+      expect(classifyExtension('a.ppt').kind).toBe('legacyOffice')
+    })
+
+    it('routes uppercase extensions case-insensitively', () => {
+      expect(classifyExtension('a.PDF').kind).toBe('pdf')
+      expect(classifyExtension('a.DOCX').kind).toBe('docx')
+      expect(classifyExtension('a.DOC').kind).toBe('legacyOffice')
+    })
+
     it('exports immutable sets', () => {
       expect(IMAGE_EXTS.has('png')).toBe(true)
       expect(CODE_EXTS.has('ts')).toBe(true)
