@@ -67,6 +67,25 @@ pub fn validate_skill_name(name: &str) -> bool {
     SKILL_NAME_RE.is_match(name)
 }
 
+/// Normalize a skill title for case-insensitive lookup. Mirrors the
+/// normalization applied by the proactive scenario when it stores skills,
+/// so look-up by user/LLM-provided strings (which may differ in case,
+/// whitespace, or trailing punctuation) hits the canonical row.
+///
+/// Used by both `record_skill_cited` (citation chip → cited_count bump)
+/// and `load_skill` (agent-driven full-body fetch).
+pub fn normalize_skill_title(s: &str) -> String {
+    s.trim()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_end_matches(|c: char| {
+            matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | '。' | '，' | '；' | '：' | '！' | '？')
+        })
+        .to_string()
+}
+
 // ─── Activation Criteria ────────────────────────────────────────────────
 
 /// Activation criteria parsed from SKILL.md frontmatter.
@@ -1011,5 +1030,15 @@ Test.
         assert!(!validate_skill_name(""));
         assert!(!validate_skill_name("has spaces"));
         assert!(!validate_skill_name("-starts-dash"));
+    }
+
+    #[test]
+    fn normalize_skill_title_handles_case_whitespace_punctuation() {
+        assert_eq!(normalize_skill_title("Stock Research"), "stock research");
+        assert_eq!(normalize_skill_title("  Stock  Research  "), "stock research");
+        assert_eq!(normalize_skill_title("Stock Research."), "stock research");
+        assert_eq!(normalize_skill_title("Stock Research！"), "stock research");
+        assert_eq!(normalize_skill_title("API_KEY-Blacklist"), "api_key-blacklist");
+        assert_eq!(normalize_skill_title(""), "");
     }
 }

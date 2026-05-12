@@ -16,6 +16,7 @@ import {
   proactiveLearningEventsAtom,
   sessionBrowserPreviewMapAtom,
   liveMessagesMapAtom,
+  skillRecallsMapAtom,
   type AgentStreamState,
   type ProactiveLearningEvent,
   type AgentStreamErrorPayload,
@@ -362,6 +363,46 @@ function startAgentListeners(store: Store): void {
           )
         updateScreenshot(1200).then(() => updateScreenshot(3500))
       }
+    })
+  )
+
+  // agent:skill-recalled → push into skillRecallsMapAtom (dedup by toolCallId)
+  reg(
+    listen<{
+      conversationId: string
+      toolCallId: string
+      kind: 'search' | 'load'
+      timestamp: string
+      query?: string
+      results?: Array<{ name: string; summary: string; score: number; provenance: 'learned' | 'builtin'; cited_count?: number }>
+      name?: string
+      reason?: string
+      provenance?: 'learned' | 'builtin'
+    }>('agent:skill-recalled', ({ payload }) => {
+      const sid = payload.conversationId
+      store.set(skillRecallsMapAtom, (prev) => {
+        const current = prev.get(sid) ?? []
+        // Dedup by toolCallId. The dispatcher injects `tc.id` as `_tool_call_id`
+        // into tool args before spawn (agent/dispatcher.rs), so the Rust
+        // skill_search / load_skill tools have a stable per-call ID to echo in
+        // the `agent:skill-recalled` event. Same ID arriving twice (e.g. event
+        // double-delivery under HMR) collapses to one chip — intended.
+        if (current.some((r) => r.toolCallId === payload.toolCallId)) {
+          return prev
+        }
+        const next = new Map(prev)
+        next.set(sid, [...current, {
+          toolCallId: payload.toolCallId,
+          kind: payload.kind,
+          timestamp: payload.timestamp,
+          query: payload.query,
+          results: payload.results,
+          name: payload.name,
+          reason: payload.reason,
+          provenance: payload.provenance,
+        }])
+        return next
+      })
     })
   )
 

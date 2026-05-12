@@ -247,6 +247,25 @@ export const agentStreamingStatesAtom = atom<Map<string, AgentStreamState>>(new 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const liveMessagesMapAtom = atom<Map<string, any[]>>(new Map())
 
+export interface SkillRecall {
+  toolCallId: string
+  kind: 'search' | 'load'
+  timestamp: string
+  query?: string
+  results?: Array<{
+    name: string
+    summary: string
+    score: number
+    provenance: 'learned' | 'builtin'
+    cited_count?: number
+  }>
+  name?: string
+  reason?: string
+  provenance?: 'learned' | 'builtin'
+}
+
+export const skillRecallsMapAtom = atom<Map<string, SkillRecall[]>>(new Map())
+
 export const agentPendingPromptAtom = atom<AgentPendingPrompt | null>(null)
 
 // Per-session pending files. Switching sessions must not leak attachments

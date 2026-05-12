@@ -44,6 +44,7 @@ import { ProactiveLearningChip } from '@/components/chat/ProactiveLearningChip'
 import { parseSkillCitations } from '@/lib/skill-citation'
 import { normalizeAgentMarkdown } from '@/lib/normalize-agent-markdown'
 import { SkillCitationChips } from './SkillCitationChips'
+import { SkillRecallChips } from './SkillRecallChips'
 import { ScrollPositionManager } from '@/hooks/useScrollPositionMemory'
 import { cn } from '@/lib/utils'
 import { Spinner } from '@/components/ui/spinner'
@@ -1015,6 +1016,8 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
 
           </>
         )}
+        {/* Skill recall chips — separate visual lane from citation chips */}
+        <SkillRecallChips sessionId={sessionId} />
       </ConversationContent>
       {/* 记忆捕捉 chip 列表 — 只显示来自当前 session 的提取事件。
           PR #61 加了 sessionId 字段做 filter，避免切 session 时看到
