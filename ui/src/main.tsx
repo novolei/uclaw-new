@@ -25,7 +25,6 @@ import {
 import { Toaster } from './components/ui/sonner'
 import { GlobalShortcuts } from './components/shortcuts/GlobalShortcuts'
 import './styles/globals.css'
-import 'katex/dist/katex.min.css'
 
 // 开机即应用聊天外观（避免首次渲染时闪烁）
 import { applyChatAppearanceToDOM } from './atoms/chat-appearance'

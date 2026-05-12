@@ -1,8 +1,6 @@
 import * as React from 'react'
 import Markdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
 import { cn } from '@/lib/utils'
 import { MarkdownCodeBlock } from '@/components/shared/code-block/CodeBlock'
 
@@ -128,20 +126,25 @@ function remarkPreserveBreaks() {
 
 // ===== Markdown 渲染器组件 =====
 
-// remark-math option: require `$$...$$` for math instead of `$...$`.
-// With the default `singleDollarTextMath: true`, currency mentions like
-// `$3.65`, `$10.77`, `$0.58` get paired across long spans of prose and
-// everything between two `$` signs renders as KaTeX italic math. We saw
-// this break the bottom blockquote of stock-comparison responses: text
-// like `**Meta居中**` rendered as `∗∗Meta居中∗∗` in math italic because
-// it sat between two currency `$`s. Math users wanting inline expressions
-// can use `$$x^2$$` — agents almost never need inline math but routinely
-// emit currency, so this trade-off is one-sided.
+// remark-math + rehype-katex removed entirely.
+//
+// Why: agent responses overwhelmingly contain dollar amounts ($3.65,
+// $294.76) and numeric ranges ($580 — 600$) rather than LaTeX math.
+// remark-math treats any `$...$` or `$$...$$` pair as math and feeds
+// the contents to KaTeX, which then warns about Unicode (CJK) chars in
+// math mode and renders the content in a serif italic typeface. The
+// result: random spans of agent text show up as math italic — a real
+// bug, never a real feature for our users.
+//
+// Disabling `singleDollarTextMath` only addressed half of it (still
+// allowed `$$...$$`). Removing the plugin chain entirely is the only
+// robust fix. Users who genuinely need formula rendering can wrap in
+// a ```latex``` code block (which our highlighter already handles) or
+// paste a rendered image.
 import type { PluggableList } from 'unified'
-const REMARK_MATH_OPTIONS = { singleDollarTextMath: false }
-const REMARK_PLUGINS: PluggableList = [remarkGfm, [remarkMath, REMARK_MATH_OPTIONS]]
-const REMARK_PLUGINS_WITH_BREAKS: PluggableList = [remarkGfm, [remarkMath, REMARK_MATH_OPTIONS], remarkPreserveBreaks]
-const REHYPE_PLUGINS: PluggableList = [rehypeKatex]
+const REMARK_PLUGINS: PluggableList = [remarkGfm]
+const REMARK_PLUGINS_WITH_BREAKS: PluggableList = [remarkGfm, remarkPreserveBreaks]
+const REHYPE_PLUGINS: PluggableList = []
 
 /** 链接渲染器：外部 URL 用 Tauri openExternal 打开 */
 const MarkdownLink = React.memo(function MarkdownLink({
