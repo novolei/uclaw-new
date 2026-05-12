@@ -365,6 +365,31 @@ const MarkdownHr = React.memo(function MarkdownHr(): React.ReactElement {
   return <hr className="my-6 border-0 border-t border-border/60" />
 })
 
+/**
+ * `<strong>` renderer applied uniformly to ALL `**bold**` spans, regardless
+ * of whether they live inside a `not-prose` subtree (e.g. our tables).
+ *
+ * Why a dedicated component instead of `prose-strong:` utilities:
+ *   1. `MarkdownTable` wraps the `<table>` in `not-prose` (so prose's
+ *      default table styling doesn't fight our card layout). That also
+ *      strips `prose-strong:*` styles from `<strong>` inside cells —
+ *      browser default `font-weight: bold` (700) takes over, which reads
+ *      as a typeface change in mixed CJK + Latin prose.
+ *   2. The previous setup also forced `text-foreground` on bold, which
+ *      broke `<blockquote>`'s dimmed (`text-foreground/75`) color —
+ *      bold spans popped via color contrast even when their weight
+ *      matched, again reading as a different font.
+ *
+ * The fix is purely additive: `font-medium` (500) for a subtle emphasis,
+ * inherit color from the parent so bold blends with whatever container
+ * it lives in.
+ */
+const MarkdownStrong = React.memo(function MarkdownStrong({
+  children,
+}: React.HTMLAttributes<HTMLElement>): React.ReactElement {
+  return <strong className="font-medium text-inherit">{children}</strong>
+})
+
 const MARKDOWN_COMPONENTS = {
   a: MarkdownLink,
   pre: MarkdownPre,
@@ -379,6 +404,7 @@ const MARKDOWN_COMPONENTS = {
   td: MarkdownTd,
   blockquote: MarkdownBlockquote,
   hr: MarkdownHr,
+  strong: MarkdownStrong,
 } as const
 
 interface MessageResponseProps {
@@ -407,12 +433,11 @@ export const MessageResponse = React.memo(
           'prose-p:my-1.5 prose-p:leading-[1.65]',
           'prose-pre:my-0 prose-pre:bg-transparent prose-pre:p-0',
           'prose-a:text-primary prose-a:no-underline hover:prose-a:underline',
-          // font-medium (500) instead of font-semibold (600): in mixed
-          // CJK + Latin prose, the 400→600 jump reads as a different
-          // typeface rather than emphasis. Medium preserves the "this is
-          // important" cue while staying visually unified with the
-          // surrounding regular text.
-          'prose-strong:font-medium prose-strong:text-foreground',
+          // `<strong>` styling moved to the MarkdownStrong component
+          // override (font-medium + inherit color), so it applies inside
+          // `not-prose` table cells too. Don't restore prose-strong:*
+          // here — they would re-introduce color contrast inside
+          // blockquotes.
           '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
           className,
         )}
