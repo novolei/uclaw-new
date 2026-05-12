@@ -82,10 +82,14 @@ fn collect_entries(
         }
     }
 
-    // Learned: E3 ranking from list_top_learned_skills (cited DESC, usage DESC, updated DESC),
+    // Learned: E3 ranking from list_promoted_learned_skills (cited DESC, usage DESC, updated DESC),
     // then re-ranked by category bonus when bias != Balanced.
     // Fetch a larger window (max_entries * 2, capped at 200) so bias re-ranking has
     // candidates to promote even when the top E3 results aren't category-matched.
+    //
+    // PR-mattpocock-3: drafts are deliberately excluded here — they're still
+    // reachable via skill_search and slash commands, but only `promoted`
+    // skills get auto-injected into the system prompt.
     let learned_limit = max_entries.saturating_sub(entries.len());
     if learned_limit == 0 {
         return entries;
@@ -96,7 +100,7 @@ fn collect_entries(
         (learned_limit * 2).min(200)
     };
     let learned = store
-        .list_top_learned_skills(space_id, fetch_limit)
+        .list_promoted_learned_skills(space_id, fetch_limit)
         .unwrap_or_else(|e| {
             tracing::warn!("skills_manifest: failed to load learned skills: {}", e);
             Vec::new()

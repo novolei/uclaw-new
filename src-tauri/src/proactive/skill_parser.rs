@@ -298,7 +298,13 @@ pub fn store_skill_as_procedure(
         "pitfalls": skill.pitfalls,
         "source": "proactive_skill_extraction",
         "enabled": true,
-        "usage_count": 0
+        "usage_count": 0,
+        // PR-mattpocock-3 lifecycle gate: newly-extracted skills start as
+        // 'draft'. They flip to 'promoted' once cited_count crosses the
+        // PROMOTION_THRESHOLD (see record_skill_cited in tauri_commands.rs).
+        // Drafts stay searchable via skill_search but DON'T enter the
+        // manifest top-30 — prevents unvalidated noise drowning out builtins.
+        "lifecycle": "draft"
     });
 
     if !skill.signals.is_empty() {
@@ -899,6 +905,38 @@ mod tests {
         let version = version.unwrap();
         assert!(version.content.contains("测试技能"));
         assert!(version.content.contains("测试场景"));
+    }
+
+    #[test]
+    fn store_skill_defaults_lifecycle_to_draft() {
+        // PR-mattpocock-3: newly-extracted skills must start as 'draft' so
+        // they don't enter the manifest top-30 until they've been cited
+        // enough times to prove useful (see PROMOTION_THRESHOLD in
+        // record_skill_cited).
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).unwrap();
+        let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        let store = MemoryGraphStore::new(conn);
+
+        let skill = ParsedSkill {
+            name: "draft 默认技能".to_string(),
+            context: "ctx".to_string(),
+            principles: "p".to_string(),
+            steps: "s".to_string(),
+            pitfalls: "x".to_string(),
+            signals: vec![],
+            signals_seen: vec![],
+            validation_hint: None,
+            category: None,
+            anti_patterns: None,
+            description: None,
+        };
+
+        let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
+        let meta = node.metadata.expect("metadata should be set");
+        let lifecycle = meta.get("lifecycle").and_then(|v| v.as_str());
+        assert_eq!(lifecycle, Some("draft"),
+            "newly stored skill should default to lifecycle=draft, got {:?}", lifecycle);
     }
 
     #[test]
