@@ -1,120 +1,49 @@
 # CLAUDE.md
 
-Guidance for Claude Code (claude.ai/code) when working in this repository.
+Guidance for Claude Code when working in this repository. Part 1 is uClaw-specific working style; Part 2 is project reference. Read both before any non-trivial edit.
 
-This file has two halves:
-
-1. **Working Style** — behavioral guardrails that bias toward correctness over speed (adapted from [andrej-karpathy-skills/CLAUDE.md](https://github.com/forrestchang/andrej-karpathy-skills/blob/main/CLAUDE.md), with uClaw-specific examples).
-2. **Project Reference** — architecture, commands, and recurring gotchas you need to be effective in this codebase.
-
-Read both before any non-trivial edit. For genuinely trivial work (one-line fix, doc typo) use judgment; the Working Style still applies.
+General defaults (surface assumptions, prefer the minimum change, touch only what's required, define verifiable success criteria) are enforced by the `superpowers:*` skills — invoke them on non-trivial work. The notes below are the uClaw-specific overlay.
 
 ---
 
 # Part 1 — Working Style
 
-## 1. Think before coding
+## Surfaces to check before assuming
 
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
+- **Migration version numbers.** New schema work picks the next free integer in `src-tauri/src/db/migrations.rs` AND must coordinate with any open PR that's claimed a number — see *Active migration registry* in Part 2. Two PRs reusing the same V-number is the most common merge accident in this repo.
+- **The agent loop is pure Rust.** No Claude Code SDK / Anthropic SDK in the agent path. Frontend code that looks SDK-shaped (`SDKMessage`, `useSDKRenderer`, etc.) is Proma-migration leftover — verify it actually executes before relying on it.
+- **Two storage tables per domain.** Chat lives in `messages`; agent lives in `agent_messages` (the visible conversation) **and** `agent_turns` (per-tool-call breakdown). Search/index/migration work must touch the right one — a typical dev DB has ≫ rows in `agent_messages` and `agent_turns`, often 0 in `messages`.
 
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask one question and wait — don't fan out into speculative work.
-- If multiple interpretations exist, present them — don't silently pick one.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
+## Match the codebase shape
 
-**uClaw-specific surfaces to check before assuming:**
-- **Migration version numbers.** New schema work picks the next free integer in `src-tauri/src/db/migrations.rs` AND must coordinate with any open PR that's claimed a number — see *Active migration registry* below. Two PRs reusing the same V-number is the most common merge accident in this repo.
-- **The agent loop is pure Rust.** There is no Claude Code SDK / Anthropic SDK in the agent path. If you find frontend code that looks SDK-shaped (`SDKMessage`, `useSDKRenderer`, etc.), that's Proma-migration leftover — verify whether it actually executes before relying on it.
-- **Two storage tables per domain.** Chat lives in `messages`; agent lives in `agent_messages` (the visible conversation) **and** `agent_turns` (per-tool-call breakdown). Search/index/migration work must touch the right one — check counts: a typical dev DB has ≫ rows in `agent_messages` and `agent_turns`, often 0 in `messages`.
+When extending a feature that already has a flat shape (e.g. the existing `search_conversations` UNION-of-branches pattern), add another branch in the same file rather than introducing a new abstraction layer. uClaw favors flat enumeration over generic dispatchers — match it.
 
-## 2. Simplicity first
+## Adjacent edits that look like scope creep but aren't
 
-**Minimum code that solves the problem. Nothing speculative.**
+- **New Tauri command** → define in `tauri_commands.rs` AND register in the `invoke_handler!` macro in `main.rs`. Forgetting the macro entry compiles fine but fails at runtime.
+- **New background service** → register in the `[Stage 3]` block in `main.rs`.
+- **New built-in agent tool** → register in `agent/dispatcher.rs` and, if destructive, in `SafetyManager`.
 
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
+Call these out in the commit body so they're not mistaken for scope creep.
 
-Ask: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+## Verification commands
 
-**uClaw-specific:** when extending a feature that already has a flat shape (e.g. the existing `search_conversations` UNION-of-branches pattern), add another branch in the same file rather than introducing a new abstraction layer. The codebase favors flat enumeration over generic dispatchers — match it.
-
-## 3. Surgical changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it — don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that **your** changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: every changed line should trace directly to the user's request.
-
-**uClaw-specific exceptions where extra changes ARE warranted:**
-- A new Tauri command requires **two** edits: define in `tauri_commands.rs` AND register in the `invoke_handler!` macro in `main.rs`. Forgetting the macro entry compiles fine but fails at runtime.
-- A new background service requires registration in the `[Stage 3]` block in `main.rs`.
-- A new built-in agent tool requires registration in `agent/dispatcher.rs` and, if destructive, in `SafetyManager`.
-
-If you have to make these adjacent edits, call them out in the commit body — they look like scope creep but aren't.
-
-## 4. Goal-driven execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let the loop run independently. Weak criteria ("make it work") force constant clarification.
-
-**uClaw-specific:** the verification commands you should reach for first:
-- `cd src-tauri && cargo build 2>&1 | grep -E "^error" | head` — full backend compile, errors only
-- `cd src-tauri && cargo test --lib [filter]` — unit tests (defined inline; no integration dir)
+- `cd src-tauri && cargo build 2>&1 | grep -E "^error" | head` — backend compile, errors only
+- `cd src-tauri && cargo test --lib [filter]` — unit tests (inline `#[cfg(test)]`; no integration dir)
 - `cd ui && npx tsc --noEmit 2>&1 | head -10` — TS check
 - `cd ui && npm test -- --run 2>&1 | tail -10` — Vitest, jsdom
 
-Bisectability: prefer one logical change per commit. The plans in `docs/superpowers/plans/*.md` follow this — match the pattern when you ship.
+Bisectability: one logical change per commit. Match the plans in `docs/superpowers/plans/*.md`.
 
-## 5. Workflow skills
+## Workflow
 
-This repo uses the [superpowers](https://github.com/anthropics/superpowers) skill set. For non-trivial work — anything that would touch more than a couple of files or introduce a new concept — use the skill workflow rather than ad-hoc implementation:
+Non-trivial work goes through `superpowers:brainstorming` → `writing-plans` → `subagent-driven-development`, producing a spec in `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and a plan in `docs/superpowers/plans/<feature>.md`. Skip only for typos, single-line fixes, doc-only changes, or hotfixes with an obvious root cause and a ≤ 1-file fix.
 
-1. **`superpowers:brainstorming`** — turn an idea into a design doc in `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`.
-2. **`superpowers:writing-plans`** — turn the spec into a task-by-task plan in `docs/superpowers/plans/<feature>.md` with bite-sized steps and exact code.
-3. **`superpowers:subagent-driven-development`** — execute the plan via fresh subagents, one task per dispatch, with two-stage review (spec compliance, then code quality).
+PR shape: one branch per plan, one commit per plan task, one PR with a `## Commits (bisectable)` table. See PRs #29, #31, #33, #35, #36.
 
-Skip the workflow only for: typos, single-line fixes, doc-only changes, or hotfixes that have an obvious root cause and a localized fix (≤ 1 file).
+## Real bugs found mid-task
 
-The PR pattern that's worked well in this repo: one branch per plan, one commit per plan task, opened as one PR with a `## Commits (bisectable)` table in the description. See PRs #29, #31, #33, #35, #36 for shape.
-
-## 6. When you find a real bug
-
-If you discover a bug that's outside the current task's scope but you're confident is real (root cause identified, low-risk fix), spin it off as its own small PR rather than:
-
-- Folding it into the current task (scope creep + bisectability loss), or
-- Leaving it for later (it'll get forgotten).
-
-If you can't unambiguously identify the root cause, surface it in your status report instead of patching symptoms.
-
----
-
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, clarifying questions come before implementation rather than after mistakes, and migration version numbers stop colliding across open PRs.
+If you discover a bug outside the current task's scope with a confident root cause and a low-risk fix, spin it off as its own small PR — don't fold it in (scope creep + bisectability loss) and don't leave it for later (it'll get forgotten). If the root cause isn't clear, surface it in your status report rather than patching symptoms.
 
 ---
 
@@ -208,16 +137,10 @@ If you're adding a migration: pick the next number after both merged AND open PR
 - **Theming**: 11 themes defined in `ui/src/styles/globals.css` as CSS variables (`--popover`, `--accent`, `--border`, etc.). New components must use the theme tokens (`bg-popover`, `text-muted-foreground`) rather than hardcoded colors (`bg-zinc-900`, `text-gray-500`) — hardcoded values break under warm-paper / qingye / forest-* themes.
 - **Tests**: Vitest + React Testing Library + jsdom. `renderWithProviders` from `ui/src/test-utils/render.tsx` wraps in JotaiProvider + Tooltip + a fresh store. Recharts is finicky under jsdom — mock it in tests for components that use it.
 
-## Working in This Repo
+## Gotchas
 
-When changing IPC surface area: add the command function in the appropriate `tauri_commands.rs` section, register it in the `invoke_handler!` macro in `main.rs`, and call it from the frontend with `invoke('command_name', { ... })`.
+The registration mechanics for Tauri commands, background services, and built-in agent tools are listed in *Part 1 — Adjacent edits*. From the frontend, call commands with `invoke('command_name', { ... })`. Background-service registration is gated on the relevant `memubot_config` flag.
 
-When adding a background service: implement the service, register it inside the `[Stage 3]` block in `main.rs` (gated on the relevant `memubot_config` flag), and `service_manager.start_all()` will pick it up.
-
-When adding a built-in agent tool: drop it under `agent/tools/builtin/` and register through the dispatcher in `agent/dispatcher.rs`. If the tool can be destructive, surface it through `SafetyManager` so the approval flow works.
-
-When adding FTS coverage of a new table: don't forget the **backfill** step (`INSERT INTO …_fts(rowid, …) SELECT … FROM source WHERE rowid NOT IN (SELECT rowid FROM …_fts)`). Without it, search misses everything that pre-dates the migration.
-
-The CSP in `tauri.conf.json` restricts `connect-src` to the allow-listed LLM provider domains. Adding a new provider requires updating that header along with `providers/registry.rs`.
-
-The embedded Python directory is gitignored — assume it's missing on a fresh checkout and tell users to run `scripts/setup-python-env.sh` before `cargo tauri dev`. If `MemUClient` fails to start, `AppState.memu_client` is `None` and memU-dependent features degrade gracefully rather than aborting boot.
+- **FTS backfill.** When adding FTS coverage of a new table, don't forget `INSERT INTO …_fts(rowid, …) SELECT … FROM source WHERE rowid NOT IN (SELECT rowid FROM …_fts)`. Without it, search misses everything that pre-dates the migration.
+- **CSP + providers.** Adding a new LLM provider requires updating both `providers/registry.rs` and the `connect-src` allow-list in `tauri.conf.json`'s CSP.
+- **Embedded Python is gitignored.** Assume `src-tauri/pyembed/` is missing on a fresh checkout — run `scripts/setup-python-env.sh` before `cargo tauri dev`. If `MemUClient` fails to start, `AppState.memu_client` is `None` and memU-dependent features degrade gracefully rather than aborting boot.
