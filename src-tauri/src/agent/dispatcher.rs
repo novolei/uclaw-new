@@ -659,6 +659,9 @@ impl LoopDelegate for ChatDelegate {
                                                 });
 
                                                 if self.sleep_or_abort(delay).await {
+                                                    // Frontend already saw Starting; signal the cancel via stream-reset
+                                                    // so any in-flight UI state can unwind.
+                                                    self.emit_stream_reset();
                                                     return Err(e);
                                                 }
 
