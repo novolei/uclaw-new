@@ -60,6 +60,11 @@ impl ManagedService for FilesRailService {
 
     async fn stop(&self) -> anyhow::Result<()> {
         *self.status.write().await = ServiceStatus::Stopping;
+        // TODO(files-rail-stop): the watcher's tokio::spawn flush loop is
+        // orphaned here — it dies when the tauri runtime tears down, which
+        // is fine for the only stop path today (WindowEvent::Destroyed →
+        // service_manager.stop_all → process exit). If we ever support
+        // hot-restart, store the JoinHandle in Inner and call abort() here.
         // Watcher is held in Arc and drops naturally when service drops.
         // Tauri's WindowEvent::Destroyed flow releases AppState which drops here.
         *self.status.write().await = ServiceStatus::Stopped;

@@ -594,9 +594,9 @@ impl AppState {
         let target = if rel_path.is_empty() || rel_path == "/" {
             mount_root.clone()
         } else {
-            if rel_path.split('/').any(|seg| seg == "..") {
-                return Err(crate::error::Error::Internal(
-                    "invalid rel_path: .. not allowed".into(),
+            if rel_path.starts_with('/') || rel_path.split('/').any(|seg| seg == "..") {
+                return Err(crate::error::Error::InvalidInput(
+                    "invalid rel_path: absolute paths and .. segments are not allowed".into(),
                 ));
             }
             mount_root.join(rel_path)
