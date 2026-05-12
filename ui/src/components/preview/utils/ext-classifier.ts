@@ -6,7 +6,16 @@
  * W4c will introduce `'diff'`.
  */
 
-export type RendererKind = 'image' | 'markdown' | 'code' | 'binary'
+export type RendererKind =
+  | 'image'
+  | 'markdown'
+  | 'code'
+  | 'pdf'
+  | 'docx'
+  | 'xlsx'
+  | 'pptx'
+  | 'legacyOffice'
+  | 'binary'
 
 export interface ClassificationResult {
   kind: RendererKind
@@ -74,12 +83,19 @@ export function getExtension(filename: string): string {
 
 /**
  * Classify a filename into a renderer kind + optional shiki language hint.
- * Priority: image → markdown → code → binary fallback.
+ * Priority: image → markdown → pdf/office → code → binary fallback.
  */
 export function classifyExtension(filename: string): ClassificationResult {
   const ext = getExtension(filename)
   if (ext && IMAGE_EXTS.has(ext)) return { kind: 'image', ext }
   if (ext && MD_EXTS.has(ext)) return { kind: 'markdown', ext }
+  if (ext === 'pdf') return { kind: 'pdf', ext }
+  if (ext === 'docx') return { kind: 'docx', ext }
+  if (ext === 'xlsx') return { kind: 'xlsx', ext }
+  if (ext === 'pptx') return { kind: 'pptx', ext }
+  if (ext === 'doc' || ext === 'xls' || ext === 'ppt') {
+    return { kind: 'legacyOffice', ext }
+  }
   if (ext && CODE_EXTS.has(ext)) {
     return { kind: 'code', ext, language: CODE_EXTS.get(ext) }
   }
