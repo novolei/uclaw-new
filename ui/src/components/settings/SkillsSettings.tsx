@@ -12,7 +12,7 @@
 import * as React from 'react'
 import Markdown from 'react-markdown'
 import { toast } from 'sonner'
-import { ChevronDown, ChevronRight, Trash2, Sparkles, RefreshCw, Search, Combine, KeyRound } from 'lucide-react'
+import { ChevronDown, ChevronRight, Trash2, Sparkles, RefreshCw, Search, Combine, KeyRound, History } from 'lucide-react'
 import {
   listLearnedSkills,
   toggleLearnedSkill,
@@ -22,6 +22,7 @@ import {
   type SkillConsolidationProposal,
 } from '@/lib/tauri-bridge'
 import { SkillConsolidationDialog } from './SkillConsolidationDialog'
+import { SkillEvolutionTab } from './SkillEvolutionTab'
 import type { LearnedSkill } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -48,12 +49,14 @@ function formatDate(s: string): string {
 interface SkillCardProps {
   skill: LearnedSkill
   expanded: boolean
+  showTimeline: boolean
   onToggleExpand: () => void
+  onToggleTimeline: () => void
   onToggleEnabled: (next: boolean) => void
   onRequestDelete: () => void
 }
 
-function SkillCard({ skill, expanded, onToggleExpand, onToggleEnabled, onRequestDelete }: SkillCardProps): React.ReactElement {
+function SkillCard({ skill, expanded, showTimeline, onToggleExpand, onToggleTimeline, onToggleEnabled, onRequestDelete }: SkillCardProps): React.ReactElement {
   return (
     <div
       className={cn(
@@ -104,26 +107,50 @@ function SkillCard({ skill, expanded, onToggleExpand, onToggleEnabled, onRequest
       {/* Expanded body */}
       {expanded && (
         <div className="border-t border-border/40 px-4 py-3 space-y-3 text-[12.5px] text-foreground/90">
-          {skill.context && (
-            <Section label="场景">
-              <p className="leading-relaxed text-muted-foreground">{skill.context}</p>
-            </Section>
+          {/* Timeline toggle */}
+          <div className="flex items-center justify-end">
+            <button
+              type="button"
+              onClick={onToggleTimeline}
+              className={cn(
+                'flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11.5px] transition-colors',
+                showTimeline
+                  ? 'border-border bg-muted/60 text-foreground'
+                  : 'border-border/40 text-muted-foreground hover:border-border hover:text-foreground',
+              )}
+            >
+              <History className="size-3.5" />
+              演化历史
+            </button>
+          </div>
+
+          {showTimeline ? (
+            <SkillEvolutionTab skillId={skill.id} />
+          ) : (
+            <>
+              {skill.context && (
+                <Section label="场景">
+                  <p className="leading-relaxed text-muted-foreground">{skill.context}</p>
+                </Section>
+              )}
+              {skill.principles && (
+                <Section label="原则">
+                  <MarkdownBlock text={skill.principles} />
+                </Section>
+              )}
+              {skill.steps && (
+                <Section label="步骤">
+                  <MarkdownBlock text={skill.steps} />
+                </Section>
+              )}
+              {skill.pitfalls && (
+                <Section label="陷阱">
+                  <MarkdownBlock text={skill.pitfalls} />
+                </Section>
+              )}
+            </>
           )}
-          {skill.principles && (
-            <Section label="原则">
-              <MarkdownBlock text={skill.principles} />
-            </Section>
-          )}
-          {skill.steps && (
-            <Section label="步骤">
-              <MarkdownBlock text={skill.steps} />
-            </Section>
-          )}
-          {skill.pitfalls && (
-            <Section label="陷阱">
-              <MarkdownBlock text={skill.pitfalls} />
-            </Section>
-          )}
+
           <div className="pt-1 text-[11px] text-muted-foreground/60 tabular-nums">
             使用 {skill.usageCount} 次 · 创建于 {formatDate(skill.createdAt)}
           </div>
@@ -160,6 +187,7 @@ export function SkillsSettings(): React.ReactElement {
   const [loading, setLoading] = React.useState(true)
   const [query, setQuery] = React.useState('')
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set())
+  const [timelineOpen, setTimelineOpen] = React.useState<Set<string>>(new Set())
   const [pendingDelete, setPendingDelete] = React.useState<LearnedSkill | null>(null)
   const [proposing, setProposing] = React.useState(false)
   const [backfilling, setBackfilling] = React.useState(false)
@@ -185,6 +213,15 @@ export function SkillsSettings(): React.ReactElement {
 
   const onToggleExpand = (id: string) => {
     setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const onToggleTimeline = (id: string) => {
+    setTimelineOpen((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
@@ -379,7 +416,9 @@ export function SkillsSettings(): React.ReactElement {
               key={skill.id}
               skill={skill}
               expanded={expanded.has(skill.id)}
+              showTimeline={timelineOpen.has(skill.id)}
               onToggleExpand={() => onToggleExpand(skill.id)}
+              onToggleTimeline={() => onToggleTimeline(skill.id)}
               onToggleEnabled={(next) => void onToggleEnabled(skill, next)}
               onRequestDelete={() => setPendingDelete(skill)}
             />

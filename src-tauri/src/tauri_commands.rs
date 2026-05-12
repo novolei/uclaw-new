@@ -3231,6 +3231,39 @@ pub async fn record_skill_cited(
     Ok(Some(node.id))
 }
 
+/// Return all version records for a skill node, newest-first.
+///
+/// Used by the "演化历史" tab in Settings → 已学技能 to render a side-by-side
+/// diff of the active version vs the most-recent superseded one.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillVersionInfo {
+    pub id: String,
+    pub status: String,
+    pub content: String,
+    pub created_at: String,
+}
+
+#[tauri::command]
+pub async fn get_skill_versions(
+    state: State<'_, AppState>,
+    node_id: String,
+) -> Result<Vec<SkillVersionInfo>, String> {
+    let store = &state.memory_graph_store;
+    let versions = store
+        .get_versions(&node_id)
+        .map_err(|e| format!("Failed to get versions: {}", e))?;
+    Ok(versions
+        .into_iter()
+        .map(|v| SkillVersionInfo {
+            id: v.id,
+            status: v.status.as_str().to_string(),
+            content: v.content,
+            created_at: v.created_at,
+        })
+        .collect())
+}
+
 /// Backfill `memory_keywords` rows for learned skills that are missing them.
 ///
 /// Background: PR #58 added keyword writing to `store_skill_as_procedure`,
