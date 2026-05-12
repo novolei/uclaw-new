@@ -1771,3 +1771,178 @@ html[data-chat-font-size="lg"] .chat-content h2 { font-size: 22px; }
 html[data-chat-font-size="lg"] .chat-content h3 { font-size: 18px; }
 html[data-chat-font-size="lg"] .chat-content th { font-size: 13px; }
 html[data-chat-font-size="lg"] .chat-content td { font-size: 16.5px; }
+
+/* ===== W4b: Office preview rules (DOCX / XLSX / PPTX) ===== */
+
+.office-preview-host {
+  min-height: 100%;
+  padding: 12px;
+  color: hsl(var(--foreground));
+  font-size: 12px;
+}
+
+.office-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.office-preview-title {
+  color: hsl(var(--foreground) / 0.72);
+  font-weight: 600;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.office-preview-notice,
+.office-empty {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.office-preview-notice {
+  border: 1px solid hsl(var(--border) / 0.45);
+  border-radius: 8px;
+  background: hsl(var(--muted) / 0.24);
+  padding: 8px 10px;
+}
+
+.office-sheet,
+.office-slide {
+  border: 1px solid hsl(var(--border) / 0.5);
+  border-radius: 8px;
+  background: hsl(var(--background) / 0.72);
+  overflow: hidden;
+}
+
+.office-sheet h3,
+.office-slide h3 {
+  margin: 0;
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.office-sheet h3 {
+  padding: 10px 12px;
+  border-bottom: 1px solid hsl(var(--border) / 0.45);
+}
+
+.office-table-wrap {
+  overflow: auto;
+  max-width: 100%;
+}
+
+.office-table-wrap table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.office-table-wrap th,
+.office-table-wrap td {
+  max-width: 280px;
+  min-width: 72px;
+  border-right: 1px solid hsl(var(--border) / 0.35);
+  border-bottom: 1px solid hsl(var(--border) / 0.35);
+  padding: 6px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.office-table-wrap thead th,
+.office-row-heading {
+  position: sticky;
+  z-index: 1;
+  background: hsl(var(--muted) / 0.36);
+  color: hsl(var(--muted-foreground));
+  font-weight: 500;
+}
+
+.office-table-wrap thead th {
+  top: 0;
+}
+
+.office-row-heading {
+  left: 0;
+  min-width: 44px;
+  text-align: right;
+}
+
+.office-slide {
+  padding: 12px;
+}
+
+.office-slide-index {
+  margin-bottom: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.office-slide ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: hsl(var(--foreground) / 0.82);
+  line-height: 1.6;
+}
+
+.office-slide li + li {
+  margin-top: 4px;
+}
+
+/* DOCX uses mammoth's plain HTML — give it minimal padding + theme typography */
+.office-docx-host {
+  padding: 24px;
+  color: hsl(var(--foreground) / 0.88);
+  font-size: 13px;
+  line-height: 1.7;
+  max-width: 880px;
+  margin: 0 auto;
+}
+
+.office-docx-host h1,
+.office-docx-host h2,
+.office-docx-host h3 {
+  color: hsl(var(--foreground));
+  font-weight: 600;
+  margin: 1.4em 0 0.6em;
+}
+
+.office-docx-host h1 { font-size: 20px; }
+.office-docx-host h2 { font-size: 17px; }
+.office-docx-host h3 { font-size: 14px; }
+
+.office-docx-host p { margin: 0.6em 0; }
+.office-docx-host ul,
+.office-docx-host ol { padding-left: 1.4em; }
+.office-docx-host li { margin: 0.2em 0; }
+.office-docx-host strong { font-weight: 600; color: hsl(var(--foreground)); }
+.office-docx-host em { font-style: italic; }
+.office-docx-host a {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.office-docx-host table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+  font-size: 12px;
+}
+.office-docx-host th,
+.office-docx-host td {
+  border: 1px solid hsl(var(--border) / 0.5);
+  padding: 6px 10px;
+  text-align: left;
+}
+.office-docx-host th {
+  background: hsl(var(--muted) / 0.4);
+  font-weight: 600;
+}
