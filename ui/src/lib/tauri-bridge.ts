@@ -522,6 +522,21 @@ export const applySkillConsolidation = (
 ): Promise<SkillConsolidationResult> =>
   invoke('apply_skill_consolidation', { plan });
 
+// — Skill version history —
+
+export interface SkillVersionInfo {
+  id: string;
+  status: string;
+  content: string;
+  createdAt: string;
+}
+
+export const getSkillVersions = (nodeId: string): Promise<SkillVersionInfo[]> =>
+  invoke<SkillVersionInfo[]>('get_skill_versions', { nodeId }).catch((e) => {
+    console.error('[getSkillVersions]', e);
+    return [];
+  });
+
 // ─────────────────────────────────────────────────────────
 // Memory Graph
 // ─────────────────────────────────────────────────────────
@@ -884,6 +899,7 @@ export const sendAgentMessage = (input: any): Promise<void> => {
     channelId: input.channelId ?? null,
     modelId: input.modelId ?? null,
     workspaceId: input.workspaceId ?? null,
+    strategy: input.strategy ?? null,
   }})
 }
 

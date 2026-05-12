@@ -3235,6 +3235,39 @@ pub async fn record_skill_cited(
     Ok(Some(node.id))
 }
 
+/// Return all version records for a skill node, newest-first.
+///
+/// Used by the "演化历史" tab in Settings → 已学技能 to render a side-by-side
+/// diff of the active version vs the most-recent superseded one.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillVersionInfo {
+    pub id: String,
+    pub status: String,
+    pub content: String,
+    pub created_at: String,
+}
+
+#[tauri::command]
+pub async fn get_skill_versions(
+    state: State<'_, AppState>,
+    node_id: String,
+) -> Result<Vec<SkillVersionInfo>, String> {
+    let store = &state.memory_graph_store;
+    let versions = store
+        .get_versions(&node_id)
+        .map_err(|e| format!("Failed to get versions: {}", e))?;
+    Ok(versions
+        .into_iter()
+        .map(|v| SkillVersionInfo {
+            id: v.id,
+            status: v.status.as_str().to_string(),
+            content: v.content,
+            created_at: v.created_at,
+        })
+        .collect())
+}
+
 /// Backfill `memory_keywords` rows for learned skills that are missing them.
 ///
 /// Background: PR #58 added keyword writing to `store_skill_as_procedure`,
@@ -4044,6 +4077,9 @@ pub struct SendAgentMessageInput {
     pub channel_id: Option<String>,
     pub model_id: Option<String>,
     pub workspace_id: Option<String>,
+    /// Strategy preset from the frontend dropdown: "balanced" | "repair" | "optimize" | "innovate".
+    /// None or unrecognized values fall back to Balanced.
+    pub strategy: Option<String>,
 }
 
 #[tauri::command]
@@ -4284,7 +4320,7 @@ pub async fn send_agent_message(
         app_handle.clone(),
         input.session_id.clone(),
         "default".into(),
-    ));
+    ).with_memu(state.memu_client.clone()));
     tools.register(builtin::load_skill::LoadSkillTool::new(
         Arc::clone(&state.skills_registry),
         Arc::clone(&state.memory_graph_store),
@@ -4362,6 +4398,13 @@ pub async fn send_agent_message(
 
         // Build skill manifest and inject into system prompt (async: needs registry.read()).
         {
+            use crate::skills_manifest::StrategyBias;
+            let strategy_bias = match input.strategy.as_deref() {
+                Some("repair")   => StrategyBias::Repair,
+                Some("optimize") => StrategyBias::Optimize,
+                Some("innovate") => StrategyBias::Innovate,
+                _                => StrategyBias::Balanced,
+            };
             let registry = skills_registry_for_manifest.read().await;
             let manifest = crate::skills_manifest::build_skills_manifest(
                 &registry,
@@ -4369,6 +4412,7 @@ pub async fn send_agent_message(
                 "default",
                 30,
                 1500,
+                strategy_bias,
             );
             delegate.set_skills_manifest_block(manifest);
         }

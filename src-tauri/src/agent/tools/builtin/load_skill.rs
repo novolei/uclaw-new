@@ -89,6 +89,7 @@ impl<R: tauri::Runtime> Tool for LoadSkillTool<R> {
                         "description": p.description,
                     })).collect::<Vec<_>>(),
                     "provenance": "builtin",
+                    "validation_hint": serde_json::Value::Null,
                 });
                 self.emit_recalled(&params, "builtin", &name, &reason);
                 return Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64));
@@ -121,12 +122,18 @@ impl<R: tauri::Runtime> Tool for LoadSkillTool<R> {
 
         self.emit_recalled(&params, "learned", &node.title, &reason);
 
+        let validation_hint = node.metadata.as_ref()
+            .and_then(|m| m.get("validation_hint"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         let result = json!({
             "name": node.title,
             "version": version.id,
             "content": version.content,
             "parameters": [],
             "provenance": "learned",
+            "validation_hint": validation_hint,
         });
         Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
     }
@@ -312,5 +319,53 @@ mod tests {
         assert_eq!(out.result["name"], "writing-assistant");
         assert_eq!(out.result["version"], "2.1.0");
         assert!(out.result["content"].as_str().unwrap().contains("Writing Assistant"));
+        assert!(out.result["validation_hint"].is_null(), "builtin should return null for validation_hint");
+    }
+
+    #[tokio::test]
+    async fn returns_validation_hint_from_metadata() {
+        use crate::memory_graph::models::{MemoryNode, MemoryNodeKind, MemoryVersion, MemoryVersionStatus};
+
+        let store = fresh_store();
+        let now = chrono::Utc::now().to_rfc3339();
+        let id = uuid::Uuid::new_v4().to_string();
+        store.create_node(&MemoryNode {
+            id: id.clone(),
+            space_id: "default".into(),
+            kind: MemoryNodeKind::Procedure,
+            title: "verify-skill".into(),
+            metadata: Some(json!({
+                "skill_type": "learned",
+                "enabled": true,
+                "summary": "x",
+                "validation_hint": "Re-run with --quiet and check exit code"
+            })),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        }).unwrap();
+        store.create_version(&MemoryVersion {
+            id: uuid::Uuid::new_v4().to_string(),
+            node_id: id,
+            supersedes_version_id: None,
+            status: MemoryVersionStatus::Active,
+            content: "body".into(),
+            metadata: None,
+            embedding_json: None,
+            created_at: now,
+        }).unwrap();
+
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        let tool = LoadSkillTool::new(
+            registry,
+            store,
+            app.handle().clone(),
+            "sess".into(),
+            "default".into(),
+        );
+
+        let out = tool.execute(json!({ "name": "verify-skill", "reason": "test" })).await.unwrap();
+        assert_eq!(out.result["validation_hint"], "Re-run with --quiet and check exit code");
+        assert_eq!(out.result["provenance"], "learned");
     }
 }

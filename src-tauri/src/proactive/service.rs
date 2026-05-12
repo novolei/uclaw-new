@@ -601,7 +601,16 @@ impl ProactiveService {
                             if llm_response.trim() != NO_MESSAGE_MARKER {
                                 // skill_extraction 场景：解析 XML 并存储为 Procedure 节点
                                 if scenario.name() == "skill_extraction" {
-                                    let parsed_skills = crate::proactive::skill_parser::parse_skill_report(&llm_response);
+                                    let mut parsed_skills = crate::proactive::skill_parser::parse_skill_report(&llm_response);
+                                    // Classify failure types from execution logs and stamp
+                                    // each new skill with signals_seen (empirical counterpart
+                                    // to the LLM-prescribed signals[]).
+                                    let signals_seen = crate::proactive::scenarios::skill_extraction::extract_signals_seen(
+                                        &scenario_ctx.execution_logs
+                                    );
+                                    for skill in &mut parsed_skills {
+                                        skill.signals_seen = signals_seen.clone();
+                                    }
                                     let items_extracted = if !parsed_skills.is_empty() {
                                         let space_id = scenario_ctx.active_space_id.clone();
                                         let mut stored_count = 0usize;
@@ -616,6 +625,36 @@ impl ProactiveService {
                                                         "Stored learned skill as Procedure node"
                                                     );
                                                     stored_count += 1;
+                                                    // Best-effort: embed the skill body and persist
+                                                    // to memory_versions.embedding_json. Failure
+                                                    // is logged but never aborts skill storage.
+                                                    if refs.memu_client.is_some() {
+                                                        let body = crate::proactive::skill_parser::build_version_content(skill);
+                                                        // Construct the text to embed: body + signals so that semantic search
+                                                        // can match queries against trigger phrases even if they're not in the body.
+                                                        let mut embed_text = body.clone();
+                                                        if !skill.signals.is_empty() {
+                                                            embed_text.push_str("\n\nTrigger signals: ");
+                                                            embed_text.push_str(&skill.signals.join(", "));
+                                                        }
+                                                        if !skill.signals_seen.is_empty() {
+                                                            embed_text.push_str("\n\nObserved error types: ");
+                                                            embed_text.push_str(&skill.signals_seen.join(", "));
+                                                        }
+                                                        let store = Arc::clone(&refs.memory_graph_store);
+                                                        let memu = refs.memu_client.clone();
+                                                        let node_id = node.id.clone();
+                                                        tokio::spawn(async move {
+                                                            if let Some(vec) = crate::memu::embedding::embed_skill_body(&memu, &embed_text).await {
+                                                                let json = crate::memu::embedding::serialize_embedding(&vec);
+                                                                if let Ok(Some(ver)) = store.get_active_version(&node_id) {
+                                                                    if let Err(e) = store.update_version_embedding(&ver.id, &json) {
+                                                                        tracing::warn!(node_id, error = %e, "failed to persist skill embedding");
+                                                                    }
+                                                                }
+                                                            }
+                                                        });
+                                                    }
                                                 }
                                                 Err(e) => {
                                                     tracing::warn!(
@@ -884,6 +923,39 @@ impl ProactiveService {
     }
 }
 
+// ─── cited_count 周期性衰减 ───────────────────────────────────────────
+
+/// 对所有已学习技能的 `cited_count` 应用 5% 衰减（floor(prev * 0.95)）。
+///
+/// 返回实际执行了更新的节点数。`cited_count` 已为 0 的节点跳过，
+/// 不产生写操作。
+pub fn decay_cited_counts(
+    store: &MemoryGraphStore,
+    space_id: &str,
+) -> Result<usize, crate::error::Error> {
+    let nodes = store.list_top_learned_skills(space_id, 10_000)?;
+    let mut updated = 0;
+    for detail in nodes {
+        let mut meta = detail.node.metadata.clone().unwrap_or(serde_json::json!({}));
+        let prev = meta.get("cited_count").and_then(|v| v.as_u64()).unwrap_or(0);
+        let next = ((prev as f64) * 0.95).floor() as u64;
+        if next == prev {
+            continue; // no change (includes cited_count == 0 case)
+        }
+        if let Some(obj) = meta.as_object_mut() {
+            obj.insert(
+                "cited_count".to_string(),
+                serde_json::Value::Number(serde_json::Number::from(next)),
+            );
+        }
+        if store.update_node(&detail.node.id, None, None, Some(&meta)).is_ok() {
+            updated += 1;
+        }
+    }
+    tracing::info!(updated, "cited_count decay tick complete");
+    Ok(updated)
+}
+
 // ─── ManagedService 实现 ──────────────────────────────────────────────
 
 #[async_trait]
@@ -917,6 +989,65 @@ impl ManagedService for ProactiveService {
 
         // 启动轮询循环
         self.start_tick_loop().await;
+
+        // 启动 cited_count 周衰减任务（独立于主 tick loop，每 7 天触发一次）
+        {
+            let store = Arc::clone(&self.memory_graph_store);
+            tokio::spawn(async move {
+                const ONE_WEEK: std::time::Duration =
+                    std::time::Duration::from_secs(7 * 24 * 60 * 60);
+                let mut ticker = tokio::time::interval(ONE_WEEK);
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                // Skip the immediate t=0 fire — first decay runs after one full week
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    if let Err(e) = decay_cited_counts(&store, "default") {
+                        tracing::warn!(err = %e, "decay_cited_counts failed");
+                    }
+                }
+            });
+        }
+
+        // One-shot backfill: embed legacy skill versions that have NULL embedding_json.
+        // Runs at idle priority (spawned independently so it never blocks the tick loop).
+        if self.memu_client.is_some() {
+            let store = Arc::clone(&self.memory_graph_store);
+            let memu = self.memu_client.clone();
+            tokio::spawn(async move {
+                // Short initial delay so the bridge is fully ready.
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                // TODO(multi-space): backfill currently iterates only the "default" space.
+                // Once multi-space skill storage ships, iterate all spaces here so legacy
+                // embeddings get filled across the board. For v1 (single "default" space)
+                // this is correct.
+                match store.list_versions_without_embedding("default", 500) {
+                    Ok(pairs) if !pairs.is_empty() => {
+                        tracing::info!(count = pairs.len(), "embedding backfill: starting");
+                        let mut filled = 0usize;
+                        for (version_id, content) in &pairs {
+                            if let Some(vec) = crate::memu::embedding::embed_skill_body(&memu, content).await {
+                                let json = crate::memu::embedding::serialize_embedding(&vec);
+                                if let Err(e) = store.update_version_embedding(version_id, &json) {
+                                    tracing::warn!(version_id, error = %e, "embedding backfill: write failed");
+                                } else {
+                                    filled += 1;
+                                }
+                            }
+                            // Yield between calls so we don't saturate the bridge.
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        }
+                        tracing::info!(filled, total = pairs.len(), "embedding backfill: complete");
+                    }
+                    Ok(_) => {
+                        tracing::debug!("embedding backfill: no versions need embedding");
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "embedding backfill: failed to list versions");
+                    }
+                }
+            });
+        }
 
         // 切换状态为 Idle（等待首次 tick）
         *self.state.write().await = ProactiveState::Idle;
@@ -1170,5 +1301,68 @@ mod tests {
         assert!(!service.is_waiting_user_input.load(Ordering::SeqCst));
         let resp = service.user_input_response.read().await;
         assert_eq!(resp.as_deref(), Some("确认执行"));
+    }
+
+    /// 辅助：向 store 插入一个带有 cited_count 的 Procedure 节点，返回 node id
+    fn insert_learned_skill(
+        store: &MemoryGraphStore,
+        space_id: &str,
+        name: &str,
+        cited_count: u64,
+    ) -> String {
+        use crate::memory_graph::models::{MemoryNode, MemoryNodeKind};
+        let now = chrono::Utc::now().to_rfc3339();
+        let id = uuid::Uuid::new_v4().to_string();
+        let meta = serde_json::json!({
+            "skill_type": "learned",
+            "cited_count": cited_count,
+            "enabled": true,
+        });
+        let node = MemoryNode {
+            id: id.clone(),
+            space_id: space_id.to_string(),
+            kind: MemoryNodeKind::Procedure,
+            title: name.to_string(),
+            metadata: Some(meta),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        store.create_node(&node).expect("insert_learned_skill: create_node failed");
+        id
+    }
+
+    /// 辅助：读取节点当前的 cited_count
+    fn read_cited_count(store: &MemoryGraphStore, node_id: &str) -> u64 {
+        let node = store
+            .get_node(node_id)
+            .expect("read_cited_count: get_node failed")
+            .expect("read_cited_count: node not found");
+        node.metadata
+            .as_ref()
+            .and_then(|m| m.get("cited_count"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    }
+
+    /// Test: cited=20 → floor(20 * 0.95) = 19 after one decay call
+    #[test]
+    fn decay_applies_to_learned_skills() {
+        let store = make_test_memory_graph_store();
+        let node_id = insert_learned_skill(&store, "default", "my_skill", 20);
+
+        let updated = decay_cited_counts(&store, "default").expect("decay failed");
+        assert_eq!(updated, 1, "expected 1 node updated");
+        assert_eq!(read_cited_count(&store, &node_id), 19, "expected cited_count=19");
+    }
+
+    /// Test: cited=0 → no-op (floor(0 * 0.95) == 0, skip write)
+    #[test]
+    fn decay_floors_at_zero_not_negative() {
+        let store = make_test_memory_graph_store();
+        let node_id = insert_learned_skill(&store, "default", "zero_skill", 0);
+
+        let updated = decay_cited_counts(&store, "default").expect("decay failed");
+        assert_eq!(updated, 0, "expected 0 nodes updated (no-op)");
+        assert_eq!(read_cited_count(&store, &node_id), 0, "cited_count should remain 0");
     }
 }

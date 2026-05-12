@@ -256,6 +256,8 @@ export interface AgentSendInput {
   files?: AgentPendingFile[]
   mentionedSkills?: string[]
   mentionedMcpServers?: string[]
+  /** Strategy preset forwarded to the backend manifest re-ranker. */
+  strategy?: 'balanced' | 'repair' | 'optimize' | 'innovate'
 }
 
 /** Agent 队列消息输入 */

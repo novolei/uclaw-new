@@ -1,6 +1,7 @@
 pub mod types;
 // 预留：后续 Task 创建
 pub mod conversation_learning;
+pub mod failure_signals;
 pub mod skill_extraction;
 pub mod multimodal_context;
 
