@@ -227,8 +227,13 @@ impl ChatDelegate {
         }));
     }
 
-    /// Emit turn cost event after each LLM call
-    fn emit_turn_cost(&self, usage: &TokenUsage) {
+    /// Emit turn cost event after each LLM call.
+    ///
+    /// Async because the budget-threshold check reads `state.settings`, a
+    /// `tokio::sync::RwLock`. The previous `Handle::block_on` approach
+    /// deadlocked when called from inside an async task (this fn is invoked
+    /// from `on_usage`, which is async).
+    async fn emit_turn_cost(&self, usage: &TokenUsage) {
         let cost = calculate_cost(&self.model, usage.input_tokens, usage.output_tokens);
         let turn_cost = TurnCostInfo {
             input_tokens: usage.input_tokens,
@@ -253,6 +258,23 @@ impl ChatDelegate {
                 usage.input_tokens,
                 usage.output_tokens,
             );
+
+            // Phase 6-C: budget threshold check. Best-effort — failures don't propagate.
+            let budget_opt: Option<f64> = state.settings.read().await.monthly_budget_usd;
+            if let Some(budget) = budget_opt {
+                if budget > 0.0 {
+                    let month_start = crate::cost_store::current_month_start_ms();
+                    let total_after = crate::cost_store::monthly_total(&state, month_start);
+                    let total_before = (total_after - cost).max(0.0);
+                    if let Some(threshold) = crate::cost_store::fired_threshold(total_before, total_after, budget) {
+                        let _ = self.app_handle.emit("budget:threshold", crate::ipc::BudgetThresholdPayload {
+                            threshold,
+                            current: total_after,
+                            budget,
+                        });
+                    }
+                }
+            }
         }
 
         let _ = self.app_handle.emit("agent:turn_cost", serde_json::json!({
@@ -1216,7 +1238,7 @@ impl LoopDelegate for ChatDelegate {
             model = %self.model,
             "on_usage called"
         );
-        self.emit_turn_cost(usage);
+        self.emit_turn_cost(usage).await;
         self.emit_context_stats(
             &reason_ctx.messages,
             reason_ctx.total_input_tokens,

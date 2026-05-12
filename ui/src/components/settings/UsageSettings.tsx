@@ -1,14 +1,16 @@
 /**
- * UsageSettings — Settings → 用量 tab.
+ * UsageSettings — Settings → 用量与预算 tab.
  *
- * Three views:
+ * Sections (top to bottom):
+ *   - BudgetHeader: month-to-date spend + progress bar vs. configured budget
+ *   - WorkspaceRollupSection: per-workspace spend for the current month
+ *   - KPI cards (last 30 days)
  *   - Daily total bar chart (last 30 days)
  *   - Per-model donut (last 30 days)
  *   - Per-session table (most recent first)
  *
  * Live update: subscribes to `agent:turn_cost` events; on each event
- * we re-fetch the daily rollup (debounced 1s) so the bar chart bumps
- * without manual reload.
+ * we re-fetch the daily rollup AND the monthly totals (debounced 1s).
  */
 
 import * as React from 'react'
@@ -19,12 +21,22 @@ import {
   XAxis, YAxis, Tooltip,
   CartesianGrid, Legend,
 } from 'recharts'
+import { useAtomValue, useSetAtom } from 'jotai'
+import {
+  monthTotalUsdAtom,
+  workspaceRollupAtom,
+  monthlyBudgetUsdAtom,
+  refreshCostsAtom,
+  loadBudgetAtom,
+  setBudgetAtom,
+} from '@/atoms/cost'
 import {
   getDailyCosts, getModelCosts, getSessionCosts, onTurnCost,
 } from '@/lib/tauri-bridge'
 import type {
-  DailyCostRollup, ModelCostRollup, SessionCostRollup,
+  DailyCostRollup, ModelCostRollup, SessionCostRollup, WorkspaceCostRollup,
 } from '@/lib/types'
+import { getWorkspaceIcon } from '@/lib/workspace-icons'
 
 const PALETTE = ['hsl(220 70% 55%)', 'hsl(160 65% 45%)', 'hsl(30 80% 55%)',
                  'hsl(280 60% 60%)', 'hsl(0 70% 60%)', 'hsl(180 60% 45%)']
@@ -34,9 +46,157 @@ function formatUsd(v: number): string {
   return `$${v.toFixed(2)}`
 }
 
+function formatUsdShort(v: number): string {
+  if (v < 0.01) return `$${v.toFixed(4)}`
+  if (v < 1) return `$${v.toFixed(3)}`
+  return `$${v.toFixed(2)}`
+}
+
 function formatDateChip(epochMs: number): string {
   const d = new Date(epochMs)
   return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
+function BudgetHeader({
+  total, budget, onSave,
+}: {
+  total: number
+  budget: number | null
+  onSave: (v: number | null) => void
+}): React.ReactElement {
+  const [editing, setEditing] = React.useState(false)
+  const [draft, setDraft] = React.useState<string>(budget?.toString() ?? '')
+
+  if (budget == null) {
+    return (
+      <div className="rounded-xl border border-border/60 bg-card p-4">
+        <div className="text-[12.5px] font-medium text-foreground/80">本月已使用 {formatUsdShort(total)}</div>
+        <div className="mt-1 text-[11px] text-muted-foreground/70">设置月度预算后，达到 80% / 100% 会收到提醒。</div>
+        {editing ? (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              const v = parseFloat(draft)
+              if (Number.isFinite(v) && v > 0) {
+                onSave(v)
+                setEditing(false)
+              }
+            }}
+            className="mt-3 flex items-center gap-2"
+          >
+            <span className="text-[12px] text-muted-foreground/80">$</span>
+            <input
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              type="number" min="0" step="0.01" inputMode="decimal"
+              className="w-24 rounded-md border border-border/60 bg-background px-2 py-1 text-[12.5px] outline-none focus:border-primary"
+            />
+            <button type="submit" className="rounded-md bg-primary px-2.5 py-1 text-[11.5px] text-primary-foreground hover:bg-primary/90">
+              保存
+            </button>
+            <button type="button" onClick={() => setEditing(false)} className="text-[11.5px] text-muted-foreground/70 hover:text-foreground/80">
+              取消
+            </button>
+          </form>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            className="mt-3 rounded-md border border-dashed border-border/70 bg-transparent px-3 py-1.5 text-[11.5px] text-muted-foreground/85 hover:border-primary/50 hover:text-foreground/90"
+          >
+            设置月度预算
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  const pct = Math.min(total / budget, 1.5)
+  const isOver = total > budget
+  const isWarn = !isOver && total / budget >= 0.8
+
+  return (
+    <div className="rounded-xl border border-border/60 bg-card p-4">
+      <div className="flex items-baseline justify-between">
+        <div>
+          <div className="text-[14px] font-semibold text-foreground/90">本月用量</div>
+          <div className="mt-0.5 text-[11.5px] text-muted-foreground/70">
+            {formatUsdShort(total)} / {formatUsdShort(budget)} ·{' '}
+            <span className={isOver ? 'text-destructive font-medium' : isWarn ? 'text-amber-500 font-medium' : ''}>
+              {Math.round((total / budget) * 100)}%
+            </span>
+          </div>
+        </div>
+        {editing ? (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (draft === '') { onSave(null); setEditing(false); return }
+              const v = parseFloat(draft)
+              if (Number.isFinite(v) && v > 0) { onSave(v); setEditing(false) }
+            }}
+            className="flex items-center gap-1.5"
+          >
+            <span className="text-[12px] text-muted-foreground/80">$</span>
+            <input
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              type="number" min="0" step="0.01" inputMode="decimal"
+              className="w-20 rounded-md border border-border/60 bg-background px-2 py-1 text-[12.5px] outline-none focus:border-primary"
+              placeholder="预算"
+            />
+            <button type="submit" className="text-[11.5px] text-primary hover:underline">保存</button>
+            <button type="button" onClick={() => setEditing(false)} className="text-[11.5px] text-muted-foreground/70 hover:text-foreground/80">×</button>
+          </form>
+        ) : (
+          <button
+            type="button"
+            onClick={() => { setDraft(budget.toString()); setEditing(true) }}
+            className="text-[11px] text-muted-foreground/70 hover:text-foreground/80 underline-offset-2 hover:underline"
+          >
+            修改预算
+          </button>
+        )}
+      </div>
+      <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-muted">
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${
+            isOver ? 'bg-destructive' : isWarn ? 'bg-amber-500' : 'bg-primary'
+          }`}
+          style={{ width: `${(pct / 1.5) * 100}%` }}
+        />
+      </div>
+    </div>
+  )
+}
+
+function WorkspaceRollupSection({ items }: { items: WorkspaceCostRollup[] }): React.ReactElement | null {
+  if (items.length === 0) return null
+  const max = Math.max(...items.map((i) => i.totalCostUsd), 0.0001)
+  return (
+    <section>
+      <h3 className="mb-2 text-[12px] font-semibold uppercase tracking-wide text-muted-foreground/80">按工作区（本月）</h3>
+      <div className="space-y-1.5">
+        {items.map((r) => {
+          const Icon = getWorkspaceIcon(r.workspaceIcon)
+          return (
+            <div key={r.workspaceId} className="flex items-center gap-2.5 rounded-md border border-border/40 bg-card/60 px-3 py-2">
+              <span className="inline-flex items-center justify-center size-5 rounded bg-primary/15 text-primary shrink-0">
+                <Icon className="size-3.5" />
+              </span>
+              <span className="flex-1 truncate text-[12.5px] text-foreground/85">{r.workspaceName || '默认工作区'}</span>
+              <div className="relative h-1.5 w-24 overflow-hidden rounded-full bg-muted">
+                <div className="h-full rounded-full bg-primary/70" style={{ width: `${(r.totalCostUsd / max) * 100}%` }} />
+              </div>
+              <span className="w-16 shrink-0 text-right text-[12px] tabular-nums text-foreground/80">{formatUsdShort(r.totalCostUsd)}</span>
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
 }
 
 export function UsageSettings(): React.ReactElement {
@@ -44,6 +204,13 @@ export function UsageSettings(): React.ReactElement {
   const [models, setModels] = React.useState<ModelCostRollup[]>([])
   const [sessions, setSessions] = React.useState<SessionCostRollup[]>([])
   const [loading, setLoading] = React.useState(true)
+
+  const monthTotal = useAtomValue(monthTotalUsdAtom)
+  const wsRollup = useAtomValue(workspaceRollupAtom)
+  const budget = useAtomValue(monthlyBudgetUsdAtom)
+  const refreshCosts = useSetAtom(refreshCostsAtom)
+  const loadBudget = useSetAtom(loadBudgetAtom)
+  const saveBudget = useSetAtom(setBudgetAtom)
 
   const refetch = React.useCallback(async () => {
     setLoading(true)
@@ -61,20 +228,27 @@ export function UsageSettings(): React.ReactElement {
     }
   }, [])
 
-  React.useEffect(() => { void refetch() }, [refetch])
+  React.useEffect(() => {
+    void refetch()
+    void refreshCosts()
+    void loadBudget()
+  }, [refetch, refreshCosts, loadBudget])
 
   // Debounced re-fetch on new turn_cost events
   React.useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null
     const unlistenP = onTurnCost(() => {
       if (timer) clearTimeout(timer)
-      timer = setTimeout(() => { void refetch() }, 1000)
+      timer = setTimeout(() => {
+        void refetch()
+        void refreshCosts()  // Phase 6-C: keep the monthly view live too
+      }, 1000)
     })
     return () => {
       if (timer) clearTimeout(timer)
       void unlistenP.then((u) => u())
     }
-  }, [refetch])
+  }, [refetch, refreshCosts])
 
   const totals = React.useMemo(() => {
     const cost = daily.reduce((a, d) => a + d.costUsd, 0)
@@ -86,6 +260,9 @@ export function UsageSettings(): React.ReactElement {
 
   return (
     <div className="space-y-6 pb-8">
+      <BudgetHeader total={monthTotal ?? 0} budget={budget} onSave={(v) => void saveBudget(v)} />
+      <WorkspaceRollupSection items={wsRollup} />
+
       {/* KPI cards */}
       <section>
         <h3 className="mb-2.5 text-[12px] font-semibold uppercase tracking-widest text-muted-foreground/70">

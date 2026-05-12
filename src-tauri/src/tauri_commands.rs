@@ -2,7 +2,7 @@ use tauri::State;
 use crate::app::AppState;
 use crate::error::Error;
 use crate::ipc::*;
-use crate::ipc::{DailyCostRollup, ModelCostRollup, SessionCostRollup, PermissionRule, PermissionAuditEntry, CreatePermissionRuleInput};
+use crate::ipc::{DailyCostRollup, ModelCostRollup, SessionCostRollup, WorkspaceCostRollup, PermissionRule, PermissionAuditEntry, CreatePermissionRuleInput};
 use crate::agent::types::*;
 use crate::agent::tools::tool::ToolRegistry;
 use crate::agent::tools::builtin;
@@ -42,6 +42,7 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<GetSettingsRespo
         theme: settings.theme.clone(),
         config_path: state.config_path.to_string_lossy().into(),
         data_path: state.data_dir.to_string_lossy().into(),
+        monthly_budget_usd: settings.monthly_budget_usd,
     })
 }
 
@@ -53,6 +54,11 @@ pub async fn patch_settings(state: State<'_, AppState>, input: PatchSettingsInpu
     }
     if let Some(theme) = input.theme {
         settings.theme = theme;
+    }
+    // Outer Some = field was present in the JSON; inner is the new value (or None to clear).
+    if let Some(budget) = input.monthly_budget_usd {
+        // Clamp negatives/zero to None — belt-and-suspenders for IPC robustness.
+        settings.monthly_budget_usd = budget.filter(|&b| b > 0.0);
     }
     settings.save(&state.config_path)?;
     drop(settings);
@@ -709,6 +715,56 @@ pub async fn get_session_costs(
     }).map_err(|e| Error::Internal(format!("session query: {}", e)))?;
 
     Ok(rows.flatten().collect())
+}
+
+/// Sum cost_records for the current month, grouped by workspace.
+/// `since_ms` is the start of the current month in user-local time
+/// (computed in the frontend — keeps timezone logic out of Rust).
+#[tauri::command]
+pub async fn list_workspace_cost_rollup(
+    state: State<'_, AppState>,
+    since_ms: i64,
+) -> Result<Vec<WorkspaceCostRollup>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let mut stmt = conn.prepare(
+        "SELECT
+             s.space_id AS workspace_id,
+             COALESCE(sp.name, '默认工作区') AS workspace_name,
+             COALESCE(sp.icon, 'Folder') AS workspace_icon,
+             COALESCE(SUM(c.cost_usd), 0) AS total_cost_usd,
+             COALESCE(SUM(c.input_tokens + c.output_tokens), 0) AS total_tokens
+         FROM cost_records c
+         JOIN agent_sessions s ON c.session_id = s.id
+         LEFT JOIN spaces sp ON sp.id = s.space_id
+         WHERE c.created_at >= ?1
+         GROUP BY s.space_id
+         ORDER BY total_cost_usd DESC"
+    ).map_err(|e| Error::Internal(format!("prepare workspace rollup: {}", e)))?;
+    let rows = stmt.query_map(rusqlite::params![since_ms], |row| {
+        Ok(WorkspaceCostRollup {
+            workspace_id: row.get(0)?,
+            workspace_name: row.get(1)?,
+            workspace_icon: row.get(2)?,
+            total_cost_usd: row.get(3)?,
+            total_tokens: row.get(4)?,
+        })
+    }).map_err(|e| Error::Internal(format!("workspace rollup query: {}", e)))?;
+    Ok(rows.filter_map(Result::ok).collect())
+}
+
+/// Sum of cost_records.cost_usd where created_at >= since_ms.
+#[tauri::command]
+pub async fn get_month_cost_total(
+    state: State<'_, AppState>,
+    since_ms: i64,
+) -> Result<f64, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let total: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_records WHERE created_at >= ?1",
+        rusqlite::params![since_ms],
+        |row| row.get(0),
+    ).map_err(|e| Error::Internal(format!("month total query: {}", e)))?;
+    Ok(total)
 }
 
 /// Parse an `updated_at` string into epoch milliseconds. Accepts a bare i64-ms
@@ -6978,4 +7034,150 @@ mod search_workspace_tests {
     // TODO(phase6b): No AppState test helper exists, so end-to-end integration
     // tests of search_conversations() as a Tauri command are skipped. The two
     // schema-level tests above cover JOIN correctness for all 5 SQL branches.
+}
+
+#[cfg(test)]
+mod settings_budget_tests {
+    use crate::settings::UserSettings;
+
+    #[test]
+    fn user_settings_default_has_no_budget() {
+        let s = UserSettings::default();
+        assert_eq!(s.monthly_budget_usd, None);
+    }
+
+    #[test]
+    fn user_settings_roundtrips_through_json() {
+        let s = UserSettings {
+            language: "en".into(),
+            theme: "light".into(),
+            monthly_budget_usd: Some(50.0),
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let s2: UserSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(s2.monthly_budget_usd, Some(50.0));
+    }
+
+    #[test]
+    fn user_settings_loads_legacy_config_without_field() {
+        let legacy = r#"{"language":"en","theme":"light"}"#;
+        let s: UserSettings = serde_json::from_str(legacy).unwrap();
+        assert_eq!(s.monthly_budget_usd, None);
+    }
+}
+
+#[cfg(test)]
+mod workspace_cost_rollup_tests {
+    use rusqlite::Connection;
+    use crate::db::migrations::run;
+
+    fn setup_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        run(&conn).expect("run migrations");
+        conn
+    }
+
+    fn insert_session(conn: &Connection, id: &str, space_id: &str, title: &str) {
+        conn.execute(
+            "INSERT INTO agent_sessions (id, space_id, title, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 0, 0)",
+            rusqlite::params![id, space_id, title],
+        ).unwrap();
+    }
+    fn insert_workspace(conn: &Connection, id: &str, name: &str) {
+        conn.execute(
+            "INSERT INTO spaces (id, name, icon, path, attached_dirs,
+                                 sort_order, created_at, updated_at)
+             VALUES (?1, ?2, 'Folder', '/x', '[]', 0, '0', '0')",
+            rusqlite::params![id, name],
+        ).unwrap();
+    }
+    fn insert_cost(conn: &Connection, session_id: &str, model: &str, cost: f64, ts: i64) {
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO cost_records (id, session_id, model, input_tokens, output_tokens, cost_usd, created_at)
+             VALUES (?1, ?2, ?3, 100, 50, ?4, ?5)",
+            rusqlite::params![id, session_id, model, cost, ts],
+        ).unwrap();
+    }
+
+    #[test]
+    fn workspace_rollup_groups_costs_by_space() {
+        let conn = setup_db();
+        insert_workspace(&conn, "ws-a", "Alpha");
+        insert_workspace(&conn, "ws-b", "Beta");
+        insert_session(&conn, "s1", "ws-a", "");
+        insert_session(&conn, "s2", "ws-a", "");
+        insert_session(&conn, "s3", "ws-b", "");
+        insert_cost(&conn, "s1", "claude-x", 1.0, 1000);
+        insert_cost(&conn, "s2", "claude-x", 2.0, 2000);
+        insert_cost(&conn, "s3", "claude-x", 0.5, 1500);
+
+        let mut stmt = conn.prepare(
+            "SELECT s.space_id, COALESCE(sp.name, ''), COALESCE(sp.icon, 'Folder'),
+                    SUM(c.cost_usd), SUM(c.input_tokens + c.output_tokens)
+             FROM cost_records c
+             JOIN agent_sessions s ON c.session_id = s.id
+             LEFT JOIN spaces sp ON sp.id = s.space_id
+             WHERE c.created_at >= ?1
+             GROUP BY s.space_id
+             ORDER BY SUM(c.cost_usd) DESC"
+        ).unwrap();
+        let rows: Vec<(String, String, String, f64, i64)> = stmt
+            .query_map([500i64], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            }).unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "ws-a");
+        assert!((rows[0].3 - 3.0).abs() < 0.01);
+        assert_eq!(rows[0].4, 300); // 2 rows × (100 in + 50 out) = 300
+        assert_eq!(rows[1].0, "ws-b");
+        assert!((rows[1].3 - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn workspace_rollup_filters_by_since_ms() {
+        let conn = setup_db();
+        insert_workspace(&conn, "ws-a", "Alpha");
+        insert_session(&conn, "s1", "ws-a", "");
+        insert_cost(&conn, "s1", "claude-x", 1.0, 500);
+        insert_cost(&conn, "s1", "claude-x", 2.0, 1500);
+
+        let mut stmt = conn.prepare(
+            "SELECT SUM(c.cost_usd)
+             FROM cost_records c
+             JOIN agent_sessions s ON c.session_id = s.id
+             WHERE c.created_at >= ?1"
+        ).unwrap();
+        let total: f64 = stmt.query_row([1000i64], |r| r.get(0)).unwrap();
+        assert!((total - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn workspace_rollup_returns_empty_for_no_records() {
+        let conn = setup_db();
+        let mut stmt = conn.prepare(
+            "SELECT COUNT(*) FROM cost_records c WHERE c.created_at >= ?1"
+        ).unwrap();
+        let count: i64 = stmt.query_row([0i64], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn month_total_sums_recent_records() {
+        let conn = setup_db();
+        insert_workspace(&conn, "ws-a", "Alpha");
+        insert_session(&conn, "s1", "ws-a", "");
+        insert_cost(&conn, "s1", "x", 1.0, 1000);
+        insert_cost(&conn, "s1", "x", 2.0, 2000);
+        insert_cost(&conn, "s1", "x", 4.0, 500);
+
+        let total: f64 = conn.query_row(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_records WHERE created_at >= ?1",
+            [800i64], |r| r.get(0),
+        ).unwrap();
+        assert!((total - 3.0).abs() < 0.01);
+    }
 }

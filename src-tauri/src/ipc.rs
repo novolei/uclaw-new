@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde::de::Deserializer;
 
 /// Common IPC result type
 pub type IpcResult<T> = Result<T, crate::error::Error>;
@@ -12,6 +13,8 @@ pub struct GetSettingsResponse {
     pub theme: String,
     pub config_path: String,
     pub data_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monthly_budget_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +22,17 @@ pub struct GetSettingsResponse {
 pub struct PatchSettingsInput {
     pub language: Option<String>,
     pub theme: Option<String>,
+    /// When provided, sets the monthly budget. To CLEAR the budget, send `Some(None)` —
+    /// represented on the wire as `monthlyBudgetUsd: null`. To leave unchanged, omit the
+    /// field entirely.
+    #[serde(default, deserialize_with = "deserialize_option_option_f64")]
+    pub monthly_budget_usd: Option<Option<f64>>,
+}
+
+fn deserialize_option_option_f64<'de, D>(d: D) -> Result<Option<Option<f64>>, D::Error>
+where D: Deserializer<'de>
+{
+    Ok(Some(Option::<f64>::deserialize(d)?))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -863,6 +877,27 @@ pub struct SessionCostRollup {
     pub turn_count: i64,
     /// Most-recent record's created_at (epoch ms).
     pub last_used_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceCostRollup {
+    pub workspace_id: String,
+    pub workspace_name: String,
+    pub workspace_icon: String,
+    pub total_cost_usd: f64,
+    pub total_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetThresholdPayload {
+    /// 80 or 100. The threshold percentage that was crossed on this turn.
+    pub threshold: u8,
+    /// Current monthly total in USD (after this turn's cost).
+    pub current: f64,
+    /// Configured monthly budget in USD.
+    pub budget: f64,
 }
 
 // ─── Permission rules ─────────────────────────────────────────────────

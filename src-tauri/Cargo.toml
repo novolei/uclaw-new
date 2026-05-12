@@ -23,7 +23,13 @@ tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
 
 # HTTP client
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
+# gzip/brotli/deflate features: many real-world sites (yahoo finance,
+# cloudflare-fronted endpoints, etc.) negotiate compressed responses
+# regardless of whether we advertise Accept-Encoding. Without these
+# features reqwest hands us the raw compressed bytes; .text() then
+# lossy-decodes binary as UTF-8 and downstream code panics on byte
+# slicing in the middle of "characters" that don't exist.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream", "gzip", "brotli", "deflate"] }
 bytes = "1"
 
 # Serialization

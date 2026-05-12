@@ -8,11 +8,33 @@ use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput
 /// Default request timeout in milliseconds.
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 
-/// Maximum response body size (1 MB).
-const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
+/// Maximum response body size (10 MB). Modern news / finance / search pages
+/// often weigh 2-5 MB after decompression; 1 MB rejected real-world fetches
+/// (yahoo finance was the trigger). 10 MB still bounds memory pressure but
+/// covers the long tail. Oversized responses are now TRUNCATED at this cap
+/// rather than rejected — partial content beats no content for the LLM.
+const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
 
 /// User-Agent header.
 const USER_AGENT: &str = "uClaw/0.1";
+
+/// Largest prefix of `s` that's `<= max_bytes` AND ends at a UTF-8 char
+/// boundary. Returns the original on input shorter than the cap.
+///
+/// Why this exists: `s[..n]` panics when `n` lands inside a multi-byte
+/// codepoint. Real-world bug — fetching a CJK / emoji-heavy page and
+/// capping at 1 MB landed exactly inside a Chinese character, crashing
+/// the tokio worker.
+fn truncate_at_byte_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut i = max_bytes;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    &s[..i]
+}
 
 /// Validate a URL to prevent SSRF attacks.
 /// Rejects non-http(s) schemes and private/loopback addresses.
@@ -188,35 +210,37 @@ impl Tool for WebFetchTool {
             warn!(url, %status, "Non-success HTTP status");
         }
 
-        // Read body with size limit
-        let content_length = resp.content_length().unwrap_or(0) as usize;
-        if content_length > MAX_RESPONSE_SIZE {
-            return Err(ToolError::Execution(format!(
-                "Response too large ({} bytes, max {} bytes)",
-                content_length, MAX_RESPONSE_SIZE
-            )));
-        }
-
-        let body = resp
+        // Read body. Real-world pages often exceed our cap; truncate at a
+        // UTF-8 char boundary instead of rejecting, so the agent gets the
+        // top of the page (head/title/intro) rather than nothing.
+        let raw_body = resp
             .text()
             .await
             .map_err(|e| ToolError::Execution(format!("Failed to read response body: {}", e)))?;
-
-        if body.len() > MAX_RESPONSE_SIZE {
-            return Err(ToolError::Execution(format!(
-                "Response body too large ({} bytes, max {} bytes)",
-                body.len(),
-                MAX_RESPONSE_SIZE
-            )));
-        }
+        let body = if raw_body.len() > MAX_RESPONSE_SIZE {
+            warn!(
+                url,
+                size = raw_body.len(),
+                cap = MAX_RESPONSE_SIZE,
+                "Response exceeded cap — truncating"
+            );
+            truncate_at_byte_boundary(&raw_body, MAX_RESPONSE_SIZE).to_owned()
+        } else {
+            raw_body
+        };
 
         let text = Self::extract_text(&body);
-        let truncated = if text.len() > max_length {
+        // max_length is documented as "characters" in the tool schema.
+        // chars().count() walks the string but we already have it in
+        // memory and capped at MAX_RESPONSE_SIZE (1 MB), so it's bounded.
+        let total_chars = text.chars().count();
+        let truncated = if total_chars > max_length {
+            let prefix: String = text.chars().take(max_length).collect();
             format!(
                 "{}...\n[Truncated: showing {}/{} characters]",
-                &text[..max_length],
+                prefix,
                 max_length,
-                text.len()
+                total_chars
             )
         } else {
             text
@@ -363,11 +387,14 @@ impl Tool for HttpRequestTool {
             .await
             .map_err(|e| ToolError::Execution(format!("Failed to read response body: {}", e)))?;
 
-        // Truncate very large bodies
+        // Truncate very large bodies. The MAX_RESPONSE_SIZE cap is for
+        // memory safety so bytes are the right unit; round down to a
+        // char boundary so the slice doesn't panic on multi-byte
+        // codepoints landing across the boundary.
         let body_display = if body.len() > MAX_RESPONSE_SIZE {
             format!(
                 "{}...\n[Truncated: {}/{} bytes]",
-                &body[..MAX_RESPONSE_SIZE],
+                truncate_at_byte_boundary(&body, MAX_RESPONSE_SIZE),
                 MAX_RESPONSE_SIZE,
                 body.len()
             )
@@ -384,5 +411,39 @@ impl Tool for HttpRequestTool {
 
         debug!(method = method_str, url, status, "HTTP request completed");
         Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_at_byte_boundary_passes_through_short_input() {
+        assert_eq!(truncate_at_byte_boundary("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_at_byte_boundary_caps_at_exact_ascii_boundary() {
+        assert_eq!(truncate_at_byte_boundary("hello world", 5), "hello");
+    }
+
+    /// Regression for the original panic: `&body[..MAX_RESPONSE_SIZE]`
+    /// fell inside a multi-byte codepoint. The helper backs off to the
+    /// nearest valid boundary instead of panicking.
+    #[test]
+    fn truncate_at_byte_boundary_rounds_down_on_multibyte() {
+        // "中" is 3 bytes in UTF-8. Asking for max_bytes=2 should give
+        // an empty string (no full codepoint fits), not panic.
+        assert_eq!(truncate_at_byte_boundary("中", 2), "");
+        // 4-byte cap on "中中" (6 bytes total) should keep the first 中
+        // (3 bytes) and stop, not slice mid-character.
+        assert_eq!(truncate_at_byte_boundary("中中", 4), "中");
+    }
+
+    #[test]
+    fn truncate_at_byte_boundary_zero_cap() {
+        assert_eq!(truncate_at_byte_boundary("中", 0), "");
+        assert_eq!(truncate_at_byte_boundary("abc", 0), "");
     }
 }

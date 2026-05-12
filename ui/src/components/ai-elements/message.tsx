@@ -1,8 +1,6 @@
 import * as React from 'react'
 import Markdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
 import { cn } from '@/lib/utils'
 import { MarkdownCodeBlock } from '@/components/shared/code-block/CodeBlock'
 
@@ -128,9 +126,25 @@ function remarkPreserveBreaks() {
 
 // ===== Markdown 渲染器组件 =====
 
-const REMARK_PLUGINS = [remarkGfm, remarkMath]
-const REMARK_PLUGINS_WITH_BREAKS = [remarkGfm, remarkMath, remarkPreserveBreaks]
-const REHYPE_PLUGINS = [rehypeKatex]
+// remark-math + rehype-katex removed entirely.
+//
+// Why: agent responses overwhelmingly contain dollar amounts ($3.65,
+// $294.76) and numeric ranges ($580 — 600$) rather than LaTeX math.
+// remark-math treats any `$...$` or `$$...$$` pair as math and feeds
+// the contents to KaTeX, which then warns about Unicode (CJK) chars in
+// math mode and renders the content in a serif italic typeface. The
+// result: random spans of agent text show up as math italic — a real
+// bug, never a real feature for our users.
+//
+// Disabling `singleDollarTextMath` only addressed half of it (still
+// allowed `$$...$$`). Removing the plugin chain entirely is the only
+// robust fix. Users who genuinely need formula rendering can wrap in
+// a ```latex``` code block (which our highlighter already handles) or
+// paste a rendered image.
+import type { PluggableList } from 'unified'
+const REMARK_PLUGINS: PluggableList = [remarkGfm]
+const REMARK_PLUGINS_WITH_BREAKS: PluggableList = [remarkGfm, remarkPreserveBreaks]
+const REHYPE_PLUGINS: PluggableList = []
 
 /** 链接渲染器：外部 URL 用 Tauri openExternal 打开 */
 const MarkdownLink = React.memo(function MarkdownLink({
@@ -365,6 +379,53 @@ const MarkdownHr = React.memo(function MarkdownHr(): React.ReactElement {
   return <hr className="my-6 border-0 border-t border-border/60" />
 })
 
+/**
+ * `<strong>` renderer applied uniformly to ALL `**bold**` spans, regardless
+ * of whether they live inside a `not-prose` subtree (e.g. our tables).
+ *
+ * Why a dedicated component instead of `prose-strong:` utilities:
+ *   1. `MarkdownTable` wraps the `<table>` in `not-prose` (so prose's
+ *      default table styling doesn't fight our card layout). That also
+ *      strips `prose-strong:*` styles from `<strong>` inside cells —
+ *      browser default `font-weight: bold` (700) takes over, which reads
+ *      as a typeface change in mixed CJK + Latin prose.
+ *   2. The previous setup also forced `text-foreground` on bold, which
+ *      broke `<blockquote>`'s dimmed (`text-foreground/75`) color —
+ *      bold spans popped via color contrast even when their weight
+ *      matched, again reading as a different font.
+ *
+ * The fix is purely additive: `font-medium` (500) for a subtle emphasis,
+ * inherit color from the parent so bold blends with whatever container
+ * it lives in.
+ */
+const MarkdownStrong = React.memo(function MarkdownStrong({
+  children,
+}: React.HTMLAttributes<HTMLElement>): React.ReactElement {
+  return <strong className="font-medium text-inherit">{children}</strong>
+})
+
+/**
+ * `<em>` renderer.
+ *
+ * Markdown `*x*` becomes `<em>` which the browser/prose styles render as
+ * `font-style: italic`. In Latin fonts that produces a true italic
+ * (slanted serif glyphs); in CJK text there's no italic form, so adjacent
+ * Chinese characters stay upright while Latin digits / words inside the
+ * `<em>` slant. User-reported symptom: numbers like `570-580` look like
+ * "a different font" when emphasized via `*570-580*` between Chinese
+ * characters.
+ *
+ * Fix: drop the italic transform entirely. Apply the same subtle
+ * `font-medium` (500) emphasis as `<strong>` so the semantic is still
+ * conveyed without typeface-mismatch glyph slanting. Italic is bad
+ * typography in mixed CJK + Latin anyway.
+ */
+const MarkdownEm = React.memo(function MarkdownEm({
+  children,
+}: React.HTMLAttributes<HTMLElement>): React.ReactElement {
+  return <em className="not-italic font-medium text-inherit">{children}</em>
+})
+
 const MARKDOWN_COMPONENTS = {
   a: MarkdownLink,
   pre: MarkdownPre,
@@ -379,6 +440,8 @@ const MARKDOWN_COMPONENTS = {
   td: MarkdownTd,
   blockquote: MarkdownBlockquote,
   hr: MarkdownHr,
+  strong: MarkdownStrong,
+  em: MarkdownEm,
 } as const
 
 interface MessageResponseProps {
@@ -407,7 +470,11 @@ export const MessageResponse = React.memo(
           'prose-p:my-1.5 prose-p:leading-[1.65]',
           'prose-pre:my-0 prose-pre:bg-transparent prose-pre:p-0',
           'prose-a:text-primary prose-a:no-underline hover:prose-a:underline',
-          'prose-strong:font-semibold prose-strong:text-foreground',
+          // `<strong>` styling moved to the MarkdownStrong component
+          // override (font-medium + inherit color), so it applies inside
+          // `not-prose` table cells too. Don't restore prose-strong:*
+          // here — they would re-introduce color contrast inside
+          // blockquotes.
           '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
           className,
         )}

@@ -21,11 +21,14 @@ export interface Settings {
   theme: string;
   configPath: string;
   dataPath: string;
+  monthlyBudgetUsd?: number | null;
 }
 
 export interface PatchSettingsInput {
   language?: string;
   theme?: string;
+  /** Send `null` to clear; omit to leave unchanged. */
+  monthlyBudgetUsd?: number | null;
 }
 
 export type View = "home" | "chat" | "settings" | "onboarding" | "apps";
@@ -1052,6 +1055,20 @@ export interface SessionCostRollup {
   costUsd: number
   turnCount: number
   lastUsedAt: number
+}
+
+export interface WorkspaceCostRollup {
+  workspaceId: string
+  workspaceName: string
+  workspaceIcon: string
+  totalCostUsd: number
+  totalTokens: number
+}
+
+export interface BudgetThresholdPayload {
+  threshold: 80 | 100
+  current: number
+  budget: number
 }
 
 // ===== Permission rules =====
