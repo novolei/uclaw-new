@@ -29,6 +29,9 @@ interface ContextUsageBadgeProps {
   cacheCreationTokens?: number
   costUsd?: number
   contextWindow?: number
+  /** Skill manifest token cost (from agent:context_stats). Shows a "技能" row
+   *  in the popover when > 0. */
+  skillsTokens?: number
   isCompacting: boolean
   isProcessing: boolean
   onCompact: () => void
@@ -118,6 +121,7 @@ export function ContextUsageBadge({
   cacheReadTokens,
   cacheCreationTokens,
   contextWindow,
+  skillsTokens,
   isCompacting,
   isProcessing,
   onCompact,
@@ -129,9 +133,10 @@ export function ContextUsageBadge({
     cacheReadTokens?: number
     cacheCreationTokens?: number
     contextWindow?: number
+    skillsTokens?: number
   } | null>(null)
   if (inputTokens && inputTokens > 0) {
-    stableRef.current = { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, contextWindow }
+    stableRef.current = { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, contextWindow, skillsTokens }
   }
 
   const [open, setOpen] = React.useState(false)
@@ -174,6 +179,10 @@ export function ContextUsageBadge({
   const displayOutput = hasCurrent ? outputTokens : stable?.outputTokens
   const displayCacheRead = hasCurrent ? cacheReadTokens : stable?.cacheReadTokens
   const displayCacheCreation = hasCurrent ? cacheCreationTokens : stable?.cacheCreationTokens
+  // skillsTokens comes in via the agent:context_stats event, which fires
+  // independently of usage_update. Always prefer the current prop value
+  // (don't gate on hasCurrent); fall back to stable cache for session switch.
+  const displaySkills = skillsTokens != null ? skillsTokens : stable?.skillsTokens
 
   // 从未有过 usage 数据 → 不显示
   if (!displayTokens || displayTokens <= 0) return null
@@ -235,6 +244,9 @@ export function ContextUsageBadge({
           {displayOutput ? <DetailRow label="输出" value={displayOutput.toLocaleString()} /> : null}
           {displayCacheCreation ? <DetailRow label="缓存写入" value={displayCacheCreation.toLocaleString()} /> : null}
           {displayCacheRead ? <DetailRow label="缓存读取" value={displayCacheRead.toLocaleString()} /> : null}
+          {displaySkills != null && displaySkills > 0 ? (
+            <DetailRow label="技能" value={displaySkills.toLocaleString()} />
+          ) : null}
 
           {displayWindow ? (
             <>

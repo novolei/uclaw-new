@@ -469,6 +469,8 @@ export interface ContextStats {
   maxTokens: number;
   usagePercent: number;
   categories?: ContextStatsCategory[];
+  /** Session this event belongs to. Required for multi-session routing. */
+  conversationId?: string;
   /** Detailed breakdown fields (optional, from agent:context_stats event) */
   modelContextLength?: number;
   systemPromptTokens?: number;

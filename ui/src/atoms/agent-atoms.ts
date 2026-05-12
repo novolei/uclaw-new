@@ -100,6 +100,10 @@ export interface AgentStreamState {
   cacheCreationTokens?: number
   costUsd?: number
   contextWindow?: number
+  /** Skill manifest token cost, from agent:context_stats event.
+   *  Reflects the size of the "你已学习到的技能" block appended to the
+   *  system prompt. Stays 0 when the manifest is empty (no learned skills). */
+  skillsTokens?: number
   isCompacting?: boolean
   compactInFlight?: boolean
   startedAt?: number
@@ -810,6 +814,8 @@ export interface AgentContextStatus {
   cacheCreationTokens?: number
   costUsd?: number
   contextWindow?: number
+  /** Skill manifest token cost (from agent:context_stats event). */
+  skillsTokens?: number
 }
 
 export const agentContextStatusAtom = atom<AgentContextStatus>((get) => {
@@ -824,6 +830,7 @@ export const agentContextStatusAtom = atom<AgentContextStatus>((get) => {
     cacheCreationTokens: state?.cacheCreationTokens,
     costUsd: state?.costUsd,
     contextWindow: state?.contextWindow,
+    skillsTokens: state?.skillsTokens,
   }
 })
 

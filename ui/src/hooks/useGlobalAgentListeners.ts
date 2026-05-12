@@ -477,6 +477,28 @@ function startAgentListeners(store: Store): void {
     )
   )
 
+  // agent:context_stats → capture skill manifest token cost into stream state
+  // so the ContextUsageBadge popover can display a "技能" row. Other fields
+  // (model_context_length, system_prompt_tokens, etc.) are intentionally
+  // ignored here — they're available via the onContextStats bridge for
+  // consumers that want the full breakdown (e.g. ContextStatsModal).
+  reg(
+    listen<{ conversationId: string; skillsTokens: number }>(
+      'agent:context_stats',
+      ({ payload }) => {
+        const sid = payload.conversationId
+        store.set(agentStreamingStatesAtom, (prev) => {
+          const existing = prev.get(sid)
+          if (!existing) return prev
+          if (existing.skillsTokens === payload.skillsTokens) return prev
+          const next = new Map(prev)
+          next.set(sid, { ...existing, skillsTokens: payload.skillsTokens })
+          return next
+        })
+      }
+    )
+  )
+
   // agent:proactive-learning → prepend to events list (cap at 10)
   reg(
     listen<ProactiveLearningEvent>('agent:proactive-learning', ({ payload }) => {

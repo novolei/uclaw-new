@@ -198,6 +198,9 @@ pub struct ResponseMetadata {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextStats {
+    /// Session this event belongs to. Required so multi-session UIs can
+    /// route the payload to the right streamingStates entry.
+    pub conversation_id: String,
     pub model_context_length: u32,
     pub system_prompt_tokens: u32,
     pub mcp_prompts_tokens: u32,
