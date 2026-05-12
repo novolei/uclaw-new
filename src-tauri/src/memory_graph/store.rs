@@ -190,9 +190,15 @@ impl MemoryGraphStore {
              WHERE space_id = ?1 AND kind = ?2
                AND COALESCE(json_extract(metadata_json, '$.skill_type'), '') = 'learned'
                AND COALESCE(json_extract(metadata_json, '$.enabled'), 1) <> 0
-             ORDER BY COALESCE(json_extract(metadata_json, '$.cited_count'), 0) DESC,
-                      COALESCE(json_extract(metadata_json, '$.usage_count'), 0) DESC,
-                      updated_at DESC
+             ORDER BY (
+               CAST(COALESCE(json_extract(metadata_json, '$.cited_count'), 0) AS REAL) *
+                 MAX(0.5,
+                     1.0 - (julianday('now') - julianday(COALESCE(json_extract(metadata_json, '$.last_cited_at'),
+                                                                  '1970-01-01T00:00:00Z'))) / 30.0
+                 ) * 10.0
+               + CAST(COALESCE(json_extract(metadata_json, '$.usage_count'), 0) AS REAL) * 3.0
+             ) DESC,
+             updated_at DESC
              LIMIT ?3"
         ).map_err(crate::error::Error::Database)?;
 
@@ -747,5 +753,105 @@ impl MemoryGraphStore {
             created_at: row.get(7)?,
             updated_at: row.get(8)?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Spin up an in-memory SQLite store with the V4 graph schema applied.
+    fn fresh_test_store() -> MemoryGraphStore {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).expect("schema");
+        let store = MemoryGraphStore::new(Arc::new(Mutex::new(conn)));
+        store
+    }
+
+    /// Insert a minimal Procedure node + active version with given metadata.
+    fn make_node_with(store: &MemoryGraphStore, title: &str, metadata: serde_json::Value) {
+        let now = chrono::Utc::now().to_rfc3339();
+        let node_id = uuid::Uuid::new_v4().to_string();
+        let node = MemoryNode {
+            id: node_id.clone(),
+            space_id: "default".to_string(),
+            kind: MemoryNodeKind::Procedure,
+            title: title.to_string(),
+            metadata: Some(metadata),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.create_node(&node).expect("create_node");
+
+        let version = MemoryVersion {
+            id: uuid::Uuid::new_v4().to_string(),
+            node_id: node_id.clone(),
+            supersedes_version_id: None,
+            status: MemoryVersionStatus::Active,
+            content: format!("content for {}", title),
+            metadata: None,
+            embedding_json: None,
+            created_at: now,
+        };
+        store.create_version(&version).expect("create_version");
+    }
+
+    #[test]
+    fn recency_factor_demotes_old_cited_skills() {
+        let store = fresh_test_store();
+        let now = chrono::Utc::now();
+        let old = (now - chrono::Duration::days(60)).to_rfc3339();
+        let fresh = (now - chrono::Duration::days(1)).to_rfc3339();
+
+        // Skill A: cited=10, last_cited_at = 60 days ago → recency_factor clamps to 0.5
+        // effective score = 10 * 0.5 * 10 + 0 * 3 = 50
+        make_node_with(&store, "old-skill", serde_json::json!({
+            "skill_type": "learned", "enabled": true,
+            "cited_count": 10, "usage_count": 0,
+            "last_cited_at": old,
+        }));
+
+        // Skill B: cited=8, last_cited_at = 1 day ago → recency_factor ≈ 0.967
+        // effective score = 8 * 0.967 * 10 + 0 * 3 ≈ 77.3 → B wins
+        make_node_with(&store, "fresh-skill", serde_json::json!({
+            "skill_type": "learned", "enabled": true,
+            "cited_count": 8, "usage_count": 0,
+            "last_cited_at": fresh,
+        }));
+
+        let result = store.list_top_learned_skills("default", 10).unwrap();
+        assert_eq!(result.len(), 2);
+        let pos_old = result.iter().position(|d| d.node.title == "old-skill").unwrap();
+        let pos_fresh = result.iter().position(|d| d.node.title == "fresh-skill").unwrap();
+        // fresh-skill (cited=8, recent) should rank above old-skill (cited=10, 60 days stale)
+        assert!(pos_fresh < pos_old,
+            "expected fresh-skill before old-skill; got order: {:?}",
+            result.iter().map(|d| &d.node.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn recency_factor_clamps_at_half_floor() {
+        let store = fresh_test_store();
+        let now = chrono::Utc::now();
+        let aged = (now - chrono::Duration::days(60)).to_rfc3339();
+        let ancient = (now - chrono::Duration::days(365)).to_rfc3339();
+
+        // Both cited=10 but different staleness — both should clamp to 0.5 factor
+        // effective scores should be equal: 10 * 0.5 * 10 = 50 each
+        make_node_with(&store, "aged", serde_json::json!({
+            "skill_type": "learned", "enabled": true,
+            "cited_count": 10, "usage_count": 0, "last_cited_at": aged,
+        }));
+        make_node_with(&store, "ancient", serde_json::json!({
+            "skill_type": "learned", "enabled": true,
+            "cited_count": 10, "usage_count": 0, "last_cited_at": ancient,
+        }));
+
+        let result = store.list_top_learned_skills("default", 10).unwrap();
+        // Both present (neither zeroed out by the clamp)
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|d| d.node.title == "aged"), "aged not in result");
+        assert!(result.iter().any(|d| d.node.title == "ancient"), "ancient not in result");
     }
 }
