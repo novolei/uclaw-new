@@ -11,6 +11,7 @@
 
 import { atom } from 'jotai'
 import { atomWithStorage } from 'jotai/utils'
+import { dirtyBuffersAtom } from './preview-editor-atoms'
 
 export interface PreviewFileTarget {
   /** Identifies the mount the file lives in (workspace:* / attached:*). */
@@ -55,12 +56,43 @@ export const previewPanelSplitRatioAtom = atomWithStorage<number>(
 )
 
 /** Write-only action: select a file AND open the panel in one update. */
-export const openPreviewAction = atom(null, (_get, set, payload: PreviewFileTarget) => {
+export const openPreviewAction = atom(null, (get, set, payload: PreviewFileTarget) => {
+  const currentTarget = get(selectedPreviewFileAtom)
+  const buffers = get(dirtyBuffersAtom)
+  const currentPath = currentTarget?.absolutePath ?? null
+  // Switching FROM a dirty file → confirm
+  if (
+    currentPath &&
+    currentPath !== payload.absolutePath &&
+    buffers.has(currentPath)
+  ) {
+    const proceed = window.confirm(
+      '当前文件有未保存的修改 — 切换将丢弃这些修改。是否继续？',
+    )
+    if (!proceed) return
+    // User chose to discard — clear the dirty entry so the next mount
+    // doesn't see stale state.
+    const next = new Map(buffers)
+    next.delete(currentPath)
+    set(dirtyBuffersAtom, next)
+  }
   set(selectedPreviewFileAtom, payload)
   set(previewPanelOpenAtom, true)
 })
 
 /** Write-only action: close the panel, keep the selection for re-open. */
-export const closePreviewAction = atom(null, (_get, set) => {
+export const closePreviewAction = atom(null, (get, set) => {
+  const currentTarget = get(selectedPreviewFileAtom)
+  const buffers = get(dirtyBuffersAtom)
+  const currentPath = currentTarget?.absolutePath ?? null
+  if (currentPath && buffers.has(currentPath)) {
+    const proceed = window.confirm(
+      '当前文件有未保存的修改 — 关闭预览将丢弃这些修改。是否继续？',
+    )
+    if (!proceed) return
+    const next = new Map(buffers)
+    next.delete(currentPath)
+    set(dirtyBuffersAtom, next)
+  }
   set(previewPanelOpenAtom, false)
 })
