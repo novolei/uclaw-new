@@ -1545,7 +1545,13 @@ html.theme-the-finals body::after {
   letter-spacing: 0.005em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  font-feature-settings: "tnum", "ss01";
+  /* No `tnum`/`ss01`: in mixed CJK + Latin prose, forcing tabular numerals
+     causes the digit run to fall through to PingFang SC's tabular glyphs
+     when sandwiched between Chinese characters, while standalone digit
+     runs stay in SF Pro Text. Result: visibly mismatched digit shapes
+     across the same message. Tabular numerals belong on tables / data
+     displays, not prose. */
+  font-variant-numeric: normal;
   text-rendering: optimizeLegibility;
 }
 html[data-chat-font-size="sm"] .chat-content {
