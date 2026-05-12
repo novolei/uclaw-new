@@ -567,7 +567,9 @@
   cursor: default;
 }
 
-/* Left sidebar sits above the global titlebar layer, so it owns a stable top drag strip. */
+/* Left sidebar sits above the global titlebar layer, so it owns a stable top drag strip.
+ * Carries the same user-select/cursor properties as .titlebar-drag-region (see comment
+ * above) to close the WKWebView mousedown text-selection race at the CSS level. */
 .sidebar-window-drag-strip {
   position: absolute;
   top: 0;
@@ -576,6 +578,9 @@
   z-index: 1;
   -webkit-app-region: drag;
   app-region: drag;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
 }
 
 /* 深色特殊主题 dialog 光晕效果 */
