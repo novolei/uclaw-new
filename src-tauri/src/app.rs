@@ -208,6 +208,9 @@ pub struct AppState {
     // Evaluation harness
     pub trajectory_store: Arc<crate::harness::TrajectoryStore>,
     pub tool_budget: Arc<crate::harness::ToolBudgetManager>,
+
+    /// Files rail service — owns the filesystem watcher for the WorkspaceRail UI.
+    pub files_rail_service: Arc<crate::files_rail::FilesRailService>,
 }
 
 impl AppState {
@@ -353,6 +356,9 @@ impl AppState {
         let service_manager = Arc::new(ServiceManager::new());
         tracing::info!("ServiceManager created");
 
+        // Files rail service — created here, registered into ServiceManager in main.rs Stage 3.
+        let files_rail_service = Arc::new(crate::files_rail::FilesRailService::new(app_handle.clone()));
+
         // ─── Stage 3：注册后台服务到 ServiceManager（在后台异步完成启动）
         // 这些注册操作需要 async，因此在 setup 中通过 spawn 完成。
         // 此处仅构建 AppState，实际注册和启动在 main.rs setup 中执行。
@@ -392,6 +398,7 @@ impl AppState {
             automation_service,
             trajectory_store,
             tool_budget,
+            files_rail_service,
         })
     }
 
@@ -530,6 +537,79 @@ impl AppState {
                     return Some(candidate.to_string());
                 }
             }
+        }
+        None
+    }
+}
+
+// ─── Files Rail Helpers ────────────────────────────────────────────────────
+
+impl AppState {
+    pub async fn files_rail_list_mounts(
+        &self,
+        session_id: Option<String>,
+    ) -> Result<Vec<crate::files_rail::MountRoot>, crate::error::Error> {
+        use crate::files_rail::{MountKind, MountRoot};
+        let mut out: Vec<MountRoot> = Vec::new();
+
+        // Workspace mount — always show if ~/Documents/workground exists.
+        let workspace_root = dirs::document_dir()
+            .ok_or_else(|| crate::error::Error::Internal("no documents dir".into()))?
+            .join("workground");
+        if workspace_root.exists() {
+            out.push(MountRoot {
+                id: "workspace:default".into(),
+                label: "工作区文件".into(),
+                path: workspace_root,
+                kind: MountKind::Workspace,
+                editable: true,
+            });
+        }
+
+        // Session-scoped mounts are stubbed in W3 Task 4 — wired in Task 10.
+        // The workspace mount alone is enough to exercise the full plumbing.
+        let _ = session_id;
+        Ok(out)
+    }
+
+    pub async fn files_rail_mount_path(
+        &self,
+        mount_id: &str,
+    ) -> Result<std::path::PathBuf, crate::error::Error> {
+        let session = self.extract_session_from_mount(mount_id);
+        let mounts = self.files_rail_list_mounts(session).await?;
+        mounts
+            .into_iter()
+            .find(|m| m.id == mount_id)
+            .map(|m| m.path)
+            .ok_or_else(|| crate::error::Error::Internal(format!("mount not found: {}", mount_id)))
+    }
+
+    pub async fn files_rail_resolve_dir(
+        &self,
+        mount_id: &str,
+        rel_path: &str,
+    ) -> Result<(std::path::PathBuf, std::path::PathBuf), crate::error::Error> {
+        let mount_root = self.files_rail_mount_path(mount_id).await?;
+        let target = if rel_path.is_empty() || rel_path == "/" {
+            mount_root.clone()
+        } else {
+            if rel_path.split('/').any(|seg| seg == "..") {
+                return Err(crate::error::Error::Internal(
+                    "invalid rel_path: .. not allowed".into(),
+                ));
+            }
+            mount_root.join(rel_path)
+        };
+        Ok((mount_root, target))
+    }
+
+    fn extract_session_from_mount(&self, mount_id: &str) -> Option<String> {
+        if let Some(rest) = mount_id.strip_prefix("session:") {
+            return Some(rest.to_string());
+        }
+        if let Some(rest) = mount_id.strip_prefix("attached:") {
+            return rest.split(':').next().map(|s| s.to_string());
         }
         None
     }

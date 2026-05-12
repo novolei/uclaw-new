@@ -2,11 +2,14 @@
 //!
 //! Spec: `docs/superpowers/specs/2026-05-12-proma-preview-port-design.md` §5
 
+pub mod commands;
 pub mod ignore;
+pub mod service;
 pub mod types;
 pub mod walker;
 pub mod watcher;
 
+pub use service::FilesRailService;
 pub use types::{
     ChangeKind, FileChange, FileNode, FilesRailChange, MountKind, MountRoot, NodeKind,
 };
