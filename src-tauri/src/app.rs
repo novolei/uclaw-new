@@ -1,8 +1,9 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tauri::Manager;
+use sha2::{Digest, Sha256};
 
 use crate::settings::UserSettings;
 use crate::agent::session::SessionManager;
@@ -544,6 +545,28 @@ impl AppState {
 
 // ─── Files Rail Helpers ────────────────────────────────────────────────────
 
+/// Stable per-path hash used inside `MountRoot.id` for attached directories.
+///
+/// We **must not** use the path's position in `attached_dirs` because the
+/// frontend's `fileTreeAtomFamily` is keyed by `mount_id` and caches state
+/// for the life of the renderer process. Index-based IDs ("...:0", "...:1")
+/// silently shuffle whenever the user detaches anything, so the next mount
+/// at that index inherits the previous mount's cached tree → the rail shows
+/// stale filenames until a manual refresh.
+///
+/// SHA-256 truncated to 16 hex chars (64 bits) is plenty of uniqueness for
+/// a single user's attached dirs and keeps IDs short enough to log.
+fn mount_id_hash(path: &Path) -> String {
+    let bytes = path.to_string_lossy();
+    let digest = Sha256::digest(bytes.as_bytes());
+    let mut out = String::with_capacity(16);
+    for byte in digest.iter().take(8) {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{:02x}", byte);
+    }
+    out
+}
+
 impl AppState {
     pub async fn files_rail_list_mounts(
         &self,
@@ -658,7 +681,7 @@ impl AppState {
             }
         };
 
-        for (idx, dir) in workspace_attached_dirs.iter().enumerate() {
+        for dir in workspace_attached_dirs.iter() {
             let pb = std::path::PathBuf::from(dir);
             if !pb.exists() {
                 continue;
@@ -670,7 +693,7 @@ impl AppState {
                 .unwrap_or("attached")
                 .to_string();
             out.push(MountRoot {
-                id: format!("workspace-attached:{}:{}", space_id_label, idx),
+                id: format!("workspace-attached:{}:{}", space_id_label, mount_id_hash(&pb)),
                 label: name,
                 path: pb,
                 kind: MountKind::AttachedDir,
@@ -680,7 +703,7 @@ impl AppState {
 
         // Session-scoped attached_dirs — one mount per path (filtered to existing).
         if let Some(sid) = session_id.as_deref() {
-            for (idx, dir) in session_attached_dirs.iter().enumerate() {
+            for dir in session_attached_dirs.iter() {
                 let pb = std::path::PathBuf::from(dir);
                 if !pb.exists() {
                     continue;
@@ -691,7 +714,7 @@ impl AppState {
                     .unwrap_or("attached")
                     .to_string();
                 out.push(MountRoot {
-                    id: format!("attached:{}:{}", sid, idx),
+                    id: format!("attached:{}:{}", sid, mount_id_hash(&pb)),
                     label: name,
                     path: pb,
                     kind: MountKind::AttachedDir,

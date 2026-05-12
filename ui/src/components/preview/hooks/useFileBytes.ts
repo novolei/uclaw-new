@@ -29,15 +29,31 @@ export type FileBytesState =
     }
   | { status: 'error'; message: string }
 
+function targetKeyOf(target: PreviewFileTarget | null): string {
+  if (!target) return ''
+  return `${target.mountId}|${target.relPath}|${target.sessionId ?? ''}`
+}
+
 export function useFileBytes(target: PreviewFileTarget | null): FileBytesState {
   const [state, setState] = React.useState<FileBytesState>({ status: 'idle' })
-  // resolvedPath is what useFileBytes returns; we want refresh keyed on it
-  // when known. Fall back to mountId:relPath for the pre-fetch period.
+  // Tracks which target's bytes are currently stored in `state`. Survives
+  // re-renders so we can detect — DURING render, before the new effect
+  // runs — that the state belongs to a previous target and must not be
+  // shown. Without this gate, the render that immediately follows a
+  // target switch reads the previous file's bytes (the effect that
+  // re-fetches hasn't run yet) and PreviewSurface mounts EditorSurface
+  // with stale `initialContent`. Even though a later render would mount
+  // a fresh editor, EditorSurface's useState(initialContent) captured
+  // the stale value at mount time, so the visible content stays stale.
+  const loadedKeyRef = React.useRef<string>('')
+  const targetKey = targetKeyOf(target)
+
   const refreshKey = target ? (target.absolutePath ?? `${target.mountId}:${target.relPath}`) : ''
   const refreshVersion = usePreviewRefresh(refreshKey || null)
 
   React.useEffect(() => {
     if (!target) {
+      loadedKeyRef.current = ''
       setState({ status: 'idle' })
       return
     }
@@ -51,6 +67,7 @@ export function useFileBytes(target: PreviewFileTarget | null): FileBytesState {
           target.sessionId ?? null,
         )
         if (cancelled) return
+        loadedKeyRef.current = targetKey
         setState({
           status: 'ready',
           bytes: result.bytes,
@@ -61,13 +78,24 @@ export function useFileBytes(target: PreviewFileTarget | null): FileBytesState {
         })
       } catch (err) {
         if (cancelled) return
+        loadedKeyRef.current = targetKey
         setState({ status: 'error', message: String(err) })
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [target?.mountId, target?.relPath, target?.sessionId, refreshVersion])
+  }, [targetKey, refreshVersion])
 
+  // Gate: report 'loading' whenever the stored state was produced for a
+  // different target than the one the caller is asking about now. This
+  // closes the race between target prop change and the effect re-run.
+  if (
+    target !== null &&
+    (state.status === 'ready' || state.status === 'error') &&
+    loadedKeyRef.current !== targetKey
+  ) {
+    return { status: 'loading' }
+  }
   return state
 }
