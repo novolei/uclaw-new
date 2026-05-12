@@ -9,10 +9,11 @@
 
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { FolderOpen, RefreshCw, Info, FolderHeart, Plus, X, ExternalLink, FolderPlus } from 'lucide-react'
+import { Plus, X, FolderPlus } from 'lucide-react'
 import { convertFileSrc } from '@tauri-apps/api/core'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { FileBrowser, FileDropZone } from '@/components/file-browser'
+import { FilesRail } from '@/components/files-rail'
+import type { MountRoot } from '@/atoms/files-rail-atoms'
+import type { TreeNode } from '@/components/files-rail/utils/tree-patch'
 import {
   agentSessionsAtom,
   agentSidePanelOpenMapAtom,
@@ -22,7 +23,6 @@ import {
   workspaceAttachedDirsMapAtom,
   agentSessionAttachedDirsMapAtom,
 } from '@/atoms/agent-atoms'
-import { workspacesAtom } from '@/atoms/workspace'
 import { toast } from 'sonner'
 import {
   attachWorkspaceDirectory,
@@ -30,9 +30,6 @@ import {
   attachSessionDirectory,
   detachSessionDirectory,
   openFolderDialog,
-  showInFinder,
-  uploadWorkspaceFile,
-  deleteWorkspaceFile,
 } from '@/lib/tauri-bridge'
 import type { FileEntry } from '@/lib/chat-types'
 import type { AgentPendingFile } from '@/lib/agent-types'
@@ -45,19 +42,16 @@ interface WorkspaceFilesViewProps {
 export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesViewProps): React.ReactElement {
   const setSidePanelOpenMap = useSetAtom(agentSidePanelOpenMapAtom)
 
+  // filesVersion is still observed here so the auto-open effect below can
+  // detect agent edits and pop the side panel open. The new FilesRail uses
+  // notify events instead of polling, so we no longer bump filesVersion from
+  // this component — readers elsewhere may still rely on it.
   const filesVersion = useAtomValue(workspaceFilesVersionAtom)
-  const setFilesVersion = useSetAtom(workspaceFilesVersionAtom)
 
   const agentSessions = useAtomValue(agentSessionsAtom)
   const sessionWorkspaceId = agentSessions.find((s) => s.id === sessionId)?.workspaceId
   const globalWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
   const currentWorkspaceId = sessionWorkspaceId ?? globalWorkspaceId
-
-  const workspaces = useAtomValue(workspacesAtom)
-  const workspaceFilesPath = React.useMemo(() => {
-    const ws = workspaces.find((w) => w.id === currentWorkspaceId)
-    return ws?.path ?? null
-  }, [workspaces, currentWorkspaceId])
 
   // Attached dirs (workspace + session).
   const wsAttachedMap = useAtomValue(workspaceAttachedDirsMapAtom)
@@ -126,29 +120,6 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
     }
   }, [sessionId, setSessionAttachedMap])
 
-  const handleFilesDropped = React.useCallback(async (files: File[]) => {
-    if (!currentWorkspaceId) {
-      toast.error('请先选择工作区')
-      return
-    }
-    for (const file of files) {
-      try {
-        const buf = await file.arrayBuffer()
-        const bytes = Array.from(new Uint8Array(buf))
-        const writtenPath = await uploadWorkspaceFile(currentWorkspaceId, file.name, bytes)
-        console.debug('[upload] wrote', writtenPath)
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        toast.error(`上传 ${file.name} 失败: ${msg}`)
-      }
-    }
-    setFilesVersion((v) => v + 1)
-  }, [currentWorkspaceId, setFilesVersion])
-
-  const handleRefresh = React.useCallback(() => {
-    setFilesVersion((prev) => prev + 1)
-  }, [setFilesVersion])
-
   // Add file to chat — image previews via convertFileSrc (Tauri asset protocol).
   const pendingFiles = useAtomValue(agentPendingFilesAtom)
   const setPendingFiles = useSetAtom(agentPendingFilesAtom)
@@ -173,24 +144,6 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
   }, [pendingFiles, setPendingFiles])
 
   // Per-file delete from the Files tab. Calls the workspace_file delete
-  // IPC and bumps filesVersion so FileBrowser re-fetches from disk.
-  const handleDeleteFile = React.useCallback(async (entry: FileEntry) => {
-    try {
-      await deleteWorkspaceFile(entry.path)
-      toast.success(`已删除: ${entry.name}`)
-      setFilesVersion((v) => v + 1)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      toast.error(`删除失败: ${msg}`)
-    }
-  }, [setFilesVersion])
-
-  const breadcrumb = React.useMemo(() => {
-    if (!sessionPath) return ''
-    const parts = sessionPath.split('/').filter(Boolean)
-    return parts.length > 2 ? `.../${parts.slice(-2).join('/')}` : sessionPath
-  }, [sessionPath])
-
   // Auto-open right panel when files change (Phase 1 behavior preserved).
   const prevFilesVersionRef = React.useRef(filesVersion)
   React.useEffect(() => {
@@ -262,107 +215,21 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
             </div>
           )}
 
-          {/* ===== Session files section ===== */}
-          {sessionPath && (
-            <>
-              <div className="flex items-center gap-1 pl-3 pr-2 h-[32px] flex-shrink-0">
-                <FolderOpen className="size-3 text-muted-foreground" />
-                <span className="text-[11px] font-medium text-muted-foreground">会话文件</span>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Info className="size-3 text-muted-foreground/50 cursor-help" />
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" className="max-w-[200px]">
-                    <p>当前会话的专属文件,仅本次对话的 Agent 可以访问</p>
-                  </TooltipContent>
-                </Tooltip>
-                <span className="text-[10px] text-muted-foreground/75 truncate flex-1" title={sessionPath}>
-                  {breadcrumb}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => showInFinder(sessionPath)}
-                  className="h-5 w-5 inline-flex items-center justify-center rounded hover:bg-foreground/[0.06] text-foreground/40 hover:text-foreground/70 transition-colors"
-                  title="在 Finder 打开"
-                >
-                  <ExternalLink className="size-2.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={handleRefresh}
-                  className="h-5 w-5 inline-flex items-center justify-center rounded hover:bg-foreground/[0.06] text-foreground/40 hover:text-foreground/70 transition-colors"
-                  title="刷新文件列表"
-                >
-                  <RefreshCw className="size-2.5" />
-                </button>
-              </div>
-              <div className="flex-1 min-h-0 overflow-y-auto">
-                <FileBrowser
-                  rootPath={sessionPath}
-                  version={filesVersion}
-                  hideToolbar
-                  embedded
-                  onAddToChat={handleAddToChat}
-                  onDelete={handleDeleteFile}
-                />
-                <FileDropZone
-                  hint="拖入会话目录"
-                  onDrop={handleFilesDropped}
-                />
-              </div>
-              <div className="mx-3 my-3 border-t border-muted-foreground/20" />
-            </>
-          )}
-
-          {/* ===== Workspace files section ===== */}
-          <div className="flex-1 min-h-0 flex flex-col mx-2 mb-2">
-            <div className="flex items-center gap-1 px-2 h-[32px] flex-shrink-0">
-              <FolderHeart className="size-3 text-muted-foreground" />
-              <span className="text-[11px] font-medium text-muted-foreground shrink-0">工作区文件</span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Info className="size-3 text-muted-foreground/50 cursor-help shrink-0" />
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="max-w-[220px]">
-                  <p>工作区内所有会话可访问的文件和文件夹,每个新对话都可以自动读取</p>
-                </TooltipContent>
-              </Tooltip>
-              {workspaceFilesPath && (
-                <span
-                  className="text-[10px] text-muted-foreground/60 truncate flex-1 min-w-0"
-                  title={workspaceFilesPath}
-                >
-                  {workspaceFilesPath.split('/').pop() || workspaceFilesPath}
-                </span>
-              )}
-              {!workspaceFilesPath && <div className="flex-1" />}
-              {workspaceFilesPath && (
-                <button
-                  type="button"
-                  onClick={() => showInFinder(workspaceFilesPath)}
-                  className="h-5 w-5 inline-flex items-center justify-center rounded hover:bg-foreground/[0.06] text-foreground/40 hover:text-foreground/70 transition-colors shrink-0"
-                  title="在 Finder 打开"
-                >
-                  <ExternalLink className="size-2.5" />
-                </button>
-              )}
-            </div>
-            <div className="flex-1 min-h-0 overflow-y-auto pb-1">
-              {workspaceFilesPath && (
-                <FileBrowser
-                  rootPath={workspaceFilesPath}
-                  version={filesVersion}
-                  hideToolbar
-                  embedded
-                  onAddToChat={handleAddToChat}
-                  onDelete={handleDeleteFile}
-                />
-              )}
-              <FileDropZone
-                hint="拖入工作区文件 / 文件夹"
-                onDrop={handleFilesDropped}
-              />
-            </div>
+          {/* ===== Files Rail (W3) ===== */}
+          <div className="flex-1 min-h-0 flex flex-col">
+            <FilesRail
+              sessionId={sessionId}
+              onFileClick={(mount: MountRoot, node: TreeNode) => {
+                handleAddToChat({
+                  name: node.name,
+                  path: `${mount.path}/${node.relPath}`,
+                  isDirectory: node.kind === 'directory',
+                  isFile: node.kind === 'file',
+                  size: node.size,
+                  modifiedAt: node.mtimeMs,
+                })
+              }}
+            />
           </div>
         </div>
       ) : (
