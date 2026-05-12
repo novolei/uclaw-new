@@ -100,6 +100,10 @@ function enqueue(
   sessionId: string | null,
   setEntry: (p: { rawPath: string; entry: ChipResolutionEntry }) => void,
 ): void {
+  // Dedup: if the path is already queued (e.g. multiple chips for the same
+  // file mounted in the same tick, or invalidator re-enqueued during flush),
+  // don't push twice — the existing entry will resolve it.
+  if (queue.some((q) => q.rawPath === rawPath)) return
   queue.push({ rawPath, sessionId })
   if (!scheduled) {
     scheduled = true
@@ -126,14 +130,17 @@ export function useFileChipResolver(
   const cache = useAtomValue(chipResolutionCacheAtom)
   const setEntry = useSetAtom(setChipResolutionAction)
   const existing = cache.get(rawPath)
+  // Re-react when cache state transitions to 'pending' (invalidator set it back)
+  // so we re-enqueue a fetch — fixes the "stays pending after file delete" bug.
+  const currentState = existing?.state
 
   React.useEffect(() => {
     if (!rawPath) return
-    if (cache.has(rawPath)) return
-    setEntry({ rawPath, entry: PENDING_ENTRY })
+    if (existing && existing.state !== 'pending') return
+    if (!existing) setEntry({ rawPath, entry: PENDING_ENTRY })
     enqueue(rawPath, sessionId, setEntry)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawPath, sessionId])
+  }, [rawPath, sessionId, currentState])
 
   return existing ?? PENDING_ENTRY
 }
