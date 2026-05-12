@@ -38,6 +38,9 @@ pub mod memorization;
 pub mod local_api;
 pub mod observability;
 
+// Phase 3: Preview Engine
+pub mod preview;
+
 // Phase 3: AI Browser
 pub mod browser;
 
