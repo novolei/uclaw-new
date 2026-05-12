@@ -434,6 +434,20 @@ pub struct SkillInfo {
     pub category: String,
 }
 
+/// Aggregate view returned by `get_workspace_capabilities` — what skills and
+/// MCP servers are available to a given workspace.
+///
+/// Skills and MCP servers are app-global today (no per-workspace scoping),
+/// so the `slug` arg on the IPC is currently ignored. The shape is shared
+/// with the frontend `getWorkspaceCapabilities` bridge in `tauri-bridge.ts`
+/// and with `mention-suggestions.tsx` / `LeftSidebar.tsx`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceCapabilities {
+    pub mcp_servers: Vec<McpServerInfo>,
+    pub skills: Vec<SkillInfo>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillDetailResponse {
@@ -1023,4 +1037,62 @@ pub struct RespondExitPlanInput {
     /// Echo of session_id (frontend already knows it, simpler than backend
     /// stashing it).
     pub session_id: String,
+}
+
+#[cfg(test)]
+mod workspace_capabilities_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The frontend `getWorkspaceCapabilities` bridge in `tauri-bridge.ts`
+    /// expects `{ mcpServers, skills }` (camelCase) — the empty case must
+    /// serialize cleanly so the LeftSidebar count badge and the
+    /// `mention-suggestions.tsx` dropdown render placeholders, not crash.
+    #[test]
+    fn empty_serializes_to_camelcase_arrays() {
+        let payload = WorkspaceCapabilities { mcp_servers: vec![], skills: vec![] };
+        let actual = serde_json::to_value(&payload).unwrap();
+        assert_eq!(actual, json!({"mcpServers": [], "skills": []}));
+    }
+
+    /// Round-trip: serialize a populated payload, parse it back into the
+    /// same struct, verify the round-trip is lossless. Catches any future
+    /// frontend/backend drift if someone renames a field.
+    #[test]
+    fn populated_round_trips_through_camelcase() {
+        let payload = WorkspaceCapabilities {
+            mcp_servers: vec![McpServerInfo {
+                id: "srv-1".into(),
+                name: "github".into(),
+                description: "GitHub MCP".into(),
+                command: "uvx".into(),
+                args: vec!["mcp-server-github".into()],
+                env: None,
+                enabled: true,
+                auto_approve: false,
+                status: "connected".into(),
+            }],
+            skills: vec![SkillInfo {
+                name: "tdd".into(),
+                version: "0.1.0".into(),
+                description: "Test-driven development".into(),
+                author: "uclaw".into(),
+                enabled: true,
+                category: "process".into(),
+            }],
+        };
+        let json_str = serde_json::to_string(&payload).unwrap();
+        let parsed: WorkspaceCapabilities = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(parsed.mcp_servers.len(), 1);
+        assert_eq!(parsed.mcp_servers[0].name, "github");
+        assert_eq!(parsed.mcp_servers[0].auto_approve, false);
+        assert_eq!(parsed.skills.len(), 1);
+        assert_eq!(parsed.skills[0].name, "tdd");
+        // mcpServers + autoApprove (not mcp_servers / auto_approve) is the
+        // frontend contract — assert the on-the-wire shape directly.
+        assert!(json_str.contains("\"mcpServers\""), "expected camelCase mcpServers in JSON: {}", json_str);
+        assert!(json_str.contains("\"autoApprove\""), "expected camelCase autoApprove in JSON: {}", json_str);
+        assert!(!json_str.contains("\"mcp_servers\""), "snake_case leaked: {}", json_str);
+    }
 }

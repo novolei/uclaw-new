@@ -2161,6 +2161,78 @@ pub async fn list_skills(state: State<'_, AppState>) -> Result<Vec<SkillInfo>, E
     }).collect())
 }
 
+/// Return the skills + MCP servers a workspace can call into.
+///
+/// The frontend `getWorkspaceCapabilities(slug)` bridge has been calling
+/// this for a while but the backend handler never existed — the call hit
+/// `.catch(() => ({mcpServers:[], skills:[]}))` on the frontend and the
+/// LeftSidebar count badge + `mention-suggestions.tsx` dropdown silently
+/// rendered empty. This wires up the real data source.
+///
+/// Skills and MCP servers are app-global today, so `slug` is accepted (to
+/// preserve the frontend contract) but ignored. Per-workspace scoping is
+/// future work — when it lands, swap in the workspace-filtered registries
+/// here without changing the IPC surface.
+#[tauri::command]
+pub async fn get_workspace_capabilities(
+    state: State<'_, AppState>,
+    slug: Option<String>,
+) -> Result<WorkspaceCapabilities, Error> {
+    // slug is accepted for forward-compat but unused until skills/MCP
+    // become workspace-scoped. Log it so an empty-result regression
+    // narrows down quickly.
+    tracing::debug!(slug = ?slug, "get_workspace_capabilities");
+
+    // Reuse the same code paths as `list_mcp_servers` and `list_skills` so
+    // the aggregate view stays consistent with the dedicated endpoints. A
+    // future refactor can DRY these into shared internal functions; for
+    // now duplication is cheaper than restructuring.
+    let mcp_servers: Vec<McpServerInfo> = {
+        let mgr = state.mcp_manager.read().await;
+        let statuses: std::collections::HashMap<String, (crate::mcp::McpServerStatus, Option<String>)> = mgr
+            .all_server_statuses()
+            .into_iter()
+            .map(|(id, st, err)| (id, (st, err)))
+            .collect();
+        mgr.all_servers().into_iter().map(|c| {
+            let (status_enum, _err) = statuses.get(&c.id)
+                .cloned()
+                .unwrap_or((crate::mcp::McpServerStatus::Disconnected, None));
+            let status = match status_enum {
+                crate::mcp::McpServerStatus::Disconnected => "disconnected",
+                crate::mcp::McpServerStatus::Connecting => "connecting",
+                crate::mcp::McpServerStatus::Connected => "connected",
+                crate::mcp::McpServerStatus::Error => "error",
+            };
+            McpServerInfo {
+                id: c.id.clone(),
+                name: c.name.clone(),
+                description: c.description.clone(),
+                command: c.command.clone(),
+                args: c.args.clone(),
+                env: Some(c.env.clone()),
+                enabled: c.enabled,
+                auto_approve: c.auto_approve,
+                status: status.into(),
+            }
+        }).collect()
+    };
+
+    let skills: Vec<SkillInfo> = {
+        let registry = state.skills_registry.read().await;
+        registry.list().into_iter().map(|s| SkillInfo {
+            name: s.name.clone(),
+            version: s.version.clone(),
+            description: s.description.clone(),
+            author: s.author.clone(),
+            enabled: registry.is_enabled(&s.name),
+            category: s.category.clone(),
+        }).collect()
+    };
+
+    Ok(WorkspaceCapabilities { mcp_servers, skills })
+}
+
 #[tauri::command]
 pub async fn toggle_skill(state: State<'_, AppState>, input: SkillToggleInput) -> Result<bool, Error> {
     let mut registry = state.skills_registry.write().await;

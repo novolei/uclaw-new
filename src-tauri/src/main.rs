@@ -401,6 +401,7 @@ fn main() {
             uclaw_core::tauri_commands::list_mcp_tools,
             // Skills
             uclaw_core::tauri_commands::list_skills,
+            uclaw_core::tauri_commands::get_workspace_capabilities,
             uclaw_core::tauri_commands::toggle_skill,
             uclaw_core::tauri_commands::discover_skills,
             uclaw_core::tauri_commands::reload_skills,
