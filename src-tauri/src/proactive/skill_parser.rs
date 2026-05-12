@@ -26,6 +26,14 @@ pub struct ParsedSkill {
     /// 技能类别：LLM 在 <category>repair|optimize|innovate</category> 里输出。
     /// 只接受这三个值（小写），其余无效值 → None（向后兼容）。
     pub category: Option<String>,
+    /// 应用本 skill 时**绝对不要做**的事 — LLM 在 `<anti_patterns>...</anti_patterns>`
+    /// 标签里输出。mattpocock-borrow PR 引入的字段，让 skill 同时承载"做什么"与"不做什么"。
+    /// 若 LLM 未输出该标签或内容为空，则为 None（向后兼容）。
+    pub anti_patterns: Option<String>,
+    /// 简短一句话描述（≤120 chars），用于 skill_search router 决定召回 — LLM 在
+    /// `<description>...</description>` 标签里输出。是 mattpocock 体例最关键的字段。
+    /// 若 LLM 未输出，则为 None；持久化时回退到 `<context>` 作为旧 schema 兼容。
+    pub description: Option<String>,
 }
 
 /// 解析 <skill_report> XML 中的 <skill> 标签
@@ -93,6 +101,18 @@ pub fn parse_skill_report(xml_text: &str) -> Vec<ParsedSkill> {
             .map(|s| s.trim().to_lowercase())
             .filter(|s| matches!(s.as_str(), "repair" | "optimize" | "innovate"));
 
+        // <anti_patterns> is optional — content trimmed; empty body → None.
+        let anti_patterns = extract_tag_content(&skill_content, "anti_patterns")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        // <description> is optional but strongly encouraged. ≤120 chars enforced
+        // as a soft cap — over-long descriptions silently truncate on persist
+        // to keep `description` searchable by a single-sentence router.
+        let description = extract_tag_content(&skill_content, "description")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         skills.push(ParsedSkill {
             name,
             context,
@@ -103,6 +123,8 @@ pub fn parse_skill_report(xml_text: &str) -> Vec<ParsedSkill> {
             signals_seen: Vec::new(), // populated by service layer from execution logs
             validation_hint,
             category,
+            anti_patterns,
+            description,
         });
     }
 
@@ -160,10 +182,32 @@ fn extract_tag_content(text: &str, tag: &str) -> Option<String> {
 /// learned skill. Extracted so the embedding pipeline can reproduce the same
 /// text without duplicating the format string.
 pub fn build_version_content(skill: &ParsedSkill) -> String {
-    format!(
-        "# {}\n\n## 适用场景\n{}\n\n## 核心原则\n{}\n\n## 实现步骤\n{}\n\n## 常见陷阱\n{}",
-        skill.name, skill.context, skill.principles, skill.steps, skill.pitfalls
-    )
+    let mut out = format!(
+        "# {}\n\n## 适用场景\n{}\n\n## 核心原则\n{}\n\n## 实现步骤\n{}",
+        skill.name, skill.context, skill.principles, skill.steps
+    );
+    if let Some(ap) = skill.anti_patterns.as_ref() {
+        out.push_str("\n\n## 反模式\n");
+        out.push_str(ap);
+    }
+    if !skill.pitfalls.is_empty() {
+        out.push_str("\n\n## 常见陷阱\n");
+        out.push_str(&skill.pitfalls);
+    }
+    out
+}
+
+/// Truncate a string to at most `max_chars` Unicode chars, preserving char
+/// boundaries (mirrors PR `66a7711`'s code-rescue fix for CJK content). Used
+/// to cap `description` at the mattpocock-borrow soft limit (120 chars).
+pub(super) fn truncate_to_char_count(s: &str, max_chars: usize) -> String {
+    let total = s.chars().count();
+    if total <= max_chars {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 /// 将 ParsedSkill 存储为 MemoryNode(kind=Procedure) + MemoryVersion
@@ -279,6 +323,21 @@ pub fn store_skill_as_procedure(
 
     if let Some(cat) = skill.category.as_ref() {
         metadata["category"] = serde_json::Value::String(cat.clone());
+    }
+
+    if let Some(ap) = skill.anti_patterns.as_ref() {
+        metadata["anti_patterns"] = serde_json::Value::String(ap.clone());
+    }
+
+    // description: take what the LLM provided; if absent, derive a short
+    // summary from `context` so skill_search's tri-tier match_reasons still
+    // has a non-empty single-line string to show in the manifest.
+    // Soft cap at 120 chars (PR-mattpocock spec).
+    let desc_raw = skill.description.clone()
+        .or_else(|| if skill.context.trim().is_empty() { None } else { Some(skill.context.clone()) });
+    if let Some(d) = desc_raw {
+        let truncated = truncate_to_char_count(&d, 120);
+        metadata["description"] = serde_json::Value::String(truncated);
     }
 
     let node = MemoryNode {
@@ -452,7 +511,11 @@ fn upgrade_existing_skill(
     let need_signals_seen_update = !skill.signals_seen.is_empty();
     let need_hint_update = skill.validation_hint.is_some();
     let need_category_update = skill.category.is_some();
-    if need_signals_update || need_signals_seen_update || need_hint_update || need_category_update {
+    let need_anti_patterns_update = skill.anti_patterns.is_some();
+    let need_description_update = skill.description.is_some();
+    if need_signals_update || need_signals_seen_update || need_hint_update
+        || need_category_update || need_anti_patterns_update || need_description_update
+    {
         let mut metadata = existing.metadata.clone().unwrap_or_else(|| serde_json::json!({}));
         if let Some(obj) = metadata.as_object_mut() {
             if need_signals_update {
@@ -483,12 +546,24 @@ fn upgrade_existing_skill(
                     serde_json::Value::String(cat.clone()),
                 );
             }
+            if let Some(ap) = skill.anti_patterns.as_ref() {
+                obj.insert(
+                    "anti_patterns".to_string(),
+                    serde_json::Value::String(ap.clone()),
+                );
+            }
+            if let Some(desc) = skill.description.as_ref() {
+                obj.insert(
+                    "description".to_string(),
+                    serde_json::Value::String(truncate_to_char_count(desc, 120)),
+                );
+            }
         }
         if let Err(e) = store.update_node(&existing.id, None, None, Some(&metadata)) {
             tracing::warn!(
                 node_id = %existing.id,
                 err = %e,
-                "skill_parser: signals/signals_seen/validation_hint update failed (continuing)"
+                "skill_parser: metadata update on upgrade failed (continuing)"
             );
         }
     }
@@ -809,6 +884,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: None,
             category: None,
+        anti_patterns: None,
+        description: None,
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -922,6 +999,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: None,
             category: None,
+        anti_patterns: None,
+        description: None,
         };
         let s2 = ParsedSkill {
             name: "处理 edit 工具文本匹配错误的备选插入策略".into(), // +1 word prefix
@@ -933,6 +1012,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: None,
             category: None,
+        anti_patterns: None,
+        description: None,
         };
 
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
@@ -968,6 +1049,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: None,
             category: None,
+        anti_patterns: None,
+        description: None,
         };
         let s2 = ParsedSkill {
             name: "  前端游戏开发项目工作流  ".into(), // same after normalize
@@ -979,6 +1062,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: None,
             category: None,
+        anti_patterns: None,
+        description: None,
         };
 
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
@@ -1081,6 +1166,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: None,
             category: None,
+        anti_patterns: None,
+        description: None,
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -1118,6 +1205,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: None,
             category: None,
+        anti_patterns: None,
+        description: None,
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -1151,6 +1240,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: None,
             category: None,
+        anti_patterns: None,
+        description: None,
         };
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
 
@@ -1174,6 +1265,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: None,
             category: None,
+        anti_patterns: None,
+        description: None,
         };
         let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
 
@@ -1215,6 +1308,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: None,
             category: None,
+        anti_patterns: None,
+        description: None,
         };
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
 
@@ -1229,6 +1324,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: None,
             category: None,
+        anti_patterns: None,
+        description: None,
         };
         let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
 
@@ -1290,6 +1387,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: Some("Re-run and check exit 0.".into()),
             category: None,
+        anti_patterns: None,
+        description: None,
         };
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
 
@@ -1312,6 +1411,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: Some("Check the log output for 'success'.".into()),
             category: None,
+        anti_patterns: None,
+        description: None,
         };
         let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
         assert_eq!(n1.id, n2.id, "expected dedup to reuse node id");
@@ -1334,6 +1435,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: None,
             category: None,
+        anti_patterns: None,
+        description: None,
         };
         let n3 = store_skill_as_procedure(&store, &s3, space).unwrap();
         assert_eq!(n1.id, n3.id);
@@ -1401,6 +1504,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: None,
             category: Some("repair".into()),
+        anti_patterns: None,
+        description: None,
         };
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
 
@@ -1423,6 +1528,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: None,
             category: Some("optimize".into()),
+        anti_patterns: None,
+        description: None,
         };
         let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
         assert_eq!(n1.id, n2.id, "expected dedup to reuse node id");
@@ -1445,6 +1552,8 @@ mod tests {
             signals_seen: vec![],
             validation_hint: None,
             category: None,
+        anti_patterns: None,
+        description: None,
         };
         let n3 = store_skill_as_procedure(&store, &s3, space).unwrap();
         assert_eq!(n1.id, n3.id);
@@ -1456,5 +1565,148 @@ mod tests {
             .map(str::to_string);
         assert_eq!(final_cat.as_deref(), Some("optimize"),
             "None re-extraction must not wipe existing category");
+    }
+
+    // ─── PR-mattpocock-A: anti_patterns + description tag tests ─────────
+
+    #[test]
+    fn parses_anti_patterns_tag() {
+        let xml = r#"<skill_report><new_skills><skill>
+<name>api-retry-strategy</name>
+<context>外部 API 频繁失败时的重试策略</context>
+<principles>区分瞬时与永久错误</principles>
+<steps>1. 检测状态码 2. 指数退避</steps>
+<pitfalls>不要无限重试</pitfalls>
+<anti_patterns>不要在 4xx (除 429) 上重试 — 这是客户端错误，重试只会重复失败</anti_patterns>
+</skill></new_skills></skill_report>"#;
+        let parsed = parse_skill_report(xml);
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0].anti_patterns.as_ref().unwrap().contains("4xx"));
+    }
+
+    #[test]
+    fn empty_anti_patterns_yields_none() {
+        let xml = r#"<skill_report><new_skills><skill>
+<name>no-ap-skill</name>
+<context>ctx</context>
+<principles>p</principles>
+<steps>s</steps>
+<pitfalls>pt</pitfalls>
+<anti_patterns></anti_patterns>
+</skill></new_skills></skill_report>"#;
+        let parsed = parse_skill_report(xml);
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0].anti_patterns.is_none(), "empty <anti_patterns> must yield None");
+    }
+
+    #[test]
+    fn parses_description_field() {
+        let xml = r#"<skill_report><new_skills><skill>
+<name>desc-skill</name>
+<description>跨源校验股票财报，当 Yahoo 返回 403 时切换源</description>
+<context>股票研究</context>
+<principles>p</principles>
+<steps>s</steps>
+<pitfalls>pt</pitfalls>
+</skill></new_skills></skill_report>"#;
+        let parsed = parse_skill_report(xml);
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0].description.as_deref().unwrap().contains("403"));
+    }
+
+    #[test]
+    fn description_truncates_to_120_chars_on_persist() {
+        // Pure-function test of the truncate helper. The persistence layer
+        // applies it via metadata["description"] = truncate_to_char_count(...)
+        // (see store_skill_as_procedure + upgrade_existing_skill).
+        let long = "用".repeat(200); // 200 CJK chars; UTF-8 bytes > char count
+        let truncated = truncate_to_char_count(&long, 120);
+        assert_eq!(truncated.chars().count(), 120,
+            "truncate_to_char_count must return exactly max_chars chars");
+        assert!(truncated.ends_with('…'),
+            "truncated string must end with ellipsis marker");
+    }
+
+    #[test]
+    fn description_passes_through_when_short() {
+        let s = "短描述";
+        let same = truncate_to_char_count(s, 120);
+        assert_eq!(same, s, "short strings must pass through unchanged");
+    }
+
+    #[test]
+    fn anti_patterns_and_description_persist_on_upgrade() {
+        let store = MemoryGraphStore::new(std::sync::Arc::new(
+            std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap()),
+        ));
+        let _ = store.conn.lock().unwrap().execute_batch(crate::db::migrations::V4_MEMORY_GRAPH);
+
+        let space = "default";
+        let s1 = ParsedSkill {
+            name: "upgrade-target".into(),
+            context: "v1".into(),
+            principles: "p".into(),
+            steps: "s".into(),
+            pitfalls: "pt".into(),
+            signals: vec![],
+            signals_seen: vec![],
+            validation_hint: None,
+            category: None,
+            anti_patterns: Some("v1 anti-pattern".into()),
+            description: Some("v1 description".into()),
+        };
+        let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
+
+        // Re-extract with new anti_patterns + description → both replaced.
+        let s2 = ParsedSkill {
+            name: "upgrade-target".into(),
+            context: "v2".into(),
+            principles: "p".into(),
+            steps: "s".into(),
+            pitfalls: "pt".into(),
+            signals: vec![],
+            signals_seen: vec![],
+            validation_hint: None,
+            category: None,
+            anti_patterns: Some("v2 anti-pattern".into()),
+            description: Some("v2 description".into()),
+        };
+        let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
+        assert_eq!(n1.id, n2.id, "expected dedup to reuse node id");
+
+        let updated = store.get_node(&n1.id).unwrap().unwrap();
+        let ap = updated.metadata.as_ref()
+            .and_then(|m| m.get("anti_patterns"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let desc = updated.metadata.as_ref()
+            .and_then(|m| m.get("description"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        assert_eq!(ap.as_deref(), Some("v2 anti-pattern"));
+        assert_eq!(desc.as_deref(), Some("v2 description"));
+
+        // Now: re-extract with None → existing values preserved (empty-keeps-old).
+        let s3 = ParsedSkill {
+            name: "upgrade-target".into(),
+            context: "v3".into(),
+            principles: "p".into(),
+            steps: "s".into(),
+            pitfalls: "pt".into(),
+            signals: vec![],
+            signals_seen: vec![],
+            validation_hint: None,
+            category: None,
+            anti_patterns: None,
+            description: None,
+        };
+        let _ = store_skill_as_procedure(&store, &s3, space).unwrap();
+        let final_node = store.get_node(&n1.id).unwrap().unwrap();
+        let final_ap = final_node.metadata.as_ref()
+            .and_then(|m| m.get("anti_patterns"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        assert_eq!(final_ap.as_deref(), Some("v2 anti-pattern"),
+            "None re-extraction must not wipe existing anti_patterns");
     }
 }
