@@ -39,6 +39,10 @@ export default defineConfig({
             id.includes('node_modules/@xmldom') ||
             id.includes('node_modules/mammoth')
           ) return 'office-parsers'
+          // VS-Code-style file icons — ~620 KB pre-tree-shake. Splitting it
+          // out keeps the main bundle thin; the files-rail mount loads it
+          // synchronously the first time a tree row is rendered.
+          if (id.includes('node_modules/@react-symbols/icons')) return 'file-icons'
           // Existing vendor splits — preserve
           if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) {
             return 'react'
