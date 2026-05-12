@@ -16,14 +16,16 @@ export interface ClassificationResult {
   language?: string
 }
 
+/** Image file extensions handled by `<ImageRenderer>` via the asset protocol. */
 export const IMAGE_EXTS: ReadonlySet<string> = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico',
 ])
 
+/** Markdown file extensions handled by `<MarkdownRenderer>`. */
 export const MD_EXTS: ReadonlySet<string> = new Set(['md', 'markdown'])
 
 /**
- * Code-rendererable extensions, mapping to the shiki language id.
+ * Code-renderable extensions, mapping to the shiki language id.
  * Plain-text files (.txt, .log, .csv, etc) intentionally map to `'text'`
  * so the renderer shows them in a monospace pane without syntax highlight.
  */
@@ -56,6 +58,11 @@ export const CODE_EXTS: ReadonlyMap<string, string> = new Map([
   ['gitignore', 'text'], ['dockerfile', 'docker'],
 ])
 
+/**
+ * Extract a normalized extension (lowercase, no dot) from a filename.
+ * Returns the empty string for filenames with no extension (`Makefile`).
+ * For dotfiles (`.gitignore` / `.env`), treats the name-after-dot as the extension.
+ */
 export function getExtension(filename: string): string {
   const dot = filename.lastIndexOf('.')
   if (dot === -1) return ''
@@ -65,6 +72,10 @@ export function getExtension(filename: string): string {
   return filename.slice(dot + 1).toLowerCase()
 }
 
+/**
+ * Classify a filename into a renderer kind + optional shiki language hint.
+ * Priority: image → markdown → code → binary fallback.
+ */
 export function classifyExtension(filename: string): ClassificationResult {
   const ext = getExtension(filename)
   if (ext && IMAGE_EXTS.has(ext)) return { kind: 'image', ext }
