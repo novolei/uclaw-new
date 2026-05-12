@@ -20,6 +20,7 @@ pub mod infra;
 pub mod memory;
 pub mod memory_graph;
 pub mod skills;
+pub mod skills_manifest;
 pub mod mcp;
 pub mod channels;
 pub mod providers;
