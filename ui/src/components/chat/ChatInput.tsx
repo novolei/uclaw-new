@@ -42,6 +42,8 @@ import { cn } from '@/lib/utils'
 import { fileToBase64 } from '@/lib/file-utils'
 import { sendWithCmdEnterAtom } from '@/atoms/shortcut-atoms'
 import { openFileDialog } from '@/lib/tauri-bridge'
+import { toast } from 'sonner'
+import { createClipboardTextFile } from '@/lib/clipboard-attachment'
 
 interface ChatInputProps {
   /** 当前对话 ID */
@@ -189,6 +191,16 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
     addFilesAsAttachments(files)
   }, [addFilesAsAttachments])
 
+  /** 粘贴超长文本 → 转为附件 */
+  const handlePasteLongText = React.useCallback(
+    (text: string): void => {
+      const file = createClipboardTextFile(text)
+      handlePasteFiles([file])
+      toast.success('已将超长文本转为附件', { description: file.name })
+    },
+    [handlePasteFiles],
+  )
+
   // 拖放处理
   const handleDragOver = React.useCallback((e: React.DragEvent): void => {
     e.preventDefault()
@@ -267,6 +279,7 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
             onChange={setContent}
             onSubmit={handleSend}
             onPasteFiles={handlePasteFiles}
+            onPasteLongText={handlePasteLongText}
             placeholder={sendWithCmdEnter ? '输入消息... (⌘/Ctrl+Enter 发送，Enter 换行)' : '输入消息... (Enter 发送，Shift+Enter 换行)'}
             autoFocusTrigger={conversationId}
             sendWithCmdEnter={sendWithCmdEnter}
