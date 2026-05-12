@@ -432,6 +432,18 @@ pub struct SkillInfo {
     pub author: String,
     pub enabled: bool,
     pub category: String,
+    /// Disk-tier provenance ("bundled" / "user" / "project") — drives
+    /// the Settings UI's tier badge and the Fork affordance (only
+    /// `bundled` skills offer Fork to my skills).
+    #[serde(default = "default_provenance")]
+    pub provenance: crate::skills::SkillProvenance,
+}
+
+fn default_provenance() -> crate::skills::SkillProvenance {
+    // Legacy callers without provenance default to Project — safest
+    // assumption since both Bundled and User imply specific paths the
+    // legacy caller couldn't have known.
+    crate::skills::SkillProvenance::Project
 }
 
 /// Aggregate view returned by `get_workspace_capabilities` — what skills and
@@ -1079,6 +1091,7 @@ mod workspace_capabilities_tests {
                 author: "uclaw".into(),
                 enabled: true,
                 category: "process".into(),
+                provenance: crate::skills::SkillProvenance::Bundled,
             }],
         };
         let json_str = serde_json::to_string(&payload).unwrap();

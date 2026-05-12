@@ -2158,6 +2158,7 @@ pub async fn list_skills(state: State<'_, AppState>) -> Result<Vec<SkillInfo>, E
         author: s.author.clone(),
         enabled: registry.is_enabled(&s.name),
         category: s.category.clone(),
+        provenance: registry.get_loaded(&s.name).map(|l| l.provenance).unwrap_or(crate::skills::SkillProvenance::Project),
     }).collect())
 }
 
@@ -2227,6 +2228,7 @@ pub async fn get_workspace_capabilities(
             author: s.author.clone(),
             enabled: registry.is_enabled(&s.name),
             category: s.category.clone(),
+            provenance: registry.get_loaded(&s.name).map(|l| l.provenance).unwrap_or(crate::skills::SkillProvenance::Project),
         }).collect()
     };
 
@@ -2254,6 +2256,7 @@ pub async fn discover_skills(state: State<'_, AppState>) -> Result<Vec<SkillInfo
         author: s.author.clone(),
         enabled: registry.is_enabled(&s.name),
         category: s.category.clone(),
+        provenance: registry.get_loaded(&s.name).map(|l| l.provenance).unwrap_or(crate::skills::SkillProvenance::Project),
     }).collect())
 }
 
@@ -2268,7 +2271,92 @@ pub async fn reload_skills(state: State<'_, AppState>) -> Result<Vec<SkillInfo>,
         author: s.author.clone(),
         enabled: registry.is_enabled(&s.name),
         category: s.category.clone(),
+        provenance: registry.get_loaded(&s.name).map(|l| l.provenance).unwrap_or(crate::skills::SkillProvenance::Project),
     }).collect())
+}
+
+/// Copy a Bundled skill into the user's `~/.uclaw/skills/<name>/` so the
+/// user can edit it freely. The bundled original is left in place but
+/// "shadowed" by the user copy on the next discovery pass — `reload()`
+/// runs automatically before this command returns.
+///
+/// Returns the destination path on success. Errors:
+///   - skill not found
+///   - skill is not Bundled (User skills are already editable; Project
+///     skills are dev-only and shouldn't be forked)
+///   - destination already exists (idempotency: refuse rather than
+///     overwrite a user's existing fork)
+#[tauri::command]
+pub async fn fork_skill_to_user(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<String, Error> {
+    let mut registry = state.skills_registry.write().await;
+
+    // Snapshot what we need before dropping the borrow — copying happens
+    // outside the lock to keep the critical section short.
+    let source_dir = {
+        let loaded = registry
+            .get_loaded(&name)
+            .ok_or_else(|| Error::NotFound(format!("Skill '{}' not found", name)))?;
+        if loaded.provenance != crate::skills::SkillProvenance::Bundled {
+            return Err(Error::InvalidInput(format!(
+                "Skill '{}' has provenance {:?} — only Bundled skills can be forked. \
+                 User and Project skills are already editable in place.",
+                name, loaded.provenance,
+            )));
+        }
+        loaded.manifest.path.clone()
+    };
+
+    let dest_dir = dirs::home_dir()
+        .ok_or_else(|| Error::Internal("Home directory unavailable".into()))?
+        .join(".uclaw")
+        .join("skills")
+        .join(&name);
+
+    if dest_dir.exists() {
+        return Err(Error::InvalidInput(format!(
+            "A user fork of '{}' already exists at {}. Delete it first if you want a fresh fork.",
+            name,
+            dest_dir.display(),
+        )));
+    }
+
+    copy_dir_recursive(&source_dir, &dest_dir)?;
+
+    tracing::info!(
+        skill = %name,
+        from = %source_dir.display(),
+        to = %dest_dir.display(),
+        "Forked Bundled skill to User tier"
+    );
+
+    // Re-discover so the user copy registers and shadows the bundled one
+    // immediately. `reload()` preserves the disabled set.
+    registry.reload();
+
+    Ok(dest_dir.display().to_string())
+}
+
+/// Recursively copy a directory tree. Symlinks are intentionally ignored —
+/// Bundled skills are vendored from the repo so they shouldn't contain any,
+/// and silently following one could let a malicious skill exfiltrate
+/// arbitrary files into the user's `~/.uclaw/` on fork.
+pub(crate) fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Error> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if ty.is_file() {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -7796,6 +7884,81 @@ mod workspace_cost_rollup_tests {
             [800i64], |r| r.get(0),
         ).unwrap();
         assert!((total - 3.0).abs() < 0.01);
+    }
+}
+
+#[cfg(test)]
+mod fork_skill_tests {
+    use super::copy_dir_recursive;
+
+    /// Recursive copy must preserve directory shape and file content.
+    /// Used by `fork_skill_to_user` to copy a Bundled skill (which can
+    /// contain SKILL.md plus subdirectories like `scripts/` or
+    /// `references/`) into the user's `~/.uclaw/skills/` tier.
+    #[test]
+    fn recursive_copy_preserves_tree() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+
+        std::fs::create_dir_all(src.join("scripts")).unwrap();
+        std::fs::create_dir_all(src.join("references")).unwrap();
+        std::fs::write(src.join("SKILL.md"), "---\nname: x\n---\nbody").unwrap();
+        std::fs::write(src.join("scripts/helper.sh"), "#!/bin/sh\necho hi").unwrap();
+        std::fs::write(src.join("references/api.md"), "# API").unwrap();
+
+        copy_dir_recursive(&src, &dst).expect("copy should succeed");
+
+        assert!(dst.join("SKILL.md").exists());
+        assert!(dst.join("scripts/helper.sh").exists());
+        assert!(dst.join("references/api.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(dst.join("SKILL.md")).unwrap(),
+            "---\nname: x\n---\nbody",
+            "file content must be copied verbatim"
+        );
+    }
+
+    /// Symlinks are intentionally skipped — Bundled skills come from a
+    /// vendored repo so they shouldn't contain any. Silently following
+    /// a symlink could let a malicious skill exfiltrate arbitrary files
+    /// into the user's ~/.uclaw/ via fork. Cross-platform: only run on
+    /// Unix where symlink creation doesn't require admin.
+    #[cfg(unix)]
+    #[test]
+    fn recursive_copy_skips_symlinks() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("real.md"), "real content").unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", src.join("evil")).unwrap();
+
+        copy_dir_recursive(&src, &dst).expect("copy should succeed");
+
+        assert!(dst.join("real.md").exists(), "real files should be copied");
+        assert!(!dst.join("evil").exists(),
+            "symlinks must be skipped — silently following could exfil arbitrary files");
+    }
+
+    /// Existing destination must be left intact and merged into (the IPC
+    /// guards against existing-fork via a separate check; the helper is
+    /// permissive — `create_dir_all` is idempotent on the root dir).
+    #[test]
+    fn recursive_copy_into_existing_dir_merges() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("new.md"), "new").unwrap();
+        std::fs::write(dst.join("existing.md"), "existing").unwrap();
+
+        copy_dir_recursive(&src, &dst).expect("copy should succeed");
+
+        assert!(dst.join("new.md").exists());
+        assert!(dst.join("existing.md").exists(),
+            "pre-existing files in dst must survive");
     }
 }
 
