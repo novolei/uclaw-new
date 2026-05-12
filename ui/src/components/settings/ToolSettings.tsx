@@ -9,6 +9,7 @@ import {
 import type { McpServerInfo, SkillInfo, ActiveManifestSkill } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { McpServerForm } from './McpServerForm'
+import { WorkspaceSkillTagsEditor } from './WorkspaceSkillTagsEditor'
 import { toast } from 'sonner'
 import { RefreshCw } from 'lucide-react'
 
@@ -112,8 +113,15 @@ export function ToolSettings() {
       </SettingsSection>
 
       <SettingsSection
+        title="工作区 Skill 标签 (V19+)"
+        description="按标签过滤当前工作区可用的 Skill — 留空 = 默认全部可见；填写后只有匹配标签的 Skill 进入 manifest。未打标的 Skill 默认视为全局（始终可见），保护新抽取学得技能的冷启动。"
+      >
+        <WorkspaceSkillTagsEditor />
+      </SettingsSection>
+
+      <SettingsSection
         title="活动技能（调试）"
-        description="此刻**会被注入到 Agent system prompt** 的技能清单 — 顺序与 Agent 看到的完全一致。用于排查「为什么这条 skill 没被召回」之类的问题。包含 builtin (Bundled/User/Project) + Learned (已 promoted)。"
+        description="此刻**会被注入到 Agent system prompt** 的技能清单 — 顺序与 Agent 看到的完全一致。用于排查「为什么这条 skill 没被召回」之类的问题。包含 builtin (Bundled/User/Project) + Learned (已 promoted)。如果配置了上方的工作区标签，此处显示的是过滤后的结果。"
       >
         <div className="space-y-2">
           <div className="flex items-center justify-between">

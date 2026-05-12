@@ -674,6 +674,22 @@ export const reloadSkills = (): Promise<SkillInfo[]> =>
 export const forkSkillToUser = (name: string): Promise<string> =>
   invoke('fork_skill_to_user', { name });
 
+/** Per-workspace skill tag scoping (V19+).
+ *
+ *  Empty list = "no filter" — workspace sees every enabled skill.
+ *  Non-empty enables the manifest-side intersection filter: a skill
+ *  is included iff its own tags overlap the workspace's tags OR the
+ *  skill has no tags (untagged = global).
+ *
+ *  Tags are normalized at write time (trim + lowercase + dedup);
+ *  `setWorkspaceSkillTags` returns the normalized list so you don't
+ *  need to re-fetch. */
+export const getWorkspaceSkillTags = (spaceId: string): Promise<string[]> =>
+  invoke('get_workspace_skill_tags', { spaceId });
+
+export const setWorkspaceSkillTags = (spaceId: string, tags: string[]): Promise<string[]> =>
+  invoke('set_workspace_skill_tags', { spaceId, tags });
+
 /** Compute the skills manifest that **would be** injected into the agent
  *  loop's system prompt right now. Powers the Settings → 内置技能 →
  *  活动技能 debug panel. Defaults to the same args the agent loop uses

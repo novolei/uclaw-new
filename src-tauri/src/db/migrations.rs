@@ -667,6 +667,21 @@ ALTER TABLE agent_sessions ADD COLUMN pinned_at INTEGER NULL;
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_pinned_at ON agent_sessions(pinned_at);
 ";
 
+/// V19 — per-workspace skill tag scoping (architecture brief item #3).
+///
+/// Stores a JSON array of lowercased tag strings. Empty array (the
+/// default) means "no filter" — the workspace sees every enabled skill,
+/// matching pre-V19 behavior. Non-empty means the skills_manifest filter
+/// applies: a skill is included iff its own tags intersect the workspace's
+/// tags, OR the skill has no tags (untagged = global, like a fresh-extracted
+/// learned skill).
+///
+/// ALTER may fail on re-run with "duplicate column" — handled by the
+/// per-statement tracing::warn! skip in run(), matching V9/V10/V17/V18 idiom.
+pub const V19_SPACES_SKILL_TAGS: &str = "
+ALTER TABLE spaces ADD COLUMN skill_tags TEXT NOT NULL DEFAULT '[]';
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -795,6 +810,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V18_AGENT_SESSIONS_PINNED_AT.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V18 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V19: per-workspace skill_tags JSON column for the manifest filter.
+    tracing::debug!("Running migration V19: spaces.skill_tags");
+    for stmt in V19_SPACES_SKILL_TAGS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V19 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -1055,5 +1077,64 @@ mod tests {
             |row| row.get(0),
         ).unwrap();
         assert_eq!(count, 1);
+    }
+
+    /// V19 adds spaces.skill_tags as a TEXT NOT NULL column with default
+    /// '[]'. Existing rows must get the default; new rows can override.
+    /// Re-running V19 must be safe (duplicate-column ALTER skipped per
+    /// run()'s per-stmt error-tolerance idiom).
+    #[test]
+    fn v19_adds_skill_tags_column_with_empty_array_default() {
+        let conn = db_pre_v16();
+        // Pre-V19: insert a workspace row to test that existing rows
+        // get the default value.
+        conn.execute(
+            "INSERT INTO spaces (id, name, icon)
+             VALUES ('engineering', 'Engineering', '📁')",
+            [],
+        ).unwrap();
+
+        // Drive V19.
+        for stmt in super::V19_SPACES_SKILL_TAGS
+            .split(';').map(|s| s.trim()).filter(|s| !s.is_empty())
+        {
+            let _ = conn.execute(stmt, []);
+        }
+
+        // Existing row got the default.
+        let tags: String = conn.query_row(
+            "SELECT skill_tags FROM spaces WHERE id = 'engineering'",
+            [],
+            |row| row.get::<_, String>(0),
+        ).unwrap();
+        assert_eq!(tags, "[]",
+            "existing spaces rows must get skill_tags='[]' default");
+
+        // New rows can override.
+        conn.execute(
+            "INSERT INTO spaces (id, name, icon, skill_tags)
+             VALUES ('research', 'Research', '📁', '[\"research\",\"academic\"]')",
+            [],
+        ).unwrap();
+        let research_tags: String = conn.query_row(
+            "SELECT skill_tags FROM spaces WHERE id = 'research'",
+            [],
+            |row| row.get::<_, String>(0),
+        ).unwrap();
+        assert_eq!(research_tags, "[\"research\",\"academic\"]");
+
+        // Idempotent re-run.
+        for stmt in super::V19_SPACES_SKILL_TAGS
+            .split(';').map(|s| s.trim()).filter(|s| !s.is_empty())
+        {
+            let _ = conn.execute(stmt, []);
+        }
+        // Data still intact after re-run.
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM spaces",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 2);
     }
 }

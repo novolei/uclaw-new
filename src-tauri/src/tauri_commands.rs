@@ -2388,9 +2388,33 @@ pub async fn list_active_manifest_skills(
     let sid = space_id.unwrap_or_else(|| "default".into());
     let limit = max_entries.unwrap_or(30);
 
+    // Resolve workspace tags (V19+) so the debug panel reflects the
+    // filtered set, not the raw global manifest. Empty / missing column
+    // = no filter (matches send_agent_message's behavior).
+    let workspace_tags: Vec<String> = {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT skill_tags FROM spaces WHERE id = ?1",
+                rusqlite::params![&sid],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .unwrap_or(None);
+        raw.as_deref()
+            .and_then(|j| serde_json::from_str::<Vec<String>>(j).ok())
+            .unwrap_or_default()
+    };
+
     let registry = state.skills_registry.read().await;
     let store = &state.memory_graph_store;
-    let entries = compute_active_manifest_entries(&registry, store, &sid, limit, bias);
+    let entries = compute_active_manifest_entries(
+        &registry,
+        store,
+        &sid,
+        limit,
+        bias,
+        if workspace_tags.is_empty() { None } else { Some(workspace_tags.as_slice()) },
+    );
 
     // Enrich "builtin" provenance to the real disk tier using the registry's
     // LoadedSkill data. "learned" passes through unchanged.
@@ -4917,6 +4941,31 @@ pub async fn send_agent_message(
 
     const AGENT_SYSTEM_PROMPT: &str = "You are uClaw, a helpful AI desktop coworker. You help users with tasks using the available tools.";
 
+    // V19+: resolve the session's workspace skill_tags before the
+    // spawn, because state.db.lock() borrows from `state: State<'_>` and
+    // can't escape into the 'static spawn closure. Failure to read →
+    // empty (no filter, identical to pre-V19 behavior).
+    let workspace_tags: Vec<String> = match state.db.lock() {
+        Ok(conn) => {
+            let raw: Option<String> = conn
+                .query_row(
+                    "SELECT s.skill_tags FROM agent_sessions a \
+                     JOIN spaces s ON s.id = a.space_id \
+                     WHERE a.id = ?1",
+                    rusqlite::params![input.session_id],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .unwrap_or(None);
+            raw.as_deref()
+                .and_then(|j| serde_json::from_str::<Vec<String>>(j).ok())
+                .unwrap_or_default()
+        }
+        Err(e) => {
+            tracing::warn!(err = %e, "Workspace skill_tags lookup failed; manifest unfiltered");
+            Vec::new()
+        }
+    };
+
     tokio::spawn(async move {
         // Build reasoning context from history
         let mut ctx = ReasoningContext::new(AGENT_SYSTEM_PROMPT.to_string());
@@ -4954,6 +5003,7 @@ pub async fn send_agent_message(
                 Some("innovate") => StrategyBias::Innovate,
                 _                => StrategyBias::Balanced,
             };
+
             let registry = skills_registry_for_manifest.read().await;
             let manifest = crate::skills_manifest::build_skills_manifest(
                 &registry,
@@ -4962,6 +5012,7 @@ pub async fn send_agent_message(
                 30,
                 1500,
                 strategy_bias,
+                if workspace_tags.is_empty() { None } else { Some(workspace_tags.as_slice()) },
             );
             delegate.set_skills_manifest_block(manifest);
         }
@@ -5603,6 +5654,93 @@ pub async fn update_workspace(
         "createdAt": created_at,
         "updatedAt": updated_at,
     }))
+}
+
+/// Normalize a list of skill tags: trim, lowercase, drop empties, dedup
+/// while preserving the user's original order. Used by both
+/// `set_workspace_skill_tags` (write) and a future migration if we ever
+/// need to clean up legacy values.
+///
+/// Returned vec is what should actually land in the DB — the IPC echoes
+/// it back so the frontend can update local state without re-fetching.
+pub(crate) fn normalize_skill_tags(input: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(input.len());
+    for raw in input {
+        let cleaned = raw.trim().to_lowercase();
+        if cleaned.is_empty() { continue; }
+        if seen.insert(cleaned.clone()) {
+            out.push(cleaned);
+        }
+    }
+    out
+}
+
+/// Read a workspace's skill_tags JSON column → Vec<String>.
+///
+/// Returns `[]` (not an error) for:
+///   - workspaces that haven't been V19-migrated yet (skill_tags is NULL)
+///   - workspaces whose skill_tags JSON is malformed (logged + returned empty)
+///   - workspace_id not found
+/// The empty case has the same manifest semantic as "no filter", so
+/// gracefully degrading here keeps the agent loop robust.
+#[tauri::command]
+pub async fn get_workspace_skill_tags(
+    state: State<'_, AppState>,
+    space_id: String,
+) -> Result<Vec<String>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT skill_tags FROM spaces WHERE id = ?1",
+            rusqlite::params![&space_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None);
+    let tags: Vec<String> = match raw.as_deref() {
+        Some(json) => serde_json::from_str(json).unwrap_or_else(|e| {
+            tracing::warn!(
+                space_id = %space_id, err = %e,
+                "skill_tags JSON malformed; returning empty"
+            );
+            Vec::new()
+        }),
+        None => Vec::new(),
+    };
+    Ok(tags)
+}
+
+/// Write a workspace's skill_tags. Normalizes (trim + lowercase + dedup
+/// while preserving order) before persisting; returns the normalized vec
+/// so the frontend can display what was actually saved.
+///
+/// Empty list is the legal "no filter" state — the manifest filter
+/// short-circuits when this column is `'[]'`, preserving pre-V19
+/// behavior for any workspace that opts out of scoping.
+#[tauri::command]
+pub async fn set_workspace_skill_tags(
+    state: State<'_, AppState>,
+    space_id: String,
+    tags: Vec<String>,
+) -> Result<Vec<String>, Error> {
+    let normalized = normalize_skill_tags(tags);
+    let json = serde_json::to_string(&normalized)
+        .map_err(|e| Error::Internal(format!("serialize tags: {}", e)))?;
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    let rows = conn
+        .execute(
+            "UPDATE spaces SET skill_tags = ?2, updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![&space_id, &json],
+        )
+        .map_err(Error::Database)?;
+    if rows == 0 {
+        return Err(Error::NotFound(format!("workspace '{}' not found", space_id)));
+    }
+    tracing::info!(
+        space_id = %space_id, tags = ?normalized,
+        "Updated workspace skill_tags"
+    );
+    Ok(normalized)
 }
 
 /// Apply `sort_order = idx` for each workspace id in the supplied ordered
@@ -7969,6 +8107,61 @@ mod workspace_cost_rollup_tests {
             [800i64], |r| r.get(0),
         ).unwrap();
         assert!((total - 3.0).abs() < 0.01);
+    }
+}
+
+#[cfg(test)]
+mod workspace_skill_tag_tests {
+    use super::normalize_skill_tags;
+
+    /// Trimming, lowercasing, and de-duplication must all happen at write
+    /// time so the DB never has to deal with mixed-case duplicates.
+    #[test]
+    fn normalizes_trim_lowercase_dedup() {
+        let input = vec![
+            "Engineering".to_string(),
+            " process ".to_string(),
+            "engineering".to_string(),
+            "PROCESS".to_string(),
+        ];
+        let normalized = normalize_skill_tags(input);
+        assert_eq!(normalized, vec!["engineering".to_string(), "process".to_string()]);
+    }
+
+    /// Empty / whitespace-only entries must be silently dropped — the
+    /// frontend shouldn't have to filter them out before calling set_*.
+    #[test]
+    fn drops_empty_and_whitespace_only() {
+        let input = vec![
+            "".to_string(),
+            "   ".to_string(),
+            "research".to_string(),
+            "\t\n".to_string(),
+        ];
+        assert_eq!(normalize_skill_tags(input), vec!["research".to_string()]);
+    }
+
+    /// Empty input returns empty output (the `[]` no-filter state must
+    /// remain reachable without DB tricks).
+    #[test]
+    fn empty_input_returns_empty() {
+        assert_eq!(normalize_skill_tags(vec![]), Vec::<String>::new());
+    }
+
+    /// User-supplied order is preserved within unique entries — so the
+    /// Settings UI's chip order matches what was typed, not arbitrary.
+    #[test]
+    fn preserves_first_occurrence_order() {
+        let input = vec![
+            "research".to_string(),
+            "process".to_string(),
+            "engineering".to_string(),
+            "research".to_string(),  // dup, dropped
+        ];
+        assert_eq!(
+            normalize_skill_tags(input),
+            vec!["research".to_string(), "process".to_string(), "engineering".to_string()]
+        );
     }
 }
 
