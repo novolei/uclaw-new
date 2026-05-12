@@ -23,6 +23,7 @@ When extending a feature that already has a flat shape (e.g. the existing `searc
 - **New Tauri command** → define in `tauri_commands.rs` AND register in the `invoke_handler!` macro in `main.rs`. Forgetting the macro entry compiles fine but fails at runtime.
 - **New background service** → register in the `[Stage 3]` block in `main.rs`.
 - **New built-in agent tool** → register in `agent/dispatcher.rs` and, if destructive, in `SafetyManager`.
+- **Chat-composer behavior change** → uClaw has **two parallel composers** that wrap the same `RichTextInput`: `ui/src/components/chat/ChatInput.tsx` (Chat mode) and `ui/src/components/agent/AgentView.tsx` (Agent mode). Each owns its own `handlePasteFiles` / `handleDrop` / send wiring. Any paste / drop / attachment / submit behavior change must be applied to **both** files. Verifying only Chat mode hides regressions in the more common Agent mode (and vice versa). The shared `RichTextInput` is a [PLACEHOLDER] textarea today — a real TipTap port is scheduled for W4 of the Proma preview port; until then, prop wiring lives in the composers, not in RichTextInput.
 
 Call these out in the commit body so they're not mistaken for scope creep.
 

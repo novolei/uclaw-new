@@ -132,6 +132,7 @@ All colors via theme variables: `bg-popover`, `text-foreground`, `text-muted-for
 
 - Every new Tauri command: defined in `tauri_commands.rs` **AND** registered in `main.rs invoke_handler!`. Compile-clean but runtime-fail if missed.
 - Every new background service: registered in `main.rs` Stage 3 block.
+- **Dual composer rule** — uClaw has two parallel composers (`ChatInput.tsx` for Chat mode, `AgentView.tsx` for Agent mode), each owning its own `handlePasteFiles` / drop / submit callbacks while sharing a single `RichTextInput`. **Any paste / drop / attachment / submit behavior change must land in both files.** W1's first cut missed `AgentView.tsx` and was caught by the user in QA — it shipped as `fix(agent): wire long-text paste to attachment in AgentView (W1 followup)`. Future waves: grep both composers when touching input wiring.
 - Mention in commit body so reviewer doesn't flag as scope creep.
 
 ### 2.4 Migration version pinning
