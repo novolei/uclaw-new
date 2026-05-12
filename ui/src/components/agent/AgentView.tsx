@@ -21,6 +21,7 @@ import { AgentMessages } from './AgentMessages'
 import { AgentHeader } from './AgentHeader'
 import { BrowserPreviewOverlay } from './BrowserPreviewOverlay'
 import { ContextUsageBadge } from './ContextUsageBadge'
+import { StrategyPresetSelector } from './StrategyPresetSelector'
 import { PermissionBanner } from './PermissionBanner'
 import { PermissionModeSelector } from './PermissionModeSelector'
 import { AgentStatusBar } from './AgentStatusBar'
@@ -53,6 +54,7 @@ import {
   agentModelIdAtom,
   agentSessionChannelMapAtom,
   agentSessionModelMapAtom,
+  agentSessionStrategyMapAtom,
   currentAgentWorkspaceIdAtom,
   agentPendingPromptAtom,
   agentPendingFilesAtom,
@@ -210,6 +212,8 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const sessionModelMap = useAtomValue(agentSessionModelMapAtom)
   const setSessionChannelMap = useSetAtom(agentSessionChannelMapAtom)
   const setSessionModelMap = useSetAtom(agentSessionModelMapAtom)
+  const sessionStrategyMap = useAtomValue(agentSessionStrategyMapAtom)
+  const currentStrategy = sessionStrategyMap.get(sessionId) ?? 'balanced'
   const defaultChannelId = useAtomValue(agentChannelIdAtom)
   const [defaultModelId, setDefaultModelId] = useAtom(agentModelIdAtom)
   const agentChannelId = sessionChannelMap.get(sessionId) ?? defaultChannelId
@@ -942,6 +946,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       modelId: activeProviderModel?.modelId || agentModelId || undefined,
       workspaceId: currentWorkspaceId || undefined,
       startedAt: streamStartedAt,
+      strategy: currentStrategy !== 'balanced' ? currentStrategy : undefined,
       ...(attachedDirs.length > 0 && { additionalDirectories: attachedDirs }),
       // 解析用户消息中的 Skill/MCP 引用，传递结构化元数据给后端
       ...(() => {
@@ -986,7 +991,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           return map
         })
       })
-  }, [inputContent, pendingFiles, sessionId, activeProviderModel, agentChannelId, agentModelId, currentWorkspaceId, workspaces, streaming, suggestion, store, setStreamingStates, setPendingFiles, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, setMessages])
+  }, [inputContent, pendingFiles, sessionId, activeProviderModel, agentChannelId, agentModelId, currentWorkspaceId, workspaces, streaming, suggestion, currentStrategy, store, setStreamingStates, setPendingFiles, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, setMessages])
 
   /** 停止生成 */
   const handleStop = React.useCallback((): void => {
@@ -1502,6 +1507,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                   isProcessing={streaming}
                   onCompact={handleCompact}
                 />
+                <StrategyPresetSelector sessionId={sessionId} />
                 {/* <FeishuNotifyToggle sessionId={sessionId} /> */}
               </div>
 

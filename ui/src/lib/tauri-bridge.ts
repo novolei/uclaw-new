@@ -884,6 +884,7 @@ export const sendAgentMessage = (input: any): Promise<void> => {
     channelId: input.channelId ?? null,
     modelId: input.modelId ?? null,
     workspaceId: input.workspaceId ?? null,
+    strategy: input.strategy ?? null,
   }})
 }
 

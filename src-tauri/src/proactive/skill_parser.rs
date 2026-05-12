@@ -23,6 +23,9 @@ pub struct ParsedSkill {
     /// LLM 在 <validation_hint>…</validation_hint> 标签里输出；agent 看到后自行决定要不要验证。
     /// 若 LLM 未输出该标签，则为 None（向后兼容）。
     pub validation_hint: Option<String>,
+    /// 技能类别：LLM 在 <category>repair|optimize|innovate</category> 里输出。
+    /// 只接受这三个值（小写），其余无效值 → None（向后兼容）。
+    pub category: Option<String>,
 }
 
 /// 解析 <skill_report> XML 中的 <skill> 标签
@@ -85,6 +88,11 @@ pub fn parse_skill_report(xml_text: &str) -> Vec<ParsedSkill> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        // <category> is optional; only "repair", "optimize", "innovate" are valid.
+        let category = extract_tag_content(&skill_content, "category")
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| matches!(s.as_str(), "repair" | "optimize" | "innovate"));
+
         skills.push(ParsedSkill {
             name,
             context,
@@ -94,6 +102,7 @@ pub fn parse_skill_report(xml_text: &str) -> Vec<ParsedSkill> {
             signals,
             signals_seen: Vec::new(), // populated by service layer from execution logs
             validation_hint,
+            category,
         });
     }
 
@@ -256,6 +265,10 @@ pub fn store_skill_as_procedure(
 
     if let Some(hint) = skill.validation_hint.as_ref() {
         metadata["validation_hint"] = serde_json::Value::String(hint.clone());
+    }
+
+    if let Some(cat) = skill.category.as_ref() {
+        metadata["category"] = serde_json::Value::String(cat.clone());
     }
 
     let node = MemoryNode {
@@ -434,7 +447,8 @@ fn upgrade_existing_skill(
     let need_signals_update = !skill.signals.is_empty();
     let need_signals_seen_update = !skill.signals_seen.is_empty();
     let need_hint_update = skill.validation_hint.is_some();
-    if need_signals_update || need_signals_seen_update || need_hint_update {
+    let need_category_update = skill.category.is_some();
+    if need_signals_update || need_signals_seen_update || need_hint_update || need_category_update {
         let mut metadata = existing.metadata.clone().unwrap_or_else(|| serde_json::json!({}));
         if let Some(obj) = metadata.as_object_mut() {
             if need_signals_update {
@@ -457,6 +471,12 @@ fn upgrade_existing_skill(
                 obj.insert(
                     "validation_hint".to_string(),
                     serde_json::Value::String(hint.clone()),
+                );
+            }
+            if let Some(cat) = skill.category.as_ref() {
+                obj.insert(
+                    "category".to_string(),
+                    serde_json::Value::String(cat.clone()),
                 );
             }
         }
@@ -784,6 +804,7 @@ mod tests {
             signals: vec![],
             signals_seen: vec![],
             validation_hint: None,
+            category: None,
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -896,6 +917,7 @@ mod tests {
             signals: vec![],
             signals_seen: vec![],
             validation_hint: None,
+            category: None,
         };
         let s2 = ParsedSkill {
             name: "处理 edit 工具文本匹配错误的备选插入策略".into(), // +1 word prefix
@@ -906,6 +928,7 @@ mod tests {
             signals: vec![],
             signals_seen: vec![],
             validation_hint: None,
+            category: None,
         };
 
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
@@ -940,6 +963,7 @@ mod tests {
             signals: vec![],
             signals_seen: vec![],
             validation_hint: None,
+            category: None,
         };
         let s2 = ParsedSkill {
             name: "  前端游戏开发项目工作流  ".into(), // same after normalize
@@ -950,6 +974,7 @@ mod tests {
             signals: vec![],
             signals_seen: vec![],
             validation_hint: None,
+            category: None,
         };
 
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
@@ -1051,6 +1076,7 @@ mod tests {
             ],
             signals_seen: vec![],
             validation_hint: None,
+            category: None,
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -1087,6 +1113,7 @@ mod tests {
             signals: vec![],
             signals_seen: vec![],
             validation_hint: None,
+            category: None,
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -1119,6 +1146,7 @@ mod tests {
             signals: vec!["old-signal".into()],
             signals_seen: vec![],
             validation_hint: None,
+            category: None,
         };
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
 
@@ -1141,6 +1169,7 @@ mod tests {
             signals: vec!["new1".into(), "new2".into()],
             signals_seen: vec![],
             validation_hint: None,
+            category: None,
         };
         let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
 
@@ -1181,6 +1210,7 @@ mod tests {
             signals: vec!["keep-me".into()],
             signals_seen: vec![],
             validation_hint: None,
+            category: None,
         };
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
 
@@ -1194,6 +1224,7 @@ mod tests {
             signals: vec![],  // empty — should NOT wipe existing signals
             signals_seen: vec![],
             validation_hint: None,
+            category: None,
         };
         let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
 
@@ -1254,6 +1285,7 @@ mod tests {
             signals: vec![],
             signals_seen: vec![],
             validation_hint: Some("Re-run and check exit 0.".into()),
+            category: None,
         };
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
 
@@ -1275,6 +1307,7 @@ mod tests {
             signals: vec![],
             signals_seen: vec![],
             validation_hint: Some("Check the log output for 'success'.".into()),
+            category: None,
         };
         let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
         assert_eq!(n1.id, n2.id, "expected dedup to reuse node id");
@@ -1296,6 +1329,7 @@ mod tests {
             signals: vec![],
             signals_seen: vec![],
             validation_hint: None,
+            category: None,
         };
         let n3 = store_skill_as_procedure(&store, &s3, space).unwrap();
         assert_eq!(n1.id, n3.id);
@@ -1307,5 +1341,116 @@ mod tests {
             .map(str::to_string);
         assert_eq!(final_hint.as_deref(), Some("Check the log output for 'success'."),
             "None re-extraction must not wipe existing validation_hint");
+    }
+
+    // ─── Task 6: category tag tests ──────────────────────────────────────
+
+    #[test]
+    fn parses_category_tag() {
+        let xml = r#"<skill_report><new_skills><skill>
+<name>bug-fixer</name>
+<context>debugging sessions</context>
+<principles>isolate then fix</principles>
+<steps>1. repro 2. fix</steps>
+<pitfalls>don't guess</pitfalls>
+<category>repair</category>
+</skill></new_skills></skill_report>"#;
+        let parsed = parse_skill_report(xml);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].category.as_deref(), Some("repair"));
+    }
+
+    #[test]
+    fn parses_invalid_category_as_none() {
+        let xml = r#"<skill_report><new_skills><skill>
+<name>some-skill</name>
+<context>ctx</context>
+<principles>p</principles>
+<steps>s</steps>
+<pitfalls>pt</pitfalls>
+<category>unknown-value</category>
+</skill></new_skills></skill_report>"#;
+        let parsed = parse_skill_report(xml);
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0].category.is_none(), "invalid category must be None");
+    }
+
+    #[test]
+    fn category_persists_on_upgrade() {
+        use crate::memory_graph::store::MemoryGraphStore;
+        use rusqlite::Connection;
+        use std::sync::{Arc, Mutex};
+
+        let conn = Connection::open_in_memory().unwrap();
+        let store = MemoryGraphStore::new(Arc::new(Mutex::new(conn)));
+        store.ensure_tables();
+        let space = "default";
+
+        // First extraction: skill with category "repair".
+        let s1 = ParsedSkill {
+            name: "cat-skill".into(),
+            context: "ctx".into(),
+            principles: "p".into(),
+            steps: "s".into(),
+            pitfalls: "pt".into(),
+            signals: vec![],
+            signals_seen: vec![],
+            validation_hint: None,
+            category: Some("repair".into()),
+        };
+        let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
+
+        // Confirm initial category stored.
+        let stored = store.get_node(&n1.id).unwrap().unwrap();
+        let init_cat = stored.metadata.as_ref()
+            .and_then(|m| m.get("category"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        assert_eq!(init_cat.as_deref(), Some("repair"));
+
+        // Second extraction (dedup hit): new category replaces old one.
+        let s2 = ParsedSkill {
+            name: "cat-skill".into(),
+            context: "ctx v2".into(),
+            principles: "p".into(),
+            steps: "s".into(),
+            pitfalls: "pt".into(),
+            signals: vec![],
+            signals_seen: vec![],
+            validation_hint: None,
+            category: Some("optimize".into()),
+        };
+        let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
+        assert_eq!(n1.id, n2.id, "expected dedup to reuse node id");
+
+        let updated = store.get_node(&n1.id).unwrap().unwrap();
+        let cat = updated.metadata.as_ref()
+            .and_then(|m| m.get("category"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        assert_eq!(cat.as_deref(), Some("optimize"), "category should be updated on upgrade");
+
+        // Third extraction: no category — should NOT wipe existing.
+        let s3 = ParsedSkill {
+            name: "cat-skill".into(),
+            context: "ctx v3".into(),
+            principles: "p".into(),
+            steps: "s".into(),
+            pitfalls: "pt".into(),
+            signals: vec![],
+            signals_seen: vec![],
+            validation_hint: None,
+            category: None,
+        };
+        let n3 = store_skill_as_procedure(&store, &s3, space).unwrap();
+        assert_eq!(n1.id, n3.id);
+
+        let final_node = store.get_node(&n1.id).unwrap().unwrap();
+        let final_cat = final_node.metadata.as_ref()
+            .and_then(|m| m.get("category"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        assert_eq!(final_cat.as_deref(), Some("optimize"),
+            "None re-extraction must not wipe existing category");
     }
 }

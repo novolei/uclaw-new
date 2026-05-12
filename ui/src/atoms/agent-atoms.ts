@@ -224,6 +224,10 @@ export const agentChannelIdsAtom = atom<string[]>([])
 
 export const agentSessionChannelMapAtom = atom<Map<string, string>>(new Map())
 export const agentSessionModelMapAtom = atom<Map<string, string>>(new Map())
+
+/** Per-session strategy preset. 'balanced' is the default (no bias). */
+export type AgentStrategy = 'balanced' | 'repair' | 'optimize' | 'innovate'
+export const agentSessionStrategyMapAtom = atom<Map<string, AgentStrategy>>(new Map())
 export const currentAgentSessionIdAtom = atom<string | null>(null)
 export const currentAgentMessagesAtom = atom<AgentMessage[]>([])
 

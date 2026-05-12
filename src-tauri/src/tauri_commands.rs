@@ -4040,6 +4040,9 @@ pub struct SendAgentMessageInput {
     pub channel_id: Option<String>,
     pub model_id: Option<String>,
     pub workspace_id: Option<String>,
+    /// Strategy preset from the frontend dropdown: "balanced" | "repair" | "optimize" | "innovate".
+    /// None or unrecognized values fall back to Balanced.
+    pub strategy: Option<String>,
 }
 
 #[tauri::command]
@@ -4358,6 +4361,13 @@ pub async fn send_agent_message(
 
         // Build skill manifest and inject into system prompt (async: needs registry.read()).
         {
+            use crate::skills_manifest::StrategyBias;
+            let strategy_bias = match input.strategy.as_deref() {
+                Some("repair")   => StrategyBias::Repair,
+                Some("optimize") => StrategyBias::Optimize,
+                Some("innovate") => StrategyBias::Innovate,
+                _                => StrategyBias::Balanced,
+            };
             let registry = skills_registry_for_manifest.read().await;
             let manifest = crate::skills_manifest::build_skills_manifest(
                 &registry,
@@ -4365,6 +4375,7 @@ pub async fn send_agent_message(
                 "default",
                 30,
                 1500,
+                strategy_bias,
             );
             delegate.set_skills_manifest_block(manifest);
         }
