@@ -69,7 +69,7 @@ export interface SDKMessageRendererProps {
 
 // ===== system 消息：上下文压缩分割线 =====
 
-function CompactBoundaryDivider(): React.ReactElement {
+export function CompactBoundaryDivider(): React.ReactElement {
   return (
     <div className="flex items-center gap-3 my-4 px-1">
       <div className="flex-1 h-px bg-border/40" />

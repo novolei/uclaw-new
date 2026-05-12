@@ -48,7 +48,7 @@ import { ScrollPositionManager } from '@/hooks/useScrollPositionMemory'
 import { cn } from '@/lib/utils'
 import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { CompactingIndicator } from './SDKMessageRenderer'
+import { CompactingIndicator, CompactBoundaryDivider } from './SDKMessageRenderer'
 import type { AgentMessage, AgentEventUsage, RetryAttempt } from '@/lib/agent-types'
 import type { ToolActivity, AgentStreamState } from '@/atoms/agent-atoms'
 import { readAttachment, saveImageAs } from '@/lib/tauri-bridge'
@@ -987,9 +987,31 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
               </Message>
             )}
 
-            {/* 压缩中指示器：由 isCompacting flag 驱动的尾部元素，compact_boundary 到达时 flag 翻 false 自然消失，
-                视觉上被流中新出现的"上下文已压缩"分隔符无缝替换 */}
+            {/* 压缩中指示器：由 isCompacting flag 驱动 */}
             {streamState?.isCompacting && <CompactingIndicator />}
+
+            {/* liveMessages 尾部渲染：handleCompact 注入的 /compact 用户气泡 +
+                useGlobalAgentListeners 在 stream-complete 时注入的 compact_boundary
+                分隔符。两者都不在 DB messages 数组里，是会话内的瞬时合成项。
+                Session 切换或刷新会清空（这是预期行为）。 */}
+            {liveMessages?.map((item: any) => {
+              const key = item.uuid ?? `live-${item._createdAt}`
+              if (item.type === 'system' && item.subtype === 'compact_boundary') {
+                return <div key={key} data-live-marker="compact-boundary"><CompactBoundaryDivider /></div>
+              }
+              if (item.type === 'user') {
+                const text = item.message?.content?.[0]?.text ?? ''
+                if (!text) return null
+                return (
+                  <div key={key} data-live-marker="user-synthetic" className="flex justify-end my-2 px-1">
+                    <span className="text-[12px] text-muted-foreground px-3 py-1 rounded-full border border-border/40 bg-muted/30">
+                      {text}
+                    </span>
+                  </div>
+                )
+              }
+              return null
+            })}
 
           </>
         )}

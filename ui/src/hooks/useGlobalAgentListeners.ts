@@ -15,6 +15,7 @@ import {
   agentSessionsAtom,
   proactiveLearningEventsAtom,
   sessionBrowserPreviewMapAtom,
+  liveMessagesMapAtom,
   type AgentStreamState,
   type ProactiveLearningEvent,
   type AgentStreamErrorPayload,
@@ -43,6 +44,20 @@ function createInitialStreamState(): AgentStreamState {
 
 let cleanupFns: Array<() => void> = []
 let initialized = false
+
+// HMR 清理：模块热替换前调用所有 cleanupFns，否则旧 listener 仍挂在 Tauri 事件
+// 总线上，造成每个事件触发多次回调（症状是 streaming 文字 2x/3x 重复）。
+// 没有这段，每次 .ts 保存重载都会"再加一份监听"。
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    cleanupFns.forEach((fn) => {
+      try { fn() } catch (e) { console.error('[useGlobalAgentListeners] HMR cleanup error', e) }
+    })
+    cleanupFns = []
+    initialized = false
+    lastReasoningSeq.clear()
+  })
+}
 
 // Per-session last-processed seq numbers for chat:stream-reasoning deduplication.
 // The backend includes a monotonically increasing `seq` with each delta; we skip
@@ -132,18 +147,35 @@ function startAgentListeners(store: Store): void {
         })
         return next
       })
-      // 压缩完成 → 弹 toast。优先用后端 payload.compact 的结构化数据，
-      // 退化到 wasCompacting 仅有时的简短提示。
-      if (payload.compact) {
-        const { removed, remaining } = payload.compact
+      // 压缩完成 → 两件事：(1) 弹 toast 给即时反馈；(2) 在 liveMessages
+      // 尾部注入一个 compact_boundary 标记，由 AgentMessages 渲染成持久
+      // 的"上下文已压缩"分隔符（区别于 toast 的瞬时通知）。
+      if (payload.compact || wasCompacting) {
+        const removed = payload.compact?.removed ?? 0
+        const remaining = payload.compact?.remaining ?? 0
         toast.success('上下文已压缩', {
           description: removed > 0
             ? `已移除 ${removed} 条早期消息，保留 ${remaining} 条`
-            : `已是最简上下文，当前保留 ${remaining} 条`,
+            : payload.compact
+              ? `已是最简上下文，当前保留 ${remaining} 条`
+              : undefined,
           duration: 3500,
         })
-      } else if (wasCompacting) {
-        toast.success('上下文已压缩', { duration: 3500 })
+
+        store.set(liveMessagesMapAtom, (prev) => {
+          const map = new Map(prev)
+          const current = map.get(sid) ?? []
+          const marker = {
+            type: 'system',
+            subtype: 'compact_boundary',
+            uuid: `compact-boundary-${Date.now()}`,
+            _createdAt: Date.now(),
+            removed,
+            remaining,
+          }
+          map.set(sid, [...current, marker])
+          return map
+        })
       }
       const currentSid = store.get(currentAgentSessionIdAtom)
       if (sid !== currentSid) {
