@@ -16,7 +16,6 @@ import {
   MessageActions,
   MessageResponse,
   UserMessageContent,
-  BasePathsProvider,
 } from '@/components/ai-elements/message'
 import {
   Conversation,
@@ -667,7 +666,7 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
               ) : null}
               <ToolResultInlineImages activities={toolActivities} />
               {message.content && (
-                <MessageResponse basePath={sessionPath || undefined} basePaths={attachedDirs}>{parsed.cleanedContent}</MessageResponse>
+                <MessageResponse sessionId={message.sessionId ?? null}>{parsed.cleanedContent}</MessageResponse>
               )}
             </>
           )}
@@ -897,7 +896,6 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
   }, [messages])
 
   return (
-    <BasePathsProvider basePaths={attachedDirs}>
     <Conversation resize={ready && !transitioning ? 'smooth' : 'instant'} className={ready ? 'opacity-100 transition-opacity duration-200' : 'opacity-0'}>
       <ScrollPositionManager id={sessionId} ready={ready} />
       <ConversationContent>
@@ -945,7 +943,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
                     const { cleanedContent: streamCleanedContent, citations: streamCitations } = parseSkillCitations(normalizeAgentMarkdown(smoothContent))
                     return (
                       <>
-                        <MessageResponse basePath={sessionPath || undefined} basePaths={attachedDirs}>{streamCleanedContent}</MessageResponse>
+                        <MessageResponse sessionId={sessionId ?? null}>{streamCleanedContent}</MessageResponse>
                         {/* Once the citation block has fully streamed in, render
                             the chip(s) — the dedupe key uses the session id so
                             the streaming chip and the post-finalization chip
@@ -1044,6 +1042,5 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
         <StickyUserMessage userMessages={allUserMessagesData} />
       )}
     </Conversation>
-    </BasePathsProvider>
   )
 }

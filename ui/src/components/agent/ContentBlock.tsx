@@ -196,8 +196,6 @@ export interface ContentBlockProps {
   block: SDKContentBlock
   /** 所有消息（用于查找工具结果） */
   allMessages: SDKMessage[]
-  /** 相对路径解析基准（文件链接用） */
-  basePath?: string
   /** 是否启用入场动画 */
   animate?: boolean
   /** 在父级中的索引（用于动画延迟） */
@@ -283,12 +281,11 @@ interface ToolUseBlockProps {
   index?: number
   dimmed?: boolean
   childBlocks?: SDKContentBlock[]
-  basePath?: string
   /** 是否正在流式输出中 */
   isStreaming?: boolean
 }
 
-function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed = false, childBlocks, basePath, isStreaming }: ToolUseBlockProps): React.ReactElement {
+function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed = false, childBlocks, isStreaming }: ToolUseBlockProps): React.ReactElement {
   const [expanded, setExpanded] = React.useState(false)
   const toolResult = useToolResult(block.id, allMessages)
   const isAgentTool = block.name === 'Agent' || block.name === 'Task'
@@ -373,7 +370,6 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
                 key={ci}
                 block={childBlock}
                 allMessages={allMessages}
-                basePath={basePath}
                 animate
                 index={ci}
                 dimmed
@@ -574,13 +570,13 @@ export function ThinkingBlock({ block, dimmed = false }: ThinkingBlockProps): Re
 
 // ===== ContentBlock 主组件 =====
 
-export function ContentBlock({ block, allMessages, basePath, animate = false, index = 0, dimmed = false, childBlocks, isStreaming }: ContentBlockProps): React.ReactElement | null {
+export function ContentBlock({ block, allMessages, animate = false, index = 0, dimmed = false, childBlocks, isStreaming }: ContentBlockProps): React.ReactElement | null {
   // text 块 — 主要内容，不受 dimmed 影响
   if (block.type === 'text') {
     const textBlock = block as SDKTextBlock
     if (!textBlock.text) return null
     return (
-      <MessageResponse basePath={basePath}>{textBlock.text}</MessageResponse>
+      <MessageResponse>{textBlock.text}</MessageResponse>
     )
   }
 
@@ -595,7 +591,6 @@ export function ContentBlock({ block, allMessages, basePath, animate = false, in
         index={index}
         dimmed={dimmed}
         childBlocks={childBlocks}
-        basePath={basePath}
         isStreaming={isStreaming}
       />
     )

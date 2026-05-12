@@ -59,8 +59,6 @@ export interface SDKMessageRendererProps {
   message: SDKMessage
   /** 所有消息（用于 ContentBlock 内查找工具结果） */
   allMessages: SDKMessage[]
-  /** 相对路径解析基准 */
-  basePath?: string
   /** 是否显示消息头部（模型 icon + 名称），默认 true */
   showHeader?: boolean
   /** 用户在前端选择的模型 ID（优先用于显示名称） */
@@ -333,7 +331,6 @@ export interface AssistantTurnRendererProps {
   turn: AssistantTurn
   /** 所有消息（全局，供工具结果查找跨 turn 的结果） */
   allMessages: SDKMessage[]
-  basePath?: string
   /** 分叉回调（传入最后一条 assistant 消息的 uuid） */
   onFork?: (upToMessageUuid: string) => void
   /** 回退回调（传入 assistant message uuid） */
@@ -352,7 +349,7 @@ export interface AssistantTurnRendererProps {
   sessionModelId?: string
 }
 
-export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onRewind, onRetry, onRetryInNewSession, onCompact, isStreaming, stoppedByUser, sessionModelId }: AssistantTurnRendererProps): React.ReactElement | null {
+export function AssistantTurnRenderer({ turn, allMessages, onFork, onRewind, onRetry, onRetryInNewSession, onCompact, isStreaming, stoppedByUser, sessionModelId }: AssistantTurnRendererProps): React.ReactElement | null {
   const channels = useAtomValue(channelsAtom)
   // 收集所有 assistant 消息的内容块，保留 parent_tool_use_id 关联
   interface EnrichedBlock {
@@ -557,7 +554,6 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
                   key={i}
                   block={block}
                   allMessages={allMessages}
-                  basePath={basePath}
                   animate={!!isStreaming}
                   index={i}
                   dimmed={hasTextContent && block.type !== 'text'}
@@ -617,7 +613,6 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
 export function SDKMessageRenderer({
   message,
   allMessages,
-  basePath,
   showHeader = true,
   sessionModelId,
 }: SDKMessageRendererProps): React.ReactElement | null {
@@ -663,7 +658,6 @@ export function SDKMessageRenderer({
                 key={i}
                 block={block}
                 allMessages={allMessages}
-                basePath={basePath}
                 index={i}
                 dimmed={hasTextContent && block.type !== 'text'}
               />
@@ -1022,7 +1016,6 @@ function ErrorMessage({ message, onRetry, onRetryInNewSession, onCompact }: Erro
 export interface MessageGroupRendererProps {
   group: MessageGroup
   allMessages: SDKMessage[]
-  basePath?: string
   onFork?: (upToMessageUuid: string) => void
   onRewind?: (assistantMessageUuid: string) => void
   /** 错误重试回调（仅当 turn 含错误消息时使用） */
@@ -1105,7 +1098,7 @@ export function getGroupPreview(group: MessageGroup): string {
   return texts.join(' ').slice(0, 200)
 }
 
-export function MessageGroupRenderer({ group, allMessages, basePath, onFork, onRewind, onRetry, onRetryInNewSession, onCompact, isStreaming, stoppedByUser, sessionModelId }: MessageGroupRendererProps): React.ReactElement | null {
+export function MessageGroupRenderer({ group, allMessages, onFork, onRewind, onRetry, onRetryInNewSession, onCompact, isStreaming, stoppedByUser, sessionModelId }: MessageGroupRendererProps): React.ReactElement | null {
   const groupId = getGroupId(group)
 
   if (group.type === 'user') {
@@ -1129,7 +1122,6 @@ export function MessageGroupRenderer({ group, allMessages, basePath, onFork, onR
       <AssistantTurnRenderer
         turn={group}
         allMessages={allMessages}
-        basePath={basePath}
         onFork={onFork}
         onRewind={onRewind}
         onRetry={onRetry}

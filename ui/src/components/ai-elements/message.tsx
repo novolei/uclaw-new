@@ -481,10 +481,6 @@ interface MessageResponseProps {
   preserveBreaks?: boolean
   /** Session ID for chip workspace resolution. Pass null for workspace-only resolution. */
   sessionId?: string | null
-  /** @deprecated replaced by sessionId — kept to avoid breaking AgentMessages.tsx call sites */
-  basePath?: string
-  /** @deprecated replaced by sessionId — kept to avoid breaking AgentMessages.tsx call sites */
-  basePaths?: string[]
 }
 
 /**
@@ -551,16 +547,6 @@ export function UserMessageContent({ children }: { children: React.ReactNode }):
       {children}
     </MessageResponse>
   )
-}
-
-export function BasePathsProvider({
-  basePaths,
-  children,
-}: {
-  basePaths?: string[]
-  children: React.ReactNode
-}): React.ReactElement {
-  return <>{children}</>
 }
 
 // ===== 流式辅助组件 =====
