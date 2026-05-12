@@ -4,6 +4,7 @@ pub mod context;
 pub mod dispatcher;
 pub mod mode_prompts;
 pub mod plan_state;
+pub mod retry;
 pub mod session;
 pub mod teams;
 pub mod tools;
