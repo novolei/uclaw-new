@@ -3,7 +3,7 @@
 //! Reuses `AppState::files_rail_list_mounts` to fetch the mount catalog,
 //! then composes the absolute path with `..` and absolute-path guards.
 
-use super::types::{PreviewBytes, MAX_PREVIEW_BYTES};
+use super::types::{ChipResolution, PreviewBytes, MAX_PREVIEW_BYTES};
 use crate::app::AppState;
 use crate::error::Error;
 use std::fs;
@@ -106,4 +106,112 @@ pub fn read_capped(path: &Path) -> Result<PreviewBytes, Error> {
         truncated,
         mtime_ms,
     })
+}
+
+/// Strip an optional `:line:col` suffix from a chip-candidate input.
+/// Returns `(bare_path, line, col)`. Mirrors `parseLineCol` in TS.
+///
+/// Marked `pub(super)` so the test module in `tests.rs` can call it.
+pub(super) fn strip_line_col(input: &str) -> (&str, Option<u32>, Option<u32>) {
+    // Try to peel one or two trailing `:N` segments where N >= 1.
+    let mut tail_path = input;
+    let mut first: Option<u32> = None;
+    let mut second: Option<u32> = None;
+
+    if let Some((head, tail)) = tail_path.rsplit_once(':') {
+        if let Ok(n) = tail.parse::<u32>() {
+            if n >= 1 {
+                first = Some(n);
+                tail_path = head;
+            }
+        }
+    }
+    if first.is_some() {
+        if let Some((head, tail)) = tail_path.rsplit_once(':') {
+            if let Ok(n) = tail.parse::<u32>() {
+                if n >= 1 {
+                    second = Some(n);
+                    tail_path = head;
+                }
+            }
+        }
+    }
+
+    // When we peeled exactly one number, it's the line.
+    // When we peeled two, the first peel was the col and the second was the line.
+    match (second, first) {
+        (Some(line), Some(col)) => (tail_path, Some(line), Some(col)),
+        (None, Some(line)) => (tail_path, Some(line), None),
+        _ => (input, None, None),
+    }
+}
+
+/// Resolve a single chip candidate against mounts + absolute-path fallback.
+///
+/// Returns a fully-populated `ChipResolution`. Never errors — malformed or
+/// missing inputs yield `exists: false`.
+pub async fn resolve_chip_candidate(
+    state: &AppState,
+    raw: &str,
+    session_id: Option<String>,
+) -> ChipResolution {
+    let (bare, _line, _col) = strip_line_col(raw);
+
+    // Absolute paths take the express lane.
+    if bare.starts_with('/') {
+        let p = Path::new(bare);
+        let exists = fs::metadata(p).map(|m| m.is_file()).unwrap_or(false);
+        return ChipResolution {
+            input: raw.to_string(),
+            exists,
+            mount_id: None,
+            rel_path: None,
+            absolute_path: if exists {
+                p.canonicalize().ok().map(|c| c.to_string_lossy().into_owned())
+            } else {
+                None
+            },
+        };
+    }
+
+    // Relative path — reject `..` segments defensively.
+    if bare.split('/').any(|seg| seg == "..") {
+        return ChipResolution {
+            input: raw.to_string(),
+            exists: false,
+            mount_id: None,
+            rel_path: None,
+            absolute_path: None,
+        };
+    }
+
+    let mounts = match state.files_rail_list_mounts(session_id).await {
+        Ok(m) => m,
+        Err(_) => Vec::new(),
+    };
+    for mount in mounts {
+        let candidate = mount.path.join(bare);
+        if let Ok(meta) = fs::metadata(&candidate) {
+            if meta.is_file() {
+                let abs = candidate
+                    .canonicalize()
+                    .ok()
+                    .map(|c| c.to_string_lossy().into_owned());
+                return ChipResolution {
+                    input: raw.to_string(),
+                    exists: true,
+                    mount_id: Some(mount.id.clone()),
+                    rel_path: Some(bare.to_string()),
+                    absolute_path: abs,
+                };
+            }
+        }
+    }
+    ChipResolution {
+        input: raw.to_string(),
+        exists: false,
+        mount_id: None,
+        rel_path: None,
+        absolute_path: None,
+    }
 }
