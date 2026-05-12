@@ -1001,12 +1001,13 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
   /** 手动发送 /compact 命令 */
   const handleCompact = React.useCallback((): void => {
-    if (!agentChannelId) return
+    // /compact 的后端拦截在任何 channel/model 逻辑之前发生，不需要 channelId。
+    // 旧 `if (!agentChannelId) return` 守卫会在用户没显式选 channel 时
+    // 静默吞掉整个调用（普通消息有 activeProviderModel.providerId 兜底，
+    // 但 handleCompact 没兜底）→ 前端清输入框、不发 IPC、零反应。
 
     // 如果当前正在 streaming（agent 还在多轮工具调用中），先停掉当前 turn，
-    // 再走 /compact。/compact 的语义是"我现在就要压缩"——若 streaming
-    // 守卫直接吞掉这次调用（旧行为），前端零反应、后端无 IPC，看上去像
-    // 整个命令消失了。
+    // 再走 /compact。
     if (streaming) {
       stopAgent(sessionId).catch(console.error)
     }
@@ -1050,7 +1051,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     sendAgentMessage({
       sessionId,
       userMessage: '/compact',
-      channelId: agentChannelId,
+      // 兜底用 activeProviderModel.providerId（与普通发送路径一致），
+      // 否则用户未显式选 channel 时 agentChannelId 为 null，IPC 会带空 channelId。
+      // 后端 /compact 拦截不读 channelId，这里只是保持 schema 完整。
+      channelId: agentChannelId ?? activeProviderModel?.providerId ?? null,
       modelId: agentModelId || undefined,
       workspaceId: currentWorkspaceId || undefined,
       startedAt: streamStartedAt,
