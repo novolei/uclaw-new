@@ -86,6 +86,7 @@ import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { sendWithCmdEnterAtom } from '@/atoms/shortcut-atoms'
 import type { AgentSendInput, AgentMessage, AgentPendingFile } from '@/lib/agent-types'
 import { fileToBase64 } from '@/lib/file-utils'
+import { createClipboardTextFile } from '@/lib/clipboard-attachment'
 import {
   updateSettings,
   getAgentSessionPath,
@@ -649,6 +650,13 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   /** 粘贴文件处理 */
   const handlePasteFiles = React.useCallback((files: File[]): void => {
     addFilesAsAttachments(files)
+  }, [addFilesAsAttachments])
+
+  /** 粘贴超长文本 → 转为附件 */
+  const handlePasteLongText = React.useCallback((text: string): void => {
+    const file = createClipboardTextFile(text)
+    addFilesAsAttachments([file])
+    toast.success('已将超长文本转为附件', { description: file.name })
   }, [addFilesAsAttachments])
 
   /** 拖放处理 */
@@ -1433,6 +1441,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
               onChange={setInputContent}
               onSubmit={handleSend}
               onPasteFiles={handlePasteFiles}
+              onPasteLongText={handlePasteLongText}
               placeholder={
                 activeProviderModel
                   ? sendWithCmdEnter
