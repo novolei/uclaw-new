@@ -6110,6 +6110,225 @@ fn session_workspace_root(state: &AppState, session_id: &str) -> Option<std::pat
     raw.filter(|s| !s.trim().is_empty()).map(std::path::PathBuf::from)
 }
 
+/// One result row of the `@`-mention file picker.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileMatch {
+    /// File name only (e.g. `App.tsx`).
+    pub name: String,
+    /// Absolute path — what gets inserted into the composer as a chip.
+    pub absolute_path: String,
+    /// Path relative to the workspace root (or attached dir root). Used for
+    /// the dropdown's two-line layout: `name` on top, `relative_path` below.
+    pub relative_path: String,
+    /// File extension (lowercased, no dot), or empty string for files without
+    /// one. Drives the icon hint in the dropdown.
+    pub extension: String,
+}
+
+/// Common heavy / generated / VCS directories the @-mention picker must
+/// **never** descend into. A monorepo with `node_modules` can contain
+/// 100k+ files; walking them all would lock the popup. Keep this list
+/// small and well-justified — pruning legitimate dirs would silently
+/// drop user files.
+const MENTION_SKIP_DIRS: &[&str] = &[
+    ".git", ".hg", ".svn",          // VCS
+    "node_modules", "target",       // npm + cargo build outputs
+    "dist", "build", "out",         // generic build outputs
+    "__pycache__", ".venv", "venv", // Python
+    ".idea", ".vscode",             // IDE state
+    ".uclaw",                       // uClaw's own state in case it lands in a workspace
+    ".DS_Store",                    // macOS junk
+];
+
+/// Search the session's workspace + attached_dirs for files matching `query`.
+///
+/// Powers the `@`-mention popover in the composer. Returns up to `limit`
+/// (default 30) matches, alphabetically sorted, with heavy/VCS dirs pruned
+/// from the walk. An empty query returns the first N files alphabetically.
+///
+/// Match rule: case-insensitive substring on the **file name only**. We
+/// deliberately don't match against the path prefix because users
+/// `@-ref` files by name ("App.tsx", not "src/components/App.tsx").
+///
+/// Roots searched:
+///   - The workspace path (resolved via `agent_sessions.space_id` → `spaces.path`)
+///   - Workspace-level `spaces.attached_dirs`
+///   - Session-level `agent_sessions.attached_dirs`
+#[tauri::command]
+pub async fn search_workspace_files_for_mention(
+    state: State<'_, AppState>,
+    session_id: String,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<WorkspaceFileMatch>, Error> {
+    let limit = limit.unwrap_or(30).min(200);
+    let q_lower = query.trim().to_lowercase();
+
+    // Resolve all roots. `session_id` may identify either an agent session
+    // (Agent mode composer) or a chat conversation (Chat mode composer);
+    // try both tables before falling back to the active workspace from
+    // settings. This single IPC then serves both composers without the
+    // frontend needing to know which type it has.
+    let roots: Vec<std::path::PathBuf> = {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let mut out: Vec<std::path::PathBuf> = Vec::new();
+
+        // Try resolving the workspace via the agent_sessions table first.
+        let mut space_id: Option<String> = conn
+            .query_row(
+                "SELECT space_id FROM agent_sessions WHERE id = ?1",
+                rusqlite::params![&session_id],
+                |r| r.get::<_, String>(0),
+            )
+            .ok();
+
+        // Fall back to the conversations table (chat mode).
+        if space_id.is_none() {
+            space_id = conn
+                .query_row(
+                    "SELECT space_id FROM conversations WHERE id = ?1",
+                    rusqlite::params![&session_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok();
+        }
+
+        // Last resort: the globally-active workspace. This handles the
+        // brand-new-draft case where a session/conversation doesn't
+        // exist yet but the user is already typing in the composer.
+        if space_id.is_none() {
+            space_id = conn
+                .query_row(
+                    "SELECT value FROM settings WHERE key = 'active_workspace_id'",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok();
+        }
+
+        if let Some(sid) = space_id {
+            // 1. spaces.path
+            if let Ok(path) = conn.query_row::<Option<String>, _, _>(
+                "SELECT path FROM spaces WHERE id = ?1",
+                rusqlite::params![&sid],
+                |r| r.get(0),
+            ) {
+                if let Some(p) = path.filter(|s| !s.trim().is_empty()) {
+                    out.push(std::path::PathBuf::from(p));
+                }
+            }
+            // 2. spaces.attached_dirs
+            if let Ok(Some(raw)) = conn.query_row::<Option<String>, _, _>(
+                "SELECT attached_dirs FROM spaces WHERE id = ?1",
+                rusqlite::params![&sid],
+                |r| r.get(0),
+            ) {
+                if let Ok(dirs) = serde_json::from_str::<Vec<String>>(&raw) {
+                    for d in dirs {
+                        if !d.trim().is_empty() {
+                            out.push(std::path::PathBuf::from(d));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. agent_sessions.attached_dirs (Agent mode only — chat
+        // conversations don't have session-level attached_dirs).
+        if let Ok(Some(raw)) = conn.query_row::<Option<String>, _, _>(
+            "SELECT attached_dirs FROM agent_sessions WHERE id = ?1",
+            rusqlite::params![&session_id],
+            |r| r.get(0),
+        ) {
+            if let Ok(dirs) = serde_json::from_str::<Vec<String>>(&raw) {
+                for d in dirs {
+                    if !d.trim().is_empty() {
+                        out.push(std::path::PathBuf::from(d));
+                    }
+                }
+            }
+        }
+
+        // Dedup while preserving order — same path under both workspace
+        // and session attached_dirs shouldn't be double-walked.
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|p| seen.insert(p.clone()));
+        out
+    };
+
+    if roots.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Walk all roots, prune skip dirs early, filter by query, accumulate.
+    let mut matches: Vec<WorkspaceFileMatch> = Vec::new();
+    for root in &roots {
+        if !root.exists() { continue; }
+
+        let walker = walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| {
+                // Prune at the directory level so we never descend into
+                // node_modules / .git / etc.
+                let name = match e.file_name().to_str() {
+                    Some(n) => n,
+                    None => return true,
+                };
+                if name.starts_with('.') && name != "." {
+                    // Hidden files are skipped unless the user explicitly
+                    // attached this dir (root itself is a dotdir → allowed).
+                    if e.depth() > 0 { return false; }
+                }
+                if e.file_type().is_dir() && MENTION_SKIP_DIRS.contains(&name) {
+                    return false;
+                }
+                true
+            });
+
+        for entry in walker.flatten() {
+            if matches.len() >= limit * 4 {
+                // Hard cap on pre-filter results to bound CPU on huge trees;
+                // the final sort+truncate happens below. *4 buffer so the
+                // sort has room to pick the best limit entries.
+                break;
+            }
+            if !entry.file_type().is_file() { continue; }
+            let name_os = entry.file_name();
+            let name = match name_os.to_str() {
+                Some(n) => n,
+                None => continue,
+            };
+            if !q_lower.is_empty() && !name.to_lowercase().contains(&q_lower) {
+                continue;
+            }
+            let abs = entry.path().to_path_buf();
+            let rel = abs
+                .strip_prefix(root)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| abs.to_string_lossy().into_owned());
+            let extension = abs
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_lowercase())
+                .unwrap_or_default();
+            matches.push(WorkspaceFileMatch {
+                name: name.to_string(),
+                absolute_path: abs.to_string_lossy().into_owned(),
+                relative_path: rel,
+                extension,
+            });
+        }
+    }
+
+    // Sort: alphabetical case-insensitive by file name. Recency-aware
+    // ranking is a future enhancement when we have per-file access stats.
+    matches.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    matches.truncate(limit);
+    Ok(matches)
+}
+
 /// Lightweight directory listing for the Files tab. Reads `path` and
 /// returns a flat list of immediate children as FileEntry-shaped objects.
 /// Hidden files (dotfiles) and macOS `.DS_Store` are filtered out so the
@@ -8434,5 +8653,43 @@ mod process_meta_tests {
         assert!(meta.reasoning.is_none(),
             "no Thinking blocks should produce None, not Some(empty); got: {:?}",
             meta.reasoning);
+    }
+}
+
+#[cfg(test)]
+mod mention_file_search_tests {
+    use super::MENTION_SKIP_DIRS;
+
+    /// The skip list is load-bearing: missing a heavy dir means the
+    /// @-mention popup hangs in a real codebase. This test pins the
+    /// expected set so a future refactor that accidentally removes
+    /// `node_modules` (etc.) fails loudly.
+    #[test]
+    fn skip_set_includes_load_bearing_heavy_dirs() {
+        for required in [
+            "node_modules", // npm — the most common 100k-file culprit
+            "target",       // cargo build output
+            ".git",         // VCS metadata
+            "__pycache__",  // Python bytecode caches
+            ".venv",        // Python virtual env
+        ] {
+            assert!(
+                MENTION_SKIP_DIRS.contains(&required),
+                "skip set must include `{}` — removing it would make the @-mention picker hang on real codebases",
+                required,
+            );
+        }
+    }
+
+    /// Skip list shouldn't accidentally include legitimate source dirs.
+    #[test]
+    fn skip_set_excludes_legitimate_source_dirs() {
+        for legit in ["src", "components", "tests", "docs", "examples", "lib"] {
+            assert!(
+                !MENTION_SKIP_DIRS.contains(&legit),
+                "skip set must NOT include `{}` — that would hide user files",
+                legit,
+            );
+        }
     }
 }

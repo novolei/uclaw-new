@@ -549,6 +549,7 @@ fn main() {
             uclaw_core::tauri_commands::read_attached_file,
             uclaw_core::tauri_commands::delete_workspace,
             uclaw_core::tauri_commands::list_directory_entries,
+            uclaw_core::tauri_commands::search_workspace_files_for_mention,
             uclaw_core::tauri_commands::upload_workspace_file,
             uclaw_core::tauri_commands::copy_file_into_workspace,
             uclaw_core::tauri_commands::list_always_allowed_paths,

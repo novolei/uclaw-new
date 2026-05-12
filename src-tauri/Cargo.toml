@@ -59,6 +59,9 @@ async-trait = "0.1"
 dotenvy = "0.15"
 toml = "0.8"
 
+# Filesystem traversal for the @-mention file lookup IPC
+walkdir = "2"
+
 # HTTP server for remote access
 axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"

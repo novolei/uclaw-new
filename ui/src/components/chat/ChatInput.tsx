@@ -21,6 +21,10 @@ import { ContextSettingsPopover } from './ContextSettingsPopover'
 import { ToolSelectorPopover } from './ToolSelectorPopover'
 import { AttachmentPreviewItem } from './AttachmentPreviewItem'
 import { RichTextInput } from '@/components/ai-elements/rich-text-input'
+import {
+  ComposerMentionController,
+  type ComposerMentionControllerHandle,
+} from '@/components/composer/ComposerMentionController'
 import { SpeechButton } from '@/components/ai-elements/speech-button'
 import { Button } from '@/components/ui/button'
 import {
@@ -65,6 +69,14 @@ interface ChatInputProps {
 
 export function ChatInput({ conversationId, streaming, pendingAttachments, onSetPendingAttachments, onSend, onStop, onClearContext }: ChatInputProps): React.ReactElement {
   const sendWithCmdEnter = useAtomValue(sendWithCmdEnterAtom)
+
+  // Composer `/` and `@` autocomplete plumbing — mirrors AgentView per
+  // CLAUDE.md's composer-parity rule. The backend `search_workspace_files_
+  // for_mention` IPC resolves conversation_id → space_id via the
+  // conversations table fallback, so this works without an agent session.
+  const composerTextareaRef = React.useRef<HTMLTextAreaElement | null>(null)
+  const mentionControllerRef = React.useRef<ComposerMentionControllerHandle | null>(null)
+
   // 从 Map atom 读写草稿
   const draftsMap = useAtomValue(conversationDraftsAtom)
   const setDraftsMap = useSetAtom(conversationDraftsAtom)
@@ -275,16 +287,28 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
           )}
 
           {/* TipTap 富文本编辑器 */}
-          <RichTextInput
-            value={content}
-            onChange={setContent}
-            onSubmit={handleSend}
-            onPasteFiles={handlePasteFiles}
-            onPasteLongText={handlePasteLongText}
-            placeholder={sendWithCmdEnter ? '输入消息... (⌘/Ctrl+Enter 发送，Enter 换行)' : '输入消息... (Enter 发送，Shift+Enter 换行)'}
-            autoFocusTrigger={conversationId}
-            sendWithCmdEnter={sendWithCmdEnter}
-          />
+          <div className="relative">
+            <RichTextInput
+              value={content}
+              onChange={setContent}
+              onSubmit={handleSend}
+              onPasteFiles={handlePasteFiles}
+              onPasteLongText={handlePasteLongText}
+              placeholder={sendWithCmdEnter ? '输入消息... (⌘/Ctrl+Enter 发送，Enter 换行，@ 文件，/ Skill)' : '输入消息... (Enter 发送，Shift+Enter 换行，@ 文件，/ Skill)'}
+              autoFocusTrigger={conversationId}
+              sendWithCmdEnter={sendWithCmdEnter}
+              textareaRef={composerTextareaRef}
+              onKeyDownIntercept={(e) =>
+                mentionControllerRef.current?.handleKeyDown(e) ?? false}
+            />
+            <ComposerMentionController
+              ref={mentionControllerRef}
+              textareaRef={composerTextareaRef}
+              value={content}
+              setValue={setContent}
+              sessionId={conversationId}
+            />
+          </div>
 
           {/* Footer 工具栏 — Cherry Studio: padding 5px 8px, height 40px, gap 16px */}
           <div className="flex items-center justify-between px-2 py-1 h-[48px] gap-4">
