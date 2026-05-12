@@ -117,12 +117,14 @@ base64 = "0.22"
 security-framework = "3"
 objc2-app-kit = { version = "0.3.2", features = ["NSColor", "NSView", "NSWindow"] }
 
+# File operations
+tempfile = "3"
+
 # PTY for terminal
 [target.'cfg(unix)'.dependencies]
 pty-process = { version = "0.5", features = ["async"] }
 
 [dev-dependencies]
-tempfile = "3"
 tauri = { version = "2.11", features = ["test"] }
 
 [features]
