@@ -9,6 +9,7 @@ fn main() {
     // _guard flushes the non-blocking file writer on Drop. Must outlive
     // the rest of main, hence the underscore-prefixed binding here.
     let _guard = uclaw_core::observability::init();
+    uclaw_core::observability::install_panic_hook();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
