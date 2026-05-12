@@ -877,6 +877,15 @@ export interface SkillInfo {
   author: string;
   enabled: boolean;
   category: string;
+  /** Disk-tier provenance from the three-tier bundling model:
+   *  - "bundled": shipped read-only with the app (resource dir)
+   *  - "user":    ~/.uclaw/skills/, read-write, survives upgrades
+   *  - "project": dev-only fallback (<cwd>/skills/)
+   *
+   *  The Fork button is only offered for "bundled" skills — User
+   *  and Project are already directly editable.
+   */
+  provenance?: 'bundled' | 'user' | 'project';
 }
 
 export interface SkillToggleInput {

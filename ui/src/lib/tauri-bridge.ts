@@ -666,6 +666,14 @@ export const discoverSkills = (): Promise<SkillInfo[]> =>
 export const reloadSkills = (): Promise<SkillInfo[]> =>
   invoke('reload_skills');
 
+/** Fork a Bundled skill into the user's `~/.uclaw/skills/<name>/` so the
+ *  user can edit it freely. The bundled original is left in place but
+ *  shadowed by the user copy on the next discovery pass. Refused with
+ *  an error if the skill is already in the User tier or if a fork
+ *  already exists at the destination. */
+export const forkSkillToUser = (name: string): Promise<string> =>
+  invoke('fork_skill_to_user', { name });
+
 export const getSkillDetail = (name: string): Promise<SkillDetailResponse> =>
   invoke('get_skill_detail', { name });
 
