@@ -2,6 +2,7 @@ import * as React from 'react'
 import { FolderOpen, RefreshCw, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useFileTree } from '@/components/files-rail/hooks/useFileTree'
+import { useFilesRailWatcher } from '@/components/files-rail/hooks/useFilesRailWatcher'
 import { FileTreeNode } from './FileTreeNode'
 import { filesRailWatchStart, filesRailWatchStop } from '@/lib/tauri-bridge'
 import type { MountRoot } from '@/atoms/files-rail-atoms'
@@ -13,7 +14,8 @@ interface MountSectionProps {
 }
 
 export function MountSection({ mount, onFileClick }: MountSectionProps): React.ReactElement {
-  const { nodes, loadState, errorMessage, isExpanded, toggleExpand, reload } = useFileTree(mount.id)
+  const { nodes, loadState, errorMessage, isExpanded, toggleExpand, reload, applyExternalChanges } = useFileTree(mount.id)
+  useFilesRailWatcher(mount.id, applyExternalChanges)
 
   React.useEffect(() => {
     void filesRailWatchStart(mount.id).catch(() => {
