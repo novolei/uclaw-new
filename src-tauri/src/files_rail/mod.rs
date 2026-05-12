@@ -5,7 +5,9 @@
 pub mod ignore;
 pub mod types;
 pub mod walker;
+pub mod watcher;
 
 pub use types::{
     ChangeKind, FileChange, FileNode, FilesRailChange, MountKind, MountRoot, NodeKind,
 };
+pub use watcher::FilesRailWatcher;
