@@ -41,7 +41,9 @@ pub async fn resolve_path(
         .find(|m| m.id == mount_id)
         .ok_or_else(|| Error::Internal(format!("mount not found: {}", mount_id)))?;
 
-    let target = if rel_path.is_empty() || rel_path == "/" {
+    // Empty rel_path = mount root. We don't need to handle `"/"` separately
+    // because the absolute-path guard above (line 27) already rejected it.
+    let target = if rel_path.is_empty() {
         mount.path.clone()
     } else {
         mount.path.join(rel_path)
@@ -65,11 +67,15 @@ pub async fn resolve_path(
 /// Read up to `MAX_PREVIEW_BYTES` from `path`. Returns `PreviewBytes` with
 /// `truncated = true` when the file exceeds the cap.
 pub fn read_capped(path: &Path) -> Result<PreviewBytes, Error> {
-    if !path.exists() {
-        return Err(Error::NotFound(format!("file not found: {}", path.display())));
-    }
-    let metadata = fs::metadata(path)
-        .map_err(|e| Error::Internal(format!("metadata: {}", e)))?;
+    // Single stat call: map ENOENT to NotFound, everything else to Internal.
+    // Avoids the TOCTOU window of a separate `exists()` pre-check.
+    let metadata = fs::metadata(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Error::NotFound(format!("file not found: {}", path.display()))
+        } else {
+            Error::Internal(format!("metadata: {}", e))
+        }
+    })?;
     if !metadata.is_file() {
         return Err(Error::InvalidInput(format!(
             "not a regular file: {}",
