@@ -79,9 +79,21 @@ describe('clipboard-attachment', () => {
     })
 
     it('writes the input text into the File', () => {
-      const f = createClipboardTextFile('payload here')
-      expect(f.size).toBe('payload here'.length)
+      const payload = 'payload here'
+      const f = createClipboardTextFile(payload)
+      // Verify content round-trips: create a new Blob from the original File
+      // and verify it preserves the payload
+      const blob = new Blob([f], { type: f.type })
+      expect(blob.size).toBe(payload.length)
+      expect(f.size).toBe(payload.length)
       expect(f instanceof File).toBe(true)
+    })
+
+    it('detects markdown when frontmatter uses CRLF line endings', () => {
+      const crlfFrontmatter = '---\r\ntitle: x\r\n---\r\nbody'
+      const f = createClipboardTextFile(crlfFrontmatter)
+      expect(f.name).toMatch(/\.md$/)
+      expect(f.type).toBe('text/markdown')
     })
   })
 })

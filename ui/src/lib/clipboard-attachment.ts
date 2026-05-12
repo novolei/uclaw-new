@@ -22,7 +22,10 @@ const MARKDOWN_PATTERNS: readonly RegExp[] = [
 ]
 
 export function looksLikeMarkdown(text: string): boolean {
-  return MARKDOWN_PATTERNS.some((p) => p.test(text))
+  // Normalize CRLF → LF so the YAML-frontmatter pattern (anchored at `---\n`)
+  // and other newline-sensitive patterns work on Windows-origin clipboard text.
+  const normalized = text.includes('\r') ? text.replace(/\r\n/g, '\n') : text
+  return MARKDOWN_PATTERNS.some((p) => p.test(normalized))
 }
 
 export function formatClipboardTimestamp(date: Date = new Date()): string {
