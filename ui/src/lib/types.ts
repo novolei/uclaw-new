@@ -888,6 +888,18 @@ export interface SkillInfo {
   provenance?: 'bundled' | 'user' | 'project';
 }
 
+/** A row in the active-manifest debug panel — surfaces exactly what
+ *  the agent loop's system prompt sees, in the order it sees it.
+ *  "learned" provenance is for graph-stored skills (kind=Procedure);
+ *  the three other values are the disk tiers. */
+export interface ActiveManifestSkill {
+  rank: number;
+  name: string;
+  summary: string;
+  provenance: 'bundled' | 'user' | 'project' | 'learned';
+  citedCount: number;
+}
+
 export interface SkillToggleInput {
   name: string;
   enabled: boolean;

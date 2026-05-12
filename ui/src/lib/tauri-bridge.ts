@@ -674,6 +674,19 @@ export const reloadSkills = (): Promise<SkillInfo[]> =>
 export const forkSkillToUser = (name: string): Promise<string> =>
   invoke('fork_skill_to_user', { name });
 
+/** Compute the skills manifest that **would be** injected into the agent
+ *  loop's system prompt right now. Powers the Settings → 内置技能 →
+ *  活动技能 debug panel. Defaults to the same args the agent loop uses
+ *  (space_id="default", max_entries=30, bias=Balanced). */
+export const listActiveManifestSkills = (
+  opts: { spaceId?: string; strategy?: string; maxEntries?: number } = {}
+): Promise<import('./types').ActiveManifestSkill[]> =>
+  invoke('list_active_manifest_skills', {
+    spaceId: opts.spaceId,
+    strategy: opts.strategy,
+    maxEntries: opts.maxEntries,
+  });
+
 export const getSkillDetail = (name: string): Promise<SkillDetailResponse> =>
   invoke('get_skill_detail', { name });
 

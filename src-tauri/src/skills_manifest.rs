@@ -50,12 +50,34 @@ pub fn build_skills_manifest(
     format_manifest(&entries, max_tokens, &bias)
 }
 
-#[derive(Debug)]
-struct ManifestEntry {
-    name: String,
-    summary: String,
-    provenance: &'static str, // "builtin" or "learned"
-    cited_count: u64,         // 0 for builtin
+/// Public mirror of `build_skills_manifest` that returns the structured
+/// entries (rather than the formatted prompt string) so the Settings UI's
+/// "active manifest" debug panel can show users exactly what's being
+/// injected. Same inputs, same selection logic, same ranking — only the
+/// output shape differs.
+pub fn compute_active_manifest_entries(
+    registry: &SkillsRegistry,
+    store: &MemoryGraphStore,
+    space_id: &str,
+    max_entries: usize,
+    bias: StrategyBias,
+) -> Vec<ManifestEntry> {
+    collect_entries(registry, store, space_id, max_entries, &bias)
+}
+
+/// Single row in the manifest. Public for the debug panel IPC.
+///
+/// `provenance` is a static string: `"builtin"` for static/borrowed skills
+/// or `"learned"` for graph-stored ones. The debug-panel IPC layer
+/// enriches `"builtin"` to the real tier (`"bundled"`/`"user"`/`"project"`)
+/// using the registry's LoadedSkill data so users see the actual
+/// provenance, not the lumped category.
+#[derive(Debug, Clone)]
+pub struct ManifestEntry {
+    pub name: String,
+    pub summary: String,
+    pub provenance: &'static str,
+    pub cited_count: u64,
 }
 
 fn collect_entries(
