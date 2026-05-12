@@ -7,7 +7,7 @@ import type { TreeNode } from '@/components/files-rail/utils/tree-patch'
 
 interface WorkspaceFilesPanelProps {
   sessionId: string | null
-  onFileClick?: (mount: MountRoot, node: TreeNode) => void
+  onFileClick?: (mount: MountRoot, node: TreeNode, event: React.MouseEvent<HTMLButtonElement>) => void
 }
 
 export function WorkspaceFilesPanel({
@@ -32,8 +32,8 @@ export function WorkspaceFilesPanel({
   }, [sessionId, setMounts])
 
   const handleClick = React.useCallback(
-    (mount: MountRoot, node: TreeNode) => {
-      onFileClick?.(mount, node)
+    (mount: MountRoot, node: TreeNode, event: React.MouseEvent<HTMLButtonElement>) => {
+      onFileClick?.(mount, node, event)
     },
     [onFileClick],
   )

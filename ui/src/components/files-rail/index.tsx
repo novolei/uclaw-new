@@ -23,7 +23,7 @@ import type { TreeNode } from './utils/tree-patch'
 
 interface FilesRailProps {
   sessionId: string | null
-  onFileClick?: (mount: MountRoot, node: TreeNode) => void
+  onFileClick?: (mount: MountRoot, node: TreeNode, event: React.MouseEvent<HTMLButtonElement>) => void
 }
 
 export function FilesRail({ sessionId, onFileClick }: FilesRailProps): React.ReactElement {

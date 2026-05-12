@@ -14,6 +14,7 @@ import { convertFileSrc } from '@tauri-apps/api/core'
 import { FilesRail } from '@/components/files-rail'
 import type { MountRoot } from '@/atoms/files-rail-atoms'
 import { openPreviewAction } from '@/atoms/preview-panel-atoms'
+import { addPendingAttachmentAction } from '@/atoms/preview-chip-atoms'
 import type { TreeNode } from '@/components/files-rail/utils/tree-patch'
 import {
   agentSessionsAtom,
@@ -43,6 +44,7 @@ interface WorkspaceFilesViewProps {
 export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesViewProps): React.ReactElement {
   const setSidePanelOpenMap = useSetAtom(agentSidePanelOpenMapAtom)
   const openPreview = useSetAtom(openPreviewAction)
+  const addAttachment = useSetAtom(addPendingAttachmentAction)
 
   // filesVersion is still observed here so the auto-open effect below can
   // detect agent edits and pop the side panel open. The new FilesRail uses
@@ -227,8 +229,19 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
           <div className="flex-1 min-h-0 flex flex-col">
             <FilesRail
               sessionId={sessionId}
-              onFileClick={(mount: MountRoot, node: TreeNode) => {
+              onFileClick={(mount: MountRoot, node: TreeNode, event: React.MouseEvent<HTMLButtonElement>) => {
                 if (node.kind === 'directory') return // directories expand, not preview
+                if (event.shiftKey) {
+                  void addAttachment({
+                    mountId: mount.id,
+                    relPath: node.relPath,
+                    name: node.name,
+                    sessionId,
+                    absolutePath: `${mount.path}/${node.relPath}`,
+                  })
+                  return
+                }
+                if (event.metaKey || event.ctrlKey) return // reserved for W5
                 openPreview({
                   mountId: mount.id,
                   relPath: node.relPath,

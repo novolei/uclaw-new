@@ -11,7 +11,7 @@ import type { TreeNode } from '@/components/files-rail/utils/tree-patch'
 interface MountSectionProps {
   mount: MountRoot
   sessionId: string | null
-  onFileClick: (mount: MountRoot, node: TreeNode) => void
+  onFileClick: (mount: MountRoot, node: TreeNode, event: React.MouseEvent<HTMLButtonElement>) => void
 }
 
 export function MountSection({ mount, sessionId, onFileClick }: MountSectionProps): React.ReactElement {
@@ -30,7 +30,8 @@ export function MountSection({ mount, sessionId, onFileClick }: MountSectionProp
   }, [mount.id, sessionId])
 
   const handleFileClick = React.useCallback(
-    (node: TreeNode) => onFileClick(mount, node),
+    (node: TreeNode, event: React.MouseEvent<HTMLButtonElement>) =>
+      onFileClick(mount, node, event),
     [mount, onFileClick],
   )
 
