@@ -354,6 +354,29 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
 
             // Build warnings from metadata
             let mut warnings: Vec<String> = Vec::new();
+
+            // Lifecycle flag — PR #117 introduced draft / promoted / deprecated.
+            // skill_search returns hits at every stage (drafts are still
+            // useful for the agent to discover) but tags non-promoted ones
+            // so the LLM knows to weigh them differently. Promoted skills
+            // (and pre-PR rows missing the field) get no flag.
+            if let Some(lc) = node
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("lifecycle"))
+                .and_then(|v| v.as_str())
+            {
+                match lc {
+                    "draft" => warnings.push(
+                        "draft 阶段（未经使用验证；引用 3 次后自动升级为 promoted）".to_string(),
+                    ),
+                    "deprecated" => warnings.push(
+                        "deprecated 阶段（已手动退役，仅作历史参考）".to_string(),
+                    ),
+                    _ => {}
+                }
+            }
+
             if let Some(hint) = node
                 .metadata
                 .as_ref()
@@ -1111,5 +1134,133 @@ mod tests {
         assert!(enum_vals.iter().any(|v| v == "repair"), "enum should include repair");
         assert!(enum_vals.iter().any(|v| v == "optimize"), "enum should include optimize");
         assert!(enum_vals.iter().any(|v| v == "innovate"), "enum should include innovate");
+    }
+
+    /// Insert a learned node with an explicit `lifecycle` metadata field.
+    /// Used by the lifecycle-warning tests below — keeps them independent of
+    /// `make_learned_node_with_validation_hint`, which also bumps warnings.
+    fn make_learned_node_with_lifecycle(
+        store: &MemoryGraphStore,
+        title: &str,
+        keywords: &[&str],
+        lifecycle: Option<&str>,
+    ) -> String {
+        let now = chrono::Utc::now().to_rfc3339();
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut meta = json!({
+            "skill_type": "learned",
+            "enabled": true,
+            "summary": format!("Summary for {}", title),
+            "cited_count": 0u64,
+            "usage_count": 0u64,
+        });
+        if let Some(lc) = lifecycle {
+            meta.as_object_mut().unwrap().insert(
+                "lifecycle".into(),
+                serde_json::Value::String(lc.to_string()),
+            );
+        }
+        let node = MemoryNode {
+            id: id.clone(),
+            space_id: "default".into(),
+            kind: crate::memory_graph::models::MemoryNodeKind::Procedure,
+            title: title.into(),
+            metadata: Some(meta),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        store.create_node(&node).unwrap();
+        for kw in keywords {
+            store.create_keyword(&MemoryKeyword {
+                id: uuid::Uuid::new_v4().to_string(),
+                space_id: "default".into(),
+                node_id: id.clone(),
+                keyword: kw.to_string(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+            }).unwrap();
+        }
+        id
+    }
+
+    /// draft skills must surface a lifecycle warning so the LLM knows the
+    /// skill is unvalidated. PR-mattpocock-3 spec §Layer B-2 deferred this
+    /// to a follow-up — this is that follow-up.
+    #[tokio::test]
+    async fn warnings_flag_draft_skill() {
+        let store = fresh_store();
+        let _id = make_learned_node_with_lifecycle(&store, "draft-skill", &["alpha"], Some("draft"));
+
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        let tool = SkillSearchTool::new(
+            registry, Arc::clone(&store), app.handle().clone(),
+            "test-session".into(), "default".into(),
+        );
+
+        let out = tool.execute(json!({ "query": "alpha" })).await.unwrap();
+        let hits = out.result.as_array().unwrap();
+        assert_eq!(hits.len(), 1);
+        let warnings = hits[0]["warnings"].as_array().unwrap();
+        assert!(
+            warnings.iter().any(|w| w.as_str().unwrap_or("").contains("draft")),
+            "draft hit should be flagged in warnings; got: {:?}", warnings
+        );
+    }
+
+    /// deprecated skills must surface a lifecycle warning so the LLM
+    /// down-weights them. Hits are still returned (the agent might be
+    /// looking for historical context) but with an explicit flag.
+    #[tokio::test]
+    async fn warnings_flag_deprecated_skill() {
+        let store = fresh_store();
+        let _id = make_learned_node_with_lifecycle(&store, "old-skill", &["beta"], Some("deprecated"));
+
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        let tool = SkillSearchTool::new(
+            registry, Arc::clone(&store), app.handle().clone(),
+            "test-session".into(), "default".into(),
+        );
+
+        let out = tool.execute(json!({ "query": "beta" })).await.unwrap();
+        let hits = out.result.as_array().unwrap();
+        assert_eq!(hits.len(), 1);
+        let warnings = hits[0]["warnings"].as_array().unwrap();
+        assert!(
+            warnings.iter().any(|w| w.as_str().unwrap_or("").contains("deprecated")),
+            "deprecated hit should be flagged in warnings; got: {:?}", warnings
+        );
+    }
+
+    /// promoted skills and pre-PR rows missing the `lifecycle` field must
+    /// NOT have a lifecycle warning — only validation_hint / fastembed
+    /// warnings are eligible. This is the grandfathering invariant.
+    #[tokio::test]
+    async fn warnings_omit_lifecycle_flag_for_promoted_and_missing() {
+        let store = fresh_store();
+        let _p = make_learned_node_with_lifecycle(&store, "promoted-skill", &["gamma"], Some("promoted"));
+        let _l = make_learned_node_with_lifecycle(&store, "legacy-skill",  &["gamma"], None);
+
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        let tool = SkillSearchTool::new(
+            registry, Arc::clone(&store), app.handle().clone(),
+            "test-session".into(), "default".into(),
+        );
+
+        let out = tool.execute(json!({ "query": "gamma" })).await.unwrap();
+        let hits = out.result.as_array().unwrap();
+        assert_eq!(hits.len(), 2);
+        for hit in hits {
+            let warnings = hit["warnings"].as_array().unwrap();
+            assert!(
+                !warnings.iter().any(|w| {
+                    let s = w.as_str().unwrap_or("");
+                    s.contains("draft") || s.contains("deprecated")
+                }),
+                "promoted/legacy hit must not carry lifecycle warning; got: {:?} for {:?}",
+                warnings, hit["name"],
+            );
+        }
     }
 }
