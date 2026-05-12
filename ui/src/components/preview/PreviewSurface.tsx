@@ -54,10 +54,16 @@ export function PreviewSurface({ target }: PreviewSurfaceProps): React.ReactElem
   if (route.kind === 'image') {
     return <ImageRenderer resolvedPath={state.resolvedPath} name={target.name} />
   }
+  // Force a fresh EditorSurface per file so internal baseline/content/mtime
+  // state cannot leak across switches. The polish commit that decoupled the
+  // sync-from-props effect from initialContent changes made the editor sticky
+  // to whatever it mounted with — a `key` on the target makes that intentional.
+  const surfaceKey = `${target.mountId}::${target.relPath}`
   if (route.kind === 'markdown') {
     return (
       <>
         <EditorSurface
+          key={surfaceKey}
           target={target}
           initialContent={text}
           mtimeMs={state.mtimeMs}
@@ -71,6 +77,7 @@ export function PreviewSurface({ target }: PreviewSurfaceProps): React.ReactElem
     return (
       <>
         <EditorSurface
+          key={surfaceKey}
           target={target}
           initialContent={text}
           mtimeMs={state.mtimeMs}
