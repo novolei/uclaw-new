@@ -3,8 +3,18 @@
 Skills in this directory are vendored from [mattpocock/skills](https://github.com/mattpocock/skills)
 (MIT License) at upstream commit `f304057d` (2026-05-13).
 
-Each `SKILL.md` keeps the upstream content **verbatim** so future re-borrows
-can diff cleanly. Original frontmatter has not been altered.
+Each `SKILL.md` keeps the upstream **prompt body** verbatim so future re-borrows
+can diff cleanly.
+
+**Frontmatter divergence (documented):** As of 2026-05-13, an `activation.tags`
+block was added to the domain-specific skills (`tdd`, `diagnose`, `zoom-out`)
+to enable per-workspace scoping under the V19 `spaces.skill_tags` filter
+introduced in PR #126. The change is **purely additive** — the original
+`name` / `description` / `disable-model-invocation` fields are untouched, and
+re-vendoring only requires re-adding the same tag block per skill. The
+cross-domain skills (`caveman`, `handoff`, `grill-me`, `write-a-skill`) are
+intentionally left untagged so they remain globally available in every
+workspace per V19's "untagged = global" rule.
 
 Per uClaw's `CLAUDE.md`, these skills are subject to uClaw's own `SkillsRegistry`
 discovery and citation tracking — same as builtin skills under `skills/writing-assistant/`.

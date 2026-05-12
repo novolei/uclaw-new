@@ -459,9 +459,14 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         // 确保 React 在一次渲染中同时显示持久化消息并移除流式气泡/实时消息，
         // 避免「实时消息已清 → 持久化消息未到」的空档闪烁
         // 用 spread 保留全部 usage / context 字段（inputTokens, skillsTokens,
-        // costUsd, contextWindow, …），只清除四个流式展示字段。之前用
+        // costUsd, contextWindow, …），只清除五个流式展示字段。之前用
         // 字段白名单导致 skillsTokens / costUsd 等一轮结束就丢失，
         // ContextUsageBadge 的"技能"行回轮后会消失。
+        //
+        // 必须包括 `reasoning` ——遗漏会导致 ThinkingBlock 一直存活，
+        // 持久化消息加载后流式气泡只剩 ThinkingBlock 显示成空的
+        // 「Assistant ... THINKING >」幽灵卡片（thinking 已写进 message.reasoning，
+        // 由 AgentMessageItem 内联渲染，不需要在流式气泡里重复展示）。
         setStreamingStates((prev) => {
           const state = prev.get(sessionId)
           if (!state || state.running) return prev  // 仍在运行中，不清除
@@ -471,6 +476,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
               ...state,
               running: false,
               content: '',
+              reasoning: undefined,
               toolActivities: [],
               teammates: [],
             })

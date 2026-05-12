@@ -8295,3 +8295,101 @@ mod slash_command_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod process_meta_tests {
+    use super::extract_process_meta_from_messages;
+    use crate::agent::types::{ChatMessage, ContentBlock, MessageRole};
+
+    /// Regression for the orphan THINKING bubble bug: when a single-turn
+    /// assistant response returns via `TextAction::Return`, the loop must
+    /// push the final assistant message (containing the Thinking block)
+    /// into ctx.messages so this extractor picks it up and persists
+    /// `reasoning` to agent_messages.reasoning.
+    ///
+    /// Before the fix in agentic_loop.rs:138, the loop returned immediately
+    /// without pushing — so `reasoning` was empty in the DB, the historical
+    /// message rendered without a ThinkingBlock, and the frontend's
+    /// streamState.reasoning lingered as the only place the thinking
+    /// existed, producing the "Assistant ... THINKING >" ghost row.
+    #[test]
+    fn extracts_reasoning_from_final_assistant_message() {
+        let messages = vec![
+            // Simulates a single-turn loop's final assistant message:
+            // one Thinking block plus one Text block. This is exactly
+            // the shape `agentic_loop.rs` now pushes before returning.
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "I should answer with the stock price.".into(),
+                        signature: None,
+                    },
+                    ContentBlock::Text {
+                        text: "AAPL is at $292.76 today.".into(),
+                    },
+                ],
+            },
+        ];
+
+        let meta = extract_process_meta_from_messages(&messages, String::new());
+        assert_eq!(
+            meta.reasoning.as_deref(),
+            Some("I should answer with the stock price."),
+            "final-turn thinking must reach process_meta.reasoning",
+        );
+    }
+
+    /// Multi-turn loop: intermediate Continue turns + final Return turn
+    /// must concatenate their thinking with "\n\n" separators (preserves
+    /// the existing thinking_buf behavior for tool-call sequences).
+    #[test]
+    fn concatenates_thinking_across_intermediate_and_final_turns() {
+        let messages = vec![
+            // Intermediate turn — pushed by TextAction::Continue branch
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "Step 1: search for the symbol.".into(),
+                        signature: None,
+                    },
+                    ContentBlock::Text { text: "looking up...".into() },
+                ],
+            },
+            // Final turn — must also be pushed (this is the fix)
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "Step 2: format the answer.".into(),
+                        signature: None,
+                    },
+                    ContentBlock::Text { text: "AAPL: $292.76".into() },
+                ],
+            },
+        ];
+
+        let meta = extract_process_meta_from_messages(&messages, String::new());
+        let reasoning = meta.reasoning.expect("multi-turn loop must produce reasoning");
+        assert!(reasoning.contains("Step 1"), "got: {}", reasoning);
+        assert!(reasoning.contains("Step 2"), "got: {}", reasoning);
+        assert!(reasoning.contains("\n\n"),
+            "blocks must be separated by blank line; got: {}", reasoning);
+    }
+
+    /// Empty content (no Thinking blocks) → reasoning is None, not empty
+    /// string. The `INSERT INTO agent_messages` uses this directly as the
+    /// reasoning column value; None correctly stores SQL NULL.
+    #[test]
+    fn no_thinking_blocks_yields_none() {
+        let messages = vec![ChatMessage {
+            role: MessageRole::Assistant,
+            content: vec![ContentBlock::Text { text: "plain reply".into() }],
+        }];
+        let meta = extract_process_meta_from_messages(&messages, String::new());
+        assert!(meta.reasoning.is_none(),
+            "no Thinking blocks should produce None, not Some(empty); got: {:?}",
+            meta.reasoning);
+    }
+}

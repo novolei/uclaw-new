@@ -136,6 +136,39 @@ pub async fn run_agentic_loop(
                     .await
                 {
                     TextAction::Return(outcome) => {
+                        // Push the final assistant message (with its thinking
+                        // block) into `reason_ctx.messages` so the caller's
+                        // post-loop `extract_process_meta_from_messages` pass
+                        // can persist `reasoning` to `agent_messages.reasoning`.
+                        //
+                        // Without this push, only intermediate Continue /
+                        // ContinueWithNudge turns get their thinking persisted —
+                        // simple single-turn responses (the common case) lose
+                        // their thinking entirely. Symptom: the historical
+                        // message in AgentMessages.tsx has no inline
+                        // ThinkingBlock (because message.reasoning is empty),
+                        // and the frontend streaming bubble survives the
+                        // stream-complete cleanup with only a "THINKING >"
+                        // pill visible — the orphan ghost row.
+                        //
+                        // Mirrors the Continue / ContinueWithNudge block
+                        // construction so the persisted message shape is
+                        // identical regardless of the loop's exit path.
+                        let mut blocks = Vec::new();
+                        if let Some(ref t) = thinking {
+                            if !t.is_empty() {
+                                blocks.push(ContentBlock::Thinking {
+                                    thinking: t.clone(),
+                                    signature: thinking_signature.clone(),
+                                });
+                            }
+                        }
+                        blocks.push(ContentBlock::Text { text: text.clone() });
+                        reason_ctx.messages.push(ChatMessage {
+                            role: MessageRole::Assistant,
+                            content: blocks,
+                        });
+
                         reason_ctx.thread_state = ThreadState::Completed;
                         delegate.after_iteration(iteration).await;
                         return outcome;

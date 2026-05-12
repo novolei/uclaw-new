@@ -1151,21 +1151,39 @@ Test.
         if !borrowed_dir.exists() {
             return;
         }
-        let expected_names = [
-            "diagnose", "tdd", "zoom-out",
-            "handoff", "grill-me", "caveman", "write-a-skill",
+        // Engineering-domain skills carry tags so the V19 workspace-tag
+        // filter can scope them to engineering workspaces. Cross-domain
+        // skills (caveman/handoff/grill-me/write-a-skill) are intentionally
+        // untagged → "untagged = global" per V19, available everywhere.
+        let expected: &[(&str, &[&str])] = &[
+            ("diagnose",      &["engineering", "debugging"]),
+            ("tdd",           &["engineering", "testing"]),
+            ("zoom-out",      &["engineering", "navigation"]),
+            ("handoff",       &[]),
+            ("grill-me",      &[]),
+            ("caveman",       &[]),
+            ("write-a-skill", &[]),
         ];
-        for name in expected_names {
+        for (name, want_tags) in expected {
             let path = borrowed_dir.join(name).join("SKILL.md");
             assert!(path.exists(),
                 "missing borrowed skill: {}", path.display());
             let content = std::fs::read_to_string(&path).unwrap();
             let loaded = parse_skill_md(&content, path.clone(), SkillProvenance::Bundled)
                 .unwrap_or_else(|e| panic!("borrowed skill {} failed to parse: {:?}", name, e));
-            assert_eq!(loaded.manifest.name, name,
+            assert_eq!(loaded.manifest.name, *name,
                 "name in frontmatter must match directory name");
             assert!(!loaded.manifest.description.is_empty(),
                 "borrowed skill {} must have a description (mattpocock convention)", name);
+            let got_tags = &loaded.manifest.activation.tags;
+            assert_eq!(
+                got_tags.iter().map(String::as_str).collect::<Vec<_>>(),
+                want_tags.to_vec(),
+                "borrowed skill `{}` tag set mismatch — see skills/borrowed/ATTRIBUTION.md \
+                 for the documented divergence from upstream. Cross-domain skills must stay \
+                 untagged so V19's 'untagged = global' rule keeps them available everywhere.",
+                name,
+            );
         }
     }
 
