@@ -6,6 +6,11 @@ import { CodeRenderer } from './renderers/CodeRenderer'
 import { MarkdownRenderer } from './renderers/MarkdownRenderer'
 import { ImageRenderer } from './renderers/ImageRenderer'
 import { BinaryFallback } from './renderers/BinaryFallback'
+import { PdfRenderer } from './renderers/PdfRenderer'
+import { DocxRenderer } from './renderers/DocxRenderer'
+import { XlsxRenderer } from './renderers/XlsxRenderer'
+import { PptxRenderer } from './renderers/PptxRenderer'
+import { LegacyOfficeHint } from './renderers/LegacyOfficeHint'
 import { usePreviewRefresh } from '@/hooks/usePreviewRefresh'
 import type { PreviewFileTarget } from '@/atoms/preview-panel-atoms'
 
@@ -59,6 +64,21 @@ export function PreviewSurface({ target }: PreviewSurfaceProps): React.ReactElem
         truncated={state.truncated}
       />
     )
+  }
+  if (route.kind === 'pdf') {
+    return <PdfRenderer bytes={state.bytes} name={target.name} />
+  }
+  if (route.kind === 'docx') {
+    return <DocxRenderer bytes={state.bytes} name={target.name} />
+  }
+  if (route.kind === 'xlsx') {
+    return <XlsxRenderer bytes={state.bytes} name={target.name} />
+  }
+  if (route.kind === 'pptx') {
+    return <PptxRenderer bytes={state.bytes} name={target.name} />
+  }
+  if (route.kind === 'legacyOffice') {
+    return <LegacyOfficeHint name={target.name} ext={route.ext} />
   }
   return <BinaryFallback name={target.name} size={state.size} ext={route.ext} />
 }
