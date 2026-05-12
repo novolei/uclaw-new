@@ -26,6 +26,7 @@
 //! - `IssueRequest` / `issue.rs` is dropped (no UI affordance in PR B).
 
 pub(crate) mod error;
+pub(crate) mod command;
 // Subsequent tasks add their own `pub(crate) mod <name>;` lines below
 // so each commit's build stays green and bisectable.
 
