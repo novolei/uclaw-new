@@ -590,6 +590,19 @@ impl SkillsRegistry {
             .filter(|s| !self.disabled.contains(&s.manifest.name))
     }
 
+    /// Format a single static/borrowed skill for injection into the system prompt.
+    ///
+    /// Returns `None` if no skill with that exact name is registered (or it's
+    /// in the disabled set). Used by the `/<skill-name>` slash command path in
+    /// `send_agent_message` — the resolver gets back the formatted prompt
+    /// string ready to push into `agent_messages` as a system note.
+    pub fn format_for_injection(&self, name: &str) -> Option<String> {
+        self.skills
+            .get(name)
+            .filter(|s| !self.disabled.contains(&s.manifest.name))
+            .map(|skill| format_skill_prompt(skill))
+    }
+
     /// Build system prompt injection for matched skills.
     pub fn build_skill_prompt(&self, message: &str) -> String {
         // First check for slash command

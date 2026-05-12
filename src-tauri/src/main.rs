@@ -462,6 +462,7 @@ fn main() {
             uclaw_core::tauri_commands::delete_learned_skill,
             uclaw_core::tauri_commands::record_skill_cited,
             uclaw_core::tauri_commands::set_skill_lifecycle,
+            uclaw_core::tauri_commands::list_invocable_skills,
             uclaw_core::tauri_commands::get_skill_versions,
             uclaw_core::tauri_commands::backfill_skill_keywords,
             uclaw_core::tauri_commands::propose_skill_consolidation,
