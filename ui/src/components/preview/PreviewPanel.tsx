@@ -9,9 +9,9 @@
  *
  * Layout: header + surface. Surface picks the renderer.
  *
- * The component still returns `null` when closed, but the conventional way
- * to use it is to gate the mount at the parent (so the layout collapses
- * back to chat-only without an empty flex slot).
+ * The component returns `null` when closed, but the conventional way to
+ * use it is to gate the mount at the parent (so the layout collapses back
+ * to chat-only without an empty flex slot).
  */
 
 import * as React from 'react'
@@ -41,11 +41,11 @@ export function PreviewPanel(): React.ReactElement | null {
 
   return (
     <aside
-      className="flex flex-col h-full w-full min-w-0 bg-popover border-l border-border"
+      className="flex flex-col h-full w-full min-w-0 bg-popover"
       aria-label="文件预览"
     >
       <PreviewHeader target={target} />
-      <div className="flex-1 min-h-0 flex flex-col">
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         <PreviewSurface target={target} />
       </div>
     </aside>
