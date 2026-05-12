@@ -64,8 +64,19 @@ impl FilesRailWatcher {
                 // acquire the lock from the watcher thread via blocking_lock
                 // because notify's callback is NOT async.
                 let mut inner = inner_ref.blocking_lock();
-                for path in &event.paths {
-                    Self::queue_event(&mut inner, path, &event.kind);
+                // RenameMode::Both arrives with paths = [src, dst]; emit a single
+                // paired Renamed event so the frontend's tree-patch can move the
+                // node in one step. All other event kinds fan out per-path.
+                let is_paired_rename = matches!(
+                    event.kind,
+                    EventKind::Modify(ModifyKind::Name(RenameMode::Both))
+                );
+                if is_paired_rename && event.paths.len() == 2 {
+                    Self::queue_rename_pair(&mut inner, &event.paths[0], &event.paths[1]);
+                } else {
+                    for path in &event.paths {
+                        Self::queue_event(&mut inner, path, &event.kind);
+                    }
                 }
             }
         })?;
@@ -85,6 +96,12 @@ impl FilesRailWatcher {
     }
 
     /// Register a mount + start watching its root recursively.
+    ///
+    /// NOTE: this silently no-ops the actual notify subscription if `start()`
+    /// has not yet been called. The mount entry is still inserted into the
+    /// internal map. Callers MUST invoke `start()` before any
+    /// `register_mount()` calls — otherwise events for that mount never
+    /// arrive. Service layer (`FilesRailService::start`) handles the order.
     pub async fn register_mount(
         &self,
         mount_id: String,
@@ -123,6 +140,9 @@ impl FilesRailWatcher {
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
+        // Note: for Remove events, path.is_dir() returns false because the entry
+        // is already gone — consumers should not rely on is_dir to distinguish
+        // file vs directory deletions. Use prior tree state for that.
         let is_dir = path.is_dir();
         let change_kind = match kind {
             EventKind::Create(_) => ChangeKind::Created,
@@ -135,6 +155,37 @@ impl FilesRailWatcher {
             kind: change_kind,
             rel_path,
             new_rel_path: None,
+            is_dir,
+        });
+    }
+
+    /// Emit a single paired Renamed event when notify provides both src + dst
+    /// paths in one event. Falls back to two `Renamed` orphans if neither
+    /// path lives under any registered mount.
+    fn queue_rename_pair(inner: &mut Inner, src: &Path, dst: &Path) {
+        // The src and dst paths usually share a mount but we don't assume.
+        let src_owning = inner.mounts.iter_mut().find_map(|(_, e)| {
+            if src.starts_with(&e.root) { Some(e) } else { None }
+        });
+        let Some(entry) = src_owning else { return };
+
+        let src_rel = src
+            .strip_prefix(&entry.root)
+            .unwrap_or(src)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let dst_rel = dst
+            .strip_prefix(&entry.root)
+            .unwrap_or(dst)
+            .to_string_lossy()
+            .replace('\\', "/");
+        // is_dir: probe dst (src is gone after the rename, dst exists).
+        let is_dir = dst.is_dir();
+
+        entry.pending.push(FileChange {
+            kind: ChangeKind::Renamed,
+            rel_path: src_rel,
+            new_rel_path: Some(dst_rel),
             is_dir,
         });
     }
