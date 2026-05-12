@@ -20,6 +20,15 @@ pub use crate::files_rail::commands::{
 
 pub use crate::preview::commands::{preview_read_bytes, preview_resolve_chips};
 
+// ─── Git Commands (re-exported from tauri_commands_git) ──────────────
+
+pub use crate::tauri_commands_git::{
+    git_status, git_diff, git_is_repo, git_init_repo, git_branches,
+    git_current_branch, git_default_branch, git_checkout_branch,
+    git_create_branch, git_commit, git_commit_push_pr,
+    gh_available, gh_create_pr, gh_create_issue,
+};
+
 const TITLE_GEN_SYSTEM_PROMPT: &str = "You are a title generator. Given a user's first message, return ONLY a JSON object with two fields: \"title\" (max 5 words, imperative or noun phrase) and \"emoji\" (single relevant emoji). No explanation.";
 
 // ─── Agent Teams Abort Handle Registry ────────────────────────────────────────
