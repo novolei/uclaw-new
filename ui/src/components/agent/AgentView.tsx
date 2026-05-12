@@ -453,24 +453,21 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         // 消息加载完成后，同步清除流式展示状态和实时消息，
         // 确保 React 在一次渲染中同时显示持久化消息并移除流式气泡/实时消息，
         // 避免「实时消息已清 → 持久化消息未到」的空档闪烁
-        // 注意：保留 inputTokens/contextWindow 以维持上下文用量圆环显示
+        // 用 spread 保留全部 usage / context 字段（inputTokens, skillsTokens,
+        // costUsd, contextWindow, …），只清除四个流式展示字段。之前用
+        // 字段白名单导致 skillsTokens / costUsd 等一轮结束就丢失，
+        // ContextUsageBadge 的"技能"行回轮后会消失。
         setStreamingStates((prev) => {
           const state = prev.get(sessionId)
           if (!state || state.running) return prev  // 仍在运行中，不清除
           const map = new Map(prev)
           if (state.inputTokens !== undefined) {
-            // 保留 usage 数据，仅清除流式展示字段
             map.set(sessionId, {
+              ...state,
               running: false,
               content: '',
               toolActivities: [],
               teammates: [],
-              inputTokens: state.inputTokens,
-              outputTokens: state.outputTokens,
-              cacheReadTokens: state.cacheReadTokens,
-              cacheCreationTokens: state.cacheCreationTokens,
-              contextWindow: state.contextWindow,
-              model: state.model,
             })
           } else {
             map.delete(sessionId)
