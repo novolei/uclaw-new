@@ -398,3 +398,129 @@ Explicitly **NOT** borrowed:
 **Scope check**: each PR (~2200 LOC) is one implementation-plan-sized chunk. PR A ships independently testable (all Rust + IPC + api.ts + tests green); PR B builds on PR A's IPC layer.
 
 **Ambiguity check**: "verbatim port" definition (§5) is exhaustive; the 3 permitted-adaptation cases are enumerated. `Result<T, String>` decision (§3.1) prevents any confusion vs uClaw's `crate::error::Error`. Auto-init confirmation toast (§4.2) is explicit about being a uClaw deviation from if2Ai.
+
+---
+
+## 12. PR B integration addendum (2026-05-13 brainstorm resolutions)
+
+This section records the integration decisions that were left open in §4 when the spec was first written. Brainstormed after PR A merged at `7f90720`.
+
+### 12.1 Adaptations narrowed from 3 to 2
+
+The original §4.2 listed two BranchPicker wiring changes: (1) `cwd` source swap, (2) `files_rail:change` subscription for live "未提交的更改" updates.
+
+**Drop (2)** per YAGNI. The uncommitted-changes indicator renders only inside the open popover (if2Ai BranchPicker.tsx:368–372). When closed, the count isn't visible. if2Ai's existing `refresh` runs on every popover open (lines 113–145), so the count is fresh whenever the user can see it. Live update while the popover is open is borderline-useful — revisit only if dogfood reveals a real complaint.
+
+**Net adaptations** (down from 3 to 2):
+1. `cwd` source swap (if2Ai's `currentProject.workdir` → uClaw's `activeWorkspaceCwdAtom`)
+2. GitActionsPicker 400-LOC split into 3 files (uClaw cap rule)
+
+Plus 2 explicit deletions during port (not adaptations, just trimmings):
+- Drop the `'the-finals-selected-menu-item'` class at BranchPicker.tsx:353. It's an if2Ai theme-scoped hook (`[data-theme="theFinals"]`) — a no-op selector in uClaw, but cleaner removed than left dead.
+- Skip WorkspacePill entirely. uClaw already has `TabBarWorkspaceChip` (passive label, TabBar) + `WorkspaceSwitcherBar` (interactive, bottom bar). A third surface in the composer would compete with existing affordances.
+
+### 12.2 `activeWorkspaceCwdAtom` — new derived atom
+
+Add to `ui/src/atoms/workspace.ts` (sibling of `activeWorkspaceIdAtom`):
+
+```ts
+/**
+ * Active workspace's filesystem path, or null if no workspace has a
+ * directory attached. Drives the cwd argument for every git IPC call
+ * from BranchPicker / GitActionsPicker / GitWorkbenchDialog.
+ */
+export const activeWorkspaceCwdAtom = atom<string | null>((get) => {
+  const id = get(activeWorkspaceIdAtom)
+  if (!id) return null
+  const ws = get(workspacesAtom).find((w) => w.id === id)
+  return ws?.path ?? null
+})
+```
+
+Pure derived atom — no IO, no async. Re-evaluates when `activeWorkspaceIdAtom` or `workspacesAtom` changes.
+
+### 12.3 Null-cwd policy
+
+When `activeWorkspaceCwdAtom === null`, `GitChipsRow` returns `null` (renders nothing). Cleanest UX — git is meaningless without a directory, so the affordance just disappears. Matches if2Ai's behavior when its `currentProject` is undefined.
+
+No disabled state, no tooltip prompt, no "attach a directory" affordance in the composer.
+
+### 12.4 GitChipsRow — final shape (no cwd prop)
+
+`GitChipsRow` reads `activeWorkspaceCwdAtom` directly. No `cwd` prop on the row — single source of truth, eliminates prop-drilling concerns across the dual-composer split.
+
+```tsx
+interface GitChipsRowProps {
+  className?: string  // for composer-specific layout tweaks (rarely used)
+}
+
+export function GitChipsRow({ className }: GitChipsRowProps): React.ReactElement | null {
+  const cwd = useAtomValue(activeWorkspaceCwdAtom)
+  if (!cwd) return null
+
+  // probe is-repo + current-branch + workbench-open state internally
+
+  return (
+    <div className={cn('flex items-center gap-1.5', className)}>
+      <BranchPicker cwd={cwd} {...} />
+      <GitActionsPicker cwd={cwd} {...} />
+      <GitWorkbenchDialog cwd={cwd} {...} />
+    </div>
+  )
+}
+```
+
+~50 LOC total. Probes `gitIsRepo(cwd)` + `gitCurrentBranch(cwd)` on `cwd` change via `useEffect`.
+
+### 12.5 Composer placement (exact line numbers)
+
+Both composers already have a `flex items-center gap-1.5 flex-1 min-w-0` left-side row in their `h-[48px]` bottom toolbar:
+
+| Composer | File | Line |
+|---|---|---|
+| Chat mode | `ui/src/components/chat/ChatInput.tsx` | 289–294 (h-[48px] row); inner row at 291 |
+| Agent mode | `ui/src/components/agent/AgentView.tsx` | 1467–1472 (h-[48px] row); inner row at 1468 |
+
+Insert `<GitChipsRow />` as the **last child** of that inner row in both files (after any existing left-aligned chips). Per CLAUDE.md dual-composer rule, both files modified in the same task commit.
+
+### 12.6 Commit & test plan (10 implementation commits + plan)
+
+11 commits total on `claude/w6-pr-b-ui`:
+
+1. `docs(plan): W6 PR B implementation plan`
+2. `feat(workspace): activeWorkspaceCwdAtom derived atom`
+3. `feat(git): BranchPicker — search/list/switch (verbatim port + cwd swap)`
+4. `feat(git): BranchPicker — create form + dirty-tree guard`
+5. `feat(git): BranchPicker — no-repo init affordance + confirmation toast`
+6. `feat(git): GitWorkbenchDialog — 3-tab status/diff/branches inspector`
+7. `feat(git): GitActionsPicker shell — menu + Mode state machine`
+8. `feat(git): GitActionsPickerForms — commit/createBranch/PR sub-views`
+9. `feat(git): GitActionsPickerDraftPr — gh-missing fallback + shellAnsiCQuote`
+10. `feat(git): GitChipsRow wrapper + wire into ChatInput + AgentView`
+11. `test(git): 6 jsdom integration tests + manual checklist`
+
+Test floor: **+6 vitest cases** (310 baseline → 316):
+- `activeWorkspaceCwdAtom` derived value (2)
+- `BranchPicker` jsdom + RTL (2)
+- `GitActionsPicker` jsdom + RTL (2)
+
+### 12.7 Risks (PR B specific)
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| Composer left-side row gets crowded | medium | low | Match if2Ai placement; if real estate runs out, future polish hides chips behind a "..." menu |
+| `gh` missing | high | low | Draft fallback ports verbatim from if2Ai with copy-able shell command |
+| Workspace switch mid-popover | low | low | BranchPicker / GitActionsPicker close popover + reset state on `cwd` change (handled by if2Ai's existing useEffect) |
+| Toast spam on init / commit / PR | medium | low | `sonner` dedup via shared toast id per action family |
+| 11-theme readability (esp. amber warning states) | low | medium | Manual checklist + theme-token-only Tailwind |
+| Dual composer regression | medium | medium | Manual checklist explicitly tests both Chat and Agent modes |
+
+### 12.8 Self-review (addendum)
+
+**Placeholder scan**: no "TBD" / "TODO".
+
+**Internal consistency**: `activeWorkspaceCwdAtom` referenced consistently across §12.2 (definition), §12.4 (GitChipsRow reads it), §12.5 (composer placement implies it gates rendering). Null-cwd policy (§12.3) consistent with §12.4 (`if (!cwd) return null`).
+
+**Scope check**: PR B fits one implementation plan (~2000 LOC, 10 implementation commits).
+
+**Ambiguity check**: "skip WorkspacePill entirely" (§12.1) means no file is created and no chip is rendered; nothing left to interpret.
