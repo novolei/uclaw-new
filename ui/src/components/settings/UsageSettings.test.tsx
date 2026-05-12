@@ -32,6 +32,10 @@ vi.mock('@/lib/tauri-bridge', () => ({
     { sessionId: 's1', title: 'Foo', inputTokens: 1500, outputTokens: 600, costUsd: 0.020, turnCount: 5, lastUsedAt: 1715000000000 },
   ]),
   onTurnCost: vi.fn(async () => () => {}),
+  getMonthCostTotal: vi.fn(async () => 0.0036),
+  listWorkspaceCostRollup: vi.fn(async () => []),
+  getSettings: vi.fn(async () => ({ monthlyBudgetUsd: null })),
+  patchSettings: vi.fn(async () => ({})),
 }))
 
 describe('UsageSettings', () => {
@@ -42,8 +46,9 @@ describe('UsageSettings', () => {
   it('renders the KPI totals from the daily rollup', async () => {
     renderWithProviders(<UsageSettings />)
     // Total cost = 0.0012 + 0.0024 = 0.0036 → "$0.0036" (sub-cent: 4 decimals)
+    // May appear in both BudgetHeader and KPI card — use getAllByText
     await waitFor(() => {
-      expect(screen.getByText(/\$0\.0036/)).toBeInTheDocument()
+      expect(screen.getAllByText(/\$0\.0036/).length).toBeGreaterThanOrEqual(1)
     })
     // Total turns = 4 + 6 = 10
     expect(screen.getByText('10')).toBeInTheDocument()

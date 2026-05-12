@@ -2,6 +2,8 @@ import { atom } from 'jotai'
 import {
   getMonthCostTotal,
   listWorkspaceCostRollup,
+  getSettings,
+  patchSettings,
 } from '@/lib/tauri-bridge'
 import type { WorkspaceCostRollup } from '@/lib/types'
 
@@ -28,6 +30,21 @@ export const workspaceRollupAtom = atom<WorkspaceCostRollup[]>([])
  * re-alert if still over budget.
  */
 export const firedBudgetThresholdsAtom = atom<Set<80 | 100>>(new Set<80 | 100>())
+
+/** Current monthly budget in USD. `null` means no budget set. */
+export const monthlyBudgetUsdAtom = atom<number | null>(null)
+
+/** One-shot loader: fetch from backend and seed the atom. */
+export const loadBudgetAtom = atom(null, async (_get, set) => {
+  const s = await getSettings()
+  set(monthlyBudgetUsdAtom, s.monthlyBudgetUsd ?? null)
+})
+
+/** Patch the budget on the backend AND update the atom. */
+export const setBudgetAtom = atom(null, async (_get, set, value: number | null) => {
+  await patchSettings({ monthlyBudgetUsd: value })
+  set(monthlyBudgetUsdAtom, value)
+})
 
 /** Refresh both monthly atoms in parallel. */
 export const refreshCostsAtom = atom(null, async (get, set) => {

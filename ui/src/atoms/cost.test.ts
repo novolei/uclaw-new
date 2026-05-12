@@ -6,7 +6,11 @@ import {
   workspaceRollupAtom,
   firedBudgetThresholdsAtom,
   refreshCostsAtom,
+  monthlyBudgetUsdAtom,
+  loadBudgetAtom,
+  setBudgetAtom,
 } from './cost'
+import { patchSettings } from '@/lib/tauri-bridge'
 
 vi.mock('@/lib/tauri-bridge', () => ({
   getMonthCostTotal: vi.fn().mockResolvedValue(42.5),
@@ -14,6 +18,12 @@ vi.mock('@/lib/tauri-bridge', () => ({
     { workspaceId: 'ws-a', workspaceName: 'A', workspaceIcon: 'Folder', totalCostUsd: 30, totalTokens: 1000 },
     { workspaceId: 'ws-b', workspaceName: 'B', workspaceIcon: 'Folder', totalCostUsd: 12.5, totalTokens: 500 },
   ]),
+  getSettings: vi.fn().mockResolvedValue({
+    language: 'en', theme: 'light',
+    configPath: '/x', dataPath: '/y',
+    monthlyBudgetUsd: 100,
+  }),
+  patchSettings: vi.fn().mockResolvedValue({}),
 }))
 
 describe('cost atoms', () => {
@@ -56,5 +66,18 @@ describe('cost atoms', () => {
     store.set(firedBudgetThresholdsAtom, new Set([80 as const]))
     expect(store.get(firedBudgetThresholdsAtom).has(80)).toBe(true)
     expect(store.get(firedBudgetThresholdsAtom).has(100)).toBe(false)
+  })
+
+  it('loadBudgetAtom hydrates monthlyBudgetUsdAtom from backend', async () => {
+    const store = createStore()
+    await store.set(loadBudgetAtom)
+    expect(store.get(monthlyBudgetUsdAtom)).toBe(100)
+  })
+
+  it('setBudgetAtom calls patchSettings and updates atom', async () => {
+    const store = createStore()
+    await store.set(setBudgetAtom, 250)
+    expect(patchSettings).toHaveBeenCalledWith({ monthlyBudgetUsd: 250 })
+    expect(store.get(monthlyBudgetUsdAtom)).toBe(250)
   })
 })
