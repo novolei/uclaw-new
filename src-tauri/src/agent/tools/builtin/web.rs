@@ -8,8 +8,12 @@ use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput
 /// Default request timeout in milliseconds.
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 
-/// Maximum response body size (1 MB).
-const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
+/// Maximum response body size (10 MB). Modern news / finance / search pages
+/// often weigh 2-5 MB after decompression; 1 MB rejected real-world fetches
+/// (yahoo finance was the trigger). 10 MB still bounds memory pressure but
+/// covers the long tail. Oversized responses are now TRUNCATED at this cap
+/// rather than rejected — partial content beats no content for the LLM.
+const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
 
 /// User-Agent header.
 const USER_AGENT: &str = "uClaw/0.1";
@@ -206,27 +210,24 @@ impl Tool for WebFetchTool {
             warn!(url, %status, "Non-success HTTP status");
         }
 
-        // Read body with size limit
-        let content_length = resp.content_length().unwrap_or(0) as usize;
-        if content_length > MAX_RESPONSE_SIZE {
-            return Err(ToolError::Execution(format!(
-                "Response too large ({} bytes, max {} bytes)",
-                content_length, MAX_RESPONSE_SIZE
-            )));
-        }
-
-        let body = resp
+        // Read body. Real-world pages often exceed our cap; truncate at a
+        // UTF-8 char boundary instead of rejecting, so the agent gets the
+        // top of the page (head/title/intro) rather than nothing.
+        let raw_body = resp
             .text()
             .await
             .map_err(|e| ToolError::Execution(format!("Failed to read response body: {}", e)))?;
-
-        if body.len() > MAX_RESPONSE_SIZE {
-            return Err(ToolError::Execution(format!(
-                "Response body too large ({} bytes, max {} bytes)",
-                body.len(),
-                MAX_RESPONSE_SIZE
-            )));
-        }
+        let body = if raw_body.len() > MAX_RESPONSE_SIZE {
+            warn!(
+                url,
+                size = raw_body.len(),
+                cap = MAX_RESPONSE_SIZE,
+                "Response exceeded cap — truncating"
+            );
+            truncate_at_byte_boundary(&raw_body, MAX_RESPONSE_SIZE).to_owned()
+        } else {
+            raw_body
+        };
 
         let text = Self::extract_text(&body);
         // max_length is documented as "characters" in the tool schema.

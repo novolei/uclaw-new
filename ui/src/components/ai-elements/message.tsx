@@ -404,6 +404,28 @@ const MarkdownStrong = React.memo(function MarkdownStrong({
   return <strong className="font-medium text-inherit">{children}</strong>
 })
 
+/**
+ * `<em>` renderer.
+ *
+ * Markdown `*x*` becomes `<em>` which the browser/prose styles render as
+ * `font-style: italic`. In Latin fonts that produces a true italic
+ * (slanted serif glyphs); in CJK text there's no italic form, so adjacent
+ * Chinese characters stay upright while Latin digits / words inside the
+ * `<em>` slant. User-reported symptom: numbers like `570-580` look like
+ * "a different font" when emphasized via `*570-580*` between Chinese
+ * characters.
+ *
+ * Fix: drop the italic transform entirely. Apply the same subtle
+ * `font-medium` (500) emphasis as `<strong>` so the semantic is still
+ * conveyed without typeface-mismatch glyph slanting. Italic is bad
+ * typography in mixed CJK + Latin anyway.
+ */
+const MarkdownEm = React.memo(function MarkdownEm({
+  children,
+}: React.HTMLAttributes<HTMLElement>): React.ReactElement {
+  return <em className="not-italic font-medium text-inherit">{children}</em>
+})
+
 const MARKDOWN_COMPONENTS = {
   a: MarkdownLink,
   pre: MarkdownPre,
@@ -419,6 +441,7 @@ const MARKDOWN_COMPONENTS = {
   blockquote: MarkdownBlockquote,
   hr: MarkdownHr,
   strong: MarkdownStrong,
+  em: MarkdownEm,
 } as const
 
 interface MessageResponseProps {
