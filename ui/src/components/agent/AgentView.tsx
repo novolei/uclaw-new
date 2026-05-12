@@ -1001,7 +1001,15 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
   /** 手动发送 /compact 命令 */
   const handleCompact = React.useCallback((): void => {
-    if (!agentChannelId || streaming) return
+    if (!agentChannelId) return
+
+    // 如果当前正在 streaming（agent 还在多轮工具调用中），先停掉当前 turn，
+    // 再走 /compact。/compact 的语义是"我现在就要压缩"——若 streaming
+    // 守卫直接吞掉这次调用（旧行为），前端零反应、后端无 IPC，看上去像
+    // 整个命令消失了。
+    if (streaming) {
+      stopAgent(sessionId).catch(console.error)
+    }
 
     const streamStartedAt = Date.now()
     const localUuid = crypto.randomUUID()
