@@ -407,7 +407,12 @@ export const MessageResponse = React.memo(
           'prose-p:my-1.5 prose-p:leading-[1.65]',
           'prose-pre:my-0 prose-pre:bg-transparent prose-pre:p-0',
           'prose-a:text-primary prose-a:no-underline hover:prose-a:underline',
-          'prose-strong:font-semibold prose-strong:text-foreground',
+          // font-medium (500) instead of font-semibold (600): in mixed
+          // CJK + Latin prose, the 400→600 jump reads as a different
+          // typeface rather than emphasis. Medium preserves the "this is
+          // important" cue while staying visually unified with the
+          // surrounding regular text.
+          'prose-strong:font-medium prose-strong:text-foreground',
           '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
           className,
         )}
