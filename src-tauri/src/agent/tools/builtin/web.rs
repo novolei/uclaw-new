@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tracing::{debug, info, warn};
 use url::Url;
 
-use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput};
+use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 
 /// Default request timeout in milliseconds.
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
@@ -188,7 +188,10 @@ impl Tool for WebFetchTool {
         // Validate URL to prevent SSRF
         if let Err(reason) = validate_url(url) {
             warn!(url, reason = %reason, "web_fetch: URL rejected");
-            return Err(ToolError::InvalidParams(reason));
+            return Err(ToolError::kinded(
+                ToolErrorKind::PermissionDenied,
+                format!("URL blocked: {}", reason),
+            ));
         }
 
         info!(url, timeout_ms, "Fetching web page");
@@ -197,17 +200,45 @@ impl Tool for WebFetchTool {
             .user_agent(USER_AGENT)
             .timeout(std::time::Duration::from_millis(timeout_ms))
             .build()
-            .map_err(|e| ToolError::Execution(format!("Failed to create HTTP client: {}", e)))?;
+            .map_err(|e| ToolError::kinded_with_source(
+                ToolErrorKind::Other,
+                "Failed to create HTTP client",
+                e.to_string(),
+            ))?;
 
         let resp = client
             .get(url)
             .send()
             .await
-            .map_err(|e| ToolError::Execution(format!("Failed to fetch {}: {}", url, e)))?;
+            .map_err(|e| {
+                let kind = if e.is_timeout() {
+                    ToolErrorKind::Timeout
+                } else {
+                    ToolErrorKind::NetworkError
+                };
+                ToolError::kinded_with_source(
+                    kind,
+                    format!("Failed to fetch {}", url),
+                    e.to_string(),
+                )
+            })?;
 
         let status = resp.status();
         if !status.is_success() {
+            let code = status.as_u16();
+            let kind = match code {
+                400..=403 => ToolErrorKind::PermissionDenied,
+                404 => ToolErrorKind::ResourceNotFound,
+                408 | 504 => ToolErrorKind::Timeout,
+                429 => ToolErrorKind::RateLimited,
+                500..=599 => ToolErrorKind::UpstreamError,
+                _ => ToolErrorKind::Other,
+            };
             warn!(url, %status, "Non-success HTTP status");
+            return Err(ToolError::kinded(
+                kind,
+                format!("Page returned {} ({})", code, url),
+            ));
         }
 
         // Read body. Real-world pages often exceed our cap; truncate at a
@@ -216,7 +247,11 @@ impl Tool for WebFetchTool {
         let raw_body = resp
             .text()
             .await
-            .map_err(|e| ToolError::Execution(format!("Failed to read response body: {}", e)))?;
+            .map_err(|e| ToolError::kinded_with_source(
+                ToolErrorKind::ParseError,
+                "Failed to decode response body",
+                e.to_string(),
+            ))?;
         let body = if raw_body.len() > MAX_RESPONSE_SIZE {
             warn!(
                 url,
@@ -325,7 +360,10 @@ impl Tool for HttpRequestTool {
         // Validate URL to prevent SSRF
         if let Err(reason) = validate_url(url) {
             warn!(method = method_str, url, reason = %reason, "http_request: URL rejected");
-            return Err(ToolError::InvalidParams(reason));
+            return Err(ToolError::kinded(
+                ToolErrorKind::PermissionDenied,
+                format!("URL blocked: {}", reason),
+            ));
         }
 
         info!(method = method_str, url, "Making HTTP request");
@@ -334,7 +372,11 @@ impl Tool for HttpRequestTool {
             .user_agent(USER_AGENT)
             .timeout(std::time::Duration::from_millis(timeout_ms))
             .build()
-            .map_err(|e| ToolError::Execution(format!("Failed to create HTTP client: {}", e)))?;
+            .map_err(|e| ToolError::kinded_with_source(
+                ToolErrorKind::Other,
+                "Failed to create HTTP client",
+                e.to_string(),
+            ))?;
 
         let method = match method_str.to_uppercase().as_str() {
             "GET" => reqwest::Method::GET,
@@ -373,7 +415,18 @@ impl Tool for HttpRequestTool {
         let resp = request
             .send()
             .await
-            .map_err(|e| ToolError::Execution(format!("HTTP request failed: {}", e)))?;
+            .map_err(|e| {
+                let kind = if e.is_timeout() {
+                    ToolErrorKind::Timeout
+                } else {
+                    ToolErrorKind::NetworkError
+                };
+                ToolError::kinded_with_source(
+                    kind,
+                    format!("HTTP request failed: {}", url),
+                    e.to_string(),
+                )
+            })?;
 
         let status = resp.status().as_u16();
         let resp_headers: HashMap<String, String> = resp
@@ -385,7 +438,11 @@ impl Tool for HttpRequestTool {
         let body = resp
             .text()
             .await
-            .map_err(|e| ToolError::Execution(format!("Failed to read response body: {}", e)))?;
+            .map_err(|e| ToolError::kinded_with_source(
+                ToolErrorKind::ParseError,
+                "Failed to decode response body",
+                e.to_string(),
+            ))?;
 
         // Truncate very large bodies. The MAX_RESPONSE_SIZE cap is for
         // memory safety so bytes are the right unit; round down to a

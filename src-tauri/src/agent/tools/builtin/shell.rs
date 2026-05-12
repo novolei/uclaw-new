@@ -19,7 +19,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tracing::{debug, warn};
 
-use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput};
+use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 
 /// Maximum output size before truncation (50 KB).
 const MAX_OUTPUT_SIZE: usize = 50 * 1024;
@@ -410,7 +410,16 @@ impl Tool for BashTool {
             .stdin(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| ToolError::Execution(format!("Failed to spawn process: {e}")))?;
+            .map_err(|e| {
+                let kind = if e.kind() == std::io::ErrorKind::NotFound {
+                    ToolErrorKind::ResourceNotFound
+                } else if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    ToolErrorKind::PermissionDenied
+                } else {
+                    ToolErrorKind::Other
+                };
+                ToolError::kinded_with_source(kind, "Failed to spawn process", e.to_string())
+            })?;
 
         // --- Read output with timeout ---
         // Use tokio::join! to read stdout and stderr concurrently,
