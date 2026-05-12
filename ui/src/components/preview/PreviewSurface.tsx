@@ -5,6 +5,9 @@ import { PreviewEmpty } from './PreviewEmpty'
 import { CodeRenderer } from './renderers/CodeRenderer'
 import { MarkdownRenderer } from './renderers/MarkdownRenderer'
 import { ImageRenderer } from './renderers/ImageRenderer'
+import { EditorSurface } from './editors/EditorSurface'
+import { WriteApprovalDialog } from './editors/WriteApprovalDialog'
+import { DiffRenderer } from './renderers/diff/DiffRenderer'
 import { BinaryFallback } from './renderers/BinaryFallback'
 import { PdfRenderer } from './renderers/PdfRenderer'
 import { DocxRenderer } from './renderers/DocxRenderer'
@@ -36,7 +39,7 @@ export function PreviewSurface({ target }: PreviewSurfaceProps): React.ReactElem
   const text = React.useMemo(() => {
     if (state.status !== 'ready') return ''
     if (!route) return ''
-    if (route.kind === 'code' || route.kind === 'markdown') {
+    if (route.kind === 'code' || route.kind === 'markdown' || route.kind === 'diff') {
       return decodeUtf8(state.bytes)
     }
     return ''
@@ -51,17 +54,46 @@ export function PreviewSurface({ target }: PreviewSurfaceProps): React.ReactElem
   if (route.kind === 'image') {
     return <ImageRenderer resolvedPath={state.resolvedPath} name={target.name} />
   }
+  // Force a fresh EditorSurface per file so internal baseline/content/mtime
+  // state cannot leak across switches. The polish commit that decoupled the
+  // sync-from-props effect from initialContent changes made the editor sticky
+  // to whatever it mounted with — a `key` on the target makes that intentional.
+  const surfaceKey = `${target.mountId}::${target.relPath}`
   if (route.kind === 'markdown') {
-    return <MarkdownRenderer text={text} />
+    return (
+      <>
+        <EditorSurface
+          key={surfaceKey}
+          target={target}
+          initialContent={text}
+          mtimeMs={state.mtimeMs}
+          isMarkdown={true}
+        />
+        <WriteApprovalDialog />
+      </>
+    )
   }
   if (route.kind === 'code') {
     return (
-      <CodeRenderer
-        code={text}
-        language={route.language ?? 'text'}
-        cacheScope={state.resolvedPath}
-        refreshVersion={refreshVersion}
-        truncated={state.truncated}
+      <>
+        <EditorSurface
+          key={surfaceKey}
+          target={target}
+          initialContent={text}
+          mtimeMs={state.mtimeMs}
+          isMarkdown={false}
+          language={route.language ?? 'text'}
+        />
+        <WriteApprovalDialog />
+      </>
+    )
+  }
+  if (route.kind === 'diff') {
+    return (
+      <DiffRenderer
+        left={{ content: '', label: 'before' }}
+        right={{ content: text, label: target.name }}
+        language="diff"
       />
     )
   }

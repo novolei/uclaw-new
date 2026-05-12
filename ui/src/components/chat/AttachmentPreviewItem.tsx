@@ -3,7 +3,7 @@
  */
 
 import * as React from 'react'
-import { X, Paperclip } from 'lucide-react'
+import { X, FileText } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ImageLightbox } from '@/components/ui/image-lightbox'
 
@@ -21,6 +21,12 @@ function isImage(mediaType: string): boolean {
 
 function truncateName(name: string, max: number = 20): string {
   return name.length > max ? name.slice(0, max - 3) + '...' : name
+}
+
+function fileExtBadge(filename: string): string {
+  const dot = filename.lastIndexOf('.')
+  if (dot < 0 || dot === filename.length - 1) return ''
+  return filename.slice(dot + 1).toUpperCase().slice(0, 4)
 }
 
 export function AttachmentPreviewItem({
@@ -69,26 +75,38 @@ export function AttachmentPreviewItem({
     )
   }
 
+  const ext = fileExtBadge(filename)
   return (
     <div
       className={cn(
-        'group/attachment relative flex items-center gap-2 shrink-0',
-        'rounded-lg bg-[#37a5aa]/10 border border-[#37a5aa]/20',
-        'pl-2.5 pr-7 py-1.5 text-[13px] text-[#37a5aa]',
-        'transition-colors hover:bg-[#37a5aa]/15',
+        'group/attachment relative flex items-center gap-1.5 shrink-0',
+        'rounded-md bg-foreground/[0.04] border border-border/60',
+        'pl-1.5 pr-6 py-1 text-[12px] text-foreground/85',
+        'transition-colors hover:bg-foreground/[0.07] hover:border-border',
         className
       )}
+      title={filename}
     >
-      <Paperclip className="size-4 shrink-0" />
-      <span className="max-w-[160px] truncate">{truncateName(filename)}</span>
+      <span
+        className={cn(
+          'inline-flex items-center justify-center shrink-0',
+          'h-[16px] min-w-[22px] px-1 rounded-sm',
+          'bg-primary/12 text-primary text-[9.5px] font-semibold tracking-wide tabular-nums',
+        )}
+      >
+        {ext || <FileText className="size-3" />}
+      </span>
+      <span className="max-w-[160px] truncate leading-tight">{truncateName(filename)}</span>
       <button
         type="button"
         onClick={onRemove}
+        aria-label="移除附件"
         className={cn(
-          'absolute top-1/2 right-1.5 -translate-y-1/2 size-[18px] rounded-full',
+          'absolute top-1/2 right-1 -translate-y-1/2 size-[16px] rounded-full',
           'flex items-center justify-center',
-          'text-[#37a5aa]/60 hover:text-[#37a5aa] hover:bg-[#37a5aa]/20',
-          'opacity-0 group-hover/attachment:opacity-100 transition-all duration-200'
+          'text-foreground/45 hover:text-foreground hover:bg-foreground/10',
+          'opacity-0 group-hover/attachment:opacity-100 transition-all duration-150',
+          'focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
         )}
       >
         <X className="size-3" />

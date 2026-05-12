@@ -16,6 +16,8 @@ import { toast } from 'sonner'
 import { invoke } from '@tauri-apps/api/core'
 import type { PendingAttachment } from './chat-atoms'
 import { pendingAttachmentsAtom } from './chat-atoms'
+import { agentPendingFilesAtom } from './agent-atoms'
+import type { AgentPendingFile } from '@/lib/agent-types'
 
 export type ChipResolutionState = 'pending' | 'ok' | 'missing'
 
@@ -89,13 +91,22 @@ function inferMediaType(name: string): string {
 export const addPendingAttachmentAction = atom(
   null,
   async (get, set, payload: AddAttachmentPayload) => {
+    // Two parallel composer atoms exist: `pendingAttachmentsAtom` (Chat
+    // mode, global) and `agentPendingFilesAtom` (Agent mode, session-
+    // scoped). The user only ever sees one composer, but we don't know
+    // which from this action's call site (rail Shift-click is Agent-only,
+    // FilePathChip can be either). Writing to both keeps the chip visible
+    // regardless of mode; both composers clear their own list on send.
+    const chatList = get(pendingAttachmentsAtom)
+    const agentList = get(agentPendingFilesAtom)
     const dedupeKey = payload.absolutePath || `${payload.mountId}::${payload.relPath}`
-    const current = get(pendingAttachmentsAtom)
-    if (
-      current.some(
-        (a) => (a.localPath || a.filename) === dedupeKey || a.localPath === payload.absolutePath,
-      )
-    ) {
+    const inChat = chatList.some(
+      (a) => (a.localPath || a.filename) === dedupeKey || a.localPath === payload.absolutePath,
+    )
+    const inAgent = agentList.some(
+      (a) => a.sourcePath === payload.absolutePath || a.filename === payload.name,
+    )
+    if (inChat && inAgent) {
       toast.info('文件已在附件中', { id: 'attachment-added', description: payload.name })
       return
     }
@@ -105,14 +116,27 @@ export const addPendingAttachmentAction = atom(
         relPath: payload.relPath,
         sessionId: payload.sessionId ?? null,
       })
-      const next: PendingAttachment = {
-        filename: payload.name,
-        localPath: result.resolved_path,
-        mediaType: inferMediaType(payload.name),
-        size: result.size,
+      const mediaType = inferMediaType(payload.name)
+      if (!inChat) {
+        const next: PendingAttachment = {
+          filename: payload.name,
+          localPath: result.resolved_path,
+          mediaType,
+          size: result.size,
+        }
+        set(pendingAttachmentsAtom, [...chatList, next])
       }
-      set(pendingAttachmentsAtom, [...current, next])
-      toast.success(`已添加 ${payload.name} 到聊天`, { id: 'attachment-added' })
+      if (!inAgent) {
+        const next: AgentPendingFile = {
+          id: `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          filename: payload.name,
+          mediaType,
+          size: result.size,
+          sourcePath: result.resolved_path,
+        }
+        set(agentPendingFilesAtom, [...agentList, next])
+      }
+      toast.success(`已添加 ${payload.name}`, { id: 'attachment-added' })
     } catch (err) {
       toast.error('无法添加附件', {
         id: 'attachment-added',

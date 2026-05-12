@@ -1,8 +1,9 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tauri::Manager;
+use sha2::{Digest, Sha256};
 
 use crate::settings::UserSettings;
 use crate::agent::session::SessionManager;
@@ -580,6 +581,28 @@ impl AppState {
 
 // ─── Files Rail Helpers ────────────────────────────────────────────────────
 
+/// Stable per-path hash used inside `MountRoot.id` for attached directories.
+///
+/// We **must not** use the path's position in `attached_dirs` because the
+/// frontend's `fileTreeAtomFamily` is keyed by `mount_id` and caches state
+/// for the life of the renderer process. Index-based IDs ("...:0", "...:1")
+/// silently shuffle whenever the user detaches anything, so the next mount
+/// at that index inherits the previous mount's cached tree → the rail shows
+/// stale filenames until a manual refresh.
+///
+/// SHA-256 truncated to 16 hex chars (64 bits) is plenty of uniqueness for
+/// a single user's attached dirs and keeps IDs short enough to log.
+fn mount_id_hash(path: &Path) -> String {
+    let bytes = path.to_string_lossy();
+    let digest = Sha256::digest(bytes.as_bytes());
+    let mut out = String::with_capacity(16);
+    for byte in digest.iter().take(8) {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{:02x}", byte);
+    }
+    out
+}
+
 impl AppState {
     pub async fn files_rail_list_mounts(
         &self,
@@ -658,9 +681,65 @@ impl AppState {
             });
         }
 
+        // W4d Issue 4 fix: workspace-level attached_dirs become MountRoots too.
+        // Without this, dirs attached via attachWorkspaceDirectory (the standard
+        // UI flow) never appear in the rail, which blocks testing of the
+        // preview-write approval flow.
+        let workspace_attached_dirs: Vec<String> = {
+            let space_id_opt = space_id_for_session.clone().or_else(|| {
+                // No session → fall back to the globally-active workspace.
+                self.db.lock().ok().and_then(|conn| {
+                    conn.query_row(
+                        "SELECT value FROM settings WHERE key = 'active_workspace_id'",
+                        [],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .ok()
+                })
+            });
+            match space_id_opt {
+                Some(space_id) => self
+                    .db
+                    .lock()
+                    .ok()
+                    .and_then(|conn| {
+                        conn.query_row(
+                            "SELECT attached_dirs FROM spaces WHERE id = ?1",
+                            rusqlite::params![space_id],
+                            |r| r.get::<_, Option<String>>(0),
+                        )
+                        .ok()
+                        .flatten()
+                    })
+                    .and_then(|j| serde_json::from_str::<Vec<String>>(&j).ok())
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            }
+        };
+
+        for dir in workspace_attached_dirs.iter() {
+            let pb = std::path::PathBuf::from(dir);
+            if !pb.exists() {
+                continue;
+            }
+            let space_id_label = space_id_for_session.as_deref().unwrap_or("default");
+            let name = pb
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("attached")
+                .to_string();
+            out.push(MountRoot {
+                id: format!("workspace-attached:{}:{}", space_id_label, mount_id_hash(&pb)),
+                label: name,
+                path: pb,
+                kind: MountKind::AttachedDir,
+                editable: false,
+            });
+        }
+
         // Session-scoped attached_dirs — one mount per path (filtered to existing).
         if let Some(sid) = session_id.as_deref() {
-            for (idx, dir) in session_attached_dirs.iter().enumerate() {
+            for dir in session_attached_dirs.iter() {
                 let pb = std::path::PathBuf::from(dir);
                 if !pb.exists() {
                     continue;
@@ -671,7 +750,7 @@ impl AppState {
                     .unwrap_or("attached")
                     .to_string();
                 out.push(MountRoot {
-                    id: format!("attached:{}:{}", sid, idx),
+                    id: format!("attached:{}:{}", sid, mount_id_hash(&pb)),
                     label: name,
                     path: pb,
                     kind: MountKind::AttachedDir,

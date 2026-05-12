@@ -115,4 +115,13 @@ describe('ext-classifier', () => {
       expect(isPreviewableExt('TS')).toBe(true)
     })
   })
+
+  describe('classifyExtension diff routing', () => {
+    it('routes .diff to kind: "diff"', () => {
+      expect(classifyExtension('foo.diff')).toEqual({ kind: 'diff', ext: 'diff' })
+    })
+    it('routes .patch to kind: "diff"', () => {
+      expect(classifyExtension('foo.patch')).toEqual({ kind: 'diff', ext: 'patch' })
+    })
+  })
 })

@@ -15,6 +15,7 @@ export type RendererKind =
   | 'xlsx'
   | 'pptx'
   | 'legacyOffice'
+  | 'diff'
   | 'binary'
 
 export interface ClassificationResult {
@@ -59,8 +60,6 @@ export const CODE_EXTS: ReadonlyMap<string, string> = new Map([
   ['xml', 'xml'],
   ['sql', 'sql'], ['graphql', 'graphql'], ['gql', 'graphql'],
   ['lock', 'yaml'],
-  // diff / patch
-  ['diff', 'diff'], ['patch', 'diff'],
   // plain text fallthrough
   ['txt', 'text'], ['log', 'text'], ['csv', 'text'],
   ['cfg', 'text'], ['conf', 'text'],
@@ -116,6 +115,7 @@ export function classifyExtension(filename: string): ClassificationResult {
   if (ext === 'doc' || ext === 'xls' || ext === 'ppt') {
     return { kind: 'legacyOffice', ext }
   }
+  if (ext === 'diff' || ext === 'patch') return { kind: 'diff', ext }
   if (ext && CODE_EXTS.has(ext)) {
     return { kind: 'code', ext, language: CODE_EXTS.get(ext) }
   }

@@ -215,3 +215,58 @@ pub async fn resolve_chip_candidate(
         absolute_path: None,
     }
 }
+
+/// Write `content` to `path` using direct write + fsync.
+///
+/// Name retained as `write_atomic` for compatibility with existing callers,
+/// but the implementation is now direct write+fsync. The previous
+/// tempfile+rename pattern triggered a panic in notify-rs's macOS kqueue
+/// backend: replacing a watched inode via rename caused kqueue to lose state
+/// and call Option::unwrap() on None inside kqueue-1.1.1. The panic killed
+/// the watcher thread, leaving the files rail unable to auto-refresh until a
+/// manual click. Direct write keeps the same inode; the file watcher fires a
+/// single Modify event without panicking.
+///
+/// Atomicity tradeoff: a crash mid-write could leave a partial file. For
+/// editor-saves with small content, this is far less impactful than the
+/// file-watcher panic.
+///
+/// 50 MB cap mirrors `MAX_PREVIEW_BYTES` — reject larger writes upfront.
+pub fn write_atomic(path: &Path, content: &str) -> Result<(i64, u64), Error> {
+    use std::fs::File;
+    use std::io::Write;
+
+    if content.len() as u64 > MAX_PREVIEW_BYTES {
+        return Err(Error::InvalidInput(format!(
+            "content exceeds {} bytes cap",
+            MAX_PREVIEW_BYTES
+        )));
+    }
+
+    let mut f = File::create(path)
+        .map_err(|e| Error::Internal(format!("create: {}", e)))?;
+    f.write_all(content.as_bytes())
+        .map_err(|e| Error::Internal(format!("write: {}", e)))?;
+    f.sync_all()
+        .map_err(|e| Error::Internal(format!("fsync: {}", e)))?;
+
+    let metadata = f
+        .metadata()
+        .map_err(|e| Error::Internal(format!("post-write stat: {}", e)))?;
+    let size = metadata.len();
+    if size != content.len() as u64 {
+        return Err(Error::Internal(format!(
+            "post-write size mismatch: expected {} got {}",
+            content.len(),
+            size
+        )));
+    }
+    let mtime_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    Ok((mtime_ms, size))
+}
