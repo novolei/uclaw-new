@@ -8,8 +8,12 @@
  */
 
 import * as React from 'react'
+import type { ComponentProps } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { markdownFileChipPlugin } from '@/components/preview/chips/markdownFileChipPlugin'
+import { FilePathChip } from '@/components/preview/chips/FilePathChip'
+import { useFileChipResolver } from '@/components/preview/chips/useFileChipResolver'
 import {
   ChevronRight,
   ChevronDown,
@@ -477,7 +481,33 @@ const THINKING_MD_COMPONENTS = {
   ),
 } as const
 
-const THINKING_REMARK_PLUGINS = [remarkGfm]
+const THINKING_REMARK_PLUGINS = [remarkGfm, markdownFileChipPlugin]
+
+// ===== Thinking chip adapter =====
+
+interface ThinkingChipProps {
+  rawPath: string
+  label: string
+  line?: number
+  col?: number
+}
+
+function ThinkingFileChip(props: ThinkingChipProps & { sessionId: string | null }): React.ReactElement {
+  const resolution = useFileChipResolver(props.rawPath, props.sessionId)
+  return (
+    <FilePathChip
+      rawPath={props.rawPath}
+      label={props.label}
+      state={resolution.state}
+      mountId={resolution.mountId}
+      relPath={resolution.relPath}
+      absolutePath={resolution.absolutePath}
+      sessionId={props.sessionId}
+      line={props.line}
+      col={props.col}
+    />
+  )
+}
 
 interface ThinkingBlockProps {
   block: SDKThinkingBlock
@@ -490,6 +520,16 @@ export function ThinkingBlock({ block, dimmed = false }: ThinkingBlockProps): Re
   const toggleExpand = React.useCallback(() => {
     setIsExpanded((prev) => !prev)
   }, [])
+
+  const thinkingComponents = React.useMemo(
+    () => ({
+      ...THINKING_MD_COMPONENTS,
+      'file-path-chip': (chipProps: ThinkingChipProps) => (
+        <ThinkingFileChip {...chipProps} sessionId={null} />
+      ),
+    }),
+    [],
+  ) as ComponentProps<typeof Markdown>['components']
 
   return (
     <div className={cn('mb-2', dimmed && 'opacity-60')}>
@@ -523,7 +563,7 @@ export function ThinkingBlock({ block, dimmed = false }: ThinkingBlockProps): Re
             'animate-in fade-in slide-in-from-top-1 duration-150',
           )}
         >
-          <Markdown remarkPlugins={THINKING_REMARK_PLUGINS} components={THINKING_MD_COMPONENTS}>
+          <Markdown remarkPlugins={THINKING_REMARK_PLUGINS} components={thinkingComponents}>
             {block.thinking}
           </Markdown>
         </div>

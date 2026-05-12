@@ -1,8 +1,12 @@
 import * as React from 'react'
+import type { ComponentProps } from 'react'
 import Markdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { cn } from '@/lib/utils'
 import { MarkdownCodeBlock } from '@/components/shared/code-block/CodeBlock'
+import { markdownFileChipPlugin } from '@/components/preview/chips/markdownFileChipPlugin'
+import { FilePathChip } from '@/components/preview/chips/FilePathChip'
+import { useFileChipResolver, useChipCacheInvalidator } from '@/components/preview/chips/useFileChipResolver'
 
 // ===== Message 原语组件 =====
 
@@ -142,8 +146,8 @@ function remarkPreserveBreaks() {
 // a ```latex``` code block (which our highlighter already handles) or
 // paste a rendered image.
 import type { PluggableList } from 'unified'
-const REMARK_PLUGINS: PluggableList = [remarkGfm]
-const REMARK_PLUGINS_WITH_BREAKS: PluggableList = [remarkGfm, remarkPreserveBreaks]
+const REMARK_PLUGINS: PluggableList = [remarkGfm, markdownFileChipPlugin]
+const REMARK_PLUGINS_WITH_BREAKS: PluggableList = [remarkGfm, remarkPreserveBreaks, markdownFileChipPlugin]
 const REHYPE_PLUGINS: PluggableList = []
 
 /** 链接渲染器：外部 URL 用 Tauri openExternal 打开 */
@@ -426,6 +430,32 @@ const MarkdownEm = React.memo(function MarkdownEm({
   return <em className="not-italic font-medium text-inherit">{children}</em>
 })
 
+// ===== File chip adapter (wires HAST custom element → FilePathChip) =====
+
+interface FileChipHastProps {
+  rawPath: string
+  label: string
+  line?: number
+  col?: number
+}
+
+function FileChipFromHast(props: FileChipHastProps & { sessionId: string | null }): React.ReactElement {
+  const resolution = useFileChipResolver(props.rawPath, props.sessionId)
+  return (
+    <FilePathChip
+      rawPath={props.rawPath}
+      label={props.label}
+      state={resolution.state}
+      mountId={resolution.mountId}
+      relPath={resolution.relPath}
+      absolutePath={resolution.absolutePath}
+      sessionId={props.sessionId}
+      line={props.line}
+      col={props.col}
+    />
+  )
+}
+
 const MARKDOWN_COMPONENTS = {
   a: MarkdownLink,
   pre: MarkdownPre,
@@ -449,8 +479,11 @@ interface MessageResponseProps {
   className?: string
   /** 是否在 text 节点中保留换行（user 消息常用） */
   preserveBreaks?: boolean
-  /** 兼容 Agent 视图：基础目录路径（当前未启用文件路径 chip，仅占位以避免类型破坏） */
+  /** Session ID for chip workspace resolution. Pass null for workspace-only resolution. */
+  sessionId?: string | null
+  /** @deprecated replaced by sessionId — kept to avoid breaking AgentMessages.tsx call sites */
   basePath?: string
+  /** @deprecated replaced by sessionId — kept to avoid breaking AgentMessages.tsx call sites */
   basePaths?: string[]
 }
 
@@ -459,9 +492,20 @@ interface MessageResponseProps {
  * 支持 GFM、数学公式（KaTeX）、代码语法高亮（Shiki）。
  */
 export const MessageResponse = React.memo(
-  function MessageResponse({ children, className, preserveBreaks = false }: MessageResponseProps): React.ReactElement {
+  function MessageResponse({ children, className, preserveBreaks = false, sessionId = null }: MessageResponseProps): React.ReactElement {
+    useChipCacheInvalidator()
     const remarkPlugins = preserveBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS
     const content = typeof children === 'string' ? children : ''
+
+    const components = React.useMemo(
+      () => ({
+        ...MARKDOWN_COMPONENTS,
+        'file-path-chip': (chipProps: FileChipHastProps) => (
+          <FileChipFromHast {...chipProps} sessionId={sessionId} />
+        ),
+      }),
+      [sessionId],
+    )
 
     return (
       <div
@@ -484,7 +528,7 @@ export const MessageResponse = React.memo(
             remarkPlugins={remarkPlugins}
             rehypePlugins={REHYPE_PLUGINS}
             urlTransform={defaultUrlTransform}
-            components={MARKDOWN_COMPONENTS}
+            components={components as ComponentProps<typeof Markdown>['components']}
           >
             {content}
           </Markdown>
@@ -494,7 +538,7 @@ export const MessageResponse = React.memo(
       </div>
     )
   },
-  (prev, next) => prev.children === next.children && prev.preserveBreaks === next.preserveBreaks && prev.className === next.className,
+  (prev, next) => prev.children === next.children && prev.preserveBreaks === next.preserveBreaks && prev.className === next.className && prev.sessionId === next.sessionId,
 )
 
 /** 用户消息：通过 MessageResponse 渲染 markdown，但保留换行 */

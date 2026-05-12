@@ -1,6 +1,17 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { renderWithProviders } from '@/test-utils/render'
 import { MessageResponse } from './message'
+
+// useChipCacheInvalidator calls listen() from @tauri-apps/api/event which
+// is not available in jsdom. Stub it with a no-op that returns an unlisten fn.
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async () => () => {}),
+  emit: vi.fn(async () => {}),
+}))
+// useFileChipResolver calls invoke() from @tauri-apps/api/core.
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(async () => []),
+}))
 
 describe('MessageResponse — headings', () => {
   it('renders h2 with accent bar wrapper', () => {
