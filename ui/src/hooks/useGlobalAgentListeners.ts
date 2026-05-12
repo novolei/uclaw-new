@@ -14,6 +14,7 @@ import {
   agentSessionsAtom,
   proactiveLearningEventsAtom,
   sessionBrowserPreviewMapAtom,
+  liveMessagesMapAtom,
   type AgentStreamState,
   type ProactiveLearningEvent,
   type AgentStreamErrorPayload,
@@ -109,6 +110,13 @@ function startAgentListeners(store: Store): void {
   reg(
     listen<{ conversationId: string; text: string }>('chat:stream-complete', ({ payload }) => {
       const sid = payload.conversationId
+      // Snapshot isCompacting BEFORE clearing — used below to decide if we
+      // should append the "上下文已压缩" divider. The compact_boundary
+      // SDK subtype is the only way the renderer paints that pill, and
+      // no Rust backend code emits one — it was Proma-SDK leftover. So
+      // the frontend synthesizes the marker the moment the stream that
+      // had isCompacting:true reaches completion.
+      const wasCompacting = store.get(agentStreamingStatesAtom).get(sid)?.isCompacting === true
       store.set(agentStreamingStatesAtom, (prev) => {
         const existing = prev.get(sid)
         if (!existing) return prev
@@ -126,6 +134,20 @@ function startAgentListeners(store: Store): void {
         })
         return next
       })
+      if (wasCompacting) {
+        store.set(liveMessagesMapAtom, (prev) => {
+          const map = new Map(prev)
+          const current = map.get(sid) ?? []
+          const marker = {
+            type: 'system',
+            subtype: 'compact_boundary',
+            uuid: `compact-boundary-${Date.now()}`,
+            _createdAt: Date.now(),
+          }
+          map.set(sid, [...current, marker])
+          return map
+        })
+      }
       const currentSid = store.get(currentAgentSessionIdAtom)
       if (sid !== currentSid) {
         store.set(unviewedCompletedSessionIdsAtom, (prev) => {
