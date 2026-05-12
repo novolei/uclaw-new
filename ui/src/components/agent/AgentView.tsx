@@ -265,6 +265,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     cacheCreationTokens: streamState?.cacheCreationTokens,
     costUsd: streamState?.costUsd,
     contextWindow: streamState?.contextWindow,
+    skillsTokens: streamState?.skillsTokens,
   }
   const setAgentStreamErrors = useSetAtom(agentStreamErrorsAtom)
   const streamErrors = useAtomValue(agentStreamErrorsAtom)
@@ -1499,6 +1500,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                   cacheCreationTokens={contextStatus.cacheCreationTokens}
                   costUsd={contextStatus.costUsd}
                   contextWindow={contextStatus.contextWindow}
+                  skillsTokens={contextStatus.skillsTokens}
                   isCompacting={contextStatus.isCompacting}
                   isProcessing={streaming}
                   onCompact={handleCompact}

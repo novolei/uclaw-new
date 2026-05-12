@@ -373,6 +373,7 @@ impl ChatDelegate {
         let free = model_context_length as i32 - used as i32;
 
         let stats = ContextStats {
+            conversation_id: self.conversation_id.clone(),
             model_context_length,
             system_prompt_tokens,
             mcp_prompts_tokens: 0,
