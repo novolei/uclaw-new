@@ -138,12 +138,21 @@ function startAgentListeners(store: Store): void {
         const finalActivities = existing.toolActivities.map((a) =>
           a.done ? a : { ...a, done: true }
         )
+        // Clear `reasoning` once the turn completes — the persisted
+        // assistant message carries it in `message.reasoning`, and
+        // AgentMessageItem renders it inline from that field. Leaving
+        // streamState.reasoning truthy after running=false keeps the
+        // streaming bubble alive with only a ThinkingBlock once the
+        // AgentView post-persist effect (which clears content + tool
+        // activities) finishes — producing the orphan "THINKING >"
+        // ghost row reported visually.
         next.set(sid, {
           ...existing,
           running: false,
           isCompacting: false,
           compactInFlight: false,
           content: payload.text || existing.content,
+          reasoning: undefined,
           toolActivities: finalActivities,
         })
         return next
@@ -216,7 +225,11 @@ function startAgentListeners(store: Store): void {
         const existing = prev.get(sid)
         if (!existing) return prev
         const next = new Map(prev)
-        next.set(sid, { ...existing, running: false, isCompacting: false, compactInFlight: false })
+        // Clear `reasoning` for the same reason as the stream-complete
+        // handler — without this, an error mid-thinking would leave an
+        // orphan ThinkingBlock in the streaming bubble after the persisted
+        // message arrives.
+        next.set(sid, { ...existing, running: false, isCompacting: false, compactInFlight: false, reasoning: undefined })
         return next
       })
     })
