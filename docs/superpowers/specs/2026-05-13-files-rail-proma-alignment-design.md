@@ -58,6 +58,7 @@ The existing `MountSection` component is **removed**. Its responsibilities split
 - `ui/src/components/files-rail/workspace/WorkspaceFilesPanel.tsx` — new composition; no longer renders `MountSection`.
 - `ui/src/components/files-rail/workspace/FileTreeNode.tsx` — host `FileRowMenu` on hover, accept "in-rename" flag.
 - `ui/src/components/agent/SidePanel.tsx` — drop the existing top-level "添加目录" handler/button (moves to footer); keep workspace cwd plumbing.
+- `ui/src/components/chat/AttachmentPreviewItem.tsx` — replace the ext-badge stop-gap with `<FileTypeIcon>` so chat-composer chips share the rail's icon vocabulary (see Section 8a).
 
 **Delete:**
 - `ui/src/components/files-rail/workspace/MountSection.tsx` — superseded by `AttachedDirRow` + `WorkspaceFilesSection`.
@@ -173,6 +174,36 @@ A focused folder-picker dialog. Reuses the existing `openFolderDialog()` from `@
 - On valid pick, compute the new workspace-relative path: `picked + '/' + originalBasename`. Call `moveArtifact({ spaceId, srcPath, destPath })`. On success, refetch both source and destination parent dirs.
 
 No custom modal UI — defer to the OS picker. A modal browser inside the rail is YAGNI for this wave.
+
+## Section 8a: Chat Composer Chip Icons
+
+The chat composer's attached-file chip (`AttachmentPreviewItem.tsx`) currently renders a hand-rolled uppercase ext-badge (`JS`, `MD`, `PNG`, …) inside a `bg-primary/12` rounded square. This was a stop-gap from PR #127 polish. Replace with the same `@react-symbols/icons` glyph used in the files rail so a file dragged from rail to chat keeps a visually identical icon.
+
+**Change site:** `ui/src/components/chat/AttachmentPreviewItem.tsx` lines 78–98 (the non-image branch).
+
+**Before** (ext-badge):
+```tsx
+const ext = fileExtBadge(filename)
+// ...
+<span className="bg-primary/12 text-primary text-[9.5px] font-semibold ...">
+  {ext || <FileText className="size-3" />}
+</span>
+```
+
+**After** (auto-assigned glyph):
+```tsx
+import { FileTypeIcon } from '@/components/file-browser/FileTypeIcon'
+// ...
+<FileTypeIcon name={filename} isDirectory={false} size={14} />
+```
+
+The image-branch (`previewUrl` thumbnail) is unchanged.
+
+Drop the unused `fileExtBadge` helper and the unused `FileText` import.
+
+**Files touched:** 1.
+**LOC delta:** −15 / +4.
+**Test impact:** no new tests; existing `AttachmentPreviewItem` snapshot/render tests (if any) re-pass because rendered text doesn't change — only the icon node does.
 
 ## Section 8: DeleteConfirmDialog
 
