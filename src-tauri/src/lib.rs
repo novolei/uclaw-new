@@ -50,5 +50,9 @@ pub mod automation;
 // Phase 3: Files Rail
 pub mod files_rail;
 
+// W6: Git integration (workspace + branch picker backbone)
+pub mod git;
+// pub mod tauri_commands_git;  // enabled in Task 10
+
 // Evaluation harness
 pub mod harness;
