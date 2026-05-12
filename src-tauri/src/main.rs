@@ -6,17 +6,9 @@ use tauri::Manager;
 use uclaw_core::app::AppState;
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| {
-                    // chromiumoxide::handler emits WARN for every CDP event type Chrome sends
-                    // that isn't defined in its schema — these are untagged-enum parse misses,
-                    // not real errors. Silence them so the log stays readable.
-                    "info,chromiumoxide::handler=error".into()
-                }),
-        )
-        .init();
+    // _guard flushes the non-blocking file writer on Drop. Must outlive
+    // the rest of main, hence the underscore-prefixed binding here.
+    let _guard = uclaw_core::observability::init();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
