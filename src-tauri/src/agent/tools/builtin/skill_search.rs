@@ -1,7 +1,7 @@
 //! skill_search tool — agent invokes to find learned/builtin skills
-//! matching a query. Returns a list of {name, summary, score, provenance,
-//! cited_count, node_id} structs. Does NOT load full content (see
-//! load_skill for that).
+//! matching a query. Returns a list of {name, summary, relevance, quality,
+//! final_score, match_reasons, warnings, provenance, cited_count, node_id,
+//! matched_signals} structs. Does NOT load full content (see load_skill for that).
 //!
 //! Side effects: emits `agent:skill-recalled` event for UI; bumps
 //! usage_count on each learned-skill hit via existing bump_skill_usage.
@@ -95,7 +95,21 @@ impl<R: tauri::Runtime> SkillSearchTool<R> {
 struct SearchHit {
     name: String,
     summary: String,
-    score: f64,
+    /// Strength of evidence FROM the query (keyword hits, signal matches, cosine similarity).
+    /// Range: 0.0 – higher means stronger match.
+    relevance: f64,
+    /// How well-validated this skill is, independent of the query.
+    /// Derived from cited_count + usage_count.
+    quality: f64,
+    /// Used for final sorting + truncation. Today: relevance + quality.
+    final_score: f64,
+    /// Human-readable bullets explaining WHY this hit fired.
+    /// LLM uses these to audit recall; UI may display them as chip subtitles.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    match_reasons: Vec<String>,
+    /// Skill-side warnings — pulled from metadata (e.g. validation_hint).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
     provenance: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     cited_count: Option<u64>,
@@ -127,8 +141,15 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
                 },
                 "top_k": {
                     "type": "integer",
-                    "description": "Number of skills to return (default 3, max 10).",
-                    "default": 3
+                    "description": "Number of skills to return (default 5, max 20).",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "default": 5
+                },
+                "category": {
+                    "type": "string",
+                    "enum": ["repair", "optimize", "innovate"],
+                    "description": "Optional. Restrict results to skills tagged with this category. If absent, search all categories."
                 }
             },
             "required": ["query"]
@@ -145,17 +166,26 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
         if query.is_empty() {
             return Ok(ToolOutput::new(json!([]), start.elapsed().as_millis() as u64));
         }
-        let top_k = params["top_k"].as_u64().unwrap_or(3).clamp(1, 10) as usize;
+        let top_k = params["top_k"].as_u64().unwrap_or(5).clamp(1, 20) as usize;
+
+        // Optional category filter — only applied to learned skills (builtins have no category metadata).
+        let category_filter: Option<&str> = params["category"].as_str();
 
         let mut hits: Vec<SearchHit> = Vec::new();
 
-        // Builtin pass — registry.match_skills returns scored skills already
+        // Builtin pass — registry.match_skills returns scored skills already.
+        // Builtins carry no quality signal (no citation/usage history), so quality=0.0.
         let registry = self.registry.read().await;
         for skill in registry.match_skills(query) {
+            let relevance = crate::skills::score_skill(skill, query) as f64;
             hits.push(SearchHit {
                 name: skill.manifest.name.clone(),
                 summary: truncate_summary(&skill.manifest.description, 200),
-                score: crate::skills::score_skill(skill, query) as f64,
+                relevance,
+                quality: 0.0,
+                final_score: relevance,
+                match_reasons: vec![],
+                warnings: vec![],
                 provenance: "builtin",
                 cited_count: None,
                 node_id: None,
@@ -184,6 +214,18 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
                         == Some("learned");
                     if !is_learned {
                         continue;
+                    }
+                    // Apply category filter if requested
+                    if let Some(cat) = category_filter {
+                        let node_cat = node
+                            .metadata
+                            .as_ref()
+                            .and_then(|m| m.get("category"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if node_cat != cat {
+                            continue;
+                        }
                     }
                     let entry = node_score.entry(node.id.clone()).or_insert((0, node));
                     entry.0 += 1;
@@ -218,13 +260,27 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
                     node_score.keys().cloned().collect();
                 let (boost_map, new_nodes) = self.apply_cosine_scoring(q_emb, &existing_ids);
                 // Inject cosine-only hits so they participate in score building below.
+                // Apply category filter to cosine-only hits as well.
                 for (nid, node) in new_nodes {
+                    if let Some(cat) = category_filter {
+                        let node_cat = node
+                            .metadata
+                            .as_ref()
+                            .and_then(|m| m.get("category"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if node_cat != cat {
+                            continue;
+                        }
+                    }
                     node_score.entry(nid).or_insert((0, node));
                 }
                 boost_map
             } else {
                 std::collections::HashMap::new()
             };
+
+        let semantic_unavailable = self.memu_client.is_none();
 
         // Build learned hits — node already in hand, no extra DB call needed.
         let query_lower = query.to_lowercase();
@@ -269,20 +325,57 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
                 .collect();
             let signal_match_count = matched_signals.len() as f64;
 
-            let cosine_bonus = cosine_boost
-                .get(&node_id)
-                .copied()
-                .unwrap_or(0.0) as f64
-                * 2.0;
-            let score = (kw_hits as f64)
-                + signal_match_count * 1.5
-                + (cited as f64 * 0.5)
-                + (usage as f64 * 0.2)
-                + cosine_bonus;
+            let cosine_sim_val = cosine_boost.get(&node_id).copied().unwrap_or(0.0);
+            let cosine_bonus = cosine_sim_val as f64 * 2.0;
+
+            // Tri-tier scoring
+            let relevance = (kw_hits as f64) + signal_match_count * 1.5 + cosine_bonus;
+            let quality = (cited as f64 * 0.5) + (usage as f64 * 0.2);
+            let final_score = relevance + quality;
+
+            // Build human-readable match_reasons
+            let mut match_reasons: Vec<String> = Vec::new();
+            if kw_hits > 0 {
+                match_reasons.push(format!("关键词命中 {} 个", kw_hits));
+            }
+            if signal_match_count > 0.0 {
+                match_reasons.push(format!(
+                    "信号匹配 {} 个: {}",
+                    signal_match_count as usize,
+                    matched_signals.join("、")
+                ));
+            }
+            if cosine_sim_val > 0.01 {
+                match_reasons.push(format!("语义相似度 {:.2}", cosine_sim_val));
+            }
+            if cited > 0 {
+                match_reasons.push(format!("曾被引用 {} 次", cited));
+            }
+
+            // Build warnings from metadata
+            let mut warnings: Vec<String> = Vec::new();
+            if let Some(hint) = node
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("validation_hint"))
+                .and_then(|v| v.as_str())
+            {
+                warnings.push(format!("应用后建议验证: {}", hint));
+            }
+            // Surface semantic-channel unavailability only when this hit had keyword/signal
+            // matches but might have ranked higher with cosine boosting.
+            if semantic_unavailable && (kw_hits > 0 || signal_match_count > 0.0) {
+                warnings.push("需启用 fastembed 才能语义检索".to_string());
+            }
+
             hits.push(SearchHit {
                 name: node.title,
                 summary: truncate_summary(&summary, 200),
-                score,
+                relevance,
+                quality,
+                final_score,
+                match_reasons,
+                warnings,
                 provenance: "learned",
                 cited_count: Some(cited),
                 node_id: Some(node_id),
@@ -290,8 +383,8 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
             });
         }
 
-        // Sort by score desc and trim FIRST so we only bump skills the LLM actually sees.
-        hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        // Sort by final_score desc and trim FIRST so we only bump skills the LLM actually sees.
+        hits.sort_by(|a, b| b.final_score.partial_cmp(&a.final_score).unwrap_or(std::cmp::Ordering::Equal));
         hits.truncate(top_k);
 
         // Bump usage_count for learned hits that survived truncation (fire-and-forget; soft signal).
@@ -563,7 +656,6 @@ mod tests {
         keywords: &[&str],
         embedding: &[f32],
     ) -> String {
-        use crate::memory_graph::models::{MemoryVersion, MemoryVersionStatus};
         let now = chrono::Utc::now().to_rfc3339();
         let id = uuid::Uuid::new_v4().to_string();
         let node = MemoryNode {
@@ -583,11 +675,11 @@ mod tests {
         };
         store.create_node(&node).unwrap();
         let embedding_json = serde_json::to_string(embedding).unwrap();
-        let version = MemoryVersion {
+        let version = crate::memory_graph::models::MemoryVersion {
             id: uuid::Uuid::new_v4().to_string(),
             node_id: id.clone(),
             supersedes_version_id: None,
-            status: MemoryVersionStatus::Active,
+            status: crate::memory_graph::models::MemoryVersionStatus::Active,
             content: format!("Content for {}", title),
             metadata: None,
             embedding_json: Some(embedding_json),
@@ -757,5 +849,267 @@ mod tests {
             !new_ids.contains(&id_ortho.as_str()),
             "orthogonal-skill must not be in new_nodes (zero cosine)"
         );
+    }
+
+    // ─── New tests for tri-tier scoring, warnings, category filter, top_k ───
+
+    /// Helper: create a learned node with category metadata.
+    fn make_learned_node_with_category(
+        store: &MemoryGraphStore,
+        title: &str,
+        keywords: &[&str],
+        category: &str,
+        cited: u64,
+    ) -> String {
+        let now = chrono::Utc::now().to_rfc3339();
+        let id = uuid::Uuid::new_v4().to_string();
+        let node = MemoryNode {
+            id: id.clone(),
+            space_id: "default".into(),
+            kind: crate::memory_graph::models::MemoryNodeKind::Procedure,
+            title: title.into(),
+            metadata: Some(json!({
+                "skill_type": "learned",
+                "enabled": true,
+                "summary": format!("Summary for {}", title),
+                "cited_count": cited,
+                "usage_count": 0u64,
+                "category": category,
+            })),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        store.create_node(&node).unwrap();
+        for kw in keywords {
+            store.create_keyword(&MemoryKeyword {
+                id: uuid::Uuid::new_v4().to_string(),
+                space_id: "default".into(),
+                node_id: id.clone(),
+                keyword: kw.to_string(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+            }).unwrap();
+        }
+        id
+    }
+
+    /// Helper: create a learned node with a validation_hint in metadata.
+    fn make_learned_node_with_validation_hint(
+        store: &MemoryGraphStore,
+        title: &str,
+        keywords: &[&str],
+        validation_hint: &str,
+    ) -> String {
+        let now = chrono::Utc::now().to_rfc3339();
+        let id = uuid::Uuid::new_v4().to_string();
+        let node = MemoryNode {
+            id: id.clone(),
+            space_id: "default".into(),
+            kind: crate::memory_graph::models::MemoryNodeKind::Procedure,
+            title: title.into(),
+            metadata: Some(json!({
+                "skill_type": "learned",
+                "enabled": true,
+                "summary": format!("Summary for {}", title),
+                "cited_count": 0u64,
+                "usage_count": 0u64,
+                "validation_hint": validation_hint,
+            })),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        store.create_node(&node).unwrap();
+        for kw in keywords {
+            store.create_keyword(&MemoryKeyword {
+                id: uuid::Uuid::new_v4().to_string(),
+                space_id: "default".into(),
+                node_id: id.clone(),
+                keyword: kw.to_string(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+            }).unwrap();
+        }
+        id
+    }
+
+    /// final_score = relevance + quality, both > 0 when there's a keyword hit and citations.
+    #[tokio::test]
+    async fn final_score_split_into_relevance_and_quality() {
+        let store = fresh_store();
+        // cited=10 → quality = 10 * 0.5 = 5.0
+        let _id = make_learned_node_with_keywords(&store, "cited-skill", &["budget", "finance"], 10);
+
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        let tool = SkillSearchTool::new(
+            registry,
+            Arc::clone(&store),
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
+        );
+
+        let out = tool.execute(json!({ "query": "budget finance" })).await.unwrap();
+        let hits = out.result.as_array().unwrap();
+        assert_eq!(hits.len(), 1);
+        let hit = &hits[0];
+
+        let relevance = hit["relevance"].as_f64().unwrap();
+        let quality = hit["quality"].as_f64().unwrap();
+        let final_score = hit["final_score"].as_f64().unwrap();
+
+        assert!(relevance > 0.0, "relevance should be positive for keyword hits; got {}", relevance);
+        assert!(quality > 0.0, "quality should be positive for cited skill; got {}", quality);
+        assert!(
+            (final_score - (relevance + quality)).abs() < 1e-10,
+            "final_score must equal relevance + quality; got final={} relevance={} quality={}",
+            final_score, relevance, quality
+        );
+    }
+
+    /// match_reasons should contain a "关键词命中" entry for keyword hits.
+    #[tokio::test]
+    async fn match_reasons_populated_for_keyword_hit() {
+        let store = fresh_store();
+        let _id = make_learned_node_with_keywords(&store, "kw-skill", &["refactor"], 0);
+
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        let tool = SkillSearchTool::new(
+            registry,
+            Arc::clone(&store),
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
+        );
+
+        let out = tool.execute(json!({ "query": "refactor" })).await.unwrap();
+        let hits = out.result.as_array().unwrap();
+        assert_eq!(hits.len(), 1);
+
+        let reasons = hits[0]["match_reasons"].as_array().unwrap();
+        assert!(
+            reasons.iter().any(|r| r.as_str().unwrap_or("").contains("关键词命中")),
+            "match_reasons should contain '关键词命中'; got: {:?}", reasons
+        );
+    }
+
+    /// warnings should include the validation_hint text when present in metadata.
+    #[tokio::test]
+    async fn warnings_includes_validation_hint() {
+        let store = fresh_store();
+        let _id = make_learned_node_with_validation_hint(
+            &store,
+            "hint-skill",
+            &["deploy"],
+            "Run tests after",
+        );
+
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        let tool = SkillSearchTool::new(
+            registry,
+            Arc::clone(&store),
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
+        );
+
+        let out = tool.execute(json!({ "query": "deploy" })).await.unwrap();
+        let hits = out.result.as_array().unwrap();
+        assert_eq!(hits.len(), 1);
+
+        let warnings = hits[0]["warnings"].as_array().unwrap();
+        assert!(
+            warnings.iter().any(|w| w.as_str().unwrap_or("").contains("Run tests after")),
+            "warnings should contain the validation_hint text; got: {:?}", warnings
+        );
+    }
+
+    /// category=repair filter should exclude skills tagged innovate.
+    #[tokio::test]
+    async fn category_filter_excludes_other_categories() {
+        let store = fresh_store();
+        let _repair_id = make_learned_node_with_category(&store, "repair-skill", &["fix", "bug"], "repair", 0);
+        let _innovate_id = make_learned_node_with_category(&store, "innovate-skill", &["fix", "feature"], "innovate", 0);
+
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        let tool = SkillSearchTool::new(
+            registry,
+            Arc::clone(&store),
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
+        );
+
+        let out = tool.execute(json!({ "query": "fix bug", "category": "repair" })).await.unwrap();
+        let hits = out.result.as_array().unwrap();
+
+        assert!(
+            hits.iter().all(|h| h["name"] != "innovate-skill"),
+            "innovate-skill must be excluded when category=repair; hits: {:?}", hits
+        );
+        assert!(
+            hits.iter().any(|h| h["name"] == "repair-skill"),
+            "repair-skill should be included; hits: {:?}", hits
+        );
+    }
+
+    /// No category filter → both skills returned.
+    #[tokio::test]
+    async fn category_filter_omitted_returns_all() {
+        let store = fresh_store();
+        let _repair_id = make_learned_node_with_category(&store, "repair-skill", &["fix", "bug"], "repair", 0);
+        let _innovate_id = make_learned_node_with_category(&store, "innovate-skill", &["fix", "feature"], "innovate", 0);
+
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        let tool = SkillSearchTool::new(
+            registry,
+            Arc::clone(&store),
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
+        );
+
+        // No category param — both skills share keyword "fix"
+        let out = tool.execute(json!({ "query": "fix", "top_k": 20 })).await.unwrap();
+        let hits = out.result.as_array().unwrap();
+
+        assert!(
+            hits.iter().any(|h| h["name"] == "repair-skill"),
+            "repair-skill should appear without category filter; hits: {:?}", hits
+        );
+        assert!(
+            hits.iter().any(|h| h["name"] == "innovate-skill"),
+            "innovate-skill should appear without category filter; hits: {:?}", hits
+        );
+    }
+
+    /// parameters_schema should reflect default=5, max=20, and the category enum.
+    #[test]
+    fn top_k_default_is_5_max_is_20() {
+        let store = fresh_store();
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        let tool = SkillSearchTool::new(
+            registry,
+            store,
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
+        );
+
+        let schema = tool.parameters_schema();
+        let top_k_prop = &schema["properties"]["top_k"];
+        assert_eq!(top_k_prop["default"], 5, "top_k default should be 5");
+        assert_eq!(top_k_prop["maximum"], 20, "top_k maximum should be 20");
+        assert_eq!(top_k_prop["minimum"], 1, "top_k minimum should be 1");
+
+        // Verify category enum is present
+        let category_prop = &schema["properties"]["category"];
+        let enum_vals = category_prop["enum"].as_array().unwrap();
+        assert!(enum_vals.iter().any(|v| v == "repair"), "enum should include repair");
+        assert!(enum_vals.iter().any(|v| v == "optimize"), "enum should include optimize");
+        assert!(enum_vals.iter().any(|v| v == "innovate"), "enum should include innovate");
     }
 }
