@@ -89,7 +89,7 @@ function BudgetHeader({
               autoFocus
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              type="number" min="0" step="1"
+              type="number" min="0" step="0.01" inputMode="decimal"
               className="w-24 rounded-md border border-border/60 bg-background px-2 py-1 text-[12.5px] outline-none focus:border-primary"
             />
             <button type="submit" className="rounded-md bg-primary px-2.5 py-1 text-[11.5px] text-primary-foreground hover:bg-primary/90">
@@ -143,7 +143,7 @@ function BudgetHeader({
               autoFocus
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              type="number" min="0" step="1"
+              type="number" min="0" step="0.01" inputMode="decimal"
               className="w-20 rounded-md border border-border/60 bg-background px-2 py-1 text-[12.5px] outline-none focus:border-primary"
               placeholder="预算"
             />
