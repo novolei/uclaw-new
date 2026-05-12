@@ -39,3 +39,29 @@ pub struct ChipResolution {
     /// Canonicalised absolute path when resolved; `None` otherwise.
     pub absolute_path: Option<String>,
 }
+
+/// Outcome of a `preview_write_text` invocation.
+///
+/// Discriminated union for the frontend's SaveOutcome handler.
+/// `Conflict` carries the on-disk content so the conflict banner can
+/// render a diff without a follow-up read roundtrip.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum WriteResult {
+    /// Write succeeded.
+    Saved {
+        mtime_ms: i64,
+        size: u64,
+    },
+    /// The on-disk mtime did not match `expected_mtime_ms`.
+    /// `current_content` is the file's actual contents (UTF-8 decoded;
+    /// capped at MAX_PREVIEW_BYTES). `current_mtime_ms` is the actual mtime.
+    Conflict {
+        current_mtime_ms: i64,
+        current_content: String,
+    },
+    /// Write is gated by `SafetyManager`-style approval. Frontend opens
+    /// `<WriteApprovalDialog>`, awaits Allow/Deny, then calls
+    /// `approve_preview_write(approval_id, allowed)` to resolve.
+    NeedsApproval { approval_id: String },
+}

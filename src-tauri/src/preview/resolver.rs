@@ -215,3 +215,82 @@ pub async fn resolve_chip_candidate(
         absolute_path: None,
     }
 }
+
+/// Atomically write `content` to `path` using the rename-tempfile pattern.
+///
+/// Steps:
+/// 1. Create a tempfile in the SAME directory as `path` (so rename is
+///    atomic on POSIX — cross-filesystem rename would fail).
+/// 2. Write `content` to the tempfile + fsync.
+/// 3. `fs::rename(tempfile, path)` — atomic replacement.
+/// 4. `stat` the result to verify size matches `content.len()`.
+/// 5. Return `(mtime_ms, size)`.
+///
+/// On cross-filesystem rename failure (EXDEV), falls back to direct
+/// write-then-fsync (less atomic but reliable).
+///
+/// 50 MB cap mirrors `MAX_PREVIEW_BYTES` — reject larger writes upfront.
+pub fn write_atomic(path: &Path, content: &str) -> Result<(i64, u64), Error> {
+    use std::fs::File;
+    use std::io::Write;
+
+    let dir = path.parent().ok_or_else(|| {
+        Error::InvalidInput(format!("path has no parent dir: {}", path.display()))
+    })?;
+
+    if content.len() as u64 > MAX_PREVIEW_BYTES {
+        return Err(Error::InvalidInput(format!(
+            "content exceeds {} bytes cap",
+            MAX_PREVIEW_BYTES
+        )));
+    }
+
+    let tmp = tempfile::Builder::new()
+        .prefix(".uclaw-preview-write-")
+        .tempfile_in(dir)
+        .map_err(|e| Error::Internal(format!("tempfile create: {}", e)))?;
+
+    {
+        let mut f = tmp.as_file();
+        f.write_all(content.as_bytes())
+            .map_err(|e| Error::Internal(format!("tempfile write: {}", e)))?;
+        f.sync_all()
+            .map_err(|e| Error::Internal(format!("tempfile fsync: {}", e)))?;
+    }
+
+    // Atomic rename. On cross-filesystem failure, fall back.
+    let persisted = match tmp.persist(path) {
+        Ok(f) => f,
+        Err(_persist_err) => {
+            // Cross-filesystem? Write directly to the target.
+            let mut f = File::create(path)
+                .map_err(|err| Error::Internal(format!("fallback create: {}", err)))?;
+            f.write_all(content.as_bytes())
+                .map_err(|err| Error::Internal(format!("fallback write: {}", err)))?;
+            f.sync_all()
+                .map_err(|err| Error::Internal(format!("fallback fsync: {}", err)))?;
+            // _persist_err's tempfile is dropped automatically (auto-cleaned).
+            f
+        }
+    };
+
+    let metadata = persisted
+        .metadata()
+        .map_err(|e| Error::Internal(format!("post-write stat: {}", e)))?;
+    let size = metadata.len();
+    if size != content.len() as u64 {
+        return Err(Error::Internal(format!(
+            "post-write size mismatch: expected {} got {}",
+            content.len(),
+            size
+        )));
+    }
+    let mtime_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    Ok((mtime_ms, size))
+}
