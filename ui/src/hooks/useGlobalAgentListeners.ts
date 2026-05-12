@@ -382,11 +382,11 @@ function startAgentListeners(store: Store): void {
       const sid = payload.conversationId
       store.set(skillRecallsMapAtom, (prev) => {
         const current = prev.get(sid) ?? []
-        // Dedup by toolCallId. Note: until Task 5 (dispatcher wire-up) injects
-        // tc.id into tc.arguments before tool.execute(), the Rust skill_search /
-        // load_skill tools emit toolCallId="" — meaning every recall after the
-        // first one in a session will be silently dropped here. The component
-        // dedup is correct; the empty IDs are the bug, addressed by Task 5.
+        // Dedup by toolCallId. The dispatcher injects `tc.id` as `_tool_call_id`
+        // into tool args before spawn (agent/dispatcher.rs), so the Rust
+        // skill_search / load_skill tools have a stable per-call ID to echo in
+        // the `agent:skill-recalled` event. Same ID arriving twice (e.g. event
+        // double-delivery under HMR) collapses to one chip — intended.
         if (current.some((r) => r.toolCallId === payload.toolCallId)) {
           return prev
         }

@@ -58,6 +58,9 @@ pub struct ChatDelegate {
     thinking_seq: Arc<AtomicU64>,
     /// Workspace root used to source `uclaw.md` for prompt composition.
     workspace_root: Option<std::path::PathBuf>,
+    /// Pre-built skill manifest block, set via set_skills_manifest_block
+    /// before run_loop starts. Empty when no skills exist (no append).
+    skills_manifest_block: String,
 }
 
 impl ChatDelegate {
@@ -88,6 +91,7 @@ impl ChatDelegate {
             thinking_enabled: false,
             thinking_seq: Arc::new(AtomicU64::new(0)),
             workspace_root,
+            skills_manifest_block: String::new(),
         }
     }
 
@@ -117,6 +121,12 @@ impl ChatDelegate {
         self.memory_context = Some(context);
     }
 
+    /// Set the skill manifest block to append to the system prompt.
+    /// Caller is responsible for building this via skills_manifest::build_skills_manifest.
+    pub fn set_skills_manifest_block(&mut self, block: String) {
+        self.skills_manifest_block = block;
+    }
+
     /// Build the effective system prompt including memory context, the user's
     /// uclaw.md (workspace-level), Karpathy baseline, and mode-specific
     /// guardrails. Reads uclaw.md on every call (small file, OS cache).
@@ -131,11 +141,17 @@ impl ChatDelegate {
             Some(ctx) => format!("{}\n\n{}", self.system_prompt, ctx),
             None => self.system_prompt.clone(),
         };
-        crate::agent::mode_prompts::compose_system_prompt(
+        let composed = crate::agent::mode_prompts::compose_system_prompt(
             &base_with_memory,
             self.workspace_root.as_deref(),
             effective_mode,
-        )
+        );
+        // Append the skill manifest block (empty string when no skills exist).
+        if self.skills_manifest_block.is_empty() {
+            composed
+        } else {
+            format!("{}{}", composed, self.skills_manifest_block)
+        }
     }
 
     /// Build the per-message dynamic context block.
@@ -364,7 +380,7 @@ impl ChatDelegate {
             model_context_length,
             system_prompt_tokens,
             mcp_prompts_tokens: 0,
-            skills_tokens: 0,
+            skills_tokens: estimate_tokens(&self.skills_manifest_block),
             messages_tokens,
             tool_use_tokens,
             compact_buffer_tokens: compact_buffer,
@@ -1129,7 +1145,18 @@ impl LoopDelegate for ChatDelegate {
                     // get caught at the JoinHandle boundary rather than unwinding through
                     // the agent loop and killing the whole turn.
                     let tool_name_for_panic = tc.name.clone();
-                    let tool_args_for_spawn = tc.arguments.clone();
+                    let tool_args_for_spawn = {
+                        let mut args = tc.arguments.clone();
+                        if let Some(obj) = args.as_object_mut() {
+                            obj.insert("_tool_call_id".to_string(), serde_json::Value::String(tc.id.clone()));
+                        } else {
+                            tracing::warn!(
+                                tool = %tc.name,
+                                "tool arguments is not a JSON object; skipping _tool_call_id injection"
+                            );
+                        }
+                        args
+                    };
                     let tools_arc = Arc::clone(&self.tools);
                     let execute_result = match tokio::task::spawn(async move {
                         match tools_arc.get(&tool_name_for_panic) {

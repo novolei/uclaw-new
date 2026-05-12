@@ -4268,6 +4268,20 @@ pub async fn send_agent_message(
             app_handle.clone(),
         ).with_infra(Arc::clone(&state.infra_service))
     );
+    tools.register(builtin::skill_search::SkillSearchTool::new(
+        Arc::clone(&state.skills_registry),
+        Arc::clone(&state.memory_graph_store),
+        app_handle.clone(),
+        input.session_id.clone(),
+        "default".into(),
+    ));
+    tools.register(builtin::load_skill::LoadSkillTool::new(
+        Arc::clone(&state.skills_registry),
+        Arc::clone(&state.memory_graph_store),
+        app_handle.clone(),
+        input.session_id.clone(),
+        "default".into(),
+    ));
     {
         use crate::browser::tools::*;
         let b = Arc::clone(&state.browser_service);
@@ -4298,6 +4312,8 @@ pub async fn send_agent_message(
     let trajectory_store = Arc::clone(&state.trajectory_store);
     let tool_budget = Arc::clone(&state.tool_budget);
     let running_sessions = Arc::clone(&state.running_sessions);
+    let skills_registry_for_manifest = Arc::clone(&state.skills_registry);
+    let memory_graph_store_for_manifest = Arc::clone(&state.memory_graph_store);
     // Same rule as tool registration above: prefer the session's actual
     // workspace, fall back to the globally-active workspace only if the
     // session has no space binding.
@@ -4333,6 +4349,19 @@ pub async fn send_agent_message(
         delegate.set_infra_service(Arc::clone(&infra_service));
         delegate.set_trajectory_store(Arc::clone(&trajectory_store));
         delegate.set_tool_budget(Arc::clone(&tool_budget));
+
+        // Build skill manifest and inject into system prompt (async: needs registry.read()).
+        {
+            let registry = skills_registry_for_manifest.read().await;
+            let manifest = crate::skills_manifest::build_skills_manifest(
+                &registry,
+                &memory_graph_store_for_manifest,
+                "default",
+                30,
+                1500,
+            );
+            delegate.set_skills_manifest_block(manifest);
+        }
 
         let config = AgenticLoopConfig::default();
 
