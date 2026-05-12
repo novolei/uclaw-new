@@ -558,6 +558,7 @@ fn main() {
             uclaw_core::tauri_commands::write_workspace_uclaw_md,
             uclaw_core::tauri_commands::read_default_prompts,
             uclaw_core::tauri_commands::open_workspace_uclaw_md_externally,
+            uclaw_core::tauri_commands::reveal_path_in_file_manager,
             // Trajectory
             uclaw_core::tauri_commands::get_session_trajectory,
             uclaw_core::tauri_commands::search_trajectories,

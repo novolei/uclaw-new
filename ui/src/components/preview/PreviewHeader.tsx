@@ -1,23 +1,24 @@
 /**
  * PreviewHeader — Title row for the preview panel.
  *
- * Layout: [file-type icon] [name / path stack] [copy-path] [pop-out] [close].
- * File-type icon comes from the existing `<FileTypeIcon>` so it matches the
- * rail's iconography. Copy-path lifts the path to the clipboard with a brief
- * confirmation. Pop-out is a placeholder for W5's detached window.
+ * Layout (left → right): file-type icon · filename / parent-folder stack ·
+ * action buttons (copy path, reveal in Finder, close). The parent-folder
+ * subline replaces the old full-path display because for files at the
+ * workspace root the path was identical to the filename and looked
+ * redundant. Home directory is collapsed to `~/` for legibility.
  */
 
 import * as React from 'react'
 import { useSetAtom } from 'jotai'
 import { toast } from 'sonner'
-import { X, ExternalLink, Copy, Check } from 'lucide-react'
+import { invoke } from '@tauri-apps/api/core'
+import { X, FolderOpen, Copy, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { closePreviewAction, type PreviewFileTarget } from '@/atoms/preview-panel-atoms'
 import { FileTypeIcon } from '@/components/file-browser/FileTypeIcon'
 
 interface PreviewHeaderProps {
   target: PreviewFileTarget | null
-  resolvedPath?: string
 }
 
 interface HeaderButtonProps {
@@ -43,12 +44,12 @@ function HeaderButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        'size-7 inline-flex items-center justify-center rounded-md',
+        'size-6 inline-flex items-center justify-center rounded-md shrink-0',
         'transition-colors motion-reduce:transition-none',
         'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
         disabled
           ? 'text-foreground/25 cursor-not-allowed'
-          : 'text-foreground/60 hover:text-foreground hover:bg-foreground/[0.06] active:bg-foreground/[0.10]',
+          : 'text-foreground/55 hover:text-foreground hover:bg-foreground/[0.06] active:bg-foreground/[0.10]',
       )}
     >
       {children}
@@ -56,9 +57,29 @@ function HeaderButton({
   )
 }
 
-export function PreviewHeader({ target, resolvedPath }: PreviewHeaderProps): React.ReactElement {
+/** Best-effort home-dir collapse — purely cosmetic for the path display. */
+function prettifyPath(p: string): string {
+  if (!p) return ''
+  const unixHome = p.match(/^(\/Users\/[^/]+|\/home\/[^/]+)(\/.*)?$/)
+  if (unixHome) return `~${unixHome[2] ?? ''}`
+  const winHome = p.match(/^([A-Za-z]:\\Users\\[^\\]+)(\\.*)?$/)
+  if (winHome) return `~${(winHome[2] ?? '').replace(/\\/g, '/')}`
+  return p
+}
+
+function parentDir(p: string): string {
+  if (!p) return ''
+  const normalized = p.replace(/\\/g, '/')
+  const idx = normalized.lastIndexOf('/')
+  if (idx <= 0) return ''
+  return normalized.slice(0, idx)
+}
+
+export function PreviewHeader({ target }: PreviewHeaderProps): React.ReactElement {
   const closePreview = useSetAtom(closePreviewAction)
-  const displayPath = resolvedPath ?? target?.relPath ?? ''
+  const absolutePath = target?.absolutePath ?? ''
+  const parent = parentDir(absolutePath)
+  const prettyParent = prettifyPath(parent)
   const [copied, setCopied] = React.useState(false)
   const copyResetTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -69,60 +90,74 @@ export function PreviewHeader({ target, resolvedPath }: PreviewHeaderProps): Rea
   }, [])
 
   const handleCopy = React.useCallback(async () => {
-    if (!displayPath) return
+    if (!absolutePath) return
     try {
-      await navigator.clipboard.writeText(displayPath)
+      await navigator.clipboard.writeText(absolutePath)
       setCopied(true)
       if (copyResetTimer.current) clearTimeout(copyResetTimer.current)
       copyResetTimer.current = setTimeout(() => setCopied(false), 1400)
     } catch (err) {
       toast.error('复制失败', { description: String(err) })
     }
-  }, [displayPath])
+  }, [absolutePath])
+
+  const handleReveal = React.useCallback(async () => {
+    if (!absolutePath) return
+    try {
+      await invoke('reveal_path_in_file_manager', { path: absolutePath })
+    } catch (err) {
+      toast.error('无法在文件管理器中显示', {
+        description: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }, [absolutePath])
+
+  const canReveal = absolutePath.length > 0
 
   return (
     <header
       className={cn(
         'flex items-center gap-2 flex-shrink-0',
-        'h-[40px] px-3',
-        'border-b border-border bg-popover',
+        'h-[44px] px-3',
+        'border-b border-border bg-popover/95 backdrop-blur-[2px]',
       )}
     >
       <FileTypeIcon
         name={target?.name ?? 'unknown'}
         isDirectory={false}
-        size={14}
+        size={15}
         className="shrink-0"
       />
       <div className="flex-1 min-w-0 flex flex-col leading-tight">
-        <div className="text-[12.5px] font-medium text-foreground truncate">
+        <div className="text-[13px] font-medium text-foreground truncate">
           {target?.name ?? '未选中文件'}
         </div>
-        {displayPath && (
+        {prettyParent && (
           <div
-            className="text-[10.5px] text-muted-foreground/70 truncate font-mono tabular-nums"
+            className="text-[10.5px] text-muted-foreground/75 truncate font-mono tabular-nums"
             dir="rtl"
-            title={displayPath}
+            title={absolutePath}
           >
-            {displayPath}
+            {prettyParent}
           </div>
         )}
       </div>
-      {displayPath && (
+      {absolutePath && (
         <HeaderButton
           ariaLabel={copied ? '路径已复制' : '复制完整路径'}
-          title={copied ? '已复制' : '复制路径'}
+          title={copied ? '已复制' : '复制完整路径'}
           onClick={handleCopy}
         >
           {copied ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
         </HeaderButton>
       )}
       <HeaderButton
-        ariaLabel="弹出独立窗口 (W5 即将上线)"
-        title="弹出独立窗口（W5 即将上线）"
-        disabled
+        ariaLabel="在文件管理器中显示"
+        title="在文件管理器中显示"
+        onClick={handleReveal}
+        disabled={!canReveal}
       >
-        <ExternalLink size={13} />
+        <FolderOpen size={14} />
       </HeaderButton>
       <HeaderButton
         ariaLabel="关闭预览"

@@ -6117,6 +6117,47 @@ pub async fn open_workspace_uclaw_md_externally(state: State<'_, AppState>) -> R
     Ok(())
 }
 
+/// Reveal `path` in the host file manager.
+///
+/// macOS `open -R <file>` selects the file inside Finder; Windows
+/// `explorer /select,"<file>"` does the equivalent. Linux has no
+/// universal "select" affordance, so we open the parent directory.
+/// All branches are best-effort: if the spawn fails we surface the
+/// error rather than swallowing it so the UI can toast.
+#[tauri::command]
+pub async fn reveal_path_in_file_manager(path: String) -> Result<(), Error> {
+    let p = std::path::PathBuf::from(&path);
+    if !p.exists() {
+        return Err(Error::InvalidInput(format!("path does not exist: {path}")));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-R", &path])
+            .spawn()
+            .map_err(|e| Error::Internal(format!("reveal in Finder: {e}")))?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{path}"))
+            .spawn()
+            .map_err(|e| Error::Internal(format!("reveal in Explorer: {e}")))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let dir = if p.is_dir() { p.clone() } else {
+            p.parent().map(std::path::Path::to_path_buf).unwrap_or(p.clone())
+        };
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| Error::Internal(format!("xdg-open: {e}")))?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn read_default_prompts() -> Result<crate::ipc::DefaultPromptsResponse, Error> {
     use crate::agent::mode_prompts;
