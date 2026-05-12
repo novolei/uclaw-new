@@ -21,14 +21,12 @@ interface FileTreeNodeProps {
   isExpanded: (rel: string) => boolean
   onToggle: (rel: string, isDir: boolean) => Promise<void>
   onFileClick: (node: TreeNode, event: React.MouseEvent<HTMLButtonElement>) => void
-  /** Mount this node belongs to — drives menu gating and IPC routing. Optional
-   *  for backward-compat with legacy callers (MountSection); when absent, the
-   *  row renders without the 3-dot menu. Task 12 tightens this to required. */
-  mount?: MountRoot
-  /** Active session ID (for addPendingAttachmentAction). Optional, see above. */
-  sessionId?: string | null
+  /** Mount this node belongs to — drives menu gating and IPC routing. */
+  mount: MountRoot
+  /** Active session ID (for addPendingAttachmentAction). */
+  sessionId: string | null
   /** Sibling names at this depth — used by RenameInput for dup detection. */
-  siblings?: Set<string>
+  siblings: Set<string>
   /** Called after a successful rename so the panel can refetch. */
   onRenamed?: (info: { mountId: string; oldRelPath: string; newRelPath: string }) => void
 }
@@ -46,14 +44,11 @@ export const FileTreeNode = React.memo(function FileTreeNode({
 }: FileTreeNodeProps): React.ReactElement {
   const expanded = isExpanded(node.relPath)
   const isDir = node.kind === 'directory'
-  // Legacy MountSection callers don't pass `mount` — skip the menu/rename code
-  // path entirely so behaviour matches the pre-Task-9 file.
-  const hasMenuContext = mount !== undefined
-  const absolutePath = mount ? `${mount.path}/${node.relPath}` : ''
+  const absolutePath = `${mount.path}/${node.relPath}`
   const renamingPath = useAtomValue(renamingFilePathAtom)
   const setRenaming = useSetAtom(renamingFilePathAtom)
   const currentWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
-  const isRenaming = hasMenuContext && renamingPath === absolutePath
+  const isRenaming = renamingPath === absolutePath
 
   const handleClick = React.useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -65,7 +60,6 @@ export const FileTreeNode = React.memo(function FileTreeNode({
   )
 
   const handleRenameCommit = React.useCallback(async (newName: string) => {
-    if (!mount) return
     if (newName === node.name) {
       setRenaming(null)
       return
@@ -136,7 +130,7 @@ export const FileTreeNode = React.memo(function FileTreeNode({
             size={14}
             className="shrink-0"
           />
-          {isRenaming && mount && siblings ? (
+          {isRenaming ? (
             <RenameInput
               initialName={node.name}
               siblings={siblings}
@@ -147,10 +141,10 @@ export const FileTreeNode = React.memo(function FileTreeNode({
             <span className="truncate font-mono tabular-nums">{node.name}</span>
           )}
         </button>
-        {hasMenuContext && mount && !isRenaming && (
+        {!isRenaming && (
           <FileRowMenu
             mount={mount}
-            sessionId={sessionId ?? null}
+            sessionId={sessionId}
             relPath={node.relPath}
             name={node.name}
             isDirectory={isDir}
