@@ -27,6 +27,13 @@ export default defineConfig({
         manualChunks(id: string) {
           // PDF and office parsers — bundle separately to reduce initial bundle size
           if (id.includes('pdfjs-dist/build/pdf.worker')) return 'pdfjs-worker'
+          // W4d editor stack — lazy chunk so read-only sessions pay zero
+          if (
+            id.includes('node_modules/@codemirror/') ||
+            id.includes('node_modules/@tiptap/') ||
+            id.includes('node_modules/lowlight/') ||
+            id.includes('node_modules/prosemirror-')
+          ) return 'editors'
           if (
             id.includes('node_modules/jszip') ||
             id.includes('node_modules/@xmldom') ||
