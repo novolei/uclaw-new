@@ -508,6 +508,21 @@ fn main() {
             // Preview Commands
             uclaw_core::preview::commands::preview_read_bytes,
             uclaw_core::preview::commands::preview_resolve_chips,
+            // ─── Git Commands ───
+            uclaw_core::tauri_commands_git::gh_available,
+            uclaw_core::tauri_commands_git::gh_create_issue,
+            uclaw_core::tauri_commands_git::gh_create_pr,
+            uclaw_core::tauri_commands_git::git_branches,
+            uclaw_core::tauri_commands_git::git_checkout_branch,
+            uclaw_core::tauri_commands_git::git_commit,
+            uclaw_core::tauri_commands_git::git_commit_push_pr,
+            uclaw_core::tauri_commands_git::git_create_branch,
+            uclaw_core::tauri_commands_git::git_current_branch,
+            uclaw_core::tauri_commands_git::git_default_branch,
+            uclaw_core::tauri_commands_git::git_diff,
+            uclaw_core::tauri_commands_git::git_init_repo,
+            uclaw_core::tauri_commands_git::git_is_repo,
+            uclaw_core::tauri_commands_git::git_status,
             // Workspace Commands
             uclaw_core::tauri_commands::get_active_workspace_id,
             uclaw_core::tauri_commands::set_active_workspace_id,
