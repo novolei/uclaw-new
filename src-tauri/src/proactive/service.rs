@@ -601,7 +601,16 @@ impl ProactiveService {
                             if llm_response.trim() != NO_MESSAGE_MARKER {
                                 // skill_extraction 场景：解析 XML 并存储为 Procedure 节点
                                 if scenario.name() == "skill_extraction" {
-                                    let parsed_skills = crate::proactive::skill_parser::parse_skill_report(&llm_response);
+                                    let mut parsed_skills = crate::proactive::skill_parser::parse_skill_report(&llm_response);
+                                    // Classify failure types from execution logs and stamp
+                                    // each new skill with signals_seen (empirical counterpart
+                                    // to the LLM-prescribed signals[]).
+                                    let signals_seen = crate::proactive::scenarios::skill_extraction::extract_signals_seen(
+                                        &scenario_ctx.execution_logs
+                                    );
+                                    for skill in &mut parsed_skills {
+                                        skill.signals_seen = signals_seen.clone();
+                                    }
                                     let items_extracted = if !parsed_skills.is_empty() {
                                         let space_id = scenario_ctx.active_space_id.clone();
                                         let mut stored_count = 0usize;

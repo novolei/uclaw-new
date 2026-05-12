@@ -15,6 +15,10 @@ pub struct ParsedSkill {
     /// 描述「哪类用户提问或错误消息」应该触发本技能。
     /// 若 LLM 未输出该块，则为空 Vec（向后兼容）。
     pub signals: Vec<String>,
+    /// 从执行日志失败信息分类出的高层次错误信号（来自 failure_signals::classify_error）。
+    /// 这是 signals[] 的经验对应版：「该技能是从哪类失败中被提炼出来的」。
+    /// 若提取时无失败日志，则为空 Vec（向后兼容）。
+    pub signals_seen: Vec<String>,
 }
 
 /// 解析 <skill_report> XML 中的 <skill> 标签
@@ -80,6 +84,7 @@ pub fn parse_skill_report(xml_text: &str) -> Vec<ParsedSkill> {
             steps,
             pitfalls,
             signals,
+            signals_seen: Vec::new(), // populated by service layer from execution logs
         });
     }
 
@@ -227,6 +232,14 @@ pub fn store_skill_as_procedure(
     if !skill.signals.is_empty() {
         metadata["signals"] = serde_json::Value::Array(
             skill.signals.iter()
+                .map(|s| serde_json::Value::String(s.clone()))
+                .collect(),
+        );
+    }
+
+    if !skill.signals_seen.is_empty() {
+        metadata["signals_seen"] = serde_json::Value::Array(
+            skill.signals_seen.iter()
                 .map(|s| serde_json::Value::String(s.clone()))
                 .collect(),
         );
@@ -402,21 +415,35 @@ fn upgrade_existing_skill(
     // Update signals if the re-extraction produced any. Empty re-extraction
     // keeps the old signals (a re-extraction without signals shouldn't wipe
     // existing trigger phrases — that's worse than keeping stale ones).
-    if !skill.signals.is_empty() {
+    // Same rule applies to signals_seen — batch both updates into one
+    // metadata write to avoid two separate round-trips.
+    let need_signals_update = !skill.signals.is_empty();
+    let need_signals_seen_update = !skill.signals_seen.is_empty();
+    if need_signals_update || need_signals_seen_update {
         let mut metadata = existing.metadata.clone().unwrap_or_else(|| serde_json::json!({}));
         if let Some(obj) = metadata.as_object_mut() {
-            obj.insert(
-                "signals".to_string(),
-                serde_json::Value::Array(
-                    skill.signals.iter().map(|s| serde_json::Value::String(s.clone())).collect(),
-                ),
-            );
+            if need_signals_update {
+                obj.insert(
+                    "signals".to_string(),
+                    serde_json::Value::Array(
+                        skill.signals.iter().map(|s| serde_json::Value::String(s.clone())).collect(),
+                    ),
+                );
+            }
+            if need_signals_seen_update {
+                obj.insert(
+                    "signals_seen".to_string(),
+                    serde_json::Value::Array(
+                        skill.signals_seen.iter().map(|s| serde_json::Value::String(s.clone())).collect(),
+                    ),
+                );
+            }
         }
         if let Err(e) = store.update_node(&existing.id, None, None, Some(&metadata)) {
             tracing::warn!(
                 node_id = %existing.id,
                 err = %e,
-                "skill_parser: signals update failed (continuing)"
+                "skill_parser: signals/signals_seen update failed (continuing)"
             );
         }
     }
@@ -734,6 +761,7 @@ mod tests {
             steps: "测试步骤".to_string(),
             pitfalls: "测试陷阱".to_string(),
             signals: vec![],
+            signals_seen: vec![],
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -844,6 +872,7 @@ mod tests {
             steps: "v1".into(),
             pitfalls: "v1".into(),
             signals: vec![],
+            signals_seen: vec![],
         };
         let s2 = ParsedSkill {
             name: "处理 edit 工具文本匹配错误的备选插入策略".into(), // +1 word prefix
@@ -852,6 +881,7 @@ mod tests {
             steps: "v2".into(),
             pitfalls: "v2".into(),
             signals: vec![],
+            signals_seen: vec![],
         };
 
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
@@ -884,6 +914,7 @@ mod tests {
             steps: "v1 steps".into(),
             pitfalls: "v1 pitfalls".into(),
             signals: vec![],
+            signals_seen: vec![],
         };
         let s2 = ParsedSkill {
             name: "  前端游戏开发项目工作流  ".into(), // same after normalize
@@ -892,6 +923,7 @@ mod tests {
             steps: "v2 steps".into(),
             pitfalls: "v2 pitfalls".into(),
             signals: vec![],
+            signals_seen: vec![],
         };
 
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
@@ -991,6 +1023,7 @@ mod tests {
                 "token expired".into(),
                 "authentication failed".into(),
             ],
+            signals_seen: vec![],
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -1025,6 +1058,7 @@ mod tests {
             steps: "s".into(),
             pitfalls: "pt".into(),
             signals: vec![],
+            signals_seen: vec![],
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -1055,6 +1089,7 @@ mod tests {
             steps: "1. detect\n2. swap".into(),
             pitfalls: "don't loop".into(),
             signals: vec!["old-signal".into()],
+            signals_seen: vec![],
         };
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
 
@@ -1075,6 +1110,7 @@ mod tests {
             steps: "1. detect\n2. swap".into(),
             pitfalls: "don't loop".into(),
             signals: vec!["new1".into(), "new2".into()],
+            signals_seen: vec![],
         };
         let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
 
@@ -1113,6 +1149,7 @@ mod tests {
             steps: "s".into(),
             pitfalls: "pt".into(),
             signals: vec!["keep-me".into()],
+            signals_seen: vec![],
         };
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
 
@@ -1124,6 +1161,7 @@ mod tests {
             steps: "s".into(),
             pitfalls: "pt".into(),
             signals: vec![],  // empty — should NOT wipe existing signals
+            signals_seen: vec![],
         };
         let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
 

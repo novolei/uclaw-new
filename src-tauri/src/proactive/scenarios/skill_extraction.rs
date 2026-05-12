@@ -56,6 +56,28 @@ pub const SKILL_EXTRACTION_SYSTEM_PROMPT: &str = r#"你是一个自我改进代�
 - 不要泛泛而谈，要基于具体的执行日志给出具体建议
 "#;
 
+/// Aggregate failure-type signals across all failed execution logs.
+///
+/// Iterates the failure logs, serialises each `tool_output` to a string,
+/// and runs `classify_error` on it.  The union of all returned signals
+/// is returned as a sorted, deduplicated `Vec<String>`.
+///
+/// An empty result means none of the failure messages matched a known
+/// pattern — the skill still extracts, just without `signals_seen` entries.
+pub fn extract_signals_seen(logs: &[ExecutionLog]) -> Vec<String> {
+    use crate::proactive::scenarios::failure_signals::classify_error;
+    let mut sigs = std::collections::BTreeSet::new();
+    for log in logs {
+        if !log.success {
+            let msg = serde_json::to_string(&log.tool_output).unwrap_or_default();
+            for s in classify_error(&msg) {
+                sigs.insert(s.to_string());
+            }
+        }
+    }
+    sigs.into_iter().collect()
+}
+
 pub struct SkillExtractionScenario {
     config: SkillExtractionConfig,
 }
@@ -356,5 +378,48 @@ mod tests {
         assert!(result.contains("read_file"));
         assert!(result.contains("FAILED"));
         assert!(result.contains("SUCCESS"));
+    }
+
+    #[test]
+    fn signals_seen_extracted_from_failure_logs() {
+        // Build a failure log whose tool_output contains a 403 message.
+        let mut log = make_execution_log("web_fetch", false, 500);
+        log.tool_output = serde_json::json!({"error": "HTTP 403 Forbidden"});
+
+        let logs = vec![log];
+        let sigs = super::extract_signals_seen(&logs);
+
+        assert!(sigs.contains(&"http_4xx".to_string()),
+            "expected http_4xx; got {:?}", sigs);
+        assert!(sigs.contains(&"permission_denied".to_string()),
+            "expected permission_denied; got {:?}", sigs);
+    }
+
+    #[test]
+    fn signals_seen_empty_for_success_logs_only() {
+        let logs = vec![
+            make_execution_log("read_file", true, 50),
+            make_execution_log("search", true, 100),
+        ];
+        let sigs = super::extract_signals_seen(&logs);
+        assert!(sigs.is_empty(), "no failures → signals_seen should be empty; got {:?}", sigs);
+    }
+
+    #[test]
+    fn signals_seen_unions_across_multiple_failure_logs() {
+        // Two distinct failure logs contributing different signals.
+        // Result should contain BOTH signal sets (union, not just first).
+        let mut log_a = make_execution_log("web_fetch", false, 100);
+        log_a.tool_output = serde_json::json!({"error": "HTTP 403 Forbidden"});
+        let mut log_b = make_execution_log("api_call", false, 500);
+        log_b.tool_output = serde_json::json!({"error": "request timed out after 30s"});
+
+        let sigs = extract_signals_seen(&[log_a, log_b]);
+        // From log_a: http_4xx + permission_denied
+        // From log_b: timeout
+        // Union should have all three.
+        assert!(sigs.contains(&"http_4xx".to_string()),  "missing http_4xx; got {:?}", sigs);
+        assert!(sigs.contains(&"permission_denied".to_string()), "missing permission_denied; got {:?}", sigs);
+        assert!(sigs.contains(&"timeout".to_string()),  "missing timeout; got {:?}", sigs);
     }
 }
