@@ -128,9 +128,20 @@ function remarkPreserveBreaks() {
 
 // ===== Markdown 渲染器组件 =====
 
-const REMARK_PLUGINS = [remarkGfm, remarkMath]
-const REMARK_PLUGINS_WITH_BREAKS = [remarkGfm, remarkMath, remarkPreserveBreaks]
-const REHYPE_PLUGINS = [rehypeKatex]
+// remark-math option: require `$$...$$` for math instead of `$...$`.
+// With the default `singleDollarTextMath: true`, currency mentions like
+// `$3.65`, `$10.77`, `$0.58` get paired across long spans of prose and
+// everything between two `$` signs renders as KaTeX italic math. We saw
+// this break the bottom blockquote of stock-comparison responses: text
+// like `**Meta居中**` rendered as `∗∗Meta居中∗∗` in math italic because
+// it sat between two currency `$`s. Math users wanting inline expressions
+// can use `$$x^2$$` — agents almost never need inline math but routinely
+// emit currency, so this trade-off is one-sided.
+import type { PluggableList } from 'unified'
+const REMARK_MATH_OPTIONS = { singleDollarTextMath: false }
+const REMARK_PLUGINS: PluggableList = [remarkGfm, [remarkMath, REMARK_MATH_OPTIONS]]
+const REMARK_PLUGINS_WITH_BREAKS: PluggableList = [remarkGfm, [remarkMath, REMARK_MATH_OPTIONS], remarkPreserveBreaks]
+const REHYPE_PLUGINS: PluggableList = [rehypeKatex]
 
 /** 链接渲染器：外部 URL 用 Tauri openExternal 打开 */
 const MarkdownLink = React.memo(function MarkdownLink({
