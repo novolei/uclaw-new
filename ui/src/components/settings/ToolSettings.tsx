@@ -1,29 +1,51 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { SettingsSection } from './primitives/SettingsSection'
 import { SettingsToggle } from './primitives/SettingsToggle'
 import { SettingsCard } from './primitives/SettingsCard'
-import { listMcpServers, listSkills, toggleSkill, forkSkillToUser, reloadSkills } from '@/lib/tauri-bridge'
-import type { McpServerInfo, SkillInfo } from '@/lib/types'
+import {
+  listMcpServers, listSkills, toggleSkill, forkSkillToUser, reloadSkills,
+  listActiveManifestSkills,
+} from '@/lib/tauri-bridge'
+import type { McpServerInfo, SkillInfo, ActiveManifestSkill } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { McpServerForm } from './McpServerForm'
 import { toast } from 'sonner'
+import { RefreshCw } from 'lucide-react'
 
-const PROVENANCE_BADGE: Record<NonNullable<SkillInfo['provenance']>, { label: string; className: string }> = {
+type ProvenanceKey = NonNullable<SkillInfo['provenance']> | 'learned'
+
+const PROVENANCE_BADGE: Record<ProvenanceKey, { label: string; className: string }> = {
   bundled: { label: 'Bundled', className: 'bg-primary/10 text-primary border-primary/20' },
   user:    { label: 'User',    className: 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400' },
   project: { label: 'Project', className: 'bg-muted text-muted-foreground border-border' },
+  learned: { label: 'Learned', className: 'bg-amber-500/10 text-amber-600 border-amber-500/20 dark:text-amber-400' },
 }
 
 export function ToolSettings() {
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [skills, setSkills] = useState<SkillInfo[]>([])
+  const [activeManifest, setActiveManifest] = useState<ActiveManifestSkill[] | null>(null)
+  const [manifestLoading, setManifestLoading] = useState(false)
   const [showMcpForm, setShowMcpForm] = useState(false)
   const [forkingName, setForkingName] = useState<string | null>(null)
+
+  const refreshActiveManifest = useCallback(async () => {
+    setManifestLoading(true)
+    try {
+      const rows = await listActiveManifestSkills()
+      setActiveManifest(rows)
+    } catch (e) {
+      toast.error('加载活动技能清单失败', { description: String(e) })
+    } finally {
+      setManifestLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
     listMcpServers().then(setMcpServers)
     listSkills().then(setSkills)
-  }, [])
+    refreshActiveManifest()
+  }, [refreshActiveManifest])
 
   const handleSkillToggle = async (name: string, enabled: boolean) => {
     await toggleSkill({ name, enabled })
@@ -43,6 +65,9 @@ export function ToolSettings() {
       // provenance badge flips to "User" without a manual reload.
       const fresh = await reloadSkills()
       setSkills(fresh)
+      // Manifest contents don't change on fork (same name, different tier)
+      // but the panel's provenance label does — refresh it.
+      refreshActiveManifest()
     } catch (e) {
       toast.error('Fork 失败', {
         description: String(e),
@@ -84,6 +109,67 @@ export function ToolSettings() {
         <Button variant="outline" size="sm" onClick={() => setShowMcpForm(true)}>
           添加 MCP 服务器
         </Button>
+      </SettingsSection>
+
+      <SettingsSection
+        title="活动技能（调试）"
+        description="此刻**会被注入到 Agent system prompt** 的技能清单 — 顺序与 Agent 看到的完全一致。用于排查「为什么这条 skill 没被召回」之类的问题。包含 builtin (Bundled/User/Project) + Learned (已 promoted)。"
+      >
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-muted-foreground">
+              {activeManifest == null
+                ? '加载中…'
+                : activeManifest.length === 0
+                ? '当前 manifest 为空 — 没有 enabled 的 builtin 技能且没有 promoted 的 learned 技能'
+                : `共 ${activeManifest.length} 条按 E3 排序`}
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={manifestLoading}
+              onClick={refreshActiveManifest}
+            >
+              <RefreshCw className={`size-3.5 mr-1 ${manifestLoading ? 'animate-spin' : ''}`} />
+              刷新
+            </Button>
+          </div>
+          {activeManifest && activeManifest.length > 0 && (
+            <div className="space-y-1">
+              {activeManifest.map((row) => {
+                const badge = PROVENANCE_BADGE[row.provenance]
+                return (
+                  <div
+                    key={`${row.rank}-${row.name}`}
+                    className="flex items-start gap-2 px-2 py-1.5 rounded border border-border/40 bg-muted/30 hover:bg-muted/50 transition-colors"
+                  >
+                    <span className="text-[10px] text-muted-foreground/60 tabular-nums w-5 flex-shrink-0 text-right pt-0.5">
+                      {row.rank}.
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-xs font-medium truncate">{row.name}</span>
+                        <span className={`text-[9px] px-1 py-px rounded border ${badge.className}`}>
+                          {badge.label}
+                        </span>
+                        {row.provenance === 'learned' && row.citedCount > 0 && (
+                          <span className="text-[9px] text-muted-foreground/60">
+                            ✓ {row.citedCount}
+                          </span>
+                        )}
+                      </div>
+                      {row.summary && (
+                        <div className="text-[11px] text-muted-foreground mt-0.5 line-clamp-1">
+                          {row.summary}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
       </SettingsSection>
 
       <SettingsSection

@@ -2339,6 +2339,91 @@ pub async fn fork_skill_to_user(
     Ok(dest_dir.display().to_string())
 }
 
+/// One row of the active-manifest debug panel.
+///
+/// Returned by `list_active_manifest_skills`. Mirrors the actual selection
+/// `build_skills_manifest` performs (top-K by E3 ranking + strategy bias),
+/// surfacing the structured rows instead of the formatted prompt string
+/// so the Settings UI can render badges + per-skill rank/cited counts.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveManifestSkill {
+    /// 1-based position in the injected manifest.
+    pub rank: usize,
+    pub name: String,
+    pub summary: String,
+    /// "bundled" | "user" | "project" | "learned" — for static/borrowed
+    /// skills this resolves through the registry to the real disk tier.
+    pub provenance: String,
+    /// cited_count for learned skills; 0 for static (kept for symmetry).
+    pub cited_count: u64,
+}
+
+/// Compute the skills manifest that **would be** injected for a session
+/// right now, without actually running the agent loop. Powers the
+/// Settings → 内置技能 → 活动技能 debug panel: users can see exactly
+/// which skills the LLM sees + in what order.
+///
+/// Args mirror the agent-loop call site in `send_agent_message`:
+///   - `space_id` — currently the agent loop hard-codes `"default"`;
+///     the IPC accepts it for forward-compat with per-workspace scoping.
+///   - `strategy` — optional `"repair" | "optimize" | "innovate"`;
+///     unrecognized values fall back to Balanced (the same as the loop).
+///   - `max_entries` — defaults to 30 to match the loop.
+#[tauri::command]
+pub async fn list_active_manifest_skills(
+    state: State<'_, AppState>,
+    space_id: Option<String>,
+    strategy: Option<String>,
+    max_entries: Option<usize>,
+) -> Result<Vec<ActiveManifestSkill>, Error> {
+    use crate::skills_manifest::{compute_active_manifest_entries, StrategyBias};
+
+    let bias = match strategy.as_deref() {
+        Some("repair") => StrategyBias::Repair,
+        Some("optimize") => StrategyBias::Optimize,
+        Some("innovate") => StrategyBias::Innovate,
+        _ => StrategyBias::Balanced,
+    };
+    let sid = space_id.unwrap_or_else(|| "default".into());
+    let limit = max_entries.unwrap_or(30);
+
+    let registry = state.skills_registry.read().await;
+    let store = &state.memory_graph_store;
+    let entries = compute_active_manifest_entries(&registry, store, &sid, limit, bias);
+
+    // Enrich "builtin" provenance to the real disk tier using the registry's
+    // LoadedSkill data. "learned" passes through unchanged.
+    let enriched: Vec<ActiveManifestSkill> = entries
+        .into_iter()
+        .enumerate()
+        .map(|(idx, e)| {
+            let provenance = if e.provenance == "learned" {
+                "learned".to_string()
+            } else {
+                registry
+                    .get_loaded(&e.name)
+                    .map(|loaded| match loaded.provenance {
+                        crate::skills::SkillProvenance::Bundled => "bundled",
+                        crate::skills::SkillProvenance::User => "user",
+                        crate::skills::SkillProvenance::Project => "project",
+                    })
+                    .unwrap_or("project")
+                    .to_string()
+            };
+            ActiveManifestSkill {
+                rank: idx + 1,
+                name: e.name,
+                summary: e.summary,
+                provenance,
+                cited_count: e.cited_count,
+            }
+        })
+        .collect();
+
+    Ok(enriched)
+}
+
 /// Recursively copy a directory tree. Symlinks are intentionally ignored —
 /// Bundled skills are vendored from the repo so they shouldn't contain any,
 /// and silently following one could let a malicious skill exfiltrate
