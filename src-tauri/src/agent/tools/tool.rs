@@ -23,6 +23,57 @@ impl ToolOutput {
     }
 }
 
+/// Categorical label for a tool failure, exposed to the LLM as a
+/// bracketed tag in the error message (e.g. `[NotFound] ...`).
+///
+/// Picking the right kind helps the LLM reason about retry vs.
+/// alternative-approach. e.g. NotFound rarely benefits from retry but
+/// suggests trying a different URL; Timeout often does benefit from a
+/// retry; PermissionDenied means stop and ask the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolErrorKind {
+    /// Input doesn't match schema / missing required field / malformed value.
+    InvalidInput,
+    /// Resource doesn't exist (HTTP 404, FS ENOENT, DB row missing).
+    ResourceNotFound,
+    /// Authorization or sandboxing rejection (HTTP 403, FS EACCES, SSRF).
+    PermissionDenied,
+    /// Operation took too long.
+    Timeout,
+    /// Network-level failure (DNS, connection refused, TLS error).
+    NetworkError,
+    /// Server-side error (HTTP 5xx, downstream service unhealthy).
+    UpstreamError,
+    /// HTTP 429 / API rate limit.
+    RateLimited,
+    /// Body exceeded buffer cap, file too large, etc.
+    PayloadTooLarge,
+    /// Body couldn't be parsed as expected format (JSON parse, malformed HTML).
+    ParseError,
+    /// Service / resource temporarily unavailable (DB locked, service starting).
+    Unavailable,
+    /// Catch-all when no other variant fits.
+    Other,
+}
+
+impl ToolErrorKind {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::InvalidInput => "InvalidInput",
+            Self::ResourceNotFound => "NotFound",
+            Self::PermissionDenied => "PermissionDenied",
+            Self::Timeout => "Timeout",
+            Self::NetworkError => "NetworkError",
+            Self::UpstreamError => "UpstreamError",
+            Self::RateLimited => "RateLimited",
+            Self::PayloadTooLarge => "PayloadTooLarge",
+            Self::ParseError => "ParseError",
+            Self::Unavailable => "Unavailable",
+            Self::Other => "Other",
+        }
+    }
+}
+
 /// Tool error
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
@@ -34,6 +85,29 @@ pub enum ToolError {
     NotFound(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// Structured error with a category and a user/LLM-friendly message.
+    /// Display formats as `[Kind] message` so the LLM can pattern-match
+    /// on the bracketed tag.
+    #[error("[{}] {message}", .kind.as_str())]
+    Kinded {
+        kind: ToolErrorKind,
+        message: String,
+        source_context: Option<String>,
+    },
+}
+
+impl ToolError {
+    pub fn kinded(kind: ToolErrorKind, message: impl Into<String>) -> Self {
+        Self::Kinded { kind, message: message.into(), source_context: None }
+    }
+
+    pub fn kinded_with_source(
+        kind: ToolErrorKind,
+        message: impl Into<String>,
+        source: impl Into<String>,
+    ) -> Self {
+        Self::Kinded { kind, message: message.into(), source_context: Some(source.into()) }
+    }
 }
 
 impl serde::Serialize for ToolError {
@@ -114,4 +188,48 @@ impl ToolRegistry {
 
 impl Default for ToolRegistry {
     fn default() -> Self { Self::new() }
+}
+
+#[cfg(test)]
+mod kinded_error_tests {
+    use super::*;
+
+    #[test]
+    fn kinded_error_displays_with_bracketed_kind() {
+        let err = ToolError::kinded(
+            ToolErrorKind::ResourceNotFound,
+            "Page returned 404",
+        );
+        assert_eq!(format!("{}", err), "[NotFound] Page returned 404");
+    }
+
+    #[test]
+    fn kinded_error_serializes_through_existing_serde_path() {
+        let err = ToolError::kinded(
+            ToolErrorKind::PermissionDenied,
+            "URL blocked",
+        );
+        let json = serde_json::to_string(&err).unwrap();
+        // Existing serde impl uses Display; both new + legacy variants share
+        // the same serialization path.
+        assert!(json.contains("PermissionDenied"), "got json: {}", json);
+        assert!(json.contains("URL blocked"), "got json: {}", json);
+    }
+
+    #[test]
+    fn kinded_with_source_keeps_source_field() {
+        let err = ToolError::kinded_with_source(
+            ToolErrorKind::ParseError,
+            "Could not parse JSON",
+            "expected ',' at line 5",
+        );
+        match err {
+            ToolError::Kinded { kind, message, source_context } => {
+                assert_eq!(kind, ToolErrorKind::ParseError);
+                assert_eq!(message, "Could not parse JSON");
+                assert_eq!(source_context.as_deref(), Some("expected ',' at line 5"));
+            }
+            _ => panic!("expected Kinded variant"),
+        }
+    }
 }
