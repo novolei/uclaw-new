@@ -30,6 +30,21 @@ export const workspacesAtom = atom<WorkspaceInfo[]>([])
 export const activeWorkspaceIdAtom = atom<string | null>(null)
 
 /**
+ * Active workspace's filesystem path, or null if no workspace has a
+ * directory attached. Drives the cwd argument for every git IPC call
+ * from BranchPicker / GitActionsPicker / GitWorkbenchDialog (W6 PR B).
+ *
+ * Pure derived atom — re-evaluates when `activeWorkspaceIdAtom` or
+ * `workspacesAtom` changes. No IO, no async.
+ */
+export const activeWorkspaceCwdAtom = atom<string | null>((get) => {
+  const id = get(activeWorkspaceIdAtom)
+  if (!id) return null
+  const ws = get(workspacesAtom).find((w) => w.id === id)
+  return ws?.path ?? null
+})
+
+/**
  * Direction of the most-recent workspace switch — used by the UI to
  * pick which side an iOS-style slide animation enters from.
  * - `forward`  = moved to a later workspace in sortOrder → slide IN from right

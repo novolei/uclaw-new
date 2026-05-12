@@ -89,6 +89,7 @@ import { sendWithCmdEnterAtom } from '@/atoms/shortcut-atoms'
 import type { AgentSendInput, AgentMessage, AgentPendingFile } from '@/lib/agent-types'
 import { fileToBase64 } from '@/lib/file-utils'
 import { createClipboardTextFile } from '@/lib/clipboard-attachment'
+import { GitChipsRow } from '@/components/chat/git/GitChipsRow'
 import {
   updateSettings,
   getAgentSessionPath,
@@ -1509,6 +1510,8 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                 />
                 <StrategyPresetSelector sessionId={sessionId} />
                 {/* <FeishuNotifyToggle sessionId={sessionId} /> */}
+
+                <GitChipsRow />
               </div>
 
               <div className="flex items-center gap-1.5">

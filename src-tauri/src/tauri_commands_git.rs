@@ -29,8 +29,68 @@ use crate::git::{branch, github, repo, status};
 
 // ─── Sandbox helpers ──────────────────────────────────────────────────
 
-/// Resolve `cwd` against the user's registered MountRoots. Accepts any
-/// mount (workspace, session, attached_dir) — read-permissive.
+/// Collect every directory path that counts as a legitimate cwd target:
+/// 1. All workspace paths from the `spaces.path` column (user-customized
+///    workspace directories, possibly outside `~/Documents/workground/`)
+/// 2. All session-attached_dirs from `agent_sessions.attached_dirs` (JSON)
+/// 3. Active-workspace mounts from `files_rail_list_mounts(None)` (the
+///    default fallback path when no spaces.path is set)
+///
+/// Returns `(workspace_paths, attached_dirs)` so the editable-mount
+/// helper can gate writes: workspaces default editable=true; attached_dirs
+/// default editable=false.
+async fn collect_sandbox_paths(
+    state: &AppState,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut workspace_paths: Vec<PathBuf> = Vec::new();
+    let mut attached_dirs: Vec<PathBuf> = Vec::new();
+
+    // Source 1: spaces.path column (user-customized workspace dirs).
+    if let Ok(conn) = state.db.lock() {
+        if let Ok(mut stmt) =
+            conn.prepare("SELECT path FROM spaces WHERE path IS NOT NULL AND path != ''")
+        {
+            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                for row in rows.flatten() {
+                    workspace_paths.push(PathBuf::from(row));
+                }
+            }
+        }
+
+        // Source 2: all sessions' attached_dirs (json array per row).
+        if let Ok(mut stmt) =
+            conn.prepare("SELECT attached_dirs FROM agent_sessions WHERE attached_dirs IS NOT NULL")
+        {
+            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                for row in rows.flatten() {
+                    if let Ok(dirs) = serde_json::from_str::<Vec<String>>(&row) {
+                        for d in dirs {
+                            if !d.trim().is_empty() {
+                                attached_dirs.push(PathBuf::from(d));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Source 3: fallback mount registry (gives us the default
+    // ~/Documents/workground when spaces.path is null).
+    if let Ok(mounts) = state.files_rail_list_mounts(None).await {
+        for m in mounts {
+            match m.kind {
+                crate::files_rail::MountKind::AttachedDir => attached_dirs.push(m.path),
+                _ => workspace_paths.push(m.path),
+            }
+        }
+    }
+
+    (workspace_paths, attached_dirs)
+}
+
+/// Resolve `cwd` against the user's registered workspaces + attached_dirs.
+/// Read-permissive — any registered path accepted.
 pub(crate) async fn assert_cwd_in_any_mount(
     state: &AppState,
     cwd: &str,
@@ -40,18 +100,13 @@ pub(crate) async fn assert_cwd_in_any_mount(
         .canonicalize()
         .map_err(|e| format!("invalid cwd '{cwd}': {e}"))?;
 
-    let mounts = state
-        .files_rail_list_mounts(None)
-        .await
-        .map_err(|e| format!("failed to list mounts: {e}"))?;
+    let (workspace_paths, attached_dirs) = collect_sandbox_paths(state).await;
 
-    for mount in mounts {
-        let Ok(canonical_mount) = mount.path.canonicalize() else {
+    for p in workspace_paths.iter().chain(attached_dirs.iter()) {
+        let Ok(canonical) = p.canonicalize() else {
             continue;
         };
-        if canonical_candidate == canonical_mount
-            || canonical_candidate.starts_with(&canonical_mount)
-        {
+        if canonical_candidate == canonical || canonical_candidate.starts_with(&canonical) {
             return Ok(canonical_candidate);
         }
     }
@@ -60,8 +115,9 @@ pub(crate) async fn assert_cwd_in_any_mount(
     ))
 }
 
-/// Resolve `cwd` against MountRoots AND require the matching mount to
-/// be `editable`. Write-gated.
+/// Resolve `cwd` against workspaces + attached_dirs, but require the
+/// match to come from a workspace (editable=true) — attached_dirs are
+/// read-only by default in W6 PR B.
 pub(crate) async fn assert_cwd_in_editable_mounts(
     state: &AppState,
     cwd: &str,
@@ -71,31 +127,30 @@ pub(crate) async fn assert_cwd_in_editable_mounts(
         .canonicalize()
         .map_err(|e| format!("invalid cwd '{cwd}': {e}"))?;
 
-    let mounts = state
-        .files_rail_list_mounts(None)
-        .await
-        .map_err(|e| format!("failed to list mounts: {e}"))?;
+    let (workspace_paths, attached_dirs) = collect_sandbox_paths(state).await;
 
-    for mount in mounts {
-        let Ok(canonical_mount) = mount.path.canonicalize() else {
+    for p in workspace_paths.iter() {
+        let Ok(canonical) = p.canonicalize() else {
             continue;
         };
-        if canonical_candidate == canonical_mount
-            || canonical_candidate.starts_with(&canonical_mount)
-        {
-            if mount.editable {
-                return Ok(canonical_candidate);
-            } else {
-                return Err(format!(
-                    "cwd '{cwd}' is inside mount '{}' which is read-only; \
-                     enable write access via the files-rail mount toggle to proceed",
-                    mount.label
-                ));
-            }
+        if canonical_candidate == canonical || canonical_candidate.starts_with(&canonical) {
+            return Ok(canonical_candidate);
+        }
+    }
+    // If we matched an attached_dir instead, surface a targeted error.
+    for p in attached_dirs.iter() {
+        let Ok(canonical) = p.canonicalize() else {
+            continue;
+        };
+        if canonical_candidate == canonical || canonical_candidate.starts_with(&canonical) {
+            return Err(format!(
+                "cwd '{cwd}' is inside a read-only attached directory; \
+                 enable write access via the files-rail mount toggle to proceed",
+            ));
         }
     }
     Err(format!(
-        "cwd '{cwd}' is not inside any registered editable mount"
+        "cwd '{cwd}' is not inside any registered editable workspace"
     ))
 }
 
