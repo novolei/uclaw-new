@@ -79,14 +79,12 @@ describe('clipboard-attachment', () => {
     })
 
     it('writes the input text into the File', () => {
+      // ASCII-only payload: byte count equals character count, so f.size
+      // matches the input length. (jsdom does not implement File.text().)
       const payload = 'payload here'
       const f = createClipboardTextFile(payload)
-      // Verify content round-trips: create a new Blob from the original File
-      // and verify it preserves the payload
-      const blob = new Blob([f], { type: f.type })
-      expect(blob.size).toBe(payload.length)
-      expect(f.size).toBe(payload.length)
       expect(f instanceof File).toBe(true)
+      expect(f.size).toBe(payload.length)
     })
 
     it('detects markdown when frontmatter uses CRLF line endings', () => {
