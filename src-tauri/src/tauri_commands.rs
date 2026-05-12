@@ -4051,6 +4051,104 @@ pub async fn send_agent_message(
     app_handle: tauri::AppHandle,
     input: SendAgentMessageInput,
 ) -> Result<(), Error> {
+    // ── /compact intercept (agent path) ─────────────────────────────
+    // Same handling as the chat path: user typed `/compact` either via
+    // the input box or the ContextUsageBadge button. Compact the agent
+    // session in-place and emit a result, no LLM call needed.
+    if input.user_message.trim() == "/compact" {
+        const COMPACT_KEEP_TURNS: usize = 10;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+
+        // Read current message count + delete all but the most recent N.
+        let (before_count, after_count) = {
+            let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+            let before: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1",
+                rusqlite::params![input.session_id],
+                |r| r.get(0),
+            ).map_err(|e| Error::Database(e))?;
+
+            // Find the created_at threshold: keep messages newer than the
+            // (before - keep)-th oldest. Easier to express: ORDER BY DESC
+            // LIMIT keep, then take MIN(created_at) of that set.
+            let keep_threshold: Option<i64> = conn.query_row(
+                "SELECT MIN(created_at) FROM (
+                     SELECT created_at FROM agent_messages
+                     WHERE session_id = ?1
+                     ORDER BY created_at DESC
+                     LIMIT ?2
+                 )",
+                rusqlite::params![input.session_id, COMPACT_KEEP_TURNS as i64],
+                |r| r.get(0),
+            ).ok();
+
+            if let Some(threshold) = keep_threshold {
+                let deleted = conn.execute(
+                    "DELETE FROM agent_messages
+                     WHERE session_id = ?1 AND created_at < ?2",
+                    rusqlite::params![input.session_id, threshold],
+                ).map_err(|e| Error::Database(e))? as i64;
+
+                if deleted > 0 {
+                    // Insert a summary placeholder so the LLM sees an explanation
+                    // for the missing history on the next turn.
+                    let summary_id = uuid::Uuid::new_v4().to_string();
+                    let summary = format!(
+                        "[Context compressed by /compact: {} earlier messages removed]",
+                        deleted,
+                    );
+                    let _ = conn.execute(
+                        "INSERT INTO agent_messages (id, session_id, role, content, created_at)
+                         VALUES (?1, ?2, 'user', ?3, ?4)",
+                        rusqlite::params![summary_id, input.session_id, summary, threshold - 1],
+                    );
+
+                    // Update count: removed N - 1 net (we deleted N and inserted 1 summary).
+                    let _ = conn.execute(
+                        "UPDATE agent_sessions
+                         SET message_count = (SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1),
+                             updated_at = ?2
+                         WHERE id = ?1",
+                        rusqlite::params![input.session_id, now_ms],
+                    );
+                }
+
+                let after: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1",
+                    rusqlite::params![input.session_id],
+                    |r| r.get(0),
+                ).map_err(|e| Error::Database(e))?;
+                (before as usize, after as usize)
+            } else {
+                (before as usize, before as usize)
+            }
+        };
+
+        // Emit completion events so the streaming UI sees the compact
+        // finish + reloads message list. We use the same events the real
+        // stream emits to avoid frontend special-casing.
+        let removed = before_count.saturating_sub(after_count);
+        let _ = app_handle.emit("agent:context-compacted", serde_json::json!({
+            "sessionId": input.session_id,
+            "removed": removed,
+            "remaining": after_count,
+        }));
+        // Final "done" event so the UI's streaming state can clear.
+        let _ = app_handle.emit("agent:turn_done", serde_json::json!({
+            "sessionId": input.session_id,
+            "result": "compact_done",
+            "removed": removed,
+            "remaining": after_count,
+        }));
+        tracing::info!(
+            session_id = %input.session_id,
+            removed,
+            remaining = after_count,
+            "/compact: agent session compacted",
+        );
+        return Ok(());
+    }
+
     // Resolve LLM config
     let legacy_config = state.llm_config.read().await;
     let max_tokens = legacy_config.max_tokens.unwrap_or(8192);

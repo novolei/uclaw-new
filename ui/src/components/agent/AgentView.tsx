@@ -253,9 +253,16 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     }
   }, [sessionId, sessionChannelMap, sessionModelMap, defaultChannelId, defaultModelId, setSessionChannelMap, setSessionModelMap])
 
+  // Pull every available field from streamState — the badge popover shows
+  // input/output/cache breakdown + dollar cost. Earlier this dropped most
+  // fields, so the popover rendered blanks even when the data was there.
   const contextStatus: AgentContextStatus = {
     isCompacting: streamState?.isCompacting ?? false,
     inputTokens: streamState?.inputTokens,
+    outputTokens: streamState?.outputTokens,
+    cacheReadTokens: streamState?.cacheReadTokens,
+    cacheCreationTokens: streamState?.cacheCreationTokens,
+    costUsd: streamState?.costUsd,
     contextWindow: streamState?.contextWindow,
   }
   const setAgentStreamErrors = useSetAtom(agentStreamErrorsAtom)
@@ -1453,6 +1460,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                   outputTokens={contextStatus.outputTokens}
                   cacheReadTokens={contextStatus.cacheReadTokens}
                   cacheCreationTokens={contextStatus.cacheCreationTokens}
+                  costUsd={contextStatus.costUsd}
                   contextWindow={contextStatus.contextWindow}
                   isCompacting={contextStatus.isCompacting}
                   isProcessing={streaming}

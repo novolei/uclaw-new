@@ -292,15 +292,26 @@ pub fn format_cost(cost: f64) -> String {
 }
 
 /// Get model context window length.
+///
+/// Note: Anthropic's 1M context beta is auto-enabled in the provider layer
+/// for Sonnet 4+ / Opus 4.6+ (see llm::providers::anthropic::supports_1m_context).
+/// When that beta is on, the actual usable window is 1M, not 200K — keep
+/// these two functions in lock-step.
 pub fn get_model_context_length(model: &str) -> u32 {
-    match model {
-        m if m.contains("claude") => 200_000,
-        m if m.contains("gpt-4o") => 128_000,
-        m if m.contains("gpt-4") => 128_000,
-        m if m.contains("deepseek") => 128_000,
-        m if m.contains("qwen") => 131_072,
-        _ => 200_000,
+    let m = model.to_lowercase();
+    // 1M context window — Anthropic models that support the beta. Matches
+    // supports_1m_context() in the anthropic provider.
+    if m.contains("sonnet-4") || m.contains("sonnet4")
+        || m.contains("opus-4-6") || m.contains("opus-4-7")
+        || m.contains("opus-4-8") || m.contains("opus-4-9")
+        || m.contains("opus-5")
+    {
+        return 1_000_000;
     }
+    if m.contains("claude") { 200_000 }
+    else if m.contains("gpt-4o") || m.contains("gpt-4") || m.contains("deepseek") { 128_000 }
+    else if m.contains("qwen") { 131_072 }
+    else { 200_000 }
 }
 
 // ─── LLM Response Outputs ──────────────────────────────────────────────
