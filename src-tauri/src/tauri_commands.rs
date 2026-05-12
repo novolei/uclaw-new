@@ -4124,21 +4124,23 @@ pub async fn send_agent_message(
             }
         };
 
-        // Emit completion events so the streaming UI sees the compact
-        // finish + reloads message list. We use the same events the real
-        // stream emits to avoid frontend special-casing.
+        // Emit `chat:stream-complete` — the same event the real agent loop
+        // fires at end-of-turn (legacy chat:* prefix is shared by both chat
+        // and agent paths). The frontend's useGlobalAgentListeners handler
+        // for this event clears `running` + (newly) `isCompacting`, so the
+        // input box re-enables and the ContextUsageBadge returns to its
+        // ring-with-popover state.
+        //
+        // We previously emitted `agent:turn_done` here — that name is not
+        // wired on the frontend, so the streaming state got stuck at
+        // running:true / isCompacting:true.
         let removed = before_count.saturating_sub(after_count);
-        let _ = app_handle.emit("agent:context-compacted", serde_json::json!({
-            "sessionId": input.session_id,
-            "removed": removed,
-            "remaining": after_count,
-        }));
-        // Final "done" event so the UI's streaming state can clear.
-        let _ = app_handle.emit("agent:turn_done", serde_json::json!({
-            "sessionId": input.session_id,
-            "result": "compact_done",
-            "removed": removed,
-            "remaining": after_count,
+        let text = format!(
+            "Compacted: removed {removed} earlier messages, {after_count} remain.",
+        );
+        let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
+            "conversationId": input.session_id,
+            "text": text,
         }));
         tracing::info!(
             session_id = %input.session_id,

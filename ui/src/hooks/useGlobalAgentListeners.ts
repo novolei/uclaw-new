@@ -119,6 +119,8 @@ function startAgentListeners(store: Store): void {
         next.set(sid, {
           ...existing,
           running: false,
+          isCompacting: false,
+          compactInFlight: false,
           content: payload.text || existing.content,
           toolActivities: finalActivities,
         })
@@ -162,7 +164,7 @@ function startAgentListeners(store: Store): void {
         const existing = prev.get(sid)
         if (!existing) return prev
         const next = new Map(prev)
-        next.set(sid, { ...existing, running: false })
+        next.set(sid, { ...existing, running: false, isCompacting: false, compactInFlight: false })
         return next
       })
     })
