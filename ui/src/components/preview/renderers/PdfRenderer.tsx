@@ -148,17 +148,19 @@ export function PdfRenderer({ bytes, name }: PdfRendererProps): React.ReactEleme
   )
 }
 
+interface ToolbarButtonProps {
+  children: React.ReactNode
+  onClick: () => void
+  disabled?: boolean
+  'aria-label': string
+}
+
 function ToolbarButton({
   children,
   onClick,
   disabled,
-  ariaLabel,
-}: {
-  children: React.ReactNode
-  onClick: () => void
-  disabled?: boolean
-  ariaLabel?: string
-} & { 'aria-label'?: string }): React.ReactElement {
+  'aria-label': ariaLabel,
+}: ToolbarButtonProps): React.ReactElement {
   return (
     <button
       type="button"
