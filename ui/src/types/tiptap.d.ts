@@ -7,6 +7,22 @@ declare module '@tiptap/react' {
     updateProps(props: any): void
     destroy(): void
   }
+  // Minimal stubs for MarkdownRichEditor (W4d Task 13). The real types are
+  // in @tiptap/react/dist/index.d.ts but this ambient module override blocks
+  // them — extend here until the PLACEHOLDER is replaced with real TipTap usage.
+  export interface EditorOptions {
+    extensions?: any[]
+    content?: string
+    onUpdate?: (props: { editor: Editor }) => void
+    [key: string]: any
+  }
+  export interface Editor {
+    getHTML(): string
+    destroy(): void
+    [key: string]: any
+  }
+  export function useEditor(options: EditorOptions & { immediatelyRender?: boolean }, deps?: any[]): Editor
+  export const EditorContent: React.ComponentType<{ editor: Editor | null; [key: string]: any }>
 }
 
 declare module '@tiptap/suggestion' {
