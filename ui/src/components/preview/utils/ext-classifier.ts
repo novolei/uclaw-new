@@ -68,6 +68,26 @@ export const CODE_EXTS: ReadonlyMap<string, string> = new Map([
 ])
 
 /**
+ * Every extension that produces something other than `kind: 'binary'`
+ * from `classifyExtension`. Used by the chip plugin to gate ambiguous
+ * tokens like `arr.map` (where the suffix isn't a real ext).
+ */
+export const ALL_PREVIEWABLE_EXTS: ReadonlySet<string> = new Set<string>([
+  ...IMAGE_EXTS,
+  ...MD_EXTS,
+  'pdf',
+  'docx', 'xlsx', 'pptx',
+  'doc', 'xls', 'ppt',
+  ...Array.from(CODE_EXTS.keys()),
+])
+
+/** True if the extension would route to a non-binary renderer. */
+export function isPreviewableExt(ext: string): boolean {
+  if (!ext) return false
+  return ALL_PREVIEWABLE_EXTS.has(ext.toLowerCase())
+}
+
+/**
  * Extract a normalized extension (lowercase, no dot) from a filename.
  * Returns the empty string for filenames with no extension (`Makefile`).
  * For dotfiles (`.gitignore` / `.env`), treats the name-after-dot as the extension.

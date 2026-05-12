@@ -5,6 +5,7 @@ import {
   IMAGE_EXTS,
   CODE_EXTS,
   MD_EXTS,
+  isPreviewableExt,
 } from './ext-classifier'
 
 describe('ext-classifier', () => {
@@ -88,6 +89,30 @@ describe('ext-classifier', () => {
       expect(IMAGE_EXTS.has('png')).toBe(true)
       expect(CODE_EXTS.has('ts')).toBe(true)
       expect(MD_EXTS.has('md')).toBe(true)
+    })
+  })
+
+  describe('isPreviewableExt', () => {
+    it('returns true for code/image/markdown/office extensions', () => {
+      expect(isPreviewableExt('ts')).toBe(true)
+      expect(isPreviewableExt('rs')).toBe(true)
+      expect(isPreviewableExt('png')).toBe(true)
+      expect(isPreviewableExt('md')).toBe(true)
+      expect(isPreviewableExt('pdf')).toBe(true)
+      expect(isPreviewableExt('docx')).toBe(true)
+      expect(isPreviewableExt('xlsx')).toBe(true)
+      expect(isPreviewableExt('pptx')).toBe(true)
+      expect(isPreviewableExt('doc')).toBe(true)
+    })
+
+    it('returns false for unknown extensions', () => {
+      expect(isPreviewableExt('exe')).toBe(false)
+      expect(isPreviewableExt('map')).toBe(false)
+      expect(isPreviewableExt('')).toBe(false)
+    })
+
+    it('is case-insensitive', () => {
+      expect(isPreviewableExt('TS')).toBe(true)
     })
   })
 })
