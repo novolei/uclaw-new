@@ -262,17 +262,28 @@ impl AppState {
         memory_store.ensure_table();
 
         // B2: Skills registry
+        //
+        // Tier order matters: Bundled → User → Project. Later tiers
+        // **shadow** earlier ones on name collision, which is the
+        // intentional Fork affordance — a user-authored `tdd` in
+        // `~/.uclaw/skills/tdd/SKILL.md` overrides the bundled `tdd` of
+        // the same name. The Bundled tier is wired up below from the
+        // Tauri resource dir.
         let mut skills_reg = SkillsRegistry::new();
-        // Add default scan directories
+
         let user_skills_dir = data_dir.join("skills");
         std::fs::create_dir_all(&user_skills_dir).ok();
-        skills_reg.add_scan_dir(user_skills_dir);
-        // Also scan project-level skills/ if it exists
+        skills_reg.add_scan_dir(user_skills_dir, crate::skills::SkillProvenance::User);
+
+        // Project-local `<cwd>/skills/` is dev-mode-only — in a bundled
+        // app `current_dir()` is the launch dir which won't contain a
+        // skills tree. Production users get their copy through the
+        // Bundled tier instead.
         let project_skills = std::env::current_dir()
             .map(|d| d.join("skills"))
             .unwrap_or_default();
         if project_skills.exists() {
-            skills_reg.add_scan_dir(project_skills);
+            skills_reg.add_scan_dir(project_skills, crate::skills::SkillProvenance::Project);
         }
         // Initial discovery
         let discovered = skills_reg.discover();
