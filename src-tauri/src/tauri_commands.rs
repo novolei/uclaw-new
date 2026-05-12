@@ -4051,6 +4051,18 @@ pub async fn send_agent_message(
     app_handle: tauri::AppHandle,
     input: SendAgentMessageInput,
 ) -> Result<(), Error> {
+    // 入口探针：每次 IPC 调用都会留下一条 log，便于诊断"前端是否真的发了请求"。
+    // user_message 限制 100 字符以避免 log 噪音，bytes 展示原始字节长度。
+    tracing::info!(
+        session_id = %input.session_id,
+        msg_len = input.user_message.chars().count(),
+        msg_bytes = input.user_message.len(),
+        msg_preview = %input.user_message.chars().take(100).collect::<String>(),
+        is_compact_exact = input.user_message == "/compact",
+        is_compact_trimmed = input.user_message.trim() == "/compact",
+        "send_agent_message ENTRY",
+    );
+
     // ── /compact intercept (agent path) ─────────────────────────────
     // Same handling as the chat path: user typed `/compact` either via
     // the input box or the ContextUsageBadge button. Compact the agent
