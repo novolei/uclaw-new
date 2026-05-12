@@ -225,6 +225,64 @@ impl MemoryGraphStore {
         Ok(details)
     }
 
+    /// Manifest-only variant of [`list_top_learned_skills`] that excludes
+    /// `draft` and `deprecated` lifecycle stages.
+    ///
+    /// PR-mattpocock-3 lifecycle gate: only `promoted` skills enter the
+    /// manifest top-30. Drafts are still searchable via `skill_search` and
+    /// still considered for dedup, but they are never auto-injected into the
+    /// system prompt until usage proves them out. Pre-PR rows missing the
+    /// `lifecycle` field are treated as `'promoted'` (grandfathered).
+    ///
+    /// Use this method from `skills_manifest`. Other callers (skill_search,
+    /// fuzzy dedup, backfill) should keep using `list_top_learned_skills`
+    /// so they continue to see drafts.
+    pub fn list_promoted_learned_skills(
+        &self,
+        space_id: &str,
+        limit: usize,
+    ) -> Result<Vec<MemoryNodeDetail>, crate::error::Error> {
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, space_id, kind, title, metadata_json, created_at, updated_at
+             FROM memory_nodes
+             WHERE space_id = ?1 AND kind = ?2
+               AND COALESCE(json_extract(metadata_json, '$.skill_type'), '') = 'learned'
+               AND COALESCE(json_extract(metadata_json, '$.enabled'), 1) <> 0
+               AND COALESCE(json_extract(metadata_json, '$.lifecycle'), 'promoted') = 'promoted'
+             ORDER BY (
+               CAST(COALESCE(json_extract(metadata_json, '$.cited_count'), 0) AS REAL) *
+                 MAX(0.5,
+                     1.0 - (julianday('now') - julianday(COALESCE(json_extract(metadata_json, '$.last_cited_at'),
+                                                                  '1970-01-01T00:00:00Z'))) / 30.0
+                 ) * 10.0
+               + CAST(COALESCE(json_extract(metadata_json, '$.usage_count'), 0) AS REAL) * 3.0
+             ) DESC,
+             updated_at DESC
+             LIMIT ?3"
+        ).map_err(crate::error::Error::Database)?;
+
+        let nodes: Vec<MemoryNode> = stmt
+            .query_map(
+                params![space_id, MemoryNodeKind::Procedure.as_str(), limit as i64],
+                |row| Self::row_to_node(row),
+            )
+            .map_err(crate::error::Error::Database)?
+            .flatten()
+            .collect();
+        drop(stmt);
+        drop(conn);
+
+        let mut details = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            let active_version = self.get_active_version(&node.id)?;
+            let routes = self.get_routes_for_node(&node.id)?;
+            let keywords = self.get_keywords_for_node(&node.id)?;
+            details.push(MemoryNodeDetail { node, active_version, routes, keywords });
+        }
+        Ok(details)
+    }
+
     /// Increment usage_count on the given skill nodes by 1 each.
     ///
     /// Best-effort: failures are returned but the caller usually ignores
@@ -905,5 +963,61 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert!(result.iter().any(|d| d.node.title == "aged"), "aged not in result");
         assert!(result.iter().any(|d| d.node.title == "ancient"), "ancient not in result");
+    }
+
+    #[test]
+    fn lifecycle_filter_excludes_draft_and_deprecated() {
+        let store = fresh_test_store();
+        let recent = chrono::Utc::now().to_rfc3339();
+
+        // promoted: included
+        make_node_with(&store, "promoted-skill", serde_json::json!({
+            "skill_type": "learned", "enabled": true,
+            "cited_count": 5, "usage_count": 0, "last_cited_at": recent,
+            "lifecycle": "promoted",
+        }));
+        // draft: excluded (not yet validated by usage)
+        make_node_with(&store, "draft-skill", serde_json::json!({
+            "skill_type": "learned", "enabled": true,
+            "cited_count": 5, "usage_count": 0, "last_cited_at": recent,
+            "lifecycle": "draft",
+        }));
+        // deprecated: excluded (manually retired)
+        make_node_with(&store, "deprecated-skill", serde_json::json!({
+            "skill_type": "learned", "enabled": true,
+            "cited_count": 5, "usage_count": 0, "last_cited_at": recent,
+            "lifecycle": "deprecated",
+        }));
+
+        // Manifest path: drafts and deprecated must be filtered out.
+        let result = store.list_promoted_learned_skills("default", 10).unwrap();
+        let titles: Vec<&str> = result.iter().map(|d| d.node.title.as_str()).collect();
+        assert_eq!(titles, vec!["promoted-skill"],
+            "manifest should include only promoted; got {:?}", titles);
+
+        // Non-manifest path (search/dedup/backfill): drafts MUST stay visible.
+        let all = store.list_top_learned_skills("default", 10).unwrap();
+        let all_titles: Vec<&str> = all.iter().map(|d| d.node.title.as_str()).collect();
+        assert_eq!(all.len(), 3,
+            "list_top_learned_skills must keep returning all lifecycles for \
+             dedup/search/backfill; got {:?}", all_titles);
+    }
+
+    #[test]
+    fn lifecycle_filter_grandfathers_missing_field() {
+        // Pre-PR rows have no `lifecycle` field — they should still appear in
+        // the manifest (treated as 'promoted' via COALESCE default).
+        let store = fresh_test_store();
+        let recent = chrono::Utc::now().to_rfc3339();
+
+        make_node_with(&store, "legacy-skill", serde_json::json!({
+            "skill_type": "learned", "enabled": true,
+            "cited_count": 5, "usage_count": 0, "last_cited_at": recent,
+            // No lifecycle field — must be treated as promoted
+        }));
+
+        let result = store.list_promoted_learned_skills("default", 10).unwrap();
+        assert_eq!(result.len(), 1, "grandfathered row should be included");
+        assert_eq!(result[0].node.title, "legacy-skill");
     }
 }

@@ -3235,6 +3235,53 @@ pub async fn record_skill_cited(
     Ok(Some(node.id))
 }
 
+/// Manually set a learned skill's lifecycle stage.
+///
+/// PR-mattpocock-3 introduces three stages — "draft" (just extracted, not
+/// yet validated by usage), "promoted" (cited ≥ 3 times OR manually
+/// promoted), "deprecated" (manually retired). The manifest only includes
+/// "promoted" skills; skill_search includes all stages but flags non-promoted
+/// ones in the result's `warnings[]`.
+///
+/// Used by Settings → 已学技能 → ⋯ overflow menu.
+#[tauri::command]
+pub async fn set_skill_lifecycle(
+    state: State<'_, AppState>,
+    node_id: String,
+    lifecycle: String,
+) -> Result<(), String> {
+    if !matches!(lifecycle.as_str(), "draft" | "promoted" | "deprecated") {
+        return Err(format!(
+            "invalid lifecycle '{}' — expected one of: draft, promoted, deprecated",
+            lifecycle
+        ));
+    }
+    let store = &state.memory_graph_store;
+    let node = store
+        .get_node(&node_id)
+        .map_err(|e| format!("lookup failed: {}", e))?
+        .ok_or_else(|| format!("skill node '{}' not found", node_id))?;
+
+    let mut meta = node.metadata.clone().unwrap_or(serde_json::json!({}));
+    if let Some(obj) = meta.as_object_mut() {
+        obj.insert(
+            "lifecycle".to_string(),
+            serde_json::Value::String(lifecycle.clone()),
+        );
+    }
+    store
+        .update_node(&node_id, None, None, Some(&meta))
+        .map_err(|e| format!("update failed: {}", e))?;
+
+    tracing::info!(
+        node_id = %node_id,
+        title = %node.title,
+        new_lifecycle = %lifecycle,
+        "set_skill_lifecycle: changed"
+    );
+    Ok(())
+}
+
 /// Return all version records for a skill node, newest-first.
 ///
 /// Used by the "演化历史" tab in Settings → 已学技能 to render a side-by-side
