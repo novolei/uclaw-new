@@ -1,0 +1,42 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`MessageResponse — markdown rendering regressions > snapshot: mixed-cjk-latin fixture 1`] = `
+"<div class="chat-content prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-p:leading-[1.65] prose-pre:my-0 prose-pre:bg-transparent prose-pre:p-0 prose-a:text-primary prose-a:no-underline hover:prose-a:underline [&amp;>*:first-child]:mt-0 [&amp;>*:last-child]:mb-0"><p>今天的工作总结：完成了 <strong class="font-medium text-inherit">Phase 6-C</strong> 的实施，包括 <em class="not-italic font-medium text-inherit">cost dashboard</em> 和
+<em class="not-italic font-medium text-inherit">budget alerts</em>。Total LOC: 1247. Commits: 6.</p>
+<p>明天计划:</p>
+<ul>
+<li>上线 Stabilization Week PR</li>
+<li>跑一组 dogfood probes</li>
+<li>修 web_fetch 的边界 case</li>
+</ul></div>"
+`;
+
+exports[`MessageResponse — markdown rendering regressions > snapshot: nested-lists fixture 1`] = `
+"<div class="chat-content prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-p:leading-[1.65] prose-pre:my-0 prose-pre:bg-transparent prose-pre:p-0 prose-a:text-primary prose-a:no-underline hover:prose-a:underline [&amp;>*:first-child]:mt-0 [&amp;>*:last-child]:mb-0"><p>实施计划：</p>
+<ol>
+<li>后端
+<ul>
+<li>Migration V19</li>
+<li>Two new commands</li>
+<li>Threshold emission</li>
+</ul>
+</li>
+<li>前端
+<ul>
+<li>Cost atoms
+<ul>
+<li>monthStartMsAtom</li>
+<li>workspaceRollupAtom</li>
+</ul>
+</li>
+<li>BudgetHeader component</li>
+</ul>
+</li>
+<li>测试
+<ul>
+<li>Rust 13 个单测</li>
+<li>Vitest 6 个单测</li>
+</ul>
+</li>
+</ol></div>"
+`;
