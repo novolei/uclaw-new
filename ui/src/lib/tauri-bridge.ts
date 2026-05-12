@@ -703,6 +703,25 @@ export const listActiveManifestSkills = (
     maxEntries: opts.maxEntries,
   });
 
+/** Returns every skill the user can `/<name>`-invoke from the composer:
+ *  static + borrowed + learned. Empty `spaceId` falls back to "default".
+ *  Powers the `/` autocomplete popup. */
+export const listInvocableSkills = (
+  spaceId?: string,
+): Promise<import('./types').InvocableSkill[]> =>
+  invoke('list_invocable_skills', { spaceId });
+
+/** Search workspace + attached_dirs for files matching `query` (case-
+ *  insensitive substring on file name only). Powers the `@` autocomplete
+ *  popup. Heavy / VCS dirs (node_modules, .git, target, ...) are pruned
+ *  server-side so this stays fast even in mono-repos. */
+export const searchWorkspaceFilesForMention = (
+  sessionId: string,
+  query: string,
+  limit?: number,
+): Promise<import('./types').WorkspaceFileMatch[]> =>
+  invoke('search_workspace_files_for_mention', { sessionId, query, limit });
+
 export const getSkillDetail = (name: string): Promise<SkillDetailResponse> =>
   invoke('get_skill_detail', { name });
 

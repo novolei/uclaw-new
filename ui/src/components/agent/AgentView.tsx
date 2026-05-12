@@ -31,6 +31,10 @@ import { PlanModeDashedBorder } from './PlanModeDashedBorder'
 import { ProviderModelSelector } from '@/components/chat/ProviderModelSelector'
 import { AttachmentPreviewItem } from '@/components/chat/AttachmentPreviewItem'
 import { RichTextInput } from '@/components/ai-elements/rich-text-input'
+import {
+  ComposerMentionController,
+  type ComposerMentionControllerHandle,
+} from '@/components/composer/ComposerMentionController'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -325,6 +329,13 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const sessionPath = sessionPathMap.get(sessionId) ?? null
   const [isDragOver, setIsDragOver] = React.useState(false)
   const [errorCopied, setErrorCopied] = React.useState(false)
+
+  // Composer `/` and `@` autocomplete plumbing — the controller renders
+  // the popup; the textareaRef lets it watch caret position; the
+  // controllerRef gives RichTextInput a way to intercept ↑↓ Enter Esc
+  // when the popup is open.
+  const composerTextareaRef = React.useRef<HTMLTextAreaElement | null>(null)
+  const mentionControllerRef = React.useRef<ComposerMentionControllerHandle | null>(null)
 
   // pendingFiles ref（供 addFilesAsAttachments 读取最新列表，避免闭包旧值）
   const pendingFilesRef = React.useRef(pendingFiles)
@@ -1446,29 +1457,42 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
               </div>
             )}
 
-            <RichTextInput
-              value={inputContent}
-              onChange={setInputContent}
-              onSubmit={handleSend}
-              onPasteFiles={handlePasteFiles}
-              onPasteLongText={handlePasteLongText}
-              placeholder={
-                activeProviderModel
-                  ? sendWithCmdEnter
-                    ? '输入消息... (⌘/Ctrl+Enter 发送，Enter 换行，@ 引用文件，/ 调用 Skill，# 调用 MCP)'
-                    : '输入消息... (Enter 发送，Shift+Enter 换行，@ 引用文件，/ 调用 Skill，# 调用 MCP)'
-                  : '请先在下方工具栏选择模型...'
-              }
-              disabled={!activeProviderModel}
-              autoFocusTrigger={sessionId}
-              collapsible
-              workspacePath={sessionPath}
-              workspaceSlug={workspaceSlug}
-              attachedDirs={allAttachedDirs}
-              htmlValue={inputHtmlContent}
-              onHtmlChange={setInputHtmlContent}
-              sendWithCmdEnter={sendWithCmdEnter}
-            />
+            <div className="relative">
+              <RichTextInput
+                value={inputContent}
+                onChange={setInputContent}
+                onSubmit={handleSend}
+                onPasteFiles={handlePasteFiles}
+                onPasteLongText={handlePasteLongText}
+                placeholder={
+                  activeProviderModel
+                    ? sendWithCmdEnter
+                      ? '输入消息... (⌘/Ctrl+Enter 发送，Enter 换行，@ 引用文件，/ 调用 Skill，# 调用 MCP)'
+                      : '输入消息... (Enter 发送，Shift+Enter 换行，@ 引用文件，/ 调用 Skill，# 调用 MCP)'
+                    : '请先在下方工具栏选择模型...'
+                }
+                disabled={!activeProviderModel}
+                autoFocusTrigger={sessionId}
+                collapsible
+                workspacePath={sessionPath}
+                workspaceSlug={workspaceSlug}
+                attachedDirs={allAttachedDirs}
+                htmlValue={inputHtmlContent}
+                onHtmlChange={setInputHtmlContent}
+                sendWithCmdEnter={sendWithCmdEnter}
+                textareaRef={composerTextareaRef}
+                onKeyDownIntercept={(e) =>
+                  mentionControllerRef.current?.handleKeyDown(e) ?? false}
+              />
+              <ComposerMentionController
+                ref={mentionControllerRef}
+                textareaRef={composerTextareaRef}
+                value={inputContent}
+                setValue={setInputContent}
+                sessionId={sessionId}
+                disabled={!activeProviderModel}
+              />
+            </div>
 
             {/* Footer 工具栏 */}
             <div className="flex items-center justify-between px-2 py-1 h-[48px] gap-4">

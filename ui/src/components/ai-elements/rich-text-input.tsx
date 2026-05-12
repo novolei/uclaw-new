@@ -1,6 +1,12 @@
 // [PLACEHOLDER] ai-elements/rich-text-input — paste hooks wired in W1.
 // A real TipTap port lives in W4's Preview Engine; for now this stays
 // a thin textarea that nonetheless honors onPasteFiles + onPasteLongText.
+//
+// 2026-05-13: extended with `textareaRef` + `onKeyDownIntercept` so the
+// composer's `<ComposerMentionController>` can drive `/` and `@` autocomplete
+// without owning the textarea itself. When the real TipTap port replaces
+// this file, it should expose equivalent surface: an editor ref + a
+// pre-handler that returns `true` to consume the key event.
 import * as React from 'react'
 
 interface RichTextInputProps {
@@ -22,6 +28,14 @@ interface RichTextInputProps {
   htmlValue?: string
   onHtmlChange?: (html: string) => void
   sendWithCmdEnter?: boolean
+  /** Forward ref to the underlying <textarea>. Required by composer-level
+   *  features (ComposerMentionController) that need direct DOM access for
+   *  caret tracking + popup anchoring. */
+  textareaRef?: React.Ref<HTMLTextAreaElement>
+  /** Pre-handler invoked before the built-in keyboard logic. Returning
+   *  `true` signals the event was consumed; the built-in submit shortcut
+   *  is then skipped. Drives the `/` and `@` popup keyboard nav. */
+  onKeyDownIntercept?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => boolean
 }
 
 export function RichTextInput({
@@ -34,9 +48,16 @@ export function RichTextInput({
   placeholder,
   disabled,
   sendWithCmdEnter,
+  textareaRef,
+  onKeyDownIntercept,
 }: RichTextInputProps): React.ReactElement {
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // Intercept first — mention popup needs ArrowUp/Down/Enter/Tab/Esc
+      // before the textarea-level Enter-to-submit. Returning true means
+      // the event is fully handled and we must NOT also submit.
+      if (onKeyDownIntercept?.(e)) return
+
       if (sendWithCmdEnter) {
         if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
           e.preventDefault()
@@ -49,7 +70,7 @@ export function RichTextInput({
         }
       }
     },
-    [onSubmit, sendWithCmdEnter],
+    [onSubmit, sendWithCmdEnter, onKeyDownIntercept],
   )
 
   const handlePaste = React.useCallback(
@@ -73,6 +94,7 @@ export function RichTextInput({
 
   return (
     <textarea
+      ref={textareaRef}
       className="w-full resize-none bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground/50 min-h-[44px] max-h-[200px]"
       value={value}
       onChange={(e) => onChange(e.target.value)}
