@@ -91,6 +91,9 @@ serde_yml = "0.0.12"
 # Regex for grep tool
 regex = "1"
 
+# HTML parsing for web_fetch
+scraper = "0.20"
+
 # Diff for edit tool
 similar = "2"
 
