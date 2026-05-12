@@ -198,3 +198,335 @@ pub async fn gh_available() -> Result<bool, String> {
         .await
         .unwrap_or(false))
 }
+
+// ─── Write commands (mutating; emit tracing events) ────────────────────
+
+#[tauri::command]
+pub async fn git_init_repo(
+    state: State<'_, AppState>,
+    cwd: String,
+) -> Result<(), String> {
+    // Init is permitted in any mount the user can read — they
+    // explicitly opted into making the dir a workspace already.
+    let path = assert_cwd_in_any_mount(&state, &cwd).await?;
+    let cwd_log = cwd.clone();
+    let started = std::time::Instant::now();
+    let outcome = run_blocking(move || crate::git::repo::init_repo(&path).map_err(|e| e.to_string())).await;
+    tracing::info!(
+        op = "init_repo",
+        cwd = %cwd_log,
+        duration_ms = started.elapsed().as_millis() as u64,
+        outcome = match &outcome { Ok(_) => "ok", Err(_) => "err" },
+        "git_op:init_repo"
+    );
+    outcome
+}
+
+#[tauri::command]
+pub async fn git_checkout_branch(
+    state: State<'_, AppState>,
+    cwd: String,
+    name: String,
+) -> Result<(), String> {
+    let path = assert_cwd_in_editable_mounts(&state, &cwd).await?;
+    let name_log = name.clone();
+    let cwd_log = cwd.clone();
+    let started = std::time::Instant::now();
+    let outcome = run_blocking(move || crate::git::branch::checkout(&path, &name).map_err(|e| e.to_string())).await;
+    tracing::info!(
+        op = "checkout_branch",
+        cwd = %cwd_log,
+        branch = %name_log,
+        duration_ms = started.elapsed().as_millis() as u64,
+        outcome = match &outcome { Ok(_) => "ok", Err(_) => "err" },
+        "git_op:checkout_branch"
+    );
+    outcome
+}
+
+#[tauri::command]
+pub async fn git_create_branch(
+    state: State<'_, AppState>,
+    cwd: String,
+    name: String,
+) -> Result<(), String> {
+    let path = assert_cwd_in_editable_mounts(&state, &cwd).await?;
+    let name_log = name.clone();
+    let cwd_log = cwd.clone();
+    let started = std::time::Instant::now();
+    let outcome = run_blocking(move || crate::git::branch::create_and_checkout(&path, &name).map_err(|e| e.to_string())).await;
+    tracing::info!(
+        op = "create_branch",
+        cwd = %cwd_log,
+        branch = %name_log,
+        duration_ms = started.elapsed().as_millis() as u64,
+        outcome = match &outcome { Ok(_) => "ok", Err(_) => "err" },
+        "git_op:create_branch"
+    );
+    outcome
+}
+
+#[tauri::command]
+pub async fn git_commit(
+    state: State<'_, AppState>,
+    cwd: String,
+    message: String,
+) -> Result<CommitOutcome, String> {
+    let path = assert_cwd_in_editable_mounts(&state, &cwd).await?;
+    let cwd_log = cwd.clone();
+    let started = std::time::Instant::now();
+
+    let message_for_blocking = message.clone();
+    let outcome: Result<CommitOutcome, String> = run_blocking(move || {
+        match crate::git::commit::commit_all_with_message(&path, &message_for_blocking) {
+            Ok(()) => Ok(CommitOutcome {
+                status: "created".to_string(),
+                message: message_for_blocking.trim().to_string(),
+            }),
+            Err(crate::git::GitError::NoWorkspaceChanges) => Ok(CommitOutcome {
+                status: "skipped".to_string(),
+                message: "no workspace changes to commit".to_string(),
+            }),
+            Err(other) => Err(other.to_string()),
+        }
+    })
+    .await;
+
+    tracing::info!(
+        op = "commit",
+        cwd = %cwd_log,
+        duration_ms = started.elapsed().as_millis() as u64,
+        outcome = match &outcome {
+            Ok(o) => o.status.as_str(),
+            Err(_) => "err",
+        },
+        "git_op:commit"
+    );
+    outcome
+}
+
+// ─── Network commands (tokio::process, not blocking pool) ────────────
+
+#[tauri::command]
+pub async fn gh_create_pr(
+    state: State<'_, AppState>,
+    cwd: String,
+    title: String,
+    body: String,
+    base: Option<String>,
+) -> Result<CreatePrResponse, String> {
+    let path = assert_cwd_in_editable_mounts(&state, &cwd).await?;
+    let cwd_log = cwd.clone();
+    let started = std::time::Instant::now();
+
+    // Resolve base branch on the blocking pool (one git rev-parse).
+    let path_for_default = path.clone();
+    let resolved_base: String = match base.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(b) => b.to_string(),
+        None => run_blocking(move || {
+            crate::git::branch::detect_default_branch(&path_for_default).map_err(|e| e.to_string())
+        })
+        .await?,
+    };
+
+    // Body tempfile must survive the await — keep it alive in a let-binding.
+    let body_file =
+        crate::git::commit::CommitMessageFile::create(if body.trim().is_empty() {
+            "(no body provided)\n"
+        } else {
+            &body
+        })
+        .map_err(|e| e.to_string())?;
+
+    let request = crate::git::github::pr::PrCreateRequest {
+        title: &title,
+        body_file: body_file.path(),
+        base: &resolved_base,
+    };
+    let outcome = crate::git::github::pr::create_async(&path, &request)
+        .await
+        .map_err(|e| e.to_string())
+        .map(|out| CreatePrResponse {
+            url: out.url,
+            was_existing: out.was_existing,
+            base: resolved_base.clone(),
+        });
+
+    drop(body_file);  // explicit per the design: drop AFTER the await resolves.
+
+    tracing::info!(
+        op = "pr_create",
+        cwd = %cwd_log,
+        title = %title,
+        base = %resolved_base,
+        duration_ms = started.elapsed().as_millis() as u64,
+        outcome = match &outcome {
+            Ok(o) if o.was_existing => "existing",
+            Ok(_) => "created",
+            Err(_) => "err",
+        },
+        "git_op:pr_create"
+    );
+    outcome
+}
+
+#[tauri::command]
+pub async fn gh_create_issue(
+    state: State<'_, AppState>,
+    cwd: String,
+    title: String,
+    body: String,
+) -> Result<String, String> {
+    let path = assert_cwd_in_editable_mounts(&state, &cwd).await?;
+    let cwd_log = cwd.clone();
+    let started = std::time::Instant::now();
+
+    let body_file =
+        crate::git::commit::CommitMessageFile::create(if body.trim().is_empty() {
+            "(no body provided)\n"
+        } else {
+            &body
+        })
+        .map_err(|e| e.to_string())?;
+
+    let body_path = body_file.path().to_string_lossy().into_owned();
+    let args = vec![
+        "issue".to_string(),
+        "create".to_string(),
+        "--title".to_string(),
+        title.clone(),
+        "--body-file".to_string(),
+        body_path,
+    ];
+    let output = tokio::process::Command::new("gh")
+        .args(&args)
+        .current_dir(&path)
+        .output()
+        .await
+        .map_err(|e| format!("gh issue create: {e}"))?;
+    drop(body_file);
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let err = format!("gh issue create failed: {stderr}");
+        tracing::info!(
+            op = "issue_create",
+            cwd = %cwd_log,
+            title = %title,
+            duration_ms = started.elapsed().as_millis() as u64,
+            outcome = "err",
+            "git_op:issue_create"
+        );
+        return Err(err);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let url = stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("http://") || line.starts_with("https://"))
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| format!("could not extract issue URL from gh stdout: {stdout}"))?;
+
+    tracing::info!(
+        op = "issue_create",
+        cwd = %cwd_log,
+        title = %title,
+        duration_ms = started.elapsed().as_millis() as u64,
+        outcome = "created",
+        "git_op:issue_create"
+    );
+    Ok(url)
+}
+
+#[tauri::command]
+pub async fn git_commit_push_pr(
+    state: State<'_, AppState>,
+    cwd: String,
+    title: String,
+    body: String,
+    branch_hint: Option<String>,
+) -> Result<String, String> {
+    let path = assert_cwd_in_editable_mounts(&state, &cwd).await?;
+    let cwd_log = cwd.clone();
+    let started = std::time::Instant::now();
+
+    let path_for_default = path.clone();
+    let default_base = run_blocking(move || {
+        crate::git::branch::detect_default_branch(&path_for_default).map_err(|e| e.to_string())
+    })
+    .await?;
+
+    let path_for_branch = path.clone();
+    let default_base_for_branch = default_base.clone();
+    let branch_hint_owned = branch_hint.clone();
+    let title_for_branch = title.clone();
+    let current_branch: String = run_blocking(move || {
+        let current = crate::git::branch::current_branch(&path_for_branch).map_err(|e| e.to_string())?;
+        if current != default_base_for_branch {
+            return Ok::<String, String>(current);
+        }
+        let hint = branch_hint_owned.as_deref().unwrap_or(&title_for_branch);
+        let new_name = crate::git::branch::build_branch_name(hint);
+        crate::git::branch::create_and_checkout(&path_for_branch, &new_name).map_err(|e| e.to_string())?;
+        Ok::<String, String>(new_name)
+    })
+    .await?;
+
+    let path_for_commit = path.clone();
+    let commit_message = title.clone();
+    let commit_outcome = run_blocking(move || {
+        match crate::git::commit::commit_all_with_message(&path_for_commit, &commit_message) {
+            Ok(()) => Ok::<&'static str, String>("created"),
+            Err(crate::git::GitError::NoWorkspaceChanges) => Ok("skipped"),
+            Err(other) => Err(other.to_string()),
+        }
+    })
+    .await?;
+
+    crate::git::github::pr::push_branch_set_upstream_async(&path, &current_branch)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let body_file =
+        crate::git::commit::CommitMessageFile::create(if body.trim().is_empty() {
+            "(no body provided)\n"
+        } else {
+            &body
+        })
+        .map_err(|e| e.to_string())?;
+
+    let request = crate::git::github::pr::PrCreateRequest {
+        title: &title,
+        body_file: body_file.path(),
+        base: &default_base,
+    };
+    let pr_outcome = crate::git::github::pr::create_async(&path, &request)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    drop(body_file);
+
+    let human = format!(
+        "{} → branch `{}` → PR {}{}",
+        match commit_outcome {
+            "created" => "Committed",
+            _ => "Working tree clean (no new commit)",
+        },
+        current_branch,
+        if pr_outcome.was_existing { "(existing) " } else { "" },
+        pr_outcome.url
+    );
+
+    tracing::info!(
+        op = "commit_push_pr",
+        cwd = %cwd_log,
+        title = %title,
+        base = %default_base,
+        branch = %current_branch,
+        duration_ms = started.elapsed().as_millis() as u64,
+        outcome = if pr_outcome.was_existing { "existing" } else { "created" },
+        "git_op:commit_push_pr"
+    );
+    Ok(human)
+}
