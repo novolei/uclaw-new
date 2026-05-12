@@ -36,8 +36,9 @@ import { cn } from '@/lib/utils'
 import { installScrollToMessage } from '@/lib/scroll-to-message'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { toast } from 'sonner'
-import { attachWorkspaceDirectory, pathIsDirectory, copyFileIntoWorkspace } from '@/lib/tauri-bridge'
+import { attachWorkspaceDirectory, pathIsDirectory, copyFileIntoWorkspace, onBudgetThreshold } from '@/lib/tauri-bridge'
 import { workspaceFilesVersionAtom, workspaceAttachedDirsMapAtom } from '@/atoms/agent-atoms'
+import { firedBudgetThresholdsAtom } from '@/atoms/cost'
 import { TabSessionSyncer } from './TabSessionSyncer'
 import { useWorkspaceSwipe } from '@/hooks/useWorkspaceSwipe'
 import { WorkspaceTabCleaner } from './WorkspaceTabCleaner'
@@ -88,6 +89,26 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
     installExitPlanListener((updater) => setAllPendingExitPlanRequests(updater)).then((d) => { dispose = d })
     return () => { dispose?.() }
   }, [setAllPendingExitPlanRequests])
+
+  const [fired, setFired] = useAtom(firedBudgetThresholdsAtom)
+  const firedRef = React.useRef(fired)
+  React.useEffect(() => { firedRef.current = fired }, [fired])
+
+  React.useEffect(() => {
+    let unlisten: (() => void) | undefined
+    onBudgetThreshold((payload) => {
+      if (firedRef.current.has(payload.threshold)) return
+      setFired(new Set([...firedRef.current, payload.threshold]))
+      const currentStr = `$${payload.current.toFixed(2)}`
+      const budgetStr = `$${payload.budget.toFixed(2)}`
+      if (payload.threshold === 80) {
+        toast.warning(`本月已使用预算 ${currentStr} / ${budgetStr} (80%)`)
+      } else {
+        toast.error(`本月已超出预算: ${currentStr} / ${budgetStr}。AI 调用将继续，但请留意。`)
+      }
+    }).then((fn) => { unlisten = fn })
+    return () => { unlisten?.() }
+  }, [setFired])
 
   // Phase 3: single window-level native drag-drop listener at app root.
   // Tabs each mount their own AgentView, but only one listener should
