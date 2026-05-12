@@ -5,7 +5,7 @@
  * across 3 files for uClaw's 400 LOC cap. This file: outer chip trigger +
  * Popover shell + Mode state machine + menu sub-view + busy/success/error
  * rendered states + all dispatcher logic (runCommit, runCreateBranch,
- * runCreateWorktree, runCreatePr, runInitRepo).
+ * runCreatePr, runInitRepo).
  *
  * See sibling files for the other halves of the split.
  */
@@ -27,15 +27,12 @@ import {
   gitCommit,
   gitCommitPushPr,
   gitCreateBranch,
-  gitCreateWorktreeProject,
   gitInitRepo,
-  type CreatedWorktreeProject,
 } from '@/modules/git/api'
 import {
   BusyView,
   CommitForm,
   CreateBranchForm,
-  CreateWorktreeForm,
   ErrorView,
   MenuContent,
   PrForm,
@@ -63,12 +60,6 @@ type Props = {
    *  状态" entry; when omitted that entry is hidden so the picker stays
    *  usable in environments without a workbench (settings page, etc). */
   onOpenWorkbench?: () => void
-  /** Fired after `gitCreateWorktreeProject` succeeds — caller is
-   *  expected to refresh the project list / sidebar and (optionally)
-   *  switch the active session into the new project.  When omitted the
-   *  "在新 worktree 里继续" action stays usable but the user has to
-   *  refresh manually. */
-  onWorktreeProjectCreated?: (project: CreatedWorktreeProject) => void
   className?: string
 }
 
@@ -76,7 +67,6 @@ type Mode =
   | { kind: 'menu' }
   | { kind: 'commit' }
   | { kind: 'createBranch' }
-  | { kind: 'createWorktree' }
   | { kind: 'pr' }
   | { kind: 'busy'; label: string }
   | { kind: 'success'; message: string }
@@ -98,15 +88,12 @@ export function GitActionsPicker({
   onGitRepoChanged,
   onBranchChange,
   onOpenWorkbench,
-  onWorktreeProjectCreated,
   className,
 }: Props) {
   const [open, setOpen] = React.useState(false)
   const [mode, setMode] = React.useState<Mode>({ kind: 'menu' })
   const [commitMessage, setCommitMessage] = React.useState('')
   const [branchName, setBranchName] = React.useState('')
-  const [worktreeBranch, setWorktreeBranch] = React.useState('')
-  const [worktreeTarget, setWorktreeTarget] = React.useState('')
   const [prTitle, setPrTitle] = React.useState('')
   const [prBody, setPrBody] = React.useState('')
   // `gh` 探测结果：null = 还在探测；true/false = 已知。
@@ -123,8 +110,6 @@ export function GitActionsPicker({
       setMode({ kind: 'menu' })
       setCommitMessage('')
       setBranchName('')
-      setWorktreeBranch('')
-      setWorktreeTarget('')
       setPrTitle('')
       setPrBody('')
       return
@@ -172,18 +157,6 @@ export function GitActionsPicker({
     }
   }
 
-  const deriveWorktreeTarget = React.useCallback(
-    (branch: string) => {
-      if (!cwd || !branch.trim()) return ''
-      const segments = cwd.split('/').filter(Boolean)
-      const repo = segments[segments.length - 1] ?? 'project'
-      const parent = '/' + segments.slice(0, -1).join('/')
-      const slug = branch.trim().replace(/[^A-Za-z0-9_-]+/g, '-')
-      return `${parent}/${repo}-${slug}`
-    },
-    [cwd],
-  )
-
   const runInitRepo = async () => {
     if (!cwd) return
     setMode({ kind: 'busy', label: '正在初始化 Git…' })
@@ -193,27 +166,6 @@ export function GitActionsPicker({
       setMode({
         kind: 'success',
         message: '已在当前项目目录初始化 Git 仓库',
-      })
-    } catch (err) {
-      setMode({
-        kind: 'error',
-        message: err instanceof Error ? err.message : String(err),
-      })
-    }
-  }
-
-  const runCreateWorktree = async () => {
-    const branch = worktreeBranch.trim()
-    if (!cwd || !branch) return
-    const target = worktreeTarget.trim() || deriveWorktreeTarget(branch)
-    if (!target) return
-    setMode({ kind: 'busy', label: '正在创建 worktree…' })
-    try {
-      const project = await gitCreateWorktreeProject({ cwd, target, branch })
-      onWorktreeProjectCreated?.(project)
-      setMode({
-        kind: 'success',
-        message: `已创建 ${branch} worktree → 切换到新项目 "${project.name}" 继续`,
       })
     } catch (err) {
       setMode({
@@ -259,7 +211,6 @@ export function GitActionsPicker({
           <MenuContent
             noRepo={noRepo}
             onOpenWorkbench={onOpenWorkbench}
-            onWorktreeProjectCreated={onWorktreeProjectCreated}
             onInitRepo={runInitRepo}
             onSetCommitMode={() => setMode({ kind: 'commit' })}
             onSetPushError={() =>
@@ -270,7 +221,6 @@ export function GitActionsPicker({
             }
             onSetPrMode={() => setMode({ kind: 'pr' })}
             onSetCreateBranchMode={() => setMode({ kind: 'createBranch' })}
-            onSetCreateWorktreeMode={() => setMode({ kind: 'createWorktree' })}
             onClose={() => setOpen(false)}
           />
         )
@@ -294,22 +244,6 @@ export function GitActionsPicker({
             onCancel={() => setMode({ kind: 'menu' })}
           />
         )
-
-      case 'createWorktree': {
-        const trimmedBranch = worktreeBranch.trim()
-        const targetSuggestion = trimmedBranch ? deriveWorktreeTarget(trimmedBranch) : ''
-        return (
-          <CreateWorktreeForm
-            worktreeBranch={worktreeBranch}
-            setWorktreeBranch={setWorktreeBranch}
-            worktreeTarget={worktreeTarget}
-            setWorktreeTarget={setWorktreeTarget}
-            targetSuggestion={targetSuggestion}
-            onSubmit={runCreateWorktree}
-            onCancel={() => setMode({ kind: 'menu' })}
-          />
-        )
-      }
 
       case 'pr':
         return (

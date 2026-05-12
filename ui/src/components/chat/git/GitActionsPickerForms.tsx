@@ -4,7 +4,7 @@
  * Verbatim port of if2Ai's GitActionsPicker.tsx (717 LOC monolith) split
  * across 3 files for uClaw's 400 LOC cap. This file: ActionItem menu-row
  * primitive, MenuContent (init-only + full menu views), CommitForm,
- * CreateBranchForm, CreateWorktreeForm, and PrForm sub-components
+ * CreateBranchForm, and PrForm sub-components
  * (presentational; receive state + dispatchers as props from the picker
  * shell), plus the shared FormShell and PrimaryButton primitives.
  *
@@ -59,24 +59,20 @@ export function ActionItem({
 export function MenuContent({
   noRepo,
   onOpenWorkbench,
-  onWorktreeProjectCreated,
   onInitRepo,
   onSetCommitMode,
   onSetPushError,
   onSetPrMode,
   onSetCreateBranchMode,
-  onSetCreateWorktreeMode,
   onClose,
 }: {
   noRepo: boolean
   onOpenWorkbench?: () => void
-  onWorktreeProjectCreated?: unknown
   onInitRepo: () => void
   onSetCommitMode: () => void
   onSetPushError: () => void
   onSetPrMode: () => void
   onSetCreateBranchMode: () => void
-  onSetCreateWorktreeMode: () => void
   onClose: () => void
 }) {
   if (noRepo) {
@@ -132,13 +128,6 @@ export function MenuContent({
         label="创建分支"
         onClick={onSetCreateBranchMode}
       />
-      {onWorktreeProjectCreated && (
-        <ActionItem
-          icon={<PanelTopOpen className="h-[14px] w-[14px]" strokeWidth={1.75} />}
-          label="在新 worktree 里继续…"
-          onClick={onSetCreateWorktreeMode}
-        />
-      )}
       <div className="h-1.5" />
     </>
   )
@@ -254,53 +243,6 @@ export function CreateBranchForm({
       />
       <PrimaryButton disabled={!branchName.trim()} onClick={onSubmit}>
         创建并检出
-      </PrimaryButton>
-    </FormShell>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// CreateWorktreeForm
-// ---------------------------------------------------------------------------
-
-export function CreateWorktreeForm({
-  worktreeBranch,
-  setWorktreeBranch,
-  worktreeTarget,
-  setWorktreeTarget,
-  targetSuggestion,
-  onSubmit,
-  onCancel,
-}: {
-  worktreeBranch: string
-  setWorktreeBranch: (v: string) => void
-  worktreeTarget: string
-  setWorktreeTarget: (v: string) => void
-  targetSuggestion: string
-  onSubmit: () => void
-  onCancel: () => void
-}) {
-  const trimmedBranch = worktreeBranch.trim()
-  return (
-    <FormShell title="新 worktree" onCancel={onCancel}>
-      <input
-        autoFocus
-        value={worktreeBranch}
-        onChange={(e) => setWorktreeBranch(e.target.value)}
-        placeholder="分支名（不存在则自动创建）"
-        className="w-full rounded-lg border border-border/70 bg-muted px-3 py-2 text-[13px] text-foreground outline-none placeholder:text-muted-foreground focus:border-primary/60"
-      />
-      <input
-        value={worktreeTarget}
-        onChange={(e) => setWorktreeTarget(e.target.value)}
-        placeholder={targetSuggestion || '目标目录（可选，默认与项目同级）'}
-        className="w-full rounded-lg border border-border/70 bg-muted px-3 py-2 font-mono text-[12px] text-foreground outline-none placeholder:text-muted-foreground focus:border-primary/60"
-      />
-      <p className="text-[11px] leading-4 text-muted-foreground">
-        成功后会自动注册为新项目；侧边栏会刷新出现，你可以直接切过去继续聊。
-      </p>
-      <PrimaryButton disabled={!trimmedBranch} onClick={onSubmit}>
-        创建 worktree 并打开
       </PrimaryButton>
     </FormShell>
   )
