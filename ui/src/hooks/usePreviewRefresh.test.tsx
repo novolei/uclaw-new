@@ -3,10 +3,13 @@ import { renderHook, act } from '@testing-library/react'
 import { Provider, createStore } from 'jotai'
 import * as React from 'react'
 import { usePreviewRefresh } from './usePreviewRefresh'
-import { bumpPreviewRefreshAtom, resetAllPreviewRefreshAtom } from '@/atoms/preview-atoms'
+import { bumpPreviewRefreshAtom } from '@/atoms/preview-atoms'
 
 // Tauri event subscription is mocked to capture the registered handler so the
-// test can synthesize events without touching the real bus.
+// test can synthesize events without touching the real bus. The shared
+// `mockListen` helper in ui/src/test-utils/mock-tauri.ts is a no-op and
+// cannot drive the event-driven assertions below, so this file uses a
+// richer event-capturing mock instead.
 const listeners = new Map<string, Set<(e: { payload: unknown }) => void>>()
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async (name: string, handler: (e: { payload: unknown }) => void) => {
@@ -32,7 +35,6 @@ describe('usePreviewRefresh', () => {
   beforeEach(() => {
     listeners.clear()
     store = createStore()
-    store.set(resetAllPreviewRefreshAtom)
   })
 
   it('returns 0 by default', () => {

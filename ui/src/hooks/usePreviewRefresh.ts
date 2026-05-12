@@ -24,6 +24,9 @@ interface FileWrittenPayload {
 }
 
 export function usePreviewRefresh(filePath: string | null): number {
+  // Empty-string key is a deliberate sentinel for the null case. The effect
+  // below short-circuits when filePath is null, so this atom is never bumped
+  // by this hook — but reading it keeps the hook signature stable.
   const version = useAtomValue(
     previewRefreshVersionAtomFamily(filePath ?? ''),
   )
