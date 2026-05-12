@@ -138,6 +138,32 @@ impl ChatDelegate {
         )
     }
 
+    /// Build the per-message dynamic context block.
+    ///
+    /// Prepended to the LAST user message in each LLM call payload — NOT
+    /// persisted to the session. Each new call gets a fresh timestamp.
+    ///
+    /// Rationale: time is metadata the agent can't physically probe with a
+    /// tool the way it can probe filesystem state — pre-injecting it saves
+    /// a `date` tool roundtrip on every "what time is it" question while
+    /// honoring the probe-first philosophy for everything else (cwd, files,
+    /// etc. stay agent-driven).
+    fn build_dynamic_context(&self) -> String {
+        use chrono::Local;
+        let now = Local::now();
+        // Example: "Monday, May 12, 2026 at 11:30 AM PST"
+        let time = now.format("%A, %B %-d, %Y at %-I:%M %p %Z").to_string();
+        let mut lines = vec![format!("**Current time:** {}", time)];
+
+        if let Some(root) = &self.workspace_root {
+            // Workspace path is also metadata: agent can't infer where it's
+            // "installed" via tool use, only the cwd it's run from.
+            lines.push(format!("**Workspace root:** {}", root.display()));
+        }
+
+        lines.join("\n")
+    }
+
     /// Resolve the effective SafetyMode for this call: per-session override
     /// (dispatcher's `safety_mode` field) wins; otherwise read the global
     /// policy mode from SafetyManager.
@@ -411,6 +437,29 @@ impl LoopDelegate for ChatDelegate {
 
         let mut messages = vec![ChatMessage::system(&effective_prompt)];
         messages.extend(reason_ctx.messages.clone());
+
+        // Prepend dynamic context (time + workspace root) to the LAST user
+        // message in this call. Mutates the clone only — the persisted
+        // session messages stay clean so context isn't duplicated when the
+        // session resumes or replays.
+        //
+        // We attach to the LAST user message (not a new message at the end)
+        // because a fresh "user" message after assistant tool calls would
+        // confuse the back-and-forth structure. Anthropic / OpenAI both
+        // require alternating user/assistant turns.
+        if let Some(last_user_idx) = messages.iter().rposition(|m| {
+            matches!(m.role, crate::agent::types::MessageRole::User)
+                && m.content.iter().any(|b| matches!(b, crate::agent::types::ContentBlock::Text { .. }))
+        }) {
+            let dyn_ctx = self.build_dynamic_context();
+            if let Some(crate::agent::types::ContentBlock::Text { text }) =
+                messages[last_user_idx].content.iter_mut().find(|b| {
+                    matches!(b, crate::agent::types::ContentBlock::Text { .. })
+                })
+            {
+                *text = format!("{}\n\n{}", dyn_ctx, text);
+            }
+        }
 
         let tools = if reason_ctx.force_text {
             Vec::new()
