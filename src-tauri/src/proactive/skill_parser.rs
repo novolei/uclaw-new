@@ -34,6 +34,14 @@ pub struct ParsedSkill {
     /// `<description>...</description>` 标签里输出。是 mattpocock 体例最关键的字段。
     /// 若 LLM 未输出，则为 None；持久化时回退到 `<context>` 作为旧 schema 兼容。
     pub description: Option<String>,
+    /// 领域标签（V19 per-workspace 作用域过滤的"skill 侧" 输入）。LLM 在
+    /// `<tags><tag>...</tag></tags>` 里输出 0-3 个。空 Vec 表示「全局可用」——
+    /// 配合 V19 的"未打标 = 全局"规则保护跨域通用 skill 的覆盖面。
+    ///
+    /// 已在 parse 时规范化：trim + lowercase + dedup（保持首次出现顺序），与
+    /// `tauri_commands::normalize_skill_tags` 的工作区侧规范化口径一致，
+    /// 这样 manifest filter 做 intersect 时不会因大小写错位。
+    pub tags: Vec<String>,
 }
 
 /// 解析 <skill_report> XML 中的 <skill> 标签
@@ -113,6 +121,26 @@ pub fn parse_skill_report(xml_text: &str) -> Vec<ParsedSkill> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        // <tags><tag>...</tag></tags> is optional. Normalize at parse time
+        // (trim + lowercase + dedup) to match the workspace-side normalization
+        // in `tauri_commands::normalize_skill_tags`. Order preserved so the
+        // first occurrence wins (matches workspace-side behavior).
+        let tags: Vec<String> = if let Some(tags_block) = extract_tag_content(&skill_content, "tags") {
+            let raw = extract_repeated_tag_content(&tags_block, "tag");
+            let mut seen = std::collections::HashSet::new();
+            let mut out = Vec::with_capacity(raw.len());
+            for r in raw {
+                let cleaned = r.trim().to_lowercase();
+                if cleaned.is_empty() { continue; }
+                if seen.insert(cleaned.clone()) {
+                    out.push(cleaned);
+                }
+            }
+            out
+        } else {
+            Vec::new()
+        };
+
         skills.push(ParsedSkill {
             name,
             context,
@@ -125,6 +153,7 @@ pub fn parse_skill_report(xml_text: &str) -> Vec<ParsedSkill> {
             category,
             anti_patterns,
             description,
+            tags,
         });
     }
 
@@ -335,6 +364,18 @@ pub fn store_skill_as_procedure(
         metadata["anti_patterns"] = serde_json::Value::String(ap.clone());
     }
 
+    // V19 per-workspace scoping (PR #126): persist domain tags into
+    // `metadata.tags`. Empty Vec is conformant — the manifest filter's
+    // "untagged = global" rule keeps cross-domain skills visible without
+    // a tags column. Already normalized at parse time.
+    if !skill.tags.is_empty() {
+        metadata["tags"] = serde_json::Value::Array(
+            skill.tags.iter()
+                .map(|t| serde_json::Value::String(t.clone()))
+                .collect(),
+        );
+    }
+
     // description: take what the LLM provided; if absent, derive a short
     // summary from `context` so skill_search's tri-tier match_reasons still
     // has a non-empty single-line string to show in the manifest.
@@ -519,8 +560,10 @@ fn upgrade_existing_skill(
     let need_category_update = skill.category.is_some();
     let need_anti_patterns_update = skill.anti_patterns.is_some();
     let need_description_update = skill.description.is_some();
+    let need_tags_update = !skill.tags.is_empty();
     if need_signals_update || need_signals_seen_update || need_hint_update
         || need_category_update || need_anti_patterns_update || need_description_update
+        || need_tags_update
     {
         let mut metadata = existing.metadata.clone().unwrap_or_else(|| serde_json::json!({}));
         if let Some(obj) = metadata.as_object_mut() {
@@ -562,6 +605,36 @@ fn upgrade_existing_skill(
                 obj.insert(
                     "description".to_string(),
                     serde_json::Value::String(truncate_to_char_count(desc, 120)),
+                );
+            }
+            if need_tags_update {
+                // V19 tags: union with existing instead of overwrite.
+                // Rationale: tags are stable domain labels — a second
+                // extraction might surface a tag the first one missed,
+                // and unioning monotonically expands the skill's
+                // workspace coverage. Empty re-extraction preserves old
+                // (same pattern as signals).
+                //
+                // Future user-facing tag editor should bypass this fn
+                // and write directly via a dedicated IPC if "narrow"
+                // semantics are needed.
+                let existing_tags: Vec<String> = obj
+                    .get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                let mut seen: std::collections::HashSet<String> = existing_tags.iter().cloned().collect();
+                let mut merged = existing_tags;
+                for t in &skill.tags {
+                    if seen.insert(t.clone()) {
+                        merged.push(t.clone());
+                    }
+                }
+                obj.insert(
+                    "tags".to_string(),
+                    serde_json::Value::Array(
+                        merged.into_iter().map(serde_json::Value::String).collect(),
+                    ),
                 );
             }
         }
@@ -892,6 +965,7 @@ mod tests {
             category: None,
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -930,6 +1004,7 @@ mod tests {
             category: None,
             anti_patterns: None,
             description: None,
+            tags: vec![],
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -1039,6 +1114,7 @@ mod tests {
             category: None,
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
         let s2 = ParsedSkill {
             name: "处理 edit 工具文本匹配错误的备选插入策略".into(), // +1 word prefix
@@ -1052,6 +1128,7 @@ mod tests {
             category: None,
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
 
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
@@ -1089,6 +1166,7 @@ mod tests {
             category: None,
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
         let s2 = ParsedSkill {
             name: "  前端游戏开发项目工作流  ".into(), // same after normalize
@@ -1102,6 +1180,7 @@ mod tests {
             category: None,
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
 
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
@@ -1206,6 +1285,7 @@ mod tests {
             category: None,
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -1245,6 +1325,7 @@ mod tests {
             category: None,
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
 
         let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
@@ -1280,6 +1361,7 @@ mod tests {
             category: None,
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
 
@@ -1305,6 +1387,7 @@ mod tests {
             category: None,
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
         let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
 
@@ -1348,6 +1431,7 @@ mod tests {
             category: None,
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
 
@@ -1364,6 +1448,7 @@ mod tests {
             category: None,
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
         let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
 
@@ -1427,6 +1512,7 @@ mod tests {
             category: None,
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
 
@@ -1451,6 +1537,7 @@ mod tests {
             category: None,
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
         let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
         assert_eq!(n1.id, n2.id, "expected dedup to reuse node id");
@@ -1475,6 +1562,7 @@ mod tests {
             category: None,
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
         let n3 = store_skill_as_procedure(&store, &s3, space).unwrap();
         assert_eq!(n1.id, n3.id);
@@ -1544,6 +1632,7 @@ mod tests {
             category: Some("repair".into()),
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
 
@@ -1568,6 +1657,7 @@ mod tests {
             category: Some("optimize".into()),
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
         let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
         assert_eq!(n1.id, n2.id, "expected dedup to reuse node id");
@@ -1592,6 +1682,7 @@ mod tests {
             category: None,
         anti_patterns: None,
         description: None,
+            tags: vec![],
         };
         let n3 = store_skill_as_procedure(&store, &s3, space).unwrap();
         assert_eq!(n1.id, n3.id);
@@ -1692,6 +1783,7 @@ mod tests {
             category: None,
             anti_patterns: Some("v1 anti-pattern".into()),
             description: Some("v1 description".into()),
+            tags: vec![],
         };
         let n1 = store_skill_as_procedure(&store, &s1, space).unwrap();
 
@@ -1708,6 +1800,7 @@ mod tests {
             category: None,
             anti_patterns: Some("v2 anti-pattern".into()),
             description: Some("v2 description".into()),
+            tags: vec![],
         };
         let n2 = store_skill_as_procedure(&store, &s2, space).unwrap();
         assert_eq!(n1.id, n2.id, "expected dedup to reuse node id");
@@ -1737,6 +1830,7 @@ mod tests {
             category: None,
             anti_patterns: None,
             description: None,
+            tags: vec![],
         };
         let _ = store_skill_as_procedure(&store, &s3, space).unwrap();
         let final_node = store.get_node(&n1.id).unwrap().unwrap();
@@ -1746,5 +1840,206 @@ mod tests {
             .map(str::to_string);
         assert_eq!(final_ap.as_deref(), Some("v2 anti-pattern"),
             "None re-extraction must not wipe existing anti_patterns");
+    }
+
+    // ─── V19 tags: parse + persist + upgrade ────────────────────────────
+
+    /// `<tags><tag>…</tag></tags>` must be parsed into a normalized Vec<String>:
+    /// trim + lowercase + dedup, preserving the first occurrence order. The
+    /// normalization mirrors `tauri_commands::normalize_skill_tags` so the
+    /// manifest filter's bare string comparison works.
+    #[test]
+    fn parse_tags_block_normalizes_and_dedups() {
+        let xml = r#"
+<skill_report>
+<new_skills>
+<skill>
+<name>test-skill</name>
+<context>ctx</context>
+<principles>p</principles>
+<steps>s</steps>
+<pitfalls>x</pitfalls>
+<tags>
+  <tag>Engineering</tag>
+  <tag>  testing  </tag>
+  <tag>ENGINEERING</tag>
+  <tag></tag>
+  <tag>testing</tag>
+</tags>
+</skill>
+</new_skills>
+</skill_report>"#;
+        let skills = parse_skill_report(xml);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(
+            skills[0].tags,
+            vec!["engineering".to_string(), "testing".to_string()],
+            "tags must be lowercased + deduped + empty-dropped, preserving first-occurrence order"
+        );
+    }
+
+    /// Skills with no `<tags>` block stay at empty Vec → V19's "untagged =
+    /// global" rule keeps them visible in every workspace. This is the
+    /// backwards-compat default for all pre-tags learned skills.
+    #[test]
+    fn parse_skill_without_tags_block_yields_empty_vec() {
+        let xml = r#"
+<skill_report>
+<new_skills>
+<skill>
+<name>untagged-skill</name>
+<context>ctx</context>
+<principles>p</principles>
+<steps>s</steps>
+<pitfalls>x</pitfalls>
+</skill>
+</new_skills>
+</skill_report>"#;
+        let skills = parse_skill_report(xml);
+        assert_eq!(skills.len(), 1);
+        assert!(skills[0].tags.is_empty(),
+            "no <tags> block → empty Vec, NOT a sentinel value");
+    }
+
+    /// Non-empty `skill.tags` lands in `metadata.tags` as a JSON array.
+    /// Empty `skill.tags` must NOT write the key at all — V19's filter
+    /// uses presence of the array, and writing `[]` would be conformant
+    /// but wasteful (and visually noisy in Settings → 已学技能).
+    #[test]
+    fn store_persists_tags_into_metadata() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).unwrap();
+        let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        let store = MemoryGraphStore::new(conn);
+
+        let skill = ParsedSkill {
+            name: "tagged-skill".to_string(),
+            context: "ctx".to_string(),
+            principles: "p".to_string(),
+            steps: "s".to_string(),
+            pitfalls: "x".to_string(),
+            signals: vec![],
+            signals_seen: vec![],
+            validation_hint: None,
+            category: None,
+            anti_patterns: None,
+            description: None,
+            tags: vec!["engineering".to_string(), "testing".to_string()],
+        };
+        let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
+        let meta = node.metadata.expect("metadata set");
+        let tags = meta.get("tags").and_then(|v| v.as_array()).expect("tags array");
+        let got: Vec<&str> = tags.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(got, vec!["engineering", "testing"]);
+    }
+
+    #[test]
+    fn store_omits_tags_key_when_empty() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).unwrap();
+        let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        let store = MemoryGraphStore::new(conn);
+
+        let skill = ParsedSkill {
+            name: "untagged-skill".to_string(),
+            context: "ctx".to_string(), principles: "p".to_string(),
+            steps: "s".to_string(), pitfalls: "x".to_string(),
+            signals: vec![], signals_seen: vec![],
+            validation_hint: None, category: None,
+            anti_patterns: None, description: None,
+            tags: vec![],
+        };
+        let node = store_skill_as_procedure(&store, &skill, "default").unwrap();
+        let meta = node.metadata.expect("metadata set");
+        assert!(meta.get("tags").is_none(),
+            "empty tags Vec must omit the metadata key entirely (not write [])");
+    }
+
+    /// Upgrade path: a re-extraction with new tags must **union** with the
+    /// existing set (not overwrite). Rationale: tags are stable domain
+    /// labels, and unioning monotonically expands the workspace coverage —
+    /// safer than narrowing it accidentally.
+    #[test]
+    fn upgrade_unions_tags_with_existing() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).unwrap();
+        let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        let store = MemoryGraphStore::new(conn);
+
+        // First extraction: ["engineering"]
+        let v1 = ParsedSkill {
+            name: "shared-name".to_string(),
+            context: "ctx".to_string(), principles: "p".to_string(),
+            steps: "s".to_string(), pitfalls: "x".to_string(),
+            signals: vec![], signals_seen: vec![],
+            validation_hint: None, category: None,
+            anti_patterns: None, description: None,
+            tags: vec!["engineering".to_string()],
+        };
+        let node1 = store_skill_as_procedure(&store, &v1, "default").unwrap();
+
+        // Second extraction (same name → upgrade path): ["testing", "engineering"]
+        let v2 = ParsedSkill {
+            name: "shared-name".to_string(),
+            context: "ctx2".to_string(), principles: "p".to_string(),
+            steps: "s".to_string(), pitfalls: "x".to_string(),
+            signals: vec![], signals_seen: vec![],
+            validation_hint: None, category: None,
+            anti_patterns: None, description: None,
+            tags: vec!["testing".to_string(), "engineering".to_string()],
+        };
+        let node2 = store_skill_as_procedure(&store, &v2, "default").unwrap();
+        assert_eq!(node1.id, node2.id, "dedup must reuse the same node id");
+
+        // Refresh the node to read post-upgrade metadata.
+        let refreshed = store.get_node(&node1.id).unwrap().expect("node exists");
+        let meta = refreshed.metadata.expect("metadata set");
+        let tags = meta.get("tags").and_then(|v| v.as_array()).expect("tags array");
+        let got: Vec<&str> = tags.iter().filter_map(|v| v.as_str()).collect();
+        assert!(got.contains(&"engineering"),
+            "union must keep the original tag; got: {:?}", got);
+        assert!(got.contains(&"testing"),
+            "union must add the new tag; got: {:?}", got);
+        assert_eq!(got.len(), 2,
+            "no spurious duplicates from union; got: {:?}", got);
+    }
+
+    /// Upgrade path: empty re-extraction tags must NOT wipe the existing
+    /// set. Matches the "empty preserves old" convention used for signals
+    /// + signals_seen + validation_hint + anti_patterns.
+    #[test]
+    fn upgrade_with_empty_tags_preserves_existing() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).unwrap();
+        let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        let store = MemoryGraphStore::new(conn);
+
+        let v1 = ParsedSkill {
+            name: "shared-name".to_string(),
+            context: "ctx".to_string(), principles: "p".to_string(),
+            steps: "s".to_string(), pitfalls: "x".to_string(),
+            signals: vec![], signals_seen: vec![],
+            validation_hint: None, category: None,
+            anti_patterns: None, description: None,
+            tags: vec!["research".to_string()],
+        };
+        store_skill_as_procedure(&store, &v1, "default").unwrap();
+
+        let v2 = ParsedSkill {
+            name: "shared-name".to_string(),
+            context: "ctx2".to_string(), principles: "p".to_string(),
+            steps: "s".to_string(), pitfalls: "x".to_string(),
+            signals: vec![], signals_seen: vec![],
+            validation_hint: None, category: None,
+            anti_patterns: None, description: None,
+            tags: vec![],  // empty re-extraction
+        };
+        let node = store_skill_as_procedure(&store, &v2, "default").unwrap();
+        let refreshed = store.get_node(&node.id).unwrap().expect("node exists");
+        let meta = refreshed.metadata.expect("metadata set");
+        let tags = meta.get("tags").and_then(|v| v.as_array()).expect("tags array still present");
+        let got: Vec<&str> = tags.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(got, vec!["research"],
+            "empty re-extraction must preserve the existing tag set");
     }
 }
