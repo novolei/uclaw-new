@@ -99,3 +99,129 @@ mod chip_tests {
         assert_eq!(col, None);
     }
 }
+
+mod write_tests {
+    use super::super::resolver::write_atomic;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn writes_new_file_creates_content_and_returns_mtime() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("new.txt");
+        let (mtime, size) = write_atomic(&path, "hello world").expect("write");
+        assert!(mtime > 0);
+        assert_eq!(size, 11);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello world");
+    }
+
+    #[test]
+    fn overwrites_existing_file_atomically() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("existing.txt");
+        fs::write(&path, "first").unwrap();
+        let (_, size) = write_atomic(&path, "second-content").expect("write");
+        assert_eq!(size, 14);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second-content");
+    }
+
+    #[test]
+    fn rejects_content_over_50mb_cap() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("huge.bin");
+        let huge = "x".repeat(50 * 1024 * 1024 + 1);
+        let err = write_atomic(&path, &huge).expect_err("must reject");
+        assert!(
+            err.to_string().contains("cap"),
+            "expected cap error, got: {}",
+            err
+        );
+        assert!(!path.exists(), "tempfile cleanup should leave no file");
+    }
+
+    #[test]
+    fn empty_content_succeeds() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("empty.txt");
+        let (_, size) = write_atomic(&path, "").expect("write");
+        assert_eq!(size, 0);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "");
+    }
+
+    #[test]
+    fn unicode_content_round_trips() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("cjk.txt");
+        let content = "你好世界 — Привет, мир";
+        let (_, size) = write_atomic(&path, content).expect("write");
+        assert_eq!(size, content.as_bytes().len() as u64);
+        assert_eq!(fs::read_to_string(&path).unwrap(), content);
+    }
+
+    #[test]
+    fn cleans_tempfile_on_error() {
+        // Provoke a write error by writing to a non-existent dir.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("nonexistent-subdir").join("file.txt");
+        let err = write_atomic(&path, "content").expect_err("must fail");
+        assert!(
+            err.to_string().contains("tempfile") || err.to_string().contains("create"),
+            "expected tempfile create error, got: {}",
+            err
+        );
+        // No leftover tempfile in tmp root.
+        let leftovers: Vec<_> = fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".uclaw-preview-write-"))
+            .collect();
+        assert!(leftovers.is_empty(), "expected no tempfile leftovers");
+    }
+}
+
+mod approval_tests {
+    use crate::app::{ApprovalResult, PendingApprovals};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn approval_allow_resolves_with_true() {
+        let pending = Arc::new(PendingApprovals::new());
+        let rx = pending.register("test-write-1".to_string());
+
+        // Simulate the user clicking Allow.
+        let resolved = pending.resolve(
+            "test-write-1",
+            ApprovalResult {
+                approved: true,
+                always_allow: false,
+                tool_name: None,
+                path_scope: None,
+                paths: None,
+            },
+        );
+        assert!(resolved);
+
+        let result = rx.await.expect("recv");
+        assert!(result.approved);
+    }
+
+    #[tokio::test]
+    async fn approval_deny_resolves_with_false() {
+        let pending = Arc::new(PendingApprovals::new());
+        let rx = pending.register("test-write-2".to_string());
+
+        pending.resolve(
+            "test-write-2",
+            ApprovalResult {
+                approved: false,
+                always_allow: false,
+                tool_name: None,
+                path_scope: None,
+                paths: None,
+            },
+        );
+
+        let result = rx.await.expect("recv");
+        assert!(!result.approved);
+    }
+}
