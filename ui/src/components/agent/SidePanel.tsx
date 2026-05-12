@@ -12,7 +12,9 @@ import { useAtomValue, useSetAtom } from 'jotai'
 import { Plus, X, FolderPlus } from 'lucide-react'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { FilesRail } from '@/components/files-rail'
+import { PreviewPanel } from '@/components/preview/PreviewPanel'
 import type { MountRoot } from '@/atoms/files-rail-atoms'
+import { openPreviewAction } from '@/atoms/preview-panel-atoms'
 import type { TreeNode } from '@/components/files-rail/utils/tree-patch'
 import {
   agentSessionsAtom,
@@ -41,6 +43,7 @@ interface WorkspaceFilesViewProps {
 
 export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesViewProps): React.ReactElement {
   const setSidePanelOpenMap = useSetAtom(agentSidePanelOpenMapAtom)
+  const openPreview = useSetAtom(openPreviewAction)
 
   // filesVersion is still observed here so the auto-open effect below can
   // detect agent edits and pop the side panel open. The new FilesRail uses
@@ -121,6 +124,7 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
   }, [sessionId, setSessionAttachedMap])
 
   // Add file to chat — image previews via convertFileSrc (Tauri asset protocol).
+  // Preserved for W4c — Shift-click / context-menu will restore file-to-chat path.
   const pendingFiles = useAtomValue(agentPendingFilesAtom)
   const setPendingFiles = useSetAtom(agentPendingFilesAtom)
   const handleAddToChat = React.useCallback((entry: FileEntry) => {
@@ -215,21 +219,24 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
             </div>
           )}
 
-          {/* ===== Files Rail (W3) ===== */}
-          <div className="flex-1 min-h-0 flex flex-col">
-            <FilesRail
-              sessionId={sessionId}
-              onFileClick={(mount: MountRoot, node: TreeNode) => {
-                handleAddToChat({
-                  name: node.name,
-                  path: `${mount.path}/${node.relPath}`,
-                  isDirectory: node.kind === 'directory',
-                  isFile: node.kind === 'file',
-                  size: node.size,
-                  modifiedAt: node.mtimeMs,
-                })
-              }}
-            />
+          {/* ===== Files Rail (W3) + Preview Panel (W4a) ===== */}
+          <div className="flex-1 min-h-0 flex flex-row">
+            <div className="flex-1 min-w-0 flex flex-col">
+              <FilesRail
+                sessionId={sessionId}
+                onFileClick={(mount: MountRoot, node: TreeNode) => {
+                  if (node.kind === 'directory') return // directories expand, not preview
+                  openPreview({
+                    mountId: mount.id,
+                    relPath: node.relPath,
+                    name: node.name,
+                    sessionId,
+                    absolutePath: `${mount.path}/${node.relPath}`,
+                  })
+                }}
+              />
+            </div>
+            <PreviewPanel />
           </div>
         </div>
       ) : (
