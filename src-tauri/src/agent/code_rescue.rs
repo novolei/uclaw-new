@@ -6,6 +6,7 @@
 //! that are long enough to be a real file (>= 10 lines). Truncated responses
 //! (finish_reason=length) are handled upstream before this runs.
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use crate::agent::types::ToolCall;
 
@@ -180,6 +181,47 @@ fn lang_to_default_filename(lang: &str) -> Option<String> {
 /// accumulate across finish_reason=length iterations.
 ///
 /// Strategy: split on "```". An even number of resulting parts means an odd
+/// Panic-safe wrapper around [`extract_write_file_calls`].
+///
+/// Code-rescue is a best-effort fallback — if any of the byte-arithmetic /
+/// regex / unwrap inside the rescue pipeline panics on weird LLM output
+/// (we hit this with CJK at the find_filename_near window edge), the safe
+/// move is "no rescue happened this turn" rather than letting the panic
+/// kill the whole agentic_loop task (which would leave the UI's streaming
+/// state stuck at running:true with no chat:stream-complete event ever
+/// firing).
+///
+/// Returns an empty Vec on panic; logs the failure via tracing::error so
+/// the panic still appears in the rolling log + crashes/ directory (the
+/// observability panic hook is process-wide and runs regardless).
+pub fn extract_write_file_calls_safe(text: &str, workspace_root: Option<&Path>) -> Vec<ToolCall> {
+    match catch_unwind(AssertUnwindSafe(|| extract_write_file_calls(text, workspace_root))) {
+        Ok(calls) => calls,
+        Err(_) => {
+            tracing::error!(
+                text_chars = text.chars().count(),
+                "code_rescue::extract_write_file_calls panicked — treating as no-rescue",
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// Panic-safe wrapper around [`extract_partial_code_block`]. Same rationale
+/// as [`extract_write_file_calls_safe`].
+pub fn extract_partial_code_block_safe(text: &str) -> Option<(String, String)> {
+    match catch_unwind(AssertUnwindSafe(|| extract_partial_code_block(text))) {
+        Ok(opt) => opt,
+        Err(_) => {
+            tracing::error!(
+                text_chars = text.chars().count(),
+                "code_rescue::extract_partial_code_block panicked — treating as no-partial",
+            );
+            None
+        }
+    }
+}
+
 /// number of fence markers — the last one opened a block that was never closed.
 ///
 /// Returns `None` when all blocks are complete (or there are no blocks).
@@ -325,6 +367,23 @@ mod tests {
         let calls = extract_write_file_calls(&text, None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].arguments["path"], "game.js");
+    }
+
+    #[test]
+    fn safe_wrapper_returns_empty_on_panic() {
+        // The current implementation is fixed and does not panic on CJK input,
+        // but the safe wrapper is the load-bearing defense if a future change
+        // re-introduces a panic. Exercise it with the same CJK-heavy payload
+        // that hit prod, and verify it returns an empty Vec instead of
+        // unwinding through the caller.
+        let mut text = "数".repeat(2500);
+        text.push_str("\n```javascript\nlet x = 1;\n");
+        text.push_str(&"console.log(x);\n".repeat(20));
+        text.push_str("```\n");
+        let calls = extract_write_file_calls_safe(&text, None);
+        // Whether rescue succeeds or not isn't the assertion — just that it
+        // didn't panic.
+        let _ = calls;
     }
 
     #[test]

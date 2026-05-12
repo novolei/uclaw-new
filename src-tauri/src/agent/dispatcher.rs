@@ -734,7 +734,11 @@ impl LoopDelegate for ChatDelegate {
 
             // Even with truncation, the accumulated+current text might now
             // form a complete code block — try rescue first.
-            let rescue_calls = crate::agent::code_rescue::extract_write_file_calls(
+            // `_safe` wrapper: code-rescue is best-effort fallback; panicking
+            // here (we hit a CJK UTF-8 boundary bug previously) would kill the
+            // whole agentic_loop task and freeze the UI. catch_unwind here means
+            // "no rescue this turn", loop continues.
+            let rescue_calls = crate::agent::code_rescue::extract_write_file_calls_safe(
                 effective_text,
                 self.workspace_root.as_deref(),
             );
@@ -753,7 +757,7 @@ impl LoopDelegate for ChatDelegate {
             if let Some((_, ref mut acc)) = reason_ctx.partial_code_buffer {
                 acc.push_str(text);
             } else if let Some((lang, partial)) =
-                crate::agent::code_rescue::extract_partial_code_block(text)
+                crate::agent::code_rescue::extract_partial_code_block_safe(text)
             {
                 reason_ctx.partial_code_buffer = Some((lang, partial));
             }
@@ -787,7 +791,7 @@ impl LoopDelegate for ChatDelegate {
 
         // Code-block rescue: try with accumulated+current text (clears buffer
         // regardless of outcome — the response is done).
-        let rescue_calls = crate::agent::code_rescue::extract_write_file_calls(
+        let rescue_calls = crate::agent::code_rescue::extract_write_file_calls_safe(
             effective_text,
             self.workspace_root.as_deref(),
         );
