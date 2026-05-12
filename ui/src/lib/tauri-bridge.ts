@@ -1247,13 +1247,20 @@ export async function filesRailListMounts(sessionId: string | null): Promise<Mou
   return raw.map(toMountRoot)
 }
 
-export async function filesRailReadDir(mountId: string, relPath: string): Promise<TreeNode[]> {
-  const raw = await invoke<BackendFileNode[]>('files_rail_read_dir', { mountId, relPath })
+export async function filesRailReadDir(
+  mountId: string,
+  relPath: string,
+  sessionId: string | null = null,
+): Promise<TreeNode[]> {
+  const raw = await invoke<BackendFileNode[]>('files_rail_read_dir', { mountId, relPath, sessionId })
   return raw.map(toTreeNode)
 }
 
-export async function filesRailWatchStart(mountId: string): Promise<void> {
-  await invoke<void>('files_rail_watch_start', { mountId })
+export async function filesRailWatchStart(
+  mountId: string,
+  sessionId: string | null = null,
+): Promise<void> {
+  await invoke<void>('files_rail_watch_start', { mountId, sessionId })
 }
 
 export async function filesRailWatchStop(mountId: string): Promise<void> {

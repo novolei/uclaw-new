@@ -19,8 +19,9 @@ pub async fn files_rail_read_dir(
     state: State<'_, AppState>,
     mount_id: String,
     rel_path: String,
+    session_id: Option<String>,
 ) -> Result<Vec<FileNode>, Error> {
-    let (mount_root, target) = state.files_rail_resolve_dir(&mount_id, &rel_path).await?;
+    let (mount_root, target) = state.files_rail_resolve_dir(&mount_id, &rel_path, session_id).await?;
     let entries = read_dir_layer(&target, &mount_root)
         .map_err(|e| Error::Internal(format!("read_dir failed: {}", e)))?;
     Ok(entries)
@@ -30,8 +31,9 @@ pub async fn files_rail_read_dir(
 pub async fn files_rail_watch_start(
     state: State<'_, AppState>,
     mount_id: String,
+    session_id: Option<String>,
 ) -> Result<(), Error> {
-    let root = state.files_rail_mount_path(&mount_id).await?;
+    let root = state.files_rail_mount_path(&mount_id, session_id).await?;
     state
         .files_rail_service
         .register_mount(mount_id, root)

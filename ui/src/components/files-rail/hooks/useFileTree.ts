@@ -30,19 +30,19 @@ interface UseFileTreeResult {
   reload: () => Promise<void>
 }
 
-export function useFileTree(mountId: string): UseFileTreeResult {
+export function useFileTree(mountId: string, sessionId: string | null = null): UseFileTreeResult {
   const [tree, setTree] = useAtom(fileTreeAtomFamily(mountId))
   const [expanded, setExpanded] = useAtom(expandedPathsAtomFamily(mountId))
 
   const reload = React.useCallback(async () => {
     setTree({ status: 'loading' })
     try {
-      const nodes = await filesRailReadDir(mountId, '')
+      const nodes = await filesRailReadDir(mountId, '', sessionId)
       setTree({ status: 'ready', nodes })
     } catch (err) {
       setTree({ status: 'error', message: String(err) })
     }
-  }, [mountId, setTree])
+  }, [mountId, sessionId, setTree])
 
   React.useEffect(() => {
     if (tree.status === 'idle') void reload()
@@ -68,7 +68,7 @@ export function useFileTree(mountId: string): UseFileTreeResult {
       const targetHasChildren = treeHasChildrenAt(tree.nodes, relPath)
       if (targetHasChildren) return
       try {
-        const fetched = await filesRailReadDir(mountId, relPath)
+        const fetched = await filesRailReadDir(mountId, relPath, sessionId)
         setTree((prev) => {
           if (prev.status !== 'ready') return prev
           return { status: 'ready', nodes: setChildrenAt(prev.nodes, relPath, fetched) }
@@ -77,7 +77,7 @@ export function useFileTree(mountId: string): UseFileTreeResult {
         /* silent — error surfaces at the dir node */
       }
     },
-    [expanded, setExpanded, tree, mountId, setTree],
+    [expanded, setExpanded, tree, mountId, sessionId, setTree],
   )
 
   const applyExternalChanges = React.useCallback(

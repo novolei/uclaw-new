@@ -49,7 +49,7 @@ export function WorkspaceFilesPanel({
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-y-auto py-2">
       {mounts.map((m) => (
-        <MountSection key={m.id} mount={m} onFileClick={handleClick} />
+        <MountSection key={m.id} mount={m} sessionId={sessionId} onFileClick={handleClick} />
       ))}
     </div>
   )

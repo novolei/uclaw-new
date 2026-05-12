@@ -10,15 +10,16 @@ import type { TreeNode } from '@/components/files-rail/utils/tree-patch'
 
 interface MountSectionProps {
   mount: MountRoot
+  sessionId: string | null
   onFileClick: (mount: MountRoot, node: TreeNode) => void
 }
 
-export function MountSection({ mount, onFileClick }: MountSectionProps): React.ReactElement {
-  const { nodes, loadState, errorMessage, isExpanded, toggleExpand, reload, applyExternalChanges } = useFileTree(mount.id)
+export function MountSection({ mount, sessionId, onFileClick }: MountSectionProps): React.ReactElement {
+  const { nodes, loadState, errorMessage, isExpanded, toggleExpand, reload, applyExternalChanges } = useFileTree(mount.id, sessionId)
   useFilesRailWatcher(mount.id, applyExternalChanges)
 
   React.useEffect(() => {
-    void filesRailWatchStart(mount.id).catch(() => {
+    void filesRailWatchStart(mount.id, sessionId).catch(() => {
       /* silent — events just won't arrive */
     })
     return () => {
@@ -26,7 +27,7 @@ export function MountSection({ mount, onFileClick }: MountSectionProps): React.R
         /* idempotent on backend */
       })
     }
-  }, [mount.id])
+  }, [mount.id, sessionId])
 
   const handleFileClick = React.useCallback(
     (node: TreeNode) => onFileClick(mount, node),

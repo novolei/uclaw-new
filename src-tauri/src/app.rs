@@ -650,8 +650,12 @@ impl AppState {
     pub async fn files_rail_mount_path(
         &self,
         mount_id: &str,
+        session_id_override: Option<String>,
     ) -> Result<std::path::PathBuf, crate::error::Error> {
-        let session = self.extract_session_from_mount(mount_id);
+        // Prefer the caller-supplied session_id (the frontend always knows which
+        // session it is rendering). Fall back to mount_id parsing for
+        // session:<id> / attached:<sid>:<idx> when the caller didn't pass it.
+        let session = session_id_override.or_else(|| self.extract_session_from_mount(mount_id));
         let mounts = self.files_rail_list_mounts(session).await?;
         mounts
             .into_iter()
@@ -664,8 +668,9 @@ impl AppState {
         &self,
         mount_id: &str,
         rel_path: &str,
+        session_id_override: Option<String>,
     ) -> Result<(std::path::PathBuf, std::path::PathBuf), crate::error::Error> {
-        let mount_root = self.files_rail_mount_path(mount_id).await?;
+        let mount_root = self.files_rail_mount_path(mount_id, session_id_override).await?;
         let target = if rel_path.is_empty() || rel_path == "/" {
             mount_root.clone()
         } else {
