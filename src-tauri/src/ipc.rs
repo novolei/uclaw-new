@@ -879,6 +879,16 @@ pub struct SessionCostRollup {
     pub last_used_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceCostRollup {
+    pub workspace_id: String,
+    pub workspace_name: String,
+    pub workspace_icon: String,
+    pub total_cost_usd: f64,
+    pub total_tokens: i64,
+}
+
 // ─── Permission rules ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
