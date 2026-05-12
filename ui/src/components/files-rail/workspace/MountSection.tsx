@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { FolderOpen, RefreshCw, AlertTriangle } from 'lucide-react'
+import { FolderOpen, RefreshCw, AlertTriangle, Lock } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useFileTree } from '@/components/files-rail/hooks/useFileTree'
 import { useFilesRailWatcher } from '@/components/files-rail/hooks/useFilesRailWatcher'
@@ -40,6 +40,14 @@ export function MountSection({ mount, sessionId, onFileClick }: MountSectionProp
       <header className="flex items-center gap-1 px-2 h-[28px] flex-shrink-0">
         <FolderOpen className="size-3 text-muted-foreground" />
         <span className="text-[11px] font-medium text-muted-foreground truncate">{mount.label}</span>
+        {!mount.editable && (
+          <Lock
+            className="size-2.5 text-muted-foreground/60 shrink-0"
+            aria-label="只读"
+          >
+            <title>只读 — 编辑此挂载点需要批准</title>
+          </Lock>
+        )}
         <span className="ml-auto" />
         <button
           type="button"

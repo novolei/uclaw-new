@@ -622,6 +622,62 @@ impl AppState {
             });
         }
 
+        // W4d Issue 4 fix: workspace-level attached_dirs become MountRoots too.
+        // Without this, dirs attached via attachWorkspaceDirectory (the standard
+        // UI flow) never appear in the rail, which blocks testing of the
+        // preview-write approval flow.
+        let workspace_attached_dirs: Vec<String> = {
+            let space_id_opt = space_id_for_session.clone().or_else(|| {
+                // No session → fall back to the globally-active workspace.
+                self.db.lock().ok().and_then(|conn| {
+                    conn.query_row(
+                        "SELECT value FROM settings WHERE key = 'active_workspace_id'",
+                        [],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .ok()
+                })
+            });
+            match space_id_opt {
+                Some(space_id) => self
+                    .db
+                    .lock()
+                    .ok()
+                    .and_then(|conn| {
+                        conn.query_row(
+                            "SELECT attached_dirs FROM spaces WHERE id = ?1",
+                            rusqlite::params![space_id],
+                            |r| r.get::<_, Option<String>>(0),
+                        )
+                        .ok()
+                        .flatten()
+                    })
+                    .and_then(|j| serde_json::from_str::<Vec<String>>(&j).ok())
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            }
+        };
+
+        for (idx, dir) in workspace_attached_dirs.iter().enumerate() {
+            let pb = std::path::PathBuf::from(dir);
+            if !pb.exists() {
+                continue;
+            }
+            let space_id_label = space_id_for_session.as_deref().unwrap_or("default");
+            let name = pb
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("attached")
+                .to_string();
+            out.push(MountRoot {
+                id: format!("workspace-attached:{}:{}", space_id_label, idx),
+                label: name,
+                path: pb,
+                kind: MountKind::AttachedDir,
+                editable: false,
+            });
+        }
+
         // Session-scoped attached_dirs — one mount per path (filtered to existing).
         if let Some(sid) = session_id.as_deref() {
             for (idx, dir) in session_attached_dirs.iter().enumerate() {
