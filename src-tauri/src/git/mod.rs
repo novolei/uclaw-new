@@ -28,6 +28,7 @@
 pub(crate) mod error;
 pub(crate) mod command;
 pub(crate) mod repo;
+pub(crate) mod branch;
 // Subsequent tasks add their own `pub(crate) mod <name>;` lines below
 // so each commit's build stays green and bisectable.
 
