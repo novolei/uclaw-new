@@ -208,6 +208,9 @@ pub struct AppState {
     // Evaluation harness
     pub trajectory_store: Arc<crate::harness::TrajectoryStore>,
     pub tool_budget: Arc<crate::harness::ToolBudgetManager>,
+
+    /// Files rail service — owns the filesystem watcher for the WorkspaceRail UI.
+    pub files_rail_service: Arc<crate::files_rail::FilesRailService>,
 }
 
 impl AppState {
@@ -353,6 +356,9 @@ impl AppState {
         let service_manager = Arc::new(ServiceManager::new());
         tracing::info!("ServiceManager created");
 
+        // Files rail service — created here, registered into ServiceManager in main.rs Stage 3.
+        let files_rail_service = Arc::new(crate::files_rail::FilesRailService::new(app_handle.clone()));
+
         // ─── Stage 3：注册后台服务到 ServiceManager（在后台异步完成启动）
         // 这些注册操作需要 async，因此在 setup 中通过 spawn 完成。
         // 此处仅构建 AppState，实际注册和启动在 main.rs setup 中执行。
@@ -392,6 +398,7 @@ impl AppState {
             automation_service,
             trajectory_store,
             tool_budget,
+            files_rail_service,
         })
     }
 
@@ -530,6 +537,159 @@ impl AppState {
                     return Some(candidate.to_string());
                 }
             }
+        }
+        None
+    }
+}
+
+// ─── Files Rail Helpers ────────────────────────────────────────────────────
+
+impl AppState {
+    pub async fn files_rail_list_mounts(
+        &self,
+        session_id: Option<String>,
+    ) -> Result<Vec<crate::files_rail::MountRoot>, crate::error::Error> {
+        use crate::files_rail::{MountKind, MountRoot};
+        let mut out: Vec<MountRoot> = Vec::new();
+
+        // Resolve the session's space_id + attached_dirs in a single short
+        // lock so we don't hold it across awaits later.
+        let (space_id_for_session, session_attached_dirs): (Option<String>, Vec<String>) =
+            if let Some(sid) = session_id.as_deref() {
+                match self.db.lock() {
+                    Ok(conn) => {
+                        let space: Option<String> = conn
+                            .query_row(
+                                "SELECT space_id FROM agent_sessions WHERE id = ?1",
+                                rusqlite::params![sid],
+                                |r| r.get::<_, String>(0),
+                            )
+                            .ok();
+                        let attached_json: Option<String> = conn
+                            .query_row(
+                                "SELECT attached_dirs FROM agent_sessions WHERE id = ?1",
+                                rusqlite::params![sid],
+                                |r| r.get::<_, String>(0),
+                            )
+                            .ok();
+                        let attached = attached_json
+                            .as_deref()
+                            .and_then(|j| serde_json::from_str::<Vec<String>>(j).ok())
+                            .unwrap_or_default();
+                        (space, attached)
+                    }
+                    Err(_) => (None, Vec::new()),
+                }
+            } else {
+                (None, Vec::new())
+            };
+
+        // Workspace mount — when a session_id resolves to a space with a custom
+        // path, use that; otherwise fall back to the default ~/Documents/workground.
+        let workspace_path: Option<std::path::PathBuf> = if let Some(space) = space_id_for_session
+            .as_deref()
+        {
+            self.db.lock().ok().and_then(|conn| {
+                conn.query_row(
+                    "SELECT path FROM spaces WHERE id = ?1",
+                    rusqlite::params![space],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .ok()
+                .flatten()
+                .filter(|s| !s.trim().is_empty())
+                .map(std::path::PathBuf::from)
+            })
+        } else {
+            None
+        };
+        let workspace_root = workspace_path.unwrap_or_else(|| {
+            dirs::document_dir()
+                .map(|d| d.join("workground"))
+                .unwrap_or_default()
+        });
+        if workspace_root.exists() {
+            let id = match space_id_for_session.as_deref() {
+                Some(s) => format!("workspace:{}", s),
+                None => "workspace:default".into(),
+            };
+            out.push(MountRoot {
+                id,
+                label: "工作区文件".into(),
+                path: workspace_root,
+                kind: MountKind::Workspace,
+                editable: true,
+            });
+        }
+
+        // Session-scoped attached_dirs — one mount per path (filtered to existing).
+        if let Some(sid) = session_id.as_deref() {
+            for (idx, dir) in session_attached_dirs.iter().enumerate() {
+                let pb = std::path::PathBuf::from(dir);
+                if !pb.exists() {
+                    continue;
+                }
+                let name = pb
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("attached")
+                    .to_string();
+                out.push(MountRoot {
+                    id: format!("attached:{}:{}", sid, idx),
+                    label: name,
+                    path: pb,
+                    kind: MountKind::AttachedDir,
+                    editable: false,
+                });
+            }
+        }
+
+        Ok(out)
+    }
+
+    pub async fn files_rail_mount_path(
+        &self,
+        mount_id: &str,
+        session_id_override: Option<String>,
+    ) -> Result<std::path::PathBuf, crate::error::Error> {
+        // Prefer the caller-supplied session_id (the frontend always knows which
+        // session it is rendering). Fall back to mount_id parsing for
+        // session:<id> / attached:<sid>:<idx> when the caller didn't pass it.
+        let session = session_id_override.or_else(|| self.extract_session_from_mount(mount_id));
+        let mounts = self.files_rail_list_mounts(session).await?;
+        mounts
+            .into_iter()
+            .find(|m| m.id == mount_id)
+            .map(|m| m.path)
+            .ok_or_else(|| crate::error::Error::Internal(format!("mount not found: {}", mount_id)))
+    }
+
+    pub async fn files_rail_resolve_dir(
+        &self,
+        mount_id: &str,
+        rel_path: &str,
+        session_id_override: Option<String>,
+    ) -> Result<(std::path::PathBuf, std::path::PathBuf), crate::error::Error> {
+        let mount_root = self.files_rail_mount_path(mount_id, session_id_override).await?;
+        let target = if rel_path.is_empty() || rel_path == "/" {
+            mount_root.clone()
+        } else {
+            if rel_path.starts_with('/') || rel_path.split('/').any(|seg| seg == "..") {
+                return Err(crate::error::Error::InvalidInput(
+                    "invalid rel_path: absolute paths and .. segments are not allowed".into(),
+                ));
+            }
+            mount_root.join(rel_path)
+        };
+        Ok((mount_root, target))
+    }
+
+    fn extract_session_from_mount(&self, mount_id: &str) -> Option<String> {
+        if let Some(rest) = mount_id.strip_prefix("session:") {
+            return Some(rest.to_string());
+        }
+        if let Some(rest) = mount_id.strip_prefix("attached:") {
+            return rest.split(':').next().map(|s| s.to_string());
         }
         None
     }

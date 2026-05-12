@@ -87,6 +87,7 @@ fn main() {
                 let pending_approvals = state.pending_approvals.clone();
                 let pending_ask_users = state.pending_ask_users.clone();
                 let pending_exit_plans = state.pending_exit_plans.clone();
+                let files_rail_service = state.files_rail_service.clone();
 
                 // 在后台异步执行服务注册和启动
                 tauri::async_runtime::spawn(async move {
@@ -203,6 +204,10 @@ fn main() {
                         service_manager.register(local_api_svc).await;
                         tracing::info!("[Stage 3] LocalApiService registered");
                     }
+
+                    // FilesRailService — always registered (not gated on memubot_config)
+                    service_manager.register(files_rail_service).await;
+                    tracing::info!("[Stage 3] FilesRailService registered");
 
                     // Stage 4: 启动所有已注册服务
                     tracing::info!("[Stage 4] Starting all registered services...");
@@ -494,6 +499,11 @@ fn main() {
             uclaw_core::tauri_commands::list_automations,
             uclaw_core::tauri_commands::trigger_automation_manual,
             uclaw_core::tauri_commands::get_automation_activity,
+            // Files Rail Commands
+            uclaw_core::files_rail::commands::files_rail_list_mounts,
+            uclaw_core::files_rail::commands::files_rail_read_dir,
+            uclaw_core::files_rail::commands::files_rail_watch_start,
+            uclaw_core::files_rail::commands::files_rail_watch_stop,
             // Workspace Commands
             uclaw_core::tauri_commands::get_active_workspace_id,
             uclaw_core::tauri_commands::set_active_workspace_id,

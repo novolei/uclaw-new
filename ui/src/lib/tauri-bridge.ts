@@ -117,6 +117,8 @@ import type {
 } from './types';
 import type { Channel } from './chat-types';
 import type { RecentThread, AskUserRequest, ExitPlanModeRequest } from './agent-types';
+import type { MountRoot } from '@/atoms/files-rail-atoms';
+import type { TreeNode } from '@/components/files-rail/utils/tree-patch';
 
 // ─────────────────────────────────────────────────────────
 // Bootstrap / Settings
@@ -1207,3 +1209,60 @@ export const readDefaultPrompts = (): Promise<DefaultPromptsResponse> =>
  */
 export const openWorkspaceUclawMdExternally = (): Promise<void> =>
   invoke<void>('open_workspace_uclaw_md_externally')
+
+// ============================================================================
+// Files Rail (W3)
+// ============================================================================
+
+interface BackendFileNode {
+  path: string
+  rel_path: string
+  name: string
+  kind: 'file' | 'directory'
+  size: number
+  mtime_ms: number
+  is_ignored: boolean
+}
+
+const toTreeNode = (n: BackendFileNode): TreeNode => ({
+  kind: n.kind,
+  relPath: n.rel_path,
+  name: n.name,
+  size: n.size,
+  mtimeMs: n.mtime_ms,
+})
+
+interface BackendMountRoot {
+  id: string
+  label: string
+  path: string
+  kind: 'workspace' | 'session' | 'attached_dir'
+  editable: boolean
+}
+
+const toMountRoot = (m: BackendMountRoot): MountRoot => ({ ...m })
+
+export async function filesRailListMounts(sessionId: string | null): Promise<MountRoot[]> {
+  const raw = await invoke<BackendMountRoot[]>('files_rail_list_mounts', { sessionId })
+  return raw.map(toMountRoot)
+}
+
+export async function filesRailReadDir(
+  mountId: string,
+  relPath: string,
+  sessionId: string | null = null,
+): Promise<TreeNode[]> {
+  const raw = await invoke<BackendFileNode[]>('files_rail_read_dir', { mountId, relPath, sessionId })
+  return raw.map(toTreeNode)
+}
+
+export async function filesRailWatchStart(
+  mountId: string,
+  sessionId: string | null = null,
+): Promise<void> {
+  await invoke<void>('files_rail_watch_start', { mountId, sessionId })
+}
+
+export async function filesRailWatchStop(mountId: string): Promise<void> {
+  await invoke<void>('files_rail_watch_stop', { mountId })
+}
