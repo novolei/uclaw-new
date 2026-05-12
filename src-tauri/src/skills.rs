@@ -1041,4 +1041,39 @@ Test.
         assert_eq!(normalize_skill_title("API_KEY-Blacklist"), "api_key-blacklist");
         assert_eq!(normalize_skill_title(""), "");
     }
+
+    /// PR-mattpocock-2: verify the vendored skills under `skills/borrowed/`
+    /// all parse cleanly under uClaw's `SkillManifest` schema. mattpocock's
+    /// frontmatter is `{ name, description, disable-model-invocation? }` —
+    /// uClaw's required fields are just `name` (all others have serde defaults),
+    /// and unknown fields are silently ignored. So this should round-trip.
+    #[test]
+    fn borrowed_skills_parse_under_uclaw_schema() {
+        let manifest_dir = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.parent().map(|x| x.to_path_buf()))
+            .unwrap_or_else(|| PathBuf::from("."));
+        let borrowed_dir = manifest_dir.join("skills/borrowed");
+        // Skip silently if we're not running from the repo workspace —
+        // some test runners place CWD in `target/`.
+        if !borrowed_dir.exists() {
+            return;
+        }
+        let expected_names = [
+            "diagnose", "tdd", "zoom-out",
+            "handoff", "grill-me", "caveman", "write-a-skill",
+        ];
+        for name in expected_names {
+            let path = borrowed_dir.join(name).join("SKILL.md");
+            assert!(path.exists(),
+                "missing borrowed skill: {}", path.display());
+            let content = std::fs::read_to_string(&path).unwrap();
+            let loaded = parse_skill_md(&content, path.clone())
+                .unwrap_or_else(|e| panic!("borrowed skill {} failed to parse: {:?}", name, e));
+            assert_eq!(loaded.manifest.name, name,
+                "name in frontmatter must match directory name");
+            assert!(!loaded.manifest.description.is_empty(),
+                "borrowed skill {} must have a description (mattpocock convention)", name);
+        }
+    }
 }
