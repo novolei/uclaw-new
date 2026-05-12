@@ -686,6 +686,58 @@ impl MemoryGraphStore {
         Ok(())
     }
 
+    // ── Embedding helpers ───────────────────────────────────────────────
+
+    /// Persist an embedding vector (as a JSON string) into `memory_versions`.
+    ///
+    /// Used by the embedding backfill task and by skill extraction to write the
+    /// fastembed vector immediately after the version is created.
+    /// Best-effort: callers log and swallow errors — a missing embedding never
+    /// breaks retrieval; it just skips the cosine channel for that skill.
+    pub fn update_version_embedding(
+        &self,
+        version_id: &str,
+        embedding_json: &str,
+    ) -> Result<(), crate::error::Error> {
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        conn.execute(
+            "UPDATE memory_versions SET embedding_json = ?1 WHERE id = ?2",
+            params![embedding_json, version_id],
+        ).map_err(crate::error::Error::Database)?;
+        debug!(version_id, "memory_graph: wrote embedding_json");
+        Ok(())
+    }
+
+    /// List active versions for learned-skill Procedure nodes that have no
+    /// embedding yet (`embedding_json IS NULL`).  Used by the one-shot backfill
+    /// task at proactive-service startup to hydrate legacy versions.
+    ///
+    /// Returns `(version_id, content)` pairs — the content is what gets embedded.
+    pub fn list_versions_without_embedding(
+        &self,
+        space_id: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, String)>, crate::error::Error> {
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        let mut stmt = conn.prepare(
+            "SELECT v.id, v.content
+             FROM memory_versions v
+             INNER JOIN memory_nodes n ON n.id = v.node_id
+             WHERE n.space_id = ?1
+               AND n.kind = 'procedure'
+               AND COALESCE(json_extract(n.metadata_json, '$.skill_type'), '') = 'learned'
+               AND v.status = 'active'
+               AND v.embedding_json IS NULL
+             LIMIT ?2"
+        ).map_err(crate::error::Error::Database)?;
+
+        let rows = stmt.query_map(params![space_id, limit as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }).map_err(crate::error::Error::Database)?;
+
+        Ok(rows.flatten().collect())
+    }
+
     // ── Private helpers ─────────────────────────────────────────────────
 
     fn row_to_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryNode> {

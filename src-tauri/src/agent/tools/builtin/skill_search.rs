@@ -18,6 +18,7 @@ use tokio::sync::RwLock;
 use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
 use crate::memory_graph::models::MemoryNode;
 use crate::memory_graph::store::MemoryGraphStore;
+use crate::memu::client::MemUClient;
 use crate::skills::SkillsRegistry;
 
 pub struct SkillSearchTool<R: tauri::Runtime = tauri::Wry> {
@@ -26,6 +27,7 @@ pub struct SkillSearchTool<R: tauri::Runtime = tauri::Wry> {
     pub app_handle: tauri::AppHandle<R>,
     pub conversation_id: String,
     pub space_id: String,
+    pub memu_client: Option<Arc<MemUClient>>,
 }
 
 impl<R: tauri::Runtime> SkillSearchTool<R> {
@@ -36,7 +38,56 @@ impl<R: tauri::Runtime> SkillSearchTool<R> {
         conversation_id: String,
         space_id: String,
     ) -> Self {
-        Self { registry, store, app_handle, conversation_id, space_id }
+        Self { registry, store, app_handle, conversation_id, space_id, memu_client: None }
+    }
+
+    /// Attach a `MemUClient` to enable the cosine-similarity channel during search.
+    /// If not set (or if fastembed is unavailable at runtime), the cosine channel is
+    /// silently skipped and keyword-only results are returned.
+    pub fn with_memu(mut self, client: Option<Arc<MemUClient>>) -> Self {
+        self.memu_client = client;
+        self
+    }
+
+    /// Scan all active learned-skill versions and compute cosine similarity against
+    /// `query_embedding`. Returns a map of node_id → cosine score (only entries with
+    /// sim > 0.0) and a vec of (node_id, MemoryNode) for skills that were NOT already
+    /// in `existing_node_ids` — so callers can inject them into the keyword channel's
+    /// node_score map.
+    ///
+    /// Extracted so tests can drive it with pre-computed fake embeddings without needing
+    /// a live fastembed bridge.
+    pub fn apply_cosine_scoring(
+        &self,
+        query_embedding: &[f32],
+        existing_node_ids: &std::collections::HashSet<String>,
+    ) -> (
+        std::collections::HashMap<String, f32>,  // node_id → cosine boost
+        Vec<(String, MemoryNode)>,               // new nodes not in existing_node_ids
+    ) {
+        let mut cosine_boost: std::collections::HashMap<String, f32> =
+            std::collections::HashMap::new();
+        let mut new_nodes: Vec<(String, MemoryNode)> = Vec::new();
+
+        if let Ok(all_skills) = self.store.list_top_learned_skills(&self.space_id, 500) {
+            for detail in &all_skills {
+                if let Some(ref active_ver) = detail.active_version {
+                    if let Some(stored_emb) = crate::memu::embedding::parse_embedding(
+                        active_ver.embedding_json.as_deref()
+                    ) {
+                        let sim = crate::memu::embedding::cosine_sim(query_embedding, &stored_emb);
+                        if sim > 0.0 {
+                            cosine_boost.insert(detail.node.id.clone(), sim);
+                            if !existing_node_ids.contains(&detail.node.id) {
+                                new_nodes.push((detail.node.id.clone(), detail.node.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        (cosine_boost, new_nodes)
     }
 }
 
@@ -140,6 +191,41 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
             }
         }
 
+        // Cosine channel — embed the query and compare against stored embeddings.
+        // Adds up to +2.0 to score (cosine_sim * 2.0). Gracefully skipped if:
+        //   - memu_client is None (fastembed unavailable)
+        //   - embed call fails
+        //   - stored versions have NULL embedding_json (use 0.0 boost)
+        //
+        // We also add any cosine-hit nodes that the keyword channel missed.
+        let query_embedding: Option<Vec<f32>> = if let Some(ref memu) = self.memu_client {
+            match memu.embed_text(&[query]).await {
+                Ok(mut vecs) if !vecs.is_empty() => Some(vecs.remove(0)),
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::debug!(error = %e, "skill_search: embed_text failed, skipping cosine channel");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Map node_id → cosine boost so we can apply it uniformly.
+        let cosine_boost: std::collections::HashMap<String, f32> =
+            if let Some(ref q_emb) = query_embedding {
+                let existing_ids: std::collections::HashSet<String> =
+                    node_score.keys().cloned().collect();
+                let (boost_map, new_nodes) = self.apply_cosine_scoring(q_emb, &existing_ids);
+                // Inject cosine-only hits so they participate in score building below.
+                for (nid, node) in new_nodes {
+                    node_score.entry(nid).or_insert((0, node));
+                }
+                boost_map
+            } else {
+                std::collections::HashMap::new()
+            };
+
         // Build learned hits — node already in hand, no extra DB call needed.
         let query_lower = query.to_lowercase();
         for (node_id, (kw_hits, node)) in node_score {
@@ -183,10 +269,16 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
                 .collect();
             let signal_match_count = matched_signals.len() as f64;
 
+            let cosine_bonus = cosine_boost
+                .get(&node_id)
+                .copied()
+                .unwrap_or(0.0) as f64
+                * 2.0;
             let score = (kw_hits as f64)
                 + signal_match_count * 1.5
                 + (cited as f64 * 0.5)
-                + (usage as f64 * 0.2);
+                + (usage as f64 * 0.2)
+                + cosine_bonus;
             hits.push(SearchHit {
                 name: node.title,
                 summary: truncate_summary(&summary, 200),
@@ -461,5 +553,209 @@ mod tests {
         let matched = b_hit["matched_signals"].as_array().unwrap();
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0], "401 unauthorized");
+    }
+
+    /// Helper: create a learned node with an explicit embedding_json stored in the
+    /// active version. Used to test the cosine channel without a live fastembed process.
+    fn make_learned_node_with_embedding(
+        store: &MemoryGraphStore,
+        title: &str,
+        keywords: &[&str],
+        embedding: &[f32],
+    ) -> String {
+        use crate::memory_graph::models::{MemoryVersion, MemoryVersionStatus};
+        let now = chrono::Utc::now().to_rfc3339();
+        let id = uuid::Uuid::new_v4().to_string();
+        let node = MemoryNode {
+            id: id.clone(),
+            space_id: "default".into(),
+            kind: crate::memory_graph::models::MemoryNodeKind::Procedure,
+            title: title.into(),
+            metadata: Some(json!({
+                "skill_type": "learned",
+                "enabled": true,
+                "summary": format!("Summary for {}", title),
+                "cited_count": 0u64,
+                "usage_count": 0u64,
+            })),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.create_node(&node).unwrap();
+        let embedding_json = serde_json::to_string(embedding).unwrap();
+        let version = MemoryVersion {
+            id: uuid::Uuid::new_v4().to_string(),
+            node_id: id.clone(),
+            supersedes_version_id: None,
+            status: MemoryVersionStatus::Active,
+            content: format!("Content for {}", title),
+            metadata: None,
+            embedding_json: Some(embedding_json),
+            created_at: now.clone(),
+        };
+        store.create_version(&version).unwrap();
+        for kw in keywords {
+            store.create_keyword(&MemoryKeyword {
+                id: uuid::Uuid::new_v4().to_string(),
+                space_id: "default".into(),
+                node_id: id.clone(),
+                keyword: kw.to_string(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+            }).unwrap();
+        }
+        id
+    }
+
+    /// Verify graceful degradation: with NULL embeddings and no memu client,
+    /// keyword-only results are returned normally (cosine channel is silently skipped).
+    #[tokio::test]
+    async fn cosine_degrades_gracefully_without_memu() {
+        let store = fresh_store();
+        // Skill with no embedding stored
+        let _id = make_learned_node_with_keywords(&store, "null-embedding-skill", &["database"], 0);
+
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        // No memu client — cosine channel should be skipped
+        let tool = SkillSearchTool::new(
+            registry,
+            Arc::clone(&store),
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
+        ); // no .with_memu() — memu_client stays None
+
+        let out = tool.execute(json!({ "query": "database" })).await.unwrap();
+        let hits = out.result.as_array().unwrap();
+        assert_eq!(hits.len(), 1, "keyword channel should still find the skill");
+        assert_eq!(hits[0]["name"], "null-embedding-skill");
+    }
+
+    /// Verify the cosine channel does NOT surface a semantic-only skill via keyword search.
+    /// (Keyword-only path: the tool without memu must not find the semantic skill.)
+    #[tokio::test]
+    async fn cosine_skill_not_surfaced_by_keyword_search() {
+        let store = fresh_store();
+
+        // Unit vector along dim 0 — represents the "query concept"
+        let q_vec: Vec<f32> = {
+            let mut v = vec![0.0f32; 8];
+            v[0] = 1.0;
+            v
+        };
+        // Matching embedding (cosine sim = 1.0 with q_vec)
+        let matching_emb = q_vec.clone();
+        // Orthogonal embedding (cosine sim = 0.0 with q_vec)
+        let unrelated_emb: Vec<f32> = {
+            let mut v = vec![0.0f32; 8];
+            v[1] = 1.0;
+            v
+        };
+
+        // Skill A: no overlapping keyword, but stored embedding matches q_vec perfectly
+        let _id_a = make_learned_node_with_embedding(&store, "semantic-skill", &["zzzunique"], &matching_emb);
+        // Skill B: keyword match for "database", orthogonal embedding
+        let _id_b = make_learned_node_with_embedding(&store, "keyword-skill", &["database"], &unrelated_emb);
+
+        // Verify cosine_sim math directly (no bridge needed for stored embeddings)
+        let stored_a_sim = crate::memu::embedding::cosine_sim(&q_vec, &matching_emb);
+        let stored_b_sim = crate::memu::embedding::cosine_sim(&q_vec, &unrelated_emb);
+        assert!((stored_a_sim - 1.0).abs() < 1e-5, "matching embedding should have sim ~1.0");
+        assert!(stored_b_sim.abs() < 1e-5, "orthogonal embedding should have sim ~0.0");
+
+        // Keyword channel alone: "database" hits keyword-skill but NOT semantic-skill
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        let tool_no_memu = SkillSearchTool::new(
+            Arc::clone(&registry),
+            Arc::clone(&store),
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
+        );
+        let out = tool_no_memu.execute(json!({ "query": "database", "top_k": 10 })).await.unwrap();
+        let hits = out.result.as_array().unwrap();
+        assert!(
+            hits.iter().all(|h| h["name"] != "semantic-skill"),
+            "keyword-only search must NOT surface semantic-skill (no keyword overlap)"
+        );
+    }
+
+    /// Positive cosine path: `apply_cosine_scoring` surfaces the semantically matching
+    /// skill and ranks it above the orthogonal one.
+    ///
+    /// Uses two orthogonal unit vectors so we can predict cosine similarity exactly,
+    /// no live fastembed bridge required.
+    #[test]
+    fn apply_cosine_scoring_surfaces_matching_skill() {
+        let store = fresh_store();
+
+        // dim-0 unit vector → matches q_vec perfectly (cosine = 1.0)
+        let matching_emb: Vec<f32> = {
+            let mut v = vec![0.0f32; 4];
+            v[0] = 1.0;
+            v
+        };
+        // dim-1 unit vector → orthogonal to q_vec (cosine = 0.0)
+        let orthogonal_emb: Vec<f32> = {
+            let mut v = vec![0.0f32; 4];
+            v[1] = 1.0;
+            v
+        };
+
+        let id_match = make_learned_node_with_embedding(
+            &store, "semantic-match", &["zzz_unique_kw"], &matching_emb,
+        );
+        let id_ortho = make_learned_node_with_embedding(
+            &store, "orthogonal-skill", &["other_kw"], &orthogonal_emb,
+        );
+
+        // Build the tool (no memu needed — we call apply_cosine_scoring directly)
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        let tool = SkillSearchTool::new(
+            registry,
+            Arc::clone(&store),
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
+        );
+
+        // Query embedding aligned with dim-0 (matches semantic-match, not orthogonal-skill)
+        let q_emb: Vec<f32> = {
+            let mut v = vec![0.0f32; 4];
+            v[0] = 1.0;
+            v
+        };
+
+        let existing = std::collections::HashSet::new();
+        let (boost_map, new_nodes) = tool.apply_cosine_scoring(&q_emb, &existing);
+
+        // semantic-match should have boost ~1.0; orthogonal-skill should NOT appear
+        let match_boost = boost_map.get(&id_match).copied().unwrap_or(0.0);
+        let ortho_boost = boost_map.get(&id_ortho).copied().unwrap_or(0.0);
+
+        assert!(
+            (match_boost - 1.0).abs() < 1e-5,
+            "semantic-match should have cosine boost ~1.0, got {}",
+            match_boost
+        );
+        assert!(
+            ortho_boost.abs() < 1e-5,
+            "orthogonal-skill should have cosine boost ~0.0, got {}",
+            ortho_boost
+        );
+
+        // Both nodes were not in existing_node_ids, so both should appear in new_nodes
+        let new_ids: Vec<&str> = new_nodes.iter().map(|(id, _)| id.as_str()).collect();
+        assert!(
+            new_ids.contains(&id_match.as_str()),
+            "semantic-match should be in new_nodes"
+        );
+        // orthogonal-skill should NOT be in new_nodes (boost was 0.0, filtered out)
+        assert!(
+            !new_ids.contains(&id_ortho.as_str()),
+            "orthogonal-skill must not be in new_nodes (zero cosine)"
+        );
     }
 }

@@ -156,6 +156,16 @@ fn extract_tag_content(text: &str, tag: &str) -> Option<String> {
     Some(content.trim().to_string())
 }
 
+/// Build the Markdown body that is stored as a `MemoryVersion.content` for a
+/// learned skill. Extracted so the embedding pipeline can reproduce the same
+/// text without duplicating the format string.
+pub fn build_version_content(skill: &ParsedSkill) -> String {
+    format!(
+        "# {}\n\n## 适用场景\n{}\n\n## 核心原则\n{}\n\n## 实现步骤\n{}\n\n## 常见陷阱\n{}",
+        skill.name, skill.context, skill.principles, skill.steps, skill.pitfalls
+    )
+}
+
 /// 将 ParsedSkill 存储为 MemoryNode(kind=Procedure) + MemoryVersion
 ///
 /// **写入时去重 (D1)**：如果当前 space 里已经有一条 normalized title
@@ -284,10 +294,7 @@ pub fn store_skill_as_procedure(
     store.create_node(&node)?;
 
     // 创建对应的 MemoryVersion 存储完整内容
-    let version_content = format!(
-        "# {}\n\n## 适用场景\n{}\n\n## 核心原则\n{}\n\n## 实现步骤\n{}\n\n## 常见陷阱\n{}",
-        skill.name, skill.context, skill.principles, skill.steps, skill.pitfalls
-    );
+    let version_content = build_version_content(skill);
 
     let version = MemoryVersion {
         id: uuid::Uuid::new_v4().to_string(),
@@ -422,10 +429,7 @@ fn upgrade_existing_skill(
     }
 
     // New version content (same template as the create-fresh path).
-    let version_content = format!(
-        "# {}\n\n## 适用场景\n{}\n\n## 核心原则\n{}\n\n## 实现步骤\n{}\n\n## 常见陷阱\n{}",
-        skill.name, skill.context, skill.principles, skill.steps, skill.pitfalls
-    );
+    let version_content = build_version_content(skill);
     let new_version = MemoryVersion {
         id: uuid::Uuid::new_v4().to_string(),
         node_id: existing.id.clone(),

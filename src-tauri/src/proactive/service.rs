@@ -625,6 +625,36 @@ impl ProactiveService {
                                                         "Stored learned skill as Procedure node"
                                                     );
                                                     stored_count += 1;
+                                                    // Best-effort: embed the skill body and persist
+                                                    // to memory_versions.embedding_json. Failure
+                                                    // is logged but never aborts skill storage.
+                                                    if refs.memu_client.is_some() {
+                                                        let body = crate::proactive::skill_parser::build_version_content(skill);
+                                                        // Construct the text to embed: body + signals so that semantic search
+                                                        // can match queries against trigger phrases even if they're not in the body.
+                                                        let mut embed_text = body.clone();
+                                                        if !skill.signals.is_empty() {
+                                                            embed_text.push_str("\n\nTrigger signals: ");
+                                                            embed_text.push_str(&skill.signals.join(", "));
+                                                        }
+                                                        if !skill.signals_seen.is_empty() {
+                                                            embed_text.push_str("\n\nObserved error types: ");
+                                                            embed_text.push_str(&skill.signals_seen.join(", "));
+                                                        }
+                                                        let store = Arc::clone(&refs.memory_graph_store);
+                                                        let memu = refs.memu_client.clone();
+                                                        let node_id = node.id.clone();
+                                                        tokio::spawn(async move {
+                                                            if let Some(vec) = crate::memu::embedding::embed_skill_body(&memu, &embed_text).await {
+                                                                let json = crate::memu::embedding::serialize_embedding(&vec);
+                                                                if let Ok(Some(ver)) = store.get_active_version(&node_id) {
+                                                                    if let Err(e) = store.update_version_embedding(&ver.id, &json) {
+                                                                        tracing::warn!(node_id, error = %e, "failed to persist skill embedding");
+                                                                    }
+                                                                }
+                                                            }
+                                                        });
+                                                    }
                                                 }
                                                 Err(e) => {
                                                     tracing::warn!(
@@ -974,6 +1004,46 @@ impl ManagedService for ProactiveService {
                     ticker.tick().await;
                     if let Err(e) = decay_cited_counts(&store, "default") {
                         tracing::warn!(err = %e, "decay_cited_counts failed");
+                    }
+                }
+            });
+        }
+
+        // One-shot backfill: embed legacy skill versions that have NULL embedding_json.
+        // Runs at idle priority (spawned independently so it never blocks the tick loop).
+        if self.memu_client.is_some() {
+            let store = Arc::clone(&self.memory_graph_store);
+            let memu = self.memu_client.clone();
+            tokio::spawn(async move {
+                // Short initial delay so the bridge is fully ready.
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                // TODO(multi-space): backfill currently iterates only the "default" space.
+                // Once multi-space skill storage ships, iterate all spaces here so legacy
+                // embeddings get filled across the board. For v1 (single "default" space)
+                // this is correct.
+                match store.list_versions_without_embedding("default", 500) {
+                    Ok(pairs) if !pairs.is_empty() => {
+                        tracing::info!(count = pairs.len(), "embedding backfill: starting");
+                        let mut filled = 0usize;
+                        for (version_id, content) in &pairs {
+                            if let Some(vec) = crate::memu::embedding::embed_skill_body(&memu, content).await {
+                                let json = crate::memu::embedding::serialize_embedding(&vec);
+                                if let Err(e) = store.update_version_embedding(version_id, &json) {
+                                    tracing::warn!(version_id, error = %e, "embedding backfill: write failed");
+                                } else {
+                                    filled += 1;
+                                }
+                            }
+                            // Yield between calls so we don't saturate the bridge.
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        }
+                        tracing::info!(filled, total = pairs.len(), "embedding backfill: complete");
+                    }
+                    Ok(_) => {
+                        tracing::debug!("embedding backfill: no versions need embedding");
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "embedding backfill: failed to list versions");
                     }
                 }
             });

@@ -246,6 +246,19 @@ impl MemUClient {
         }
     }
 
+    /// Embed a list of texts using the local FastEmbed model on the Python side.
+    ///
+    /// Returns one 384-dimensional vector per input text (bge-small-en-v1.5).
+    /// Fails with `BridgeError` if fastembed is unavailable or the bridge is down.
+    pub async fn embed_text(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, BridgeError> {
+        let params = serde_json::json!({ "texts": texts });
+        let result = self.bridge.send_request("embed_text", params).await?;
+        let vectors = result
+            .get("vectors")
+            .ok_or_else(|| BridgeError::PythonError("embed_text response missing 'vectors' field".into()))?;
+        serde_json::from_value(vectors.clone()).map_err(BridgeError::JsonError)
+    }
+
     /// Check if the underlying bridge is alive.
     pub fn is_available(&self) -> bool {
         self.bridge.is_alive()

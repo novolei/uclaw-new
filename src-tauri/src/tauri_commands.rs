@@ -4283,7 +4283,7 @@ pub async fn send_agent_message(
         app_handle.clone(),
         input.session_id.clone(),
         "default".into(),
-    ));
+    ).with_memu(state.memu_client.clone()));
     tools.register(builtin::load_skill::LoadSkillTool::new(
         Arc::clone(&state.skills_registry),
         Arc::clone(&state.memory_graph_store),

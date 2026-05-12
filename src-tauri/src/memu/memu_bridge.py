@@ -655,6 +655,29 @@ async def handle_retrieve_with_context(service: MemoryService, params: dict[str,
     return {"items": enriched}
 
 
+async def handle_embed_text(service: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """Embed a list of texts using the local FastEmbed model.
+
+    Params:
+        texts — list of strings to embed
+
+    Returns:
+        {"vectors": [[f32, ...], ...]}  — one vector per input text, or
+        {"error": "..."} if FastEmbed is unavailable.
+    """
+    texts = params.get("texts", [])
+    if not texts:
+        return {"vectors": []}
+
+    if not FASTEMBED_AVAILABLE:
+        raise RuntimeError("FastEmbed is not available (pip install fastembed)")
+
+    model = _get_fastembed_model()
+    embeddings = list(model.embed(texts))
+    vectors = [emb.tolist() for emb in embeddings]
+    return {"vectors": vectors}
+
+
 async def handle_memorize_multimodal(service: MemoryService, params: dict[str, Any]) -> dict[str, Any]:
     """Handle a memorize_multimodal request.
 
@@ -710,6 +733,7 @@ HANDLERS: dict[str, Any] = {
     "delete_item": handle_delete_item,
     "list_items": handle_list_items,
     "list_categories": handle_list_categories,
+    "embed_text": handle_embed_text,
 }
 
 
@@ -726,18 +750,19 @@ async def process_request(service, request: dict[str, Any]) -> dict[str, Any]:
         status = "ok" if service is not None else "degraded"
         return {"id": req_id, "result": {"status": status}}
 
-    # In degraded mode, return a clear error for all other methods
-    if service is None:
-        return {
-            "id": req_id,
-            "error": {"message": "memU service unavailable (package not installed)"},
-        }
-
     handler = HANDLERS.get(method)
     if handler is None:
         return {
             "id": req_id,
             "error": {"message": f"Unknown method: {method}"},
+        }
+
+    # embed_text only needs FastEmbed, not the memu service — allow in degraded mode.
+    # All other methods require a live memu service.
+    if service is None and method != "embed_text":
+        return {
+            "id": req_id,
+            "error": {"message": "memU service unavailable (package not installed)"},
         }
 
     try:
