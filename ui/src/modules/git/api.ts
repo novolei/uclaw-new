@@ -216,6 +216,33 @@ export async function ghCreateIssue(args: {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/** Returned by `gitCreateWorktreeProject` after a successful worktree + project creation. */
+export interface CreatedWorktreeProject {
+  /** Human-readable project name (derived from target directory basename). */
+  name: string
+  /** Absolute path to the newly-created worktree directory. */
+  path: string
+  /** The branch checked out in the new worktree. */
+  branch: string
+}
+
+/**
+ * Create a git worktree at `target` on `branch` (creating the branch if it
+ * doesn't exist) and register it as a new uClaw project.
+ *
+ * NOTE: The backend Tauri command for this is planned in W6 Phase 3 (worktree
+ * support).  Until then the call stubs with `invoke('git_create_worktree_project', …)`.
+ */
+export async function gitCreateWorktreeProject(args: {
+  cwd: string
+  target: string
+  branch: string
+  project_name?: string
+}): Promise<CreatedWorktreeProject> {
+  const { invoke } = await import('@tauri-apps/api/core')
+  return invoke<CreatedWorktreeProject>('git_create_worktree_project', { args })
+}
+
 /**
  * Count the number of changed files reported in `git status --short --branch`.
  *
