@@ -22,6 +22,61 @@ const COMPLETE_TIMEOUT_SECS: u64 = 120;
 /// Maximum number of retry attempts.
 const MAX_RETRIES: u32 = 3;
 
+/// Does this model support the 1M context window beta?
+///
+/// Currently: Claude Sonnet 4 and newer (including 4.5+, 4.6+) and
+/// Claude Opus 4.6 and newer. Earlier 3.x / 4.0-3 lines are 200K-only.
+///
+/// Matched against the model id substring — covers both fully-qualified
+/// IDs ("claude-sonnet-4-5-20250929") and shortened aliases ("sonnet-4-6").
+fn supports_1m_context(model: &str) -> bool {
+    let m = model.to_lowercase();
+    // Anthropic model IDs include the major-minor token after "sonnet" / "opus":
+    //   claude-sonnet-4-5, claude-sonnet-4-6, claude-opus-4-6, claude-opus-4-7
+    // The beta supports Sonnet ≥ 4 (any minor) and Opus ≥ 4.6.
+    if m.contains("sonnet-4") || m.contains("sonnet4") {
+        return true;
+    }
+    if m.contains("opus-4-6") || m.contains("opus-4-7") || m.contains("opus-4-8")
+        || m.contains("opus-4-9") || m.contains("opus-5")
+    {
+        return true;
+    }
+    false
+}
+
+#[cfg(test)]
+mod context_window_tests {
+    use super::supports_1m_context;
+
+    #[test]
+    fn sonnet_4_variants_are_1m() {
+        assert!(supports_1m_context("claude-sonnet-4-5-20250929"));
+        assert!(supports_1m_context("claude-sonnet-4-6"));
+        assert!(supports_1m_context("sonnet-4-5"));
+    }
+
+    #[test]
+    fn opus_4_6_plus_is_1m() {
+        assert!(supports_1m_context("claude-opus-4-6"));
+        assert!(supports_1m_context("claude-opus-4-7"));
+    }
+
+    #[test]
+    fn older_opus_4_0_is_not_1m() {
+        // Opus 4.0-4.5 don't support the beta.
+        assert!(!supports_1m_context("claude-opus-4-0"));
+        assert!(!supports_1m_context("claude-opus-4-5"));
+    }
+
+    #[test]
+    fn haiku_and_3x_models_are_not_1m() {
+        assert!(!supports_1m_context("claude-haiku-4-5"));
+        assert!(!supports_1m_context("claude-3-5-sonnet-20241022"));
+        assert!(!supports_1m_context("claude-3-opus-20240229"));
+    }
+}
+
 pub struct AnthropicProvider {
     api_key: String,
     base_url: String,
@@ -152,6 +207,9 @@ impl AnthropicProvider {
         if stream {
             body["stream"] = serde_json::json!(true);
         }
+        // Collect any beta headers needed for this request.
+        let mut betas: Vec<&'static str> = Vec::new();
+
         if config.thinking_enabled {
             body["thinking"] = serde_json::json!({
                 "type": "enabled",
@@ -159,8 +217,21 @@ impl AnthropicProvider {
             });
             // Extended thinking requires temperature=1
             body["temperature"] = serde_json::json!(1.0);
-            // Signal to send_with_retry to add the beta header
-            body["_betas"] = serde_json::json!(["interleaved-thinking-2025-05-14"]);
+            betas.push("interleaved-thinking-2025-05-14");
+        }
+
+        // 1M context window beta — auto-enable for models that support it.
+        // Sonnet 4+ and Opus 4.6+ on Anthropic's API support this. Without
+        // the header the request still works but max input is 200K; with
+        // it the cap rises to 1M.
+        //
+        // See: https://docs.anthropic.com/en/docs/build-with-claude/context-windows
+        if supports_1m_context(&config.model) {
+            betas.push("context-1m-2025-08-07");
+        }
+
+        if !betas.is_empty() {
+            body["_betas"] = serde_json::json!(betas);
         }
         body
     }

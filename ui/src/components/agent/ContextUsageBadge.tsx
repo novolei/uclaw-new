@@ -96,7 +96,9 @@ function UsageRing({ ratio, isWarning }: UsageRingProps): React.ReactElement {
 /** Popover 里的一行 key/value */
 interface DetailRowProps {
   label: string
-  value: string
+  // Widened so the "context" row can embed a "1M" badge alongside the
+  // numeric value — earlier this was string-only.
+  value: React.ReactNode
   emphasized?: boolean
 }
 function DetailRow({ label, value, emphasized }: DetailRowProps): React.ReactElement {
@@ -239,7 +241,19 @@ export function ContextUsageBadge({
               <div className="h-px bg-border my-0.5" />
               <DetailRow
                 label="上下文"
-                value={`${formatTokens(displayTokens)} / ${formatTokens(displayWindow)}`}
+                value={
+                  <span className="inline-flex items-center gap-1.5">
+                    {formatTokens(displayTokens)} / {formatTokens(displayWindow)}
+                    {displayWindow >= 1_000_000 && (
+                      <span
+                        className="rounded-sm bg-primary/15 text-primary px-1 py-0 text-[9.5px] font-semibold uppercase tracking-wider"
+                        title="1M context window beta enabled for this model"
+                      >
+                        1M
+                      </span>
+                    )}
+                  </span>
+                }
                 emphasized
               />
               {percent != null && (

@@ -398,6 +398,15 @@ fn compress_context_if_needed(reason_ctx: &mut ReasoningContext, config: &Agenti
     }
 }
 
+/// Public entry point for forcing a compaction outside the auto-trigger
+/// in the main loop. Used by the `/compact` user command (handled in
+/// tauri_commands::send_message): drains all but the last `keep_turns`
+/// messages and prepends a summary placeholder. Idempotent when the
+/// session is already small.
+pub fn force_compact(reason_ctx: &mut ReasoningContext, keep_turns: usize) {
+    soft_compress_context(reason_ctx, keep_turns);
+}
+
 /// Keep only the last `keep_turns` messages, inserting a summary placeholder.
 fn soft_compress_context(reason_ctx: &mut ReasoningContext, keep_turns: usize) {
     let total = reason_ctx.messages.len();
