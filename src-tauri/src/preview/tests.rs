@@ -136,7 +136,7 @@ mod write_tests {
             "expected cap error, got: {}",
             err
         );
-        assert!(!path.exists(), "tempfile cleanup should leave no file");
+        assert!(!path.exists(), "no file should be created when cap is exceeded");
     }
 
     #[test]
@@ -159,23 +159,17 @@ mod write_tests {
     }
 
     #[test]
-    fn cleans_tempfile_on_error() {
-        // Provoke a write error by writing to a non-existent dir.
+    fn write_fails_for_nonexistent_parent_dir() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("nonexistent-subdir").join("file.txt");
         let err = write_atomic(&path, "content").expect_err("must fail");
         assert!(
-            err.to_string().contains("tempfile") || err.to_string().contains("create"),
-            "expected tempfile create error, got: {}",
+            err.to_string().contains("create") || err.to_string().contains("No such file"),
+            "expected create error for nonexistent parent dir, got: {}",
             err
         );
-        // No leftover tempfile in tmp root.
-        let leftovers: Vec<_> = fs::read_dir(tmp.path())
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().starts_with(".uclaw-preview-write-"))
-            .collect();
-        assert!(leftovers.is_empty(), "expected no tempfile leftovers");
+        // No leftover at the target path.
+        assert!(!path.exists(), "target file should not exist after failed write");
     }
 }
 

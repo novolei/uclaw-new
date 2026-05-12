@@ -216,27 +216,25 @@ pub async fn resolve_chip_candidate(
     }
 }
 
-/// Atomically write `content` to `path` using the rename-tempfile pattern.
+/// Write `content` to `path` using direct write + fsync.
 ///
-/// Steps:
-/// 1. Create a tempfile in the SAME directory as `path` (so rename is
-///    atomic on POSIX — cross-filesystem rename would fail).
-/// 2. Write `content` to the tempfile + fsync.
-/// 3. `fs::rename(tempfile, path)` — atomic replacement.
-/// 4. `stat` the result to verify size matches `content.len()`.
-/// 5. Return `(mtime_ms, size)`.
+/// Name retained as `write_atomic` for compatibility with existing callers,
+/// but the implementation is now direct write+fsync. The previous
+/// tempfile+rename pattern triggered a panic in notify-rs's macOS kqueue
+/// backend: replacing a watched inode via rename caused kqueue to lose state
+/// and call Option::unwrap() on None inside kqueue-1.1.1. The panic killed
+/// the watcher thread, leaving the files rail unable to auto-refresh until a
+/// manual click. Direct write keeps the same inode; the file watcher fires a
+/// single Modify event without panicking.
 ///
-/// On cross-filesystem rename failure (EXDEV), falls back to direct
-/// write-then-fsync (less atomic but reliable).
+/// Atomicity tradeoff: a crash mid-write could leave a partial file. For
+/// editor-saves with small content, this is far less impactful than the
+/// file-watcher panic.
 ///
 /// 50 MB cap mirrors `MAX_PREVIEW_BYTES` — reject larger writes upfront.
 pub fn write_atomic(path: &Path, content: &str) -> Result<(i64, u64), Error> {
     use std::fs::File;
     use std::io::Write;
-
-    let dir = path.parent().ok_or_else(|| {
-        Error::InvalidInput(format!("path has no parent dir: {}", path.display()))
-    })?;
 
     if content.len() as u64 > MAX_PREVIEW_BYTES {
         return Err(Error::InvalidInput(format!(
@@ -245,36 +243,14 @@ pub fn write_atomic(path: &Path, content: &str) -> Result<(i64, u64), Error> {
         )));
     }
 
-    let tmp = tempfile::Builder::new()
-        .prefix(".uclaw-preview-write-")
-        .tempfile_in(dir)
-        .map_err(|e| Error::Internal(format!("tempfile create: {}", e)))?;
+    let mut f = File::create(path)
+        .map_err(|e| Error::Internal(format!("create: {}", e)))?;
+    f.write_all(content.as_bytes())
+        .map_err(|e| Error::Internal(format!("write: {}", e)))?;
+    f.sync_all()
+        .map_err(|e| Error::Internal(format!("fsync: {}", e)))?;
 
-    {
-        let mut f = tmp.as_file();
-        f.write_all(content.as_bytes())
-            .map_err(|e| Error::Internal(format!("tempfile write: {}", e)))?;
-        f.sync_all()
-            .map_err(|e| Error::Internal(format!("tempfile fsync: {}", e)))?;
-    }
-
-    // Atomic rename. On cross-filesystem failure, fall back.
-    let persisted = match tmp.persist(path) {
-        Ok(f) => f,
-        Err(_persist_err) => {
-            // Cross-filesystem? Write directly to the target.
-            let mut f = File::create(path)
-                .map_err(|err| Error::Internal(format!("fallback create: {}", err)))?;
-            f.write_all(content.as_bytes())
-                .map_err(|err| Error::Internal(format!("fallback write: {}", err)))?;
-            f.sync_all()
-                .map_err(|err| Error::Internal(format!("fallback fsync: {}", err)))?;
-            // _persist_err's tempfile is dropped automatically (auto-cleaned).
-            f
-        }
-    };
-
-    let metadata = persisted
+    let metadata = f
         .metadata()
         .map_err(|e| Error::Internal(format!("post-write stat: {}", e)))?;
     let size = metadata.len();

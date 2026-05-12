@@ -49,6 +49,13 @@ const NEW_FILE_MTIME_SENTINEL = -1
 
 export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs, isMarkdown, language }: Props): React.ReactElement {
   const setConflict = useSetAtom(setConflictAction)
+  // `baseline` is the on-disk content at last load/save. Updated ONLY on:
+  //   - filePath change (re-snap from props)
+  //   - successful save (promote current content to new baseline)
+  //   - "Discard mine" (replace with external content)
+  // `content` is the LIVE mutating state from the editor's onContentChange.
+  // useDirtyBuffer (inside TextEditor) compares content !== baseline to flag dirty.
+  const [baseline, setBaseline] = React.useState(initialContent)
   const [content, setContent] = React.useState(initialContent)
   const [mtimeMs, setMtimeMs] = React.useState(initialMtimeMs)
   const [saving, setSaving] = React.useState(false)
@@ -58,11 +65,16 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
   const filePath = target.absolutePath ?? `${target.mountId}::${target.relPath}`
   const saveMode: 'explicit' | 'auto' = isMarkdown ? 'auto' : 'explicit'
 
-  // Reset local state when the target file changes.
+  // Only reset baseline/content/mtime when the file ITSELF changes (filePath).
+  // Don't reset on every initialContent / initialMtimeMs prop update —
+  // useFileBytes refetches on watcher events would otherwise silently
+  // destroy the user's unsaved edits AND break conflict detection.
   React.useEffect(() => {
+    setBaseline(initialContent)
     setContent(initialContent)
     setMtimeMs(initialMtimeMs)
-  }, [initialContent, initialMtimeMs])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filePath])
 
   const handleSave = React.useCallback(
     async (latest: string): Promise<SaveOutcome> => {
@@ -77,6 +89,7 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
         })
         if (result.kind === 'saved') {
           setMtimeMs(result.mtimeMs ?? 0)
+          setBaseline(latest)  // promote saved content to new baseline
           return { kind: 'saved', mtimeMs: result.mtimeMs ?? 0 }
         }
         if (result.kind === 'conflict') {
@@ -115,6 +128,7 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
   }, [content, handleSave])
 
   const handleDiscard = React.useCallback((externalContent: string, externalMtimeMs: number) => {
+    setBaseline(externalContent)  // also update baseline on discard
     setContent(externalContent)
     setMtimeMs(externalMtimeMs)
     // Editor will re-mount with new initialContent via the key prop below.
@@ -141,7 +155,7 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
         <EditorComponent
           // key forces remount on file/discard so initialContent re-applies
           key={`${filePath}::${mtimeMs}`}
-          initialContent={content}
+          initialContent={baseline}
           language={language}
           mtimeMs={mtimeMs}
           filePath={filePath}
