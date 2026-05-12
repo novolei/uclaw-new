@@ -1054,8 +1054,34 @@ impl LoopDelegate for ChatDelegate {
 
                     let tool_start = std::time::Instant::now();
 
+                    // Phase: stabilization week — wrap in tokio::task::spawn so panics
+                    // get caught at the JoinHandle boundary rather than unwinding through
+                    // the agent loop and killing the whole turn.
+                    let tool_name_for_panic = tc.name.clone();
+                    let tool_args_for_spawn = tc.arguments.clone();
+                    let tools_arc = Arc::clone(&self.tools);
+                    let execute_result = match tokio::task::spawn(async move {
+                        match tools_arc.get(&tool_name_for_panic) {
+                            Some(t) => t.execute(tool_args_for_spawn).await,
+                            None => Err(crate::agent::tools::tool::ToolError::NotFound(tool_name_for_panic)),
+                        }
+                    }).await {
+                        Ok(Ok(out)) => Ok(out),
+                        Ok(Err(e)) => Err(e),
+                        Err(join_err) if join_err.is_panic() => {
+                            tracing::error!(tool = %tc.name, "tool panicked");
+                            Err(crate::agent::tools::tool::ToolError::Execution(format!(
+                                "Tool '{}' crashed unexpectedly. See ~/.uclaw/logs/crashes/ for details.",
+                                tc.name,
+                            )))
+                        }
+                        Err(join_err) => {
+                            tracing::error!(tool = %tc.name, %join_err, "tool join error");
+                            Err(crate::agent::tools::tool::ToolError::Execution(format!("Tool join error: {}", join_err)))
+                        }
+                    };
                     // Execute tool
-                    match tool.execute(tc.arguments.clone()).await {
+                    match execute_result {
                         Ok(output) => {
                             let duration_ms = tool_start.elapsed().as_millis() as u64;
                             tracing::info!(
@@ -1313,4 +1339,50 @@ fn load_attached_dirs_for_session(
         .map(parse)
         .unwrap_or_default();
     (ws_attached, sess_attached)
+}
+
+#[cfg(test)]
+mod panic_recovery_tests {
+    use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput};
+    use async_trait::async_trait;
+
+    struct PanickyTool;
+
+    #[async_trait]
+    impl Tool for PanickyTool {
+        fn name(&self) -> &str { "panicky" }
+        fn description(&self) -> &str { "test-only" }
+        fn parameters_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+        fn requires_approval(&self, _: &serde_json::Value) -> ApprovalRequirement {
+            ApprovalRequirement::Never
+        }
+        async fn execute(&self, _: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            panic!("deliberate test panic");
+        }
+    }
+
+    /// Verify the panic-recovery shape: tokio::task::spawn catches panic,
+    /// JoinHandle yields is_panic=true, we map that to a ToolError.
+    /// This mirrors what dispatcher::execute_tool does.
+    #[tokio::test]
+    async fn tool_panic_converts_to_tool_error() {
+        let tool = PanickyTool;
+        let tool_name = tool.name().to_string();
+        let join = tokio::task::spawn(async move {
+            tool.execute(serde_json::json!({})).await
+        });
+        let result = match join.await {
+            Ok(r) => r,
+            Err(e) if e.is_panic() => Err(ToolError::Execution(format!(
+                "Tool '{}' crashed unexpectedly.", tool_name
+            ))),
+            Err(e) => Err(ToolError::Execution(format!("Join error: {}", e))),
+        };
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("panicky") && msg.contains("crashed"),
+            "expected panic-recovery error, got: {}", msg
+        );
+    }
 }

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
-use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput};
+use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 
 pub struct GrepTool { workspace_root: PathBuf }
 
@@ -57,8 +57,21 @@ impl Tool for GrepTool {
 
 impl GrepTool {
     async fn search_dir(&self, dir: &PathBuf, re: &regex::Regex, include: Option<&str>, results: &mut Vec<String>) -> Result<(), ToolError> {
-        let mut entries = tokio::fs::read_dir(dir).await.map_err(|e| ToolError::Execution(format!("Cannot read dir: {}", e)))?;
-        while let Some(entry) = entries.next_entry().await.map_err(|e| ToolError::Execution(format!("Dir entry error: {}", e)))? {
+        let mut entries = tokio::fs::read_dir(dir).await.map_err(|e| {
+            let kind = if e.kind() == std::io::ErrorKind::NotFound {
+                ToolErrorKind::ResourceNotFound
+            } else if e.kind() == std::io::ErrorKind::PermissionDenied {
+                ToolErrorKind::PermissionDenied
+            } else {
+                ToolErrorKind::Other
+            };
+            ToolError::kinded_with_source(kind, format!("Cannot read dir: {}", dir.display()), e.to_string())
+        })?;
+        while let Some(entry) = entries.next_entry().await.map_err(|e| ToolError::kinded_with_source(
+            ToolErrorKind::Other,
+            "Dir entry error",
+            e.to_string(),
+        ))? {
             let path = entry.path();
             if path.is_dir() {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -149,8 +162,21 @@ impl Tool for GlobTool {
 
 impl GlobTool {
     async fn glob_dir(&self, dir: &PathBuf, pattern: &str, base: &PathBuf, results: &mut Vec<String>) -> Result<(), ToolError> {
-        let mut entries = tokio::fs::read_dir(dir).await.map_err(|e| ToolError::Execution(format!("Cannot read dir: {}", e)))?;
-        while let Some(entry) = entries.next_entry().await.map_err(|e| ToolError::Execution(format!("Dir entry error: {}", e)))? {
+        let mut entries = tokio::fs::read_dir(dir).await.map_err(|e| {
+            let kind = if e.kind() == std::io::ErrorKind::NotFound {
+                ToolErrorKind::ResourceNotFound
+            } else if e.kind() == std::io::ErrorKind::PermissionDenied {
+                ToolErrorKind::PermissionDenied
+            } else {
+                ToolErrorKind::Other
+            };
+            ToolError::kinded_with_source(kind, format!("Cannot read dir: {}", dir.display()), e.to_string())
+        })?;
+        while let Some(entry) = entries.next_entry().await.map_err(|e| ToolError::kinded_with_source(
+            ToolErrorKind::Other,
+            "Dir entry error",
+            e.to_string(),
+        ))? {
             let path = entry.path();
             let relative = path.strip_prefix(base).unwrap_or(&path);
             let relative_str = relative.to_string_lossy();

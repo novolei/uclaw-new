@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
 use tokio::fs;
-use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput};
+use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 
 pub struct ReadFileTool { workspace_root: PathBuf }
 
@@ -37,9 +37,22 @@ impl Tool for ReadFileTool {
         let path = params["path"].as_str().ok_or_else(|| ToolError::InvalidParams("path is required".into()))?;
         let full_path = if PathBuf::from(path).is_absolute() { PathBuf::from(path) } else { self.workspace_root.join(path) };
 
-        let content = fs::read_to_string(&full_path).await.map_err(|e| {
-            ToolError::Execution(format!("Cannot read {}: {}", full_path.display(), e))
-        })?;
+        let content = match fs::read_to_string(&full_path).await {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(ToolError::kinded(
+                    ToolErrorKind::ResourceNotFound,
+                    format!("File not found: {}", full_path.display()),
+                ));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                return Err(ToolError::kinded(
+                    ToolErrorKind::PermissionDenied,
+                    format!("Permission denied: {}", full_path.display()),
+                ));
+            }
+            Err(e) => return Err(e.into()),
+        };
 
         Ok(ToolOutput::success(&content, start.elapsed().as_millis() as u64))
     }
@@ -82,9 +95,22 @@ impl Tool for WriteFileTool {
         let full_path = if PathBuf::from(path).is_absolute() { PathBuf::from(path) } else { self.workspace_root.join(path) };
 
         if let Some(parent) = full_path.parent() {
-            fs::create_dir_all(parent).await.map_err(|e| ToolError::Execution(format!("Cannot create dir: {}", e)))?;
+            fs::create_dir_all(parent).await.map_err(|e| {
+                let kind = if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    ToolErrorKind::PermissionDenied
+                } else {
+                    ToolErrorKind::Other
+                };
+                ToolError::kinded_with_source(kind, format!("Cannot create dir: {}", parent.display()), e.to_string())
+            })?;
         }
-        fs::write(&full_path, content).await.map_err(|e| ToolError::Execution(format!("Cannot write {}: {}", full_path.display(), e)))?;
+        fs::write(&full_path, content).await.map_err(|e| {
+            let kind = match e.kind() {
+                std::io::ErrorKind::PermissionDenied => ToolErrorKind::PermissionDenied,
+                _ => ToolErrorKind::Other,
+            };
+            ToolError::kinded_with_source(kind, format!("Cannot write {}", full_path.display()), e.to_string())
+        })?;
 
         Ok(ToolOutput::success(&format!("Successfully wrote {} bytes to {}", content.len(), full_path.display()), start.elapsed().as_millis() as u64))
     }
@@ -114,5 +140,31 @@ mod tests {
         let tool = ReadFileTool::new(std::path::PathBuf::from("/tmp"));
         let args = serde_json::json!({});
         assert!(tool.path_args(&args).is_empty());
+    }
+
+    #[tokio::test]
+    async fn file_read_nonexistent_returns_resource_not_found_kind() {
+        let tool = ReadFileTool::new(std::path::PathBuf::from("/tmp"));
+        let result = tool.execute(serde_json::json!({
+            "path": "/tmp/definitely-does-not-exist-xyz-12345.txt"
+        })).await;
+        match result.unwrap_err() {
+            ToolError::Kinded { kind, .. } => assert_eq!(kind, ToolErrorKind::ResourceNotFound),
+            other => panic!("expected Kinded(ResourceNotFound), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn file_read_nonexistent_error_message_contains_path() {
+        let tool = ReadFileTool::new(std::path::PathBuf::from("/tmp"));
+        let result = tool.execute(serde_json::json!({
+            "path": "/tmp/definitely-does-not-exist-xyz-12345.txt"
+        })).await;
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("NotFound"),
+            "error display should contain NotFound kind tag: {}",
+            err
+        );
     }
 }

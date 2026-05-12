@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tracing::{debug, info, warn};
 use url::Url;
 
-use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput};
+use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 
 /// Default request timeout in milliseconds.
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
@@ -74,69 +74,97 @@ impl WebFetchTool {
         Self
     }
 
-    /// Naive HTML → plain-text extractor.
-    /// Strips `<script>` / `<style>` blocks and tags, keeps text content.
+    /// HTML → plain-text extractor using scraper for proper DOM parsing.
+    /// Skips script/style/noscript/template subtrees; inserts newlines at
+    /// block-level element boundaries for readable output.
     fn extract_text(html: &str) -> String {
-        let mut result = String::new();
-        let mut in_tag = false;
-        let mut in_script = false;
-        let mut in_style = false;
-        let mut tag_name = String::new();
+        use scraper::Html;
+        let doc = Html::parse_document(html);
 
-        for ch in html.chars() {
-            match ch {
-                '<' => {
-                    in_tag = true;
-                    tag_name.clear();
+        let mut out = String::new();
+        walk_for_text(doc.root_element(), &mut out);
+        return collapse_whitespace(&out);
+
+        fn walk_for_text(node: scraper::ElementRef, out: &mut String) {
+            for child in node.children() {
+                if let Some(text) = child.value().as_text() {
+                    out.push_str(text);
+                    continue;
                 }
-                '>' => {
-                    in_tag = false;
-                    let lower = tag_name.to_ascii_lowercase();
-                    if lower == "script" {
-                        in_script = true;
-                    } else if lower == "/script" {
-                        in_script = false;
-                    } else if lower == "style" {
-                        in_style = true;
-                    } else if lower == "/style" {
-                        in_style = false;
-                    } else if matches!(
-                        lower.as_str(),
-                        "br" | "p" | "/p" | "div" | "/div" | "h1" | "/h1" | "h2" | "/h2"
-                            | "h3" | "/h3" | "h4" | "/h4" | "li" | "/li" | "tr" | "/tr"
+                if let Some(elem) = scraper::ElementRef::wrap(child) {
+                    let tag = elem.value().name();
+                    // Skip non-content elements entirely.
+                    if matches!(tag, "script" | "style" | "noscript" | "template") {
+                        continue;
+                    }
+                    // Block-level elements get a newline boundary on entry.
+                    if matches!(
+                        tag,
+                        "br" | "p" | "div" | "h1" | "h2" | "h3" | "h4"
+                        | "h5" | "h6" | "li" | "tr" | "section"
+                        | "article" | "header" | "footer"
                     ) {
-                        result.push('\n');
+                        out.push('\n');
+                    }
+                    walk_for_text(elem, out);
+                    // And on exit (except for void elements like <br>).
+                    if matches!(
+                        tag,
+                        "p" | "div" | "h1" | "h2" | "h3" | "h4"
+                        | "h5" | "h6" | "li" | "tr" | "section"
+                        | "article"
+                    ) {
+                        out.push('\n');
                     }
                 }
-                _ if in_tag => {
-                    // Accumulate tag name (stop at space or / for attributes)
-                    if tag_name.len() < 20 && ch != ' ' && ch != '/' {
-                        tag_name.push(ch);
-                    }
-                }
-                _ if !in_tag && !in_script && !in_style => {
-                    result.push(ch);
-                }
-                _ => {}
             }
         }
 
-        // Decode common HTML entities
-        let result = result
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&#39;", "'")
-            .replace("&nbsp;", " ");
+        fn collapse_whitespace(s: &str) -> String {
+            s.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    }
 
-        // Collapse blank lines
-        result
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-            .collect::<Vec<&str>>()
-            .join("\n")
+    /// Heuristic SPA detection. Returns true when the page looks like a
+    /// JavaScript-rendered single-page app whose initial HTML carries
+    /// minimal human content — the scraper-extracted text will undercount.
+    ///
+    /// All three conditions required:
+    ///   1. > 5 `<script>` tags
+    ///   2. Extracted visible text < 500 characters
+    ///   3. At least one recognized framework mount marker
+    fn detect_spa(html: &str, extracted_text: &str) -> bool {
+        use scraper::{Html, Selector};
+        let doc = Html::parse_document(html);
+
+        // (1) script tag count > 5
+        let script_sel = Selector::parse("script").unwrap();
+        if doc.select(&script_sel).count() <= 5 {
+            return false;
+        }
+
+        // (2) visible body text under 500 chars
+        if extracted_text.chars().count() >= 500 {
+            return false;
+        }
+
+        // (3) at least one obvious framework mount marker
+        let markers = [
+            "#root", "#app", "#__next", "#__nuxt",
+            "[data-reactroot]", "[ng-app]",
+        ];
+        for m in &markers {
+            if let Ok(sel) = Selector::parse(m) {
+                if doc.select(&sel).next().is_some() {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
 
@@ -188,7 +216,10 @@ impl Tool for WebFetchTool {
         // Validate URL to prevent SSRF
         if let Err(reason) = validate_url(url) {
             warn!(url, reason = %reason, "web_fetch: URL rejected");
-            return Err(ToolError::InvalidParams(reason));
+            return Err(ToolError::kinded(
+                ToolErrorKind::PermissionDenied,
+                format!("URL blocked: {}", reason),
+            ));
         }
 
         info!(url, timeout_ms, "Fetching web page");
@@ -197,17 +228,45 @@ impl Tool for WebFetchTool {
             .user_agent(USER_AGENT)
             .timeout(std::time::Duration::from_millis(timeout_ms))
             .build()
-            .map_err(|e| ToolError::Execution(format!("Failed to create HTTP client: {}", e)))?;
+            .map_err(|e| ToolError::kinded_with_source(
+                ToolErrorKind::Other,
+                "Failed to create HTTP client",
+                e.to_string(),
+            ))?;
 
         let resp = client
             .get(url)
             .send()
             .await
-            .map_err(|e| ToolError::Execution(format!("Failed to fetch {}: {}", url, e)))?;
+            .map_err(|e| {
+                let kind = if e.is_timeout() {
+                    ToolErrorKind::Timeout
+                } else {
+                    ToolErrorKind::NetworkError
+                };
+                ToolError::kinded_with_source(
+                    kind,
+                    format!("Failed to fetch {}", url),
+                    e.to_string(),
+                )
+            })?;
 
         let status = resp.status();
         if !status.is_success() {
+            let code = status.as_u16();
+            let kind = match code {
+                400..=403 => ToolErrorKind::PermissionDenied,
+                404 => ToolErrorKind::ResourceNotFound,
+                408 | 504 => ToolErrorKind::Timeout,
+                429 => ToolErrorKind::RateLimited,
+                500..=599 => ToolErrorKind::UpstreamError,
+                _ => ToolErrorKind::Other,
+            };
             warn!(url, %status, "Non-success HTTP status");
+            return Err(ToolError::kinded(
+                kind,
+                format!("Page returned {} ({})", code, url),
+            ));
         }
 
         // Read body. Real-world pages often exceed our cap; truncate at a
@@ -216,7 +275,11 @@ impl Tool for WebFetchTool {
         let raw_body = resp
             .text()
             .await
-            .map_err(|e| ToolError::Execution(format!("Failed to read response body: {}", e)))?;
+            .map_err(|e| ToolError::kinded_with_source(
+                ToolErrorKind::ParseError,
+                "Failed to decode response body",
+                e.to_string(),
+            ))?;
         let body = if raw_body.len() > MAX_RESPONSE_SIZE {
             warn!(
                 url,
@@ -230,25 +293,35 @@ impl Tool for WebFetchTool {
         };
 
         let text = Self::extract_text(&body);
+        let is_spa = Self::detect_spa(&body, &text);
+
         // max_length is documented as "characters" in the tool schema.
-        // chars().count() walks the string but we already have it in
-        // memory and capped at MAX_RESPONSE_SIZE (1 MB), so it's bounded.
         let total_chars = text.chars().count();
         let truncated = if total_chars > max_length {
             let prefix: String = text.chars().take(max_length).collect();
             format!(
                 "{}...\n[Truncated: showing {}/{} characters]",
-                prefix,
-                max_length,
-                total_chars
+                prefix, max_length, total_chars
             )
         } else {
             text
         };
 
-        debug!(url, chars = truncated.len(), "Web page fetched");
+        let final_output = if is_spa {
+            format!(
+                "{}\n\n⚠️ This page appears to be a JavaScript-rendered single-page app \
+                 (heuristic: many <script> tags, sparse body text, framework mount point \
+                 detected). The text above may be missing dynamic content. For full \
+                 content, use the browser tool instead.",
+                truncated,
+            )
+        } else {
+            truncated
+        };
+
+        debug!(url, chars = final_output.len(), is_spa, "Web page fetched");
         Ok(ToolOutput::success(
-            &truncated,
+            &final_output,
             start.elapsed().as_millis() as u64,
         ))
     }
@@ -325,7 +398,10 @@ impl Tool for HttpRequestTool {
         // Validate URL to prevent SSRF
         if let Err(reason) = validate_url(url) {
             warn!(method = method_str, url, reason = %reason, "http_request: URL rejected");
-            return Err(ToolError::InvalidParams(reason));
+            return Err(ToolError::kinded(
+                ToolErrorKind::PermissionDenied,
+                format!("URL blocked: {}", reason),
+            ));
         }
 
         info!(method = method_str, url, "Making HTTP request");
@@ -334,7 +410,11 @@ impl Tool for HttpRequestTool {
             .user_agent(USER_AGENT)
             .timeout(std::time::Duration::from_millis(timeout_ms))
             .build()
-            .map_err(|e| ToolError::Execution(format!("Failed to create HTTP client: {}", e)))?;
+            .map_err(|e| ToolError::kinded_with_source(
+                ToolErrorKind::Other,
+                "Failed to create HTTP client",
+                e.to_string(),
+            ))?;
 
         let method = match method_str.to_uppercase().as_str() {
             "GET" => reqwest::Method::GET,
@@ -373,7 +453,18 @@ impl Tool for HttpRequestTool {
         let resp = request
             .send()
             .await
-            .map_err(|e| ToolError::Execution(format!("HTTP request failed: {}", e)))?;
+            .map_err(|e| {
+                let kind = if e.is_timeout() {
+                    ToolErrorKind::Timeout
+                } else {
+                    ToolErrorKind::NetworkError
+                };
+                ToolError::kinded_with_source(
+                    kind,
+                    format!("HTTP request failed: {}", url),
+                    e.to_string(),
+                )
+            })?;
 
         let status = resp.status().as_u16();
         let resp_headers: HashMap<String, String> = resp
@@ -385,7 +476,11 @@ impl Tool for HttpRequestTool {
         let body = resp
             .text()
             .await
-            .map_err(|e| ToolError::Execution(format!("Failed to read response body: {}", e)))?;
+            .map_err(|e| ToolError::kinded_with_source(
+                ToolErrorKind::ParseError,
+                "Failed to decode response body",
+                e.to_string(),
+            ))?;
 
         // Truncate very large bodies. The MAX_RESPONSE_SIZE cap is for
         // memory safety so bytes are the right unit; round down to a
@@ -445,5 +540,68 @@ mod tests {
     fn truncate_at_byte_boundary_zero_cap() {
         assert_eq!(truncate_at_byte_boundary("中", 0), "");
         assert_eq!(truncate_at_byte_boundary("abc", 0), "");
+    }
+
+    #[test]
+    fn extract_text_strips_script_and_style() {
+        let html = r#"
+            <html><head><style>body { color: red }</style></head>
+            <body>
+                <h1>Title</h1>
+                <p>Para 1.</p>
+                <script>alert('x')</script>
+                <p>Para 2.</p>
+            </body></html>"#;
+        let text = WebFetchTool::extract_text(html);
+        assert!(text.contains("Title"), "got: {:?}", text);
+        assert!(text.contains("Para 1"), "got: {:?}", text);
+        assert!(text.contains("Para 2"), "got: {:?}", text);
+        assert!(!text.contains("alert"), "got: {:?}", text);
+        assert!(!text.contains("color: red"), "got: {:?}", text);
+    }
+
+    #[test]
+    fn detect_spa_recognizes_react_root_with_few_text() {
+        let html = r#"
+            <html><body>
+            <div id="root"></div>
+            <script src="bundle.js"></script>
+            <script src="vendor.js"></script>
+            <script src="runtime.js"></script>
+            <script src="polyfills.js"></script>
+            <script src="main.js"></script>
+            <script src="chunk.js"></script>
+            </body></html>"#;
+        let text = WebFetchTool::extract_text(html);
+        assert!(
+            WebFetchTool::detect_spa(html, &text),
+            "expected SPA detection; extracted text len = {}",
+            text.chars().count()
+        );
+    }
+
+    #[test]
+    fn detect_spa_returns_false_for_content_heavy_page() {
+        let html = r#"
+            <html><body>
+            <article>
+                <h1>An Article</h1>
+                <p>This is a real content-heavy page. It has many paragraphs
+                of text. Real content here, not a SPA wrapper. We expect the
+                heuristic to recognize this as NOT a SPA because the visible
+                text is substantial. Lorem ipsum dolor sit amet, consectetur
+                adipiscing elit. Many many words to push past the 500-char
+                threshold so that this fixture clearly disambiguates from a
+                sparse SPA shell. Additional padding text to ensure we cross
+                the threshold comfortably and the test is not flaky on small
+                margins. More content. More content. More content.</p>
+            </article>
+            </body></html>"#;
+        let text = WebFetchTool::extract_text(html);
+        assert!(
+            !WebFetchTool::detect_spa(html, &text),
+            "expected NOT SPA; extracted text len = {}",
+            text.chars().count()
+        );
     }
 }
