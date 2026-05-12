@@ -80,7 +80,7 @@ pub fn read_capped(path: &Path) -> Result<PreviewBytes, Error> {
     let truncated = size > MAX_PREVIEW_BYTES;
     let to_read = if truncated { MAX_PREVIEW_BYTES } else { size };
 
-    let mut file = fs::File::open(path).map_err(|e| Error::Internal(format!("open: {}", e)))?;
+    let file = fs::File::open(path).map_err(|e| Error::Internal(format!("open: {}", e)))?;
     let mut bytes = Vec::with_capacity(to_read as usize);
     file.take(to_read)
         .read_to_end(&mut bytes)
