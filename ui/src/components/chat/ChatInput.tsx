@@ -44,6 +44,7 @@ import { sendWithCmdEnterAtom } from '@/atoms/shortcut-atoms'
 import { openFileDialog } from '@/lib/tauri-bridge'
 import { toast } from 'sonner'
 import { createClipboardTextFile } from '@/lib/clipboard-attachment'
+import { GitChipsRow } from './git/GitChipsRow'
 
 interface ChatInputProps {
   /** 当前对话 ID */
@@ -339,6 +340,8 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
               <ContextSettingsPopover />
 
               <ClearContextButton onClick={onClearContext} />
+
+              <GitChipsRow />
             </div>
 
             {/* 右侧：发送 / 停止按钮 */}
