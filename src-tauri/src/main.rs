@@ -533,6 +533,8 @@ fn main() {
             uclaw_core::tauri_commands::set_active_workspace_id,
             uclaw_core::tauri_commands::create_workspace,
             uclaw_core::tauri_commands::update_workspace,
+            uclaw_core::tauri_commands::get_workspace_skill_tags,
+            uclaw_core::tauri_commands::set_workspace_skill_tags,
             uclaw_core::tauri_commands::reorder_workspaces,
             uclaw_core::tauri_commands::get_workspace_directories,
             uclaw_core::tauri_commands::attach_workspace_directory,
