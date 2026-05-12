@@ -12,7 +12,6 @@ import { useAtomValue, useSetAtom } from 'jotai'
 import { Plus, X, FolderPlus } from 'lucide-react'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { FilesRail } from '@/components/files-rail'
-import { PreviewPanel } from '@/components/preview/PreviewPanel'
 import type { MountRoot } from '@/atoms/files-rail-atoms'
 import { openPreviewAction } from '@/atoms/preview-panel-atoms'
 import type { TreeNode } from '@/components/files-rail/utils/tree-patch'
@@ -219,24 +218,26 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
             </div>
           )}
 
-          {/* ===== Files Rail (W3) + Preview Panel (W4a) ===== */}
-          <div className="flex-1 min-h-0 flex flex-row">
-            <div className="flex-1 min-w-0 flex flex-col">
-              <FilesRail
-                sessionId={sessionId}
-                onFileClick={(mount: MountRoot, node: TreeNode) => {
-                  if (node.kind === 'directory') return // directories expand, not preview
-                  openPreview({
-                    mountId: mount.id,
-                    relPath: node.relPath,
-                    name: node.name,
-                    sessionId,
-                    absolutePath: `${mount.path}/${node.relPath}`,
-                  })
-                }}
-              />
-            </div>
-            <PreviewPanel />
+          {/* ===== Files Rail (W3) ===== */}
+          {/* PreviewPanel lived here in W4a (b2b9bcf); moved to MainArea.tsx
+              in the W4a follow-up so chat + preview share the central panel
+              as a horizontal split (matches Proma layout). FilesRail still
+              dispatches `openPreview` — MainArea picks it up via the shared
+              atom. */}
+          <div className="flex-1 min-h-0 flex flex-col">
+            <FilesRail
+              sessionId={sessionId}
+              onFileClick={(mount: MountRoot, node: TreeNode) => {
+                if (node.kind === 'directory') return // directories expand, not preview
+                openPreview({
+                  mountId: mount.id,
+                  relPath: node.relPath,
+                  name: node.name,
+                  sessionId,
+                  absolutePath: `${mount.path}/${node.relPath}`,
+                })
+              }}
+            />
           </div>
         </div>
       ) : (
