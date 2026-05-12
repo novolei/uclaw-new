@@ -730,6 +730,15 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     const effectiveText = text || suggestion || ''
     if ((!effectiveText && pendingFiles.length === 0) || !activeProviderModel) return
 
+    // /compact 输入框拦截：与徽章按钮共用一条路径，确保 UI 上的合成
+    // 消息气泡 + isCompacting 旋转动画一致出现。否则后端会跑通但前端
+    // 没有任何视觉反馈（见 PR #99 dogfood 反馈）。
+    if (effectiveText === '/compact' && pendingFiles.length === 0) {
+      setInputContent('')
+      handleCompactRef.current?.()
+      return
+    }
+
     // 上一条消息仍在处理中，直接追加发送
     if (streaming) {
       // 流式追加时不处理附件（仅支持纯文本）
@@ -1057,6 +1066,13 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       })
     })
   }, [sessionId, agentChannelId, agentModelId, currentWorkspaceId, streaming, setStreamingStates, store])
+
+  // 给 handleSend 用的 handleCompact 引用：handleCompact 在文件下方定义，
+  // handleSend 不能直接闭包它（会触发 use-before-declaration），用 ref 解耦。
+  const handleCompactRef = React.useRef<typeof handleCompact | null>(null)
+  React.useEffect(() => {
+    handleCompactRef.current = handleCompact
+  }, [handleCompact])
 
   // 当 agent 报错时用 toast 通知用户（outer_timeout 改为内联展示，不弹 toast）
   const prevAgentError = React.useRef<AgentStreamErrorPayload | null>(null)
