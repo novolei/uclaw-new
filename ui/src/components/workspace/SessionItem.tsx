@@ -30,7 +30,7 @@ interface SessionItemProps {
   onTogglePin?: () => void
 }
 
-export function SessionItem({
+function SessionItemImpl({
   title,
   titleEmoji,
   titlePending,
@@ -47,6 +47,12 @@ export function SessionItem({
   return (
     <div
       onClick={onClick}
+      // content-visibility: auto lets Chromium skip layout/paint for rows
+      // scrolled off-screen — gives near-virtualization for free, which
+      // dramatically reduces the first-render cost when switching to a
+      // workspace with many sessions. contain-intrinsic-size reserves
+      // ~32 px so the scrollbar sizing stays stable.
+      style={{ contentVisibility: 'auto', containIntrinsicSize: '0 32px' } as React.CSSProperties}
       className={cn(
         'group relative flex items-center gap-2 rounded-md px-2 py-1.5 cursor-pointer',
         'text-[13px] transition-colors duration-100',
@@ -154,3 +160,10 @@ export function SessionItem({
     </div>
   )
 }
+
+// Memo wraps the impl. Inline lambdas from WorkspaceRail (onClick / onDelete /
+// onMove / onTogglePin) defeat memo on their own, but for a workspace switch
+// the IDs (title, isActive, isOpen) change in lockstep — memo still saves
+// re-rendering rows whose underlying data is unchanged when only one row
+// changes (e.g., a session's running indicator flicks).
+export const SessionItem = React.memo(SessionItemImpl)

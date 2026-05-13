@@ -22,7 +22,7 @@ import {
 } from '@/atoms/workspace'
 
 /** Fraction of the sidebar width the user must drag past to commit. */
-const COMMIT_FRACTION = 0.22
+const COMMIT_FRACTION = 0.35
 /** Fraction of width before rubber-band damping kicks in. Below this the
  *  motion is 1:1 with the wheel — most swipes finish before reaching it. */
 const RUBBER_BAND_FROM = 0.55

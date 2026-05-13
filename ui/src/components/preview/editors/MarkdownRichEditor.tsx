@@ -110,10 +110,15 @@ export function MarkdownRichEditor(props: EditorProps): React.ReactElement {
   const hasConflict = conflicts.has(filePath)
   const filePathRef = React.useRef(filePath)
   const onSaveRef = React.useRef(onSave)
+  // useEditor()'s onUpdate closure is created ONCE — `hasConflict` captured
+  // at editor creation would be stale forever, so the "pause auto-save while
+  // conflict is showing" guard never fires. Bridge through a ref instead.
+  const hasConflictRef = React.useRef(hasConflict)
   React.useEffect(() => {
     filePathRef.current = filePath
     onSaveRef.current = onSave
-  }, [filePath, onSave])
+    hasConflictRef.current = hasConflict
+  }, [filePath, onSave, hasConflict])
 
   const editor = useEditor({
     extensions: [
@@ -134,8 +139,10 @@ export function MarkdownRichEditor(props: EditorProps): React.ReactElement {
       const md = htmlToMd(html)
       onContentChange?.(md, md !== initialContent)
 
-      // Auto-save (paused while a conflict is showing)
-      if (hasConflict) return
+      // Auto-save (paused while a conflict is showing — read via ref so
+      // the value is fresh; the closure captured at editor creation would
+      // see the initial false forever).
+      if (hasConflictRef.current) return
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
       autoSaveTimer.current = setTimeout(async () => {
         const outcome = await onSaveRef.current(md)
