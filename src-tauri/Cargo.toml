@@ -104,6 +104,9 @@ regex = "1"
 # HTML parsing for web_fetch
 scraper = "0.20"
 
+# RSS feed parsing for automation sources
+rss = "2"
+
 # Diff for edit tool
 similar = "2"
 

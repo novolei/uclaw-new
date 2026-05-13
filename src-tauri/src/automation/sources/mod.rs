@@ -19,10 +19,18 @@ pub trait SubscriptionSource: Send + Sync {
     async fn detach(&self, spec_id: &str, sub_id: &str) -> anyhow::Result<()>;
 }
 
+pub mod custom;
 pub mod file;
+pub mod rss;
 pub mod schedule;
+pub mod webpage;
 pub mod webhook;
+pub mod wecom;
 
+pub use custom::CustomSource;
 pub use file::FileSource;
+pub use rss::RssSource;
 pub use schedule::ScheduleSource;
+pub use webpage::WebpageSource;
 pub use webhook::{global_registry, WebhookRegistry, WebhookSource};
+pub use wecom::WecomSource;
