@@ -103,8 +103,14 @@ similar = "2"
 # Filesystem locks
 fs4 = "0.6"
 
-# File watching
-notify = { version = "7", features = ["macos_kqueue"] }
+# File watching.
+# macOS default backend is FSEvents (Apple-native, coalesces events
+# intelligently, well-maintained upstream). We previously opted in to the
+# `macos_kqueue` feature, which routes the macOS backend through the
+# `kqueue` crate — that crate has an unwrap panic at kqueue-1.1.1
+# lib.rs:661:86 that surfaced as a notify-rs thread death in production.
+# Switching back to the default eliminates the panic at the source.
+notify = { version = "7" }
 
 # Browser automation (Phase 3)
 chromiumoxide = { version = "0.9" }
