@@ -29,9 +29,15 @@ import { AgentStatusBar } from './AgentStatusBar'
 import { AskUserBanner } from './AskUserBanner'
 import { ExitPlanModeBanner } from './ExitPlanModeBanner'
 import { PlanModeDashedBorder } from './PlanModeDashedBorder'
+import { PetWidget } from './PetWidget'
 import { ProviderModelSelector } from '@/components/chat/ProviderModelSelector'
 import { AttachmentPreviewItem } from '@/components/chat/AttachmentPreviewItem'
 import { RichTextInput } from '@/components/ai-elements/rich-text-input'
+import { SpeechButton } from '@/components/ai-elements/speech-button'
+import { InlineRecorder } from '@/components/stt/InlineRecorder'
+import { FirstRunDialog } from '@/components/stt/FirstRunDialog'
+import { recordingStateAtom, sttSettingsAtom, modelStatusAtom } from '@/atoms/stt-atoms'
+import { invoke } from '@tauri-apps/api/core'
 import {
   ComposerMentionController,
   type ComposerMentionControllerHandle,
@@ -82,6 +88,8 @@ import {
   workspaceAttachedDirsMapAtom,
   agentSessionAttachedDirsMapAtom,
   workspaceFilesVersionAtom,
+  composerFocusedAtom,
+  composerHasTextAtom,
 } from '@/atoms/agent-atoms'
 import type { AgentContextStatus } from '@/atoms/agent-atoms'
 import { activeProviderModelAtom } from '@/atoms/active-model'
@@ -311,6 +319,24 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       return map
     })
   }, [sessionId, setDraftsMap])
+  // ── composer state atoms (PetWidget) ──
+  const setComposerFocused = useSetAtom(composerFocusedAtom)
+  const setComposerHasText = useSetAtom(composerHasTextAtom)
+
+  // Reset composer has-text atom when the active session changes.
+  // composerFocusedAtom self-heals via TipTap's onBlur on unmount; no reset needed.
+  React.useEffect(() => {
+    setComposerHasText(false)
+  }, [sessionId, setComposerHasText])
+
+  const handleComposerChange = React.useCallback((v: string) => {
+    setInputContent(v)
+    setComposerHasText(v.trim().length > 0)
+  }, [setInputContent, setComposerHasText])
+
+  const handleComposerFocus = React.useCallback(() => setComposerFocused(true), [setComposerFocused])
+  const handleComposerBlur  = React.useCallback(() => setComposerFocused(false), [setComposerFocused])
+
   const draftHtmlMap = useAtomValue(agentSessionDraftHtmlAtom)
   const setDraftHtmlMap = useSetAtom(agentSessionDraftHtmlAtom)
   const inputHtmlContent = draftHtmlMap.get(sessionId) ?? ''
@@ -330,6 +356,28 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const sessionPath = sessionPathMap.get(sessionId) ?? null
   const [isDragOver, setIsDragOver] = React.useState(false)
   const [errorCopied, setErrorCopied] = React.useState(false)
+
+  // STT state
+  const [firstRunOpen, setFirstRunOpen] = React.useState(false)
+  const recordingState = useAtomValue(recordingStateAtom)
+  const sttSettings = useAtomValue(sttSettingsAtom)
+  const setModelStatus = useSetAtom(modelStatusAtom)
+
+  // Query model status on mount so SpeechButton can show indicator dot.
+  React.useEffect(() => {
+    void invoke('stt_model_status')
+      .then((s: unknown) => {
+        const status = s as { openflow_ready: boolean; openflow_model_dir: string }
+        setModelStatus(
+          status.openflow_ready
+            ? { kind: 'ready', modelDir: status.openflow_model_dir }
+            : { kind: 'not-downloaded', expectedDir: status.openflow_model_dir },
+        )
+      })
+      .catch(() => {
+        /* leave modelStatus = unknown */
+      })
+  }, [setModelStatus])
 
   // Composer `/` and `@` autocomplete plumbing — the controller renders
   // the popup; the editorRef lets it watch the TipTap selection state;
@@ -673,6 +721,27 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     addFilesAsAttachments(files)
   }, [addFilesAsAttachments])
 
+  /** 语音识别结果 — TipTap 光标位置插入 */
+  const handleSpeechTranscript = React.useCallback((text: string): void => {
+    const editor = composerEditorRef.current
+    if (editor) {
+      editor.commands.insertContent(text)
+    } else {
+      // Fallback: append to controlled value.
+      setInputContent(inputContent + (inputContent ? ' ' : '') + text)
+    }
+  }, [composerEditorRef, inputContent, setInputContent])
+
+  // handleSend is defined below; use a ref to avoid use-before-declaration.
+  const handleSendRef = React.useRef<(() => Promise<void>) | null>(null)
+
+  /** 转写完成后按 autoSend 设置触发发送 */
+  const handleAfterTranscribe = React.useCallback((_text: string): void => {
+    if (sttSettings.autoSend) {
+      void handleSendRef.current?.()
+    }
+  }, [sttSettings.autoSend])
+
   /** 粘贴超长文本 → 转为附件 */
   const handlePasteLongText = React.useCallback((text: string): void => {
     const file = createClipboardTextFile(text)
@@ -764,6 +833,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     // 没有任何视觉反馈（见 PR #99 dogfood 反馈）。
     if (effectiveText === '/compact' && pendingFiles.length === 0) {
       setInputContent('')
+      setComposerHasText(false)
       handleCompactRef.current?.()
       return
     }
@@ -801,6 +871,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       // 2. 清空输入框
       setInputContent('')
       setInputHtmlContent('')
+      setComposerHasText(false)
       setPromptSuggestions((prev) => {
         if (!prev.has(sessionId)) return prev
         const map = new Map(prev)
@@ -980,6 +1051,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
     setInputContent('')
     setInputHtmlContent('')
+    setComposerHasText(false)
 
     sendAgentMessage(input)
       .then(() => {
@@ -1011,6 +1083,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         })
       })
   }, [inputContent, pendingFiles, sessionId, activeProviderModel, agentChannelId, agentModelId, currentWorkspaceId, workspaces, streaming, suggestion, currentStrategy, store, setStreamingStates, setPendingFiles, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, setMessages])
+
+  // Wire handleSendRef so handleAfterTranscribe can call handleSend without
+  // use-before-declaration.
+  React.useEffect(() => {
+    handleSendRef.current = handleSend
+  }, [handleSend])
 
   /** 停止生成 */
   const handleStop = React.useCallback((): void => {
@@ -1400,7 +1478,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         <div className="px-2.5 pb-2.5 md:px-[18px] md:pb-[18px]" data-input-mode="agent">
           <div
             className={cn(
-              'rounded-[17px] border-[0.5px] border-border bg-background/70 backdrop-blur-sm transition-all duration-200',
+              'relative rounded-[17px] border-[0.5px] border-border bg-background/70 backdrop-blur-sm transition-all duration-200',
               isPlanMode && !isDragOver && 'plan-mode-border',
               isDragOver && 'border-[2px] border-dashed border-[#2ecc71] bg-[#2ecc71]/[0.03]'
             )}
@@ -1408,6 +1486,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
           >
+            {/* Pet anchored to the entire composer card's top — sits above all
+                inner banners (model warning, attachment preview, agent suggestion,
+                sticky user message, etc.). bottom:100% references this card's top. */}
+            <PetWidget />
             {isPlanMode && !isDragOver && <PlanModeDashedBorder />}
             {/* 未配置模型提示 */}
             {!activeProviderModel && (
@@ -1461,7 +1543,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             <div className="relative">
               <RichTextInput
                 value={inputContent}
-                onChange={setInputContent}
+                onChange={handleComposerChange}
+                onFocus={handleComposerFocus}
+                onBlur={handleComposerBlur}
                 onSubmit={handleSend}
                 onPasteFiles={handlePasteFiles}
                 onPasteLongText={handlePasteLongText}
@@ -1544,6 +1628,17 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                 {/* <FeishuNotifyToggle sessionId={sessionId} /> */}
 
                 <GitChipsRow />
+                <SpeechButton
+                  composer="agent"
+                  onTranscript={handleSpeechTranscript}
+                  onAfterTranscribe={handleAfterTranscribe}
+                  onShowDownloadDialog={() => setFirstRunOpen(true)}
+                />
+                <InlineRecorder
+                  state={recordingState}
+                  onStop={() => { window.dispatchEvent(new CustomEvent('uclaw:stt-stop')) }}
+                  onCancel={() => { window.dispatchEvent(new CustomEvent('uclaw:stt-cancel')) }}
+                />
               </div>
 
               <div className="flex items-center gap-1.5">
@@ -1612,6 +1707,11 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+    <FirstRunDialog
+      open={firstRunOpen}
+      onOpenChange={setFirstRunOpen}
+      onReady={() => { window.dispatchEvent(new CustomEvent('uclaw:stt-start-after-ready')) }}
+    />
     </>
   )
 }

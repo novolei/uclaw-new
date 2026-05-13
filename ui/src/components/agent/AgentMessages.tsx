@@ -39,6 +39,7 @@ import { userProfileAtom } from '@/atoms/user-profile'
 import { tabMinimapCacheAtom } from '@/atoms/tab-atoms'
 import { channelsAtom } from '@/atoms/chat-atoms'
 import { proactiveLearningEventsAtom } from '@/atoms/agent-atoms'
+import { stickyUserMessageEnabledAtom } from '@/atoms/ui-preferences'
 import { ProactiveLearningChip } from '@/components/chat/ProactiveLearningChip'
 import { parseSkillCitations } from '@/lib/skill-citation'
 import { normalizeAgentMarkdown } from '@/lib/normalize-agent-markdown'
@@ -765,6 +766,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
   const setMinimapCache = useSetAtom(tabMinimapCacheAtom)
   const channels = useAtomValue(channelsAtom)
   const proactiveLearningEvents = useAtomValue(proactiveLearningEventsAtom)
+  const stickyUserMessageEnabled = useAtomValue(stickyUserMessageEnabledAtom)
   /** 淡入控制：切换会话时先隐藏，等布局完成后再显示。 */
   const [ready, setReady] = React.useState(false)
   const prevSessionIdRef = React.useRef<string | null>(null)
@@ -1038,7 +1040,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
       })()}
       <ScrollMinimap items={minimapItems} />
       <ConversationScrollButton />
-      {allUserMessagesData.length > 0 && (
+      {stickyUserMessageEnabled && allUserMessagesData.length > 0 && (
         <StickyUserMessage userMessages={allUserMessagesData} />
       )}
     </Conversation>

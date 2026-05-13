@@ -450,6 +450,12 @@ export async function installExitPlanListener(
 }
 export const agentPlanModeSessionsAtom = atom<Set<string>>(new Set<string>())
 
+// ───── composer state (lifted from RichTextInput) ─────
+/** True iff the agent composer is currently focused. Lifted to atom for PetWidget. */
+export const composerFocusedAtom = atom<boolean>(false)
+/** True iff the agent composer's editor has non-empty text content. Lifted for PetWidget. */
+export const composerHasTextAtom = atom<boolean>(false)
+
 export const currentAgentSessionAtom = atom<AgentSessionMeta | null>((get) => {
   const sessions = get(agentSessionsAtom)
   const currentId = get(currentAgentSessionIdAtom)

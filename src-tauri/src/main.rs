@@ -513,6 +513,13 @@ fn main() {
             uclaw_core::tauri_commands::start_agent_teams,
             uclaw_core::tauri_commands::get_team_channel,
             uclaw_core::tauri_commands::stop_agent_teams,
+            // STT (SenseVoice ONNX, local)
+            uclaw_core::stt::commands::stt_transcribe,
+            uclaw_core::stt::commands::stt_model_status,
+            uclaw_core::stt::commands::stt_download_model,
+            uclaw_core::stt::commands::stt_get_settings,
+            uclaw_core::stt::commands::stt_save_settings,
+            uclaw_core::stt::commands::stt_list_microphones,
         ])
         .run(tauri::generate_context!())
         .expect("error while running uClaw");
