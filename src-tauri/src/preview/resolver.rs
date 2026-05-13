@@ -157,20 +157,58 @@ pub async fn resolve_chip_candidate(
 ) -> ChipResolution {
     let (bare, _line, _col) = strip_line_col(raw);
 
-    // Absolute paths take the express lane.
+    // Absolute paths: try to match against a mount root so the auto-preview
+    // listener can build a PreviewFileTarget with mountId + relPath. Falls
+    // back to a mountless resolution (existing behavior) if no mount contains
+    // the path.
     if bare.starts_with('/') {
         let p = Path::new(bare);
         let exists = fs::metadata(p).map(|m| m.is_file()).unwrap_or(false);
+        let abs_canonical = if exists {
+            p.canonicalize().ok().map(|c| c.to_string_lossy().into_owned())
+        } else {
+            // For not-yet-existing paths (write_file before its tool_result),
+            // canonicalize fails. Use the input path verbatim so callers still
+            // get an absolute string to work with.
+            Some(bare.to_string())
+        };
+
+        // Try mount matching only for paths that look like they could be
+        // under a mount root. We compare against both the raw mount path and
+        // its canonical form to handle symlinked workspace roots.
+        let mounts = match state.files_rail_list_mounts(session_id.clone()).await {
+            Ok(m) => m,
+            Err(_) => Vec::new(),
+        };
+        for mount in &mounts {
+            let mount_path = &mount.path;
+            let candidates: [Option<std::path::PathBuf>; 2] = [
+                Some(mount_path.clone()),
+                mount_path.canonicalize().ok(),
+            ];
+            for cand in candidates.iter().flatten() {
+                if let Ok(rel) = p.strip_prefix(cand) {
+                    let rel_str = rel.to_string_lossy().replace('\\', "/");
+                    if rel_str.is_empty() {
+                        continue;
+                    }
+                    return ChipResolution {
+                        input: raw.to_string(),
+                        exists,
+                        mount_id: Some(mount.id.clone()),
+                        rel_path: Some(rel_str),
+                        absolute_path: abs_canonical,
+                    };
+                }
+            }
+        }
+
         return ChipResolution {
             input: raw.to_string(),
             exists,
             mount_id: None,
             rel_path: None,
-            absolute_path: if exists {
-                p.canonicalize().ok().map(|c| c.to_string_lossy().into_owned())
-            } else {
-                None
-            },
+            absolute_path: if exists { abs_canonical } else { None },
         };
     }
 
@@ -189,7 +227,7 @@ pub async fn resolve_chip_candidate(
         Ok(m) => m,
         Err(_) => Vec::new(),
     };
-    for mount in mounts {
+    for mount in &mounts {
         let candidate = mount.path.join(bare);
         if let Ok(meta) = fs::metadata(&candidate) {
             if meta.is_file() {
