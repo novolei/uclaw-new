@@ -88,7 +88,6 @@ fn main() {
                 let pending_ask_users = state.pending_ask_users.clone();
                 let pending_exit_plans = state.pending_exit_plans.clone();
                 let files_rail_service = state.files_rail_service.clone();
-                let db_for_runtime = state.db.clone();
 
                 // 在后台异步执行服务注册和启动
                 tauri::async_runtime::spawn(async move {
@@ -210,26 +209,11 @@ fn main() {
                     service_manager.register(files_rail_service).await;
                     tracing::info!("[Stage 3] FilesRailService registered");
 
-                    // AppRuntimeService — always registered; activates enabled Humane specs
+                    // AppRuntimeService — already constructed in AppState::new(); we just
+                    // register the shared Arc into ServiceManager here so it gets started.
                     {
-                        use uclaw_core::automation::{
-                            runtime::AppRuntimeService,
-                            sources::{
-                                CustomSource, FileSource, RssSource, ScheduleSource,
-                                WebhookSource, WebpageSource, WecomSource,
-                            },
-                        };
-                        let app_runtime_svc = AppRuntimeService::new(
-                            db_for_runtime.clone(),
-                            Arc::new(ScheduleSource::new()),
-                            Arc::new(FileSource::new()),
-                            Arc::new(WebhookSource::with_global_registry()),
-                            Arc::new(WebpageSource::new()),
-                            Arc::new(RssSource::new()),
-                            Arc::new(WecomSource::new()),
-                            Arc::new(CustomSource::new()),
-                            infra_service.clone(),
-                        );
+                        let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                        let app_runtime_svc = state_ref.runtime_service.clone();
                         service_manager.register(app_runtime_svc).await;
                         tracing::info!("[Stage 3] AppRuntimeService registered");
                     }
@@ -525,11 +509,23 @@ fn main() {
             uclaw_core::tauri_commands::browser_take_screenshot,
             // System Tray / Badge Commands (Phase 3)
             uclaw_core::tauri_commands::update_badge_count,
-            // Automation Commands (Phase 3)
+            // Automation Commands (Phase 3 legacy — install_automation kept for compat)
             uclaw_core::tauri_commands::install_automation,
             uclaw_core::tauri_commands::list_automations,
             uclaw_core::tauri_commands::trigger_automation_manual,
             uclaw_core::tauri_commands::get_automation_activity,
+            // Humane Automation Commands (Phase 1 spec § 7.3)
+            uclaw_core::tauri_commands::install_humane_spec,
+            uclaw_core::tauri_commands::import_humane_spec_file,
+            uclaw_core::tauri_commands::get_automation_spec,
+            uclaw_core::tauri_commands::update_user_config,
+            uclaw_core::tauri_commands::set_automation_permission,
+            uclaw_core::tauri_commands::set_automation_enabled,
+            uclaw_core::tauri_commands::uninstall_automation,
+            uclaw_core::tauri_commands::resolve_escalation,
+            uclaw_core::tauri_commands::list_pending_escalations,
+            uclaw_core::tauri_commands::read_automation_memory,
+            uclaw_core::tauri_commands::compact_automation_memory,
             // Files Rail Commands
             uclaw_core::files_rail::commands::files_rail_list_mounts,
             uclaw_core::files_rail::commands::files_rail_read_dir,

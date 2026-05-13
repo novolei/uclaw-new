@@ -1247,6 +1247,89 @@ export const triggerAutomationManual = (specId: string): Promise<boolean> =>
 export const getAutomationActivity = (specId: string, limit?: number): Promise<AutomationActivity[]> =>
   invoke<AutomationActivity[]>('get_automation_activity', { specId, limit })
 
+// ─── Humane Automation (Phase 1 spec § 7.3) ──────────────────────────
+
+/** Typed row from the V20 automation_specs table. */
+export interface HumaneSpecRow {
+  id: string
+  name: string
+  version: string
+  author: string
+  description: string
+  systemPrompt: string
+  specFormat: string
+  specYaml: string
+  specJson: string
+  userConfigValues: string
+  permissionsGranted: string
+  permissionsDenied: string
+  status: 'active' | 'paused' | 'error' | 'uninstalled' | string
+  enabled: boolean
+  spaceId: string | null
+  source: string
+  sourceRef: string | null
+  sourceVersion: string | null
+  createdAt: number
+  updatedAt: number
+  lastRunAt: number | null
+  lastRunOutcome: string | null
+}
+
+/** Typed row from the V21 automation_escalations table. */
+export interface EscalationRow {
+  id: string
+  specId: string
+  activityId: string
+  question: string
+  choicesJson: string
+  status: 'waiting' | 'resolved' | string
+  userChoice: string | null
+  userNote: string | null
+  createdAt: number
+  respondedAt: number | null
+}
+
+/** Upgraded: returns HumaneSpecRow[] (V20 schema). */
+export const listAutomationsHumane = (): Promise<HumaneSpecRow[]> =>
+  invoke<HumaneSpecRow[]>('list_automations')
+
+export const installHumaneSpec = (yaml: string, sourceRef?: string): Promise<HumaneSpecRow> =>
+  invoke<HumaneSpecRow>('install_humane_spec', { yaml, sourceRef })
+
+export const importHumaneSpecFile = (path: string): Promise<HumaneSpecRow> =>
+  invoke<HumaneSpecRow>('import_humane_spec_file', { path })
+
+export const getAutomationSpec = (specId: string): Promise<HumaneSpecRow> =>
+  invoke<HumaneSpecRow>('get_automation_spec', { specId })
+
+export const updateAutomationUserConfig = (specId: string, values: Record<string, unknown>): Promise<void> =>
+  invoke<void>('update_user_config', { specId, values })
+
+export const setAutomationPermission = (specId: string, permission: string, granted: boolean): Promise<void> =>
+  invoke<void>('set_automation_permission', { specId, permission, granted })
+
+export const setAutomationEnabled = (specId: string, enabled: boolean): Promise<void> =>
+  invoke<void>('set_automation_enabled', { specId, enabled })
+
+export const uninstallAutomation = (specId: string): Promise<void> =>
+  invoke<void>('uninstall_automation', { specId })
+
+/** Upgraded: delegates to AppRuntimeService.execute_run. */
+export const triggerAutomationManualHumane = (specId: string): Promise<void> =>
+  invoke<void>('trigger_automation_manual', { specId })
+
+export const resolveEscalation = (escalationId: string, choice: string, note?: string): Promise<void> =>
+  invoke<void>('resolve_escalation', { escalationId, choice, note })
+
+export const listPendingEscalations = (specId?: string): Promise<EscalationRow[]> =>
+  invoke<EscalationRow[]>('list_pending_escalations', { specId })
+
+export const readAutomationMemory = (specId: string): Promise<string> =>
+  invoke<string>('read_automation_memory', { specId })
+
+export const compactAutomationMemory = (specId: string): Promise<string> =>
+  invoke<string>('compact_automation_memory', { specId })
+
 // ─── Badge ────────────────────────────────────────────────────────────
 export const updateBadgeCount = (count: number): Promise<boolean> =>
   invoke<boolean>('update_badge_count', { count })

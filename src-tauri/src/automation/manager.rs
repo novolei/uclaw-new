@@ -10,6 +10,7 @@
 /// Returned by list_automations / install_humane_spec Tauri commands once
 /// those are rewritten in Task 13.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HumaneSpecRow {
     pub id: String,
     pub name: String,

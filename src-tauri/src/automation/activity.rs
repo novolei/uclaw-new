@@ -87,6 +87,7 @@ impl TriggerSource {
 // ─── Core struct ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AutomationActivity {
     pub id: String,
     pub spec_id: String,
