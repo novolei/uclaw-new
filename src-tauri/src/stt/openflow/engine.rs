@@ -86,6 +86,12 @@ impl OpenFlowAsrEngine {
             ));
         }
 
+        // Ensure ONNX Runtime dylib exists + ORT_DYLIB_PATH is set before
+        // OnnxInference::new() triggers ort's dlopen. Idempotent.
+        crate::stt::openflow::ort_loader::ensure_onnxruntime(None)
+            .await
+            .map_err(|e| format!("ONNX Runtime 准备失败: {}", e))?;
+
         let model_path = if self.model_dir.join("model.onnx").exists() {
             self.model_dir.join("model.onnx")
         } else {
