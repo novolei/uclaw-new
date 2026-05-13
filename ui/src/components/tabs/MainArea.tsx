@@ -24,6 +24,8 @@ import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import WelcomeView from '@/views/WelcomeView'
 import { TabBar } from './TabBar'
 import { TabContent } from './TabContent'
+import { automationPanelOpenAtom } from '@/atoms/automation'
+import { AutomationHub } from '@/components/automation/AutomationHub'
 
 const MIN_CHAT_RATIO = 0.30
 const MAX_CHAT_RATIO = 0.80
@@ -37,6 +39,7 @@ export function MainArea(): React.ReactElement {
   const setSelectedPreviewFile = useSetAtom(selectedPreviewFileAtom)
   const currentWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
   const [splitRatio, setSplitRatio] = useAtom(previewPanelSplitRatioAtom)
+  const [automationOpen, setAutomationOpen] = useAtom(automationPanelOpenAtom)
   const draggingRef = React.useRef(false)
 
   // Reset the preview panel when the active workspace changes. The previously
@@ -137,13 +140,48 @@ export function MainArea(): React.ReactElement {
     </>
   )
 
+  // AutomationHub view replaces the chat/welcome body entirely when open.
+  // The header strip mirrors TabBar's height so the visual rhythm stays
+  // consistent (close button + title where tabs would be).
+  const automationBody = (
+    <>
+      <div className="flex items-center justify-between px-4 h-[34px] flex-shrink-0 border-b border-border/40 titlebar-no-drag">
+        <span className="text-[13px] font-semibold flex items-center gap-1.5">
+          <span>Automations</span>
+        </span>
+        <button
+          onClick={() => setAutomationOpen(false)}
+          className="text-muted-foreground hover:text-foreground text-[18px] leading-none w-6 h-6 flex items-center justify-center rounded-md hover:bg-accent"
+          title="返回 (Esc)"
+        >
+          &times;
+        </button>
+      </div>
+      <div className="flex-1 min-h-0 titlebar-no-drag">
+        <AutomationHub />
+      </div>
+    </>
+  )
+
+  // Esc key returns to the previous view when AutomationHub is open.
+  React.useEffect(() => {
+    if (!automationOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setAutomationOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [automationOpen, setAutomationOpen])
+
   return (
     <>
       <Panel
         variant="grow"
         className="bg-content-area rounded-2xl shadow-xl"
       >
-        {previewOpen ? (
+        {automationOpen ? (
+          automationBody
+        ) : previewOpen ? (
           <div className="flex flex-1 min-h-0" data-preview-split>
             {/* Left: chat (TabBar + TabContent) */}
             <div

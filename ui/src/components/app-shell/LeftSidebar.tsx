@@ -11,7 +11,6 @@
  */
 
 import * as React from 'react'
-import { createPortal } from 'react-dom'
 import { useAtom, useSetAtom, useAtomValue } from 'jotai'
 import { toast } from 'sonner'
 import { Pin, PinOff, Settings, Plus, Trash2, Pencil, ChevronDown, ChevronRight, Plug, Zap, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, Hammer, LoaderCircle, Bot } from 'lucide-react'
@@ -70,8 +69,9 @@ import { useSyncActiveTabSideEffects } from '@/hooks/useSyncActiveTabSideEffects
 import { WorkspaceRail } from '@/components/workspace/WorkspaceRail'
 import { WorkspaceHeader } from '@/components/workspace/WorkspaceHeader'
 import { WorkspaceSwitcherBar } from '@/components/workspace/WorkspaceSwitcherBar'
-import { AutomationHub as AutomationHubComponent } from '@/components/automation/AutomationHub'
+// AutomationHub is rendered by MainArea (see atoms/automation::automationPanelOpenAtom)
 import { syncWorkspaceSessionsAtom, refreshWorkspacesAtom, activeWorkspaceIdAtom, workspacesAtom, workspaceSwitchDirectionAtom, swipeGestureAtom } from '@/atoms/workspace'
+import { automationPanelOpenAtom } from '@/atoms/automation'
 import { getWorkspaceIcon } from '@/lib/workspace-icons'
 import { MoveSessionDialog } from '@/components/agent/MoveSessionDialog'
 import {
@@ -353,7 +353,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   const [activeView, setActiveView] = useAtom(activeViewAtom)
   const setSettingsTab = useSetAtom(settingsTabAtom)
   const setSettingsOpen = useSetAtom(settingsOpenAtom)
-  const [automationPanelOpen, setAutomationPanelOpen] = React.useState(false)
+  const [automationPanelOpen, setAutomationPanelOpen] = useAtom(automationPanelOpenAtom)
   const [activeItem, setActiveItem] = React.useState<SidebarItemId>('all-chats')
   const [conversations, setConversations] = useAtom(conversationsAtom)
   const [currentConversationId, setCurrentConversationId] = useAtom(currentConversationIdAtom)
@@ -1084,59 +1084,12 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
       {deleteDialog}
       {moveDialog}
 
-      {/* Automation Hub slide-over */}
-      {automationPanelOpen && (
-        <AutomationSlideOver onClose={() => setAutomationPanelOpen(false)} />
-      )}
+      {/* Automation Hub is rendered by MainArea as a full main-area view
+          when `automationPanelOpenAtom` is true — see MainArea.tsx.
+          Reference to setAutomationPanelOpen kept to satisfy ESLint:
+          the button at line ~1053 still calls it. */}
+      {void automationPanelOpen}
     </div>
-  )
-}
-
-function AutomationSlideOver({ onClose }: { onClose: () => void }): React.ReactElement {
-  // Esc key closes the modal (common UX expectation; advertised by the
-  // close button's title attribute).
-  React.useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
-
-  // Portal to document.body to escape any ancestor stacking context
-  // (LeftSidebar / AppShell wrappers use transform/contain that trap z-index).
-  // Centered modal layout (max-w-5xl, ~85vh) so it feels like a full
-  // welcome-style panel rather than a narrow drawer — fits the spec list,
-  // marketplace grid, and YAML paste textarea comfortably side-by-side.
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-6"
-      onClick={onClose}
-    >
-      {/* Backdrop overlay (the parent div catches clicks via onClick={onClose}).
-          A separate semi-transparent layer underneath the modal to dim the page. */}
-      <div className="absolute inset-0 bg-foreground/20 backdrop-blur-sm" />
-      {/* Modal panel — clicks here must NOT bubble to backdrop */}
-      <div
-        className="relative w-full max-w-5xl h-[85vh] bg-background border border-border rounded-xl shadow-2xl flex flex-col overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-5 py-3 border-b border-border flex-shrink-0">
-          <span className="text-[14px] font-semibold">Automations</span>
-          <button
-            onClick={onClose}
-            className="text-muted-foreground hover:text-foreground text-[20px] leading-none w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent"
-            title="关闭 (Esc)"
-          >
-            &times;
-          </button>
-        </div>
-        <div className="flex-1 overflow-hidden">
-          <AutomationHubComponent />
-        </div>
-      </div>
-    </div>,
-    document.body,
   )
 }
 
