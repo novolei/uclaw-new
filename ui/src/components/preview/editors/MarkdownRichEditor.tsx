@@ -154,7 +154,7 @@ export function MarkdownRichEditor(props: EditorProps): React.ReactElement {
   }, [editor])
 
   return (
-    <div className="h-full w-full overflow-auto p-4 prose prose-sm dark:prose-invert max-w-none">
+    <div className="tiptap-markdown-preview h-full w-full overflow-auto p-4 prose prose-sm dark:prose-invert max-w-none">
       <EditorContent editor={editor} />
     </div>
   )

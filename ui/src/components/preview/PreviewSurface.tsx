@@ -5,6 +5,7 @@ import { PreviewEmpty } from './PreviewEmpty'
 import { CodeRenderer } from './renderers/CodeRenderer'
 import { MarkdownRenderer } from './renderers/MarkdownRenderer'
 import { ImageRenderer } from './renderers/ImageRenderer'
+import { VideoRenderer } from './renderers/VideoRenderer'
 import { EditorSurface } from './editors/EditorSurface'
 import { WriteApprovalDialog } from './editors/WriteApprovalDialog'
 import { DiffRenderer } from './renderers/diff/DiffRenderer'
@@ -53,6 +54,9 @@ export function PreviewSurface({ target }: PreviewSurfaceProps): React.ReactElem
 
   if (route.kind === 'image') {
     return <ImageRenderer resolvedPath={state.resolvedPath} name={target.name} />
+  }
+  if (route.kind === 'video') {
+    return <VideoRenderer resolvedPath={state.resolvedPath} name={target.name} />
   }
   // Force a fresh EditorSurface per file so internal baseline/content/mtime
   // state cannot leak across switches. The polish commit that decoupled the
