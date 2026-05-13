@@ -43,7 +43,7 @@ impl<R: tauri::Runtime> Tool for LoadSkillTool<R> {
     }
 
     fn description(&self) -> &str {
-        "Load the full content of a skill. Use after skill_search identifies a promising match. The returned content is the skill's full prompt body — read it, then apply it to the current task."
+        "Load full content of a named skill (use after skill_search picks a match)."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -51,10 +51,7 @@ impl<R: tauri::Runtime> Tool for LoadSkillTool<R> {
             "type": "object",
             "properties": {
                 "name": { "type": "string", "description": "Exact skill name." },
-                "reason": {
-                    "type": "string",
-                    "description": "One sentence: why you're loading this skill in the current context. Surfaces as a chip in the UI; helps the user audit your reasoning."
-                }
+                "reason": { "type": "string", "description": "One sentence: why loading this. Shown as a chip in the UI." }
             },
             "required": ["name", "reason"]
         })

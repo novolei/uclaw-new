@@ -57,6 +57,14 @@ pub struct ChatDelegate {
     /// Pre-built skill manifest block, set via set_skills_manifest_block
     /// before run_loop starts. Empty when no skills exist (no append).
     skills_manifest_block: String,
+    /// PR 2026-05-13 token-cost optim: once the agent calls
+    /// `skill_search` in this loop, the manifest's purpose (offering
+    /// the catalog) has been served. Suppress it on all subsequent
+    /// LLM calls within the same loop to save ~800 tokens per call.
+    /// Set inside `execute_tool_calls`; read inside
+    /// `effective_system_prompt`. `AtomicBool` because the dispatcher
+    /// is `Send + Sync` and the tool-execution path holds `&self`.
+    skill_search_used: AtomicBool,
 }
 
 impl ChatDelegate {
@@ -88,6 +96,7 @@ impl ChatDelegate {
             thinking_seq: Arc::new(AtomicU64::new(0)),
             workspace_root,
             skills_manifest_block: String::new(),
+            skill_search_used: AtomicBool::new(false),
         }
     }
 
@@ -142,8 +151,14 @@ impl ChatDelegate {
             self.workspace_root.as_deref(),
             effective_mode,
         );
-        // Append the skill manifest block (empty string when no skills exist).
-        if self.skills_manifest_block.is_empty() {
+        // Append the skill manifest block (empty when no skills exist).
+        // Once the agent has already invoked `skill_search` in this loop
+        // the manifest's recall-prompt job is done — suppress it on the
+        // next call to save ~800 tokens (PR 2026-05-13 token-cost optim).
+        // The flag stays sticky for the remainder of the loop because the
+        // agent loop reuses the same `ChatDelegate` across iterations.
+        let suppress_manifest = self.skill_search_used.load(Ordering::Relaxed);
+        if self.skills_manifest_block.is_empty() || suppress_manifest {
             composed
         } else {
             format!("{}{}", composed, self.skills_manifest_block)
@@ -940,6 +955,16 @@ impl LoopDelegate for ChatDelegate {
         tool_calls: Vec<ToolCall>,
         reason_ctx: &mut ReasoningContext,
     ) -> Result<Option<LoopOutcome>, Error> {
+        // PR 2026-05-13 token-cost optim: once the agent reaches for
+        // `skill_search` in this loop, the system-prompt manifest has
+        // served its purpose (catalog discovery → tool delegation).
+        // Mark the flag so `effective_system_prompt` skips the ~800-token
+        // manifest block on subsequent calls. Sticky for the rest of the
+        // loop; reset implicitly when the agent_loop spawns a fresh
+        // ChatDelegate for the next user message.
+        if tool_calls.iter().any(|tc| tc.name == "skill_search") {
+            self.skill_search_used.store(true, Ordering::Relaxed);
+        }
         for tc in &tool_calls {
             // ── Anti-fake-progress challenge ─────────────────────────
             // Intercept `plan_update done:true` calls that have neither
