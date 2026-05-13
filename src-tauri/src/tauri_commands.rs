@@ -5574,7 +5574,11 @@ pub async fn list_marketplace_humans(
 ) -> Result<Vec<crate::automation::marketplace::MarketplaceItem>, Error> {
     crate::automation::marketplace::list_humans(registry_url)
         .await
-        .map_err(|e| Error::Internal(e.to_string()))
+        // {:#} formats the full anyhow error chain (root cause + context),
+        // not just the top context line. Without this, errors like
+        // "install_humane_spec failed for 'X'" hid the actual reason
+        // (garde validation, DB constraint, parse failure, etc).
+        .map_err(|e| Error::Internal(format!("{:#}", e)))
 }
 
 #[tauri::command]
@@ -5585,7 +5589,12 @@ pub async fn install_marketplace_human(
 ) -> Result<crate::automation::manager::HumaneSpecRow, Error> {
     crate::automation::marketplace::install_human(&state.runtime_service, registry_url, &slug)
         .await
-        .map_err(|e| Error::Internal(e.to_string()))
+        .map_err(|e| {
+            // Log the FULL chain to the app log so we can grep later even
+            // if the toast truncates.
+            tracing::error!(slug = %slug, error = format!("{:#}", e), "install_marketplace_human failed");
+            Error::Internal(format!("{:#}", e))
+        })
 }
 
 // ─── Workspace Commands ─────────────────────────────────────────────────────
