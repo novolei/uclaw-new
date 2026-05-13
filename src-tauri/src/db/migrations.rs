@@ -1002,6 +1002,24 @@ fn migrate_activities_data(conn: &rusqlite::Connection) -> rusqlite::Result<()> 
 /// fixup + final swap) run inside a single transaction so any failure leaves
 /// the DB in its pre-V20 state.
 pub fn run_v20(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    // Idempotency check: if automation_specs already has the new-schema
+    // `spec_yaml` column, V20 has already been applied — skip the whole
+    // migration. Without this guard, a successful V20 followed by a failed
+    // V21 (where the .ok() at app.rs:248 swallowed the error pre-fix)
+    // leaves us with: automation_specs at new schema, V21 tables missing,
+    // and the next startup retrying V20 → SELECT toml_content FROM
+    // (new-schema) automation_specs → "no such column" → V20 fails again
+    // → V21 never gets to run → automation_escalations never created.
+    let v20_already_applied: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('automation_specs') WHERE name = 'spec_yaml'",
+        [],
+        |row| row.get::<_, i64>(0),
+    ).map(|n| n > 0).unwrap_or(false);
+    if v20_already_applied {
+        tracing::info!("V20 skipped: automation_specs already on Humane schema (V20 was applied previously)");
+        return Ok(());
+    }
+
     let tx = conn.unchecked_transaction()?;
 
     // V20a — create automation_specs_new
