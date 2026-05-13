@@ -17,12 +17,11 @@ describe('useDirtyBuffer', () => {
     store = createStore()
   })
 
-  it('registers a dirty buffer when content diverges from baseline (explicit mode)', () => {
+  it('registers a dirty buffer when content diverges from baseline', () => {
     const { rerender } = renderHook(
       ({ content }: { content: string }) =>
         useDirtyBuffer({
           filePath: '/foo.ts',
-          saveMode: 'explicit',
           baselineContent: 'init',
           baselineMtimeMs: 1000,
           currentContent: content,
@@ -43,7 +42,6 @@ describe('useDirtyBuffer', () => {
       ({ content }: { content: string }) =>
         useDirtyBuffer({
           filePath: '/foo.ts',
-          saveMode: 'explicit',
           baselineContent: 'init',
           baselineMtimeMs: 1000,
           currentContent: content,
@@ -57,12 +55,14 @@ describe('useDirtyBuffer', () => {
     expect(store.get(dirtyBuffersAtom).has('/foo.ts')).toBe(false)
   })
 
-  it('never registers in auto-save mode', () => {
+  it('registers in markdown / auto-save mode too (single dirty source of truth)', () => {
+    // Mtime-OCC removal (2026-05-13): both editors now register here so
+    // usePreviewRefresh's dirty-guard can block external refresh bumps
+    // while a markdown file has an unsaved draft.
     renderHook(
       () =>
         useDirtyBuffer({
           filePath: '/foo.md',
-          saveMode: 'auto',
           baselineContent: 'init',
           baselineMtimeMs: 1000,
           currentContent: 'changed',
@@ -70,6 +70,6 @@ describe('useDirtyBuffer', () => {
       { wrapper: wrapper(store) },
     )
 
-    expect(store.get(dirtyBuffersAtom).has('/foo.md')).toBe(false)
+    expect(store.get(dirtyBuffersAtom).has('/foo.md')).toBe(true)
   })
 })

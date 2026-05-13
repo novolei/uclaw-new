@@ -1,18 +1,17 @@
 /**
- * useDirtyBuffer — code-mode dirty tracking + close intercepts.
+ * useDirtyBuffer — universal dirty tracking + close intercepts.
  *
- * Only engaged for `saveMode === 'explicit'` (code/text formats).
- * Markdown editors use auto-save and don't register here.
+ * Engaged for BOTH save modes (explicit code-save and auto markdown-save).
+ * The dirty atom is the single source of truth for:
+ *   - usePreviewRefresh's "don't bump refetch for dirty files" guard
+ *   - openPreviewAction / closePreviewAction's confirm-on-close prompts
+ *   - the beforeunload event guard below
  *
- * Responsibilities:
- *   - Register a DirtyBuffer when content first diverges from baseline
- *   - Clear the buffer on successful save (i.e. when content returns
- *     to baseline OR the editor calls .clear() explicitly)
- *   - beforeunload event guard while dirty (browser/Tauri window close)
- *
- * File-switch + panel-close intercepts live in preview-panel-atoms.ts —
- * openPreviewAction and closePreviewAction read dirtyBuffersAtom and
- * surface a window.confirm before transitioning.
+ * Auto-save mode behaviour: while a save is in flight, `currentContent`
+ * still differs from `baselineContent` (parent only promotes baseline
+ * after the save succeeds). We stay marked dirty across the save, which
+ * is exactly what we want — the dirty-guard then blocks any inbound
+ * watcher/refresh bump from clobbering the in-flight edit.
  */
 
 import * as React from 'react'
@@ -25,7 +24,6 @@ import {
 
 export interface UseDirtyBufferArgs {
   filePath: string
-  saveMode: 'explicit' | 'auto'
   baselineContent: string
   baselineMtimeMs: number
   currentContent: string
@@ -38,24 +36,23 @@ export interface UseDirtyBufferResult {
 }
 
 export function useDirtyBuffer(args: UseDirtyBufferArgs): UseDirtyBufferResult {
-  const { filePath, saveMode, baselineContent, baselineMtimeMs, currentContent } = args
+  const { filePath, baselineContent, baselineMtimeMs, currentContent } = args
   const buffers = useAtomValue(dirtyBuffersAtom)
   const setDirty = useSetAtom(setDirtyBufferAction)
   const clearDirty = useSetAtom(clearDirtyBufferAction)
 
-  const isDirty = saveMode === 'explicit' && currentContent !== baselineContent
+  const isDirty = currentContent !== baselineContent
 
-  // Register or update the dirty entry whenever currentContent changes
-  // while dirty; clear when content returns to baseline.
+  // Register or update the dirty entry whenever currentContent diverges;
+  // clear when content returns to baseline (typically after a save).
   React.useEffect(() => {
-    if (saveMode !== 'explicit') return
     if (isDirty) {
       setDirty({ filePath, content: currentContent, baselineMtimeMs })
     } else if (buffers.has(filePath)) {
       clearDirty(filePath)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [saveMode, filePath, currentContent, isDirty])
+  }, [filePath, currentContent, isDirty])
 
   // beforeunload guard — only when buffer is dirty.
   React.useEffect(() => {

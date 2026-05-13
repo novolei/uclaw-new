@@ -42,9 +42,9 @@ pub struct ChipResolution {
 
 /// Outcome of a `preview_write_text` invocation.
 ///
-/// Discriminated union for the frontend's SaveOutcome handler.
-/// `Conflict` carries the on-disk content so the conflict banner can
-/// render a diff without a follow-up read roundtrip.
+/// The frontend tracks dirty state and guards external-refresh against it,
+/// so the backend no longer reports `Conflict`. Writes always succeed
+/// unless the mount is non-editable, in which case approval is requested.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum WriteResult {
@@ -52,13 +52,6 @@ pub enum WriteResult {
     Saved {
         mtime_ms: i64,
         size: u64,
-    },
-    /// The on-disk mtime did not match `expected_mtime_ms`.
-    /// `current_content` is the file's actual contents (UTF-8 decoded;
-    /// capped at MAX_PREVIEW_BYTES). `current_mtime_ms` is the actual mtime.
-    Conflict {
-        current_mtime_ms: i64,
-        current_content: String,
     },
     /// Write is gated by `SafetyManager`-style approval. Frontend opens
     /// `<WriteApprovalDialog>`, awaits Allow/Deny, then calls

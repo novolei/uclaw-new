@@ -1,25 +1,34 @@
 /**
- * preview-editor-atoms — Shared state for W4d preview editing surfaces.
+ * preview-editor-atoms — Shared state for preview editing surfaces.
  *
- * Five atoms power the editor stack:
+ * Three atoms power the editor stack:
  *
  *   - dirtyBuffersAtom: Map<filePath, DirtyBuffer>
- *       Only used by code-mode editors (explicit save). Markdown editors
- *       use auto-save and never register here.
+ *       Both code-mode (explicit save) AND markdown-mode (auto-save)
+ *       editors register here. Acts as the SINGLE SOURCE OF TRUTH for
+ *       "this file has unsaved local edits" — read by:
+ *         - usePreviewRefresh (skips refetch bumps for dirty files)
+ *         - openPreviewAction / closePreviewAction (confirm-on-close)
+ *         - beforeunload guard inside useDirtyBuffer
+ *
+ *   - isDirtyAtomFamily(filePath) → boolean
+ *       Selector form of `dirtyBuffersAtom.has(filePath)`. Use this in
+ *       hot paths so consumers don't have to re-render whenever any other
+ *       file's dirty state flips.
+ *
  *   - markdownEditorModeAtom: 'rich' | 'raw'  (persisted via atomWithStorage)
- *   - conflictsAtom: Map<filePath, ExternalConflict>
- *       Populated when preview_write_text returns Conflict; auto-save
- *       pauses per-filePath while a conflict exists.
- *   - lastSelfWriteMtimeAtom: Map<filePath, number>
- *       Self-write echo guard. Editor adds the mtime returned by Saved;
- *       file-watcher subscriptions filter Modified events whose mtime
- *       matches exactly (those are our own writes).
  *   - tipTapFidelityToastShownAtom: boolean (persisted)
- *       True after the user has seen the one-time fidelity warning when
- *       first editing in TipTap rich mode this session.
+ *
+ * Mtime-based optimistic concurrency control was REMOVED (2026-05-13).
+ * Reason: it kept producing false-positive "file changed on disk" warnings
+ * against macOS's coarse mtime resolution and React's commit timing window.
+ * The simpler dirty-guard pattern (cribbed from if2Ai's preview panel)
+ * eliminates the entire class of race by design — see preview/commands.rs
+ * and usePreviewRefresh.ts.
  */
 
 import { atom } from 'jotai'
+import { atomFamily } from 'jotai/utils'
 import { atomWithStorage } from 'jotai/utils'
 
 export interface DirtyBuffer {
@@ -28,13 +37,17 @@ export interface DirtyBuffer {
   baselineMtimeMs: number
 }
 
-export interface ExternalConflict {
-  externalContent: string
-  externalMtimeMs: number
-}
-
-/** Map of currently-dirty buffers (explicit-save / code mode only). */
+/** Map of currently-dirty buffers (any save mode). */
 export const dirtyBuffersAtom = atom<Map<string, DirtyBuffer>>(new Map())
+
+/**
+ * Per-path selector for "is this file currently dirty". Cheaper than
+ * subscribing to the whole Map — only re-fires when this path's
+ * membership changes, not on every other file's edits.
+ */
+export const isDirtyAtomFamily = atomFamily((filePath: string) =>
+  atom((get) => get(dirtyBuffersAtom).has(filePath)),
+)
 
 /**
  * Markdown editor mode toggle — persisted across sessions.
@@ -44,17 +57,6 @@ export const markdownEditorModeAtom = atomWithStorage<'rich' | 'raw'>(
   'uclaw-md-editor-mode',
   'rich',
 )
-
-/** Map of currently-pending external conflicts (one per filePath). */
-export const conflictsAtom = atom<Map<string, ExternalConflict>>(new Map())
-
-/**
- * Per-filePath last-self-write mtime — used to filter the editor's OWN
- * writes out of the file-watcher's Modified events stream. When the
- * watcher fires with mtime === lastSelfWriteMtime, ignore it; otherwise
- * treat as external change.
- */
-export const lastSelfWriteMtimeAtom = atom<Map<string, number>>(new Map())
 
 /** One-time toast shown when the user first edits a markdown file in
  *  rich mode this session. Suppressible. */
@@ -75,7 +77,7 @@ export const setDirtyBufferAction = atom(
   },
 )
 
-/** Clear a dirty buffer (called on successful save). */
+/** Clear a dirty buffer (called on successful save or content-returns-to-baseline). */
 export const clearDirtyBufferAction = atom(
   null,
   (get, set, filePath: string) => {
@@ -84,37 +86,5 @@ export const clearDirtyBufferAction = atom(
     const next = new Map(cur)
     next.delete(filePath)
     set(dirtyBuffersAtom, next)
-  },
-)
-
-/** Set an external conflict (called after a Conflict response). */
-export const setConflictAction = atom(
-  null,
-  (get, set, payload: { filePath: string; conflict: ExternalConflict }) => {
-    const next = new Map(get(conflictsAtom))
-    next.set(payload.filePath, payload.conflict)
-    set(conflictsAtom, next)
-  },
-)
-
-/** Clear a conflict (called when user resolves via Overwrite/Discard/✕). */
-export const clearConflictAction = atom(
-  null,
-  (get, set, filePath: string) => {
-    const cur = get(conflictsAtom)
-    if (!cur.has(filePath)) return
-    const next = new Map(cur)
-    next.delete(filePath)
-    set(conflictsAtom, next)
-  },
-)
-
-/** Record a self-write mtime (called after Saved). */
-export const recordSelfWriteAction = atom(
-  null,
-  (get, set, payload: { filePath: string; mtimeMs: number }) => {
-    const next = new Map(get(lastSelfWriteMtimeAtom))
-    next.set(payload.filePath, payload.mtimeMs)
-    set(lastSelfWriteMtimeAtom, next)
   },
 )

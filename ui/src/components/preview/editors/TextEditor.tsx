@@ -10,23 +10,19 @@
  *   - saveMode === 'explicit': Cmd-S / Ctrl-S triggers onSave
  *   - saveMode === 'auto': 300 ms debounced auto-save
  *
- * Self-write echo guard: when onSave returns 'saved', recordSelfWrite
- * is invoked so the file-watcher subscription can ignore our own writes.
+ * Dirty tracking lives in EditorSurface via useDirtyBuffer — this
+ * component only emits content changes through `onContentChange`.
  */
 
 import * as React from 'react'
-import { useSetAtom } from 'jotai'
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
 import { defaultKeymap, historyKeymap, history } from '@codemirror/commands'
-import { recordSelfWriteAction } from '@/atoms/preview-editor-atoms'
 import { uclawCmTheme, uclawSyntaxHighlight } from './codemirror-theme'
 import { loadLanguage } from './codemirror-langs'
-import { useDirtyBuffer } from './useDirtyBuffer'
 
 export type SaveOutcome =
   | { kind: 'saved'; mtimeMs: number }
-  | { kind: 'conflict'; externalContent: string; externalMtimeMs: number }
   | { kind: 'needs-approval'; approvalId: string }
   | { kind: 'error'; message: string }
 
@@ -58,32 +54,23 @@ export function TextEditor(props: EditorProps): React.ReactElement {
   const containerRef = React.useRef<HTMLDivElement>(null)
   const viewRef = React.useRef<EditorView | null>(null)
   const langCompartment = React.useRef(new Compartment())
-  const recordSelfWrite = useSetAtom(recordSelfWriteAction)
   const [currentContent, setCurrentContent] = React.useState<string>(initialContent)
+  void mtimeMs // baseline mtime tracked by parent's useDirtyBuffer; prop retained for future use
 
   // Auto-save debounce timer
   const autoSaveTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  useDirtyBuffer({
-    filePath,
-    saveMode,
-    baselineContent: initialContent,
-    baselineMtimeMs: mtimeMs,
-    currentContent,
-  })
-
   // Save handler (called by Cmd-S or auto-debounce). Keeps a stable
   // closure via refs so the listener doesn't capture stale `onSave`.
   const onSaveRef = React.useRef(onSave)
-  const filePathRef = React.useRef(filePath)
   React.useEffect(() => {
     onSaveRef.current = onSave
-    filePathRef.current = filePath
-  }, [onSave, filePath])
+  }, [onSave])
 
-  // In-flight save guard mirrors MarkdownRichEditor's: keeping more than
-  // one save in-flight against the same file races their stale
-  // expected_mtime_ms values and produces phantom conflict warnings.
+  // In-flight save guard: serializes saves against the same file so the
+  // latest typed content always wins. Even without OCC, two parallel
+  // IPC calls can return out-of-order; queuing one follow-up keeps the
+  // baseline promotion deterministic.
   const savingRef = React.useRef(false)
   const pendingContentRef = React.useRef<string | null>(null)
 
@@ -92,8 +79,6 @@ export function TextEditor(props: EditorProps): React.ReactElement {
     if (savingRef.current) {
       // Already saving — stash the latest snapshot for the loop owner.
       pendingContentRef.current = content
-      // Synthesize a "saved" outcome for the auto-debounce caller; the
-      // loop will produce the real outcome that bumps mtime / dirty state.
       return { kind: 'saved', mtimeMs: 0 }
     }
     savingRef.current = true
@@ -101,25 +86,19 @@ export function TextEditor(props: EditorProps): React.ReactElement {
     try {
       let toSave: string | null = content
       while (toSave !== null) {
-        const md: string = toSave
-        const outcome = await onSaveRef.current(md)
+        const cur: string = toSave
+        const outcome = await onSaveRef.current(cur)
         lastOutcome = outcome
-        if (outcome.kind === 'saved') {
-          recordSelfWrite({ filePath: filePathRef.current, mtimeMs: outcome.mtimeMs })
-        } else {
-          // Conflict / needs-approval / error — stop the loop, surface the
-          // outcome to the caller (Cmd-S sees it for explicit-save mode).
-          break
-        }
+        if (outcome.kind !== 'saved') break
         const next: string | null = pendingContentRef.current
         pendingContentRef.current = null
-        toSave = next !== null && next !== md ? next : null
+        toSave = next !== null && next !== cur ? next : null
       }
     } finally {
       savingRef.current = false
     }
     return lastOutcome
-  }, [recordSelfWrite])
+  }, [])
 
   // Build the initial state ONCE on filePath change (re-mount on file switch)
   React.useEffect(() => {

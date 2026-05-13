@@ -11,23 +11,21 @@
  *   - Simple GFM tables round-trip cleanly; complex alignments may lose syntax
  *   - Footnote syntax ([^1]): not preserved
  *
- * Auto-save with 300ms debounce; auto-save PAUSES while conflictsAtom
- * has an entry for this filePath.
+ * Auto-save with 300ms debounce. The mtime-based conflict pause was
+ * removed (2026-05-13) — dirty-guard pattern in usePreviewRefresh now
+ * prevents external refreshes from clobbering an unsaved draft, so the
+ * "pause auto-save while a conflict is open" path is no longer needed.
  */
 
 import * as React from 'react'
-import { useAtom, useSetAtom, useAtomValue } from 'jotai'
+import { useAtom } from 'jotai'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight'
 import { common, createLowlight } from 'lowlight'
 import { toast } from 'sonner'
-import {
-  conflictsAtom,
-  tipTapFidelityToastShownAtom,
-  recordSelfWriteAction,
-} from '@/atoms/preview-editor-atoms'
+import { tipTapFidelityToastShownAtom } from '@/atoms/preview-editor-atoms'
 import type { EditorProps } from './TextEditor'
 
 const AUTO_SAVE_DEBOUNCE_MS = 300
@@ -101,38 +99,25 @@ function walk(node: Node): string {
 }
 
 export function MarkdownRichEditor(props: EditorProps): React.ReactElement {
-  const { initialContent, filePath, onSave, onContentChange } = props
-  const conflicts = useAtomValue(conflictsAtom)
-  const recordSelfWrite = useSetAtom(recordSelfWriteAction)
+  const { initialContent, onSave, onContentChange } = props
   const [fidelityShown, setFidelityShown] = useAtom(tipTapFidelityToastShownAtom)
   const autoSaveTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const hasConflict = conflicts.has(filePath)
-  const filePathRef = React.useRef(filePath)
+  // onSave is captured once into the editor's onUpdate closure — bridge
+  // through a ref so the latest reference is always used.
   const onSaveRef = React.useRef(onSave)
-  // useEditor()'s onUpdate closure is created ONCE — `hasConflict` captured
-  // at editor creation would be stale forever, so the "pause auto-save while
-  // conflict is showing" guard never fires. Bridge through a ref instead.
-  const hasConflictRef = React.useRef(hasConflict)
-  // In-flight save guard: keeping more than one save in-flight against the
-  // same file races them — save B captures a stale `expected_mtime_ms` from
-  // before save A's response landed, so the backend reports a phantom
-  // "file was changed" conflict even though only the editor itself touched
-  // the file. We track the in-flight state and queue the LATEST content as
-  // a single follow-up save once the current one returns.
+  React.useEffect(() => {
+    onSaveRef.current = onSave
+  }, [onSave])
+
+  // In-flight save guard: serializes saves so the latest typed content
+  // wins. Without it, two parallel auto-save IPC calls can return
+  // out-of-order and the editor's baseline promotion goes non-deterministic.
   const savingRef = React.useRef(false)
   const pendingContentRef = React.useRef<string | null>(null)
-  React.useEffect(() => {
-    filePathRef.current = filePath
-    onSaveRef.current = onSave
-    hasConflictRef.current = hasConflict
-  }, [filePath, onSave, hasConflict])
 
-  /** Run a save, then drain any content that arrived during the save. */
   const runSaveLoop = React.useCallback(async (content: string) => {
     if (savingRef.current) {
-      // Already running — just remember the latest content; the loop
-      // owner will pick it up after the current save finishes.
       pendingContentRef.current = content
       return
     }
@@ -140,23 +125,17 @@ export function MarkdownRichEditor(props: EditorProps): React.ReactElement {
     try {
       let toSave: string | null = content
       while (toSave !== null) {
-        const md: string = toSave
-        const outcome = await onSaveRef.current(md)
-        if (outcome.kind === 'saved') {
-          recordSelfWrite({ filePath: filePathRef.current, mtimeMs: outcome.mtimeMs })
-        }
-        // If onUpdate stashed newer content while this save was in flight,
-        // run ONCE more with the latest snapshot. Always saves the user's
-        // freshest content before going idle.
+        const cur: string = toSave
+        const outcome = await onSaveRef.current(cur)
+        if (outcome.kind !== 'saved') break
         const next: string | null = pendingContentRef.current
         pendingContentRef.current = null
-        toSave = next !== null && next !== md ? next : null
+        toSave = next !== null && next !== cur ? next : null
       }
     } finally {
       savingRef.current = false
     }
-  }, [recordSelfWrite])
-  // Stash so the editor's onUpdate closure can call the latest version.
+  }, [])
   const runSaveLoopRef = React.useRef(runSaveLoop)
   React.useEffect(() => { runSaveLoopRef.current = runSaveLoop }, [runSaveLoop])
 
@@ -179,16 +158,8 @@ export function MarkdownRichEditor(props: EditorProps): React.ReactElement {
       const md = htmlToMd(html)
       onContentChange?.(md, md !== initialContent)
 
-      // Auto-save (paused while a conflict is showing — read via ref so
-      // the value is fresh; the closure captured at editor creation would
-      // see the initial false forever).
-      if (hasConflictRef.current) return
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
       autoSaveTimer.current = setTimeout(() => {
-        // Delegate to the in-flight-aware save loop instead of firing
-        // saves directly; concurrent saves used to race their stale
-        // `expected_mtime_ms` values against each other and produce
-        // phantom conflict warnings during normal typing.
         void runSaveLoopRef.current(md)
       }, AUTO_SAVE_DEBOUNCE_MS)
     },

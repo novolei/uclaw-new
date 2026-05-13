@@ -6,9 +6,15 @@
  * Consumer modules (W4 useFileBytes, codeHighlightCache key) include the
  * returned number so a bump naturally invalidates their state.
  *
- * Triggers added in later waves:
- *   - W3: files_rail:change
- *   - W4: manual refresh button via bumpPreviewRefreshAtom
+ * Dirty-guard (2026-05-13, ported from if2Ai): when this file has an
+ * unsaved local edit (i.e. it's in `dirtyBuffersAtom`), inbound bumps are
+ * SUPPRESSED. The user's in-progress draft must never be silently replaced
+ * by a fresh read of disk content — that's the whole reason if2Ai's preview
+ * panel never gets "file changed on disk" race surprises.
+ *
+ * Triggers:
+ *   - tauri://focus (window regained focus — refresh clean buffers)
+ *   - agent:file-written (agent's file-write tool completed)
  */
 
 import * as React from 'react'
@@ -18,6 +24,7 @@ import {
   previewRefreshVersionAtomFamily,
   bumpPreviewRefreshAtom,
 } from '@/atoms/preview-atoms'
+import { isDirtyAtomFamily } from '@/atoms/preview-editor-atoms'
 
 interface FileWrittenPayload {
   path: string
@@ -31,6 +38,14 @@ export function usePreviewRefresh(filePath: string | null): number {
     previewRefreshVersionAtomFamily(filePath ?? ''),
   )
   const bump = useSetAtom(bumpPreviewRefreshAtom)
+  const isDirty = useAtomValue(isDirtyAtomFamily(filePath ?? ''))
+
+  // Capture dirty state in a ref so the listener callbacks (registered
+  // once per filePath) always see the latest value without re-subscribing.
+  const isDirtyRef = React.useRef(isDirty)
+  React.useEffect(() => {
+    isDirtyRef.current = isDirty
+  }, [isDirty])
 
   React.useEffect(() => {
     if (!filePath) return
@@ -40,11 +55,19 @@ export function usePreviewRefresh(filePath: string | null): number {
 
     void (async () => {
       const u1 = await listen('tauri://focus', () => {
-        if (!cancelled) bump(filePath)
+        if (cancelled) return
+        // Skip refresh when there's an unsaved draft — the draft wins.
+        if (isDirtyRef.current) return
+        bump(filePath)
       })
       const u2 = await listen<FileWrittenPayload>('agent:file-written', (evt) => {
         if (cancelled) return
-        if (evt.payload?.path === filePath) bump(filePath)
+        if (evt.payload?.path !== filePath) return
+        // Agent just wrote this file. If the user has an unsaved local edit,
+        // preserve their draft (matches if2Ai's behaviour — explicit conflict
+        // resolution is surfaced on-demand, not silently clobbered).
+        if (isDirtyRef.current) return
+        bump(filePath)
       })
       unlistenFocus = u1
       unlistenWrite = u2
