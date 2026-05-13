@@ -2,6 +2,8 @@ import { useAtom, useAtomValue } from 'jotai'
 import { Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { themeModeAtom, themeStyleAtom, applyThemeToDOM, updateThemeMode, updateThemeStyle, systemIsDarkAtom } from '@/atoms/theme'
+import { stickyUserMessageEnabledAtom, updateStickyUserMessageEnabled } from '@/atoms/ui-preferences'
+import { SettingsSection, SettingsToggle } from './primitives'
 import type { ThemeStyle } from '@/lib/chat-types'
 
 // ─────────────────────────────────────────────────────────
@@ -189,6 +191,12 @@ export function AppearanceSettings() {
   const [themeMode, setThemeModeAtom] = useAtom(themeModeAtom)
   const [themeStyle, setThemeStyleAtom] = useAtom(themeStyleAtom)
   const systemIsDark = useAtomValue(systemIsDarkAtom)
+  const [stickyUserMessageEnabled, setStickyUserMessageEnabled] = useAtom(stickyUserMessageEnabledAtom)
+
+  async function handleStickyToggle(enabled: boolean): Promise<void> {
+    setStickyUserMessageEnabled(enabled)
+    await updateStickyUserMessageEnabled(enabled)
+  }
 
   function isSelected(entry: ThemeEntry): boolean {
     if (entry.kind === 'basic') {
@@ -268,6 +276,15 @@ export function AppearanceSettings() {
           ))}
         </div>
       </div>
+
+      <SettingsSection title="界面行为">
+        <SettingsToggle
+          label="用户消息置顶条"
+          description="Agent 运行时把最近一条用户消息精简后钉在输入框上方，作为上下文提示。"
+          checked={stickyUserMessageEnabled}
+          onCheckedChange={handleStickyToggle}
+        />
+      </SettingsSection>
     </div>
   )
 }
