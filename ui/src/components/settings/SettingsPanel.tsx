@@ -2,7 +2,6 @@ import * as React from 'react'
 import { useAtom } from 'jotai'
 import { settingsTabAtom, settingsOpenAtom, type SettingsTab } from '@/atoms/settings-tab'
 import { hasUpdateAtom } from '@/atoms/updater'
-import { X } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { GeneralSettings } from './GeneralSettings'
 import { ToolSettings } from './ToolSettings'
@@ -14,6 +13,7 @@ import { AboutSettings } from './AboutSettings'
 import { PetSettings } from './PetSettings'
 import { SettingsNav } from './SettingsNav'
 import { SttSettings } from './SttSettings'
+import { SettingsBreadcrumb } from './SettingsBreadcrumb'
 
 
 function SettingsContent({ tab }: { tab: SettingsTab }) {
@@ -62,20 +62,15 @@ export default function SettingsPanel() {
     about: '关于',
   }
   const activeLabel = TAB_LABEL[activeTab] ?? '设置'
+  const scrollRef = React.useRef<HTMLDivElement | null>(null)
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="h-12 flex items-center justify-between px-5 border-b border-border/50 flex-shrink-0">
-        <h2 className="text-sm font-medium text-foreground">{activeLabel}</h2>
-        <button
-          type="button"
-          onClick={() => setOpen(false)}
-          className="rounded-md p-1.5 text-muted-foreground/60 hover:text-foreground hover:bg-muted transition-colors"
-        >
-          <X size={16} />
-        </button>
-      </div>
+      <SettingsBreadcrumb
+        tabLabel={activeLabel}
+        scrollContainerRef={scrollRef as React.MutableRefObject<HTMLElement | null>}
+        onClose={() => setOpen(false)}
+      />
 
       {/* Body: left nav + right content */}
       <div className="flex flex-1 min-h-0">
@@ -88,7 +83,7 @@ export default function SettingsPanel() {
 
         {/* Right content */}
         <ScrollArea className="flex-1">
-          <div className="max-w-[800px] mx-auto px-6 py-5">
+          <div ref={scrollRef} className="max-w-[800px] mx-auto px-6 py-5">
             <SettingsContent tab={activeTab} />
           </div>
         </ScrollArea>
