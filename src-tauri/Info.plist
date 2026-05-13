@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Tauri merges this into the app bundle's Info.plist — do not duplicate keys already set in tauri.conf.json -->
 <plist version="1.0">
 <dict>
     <key>NSMicrophoneUsageDescription</key>

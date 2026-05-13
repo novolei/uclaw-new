@@ -101,14 +101,14 @@ export function useSttRecording(
       const name = (e as { name?: string })?.name
       if (name === 'NotAllowedError' || name === 'SecurityError') {
         setState({ kind: 'permission-denied' })
-      } else {
-        setState({
-          kind: 'error',
-          message: String((e as Error)?.message ?? e),
-        })
-        setTimeout(() => setState({ kind: 'idle' }), 1500)
+        return 'permission-denied'
       }
-      return 'permission-denied'
+      setState({
+        kind: 'error',
+        message: String((e as Error)?.message ?? e),
+      })
+      setTimeout(() => setState({ kind: 'idle' }), 1500)
+      return 'error'
     }
     activeRef.current = rec
     setState({ kind: 'recording', startedAtMs: rec.startedAtMs, volume: 0 })

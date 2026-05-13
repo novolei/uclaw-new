@@ -13,7 +13,7 @@ import * as React from 'react'
 import { useAtom } from 'jotai'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { Mic, CheckCircle2, X, Loader2 } from 'lucide-react'
+import { Mic, CheckCircle2, Loader2 } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -220,14 +220,9 @@ export function FirstRunDialog({
             </>
           )}
           {modelStatus.kind === 'downloading' && (
-            <>
-              <Button variant="ghost" onClick={handleClose}>
-                后台继续
-              </Button>
-              <Button variant="ghost" onClick={handleClose}>
-                <X className="size-3 mr-1" /> 取消
-              </Button>
-            </>
+            <Button variant="ghost" onClick={handleClose}>
+              后台继续
+            </Button>
           )}
           {modelStatus.kind === 'ready' && (
             <>
