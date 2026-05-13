@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use crate::agent::agentic_loop::run_agentic_loop;
 use crate::agent::types::{AgenticLoopConfig, LoopDelegate, LoopOutcome, ReasoningContext, ChatMessage};
-use super::activity::{ActivityStatus, ActivityStore, AutomationActivity};
+use super::activity::{ActivityStatus, ActivityStore, AutomationActivity, TriggerSource};
 use super::spec::AutomationSpec;
 
 pub struct AutomationRuntime {
@@ -12,20 +12,40 @@ pub struct AutomationRuntime {
 impl AutomationRuntime {
     pub async fn run(&self, spec_id: &str, spec: &AutomationSpec, trigger: &str) {
         let activity_id = uuid::Uuid::new_v4().to_string();
-        let run_id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().timestamp_millis();
+
+        // Map the trigger string to the V20b TriggerSource enum.
+        let trigger_source_type = match trigger {
+            "schedule" | "cron" => TriggerSource::Schedule,
+            "file"     => TriggerSource::File,
+            "webhook"  => TriggerSource::Webhook,
+            "webpage"  => TriggerSource::Webpage,
+            "rss"      => TriggerSource::Rss,
+            "wecom"    => TriggerSource::Wecom,
+            _          => TriggerSource::Manual,
+        };
 
         let activity = AutomationActivity {
             id: activity_id.clone(),
             spec_id: spec_id.to_string(),
-            run_id,
-            trigger: trigger.to_string(),
+            subscription_id: None,
+            trigger_source_type,
+            trigger_payload_json: "{}".to_string(),
             status: ActivityStatus::Running,
-            result: None,
-            error: None,
-            duration_ms: 0,
-            created_at: now,
+            error_text: None,
+            queued_at: now,
+            started_at: Some(now),
             completed_at: None,
+            duration_ms: 0,
+            llm_iterations: 0,
+            llm_tokens_in: 0,
+            llm_tokens_out: 0,
+            tool_calls_json: "[]".to_string(),
+            report_text: None,
+            report_outcome: None,
+            escalation_id: None,
+            resumed_from_activity_id: None,
+            resumed_from_escalation_id: None,
         };
 
         if let Err(e) = self.activity_store.insert(&activity) {
