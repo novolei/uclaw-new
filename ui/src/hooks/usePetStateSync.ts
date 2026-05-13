@@ -40,10 +40,30 @@ export function usePetStateSync(): void {
     const unlistens: Array<() => void> = []
 
     const register = (eventName: string, handler: () => void) => {
-      listen(eventName, handler).then((u) => {
-        if (cancelled) u() // unmounted before promise resolved — immediately unlisten
-        else unlistens.push(u)
-      })
+      listen(eventName, handler)
+        .then((rawU) => {
+          // Wrap unlisten so it's idempotent + non-throwing. Tauri's internal
+          // `unregisterListener` indexes a JS-side `listeners` map; if the
+          // entry has already been cleaned up (window destruction, HMR
+          // teardown, StrictMode double-mount race), calling rawU again
+          // throws `listeners[eventId].handlerId` undefined. We never want
+          // that to bubble up as an Unhandled Promise Rejection.
+          let called = false
+          const safeU = () => {
+            if (called) return
+            called = true
+            try {
+              rawU()
+            } catch (e) {
+              console.warn(`[usePetStateSync] unlisten(${eventName}) ignored:`, e)
+            }
+          }
+          if (cancelled) safeU()
+          else unlistens.push(safeU)
+        })
+        .catch((e) => {
+          console.warn(`[usePetStateSync] listen(${eventName}) failed:`, e)
+        })
     }
 
     register('chat:stream-chunk', () => {
@@ -86,7 +106,9 @@ export function usePetStateSync(): void {
     return () => {
       cancelled = true
       if (successTimer.current) clearTimeout(successTimer.current)
-      unlistens.forEach((u) => u())
+      // Each entry is the idempotent safeU from register() — safe to call,
+      // and safe even if a sibling already removed the underlying listener.
+      for (const u of unlistens) u()
     }
   }, [setPrimary])
 

@@ -24,16 +24,31 @@ export function useAutomationEvents(): void {
     // Future Phase 2 event subscription. The backend does not emit this event
     // today (Task 15 deferred InfraEvent extension); the subscription is here
     // so the wiring is in place when emitters are added.
-    let unlisten: UnlistenFn | undefined
+    //
+    // The unlisten fn is wrapped in safeUnlisten so double-invocation (StrictMode
+    // double-mount race, HMR teardown) doesn't bubble Tauri's internal
+    // "listeners[eventId].handlerId undefined" up as an Unhandled Promise
+    // Rejection — same defensive pattern as usePetStateSync.ts.
+    let safeUnlisten: (() => void) | undefined
     listen<EscalationRow>('automation:escalation_raised', (event) => {
       setEscalations((prev) => {
         if (prev.some((e) => e.id === event.payload.id)) return prev
         return [...prev, event.payload]
       })
     })
-      .then((fn) => {
-        if (cancelled) fn()
-        else unlisten = fn
+      .then((rawU: UnlistenFn) => {
+        let called = false
+        const wrapped = () => {
+          if (called) return
+          called = true
+          try {
+            rawU()
+          } catch (e) {
+            console.warn('[useAutomationEvents] unlisten ignored:', e)
+          }
+        }
+        if (cancelled) wrapped()
+        else safeUnlisten = wrapped
       })
       .catch((err) => {
         console.error('[useAutomationEvents] listen failed:', err)
@@ -41,7 +56,7 @@ export function useAutomationEvents(): void {
 
     return () => {
       cancelled = true
-      unlisten?.()
+      safeUnlisten?.()
     }
   }, [setEscalations])
 }
