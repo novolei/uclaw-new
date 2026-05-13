@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   FileCode2,
   Sparkles,
+  Smile,
 } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { GeneralSettings } from './GeneralSettings'
@@ -35,6 +36,7 @@ import { ModelSettings } from './ModelSettings'
 import { BotDefaultSettings } from './BotDefaultSettings'
 import { ProxySetting } from './ProxySetting'
 import { AboutSettings } from './AboutSettings'
+import { PetSettings } from './PetSettings'
 
 interface TabItem {
   id: SettingsTab
@@ -56,6 +58,7 @@ const TABS: TabItem[] = [
   { id: 'bots', label: 'Bot', icon: <Bot size={15} /> },
   { id: 'shortcuts', label: '快捷键', icon: <Keyboard size={15} /> },
   { id: 'proxy', label: '代理', icon: <Globe size={15} /> },
+  { id: 'pet', label: '桌面宠物', icon: <Smile size={15} /> },
   { id: 'about', label: '关于', icon: <Info size={15} /> },
 ]
 
@@ -87,6 +90,8 @@ function SettingsContent({ tab }: { tab: SettingsTab }) {
       return <ShortcutSettings />
     case 'proxy':
       return <ProxySetting />
+    case 'pet':
+      return <PetSettings />
     case 'about':
       return <AboutSettings />
     default:
