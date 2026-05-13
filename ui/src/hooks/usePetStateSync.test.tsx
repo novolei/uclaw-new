@@ -36,16 +36,42 @@ describe('usePetStateSync', () => {
     vi.useRealTimers()
   })
 
-  it('sets thinking on chat:stream-chunk', async () => {
+  it('sets typing on chat:stream-chunk (agent producing tokens)', async () => {
     const store = createStore()
     renderHook(() => usePetStateSync(), { wrapper: wrapper(store) })
     await act(async () => {
       listeners.get('chat:stream-chunk')?.({ payload: {} })
     })
+    expect(store.get(petPrimaryStateAtom)).toBe('typing')
+  })
+
+  it('sets thinking on chat:stream-tool-activity (agent using tools)', async () => {
+    const store = createStore()
+    renderHook(() => usePetStateSync(), { wrapper: wrapper(store) })
+    await act(async () => {
+      listeners.get('chat:stream-tool-activity')?.({ payload: {} })
+    })
     expect(store.get(petPrimaryStateAtom)).toBe('thinking')
   })
 
-  it('sets success then auto-returns to idle after 1500ms', async () => {
+  it('alternates typing ↔ thinking as chunks and tool activity interleave', async () => {
+    const store = createStore()
+    renderHook(() => usePetStateSync(), { wrapper: wrapper(store) })
+    await act(async () => {
+      listeners.get('chat:stream-chunk')?.({ payload: {} })
+    })
+    expect(store.get(petPrimaryStateAtom)).toBe('typing')
+    await act(async () => {
+      listeners.get('chat:stream-tool-activity')?.({ payload: {} })
+    })
+    expect(store.get(petPrimaryStateAtom)).toBe('thinking')
+    await act(async () => {
+      listeners.get('chat:stream-chunk')?.({ payload: {} })
+    })
+    expect(store.get(petPrimaryStateAtom)).toBe('typing')
+  })
+
+  it('sets success then auto-returns to idle after 4000ms (full animation)', async () => {
     const store = createStore()
     renderHook(() => usePetStateSync(), { wrapper: wrapper(store) })
     await act(async () => {
@@ -53,7 +79,7 @@ describe('usePetStateSync', () => {
     })
     expect(store.get(petPrimaryStateAtom)).toBe('success')
     await act(async () => {
-      vi.advanceTimersByTime(1500)
+      vi.advanceTimersByTime(4000)
     })
     expect(store.get(petPrimaryStateAtom)).toBe('idle')
   })
@@ -78,7 +104,7 @@ describe('usePetStateSync', () => {
     expect(store.get(petPrimaryStateAtom)).toBe('typing')
   })
 
-  it('does not override thinking/success/error with typing', async () => {
+  it('does not override thinking/success/error with composer typing', async () => {
     const store = createStore()
     store.set(petPrimaryStateAtom, 'thinking')
     const { rerender } = renderHook(() => usePetStateSync(), { wrapper: wrapper(store) })
@@ -100,17 +126,17 @@ describe('usePetStateSync', () => {
     })
     expect(store.get(petPrimaryStateAtom)).toBe('success')
 
-    // Mid-linger (after 500ms), stream-chunk arrives
+    // Mid-linger (after 500ms), stream-chunk arrives → state switches to typing
     await act(async () => {
       vi.advanceTimersByTime(500)
       listeners.get('chat:stream-chunk')?.({ payload: {} })
     })
-    expect(store.get(petPrimaryStateAtom)).toBe('thinking')
+    expect(store.get(petPrimaryStateAtom)).toBe('typing')
 
-    // Advance well past the original 1500ms — state must stay thinking, not snap to idle
+    // Advance well past the original 1500ms — state must stay typing, not snap to idle
     await act(async () => {
       vi.advanceTimersByTime(2000)
     })
-    expect(store.get(petPrimaryStateAtom)).toBe('thinking')
+    expect(store.get(petPrimaryStateAtom)).toBe('typing')
   })
 })
