@@ -81,7 +81,7 @@ pub fn build_router(state: HttpServerState) -> Router {
     // Automation webhook ingress (no auth — verified via HMAC-SHA256 signature)
     let automation_routes = Router::new()
         .route(
-            "/automation/webhook/{spec_id}/{sub_id}/*tail",
+            "/automation/webhook/{spec_id}/{sub_id}/{*tail}",
             post(automation_webhook_handler),
         );
 
