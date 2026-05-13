@@ -7,4 +7,5 @@ pub mod parse;
 
 // Public re-exports
 pub use humane_v1::HumaneAutomationSpec;
+pub use normalize::normalize_to_json;
 pub use parse::{ParseError, ParsedSpec, parse_humane_v1};
