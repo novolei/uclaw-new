@@ -20,6 +20,37 @@ fn must_be_automation(value: &str, _: &()) -> garde::Result {
     }
 }
 
+/// Deserialize `subscriptions:` leniently — items that don't match our strict
+/// Subscription enum shape are skipped with a warn log instead of failing the
+/// whole spec parse. This is the bridge that lets real DHP marketplace specs
+/// (newer subscription shape: `{id, source: {type, config}, frequency}`)
+/// install alongside specs that use our Phase 1 mirror shape (flat
+/// `{type, cron, every, path}`). Phase 3b adds a normaliser that converts the
+/// newer shape into our enum so we don't lose subscriptions silently.
+fn deserialize_subscriptions_lenient<'de, D>(
+    deserializer: D,
+) -> Result<Vec<Subscription>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Vec<serde_json::Value> = serde::Deserialize::deserialize(deserializer)?;
+    let mut out = Vec::with_capacity(raw.len());
+    for (idx, item) in raw.into_iter().enumerate() {
+        match serde_json::from_value::<Subscription>(item.clone()) {
+            Ok(s) => out.push(s),
+            Err(e) => {
+                tracing::warn!(
+                    index = idx,
+                    error = %e,
+                    raw = %item,
+                    "subscription skipped — Phase 1 schema mismatch (likely DHP newer shape; Phase 3b will normalise)"
+                );
+            }
+        }
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // Top-level spec (spec § 4.1)
 // ---------------------------------------------------------------------------
@@ -49,8 +80,15 @@ pub struct HumaneAutomationSpec {
     #[garde(length(min = 1))]
     pub system_prompt: String,
 
+    // DHP marketplace specs use a *newer* subscription shape than uClaw Phase 1
+    // mirrored: `[{id, source: {type, config}, frequency: {default, min, max}}]`
+    // rather than our flat `[{type, cron, every, path, ...}]`. Strict parsing
+    // would reject every real spec. Lenient deserializer below tries each item
+    // as a Subscription; failures are logged + skipped so the rest of the spec
+    // can still be installed. Phase 3b will add a second deserializer branch
+    // that recognises the DHP shape and maps to ours.
     #[garde(dive)]
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_subscriptions_lenient")]
     pub subscriptions: Vec<Subscription>,
     #[garde(dive)]
     #[serde(default)]
@@ -221,10 +259,20 @@ pub struct FilterRule {
 // ---------------------------------------------------------------------------
 
 fn valid_input_type(t: &str, _: &()) -> garde::Result {
-    if matches!(t, "string" | "number" | "boolean" | "secret") {
+    // Accept all input types we've seen across the DHP marketplace + hello-halo.
+    // StoreInstallDialog (Phase 3a) renders unknown types as text inputs with
+    // a warning, so parse must not reject — UI fallback covers the long tail.
+    if matches!(
+        t,
+        "string" | "number" | "boolean" | "secret" | "text" | "select" | "url" | "email" | "json" | "array"
+    ) {
         Ok(())
     } else {
-        Err(garde::Error::new(format!("unsupported input type: {}", t)))
+        // Don't reject — Phase 3a UI degrades to <input type=text> for unknowns
+        // (with a small warning chip). Log the unknown type so we can track
+        // emerging conventions for proper modelling.
+        tracing::warn!(input_type = %t, "InputDef has unrecognised type — falling back to text input");
+        Ok(())
     }
 }
 
