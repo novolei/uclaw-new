@@ -225,18 +225,36 @@ function SidebarBodyWithGesture({
       ? offsetPx - containerWidth
       : offsetPx + containerWidth
 
+  // Preview opacity tracks gesture progress, so the destination card fades
+  // in as the user swipes further — no horizontal translation on the card
+  // itself, otherwise its content drifts past the panel centerline mid-
+  // swipe and reads as "the card is in the wrong place". The bg layer DOES
+  // translate (slides in from the trailing edge as a curtain reveal); the
+  // card text stays anchored at panel center.
+  const previewProgress = containerWidth > 0
+    ? Math.min(1, Math.abs(offsetPx) / (containerWidth * 0.45))
+    : 0
+
   return (
     <div className="relative flex-1 min-h-0 overflow-hidden">
       {previewWorkspaceId && (
-        <div
-          className="absolute inset-0 bg-background pointer-events-none"
-          style={{
-            transform: `translate3d(${previewOffsetPx}px, 0, 0)`,
-            willChange: 'transform',
-          }}
-        >
-          <GesturePreviewCard workspaceId={previewWorkspaceId} />
-        </div>
+        <>
+          {/* Sliding background — gives the visual "another space sliding in" */}
+          <div
+            className="absolute inset-0 bg-background pointer-events-none"
+            style={{
+              transform: `translate3d(${previewOffsetPx}px, 0, 0)`,
+              willChange: 'transform',
+            }}
+          />
+          {/* Card content — anchored at panel center, fades in with gesture */}
+          <div
+            className="absolute inset-0 pointer-events-none"
+            style={{ opacity: previewProgress, willChange: 'opacity' }}
+          >
+            <GesturePreviewCard workspaceId={previewWorkspaceId} />
+          </div>
+        </>
       )}
       <AnimatePresence custom={switchDirection} initial={false}>
         <motion.div
