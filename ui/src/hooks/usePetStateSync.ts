@@ -3,12 +3,17 @@
  * Mount this ONCE at the app root (in App.tsx). Mounting multiple times
  * registers duplicate event listeners.
  *
- * Signal mapping (see spec):
- *   chat:stream-chunk     → thinking
- *   chat:stream-complete  → success (then auto-idle after 1500ms)
- *   chat:stream-error     → error
- *   agent:stream-reset    → idle
- *   composer focused + has text → typing (only if current is not thinking/success/error)
+ * Signal mapping:
+ *   chat:stream-chunk            → typing   (agent is producing tokens — "AI is typing")
+ *   chat:stream-tool-activity    → thinking (agent is calling tools / reasoning)
+ *   chat:stream-complete         → success  (then auto-idle after 1500ms)
+ *   chat:stream-error            → error
+ *   agent:stream-reset           → idle
+ *   composer focused + has text  → typing   (only if current is not thinking/success/error)
+ *
+ * Note: typing is shared by two triggers — user typing into composer AND agent
+ * streaming output. The visual is the same (chibi keyboard / pencil writing),
+ * which matches user mental model "something is being typed right now".
  */
 import { listen } from '@tauri-apps/api/event'
 import { useAtomValue, useSetAtom } from 'jotai'
@@ -16,7 +21,13 @@ import { useEffect, useRef } from 'react'
 import { composerFocusedAtom, composerHasTextAtom } from '@/atoms/agent-atoms'
 import { petPrimaryStateAtom, type PetPrimaryState } from '@/atoms/pet-atoms'
 
-const SUCCESS_LINGER_MS = 1500
+/**
+ * Success animation is a 4-second one-shot (jump → stars → grin → settle).
+ * Linger for the full duration so the user sees the entire celebration; any
+ * earlier `stream-chunk` / `stream-tool-activity` / `stream-error` event still
+ * cancels the timer immediately (see register() bodies).
+ */
+const SUCCESS_LINGER_MS = 4000
 
 export function usePetStateSync(): void {
   const setPrimary = useSetAtom(petPrimaryStateAtom)
@@ -36,6 +47,13 @@ export function usePetStateSync(): void {
     }
 
     register('chat:stream-chunk', () => {
+      if (successTimer.current) {
+        clearTimeout(successTimer.current)
+        successTimer.current = null
+      }
+      setPrimary('typing')
+    })
+    register('chat:stream-tool-activity', () => {
       if (successTimer.current) {
         clearTimeout(successTimer.current)
         successTimer.current = null

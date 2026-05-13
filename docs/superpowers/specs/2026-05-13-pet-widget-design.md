@@ -44,7 +44,7 @@ WebP 默认是匀速 loop。一直 4s 硬循环像紧张的玩偶——真实角
 | hover | 4s 动（不变） | 100:0 | 用户主动逗它的瞬间，要兴奋 |
 | thinking | 4s 动 + 1s 静 = 5s loop | 80:20 | 在认真干活，有微停顿，避免机械循环 |
 | typing | 4s 动（不变） | 100:0 | 敲键盘 / 写字本来就是**持续动作**，不能停 |
-| success | 4s 动（不变，~1.5s 后由 timer 切回 idle） | 100:0 | 短促瞬时，无需 loop pacing |
+| success | 4s 动（4s 后由 timer 切回 idle，保证完整播放跳起+星星+笑脸） | 100:0 | 一次性庆祝，timer 长度 = 动画长度 |
 | error | 4s 动 + 2s 静 = 6s loop | 67:33 | 悲伤姿态本就少动，多停顿更对路 |
 
 ### 实现：静止帧烤入 WebP
@@ -329,12 +329,15 @@ function App() {
 |---|---|---|---|
 | 用户聚焦 composer + 有文本 | atom 派生 | typing | 仅当当前不是 thinking/success/error |
 | 用户清空文本或失焦 | atom 派生 | idle | 同上 |
-| 收到第一个流式 token | Tauri `chat:stream-chunk` | thinking | 覆盖 typing |
+| Agent 流式产 token | Tauri `chat:stream-chunk` | typing | "AI is typing" — 视觉和用户敲键盘一致 |
+| Agent 调工具 / 推理 | Tauri `chat:stream-tool-activity` | thinking | 工具完成后下个 stream-chunk 再切回 typing |
 | 流完成 | Tauri `chat:stream-complete` | success → 1.5s → idle | 含 timer |
 | 流出错 | Tauri `chat:stream-error` | error | 持续到下次用户输入 |
 | 流被重置 / cancel | Tauri `agent:stream-reset` | idle | |
 | 鼠标进入 pet 区域 | DOM `mouseenter` | hover（仅当 primary=idle） | 派生层处理 |
 | 鼠标离开 pet 区域 | DOM `mouseleave` | 回 primary | |
+
+**为什么 chat:stream-chunk 是 typing 而不是 thinking**：动画视觉（chibi 键盘 / 铅笔写字）的语义是"有人正在打字"——agent 在产 token 和用户在敲 composer 是同一类事件（都在产出文本）。"thinking" 保留给 agent 调工具 / 推理的间歇（chibi 摸下巴 / "?"）。这种分工和 ChatGPT 的"AI is typing..."指示符语义对齐。
 
 ### 显示派生规则（`petDisplayStateAtom`）
 
