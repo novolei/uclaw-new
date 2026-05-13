@@ -13,8 +13,9 @@ import { toast } from 'sonner'
 import {
   Zap, Play, Plus, ChevronDown, ChevronRight, Clock,
   CheckCircle, XCircle, Loader, Filter, FileQuestion, AlertCircle,
-  ToggleLeft, ToggleRight, Trash2, RefreshCw,
+  ToggleLeft, ToggleRight, Trash2, RefreshCw, Store,
 } from 'lucide-react'
+import { MarketplaceModal } from './MarketplaceModal'
 import {
   humaneSpecsAtom,
   automationActivitiesAtom,
@@ -261,6 +262,7 @@ export function AutomationHub(): React.ReactElement {
   const [installing, setInstalling] = React.useState(false)
   const [loading, setLoading] = React.useState(false)
   const [showInstall, setShowInstall] = React.useState(false)
+  const [marketplaceOpen, setMarketplaceOpen] = React.useState(false)
 
   const refresh = React.useCallback(async () => {
     setLoading(true)
@@ -348,6 +350,13 @@ export function AutomationHub(): React.ReactElement {
           />
           <div className="flex items-center gap-2 justify-end">
             <button
+              onClick={() => setMarketplaceOpen(true)}
+              className="flex items-center gap-1 px-3 py-1.5 rounded text-[11px] border border-border text-foreground hover:bg-accent transition-colors"
+            >
+              <Store size={11} />
+              浏览数字人市场
+            </button>
+            <button
               onClick={handleFileImport}
               className="px-3 py-1.5 rounded text-[11px] border border-border text-foreground hover:bg-accent transition-colors"
             >
@@ -383,6 +392,12 @@ export function AutomationHub(): React.ReactElement {
           ))
         )}
       </div>
+
+      <MarketplaceModal
+        open={marketplaceOpen}
+        onClose={() => setMarketplaceOpen(false)}
+        onInstalled={(row) => setSpecs((prev) => [row, ...prev])}
+      />
     </div>
   )
 }
