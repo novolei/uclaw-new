@@ -125,6 +125,7 @@ cron = "0.12"
 
 # Base64 encoding
 base64 = "0.22"
+once_cell = "1.21.4"
 
 # macOS keychain
 [target.'cfg(target_os = "macos")'.dependencies]

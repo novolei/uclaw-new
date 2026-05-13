@@ -6048,6 +6048,7 @@ dependencies = [
  "jsonwebtoken",
  "notify",
  "objc2-app-kit",
+ "once_cell",
  "pty-process",
  "rand 0.8.6",
  "regex",
