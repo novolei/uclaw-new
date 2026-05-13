@@ -3,8 +3,8 @@ import { useAtom } from 'jotai'
 import { settingsTabAtom, settingsOpenAtom, type SettingsTab } from '@/atoms/settings-tab'
 import { hasUpdateAtom } from '@/atoms/updater'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { GeneralSettings } from './GeneralSettings'
-import { ToolSettings } from './ToolSettings'
+import { ToolsTab } from './ToolsTab'
+import { GeneralTab } from './GeneralTab'
 import { ShortcutSettings } from './ShortcutSettings'
 import { ConnectivityTab } from './ConnectivityTab'
 import { IntelligenceTab } from './IntelligenceTab'
@@ -23,11 +23,9 @@ function SettingsContent({ tab }: { tab: SettingsTab }) {
     case 'intelligence':
       return <IntelligenceTab />
     case 'tools':
-      // Placeholder — ToolsTab wrapper lands in Task 6
-      return <ToolSettings />
+      return <ToolsTab />
     case 'general':
-      // Placeholder — GeneralTab wrapper lands in Task 6
-      return <GeneralSettings />
+      return <GeneralTab />
     case 'stt':
       return <SttSettings />
     case 'shortcuts':
