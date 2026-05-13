@@ -3,6 +3,56 @@ pub mod types;
 
 pub use types::{MarketplaceItem, RegistryEntry, RegistryIndex, RegistrySource};
 
+use anyhow::{anyhow, Context, Result};
+
+use crate::automation::manager::HumaneSpecRow;
+use crate::automation::runtime::AppRuntimeService;
+
+/// List all automation-type entries from a registry. Defaults to the DHP registry.
+/// Non-automation entries (skill / mcp / extension) are filtered out — Phase 1 only
+/// installs full automations.
+pub async fn list_humans(registry_url: Option<String>) -> Result<Vec<MarketplaceItem>> {
+    let source = match registry_url {
+        Some(url) => RegistrySource { id: "custom".into(), url, name: None },
+        None => RegistrySource::default(),
+    };
+    let index = halo_adapter::fetch_index(&source).await?;
+    Ok(index.apps.iter()
+        .filter(|e| e.app_type == "automation")
+        .map(MarketplaceItem::from)
+        .collect())
+}
+
+/// Install a single registry entry. Returns the installed HumaneSpecRow.
+/// source_ref takes the form `marketplace://halo/{slug}` per spec § 5 URI convention.
+pub async fn install_human(
+    runtime: &AppRuntimeService,
+    registry_url: Option<String>,
+    slug: &str,
+) -> Result<HumaneSpecRow> {
+    let source = match registry_url {
+        Some(url) => RegistrySource { id: "custom".into(), url, name: None },
+        None => RegistrySource::default(),
+    };
+    let index = halo_adapter::fetch_index(&source).await?;
+    let entry = index.apps.iter()
+        .find(|e| e.slug == slug)
+        .ok_or_else(|| anyhow!("slug not found in registry: {}", slug))?;
+    if entry.app_type != "automation" {
+        return Err(anyhow!(
+            "entry '{}' is type '{}', only 'automation' is installable in Phase 1",
+            slug,
+            entry.app_type
+        ));
+    }
+    let yaml = halo_adapter::fetch_spec_yaml(&source, entry).await?;
+    let source_ref = format!("marketplace://{}/{}", source.id, slug);
+    runtime
+        .install_humane_spec_from_source(&yaml, "marketplace", Some(source_ref))
+        .await
+        .with_context(|| format!("install_humane_spec failed for '{}'", slug))
+}
+
 #[cfg(test)]
 mod tests {
     use super::types::*;

@@ -445,6 +445,8 @@ fn main() {
             uclaw_core::tauri_commands::list_pending_escalations,
             uclaw_core::tauri_commands::read_automation_memory,
             uclaw_core::tauri_commands::compact_automation_memory,
+            uclaw_core::tauri_commands::list_marketplace_humans,
+            uclaw_core::tauri_commands::install_marketplace_human,
             // Files Rail Commands
             uclaw_core::files_rail::commands::files_rail_list_mounts,
             uclaw_core::files_rail::commands::files_rail_read_dir,

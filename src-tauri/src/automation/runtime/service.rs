@@ -481,10 +481,22 @@ impl AppRuntimeService {
 
     // ── § 7.3 management API ────────────────────────────────────────────────
 
-    /// Parse YAML + insert a new row in `automation_specs`.
+    /// Parse YAML + insert a new row in `automation_specs` with source='local'.
+    /// Delegates to [`install_humane_spec_from_source`] for the actual work.
     pub async fn install_humane_spec(
         &self,
         yaml: &str,
+        source_ref: Option<String>,
+    ) -> anyhow::Result<HumaneSpecRow> {
+        self.install_humane_spec_from_source(yaml, "local", source_ref).await
+    }
+
+    /// Parse YAML + insert a new row in `automation_specs` with a caller-supplied `source`.
+    /// Used by the marketplace path to stamp rows with `source='marketplace'`.
+    pub async fn install_humane_spec_from_source(
+        &self,
+        yaml: &str,
+        source: &str,
         source_ref: Option<String>,
     ) -> anyhow::Result<HumaneSpecRow> {
         // 1. Parse + validate
@@ -511,7 +523,7 @@ impl AppRuntimeService {
                   status, enabled, source, source_ref,
                   created_at, updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6,'humane-yaml-v1',?7,?8,'{}','[]','[]',
-                         'active',1,'local',?9,?10,?10)",
+                         'active',1,?9,?10,?11,?11)",
                 rusqlite::params![
                     spec_id,
                     spec.name,
@@ -521,6 +533,7 @@ impl AppRuntimeService {
                     spec.system_prompt,
                     yaml,
                     spec_json,
+                    source,
                     source_ref,
                     now_ms,
                 ],
@@ -1145,6 +1158,36 @@ mod tests {
         assert_eq!(row.source, "local");
         assert_eq!(row.permissions_granted, "[]");
         assert_eq!(row.permissions_denied, "[]");
+    }
+
+    // ── Test §7.3-1b: install_humane_spec_from_source_sets_marketplace_source ─
+
+    #[tokio::test]
+    async fn install_humane_spec_from_source_sets_marketplace_source() {
+        let conn = open_test_db();
+        let svc = make_service(conn);
+
+        let row = svc
+            .install_humane_spec_from_source(
+                minimal_yaml(),
+                "marketplace",
+                Some("marketplace://halo/test-spec".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.source, "marketplace");
+        assert_eq!(row.source_ref.as_deref(), Some("marketplace://halo/test-spec"));
+    }
+
+    // ── Test §7.3-1c: install_humane_spec_legacy_path_still_returns_local ──
+
+    #[tokio::test]
+    async fn install_humane_spec_legacy_path_still_returns_local() {
+        let conn = open_test_db();
+        let svc = make_service(conn);
+
+        let row = svc.install_humane_spec(minimal_yaml(), None).await.unwrap();
+        assert_eq!(row.source, "local");
     }
 
     // ── Test §7.3-2: list_specs_returns_inserted_specs_in_order ────────────

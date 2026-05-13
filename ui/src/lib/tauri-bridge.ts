@@ -1321,6 +1321,31 @@ export const readAutomationMemory = (specId: string): Promise<string> =>
 export const compactAutomationMemory = (specId: string): Promise<string> =>
   invoke<string>('compact_automation_memory', { specId })
 
+// ─── Marketplace ──────────────────────────────────────────────────────
+
+export interface MarketplaceItem {
+  slug: string
+  name: string
+  version: string
+  author: string
+  description: string
+  appType: string
+  category: string
+  icon: string | null
+  tags: string[]
+  sizeBytes: number | null
+  minAppVersion: string | null
+  locale: string | null
+  i18nName: string | null
+  i18nDescription: string | null
+}
+
+export const listMarketplaceHumans = (registryUrl?: string): Promise<MarketplaceItem[]> =>
+  invoke<MarketplaceItem[]>('list_marketplace_humans', { registryUrl })
+
+export const installMarketplaceHuman = (slug: string, registryUrl?: string): Promise<HumaneSpecRow> =>
+  invoke<HumaneSpecRow>('install_marketplace_human', { registryUrl, slug })
+
 // ─── Badge ────────────────────────────────────────────────────────────
 export const updateBadgeCount = (count: number): Promise<boolean> =>
   invoke<boolean>('update_badge_count', { count })

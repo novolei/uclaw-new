@@ -5565,6 +5565,29 @@ pub async fn compact_automation_memory(
         .map_err(|e| Error::Internal(e.to_string()))
 }
 
+// ─── Marketplace (commit 2 of humane-marketplace-mini) ─────────────────────
+
+#[tauri::command]
+pub async fn list_marketplace_humans(
+    _state: State<'_, AppState>,
+    registry_url: Option<String>,
+) -> Result<Vec<crate::automation::marketplace::MarketplaceItem>, Error> {
+    crate::automation::marketplace::list_humans(registry_url)
+        .await
+        .map_err(|e| Error::Internal(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn install_marketplace_human(
+    state: State<'_, AppState>,
+    registry_url: Option<String>,
+    slug: String,
+) -> Result<crate::automation::manager::HumaneSpecRow, Error> {
+    crate::automation::marketplace::install_human(&state.runtime_service, registry_url, &slug)
+        .await
+        .map_err(|e| Error::Internal(e.to_string()))
+}
+
 // ─── Workspace Commands ─────────────────────────────────────────────────────
 
 #[tauri::command]
