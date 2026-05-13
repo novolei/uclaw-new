@@ -7,7 +7,7 @@
  */
 
 import * as React from 'react'
-import { useAtom } from 'jotai'
+import { useAtom, useAtomValue } from 'jotai'
 import { toast } from 'sonner'
 import {
   AlertDialog,
@@ -24,7 +24,6 @@ import { deleteTargetAtom } from '@/atoms/files-rail-row-atoms'
 import { spaceIdForMount } from '@/lib/files-rail-helpers'
 import type { MountKind } from '@/atoms/files-rail-atoms'
 import { currentAgentWorkspaceIdAtom } from '@/atoms/agent-atoms'
-import { useAtomValue } from 'jotai'
 import { cn } from '@/lib/utils'
 
 interface Props {

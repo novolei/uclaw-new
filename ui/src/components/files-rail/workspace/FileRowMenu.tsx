@@ -25,6 +25,7 @@ import {
   FolderInput,
   Pencil,
   Trash2,
+  Lock,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
@@ -152,6 +153,7 @@ export function FileRowMenu({
           className="text-xs py-1 [&>svg]:size-3.5"
           disabled={!isMutable}
           title={!isMutable ? READONLY_TOOLTIP : undefined}
+          aria-label={!isMutable ? `移动到… — ${READONLY_TOOLTIP}` : undefined}
           onSelect={(e) => {
             if (!isMutable) {
               e.preventDefault()
@@ -161,12 +163,14 @@ export function FileRowMenu({
           }}
         >
           <FolderInput />
-          移动到…
+          <span className="flex-1">移动到…</span>
+          {!isMutable && <Lock className="ml-auto size-2.5 text-muted-foreground/60 shrink-0" aria-hidden />}
         </DropdownMenuItem>
         <DropdownMenuItem
           className="text-xs py-1 [&>svg]:size-3.5"
           disabled={!isMutable}
           title={!isMutable ? READONLY_TOOLTIP : undefined}
+          aria-label={!isMutable ? `重命名 — ${READONLY_TOOLTIP}` : undefined}
           onSelect={(e) => {
             if (!isMutable) {
               e.preventDefault()
@@ -176,13 +180,15 @@ export function FileRowMenu({
           }}
         >
           <Pencil />
-          重命名
+          <span className="flex-1">重命名</span>
+          {!isMutable && <Lock className="ml-auto size-2.5 text-muted-foreground/60 shrink-0" aria-hidden />}
         </DropdownMenuItem>
         <DropdownMenuSeparator className="my-0.5" />
         <DropdownMenuItem
           className="text-xs py-1 [&>svg]:size-3.5 text-destructive focus:text-destructive"
           disabled={!isMutable}
           title={!isMutable ? READONLY_TOOLTIP : undefined}
+          aria-label={!isMutable ? `删除 — ${READONLY_TOOLTIP}` : undefined}
           onSelect={(e) => {
             if (!isMutable) {
               e.preventDefault()
@@ -192,7 +198,8 @@ export function FileRowMenu({
           }}
         >
           <Trash2 />
-          删除
+          <span className="flex-1">删除</span>
+          {!isMutable && <Lock className="ml-auto size-2.5 text-muted-foreground/60 shrink-0" aria-hidden />}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
