@@ -6,12 +6,12 @@ use super::types::{RegistryEntry, RegistryIndex, RegistrySource};
 const USER_AGENT: &str = "uClaw-Marketplace/1.0";
 const FETCH_TIMEOUT_SECS: u64 = 30;
 
-fn http_client() -> reqwest::Client {
+fn http_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS))
         .user_agent(USER_AGENT)
         .build()
-        .expect("reqwest client builds with default config")
+        .map_err(|e| anyhow!("build reqwest client: {}", e))
 }
 
 /// Fetch the registry index.
@@ -20,7 +20,7 @@ fn http_client() -> reqwest::Client {
 /// Mirrors `HaloAdapter.fetchIndex()` from hello-halo.
 pub async fn fetch_index(source: &RegistrySource) -> Result<RegistryIndex> {
     let url = format!("{}/index.json", source.url.trim_end_matches('/'));
-    let client = http_client();
+    let client = http_client()?;
     let resp = client
         .get(&url)
         .send()
@@ -59,7 +59,7 @@ pub async fn fetch_spec_yaml(source: &RegistrySource, entry: &RegistryEntry) -> 
             entry.path
         )
     });
-    let client = http_client();
+    let client = http_client()?;
     let resp = client
         .get(&url)
         .send()
