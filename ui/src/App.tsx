@@ -16,6 +16,7 @@ import { stickyUserMessageEnabledAtom, initializeUiPreferences } from './atoms/u
 import { activeProviderModelAtom } from './atoms/active-model'
 import { useGlobalChatListeners } from './hooks/useGlobalChatListeners'
 import { useGlobalAgentListeners } from './hooks/useGlobalAgentListeners'
+import { usePetStateSync } from './hooks/usePetStateSync'
 
 /** localStorage 键：语言偏好 */
 const LANGUAGE_CACHE_KEY = 'uclaw:language'
@@ -27,6 +28,7 @@ export default function App(): React.ReactElement {
 
   useGlobalChatListeners()
   useGlobalAgentListeners()
+  usePetStateSync()
 
   // 从 Tauri 后端加载初始设置
   React.useEffect(() => {
