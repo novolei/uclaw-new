@@ -75,7 +75,7 @@ export function SkillCitationChips({
               <button
                 type="button"
                 onClick={() => {
-                  setSettingsTab('skills')
+                  setSettingsTab('tools')
                   setSettingsOpen(true)
                 }}
                 className={cn(

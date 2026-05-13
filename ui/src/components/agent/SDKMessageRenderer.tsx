@@ -884,7 +884,7 @@ function ErrorMessage({ message, onRetry, onRetryInNewSession, onCompact }: Erro
         setEnvDialogOpen(true)
         break
       case 'open_channel_settings':
-        setSettingsTab('channels')
+        setSettingsTab('connectivity')
         setSettingsOpen(true)
         break
       case 'settings':

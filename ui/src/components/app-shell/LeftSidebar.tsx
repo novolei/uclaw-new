@@ -1028,7 +1028,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
           <div className="flex items-stretch gap-2">
             <Tooltip>
               <TooltipTrigger asChild>
-                <button onClick={() => { setSettingsTab('agent'); setSettingsOpen(true) }} className="flex-1 min-w-0 flex items-center gap-3 px-3 py-2 rounded-[10px] text-[12px] text-foreground/50 hover:bg-foreground/[0.04] hover:text-foreground/70 transition-colors titlebar-no-drag">
+                <button onClick={() => { setSettingsTab('intelligence'); setSettingsOpen(true) }} className="flex-1 min-w-0 flex items-center gap-3 px-3 py-2 rounded-[10px] text-[12px] text-foreground/50 hover:bg-foreground/[0.04] hover:text-foreground/70 transition-colors titlebar-no-drag">
                   <div className="flex items-center gap-2.5 flex-1 min-w-0">
                     <span className="flex items-center gap-1"><Plug size={13} className="text-foreground/40" /><span className="tabular-nums">{capabilities.mcpServers.filter((s) => s.enabled).length}</span><span className="text-foreground/30">MCP</span></span>
                     <span className="text-foreground/20">·</span>

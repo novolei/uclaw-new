@@ -6,10 +6,19 @@
 
 import { atom } from 'jotai'
 
-export type SettingsTab = 'general' | 'channels' | 'models' | 'proxy' | 'appearance' | 'usage' | 'about' | 'agent' | 'prompts' | 'tools' | 'permissions' | 'bots' | 'tutorial' | 'shortcuts' | 'skills' | 'pet'
+export type SettingsTab =
+  | 'connectivity'   // 服务商 + 用量
+  | 'intelligence'   // 模型 + Agent + 提示词
+  | 'tools'          // 工具 + 权限 + 已学技能
+  | 'general'        // 通用 + 外观
+  | 'stt'            // 语音输入
+  | 'shortcuts'
+  | 'pet'
+  | 'proxy'
+  | 'about'
 
-/** 当前设置标签页（不持久化，每次打开设置默认显示渠道） */
-export const settingsTabAtom = atom<SettingsTab>('channels')
+/** 当前设置标签页（不持久化，每次打开默认显示「服务商与用量」） */
+export const settingsTabAtom = atom<SettingsTab>('connectivity')
 
 /** 设置浮窗是否打开 */
 export const settingsOpenAtom = atom(false)

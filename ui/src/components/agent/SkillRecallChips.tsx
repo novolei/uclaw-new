@@ -32,7 +32,7 @@ export function SkillRecallChips({ sessionId, className }: SkillRecallChipsProps
   if (recalls.length === 0) return null
 
   const handleClick = (): void => {
-    setSettingsTab('skills')
+    setSettingsTab('tools')
     setSettingsOpen(true)
   }
 
