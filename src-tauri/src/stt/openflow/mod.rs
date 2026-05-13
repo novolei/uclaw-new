@@ -7,7 +7,6 @@ pub mod decoder;
 pub mod downloader;
 pub mod engine;
 pub mod onnx_inference;
-pub mod ort_loader;
 pub mod preprocess;
 
 pub use downloader::{download_all, SenseVoicePreset};
