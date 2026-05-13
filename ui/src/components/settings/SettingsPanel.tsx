@@ -6,8 +6,8 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { GeneralSettings } from './GeneralSettings'
 import { ToolSettings } from './ToolSettings'
 import { ShortcutSettings } from './ShortcutSettings'
-import { ChannelSettings } from './ChannelSettings'
-import { ModelSettings } from './ModelSettings'
+import { ConnectivityTab } from './ConnectivityTab'
+import { IntelligenceTab } from './IntelligenceTab'
 import { ProxySetting } from './ProxySetting'
 import { AboutSettings } from './AboutSettings'
 import { PetSettings } from './PetSettings'
@@ -19,11 +19,9 @@ import { SettingsBreadcrumb } from './SettingsBreadcrumb'
 function SettingsContent({ tab }: { tab: SettingsTab }) {
   switch (tab) {
     case 'connectivity':
-      // Placeholder — ConnectivityTab wrapper lands in Task 5
-      return <ChannelSettings />
+      return <ConnectivityTab />
     case 'intelligence':
-      // Placeholder — IntelligenceTab wrapper lands in Task 5
-      return <ModelSettings />
+      return <IntelligenceTab />
     case 'tools':
       // Placeholder — ToolsTab wrapper lands in Task 6
       return <ToolSettings />
@@ -41,7 +39,7 @@ function SettingsContent({ tab }: { tab: SettingsTab }) {
     case 'about':
       return <AboutSettings />
     default:
-      return <ChannelSettings />
+      return <ConnectivityTab />
   }
 }
 
