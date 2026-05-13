@@ -18,9 +18,15 @@
   bottom: 100%;
   width: 100px;
   height: 100px;
-  z-index: 2;
+  /* High z-index ensures the pet renders ABOVE the composer's background, borders,
+     and TipTap editor surface. Without this, the feet (which extend slightly into
+     the composer area via translateY) get occluded by the input box's white bg. */
+  z-index: 50;
   pointer-events: auto;
   cursor: pointer;
+  /* Defensive: ensure the pet (extending UP/OUT of parent via bottom:100%) is
+     never clipped by a parent overflow. */
+  overflow: visible;
 }
 
 .pet-widget .pet-layer {
