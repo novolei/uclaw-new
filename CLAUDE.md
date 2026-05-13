@@ -139,6 +139,8 @@ Track which V-number is claimed by which open PR before starting schema work:
 | V17 | spaces.sort_order + spaces.attached_dirs + agent_sessions.attached_dirs | merged (PR #76) |
 | V18 | agent_sessions.pinned_at — canonical pin state for the agent UI | merged (PR #92) |
 | V19 | spaces.skill_tags — per-workspace skill scoping (JSON tag array) | **claude/workspace-skill-tags** (open) |
+| V20 | rewrite automation_specs + activities + migrate legacy TOML | **humane-automation** (open) |
+| V21 | automation_subscriptions + automation_memory + automation_escalations | **humane-automation** (open) |
 
 If you're adding a migration: pick the next number after both merged AND open PRs to avoid conflicts. Update this table in your PR.
 

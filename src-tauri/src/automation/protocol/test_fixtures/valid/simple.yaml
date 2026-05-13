@@ -1,0 +1,6 @@
+type: automation
+name: Test Spec
+version: 0.1.0
+author: tester
+description: Smallest valid Humane spec for round-trip testing.
+system_prompt: You are a test agent. Reply with "ok".

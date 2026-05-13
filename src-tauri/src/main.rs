@@ -80,13 +80,6 @@ fn main() {
                 let provider_service = state.provider_service.clone();
                 let memory_graph_store = state.memory_graph_store.clone();
                 let app_handle = app.handle().clone();
-                let automation_service = state.automation_service.clone();
-                let workspace_root = state.workspace_root.clone();
-                let llm_config = state.llm_config.clone();
-                let safety_manager = state.safety_manager.clone();
-                let pending_approvals = state.pending_approvals.clone();
-                let pending_ask_users = state.pending_ask_users.clone();
-                let pending_exit_plans = state.pending_exit_plans.clone();
                 let files_rail_service = state.files_rail_service.clone();
 
                 // 在后台异步执行服务注册和启动
@@ -209,6 +202,15 @@ fn main() {
                     service_manager.register(files_rail_service).await;
                     tracing::info!("[Stage 3] FilesRailService registered");
 
+                    // AppRuntimeService — already constructed in AppState::new(); we just
+                    // register the shared Arc into ServiceManager here so it gets started.
+                    {
+                        let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                        let app_runtime_svc = state_ref.runtime_service.clone();
+                        service_manager.register(app_runtime_svc).await;
+                        tracing::info!("[Stage 3] AppRuntimeService registered");
+                    }
+
                     // Stage 4: 启动所有已注册服务
                     tracing::info!("[Stage 4] Starting all registered services...");
                     let results = service_manager.start_all().await;
@@ -219,79 +221,6 @@ fn main() {
                         }
                     }
                     tracing::info!("[Stage 4] All services started ({} total)", results.len());
-
-                    // Stage 4b: Wire AutomationService delegate factory so cron automations can run.
-                    if let Some((provider_id, model, api_key, base_url)) =
-                        provider_service.get_active_llm_config().await
-                    {
-                        let llm_cfg = {
-                            let legacy = llm_config.read().await;
-                            uclaw_core::llm::llm_config_from_provider(
-                                &provider_id, &model, &api_key, &base_url,
-                                legacy.max_tokens.unwrap_or(8192),
-                                legacy.temperature.unwrap_or(0.7),
-                            )
-                        };
-                        match uclaw_core::llm::create_provider(&llm_cfg) {
-                            Ok(llm) => {
-                                let llm = std::sync::Arc::new(llm);
-                                let model = model.clone();
-                                let workspace = workspace_root.clone();
-                                let app_h = app_handle.clone();
-                                let safety = safety_manager.clone();
-                                let approvals = pending_approvals.clone();
-                                let ask_users = pending_ask_users.clone();
-                                let exit_plans = pending_exit_plans.clone();
-
-                                let factory: std::sync::Arc<
-                                    dyn Fn(String) -> Box<dyn uclaw_core::agent::types::LoopDelegate + Send>
-                                        + Send + Sync,
-                                > = std::sync::Arc::new(move |system_prompt: String| {
-                                    use uclaw_core::agent::tools::{tool::ToolRegistry, builtin};
-                                    let session_id_for_tools = uuid::Uuid::new_v4().to_string();
-                                    let mut reg = ToolRegistry::new();
-                                    reg.register(builtin::file::ReadFileTool::new(workspace.clone()));
-                                    reg.register(builtin::file::WriteFileTool::new(workspace.clone()));
-                                    reg.register(builtin::search::GrepTool::new(workspace.clone()));
-                                    reg.register(builtin::search::GlobTool::new(workspace.clone()));
-                                    reg.register(builtin::web::WebFetchTool::new());
-                                    reg.register(builtin::edit::EditTool::new(workspace.clone()));
-                                    reg.register(builtin::shell::BashTool::new(workspace.clone()));
-                                    reg.register(builtin::ask_user::AskUserTool::new(
-                                        app_h.clone(),
-                                        std::sync::Arc::clone(&ask_users),
-                                        session_id_for_tools.clone(),
-                                    ));
-                                    reg.register(builtin::exit_plan_mode::ExitPlanModeTool::new(
-                                        app_h.clone(),
-                                        std::sync::Arc::clone(&exit_plans),
-                                        session_id_for_tools.clone(),
-                                    ));
-                                    let tools = std::sync::Arc::new(reg);
-                                    Box::new(uclaw_core::agent::dispatcher::ChatDelegate::new(
-                                        std::sync::Arc::clone(&llm),
-                                        tools,
-                                        app_h.clone(),
-                                        model.clone(),
-                                        system_prompt,
-                                        std::sync::Arc::clone(&safety),
-                                        None,
-                                        std::sync::Arc::clone(&approvals),
-                                        session_id_for_tools,
-                                        Some(workspace.clone()),
-                                    ))
-                                });
-
-                                automation_service.set_delegate_factory(factory).await;
-                                tracing::info!("[Stage 4b] AutomationService delegate factory wired");
-                            }
-                            Err(e) => {
-                                tracing::warn!("[Stage 4b] AutomationService: failed to build LLM provider: {}", e);
-                            }
-                        }
-                    } else {
-                        tracing::info!("[Stage 4b] AutomationService: no active LLM provider yet — cron will wait for factory");
-                    }
                 });
             }
 
@@ -501,10 +430,21 @@ fn main() {
             // System Tray / Badge Commands (Phase 3)
             uclaw_core::tauri_commands::update_badge_count,
             // Automation Commands (Phase 3)
-            uclaw_core::tauri_commands::install_automation,
             uclaw_core::tauri_commands::list_automations,
             uclaw_core::tauri_commands::trigger_automation_manual,
             uclaw_core::tauri_commands::get_automation_activity,
+            // Humane Automation Commands (Phase 1 spec § 7.3)
+            uclaw_core::tauri_commands::install_humane_spec,
+            uclaw_core::tauri_commands::import_humane_spec_file,
+            uclaw_core::tauri_commands::get_automation_spec,
+            uclaw_core::tauri_commands::update_user_config,
+            uclaw_core::tauri_commands::set_automation_permission,
+            uclaw_core::tauri_commands::set_automation_enabled,
+            uclaw_core::tauri_commands::uninstall_automation,
+            uclaw_core::tauri_commands::resolve_escalation,
+            uclaw_core::tauri_commands::list_pending_escalations,
+            uclaw_core::tauri_commands::read_automation_memory,
+            uclaw_core::tauri_commands::compact_automation_memory,
             // Files Rail Commands
             uclaw_core::files_rail::commands::files_rail_list_mounts,
             uclaw_core::files_rail::commands::files_rail_read_dir,

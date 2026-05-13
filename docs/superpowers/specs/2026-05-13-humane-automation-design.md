@@ -545,7 +545,8 @@ pub fn check(
 
 | Tool | Required permission |
 |---|---|
-| `shell` / `edit` | `Filesystem` + `Shell` |
+| `shell` | `Shell` |
+| `edit` / `file` | `Filesystem` |
 | `web` | `Network` |
 | `notify_user` | `Notification` |
 | `browser_*` (any) | `AiBrowser` |

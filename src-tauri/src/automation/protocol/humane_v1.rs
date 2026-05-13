@@ -1,0 +1,403 @@
+//! Rust mirror of hello-halo's AutomationSpec Zod schema. Filled in Tasks 2-4.
+
+use std::collections::HashMap;
+
+use garde::Validate;
+use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Custom validator: `kind` field must equal "automation"
+// ---------------------------------------------------------------------------
+
+fn must_be_automation(value: &str, _: &()) -> garde::Result {
+    if value == "automation" {
+        Ok(())
+    } else {
+        Err(garde::Error::new(format!(
+            "type must be 'automation', got '{}'",
+            value
+        )))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Top-level spec (spec § 4.1)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[serde(deny_unknown_fields)]
+pub struct HumaneAutomationSpec {
+    #[serde(rename = "type")]
+    #[garde(custom(must_be_automation))]
+    pub kind: String, // must equal "automation"
+
+    #[garde(length(min = 1, max = 100))]
+    pub name: String,
+    #[garde(pattern("^\\d+\\.\\d+\\.\\d+"))]
+    pub version: String,
+    #[garde(length(min = 1, max = 100))]
+    pub author: String,
+    #[garde(length(min = 1, max = 500))]
+    pub description: String,
+    #[garde(length(min = 1))]
+    pub system_prompt: String,
+
+    #[garde(dive)]
+    #[serde(default)]
+    pub subscriptions: Vec<Subscription>,
+    #[garde(dive)]
+    #[serde(default)]
+    pub config_schema: Vec<InputDef>,
+    #[garde(dive)]
+    #[serde(default)]
+    pub requires: Requires,
+    #[garde(dive)]
+    #[serde(default)]
+    pub filters: Vec<FilterRule>,
+    #[garde(dive)]
+    pub memory_schema: Option<MemorySchema>,
+    #[garde(dive)]
+    pub output: Option<OutputConfig>,
+    #[garde(dive)]
+    pub escalation: Option<EscalationConfig>,
+    // Permissions are validated at runtime against the user-granted set, not at parse time.
+    #[garde(skip)]
+    #[serde(default)]
+    pub permissions: Vec<Permission>,
+    #[garde(dive)]
+    #[serde(default)]
+    pub browser_login: Vec<BrowserLoginEntry>,
+    // i18n strings are free-form display text; no schema constraint is meaningful here.
+    #[garde(skip)]
+    #[serde(default)]
+    pub i18n: HashMap<String, I18nLocaleBlock>,
+}
+
+// ---------------------------------------------------------------------------
+// Subscription discriminated union — spec § 4.2
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Subscription {
+    Schedule(#[garde(dive)] ScheduleSubscription),
+    File(#[garde(dive)] FileSubscription),
+    Webhook(#[garde(dive)] WebhookSubscription),
+    Webpage(#[garde(dive)] WebpageSubscription),
+    Rss(#[garde(dive)] RssSubscription),
+    Wecom(#[garde(dive)] WecomSubscription),
+    Custom(#[garde(dive)] CustomSubscription),
+}
+
+// ScheduleSubscription — requires cron OR every (cross-field rule).
+// Manual impl because garde's #[garde(custom)] only sees a single field value,
+// not its siblings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScheduleSubscription {
+    pub cron: Option<String>,
+    pub every: Option<String>,
+}
+
+impl garde::Validate for ScheduleSubscription {
+    type Context = ();
+    fn validate_into(
+        &self,
+        _ctx: &Self::Context,
+        parent: &mut dyn FnMut() -> garde::Path,
+        report: &mut garde::Report,
+    ) {
+        if self.cron.is_none() && self.every.is_none() {
+            report.append(
+                parent(),
+                garde::Error::new("schedule requires cron or every"),
+            );
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Validate)]
+pub struct FileSubscription {
+    #[garde(length(min = 1))]
+    pub pattern: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Validate)]
+pub struct WebhookSubscription {
+    #[garde(pattern("^[a-z0-9-/_]+$"))]
+    pub path: String,
+    #[garde(skip)]
+    pub secret: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Validate)]
+pub struct WebpageSubscription {
+    #[garde(url)]
+    pub url: String,
+    #[garde(length(min = 1))]
+    pub selector: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Validate)]
+pub struct RssSubscription {
+    #[garde(url)]
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Validate)]
+pub struct WecomSubscription {
+    #[garde(skip)]
+    pub chat_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Validate)]
+pub struct CustomSubscription {
+    #[garde(length(min = 1))]
+    pub provider: String,
+    #[garde(length(min = 1))]
+    pub key: String,
+    #[garde(skip)]
+    #[serde(default)]
+    pub config: serde_json::Value,
+}
+
+// ---------------------------------------------------------------------------
+// Permission enum — spec § 4.3
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Permission {
+    AiBrowser,
+    Notification,
+    Filesystem,
+    Network,
+    Shell,
+    #[serde(other)]
+    Unknown,
+}
+
+// ---------------------------------------------------------------------------
+// FilterRule — spec § 4.3
+// ---------------------------------------------------------------------------
+
+fn valid_op(op: &str, _: &()) -> garde::Result {
+    if matches!(op, "eq" | "ne" | "contains" | "matches" | "gt" | "lt") {
+        Ok(())
+    } else {
+        Err(garde::Error::new(format!("unsupported op: {}", op)))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct FilterRule {
+    #[garde(length(min = 1))]
+    pub field: String,
+    #[garde(custom(valid_op))]
+    pub op: String,
+    #[garde(skip)]
+    pub value: serde_json::Value,
+}
+
+// ---------------------------------------------------------------------------
+// InputDef — spec § 4.3
+// ---------------------------------------------------------------------------
+
+fn valid_input_type(t: &str, _: &()) -> garde::Result {
+    if matches!(t, "string" | "number" | "boolean" | "secret") {
+        Ok(())
+    } else {
+        Err(garde::Error::new(format!("unsupported input type: {}", t)))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct InputDef {
+    #[garde(length(min = 1))]
+    pub key: String,
+    #[garde(length(min = 1))]
+    pub label: String,
+    #[garde(custom(valid_input_type))]
+    pub r#type: String,
+    #[garde(skip)]
+    #[serde(default)]
+    pub default: Option<serde_json::Value>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub required: bool,
+    #[garde(skip)]
+    pub description: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Requires — spec § 4.3
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Validate)]
+pub struct Requires {
+    #[garde(skip)]
+    #[serde(default)]
+    pub mcps: Vec<String>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub skills: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// MemorySchema — spec § 4.4
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct MemorySchema {
+    #[garde(length(min = 1))]
+    pub description: String,
+    #[garde(skip)]
+    #[serde(default)]
+    pub initial: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// OutputConfig — spec § 4.4
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct OutputConfig {
+    #[garde(skip)]
+    #[serde(default)]
+    pub channels: Vec<String>,
+    #[garde(skip)]
+    pub default_level: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// EscalationConfig + EscalationChoice — spec § 4.4
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct EscalationConfig {
+    #[garde(length(min = 1))]
+    pub description: String,
+    #[garde(length(min = 2), dive)]
+    pub choices: Vec<EscalationChoice>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct EscalationChoice {
+    #[garde(length(min = 1))]
+    pub id: String,
+    #[garde(length(min = 1))]
+    pub label: String,
+    #[garde(skip)]
+    pub description: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// BrowserLoginEntry — spec § 4.4
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct BrowserLoginEntry {
+    #[garde(url)]
+    pub url: String,
+    #[garde(length(min = 1))]
+    pub label: String,
+}
+
+// ---------------------------------------------------------------------------
+// I18nLocaleBlock — spec § 4.4
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Validate)]
+pub struct I18nLocaleBlock {
+    #[garde(skip)]
+    #[serde(default)]
+    pub name: Option<String>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub description: Option<String>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use garde::Validate;
+
+    const SIMPLE: &str = include_str!("test_fixtures/valid/simple.yaml");
+
+    #[test]
+    fn parses_and_validates_simple_spec() {
+        let spec: HumaneAutomationSpec = serde_yml::from_str(SIMPLE).expect("parses");
+        spec.validate().expect("validates");
+        assert_eq!(spec.name, "Test Spec");
+        assert_eq!(spec.kind, "automation");
+    }
+
+    #[test]
+    fn rejects_wrong_kind() {
+        let yaml = SIMPLE.replace("type: automation", "type: not_automation");
+        let spec: HumaneAutomationSpec = serde_yml::from_str(&yaml).unwrap();
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn parses_all_subscription_types() {
+        let yaml = include_str!("test_fixtures/valid/all_subscription_types.yaml");
+        let spec: HumaneAutomationSpec = serde_yml::from_str(yaml).expect("parses");
+        spec.validate().expect("validates");
+        assert_eq!(spec.subscriptions.len(), 8);
+        assert!(matches!(spec.subscriptions[0], Subscription::Schedule(_)));
+        assert!(matches!(spec.subscriptions[1], Subscription::Schedule(_)));
+        assert!(matches!(spec.subscriptions[2], Subscription::File(_)));
+        assert!(matches!(spec.subscriptions[3], Subscription::Webhook(_)));
+        assert!(matches!(spec.subscriptions[4], Subscription::Webpage(_)));
+        assert!(matches!(spec.subscriptions[5], Subscription::Rss(_)));
+        assert!(matches!(spec.subscriptions[6], Subscription::Wecom(_)));
+        assert!(matches!(spec.subscriptions[7], Subscription::Custom(_)));
+    }
+
+    #[test]
+    fn schedule_requires_cron_or_every() {
+        let yaml = "type: automation\nname: x\nversion: 0.1.0\nauthor: x\ndescription: x\nsystem_prompt: x\nsubscriptions:\n  - { type: schedule }";
+        let spec: HumaneAutomationSpec = serde_yml::from_str(yaml).unwrap();
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn full_featured_round_trip() {
+        let yaml = include_str!("test_fixtures/valid/full_featured.yaml");
+        let spec: HumaneAutomationSpec = serde_yml::from_str(yaml).expect("parses");
+        spec.validate().expect("validates");
+
+        // Serialize back and re-parse — idempotency
+        let yaml2 = serde_yml::to_string(&spec).expect("re-serialises");
+        let spec2: HumaneAutomationSpec = serde_yml::from_str(&yaml2).expect("re-parses");
+        spec2.validate().expect("re-validates");
+        // Serialise spec2 again — must equal yaml2 byte-for-byte (deterministic round trip)
+        let yaml3 = serde_yml::to_string(&spec2).expect("third serialise");
+        assert_eq!(yaml2, yaml3, "non-deterministic round trip");
+    }
+
+    #[test]
+    fn escalation_requires_min_2_choices() {
+        let bad = r#"
+type: automation
+name: Bad
+version: 0.1.0
+author: x
+description: x
+system_prompt: x
+escalation:
+  description: pick one
+  choices:
+    - { id: only, label: Only }
+"#;
+        let spec: HumaneAutomationSpec = serde_yml::from_str(bad).expect("parses");
+        assert!(spec.validate().is_err(), "escalation with 1 choice should fail validation");
+    }
+}

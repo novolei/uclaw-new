@@ -1,0 +1,73 @@
+type: automation
+name: Full Featured Demo
+version: 1.2.3
+author: uClaw Team
+description: Exercises every optional top-level field in the Humane v1 spec.
+system_prompt: |
+  You are a smart automation assistant.
+  Monitor the configured sources and escalate when needed.
+
+subscriptions:
+  - type: schedule
+    cron: "0 9 * * 1-5"
+  - type: rss
+    url: https://example.com/feed.xml
+
+config_schema:
+  - key: api_key
+    label: API Key
+    type: secret
+    required: true
+    description: Your third-party service API key
+
+permissions:
+  - ai_browser
+  - notification
+
+requires:
+  mcps:
+    - filesystem-mcp
+  skills:
+    - summarize
+
+filters:
+  - field: price_change_percent
+    op: gt
+    value: 5
+  - field: payload.extension
+    op: contains
+    value: ".ts"
+
+memory_schema:
+  description: Tracks the last seen item and user preferences.
+  initial: |
+    last_seen: null
+    preferences: {}
+
+output:
+  channels:
+    - system
+    - wecom
+  default_level: info
+
+escalation:
+  description: Should the automation proceed or wait for approval?
+  choices:
+    - id: yes
+      label: Proceed
+      description: Go ahead and execute the action.
+    - id: no
+      label: Skip
+      description: Skip this occurrence and wait for the next trigger.
+
+browser_login:
+  - url: https://example.com/login
+    label: Example Service
+
+i18n:
+  zh:
+    name: 全功能演示
+    description: 演示 Humane v1 规范中所有可选字段。
+    system_prompt: |
+      你是一个智能自动化助手。
+      监控已配置的来源，在需要时进行上报。

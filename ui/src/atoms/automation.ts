@@ -1,9 +1,12 @@
 import { atom } from 'jotai'
-import type { AutomationSpecRow, AutomationActivity } from '@/lib/tauri-bridge'
+import type { HumaneSpecRow, AutomationActivity, EscalationRow } from '@/lib/tauri-bridge'
 
-export type { AutomationSpecRow, AutomationActivity }
+export type { HumaneSpecRow, AutomationActivity, EscalationRow }
 
-export const automationSpecsAtom = atom<AutomationSpecRow[]>([])
+export const humaneSpecsAtom = atom<HumaneSpecRow[]>([])
+// Alias kept for any legacy imports that still reference automationSpecsAtom
+export const automationSpecsAtom = humaneSpecsAtom
 export const automationPanelOpenAtom = atom(false)
 export const selectedAutomationIdAtom = atom<string | null>(null)
 export const automationActivitiesAtom = atom<Record<string, AutomationActivity[]>>({})
+export const pendingEscalationsAtom = atom<EscalationRow[]>([])

@@ -203,15 +203,17 @@ pub struct AppState {
     /// Browser service for headless Chrome automation
     pub browser_service: Arc<crate::browser::BrowserService>,
 
-    /// Automation scheduling service
-    pub automation_service: Arc<crate::automation::AutomationService>,
-
     // Evaluation harness
     pub trajectory_store: Arc<crate::harness::TrajectoryStore>,
     pub tool_budget: Arc<crate::harness::ToolBudgetManager>,
 
     /// Files rail service — owns the filesystem watcher for the WorkspaceRail UI.
     pub files_rail_service: Arc<crate::files_rail::FilesRailService>,
+
+    /// Humane Automation runtime — manages spec activation, subscriptions, and
+    /// the § 7.3 command surface.  Registered into ServiceManager in main.rs
+    /// Stage 3; constructed here so Tauri commands can borrow it via AppState.
+    pub runtime_service: Arc<crate::automation::runtime::AppRuntimeService>,
 }
 
 impl AppState {
@@ -381,7 +383,6 @@ impl AppState {
         // Evaluation harness
         let trajectory_store = Arc::new(crate::harness::TrajectoryStore::new(db.clone()));
         let tool_budget = Arc::new(crate::harness::ToolBudgetManager::new(&data_dir));
-        let automation_service = Arc::new(crate::automation::AutomationService::new(db.clone()));
 
         // ─── Stage 2：核心服务 ─────────────────────────────────────────
         let infra_service = Arc::new(InfraService::new());
@@ -395,6 +396,32 @@ impl AppState {
 
         // Files rail service — created here, registered into ServiceManager in main.rs Stage 3.
         let files_rail_service = Arc::new(crate::files_rail::FilesRailService::new(app_handle.clone()));
+
+        // AppRuntimeService — constructed here so it is available to Tauri commands via
+        // AppState.  main.rs Stage 3 calls `state.runtime_service.clone()` to register it
+        // into ServiceManager (no double-construction needed).
+        let automation_memory_root = data_dir.join("automation_memory");
+        let _ = std::fs::create_dir_all(&automation_memory_root);
+        let runtime_service = {
+            use crate::automation::runtime::AppRuntimeService;
+            use crate::automation::sources::{
+                CustomSource, FileSource, RssSource, ScheduleSource,
+                WebhookSource, WebpageSource, WecomSource,
+            };
+            use crate::automation::memory::MemoryStore as AutomationMemoryStore;
+            AppRuntimeService::new(
+                db.clone(),
+                Arc::new(ScheduleSource::new()),
+                Arc::new(FileSource::new()),
+                Arc::new(WebhookSource::with_global_registry()),
+                Arc::new(WebpageSource::new()),
+                Arc::new(RssSource::new()),
+                Arc::new(WecomSource::new()),
+                Arc::new(CustomSource::new()),
+                infra_service.clone(),
+                Arc::new(AutomationMemoryStore::new(automation_memory_root)),
+            )
+        };
 
         // ─── Stage 3：注册后台服务到 ServiceManager（在后台异步完成启动）
         // 这些注册操作需要 async，因此在 setup 中通过 spawn 完成。
@@ -432,10 +459,10 @@ impl AppState {
             memubot_config,
             running_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             browser_service: Arc::new(crate::browser::BrowserService::new()),
-            automation_service,
             trajectory_store,
             tool_budget,
             files_rail_service,
+            runtime_service,
         })
     }
 

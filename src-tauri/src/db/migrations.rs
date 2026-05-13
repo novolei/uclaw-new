@@ -682,6 +682,389 @@ pub const V19_SPACES_SKILL_TAGS: &str = "
 ALTER TABLE spaces ADD COLUMN skill_tags TEXT NOT NULL DEFAULT '[]';
 ";
 
+// ---------------------------------------------------------------------------
+// V20 — rewrite automation_specs + automation_activities to Humane schema
+// ---------------------------------------------------------------------------
+//
+// Three sub-steps executed inside a single transaction:
+//
+// V20a: create automation_specs_new with the Humane schema (spec_yaml + spec_json
+//       + flat identity columns + source/source_ref/source_version for marketplace).
+//
+// V20b: create automation_activities_new with trigger_source_type +
+//       trigger_payload_json + runtime metric columns + resumption chain columns.
+//       NOTE: FK columns referencing tables created in V21
+//       (subscription_id → automation_subscriptions,
+//        escalation_id → automation_escalations,
+//        resumed_from_escalation_id → automation_escalations)
+//       are present as plain TEXT columns WITHOUT REFERENCES clauses. SQLite does
+//       not support adding FK constraints to existing columns via ALTER TABLE, so
+//       these will remain without FK enforcement. Application layer enforces
+//       referential integrity for these three columns. Self-reference
+//       resumed_from_activity_id → automation_activities is safe to add now (same
+//       table) and is included with ON DELETE SET NULL.
+//
+// V20c: data fixup — migrates legacy toml_content rows to Humane YAML via
+//       migrate_legacy_toml(), marks source='toml-migrated'. Failures per-row
+//       produce status='error' stub rows and do not abort the transaction.
+//       Legacy automation_activities rows are mapped with a trigger heuristic.
+//       Final swap drops the old tables and renames the new ones.
+
+const SQL_V20A_CREATE_SPECS: &str = "
+CREATE TABLE IF NOT EXISTS automation_specs_new (
+    id                  TEXT PRIMARY KEY,
+    name                TEXT NOT NULL,
+    version             TEXT NOT NULL,
+    author              TEXT NOT NULL,
+    description         TEXT NOT NULL,
+    system_prompt       TEXT NOT NULL,
+
+    spec_format         TEXT NOT NULL DEFAULT 'humane-yaml-v1',
+    spec_yaml           TEXT NOT NULL,
+    spec_json           TEXT NOT NULL,
+
+    user_config_values  TEXT NOT NULL DEFAULT '{}',
+    permissions_granted TEXT NOT NULL DEFAULT '[]',
+    permissions_denied  TEXT NOT NULL DEFAULT '[]',
+
+    status              TEXT NOT NULL DEFAULT 'active',
+    enabled             INTEGER NOT NULL DEFAULT 1,
+    space_id            TEXT,
+
+    source              TEXT NOT NULL DEFAULT 'local',
+    source_ref          TEXT,
+    source_version      TEXT,
+
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    last_run_at         INTEGER,
+    last_run_outcome    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_specs_status    ON automation_specs_new(status);
+CREATE INDEX IF NOT EXISTS idx_specs_space     ON automation_specs_new(space_id);
+CREATE INDEX IF NOT EXISTS idx_specs_enabled   ON automation_specs_new(enabled);
+CREATE INDEX IF NOT EXISTS idx_specs_source    ON automation_specs_new(source, source_version);
+";
+
+const SQL_V20B_CREATE_ACTIVITIES: &str = "
+CREATE TABLE IF NOT EXISTS automation_activities_new (
+    id                          TEXT PRIMARY KEY,
+    spec_id                     TEXT NOT NULL,
+    -- NOTE: subscription_id references automation_subscriptions which does not
+    -- exist until V21. FK clause omitted intentionally — see module-level comment.
+    subscription_id             TEXT,
+    trigger_source_type         TEXT NOT NULL DEFAULT 'manual',
+    trigger_payload_json        TEXT NOT NULL DEFAULT '{}',
+
+    status                      TEXT NOT NULL DEFAULT 'queued',
+    error_text                  TEXT,
+    queued_at                   INTEGER NOT NULL,
+    started_at                  INTEGER,
+    completed_at                INTEGER,
+    duration_ms                 INTEGER NOT NULL DEFAULT 0,
+
+    llm_iterations              INTEGER NOT NULL DEFAULT 0,
+    llm_tokens_in               INTEGER NOT NULL DEFAULT 0,
+    llm_tokens_out              INTEGER NOT NULL DEFAULT 0,
+
+    tool_calls_json             TEXT NOT NULL DEFAULT '[]',
+
+    report_text                 TEXT,
+    report_outcome              TEXT,
+
+    -- NOTE: escalation_id references automation_escalations which does not
+    -- exist until V21. FK clause omitted intentionally — see module-level comment.
+    escalation_id               TEXT,
+
+    -- Self-reference FK is safe: same table. SET NULL on delete.
+    resumed_from_activity_id    TEXT REFERENCES automation_activities_new(id) ON DELETE SET NULL,
+    -- NOTE: resumed_from_escalation_id references automation_escalations which
+    -- does not exist until V21. FK clause omitted intentionally.
+    resumed_from_escalation_id  TEXT,
+
+    FOREIGN KEY (spec_id) REFERENCES automation_specs_new(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_act_spec      ON automation_activities_new(spec_id);
+CREATE INDEX IF NOT EXISTS idx_act_status    ON automation_activities_new(status);
+CREATE INDEX IF NOT EXISTS idx_act_queued_at ON automation_activities_new(queued_at DESC);
+CREATE INDEX IF NOT EXISTS idx_act_resumed   ON automation_activities_new(resumed_from_activity_id);
+CREATE INDEX IF NOT EXISTS idx_act_sub       ON automation_activities_new(subscription_id);
+";
+
+const SQL_V20_SWAP: &str = "
+DROP TABLE IF EXISTS automation_activities;
+DROP TABLE IF EXISTS automation_specs;
+ALTER TABLE automation_specs_new RENAME TO automation_specs;
+ALTER TABLE automation_activities_new RENAME TO automation_activities;
+";
+
+/// Map a legacy trigger string to a trigger_source_type string.
+fn map_trigger_source_type(trigger: &str) -> &'static str {
+    match trigger.to_ascii_lowercase().trim() {
+        "cron" => "cron",
+        "manual" => "manual",
+        _ => "manual",
+    }
+}
+
+/// V20c — migrate legacy automation_specs rows into automation_specs_new.
+/// Each row is processed independently: on success, the Humane YAML is
+/// inserted with source='toml-migrated'. On failure, a stub row with
+/// status='error' is inserted and the error is logged. Neither outcome
+/// aborts the transaction.
+fn migrate_specs_data(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    use crate::automation::protocol::{
+        migrate_toml_v1::migrate_legacy_toml,
+        normalize::normalize_to_json,
+    };
+
+    // Fetch all legacy rows. We read everything upfront to avoid borrow
+    // conflicts between the SELECT statement and the INSERT statements.
+    let mut stmt = conn.prepare(
+        "SELECT id, name, description, toml_content, enabled, created_at, updated_at
+         FROM automation_specs"
+    )?;
+
+    struct LegacyRow {
+        id: String,
+        name: String,
+        description: String,
+        toml_content: String,
+        enabled: i64,
+        created_at: i64,
+        updated_at: i64,
+    }
+
+    let rows: Vec<LegacyRow> = stmt
+        .query_map([], |row| {
+            Ok(LegacyRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                toml_content: row.get(3)?,
+                enabled: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    for row in rows {
+        match migrate_legacy_toml(&row.toml_content) {
+            Ok(migrated) => {
+                let spec_json = normalize_to_json(&migrated.spec).unwrap_or_else(|e| {
+                    tracing::warn!("V20c: failed to normalize spec_json for {}: {}", row.id, e);
+                    "{}".to_string()
+                });
+                if let Err(e) = conn.execute(
+                    "INSERT INTO automation_specs_new
+                     (id, name, version, author, description, system_prompt,
+                      spec_format, spec_yaml, spec_json,
+                      status, enabled, source,
+                      created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+                             'humane-yaml-v1', ?7, ?8,
+                             'active', ?9, 'toml-migrated',
+                             ?10, ?11)",
+                    rusqlite::params![
+                        row.id,
+                        migrated.spec.name,
+                        migrated.spec.version,
+                        migrated.spec.author,
+                        migrated.spec.description,
+                        migrated.spec.system_prompt,
+                        migrated.yaml,
+                        spec_json,
+                        row.enabled,
+                        row.created_at,
+                        row.updated_at,
+                    ],
+                ) {
+                    tracing::error!("V20c: failed to insert migrated spec {}: {}", row.id, e);
+                }
+            }
+            Err(e) => {
+                // Migration failed — insert a stub so the row is not silently lost.
+                tracing::warn!("V20c: migration failed for spec {}: {} — inserting error stub", row.id, e);
+                let stub_yaml = format!("# migration-error: {}", e);
+                let _ = conn.execute(
+                    "INSERT INTO automation_specs_new
+                     (id, name, version, author, description, system_prompt,
+                      spec_format, spec_yaml, spec_json,
+                      status, enabled, source,
+                      created_at, updated_at)
+                     VALUES (?1, ?2, '0.0.0', 'uclaw-migrated', ?3, '',
+                             'humane-yaml-v1', ?4, '{}',
+                             'error', ?5, 'toml-migrated',
+                             ?6, ?7)",
+                    rusqlite::params![
+                        row.id,
+                        row.name,
+                        row.description,
+                        stub_yaml,
+                        row.enabled,
+                        row.created_at,
+                        row.updated_at,
+                    ],
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// V20c — migrate legacy automation_activities rows into automation_activities_new.
+fn migrate_activities_data(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    // Fetch all legacy rows upfront.
+    let mut stmt = conn.prepare(
+        "SELECT id, spec_id, trigger, status, result, error, duration_ms, created_at, completed_at
+         FROM automation_activities"
+    )?;
+
+    struct LegacyActivity {
+        id: String,
+        spec_id: String,
+        trigger: String,
+        status: String,
+        result: Option<String>,
+        error: Option<String>,
+        duration_ms: i64,
+        created_at: i64,
+        completed_at: Option<i64>,
+    }
+
+    let rows: Vec<LegacyActivity> = stmt
+        .query_map([], |row| {
+            Ok(LegacyActivity {
+                id: row.get(0)?,
+                spec_id: row.get(1)?,
+                trigger: row.get(2)?,
+                status: row.get(3)?,
+                result: row.get(4)?,
+                error: row.get(5)?,
+                duration_ms: row.get(6)?,
+                created_at: row.get(7)?,
+                completed_at: row.get(8)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    for row in rows {
+        let trigger_source_type = map_trigger_source_type(&row.trigger);
+        let new_status = row.status.to_ascii_lowercase();
+        // Map legacy status → new status vocabulary.
+        let mapped_status = match new_status.as_str() {
+            "completed" | "success" => "completed",
+            "failed" | "error" => "failed",
+            "running" => "running",
+            _ => "completed",
+        };
+        // report_outcome: 'useful' if the legacy run was successful.
+        let report_outcome: Option<&str> = match new_status.as_str() {
+            "completed" | "success" => Some("useful"),
+            _ => None,
+        };
+        // error_text from legacy error column.
+        let error_text: Option<&str> = row.error.as_deref();
+
+        if let Err(e) = conn.execute(
+            "INSERT INTO automation_activities_new
+             (id, spec_id, trigger_source_type, status, error_text,
+              queued_at, completed_at, duration_ms,
+              report_text, report_outcome)
+             VALUES (?1, ?2, ?3, ?4, ?5,
+                     ?6, ?7, ?8,
+                     ?9, ?10)",
+            rusqlite::params![
+                row.id,
+                row.spec_id,
+                trigger_source_type,
+                mapped_status,
+                error_text,
+                row.created_at,
+                row.completed_at,
+                row.duration_ms,
+                row.result,
+                report_outcome,
+            ],
+        ) {
+            tracing::error!("V20c: failed to migrate activity {}: {}", row.id, e);
+        }
+    }
+
+    Ok(())
+}
+
+/// V20 — rewrite automation_specs + automation_activities to the Humane schema.
+///
+/// All three sub-steps (V20a table creation, V20b table creation, V20c data
+/// fixup + final swap) run inside a single transaction so any failure leaves
+/// the DB in its pre-V20 state.
+pub fn run_v20(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+
+    // V20a — create automation_specs_new
+    tracing::debug!("V20a: creating automation_specs_new");
+    tx.execute_batch(SQL_V20A_CREATE_SPECS)?;
+
+    // V20b — create automation_activities_new
+    tracing::debug!("V20b: creating automation_activities_new");
+    tx.execute_batch(SQL_V20B_CREATE_ACTIVITIES)?;
+
+    // V20c — migrate existing legacy rows
+    tracing::debug!("V20c: migrating legacy automation_specs rows");
+    migrate_specs_data(&tx)?;
+    tracing::debug!("V20c: migrating legacy automation_activities rows");
+    migrate_activities_data(&tx)?;
+
+    // Final swap — drop old tables, rename new ones
+    tracing::debug!("V20c: swapping tables");
+    tx.execute_batch(SQL_V20_SWAP)?;
+
+    tx.commit()
+}
+
+const SQL_V21: &str = "
+CREATE TABLE IF NOT EXISTS automation_subscriptions (
+    id            TEXT PRIMARY KEY,
+    spec_id       TEXT NOT NULL REFERENCES automation_specs(id) ON DELETE CASCADE,
+    source_type   TEXT NOT NULL,
+    config_json   TEXT NOT NULL,
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    last_fired_at INTEGER,
+    created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sub_spec        ON automation_subscriptions(spec_id);
+CREATE INDEX IF NOT EXISTS idx_sub_source_type ON automation_subscriptions(source_type);
+
+CREATE TABLE IF NOT EXISTS automation_memory (
+    spec_id                 TEXT PRIMARY KEY REFERENCES automation_specs(id) ON DELETE CASCADE,
+    last_updated_at         INTEGER NOT NULL,
+    compacted_archives_json TEXT NOT NULL DEFAULT '[]',
+    bytes                   INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS automation_escalations (
+    id           TEXT PRIMARY KEY,
+    spec_id      TEXT NOT NULL REFERENCES automation_specs(id) ON DELETE CASCADE,
+    activity_id  TEXT NOT NULL REFERENCES automation_activities(id) ON DELETE CASCADE,
+    question     TEXT NOT NULL,
+    choices_json TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'waiting',
+    user_choice  TEXT,
+    user_note    TEXT,
+    created_at   INTEGER NOT NULL,
+    responded_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_escalation_spec   ON automation_escalations(spec_id);
+CREATE INDEX IF NOT EXISTS idx_escalation_status ON automation_escalations(status);
+";
+
+pub fn run_v21(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(SQL_V21)
+}
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -819,6 +1202,15 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             tracing::warn!("V19 stmt skipped: {} :: {}", e, stmt);
         }
     }
+    // V20: rewrite automation_specs + automation_activities to Humane schema.
+    // Wrapped in its own transaction inside run_v20 — failure here is fatal
+    // (unlike the ALTER-only migrations above) because V20 replaces the tables
+    // entirely and partial execution would leave an inconsistent schema.
+    tracing::debug!("Running migration V20: Humane automation schema rewrite");
+    run_v20(conn)?;
+    // V21: three Humane behavior tables that FK into the V20 schema.
+    tracing::debug!("Running migration V21: automation_subscriptions, automation_memory, automation_escalations");
+    run_v21(conn)?;
     tracing::info!("Database migrations complete");
     Ok(())
 }
@@ -1136,5 +1528,237 @@ mod tests {
             |row| row.get(0),
         ).unwrap();
         assert_eq!(count, 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // V20 helpers
+    // -----------------------------------------------------------------------
+
+    /// Apply the minimal set of migrations needed before V20 can run:
+    /// V1 (spaces), V7 (automation_specs + automation_activities).
+    /// We skip the intermediate migrations because none of them touch the
+    /// tables that V20 operates on — this keeps the helper fast.
+    fn db_pre_v20() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::V1_INITIAL).unwrap();
+        conn.execute_batch(super::V7_AUTOMATIONS).unwrap();
+        conn
+    }
+
+    /// V20 migrates a legacy TOML spec row into the Humane schema, setting
+    /// source='toml-migrated' and populating spec_yaml / spec_json.
+    #[test]
+    fn v20_migrates_legacy_toml_specs() {
+        let conn = db_pre_v20();
+
+        // Seed a legacy row using the real legacy TOML shape.
+        conn.execute(
+            "INSERT INTO automation_specs (id, name, description, toml_content, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                "s1", "Test", "desc",
+                "name = \"Test\"\ndescription = \"desc\"\ntask = \"Do thing\"\n[trigger]\nkind = \"manual\"\n",
+                1i64, 1i64, 1i64,
+            ],
+        ).unwrap();
+
+        super::run_v20(&conn).unwrap();
+
+        // spec_yaml must contain Humane YAML markers.
+        let yaml: String = conn.query_row(
+            "SELECT spec_yaml FROM automation_specs WHERE id = 's1'", [], |r| r.get(0)
+        ).unwrap();
+        assert!(yaml.contains("type: automation"), "expected 'type: automation' in yaml: {}", yaml);
+        assert!(yaml.contains("system_prompt: Do thing"), "expected 'system_prompt: Do thing' in yaml: {}", yaml);
+
+        // source must be 'toml-migrated'.
+        let source: String = conn.query_row(
+            "SELECT source FROM automation_specs WHERE id = 's1'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(source, "toml-migrated");
+
+        // spec_json must be valid JSON and non-empty.
+        let spec_json: String = conn.query_row(
+            "SELECT spec_json FROM automation_specs WHERE id = 's1'", [], |r| r.get(0)
+        ).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&spec_json)
+            .expect("spec_json must be valid JSON");
+        assert!(v.get("name").is_some(), "spec_json must have 'name' key");
+
+        // Identity columns must be populated from the migrated spec.
+        let name: String = conn.query_row(
+            "SELECT name FROM automation_specs WHERE id = 's1'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(name, "Test");
+
+        let status: String = conn.query_row(
+            "SELECT status FROM automation_specs WHERE id = 's1'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(status, "active");
+    }
+
+    /// V20 on an empty legacy table should succeed and produce new tables
+    /// with the correct schema columns.
+    #[test]
+    fn v20_is_idempotent_on_empty_legacy() {
+        let conn = db_pre_v20();
+        super::run_v20(&conn).unwrap(); // no legacy data — must succeed
+
+        // Verify new schema columns are present via pragma_table_info.
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('automation_specs')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        for expected in &["spec_yaml", "spec_json", "source_version", "permissions_granted"] {
+            assert!(
+                columns.contains(&expected.to_string()),
+                "missing column '{}' in automation_specs; columns present: {:?}",
+                expected,
+                columns
+            );
+        }
+
+        // Verify automation_activities new columns too.
+        let act_columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('automation_activities')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        for expected in &["trigger_source_type", "trigger_payload_json", "llm_iterations", "resumed_from_activity_id"] {
+            assert!(
+                act_columns.contains(&expected.to_string()),
+                "missing column '{}' in automation_activities; columns present: {:?}",
+                expected,
+                act_columns
+            );
+        }
+    }
+
+    /// V20 correctly maps legacy automation_activities rows, preserving
+    /// trigger_source_type and report_outcome heuristics.
+    #[test]
+    fn v20_migrates_legacy_activities() {
+        let conn = db_pre_v20();
+
+        // Seed a spec (required for FK).
+        conn.execute(
+            "INSERT INTO automation_specs (id, name, description, toml_content, enabled, created_at, updated_at)
+             VALUES ('sp1', 'Spec', '', 'name = \"Spec\"\ntask = \"t\"\n[trigger]\nkind = \"manual\"\n', 1, 0, 0)",
+            [],
+        ).unwrap();
+
+        // Seed a completed activity and a failed one.
+        conn.execute(
+            "INSERT INTO automation_activities (id, spec_id, run_id, trigger, status, result, error, duration_ms, created_at)
+             VALUES ('a1', 'sp1', 'r1', 'cron', 'Completed', 'Done', NULL, 500, 42)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO automation_activities (id, spec_id, run_id, trigger, status, result, error, duration_ms, created_at)
+             VALUES ('a2', 'sp1', 'r2', 'manual', 'failed', NULL, 'oops', 100, 99)",
+            [],
+        ).unwrap();
+
+        super::run_v20(&conn).unwrap();
+
+        // Verify completed activity mapping.
+        let (trigger_type, status, outcome, queued_at): (String, String, Option<String>, i64) =
+            conn.query_row(
+                "SELECT trigger_source_type, status, report_outcome, queued_at
+                 FROM automation_activities WHERE id = 'a1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            ).unwrap();
+        assert_eq!(trigger_type, "cron");
+        assert_eq!(status, "completed");
+        assert_eq!(outcome.as_deref(), Some("useful"), "completed activity should have report_outcome='useful'");
+        assert_eq!(queued_at, 42, "queued_at should map from legacy created_at");
+
+        // Verify failed activity mapping.
+        let (trigger_type2, status2, outcome2): (String, String, Option<String>) =
+            conn.query_row(
+                "SELECT trigger_source_type, status, report_outcome
+                 FROM automation_activities WHERE id = 'a2'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            ).unwrap();
+        assert_eq!(trigger_type2, "manual");
+        assert_eq!(status2, "failed");
+        assert!(outcome2.is_none(), "failed activity should have NULL report_outcome");
+    }
+
+    /// V21 creates automation_subscriptions, automation_memory, and
+    /// automation_escalations after V20 has established the parent tables.
+    #[test]
+    fn v21_creates_three_behavior_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Stand up the minimal schema V21 depends on: V1 (spaces/agent_sessions
+        // foundation) + V7 (legacy automation tables V20 needs to migrate from).
+        conn.execute_batch(super::V1_INITIAL).unwrap();
+        conn.execute_batch(super::V7_AUTOMATIONS).unwrap();
+        // Apply V20 to produce the Humane-shaped parent tables.
+        super::run_v20(&conn).unwrap();
+        // Apply V21 under test.
+        super::run_v21(&conn).unwrap();
+
+        for table in [
+            "automation_subscriptions",
+            "automation_memory",
+            "automation_escalations",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "table {} missing after V21", table);
+        }
+    }
+
+    /// V20 produces a status='error' stub for a spec whose TOML content is
+    /// unparseable, but does NOT abort the migration for other rows.
+    #[test]
+    fn v20_handles_bad_toml_with_error_stub() {
+        let conn = db_pre_v20();
+
+        // One valid spec and one broken spec.
+        conn.execute(
+            "INSERT INTO automation_specs (id, name, description, toml_content, enabled, created_at, updated_at)
+             VALUES ('good', 'Good', '', 'name = \"Good\"\ntask = \"t\"\n[trigger]\nkind = \"manual\"\n', 1, 0, 0)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO automation_specs (id, name, description, toml_content, enabled, created_at, updated_at)
+             VALUES ('bad', 'Bad', '', 'not valid toml [[[', 1, 0, 0)",
+            [],
+        ).unwrap();
+
+        super::run_v20(&conn).unwrap();
+
+        // Both rows should appear in the new table.
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM automation_specs", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(count, 2, "both rows (good + error stub) must be present after V20");
+
+        // Good spec is 'active', bad spec is 'error'.
+        let good_status: String = conn.query_row(
+            "SELECT status FROM automation_specs WHERE id = 'good'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(good_status, "active");
+
+        let bad_status: String = conn.query_row(
+            "SELECT status FROM automation_specs WHERE id = 'bad'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(bad_status, "error");
     }
 }

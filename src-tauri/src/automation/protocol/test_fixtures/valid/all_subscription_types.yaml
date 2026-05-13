@@ -1,0 +1,15 @@
+type: automation
+name: All Sources Test
+version: 0.1.0
+author: tester
+description: Exercises all seven subscription variants.
+system_prompt: noop
+subscriptions:
+  - { type: schedule, cron: "0 8 * * *" }
+  - { type: schedule, every: "30m" }
+  - { type: file, pattern: "src/**/*.ts" }
+  - { type: webhook, path: "github-pr", secret: "abc" }
+  - { type: webpage, url: "https://example.com", selector: ".price" }
+  - { type: rss, url: "https://example.com/feed.xml" }
+  - { type: wecom, chat_id: "chat-123" }
+  - { type: custom, provider: "tg", key: "telegram-bot", config: { token: "x" } }

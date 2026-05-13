@@ -5424,41 +5424,145 @@ pub async fn update_badge_count(
 
 // ─── Automation Commands (Phase 3) ──────────────────────────────────────────
 
-#[tauri::command]
-pub async fn install_automation(
-    state: State<'_, AppState>,
-    toml_content: String,
-) -> Result<crate::automation::spec::AutomationSpecRow, Error> {
-    state.automation_service.install(&toml_content).await
-        .map_err(|e| Error::Internal(e))
-}
-
+// list_automations — upgraded to return Vec<HumaneSpecRow> (new V20 schema)
 #[tauri::command]
 pub async fn list_automations(
     state: State<'_, AppState>,
-) -> Result<Vec<crate::automation::spec::AutomationSpecRow>, Error> {
-    state.automation_service.list()
-        .map_err(|e| Error::Internal(e))
+) -> Result<Vec<crate::automation::manager::HumaneSpecRow>, Error> {
+    state.runtime_service.list_specs()
+        .map_err(|e| Error::Internal(e.to_string()))
 }
 
+// trigger_automation_manual — upgraded to delegate to AppRuntimeService
 #[tauri::command]
 pub async fn trigger_automation_manual(
     state: State<'_, AppState>,
     spec_id: String,
-) -> Result<bool, Error> {
-    state.automation_service.trigger_manual(&spec_id).await
-        .map_err(|e| Error::Internal(e))?;
-    Ok(true)
+) -> Result<(), Error> {
+    state.runtime_service.trigger_manual(&spec_id).await
+        .map_err(|e| Error::Internal(e.to_string()))
 }
 
+// get_automation_activity — upgraded to query V20 schema via AppRuntimeService
 #[tauri::command]
 pub async fn get_automation_activity(
     state: State<'_, AppState>,
     spec_id: String,
     limit: Option<usize>,
 ) -> Result<Vec<crate::automation::activity::AutomationActivity>, Error> {
-    state.automation_service.get_activity(&spec_id, limit.unwrap_or(20))
-        .map_err(|e| Error::Internal(e))
+    state.runtime_service.get_activity(&spec_id, limit.unwrap_or(20))
+        .map_err(|e| Error::Internal(e.to_string()))
+}
+
+// ─── Humane Automation Commands (Phase 1 spec § 7.3) ─────────────────────────
+
+#[tauri::command]
+pub async fn install_humane_spec(
+    state: State<'_, AppState>,
+    yaml: String,
+    source_ref: Option<String>,
+) -> Result<crate::automation::manager::HumaneSpecRow, Error> {
+    state.runtime_service.install_humane_spec(&yaml, source_ref).await
+        .map_err(|e| Error::Internal(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn import_humane_spec_file(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<crate::automation::manager::HumaneSpecRow, Error> {
+    state.runtime_service.import_humane_spec_file(&path).await
+        .map_err(|e| Error::Internal(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn get_automation_spec(
+    state: State<'_, AppState>,
+    spec_id: String,
+) -> Result<crate::automation::manager::HumaneSpecRow, Error> {
+    state.runtime_service.get_spec(&spec_id)
+        .map_err(|e| Error::Internal(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn update_user_config(
+    state: State<'_, AppState>,
+    spec_id: String,
+    values: serde_json::Value,
+) -> Result<(), Error> {
+    state.runtime_service.update_user_config(&spec_id, &values)
+        .map_err(|e| Error::Internal(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn set_automation_permission(
+    state: State<'_, AppState>,
+    spec_id: String,
+    permission: String,
+    granted: bool,
+) -> Result<(), Error> {
+    state.runtime_service.set_permission(&spec_id, &permission, granted).await
+        .map_err(|e| Error::Internal(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn set_automation_enabled(
+    state: State<'_, AppState>,
+    spec_id: String,
+    enabled: bool,
+) -> Result<(), Error> {
+    state.runtime_service.set_enabled(&spec_id, enabled).await
+        .map_err(|e| Error::Internal(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn uninstall_automation(
+    state: State<'_, AppState>,
+    spec_id: String,
+) -> Result<(), Error> {
+    state.runtime_service.uninstall(&spec_id).await
+        .map_err(|e| Error::Internal(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn resolve_escalation(
+    state: State<'_, AppState>,
+    escalation_id: String,
+    choice: String,
+    note: Option<String>,
+) -> Result<(), Error> {
+    state.runtime_service
+        .resolve_escalation(&escalation_id, &choice, note.as_deref())
+        .await
+        .map_err(|e| Error::Internal(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn list_pending_escalations(
+    state: State<'_, AppState>,
+    spec_id: Option<String>,
+) -> Result<Vec<crate::automation::runtime::EscalationRow>, Error> {
+    state.runtime_service
+        .list_pending_escalations(spec_id.as_deref())
+        .map_err(|e| Error::Internal(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn read_automation_memory(
+    state: State<'_, AppState>,
+    spec_id: String,
+) -> Result<String, Error> {
+    state.runtime_service.read_memory(&spec_id).await
+        .map_err(|e| Error::Internal(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn compact_automation_memory(
+    state: State<'_, AppState>,
+    spec_id: String,
+) -> Result<String, Error> {
+    state.runtime_service.compact_memory(&spec_id).await
+        .map_err(|e| Error::Internal(e.to_string()))
 }
 
 // ─── Workspace Commands ─────────────────────────────────────────────────────

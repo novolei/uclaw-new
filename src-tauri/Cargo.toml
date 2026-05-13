@@ -86,6 +86,8 @@ tauri-plugin-shell = "2"
 # Cryptography for secrets
 aes-gcm = "0.10"
 sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
 rand = "0.8"
 secrecy = { version = "0.10", features = ["serde"] }
 jsonwebtoken = "9"
@@ -99,11 +101,19 @@ dirs = "6"
 # YAML for SKILL.md
 serde_yml = "0.0.12"
 
+# Validation (Humane automation schema)
+garde = { version = "0.20", features = ["derive", "pattern", "serde", "url"] }
+# File-source pattern matching (Humane Phase 1 Task 16)
+globset = "0.4"
+
 # Regex for grep tool
 regex = "1"
 
 # HTML parsing for web_fetch
 scraper = "0.20"
+
+# RSS feed parsing for automation sources
+rss = "2"
 
 # Diff for edit tool
 similar = "2"
