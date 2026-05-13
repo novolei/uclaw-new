@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use crate::agent::agentic_loop::run_agentic_loop;
 use crate::agent::types::{AgenticLoopConfig, LoopDelegate, LoopOutcome, ReasoningContext, ChatMessage};
-use super::activity::{ActivityStatus, ActivityStore, AutomationActivity, TriggerSource};
-use super::spec::AutomationSpec;
+use crate::automation::activity::{ActivityStatus, ActivityStore, AutomationActivity, TriggerSource};
+use crate::automation::spec::AutomationSpec;
 
 pub struct AutomationRuntime {
     pub activity_store: Arc<ActivityStore>,
