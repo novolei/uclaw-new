@@ -45,6 +45,10 @@ import { WorkspaceTabCleaner } from './WorkspaceTabCleaner'
 import { focusModeAtom } from '@/atoms/focus-mode-atoms'
 import { useFocusModeShortcut } from '@/hooks/useFocusModeShortcut'
 import { FocusModeOverlay } from '@/components/focus-mode/FocusModeOverlay'
+import { pendingEscalationsAtom } from '@/atoms/automation'
+import { resolveEscalation } from '@/lib/tauri-bridge'
+import { useAutomationEvents } from '@/hooks/useAutomationEvents'
+import { EscalationModal } from '@/components/automation/EscalationModal'
 
 export interface AppShellProps {
   /** Context 值，用于传递给子组件 */
@@ -59,6 +63,13 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const showRightPanel = appMode === 'agent' && !!currentSessionId
   const focusMode = useAtomValue(focusModeAtom)
   useFocusModeShortcut()  // global Alt+F binding
+
+  // Escalation modal: subscribe to pending escalations and show one at a time.
+  // Mounted here (alongside ApprovalModal) so it's always present regardless
+  // of which view or workspace is active.
+  useAutomationEvents()
+  const [escalations, setEscalations] = useAtom(pendingEscalationsAtom)
+  const firstEscalation = escalations[0]
 
   // Shift+ArrowLeft / Shift+ArrowRight to cycle workspaces (Windows /
   // external-keyboard fallback for users without a touchpad).
@@ -327,6 +338,23 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
             time; the bug was hidden because `bash` was in the global
             auto-approve whitelist short-circuiting the resolver.) */}
         <ApprovalModal />
+
+        {/* Global escalation modal — shows when a humane spec requests a
+            human decision. Dequeues one at a time; resolves via
+            resolve_escalation Tauri command then removes from local queue. */}
+        {firstEscalation && (
+          <EscalationModal
+            escalation={firstEscalation}
+            onResolve={async (choiceId) => {
+              try {
+                await resolveEscalation(firstEscalation.id, choiceId)
+                setEscalations((rest) => rest.filter((e) => e.id !== firstEscalation.id))
+              } catch (err) {
+                console.error('[EscalationModal] resolve_escalation failed:', err)
+              }
+            }}
+          />
+        )}
 
         {/* Global ask_user banner — shows agent's question pending */}
         {currentSessionId && <AskUserBanner sessionId={currentSessionId} />}
