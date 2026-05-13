@@ -8,7 +8,7 @@
 
 import * as React from 'react'
 import { useAtom, useAtomValue } from 'jotai'
-import { Check, Circle, FileEdit, FileText } from 'lucide-react'
+import { Check, Circle, Pencil, Eye } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   markdownEditorModeAtom,
@@ -41,34 +41,21 @@ export function EditorToolbar({ filePath, isMarkdown, saveMode, saving }: Props)
       <SaveStatePill state={state} />
       <div className="flex-1" />
       {isMarkdown && (
-        <div className="flex items-center gap-0.5 rounded-md bg-foreground/[0.04] p-0.5">
-          <button
-            type="button"
-            onClick={() => setMdMode('rich')}
-            className={cn(
-              'flex items-center gap-1 rounded px-2 py-0.5 text-[11px] transition-colors',
-              mdMode === 'rich'
-                ? 'bg-popover text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            <FileEdit className="h-3 w-3" />
-            富文本
-          </button>
-          <button
-            type="button"
-            onClick={() => setMdMode('raw')}
-            className={cn(
-              'flex items-center gap-1 rounded px-2 py-0.5 text-[11px] transition-colors',
-              mdMode === 'raw'
-                ? 'bg-popover text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            <FileText className="h-3 w-3" />
-            源码
-          </button>
-        </div>
+        // Single toggle: 富文本 (default) shows a Pencil to invite editing
+        // the source; 源码 shows an Eye to invite returning to the preview.
+        <button
+          type="button"
+          onClick={() => setMdMode(mdMode === 'rich' ? 'raw' : 'rich')}
+          title={mdMode === 'rich' ? '编辑源码' : '返回富文本'}
+          aria-label={mdMode === 'rich' ? '编辑源码' : '返回富文本'}
+          className={cn(
+            'inline-flex items-center justify-center size-6 rounded-md',
+            'text-muted-foreground hover:text-foreground hover:bg-foreground/[0.06]',
+            'transition-colors',
+          )}
+        >
+          {mdMode === 'rich' ? <Pencil className="size-3.5" /> : <Eye className="size-3.5" />}
+        </button>
       )}
     </div>
   )

@@ -246,7 +246,7 @@ function SidebarBodyWithGesture({
           transition={
             isGestureActive
               ? { duration: 0 }
-              : { type: 'spring', stiffness: 380, damping: 36, mass: 0.7 }
+              : { type: 'spring', stiffness: 520, damping: 36, mass: 0.55 }
           }
           className="absolute inset-0 flex flex-col bg-background"
           style={{ willChange: 'transform' }}

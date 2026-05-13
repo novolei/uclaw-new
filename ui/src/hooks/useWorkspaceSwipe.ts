@@ -22,11 +22,14 @@ import {
 } from '@/atoms/workspace'
 
 /** Fraction of the sidebar width the user must drag past to commit. */
-const COMMIT_FRACTION = 0.28
+const COMMIT_FRACTION = 0.22
+/** Fraction of width before rubber-band damping kicks in. Below this the
+ *  motion is 1:1 with the wheel — most swipes finish before reaching it. */
+const RUBBER_BAND_FROM = 0.55
 /** ms of no wheel events that ends a gesture (settle phase begins). */
-const GESTURE_END_IDLE_MS = 130
+const GESTURE_END_IDLE_MS = 90
 /** ms between two switches (prevents momentum-wheel double-firing). */
-const COOLDOWN_MS = 600
+const COOLDOWN_MS = 350
 /** Horizontal magnitude must dominate vertical by this factor to count. */
 const HORIZONTAL_DOMINANCE = 1.6
 
@@ -50,9 +53,11 @@ function isInsideEditable(target: EventTarget | null): boolean {
 /**
  * Apple-style rubber-band damping: returns a softened delta that grows
  * sub-linearly past the natural travel range. `c` controls the
- * stickiness — Apple's UIScrollView uses ~0.55.
+ * stickiness — Apple's UIScrollView uses ~0.55. We tune lower (0.32)
+ * because uClaw's swipe is shorter and a stiff rubber band reads as
+ * sluggish against the smaller travel.
  */
-function rubberBand(distance: number, range: number, c = 0.55): number {
+function rubberBand(distance: number, range: number, c = 0.32): number {
   if (range <= 0) return 0
   const sign = Math.sign(distance)
   const abs = Math.abs(distance)
@@ -151,12 +156,15 @@ export function useWorkspaceSwipe(scopeRef: React.RefObject<HTMLElement | null>)
       const width = el.clientWidth
       if (currIdx === -1 || width === 0) return
 
-      const commitDist = width * COMMIT_FRACTION
+      // Free-travel band: 1:1 follow up to RUBBER_BAND_FROM (e.g. 55%).
+      // Past that we lightly rubber-band so the user feels the boundary
+      // without it interrupting normal swipes (which finish well before).
+      const freeRange = width * RUBBER_BAND_FROM
       let displayed = -accumRaw // negate so positive accum (rightward swipe) → negative offset (current slides left)
-      if (Math.abs(displayed) > commitDist) {
+      if (Math.abs(displayed) > freeRange) {
         const sign = Math.sign(displayed)
-        const overshoot = Math.abs(displayed) - commitDist
-        displayed = sign * (commitDist + rubberBand(overshoot, width - commitDist))
+        const overshoot = Math.abs(displayed) - freeRange
+        displayed = sign * (freeRange + rubberBand(overshoot, width - freeRange))
       }
 
       // Direction & preview workspace.
