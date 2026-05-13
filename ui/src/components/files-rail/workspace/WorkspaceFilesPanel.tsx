@@ -85,8 +85,16 @@ export function WorkspaceFilesPanel({
         workspaceRootPath={workspaceRootPath}
       />
       <div className="flex-1 min-h-0 overflow-y-auto py-1">
+        {workspaceMount && (
+          <WorkspaceFilesBody
+            mount={workspaceMount}
+            sessionId={sessionId}
+            showSubtitle={attachedMounts.length > 0}
+            onFileClick={onFileClick}
+          />
+        )}
         {attachedMounts.length > 0 && (
-          <section className="mb-2">
+          <section className="mt-2">
             <div className="text-[11px] font-medium text-muted-foreground/80 px-3 pt-2 pb-1">
               附加目录（Agent 可以读取并操作此外部文件夹）
             </div>
@@ -99,14 +107,6 @@ export function WorkspaceFilesPanel({
               />
             ))}
           </section>
-        )}
-        {workspaceMount && (
-          <WorkspaceFilesBody
-            mount={workspaceMount}
-            sessionId={sessionId}
-            showSubtitle={attachedMounts.length > 0}
-            onFileClick={onFileClick}
-          />
         )}
       </div>
       <WorkspacePanelFooter workspaceId={currentWorkspaceId ?? null} />

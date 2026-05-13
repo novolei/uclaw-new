@@ -79,17 +79,17 @@ export function WorkspacePanelFooter({ workspaceId }: Props): React.ReactElement
   const disabledTitle = disabled ? '请先选择工作区' : undefined
 
   return (
-    <footer className="flex-shrink-0 grid grid-cols-2 gap-2 p-2 border-t border-border bg-popover">
+    <footer className="flex-shrink-0 flex items-center gap-2 px-2 py-2 border-t border-border bg-popover">
       <FooterButton
         label="添加文件"
-        icon={<Paperclip className="size-4" />}
+        icon={<Paperclip className="size-3.5" />}
         onClick={handleAddFile}
         disabled={disabled || busy !== null}
         title={disabledTitle}
       />
       <FooterButton
         label="附加文件夹"
-        icon={<FolderPlus className="size-4" />}
+        icon={<FolderPlus className="size-3.5" />}
         onClick={handleAttachDir}
         disabled={disabled || busy !== null}
         title={disabledTitle}
@@ -118,16 +118,16 @@ function FooterButton({
       disabled={disabled}
       title={title}
       className={cn(
-        'flex flex-col items-center justify-center gap-1 py-3',
-        'rounded-md border border-dashed border-border bg-foreground/[0.02]',
-        'text-[12px] text-muted-foreground',
+        'flex-1 inline-flex items-center justify-center gap-1.5 h-7 px-2',
+        'rounded-md border border-border/60 bg-foreground/[0.02]',
+        'text-[11.5px] text-muted-foreground',
         'transition-colors',
-        !disabled && 'hover:bg-foreground/[0.05] hover:border-border/80 hover:text-foreground',
+        !disabled && 'hover:bg-foreground/[0.06] hover:border-border hover:text-foreground',
         disabled && 'opacity-40 cursor-not-allowed',
       )}
     >
-      <span>{label}</span>
       {icon}
+      <span>{label}</span>
     </button>
   )
 }

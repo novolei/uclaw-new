@@ -10,15 +10,16 @@
  */
 
 import * as React from 'react'
-import { useAtom } from 'jotai'
+import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { invoke } from '@tauri-apps/api/core'
-import { ChevronRight, Lock, MoreHorizontal, FolderSearch } from 'lucide-react'
+import { ChevronRight, Lock, MoreHorizontal, FolderSearch, FolderMinus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
@@ -30,11 +31,21 @@ import { FileTypeIcon } from '@/components/file-browser/FileTypeIcon'
 import { FileTreeNode } from './FileTreeNode'
 import { useFileTree } from '@/components/files-rail/hooks/useFileTree'
 import { useFilesRailWatcher } from '@/components/files-rail/hooks/useFilesRailWatcher'
-import { filesRailWatchStart, filesRailWatchStop } from '@/lib/tauri-bridge'
+import {
+  filesRailWatchStart,
+  filesRailWatchStop,
+  detachWorkspaceDirectory,
+  detachSessionDirectory,
+} from '@/lib/tauri-bridge'
 import {
   expandedPathsAtomFamily,
   type MountRoot,
 } from '@/atoms/files-rail-atoms'
+import {
+  workspaceAttachedDirsMapAtom,
+  agentSessionAttachedDirsMapAtom,
+  currentAgentWorkspaceIdAtom,
+} from '@/atoms/agent-atoms'
 import type { TreeNode } from '@/components/files-rail/utils/tree-patch'
 
 interface Props {
@@ -45,11 +56,21 @@ interface Props {
 
 const TOP_EXPAND_KEY = '__top__'  // sentinel for the row's own collapse state
 
+// Mount IDs encode the scope: "workspace-attached:<sid>:<hash>" vs
+// "attached:<sid>:<hash>". We pick the right detach IPC by prefix.
+function isWorkspaceAttached(mountId: string): boolean {
+  return mountId.startsWith('workspace-attached:')
+}
+
 export function AttachedDirRow({ mount, sessionId, onFileClick }: Props): React.ReactElement {
   const [expanded, setExpanded] = useAtom(expandedPathsAtomFamily(mount.id))
   const isExpanded = expanded.has(TOP_EXPAND_KEY)
   const treeApi = useFileTree(mount.id, sessionId)
   useFilesRailWatcher(mount.id, treeApi.applyExternalChanges)
+  const currentWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
+  const setWsAttachedMap = useSetAtom(workspaceAttachedDirsMapAtom)
+  const setSessionAttachedMap = useSetAtom(agentSessionAttachedDirsMapAtom)
+  const [detaching, setDetaching] = React.useState(false)
 
   // Mount the OS watcher only while expanded.
   React.useEffect(() => {
@@ -76,6 +97,43 @@ export function AttachedDirRow({ mount, sessionId, onFileClick }: Props): React.
       })
     }
   }, [mount.path])
+
+  const handleDetach = React.useCallback(async () => {
+    if (detaching) return
+    const isWsAttach = isWorkspaceAttached(mount.id)
+    if (isWsAttach && !currentWorkspaceId) {
+      toast.error('无法解析当前工作区')
+      return
+    }
+    setDetaching(true)
+    try {
+      if (isWsAttach && currentWorkspaceId) {
+        const updated = await detachWorkspaceDirectory(currentWorkspaceId, mount.path)
+        setWsAttachedMap((prev) => {
+          const m = new Map(prev)
+          m.set(currentWorkspaceId, updated)
+          return m
+        })
+      } else if (sessionId) {
+        const updated = await detachSessionDirectory(sessionId, mount.path)
+        setSessionAttachedMap((prev) => {
+          const m = new Map(prev)
+          m.set(sessionId, updated)
+          return m
+        })
+      } else {
+        toast.error('无法识别附加目录所属的会话')
+        return
+      }
+      toast.success(`已移除附加: ${mount.label}`)
+    } catch (err) {
+      toast.error('移除附加失败', {
+        description: err instanceof Error ? err.message : String(err),
+      })
+    } finally {
+      setDetaching(false)
+    }
+  }, [detaching, mount.id, mount.path, mount.label, currentWorkspaceId, sessionId, setWsAttachedMap, setSessionAttachedMap])
 
   const isChildExpanded = React.useCallback(
     (rel: string) => expanded.has(rel),
@@ -154,6 +212,18 @@ export function AttachedDirRow({ mount, sessionId, onFileClick }: Props): React.
             >
               <FolderSearch />
               在文件夹中显示
+            </DropdownMenuItem>
+            <DropdownMenuSeparator className="my-0.5" />
+            <DropdownMenuItem
+              className="text-xs py-1 [&>svg]:size-3.5 text-destructive focus:text-destructive"
+              disabled={detaching}
+              onSelect={(e) => {
+                e.preventDefault()
+                void handleDetach()
+              }}
+            >
+              <FolderMinus />
+              {detaching ? '移除中…' : '移除附加'}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
