@@ -9,7 +9,9 @@
 
 #![allow(dead_code)]
 
+pub mod commands;
 pub mod openflow;
+pub mod settings;
 
 /// STT 转写结果（OpenFlow / SenseVoice engine 共享）。
 #[derive(Debug, Clone)]
