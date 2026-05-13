@@ -29,6 +29,7 @@ import { AgentStatusBar } from './AgentStatusBar'
 import { AskUserBanner } from './AskUserBanner'
 import { ExitPlanModeBanner } from './ExitPlanModeBanner'
 import { PlanModeDashedBorder } from './PlanModeDashedBorder'
+import { PetWidget } from './PetWidget'
 import { ProviderModelSelector } from '@/components/chat/ProviderModelSelector'
 import { AttachmentPreviewItem } from '@/components/chat/AttachmentPreviewItem'
 import { RichTextInput } from '@/components/ai-elements/rich-text-input'
@@ -1482,6 +1483,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             )}
 
             <div className="relative">
+              <PetWidget />
               <RichTextInput
                 value={inputContent}
                 onChange={handleComposerChange}
