@@ -100,7 +100,10 @@ export function useWorkspaceSwipe(scopeRef: React.RefObject<HTMLElement | null>)
       }
 
       e.preventDefault()
-      void selectWorkspace(target.id)
+      // Pass gesture direction explicitly so the wrap (last → first)
+      // still slides in the gesture direction instead of inverting
+      // because of sortOrder comparison.
+      void selectWorkspace({ id: target.id, direction: step > 0 ? 'forward' : 'backward' })
       cooldownUntil = now + COOLDOWN_MS
       accumDeltaX = 0
     }
@@ -146,7 +149,7 @@ export function useWorkspaceArrowSwitch(): void {
       if (!next || next.id === activeIdRef.current) return
 
       e.preventDefault()
-      void selectWorkspace(next.id)
+      void selectWorkspace({ id: next.id, direction: step > 0 ? 'forward' : 'backward' })
     }
 
     window.addEventListener('keydown', onKey)

@@ -63,17 +63,25 @@ export function VideoRenderer({ resolvedPath, name }: VideoRendererProps): React
   }
 
   return (
-    <div className="flex items-center justify-center h-full overflow-auto p-3 bg-popover">
-      <video
-        key={src}
-        src={src}
-        controls
-        preload="metadata"
-        onError={() => setErrored(true)}
-        className="max-w-full max-h-full rounded-md shadow-md outline-none"
+    <div className="flex items-center justify-center h-full overflow-auto p-6 bg-popover">
+      {/* Wrapper holds the rounded clip + ring + shadow stack so the
+          native <video> controls (the dark pill at the bottom + volume
+          puck on top-right) inherit the rounded corners. Black bg fills
+          letterbox bars when the video aspect doesn't match the slot. */}
+      <div
+        className="relative max-w-full max-h-full rounded-2xl overflow-hidden bg-black ring-1 ring-foreground/[0.06] shadow-[0_18px_48px_-12px_rgba(0,0,0,0.35),0_8px_16px_-8px_rgba(0,0,0,0.25)]"
       >
-        {name}
-      </video>
+        <video
+          key={src}
+          src={src}
+          controls
+          preload="metadata"
+          onError={() => setErrored(true)}
+          className="block max-w-full max-h-[78vh] outline-none"
+        >
+          {name}
+        </video>
+      </div>
     </div>
   )
 }
