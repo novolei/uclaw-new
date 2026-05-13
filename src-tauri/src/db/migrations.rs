@@ -1025,6 +1025,46 @@ pub fn run_v20(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     tx.commit()
 }
 
+const SQL_V21: &str = "
+CREATE TABLE IF NOT EXISTS automation_subscriptions (
+    id            TEXT PRIMARY KEY,
+    spec_id       TEXT NOT NULL REFERENCES automation_specs(id) ON DELETE CASCADE,
+    source_type   TEXT NOT NULL,
+    config_json   TEXT NOT NULL,
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    last_fired_at INTEGER,
+    created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sub_spec        ON automation_subscriptions(spec_id);
+CREATE INDEX IF NOT EXISTS idx_sub_source_type ON automation_subscriptions(source_type);
+
+CREATE TABLE IF NOT EXISTS automation_memory (
+    spec_id                 TEXT PRIMARY KEY REFERENCES automation_specs(id) ON DELETE CASCADE,
+    last_updated_at         INTEGER NOT NULL,
+    compacted_archives_json TEXT NOT NULL DEFAULT '[]',
+    bytes                   INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS automation_escalations (
+    id           TEXT PRIMARY KEY,
+    spec_id      TEXT NOT NULL REFERENCES automation_specs(id) ON DELETE CASCADE,
+    activity_id  TEXT NOT NULL REFERENCES automation_activities(id) ON DELETE CASCADE,
+    question     TEXT NOT NULL,
+    choices_json TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'waiting',
+    user_choice  TEXT,
+    user_note    TEXT,
+    created_at   INTEGER NOT NULL,
+    responded_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_escalation_spec   ON automation_escalations(spec_id);
+CREATE INDEX IF NOT EXISTS idx_escalation_status ON automation_escalations(status);
+";
+
+pub fn run_v21(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(SQL_V21)
+}
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -1168,6 +1208,9 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     // entirely and partial execution would leave an inconsistent schema.
     tracing::debug!("Running migration V20: Humane automation schema rewrite");
     run_v20(conn)?;
+    // V21: three Humane behavior tables that FK into the V20 schema.
+    tracing::debug!("Running migration V21: automation_subscriptions, automation_memory, automation_escalations");
+    run_v21(conn)?;
     tracing::info!("Database migrations complete");
     Ok(())
 }
@@ -1649,6 +1692,36 @@ mod tests {
         assert_eq!(trigger_type2, "manual");
         assert_eq!(status2, "failed");
         assert!(outcome2.is_none(), "failed activity should have NULL report_outcome");
+    }
+
+    /// V21 creates automation_subscriptions, automation_memory, and
+    /// automation_escalations after V20 has established the parent tables.
+    #[test]
+    fn v21_creates_three_behavior_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Stand up the minimal schema V21 depends on: V1 (spaces/agent_sessions
+        // foundation) + V7 (legacy automation tables V20 needs to migrate from).
+        conn.execute_batch(super::V1_INITIAL).unwrap();
+        conn.execute_batch(super::V7_AUTOMATIONS).unwrap();
+        // Apply V20 to produce the Humane-shaped parent tables.
+        super::run_v20(&conn).unwrap();
+        // Apply V21 under test.
+        super::run_v21(&conn).unwrap();
+
+        for table in [
+            "automation_subscriptions",
+            "automation_memory",
+            "automation_escalations",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "table {} missing after V21", table);
+        }
     }
 
     /// V20 produces a status='error' stub for a spec whose TOML content is
