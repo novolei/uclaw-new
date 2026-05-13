@@ -112,7 +112,15 @@ export const autoPreviewDismissedSessionsAtom = atom<Set<string>>(new Set<string
  */
 export const pendingWriteToolsAtom = atom<Map<string, Map<string, string>>>(new Map())
 
-/** Write-only action: close the panel, keep the selection for re-open. */
+/**
+ * Write-only action: close the panel, keep the selection for re-open.
+ *
+ * Also stamps the current target's session into autoPreviewDismissedSessionsAtom
+ * so the auto-preview listener stays quiet for the rest of the turn. This is
+ * the manual-dismiss path (close button + Esc); workspace-switch and similar
+ * programmatic closes bypass this action by writing previewPanelOpenAtom
+ * directly.
+ */
 export const closePreviewAction = atom(null, (get, set) => {
   const currentTarget = get(selectedPreviewFileAtom)
   const buffers = get(dirtyBuffersAtom)
@@ -125,6 +133,15 @@ export const closePreviewAction = atom(null, (get, set) => {
     const next = new Map(buffers)
     next.delete(currentPath)
     set(dirtyBuffersAtom, next)
+  }
+  const sid = currentTarget?.sessionId ?? null
+  if (sid) {
+    set(autoPreviewDismissedSessionsAtom, (prev: Set<string>) => {
+      if (prev.has(sid)) return prev
+      const next = new Set(prev)
+      next.add(sid)
+      return next
+    })
   }
   set(previewPanelOpenAtom, false)
 })
