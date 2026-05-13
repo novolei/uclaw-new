@@ -24,7 +24,7 @@ export const uclawCmTheme = EditorView.theme(
       backgroundColor: 'hsl(var(--popover))',
       fontFamily:
         'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
-      fontSize: '12.5px',
+      fontSize: '12px',
       height: '100%',
     },
     '.cm-content': {

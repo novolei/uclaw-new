@@ -17,6 +17,7 @@ import {
   openFolderDialog,
 } from '@/lib/tauri-bridge'
 import { workspaceAttachedDirsMapAtom } from '@/atoms/agent-atoms'
+import { bumpFilesRailRefreshAtom } from '@/atoms/files-rail-atoms'
 
 interface Props {
   workspaceId: string | null
@@ -24,6 +25,7 @@ interface Props {
 
 export function WorkspacePanelFooter({ workspaceId }: Props): React.ReactElement {
   const setWsAttachedMap = useSetAtom(workspaceAttachedDirsMapAtom)
+  const bumpRefresh = useSetAtom(bumpFilesRailRefreshAtom)
   const [busy, setBusy] = React.useState<'addFile' | 'attachDir' | null>(null)
 
   const handleAddFile = React.useCallback(async () => {
@@ -52,6 +54,12 @@ export function WorkspacePanelFooter({ workspaceId }: Props): React.ReactElement
       }
       if (added > 0) {
         toast.success(`已添加 ${added} 个文件到工作区`)
+        // copy_file_into_workspace writes to disk but the OS-level
+        // notify watcher can race with the just-finished UI flow on
+        // some hosts. Bump the refresh tick so every visible mount
+        // reloads its tree immediately — same mechanism the header
+        // ↻ button uses.
+        bumpRefresh()
       }
     } catch (err) {
       toast.error('打开文件选择器失败', {
@@ -60,7 +68,7 @@ export function WorkspacePanelFooter({ workspaceId }: Props): React.ReactElement
     } finally {
       setBusy(null)
     }
-  }, [workspaceId, busy])
+  }, [workspaceId, busy, bumpRefresh])
 
   const handleAttachDir = React.useCallback(async () => {
     if (!workspaceId || busy) return
