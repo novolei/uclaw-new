@@ -100,7 +100,7 @@ export const autoPreviewEnabledAtom = atomWithStorage<boolean>(
  *
  * Not persisted — per-turn intent should not survive reload.
  */
-export const autoPreviewDismissedSessionsAtom = atom<Set<string>>(new Set())
+export const autoPreviewDismissedSessionsAtom = atom<Set<string>>(new Set<string>())
 
 /**
  * Map<sessionId, Map<toolCallId, absolutePath>> — write tool calls

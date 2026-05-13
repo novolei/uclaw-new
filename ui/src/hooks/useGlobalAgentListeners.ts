@@ -4,6 +4,7 @@ import { useStore } from 'jotai'
 /** Jotai 没有公开导出 Store 类型，这里通过 useStore 的返回类型推导 */
 type Store = ReturnType<typeof useStore>
 import { listen } from '@tauri-apps/api/event'
+import { invoke } from '@tauri-apps/api/core'
 import { toast } from 'sonner'
 import {
   agentStreamingStatesAtom,
@@ -22,11 +23,39 @@ import {
   type AgentStreamErrorPayload,
   type BrowserPreviewState,
 } from '@/atoms/agent-atoms'
+import {
+  autoPreviewEnabledAtom,
+  autoPreviewDismissedSessionsAtom,
+  pendingWriteToolsAtom,
+  openPreviewAction,
+  type PreviewFileTarget,
+} from '@/atoms/preview-panel-atoms'
 import { workspaceSessionsAtom, updateSessionTitleAtom, type WorkspaceSession } from '@/atoms/workspace'
 import { tabsAtom } from '@/atoms/tab-atoms'
 import type { AgentSessionMeta } from '@/lib/agent-types'
 import type { TabItem } from '@/atoms/tab-atoms'
 import { browserTakeScreenshot } from '@/lib/tauri-bridge'
+
+/**
+ * Per-session monotonic counter used to drop stale async path resolutions.
+ * Each tool_start bumps the session's seq; the resolution callback captures
+ * the seq it saw and refuses to apply if the session's current seq has
+ * moved on (user navigated, stream-complete cleared state, etc.). Over-Proma
+ * improvement — Proma races and occasionally opens the wrong file.
+ */
+const autoPreviewSeq = new Map<string, number>()
+
+/** Resolved write targets, keyed by toolCallId. Populated when
+ *  preview_resolve_chips returns; read at tool_result to open the panel. */
+const resolvedWriteTargets = new Map<string, PreviewFileTarget>()
+
+interface ChipResolutionIpcPayload {
+  input: string
+  exists: boolean
+  mountId: string | null
+  relPath: string | null
+  absolutePath: string | null
+}
 
 function createInitialStreamState(): AgentStreamState {
   return {
@@ -57,6 +86,8 @@ if (import.meta.hot) {
     cleanupFns = []
     initialized = false
     lastReasoningSeq.clear()
+    autoPreviewSeq.clear()
+    resolvedWriteTargets.clear()
   })
 }
 
@@ -200,6 +231,24 @@ function startAgentListeners(store: Store): void {
         next.add(sid)
         return next
       })
+
+      // Re-arm auto-preview for the next turn: clear the per-session
+      // dismiss memory and drop any stuck pending-writes entries. The
+      // seq stays so any still-in-flight resolver call from this turn
+      // sees a stale seq and drops itself.
+      store.set(autoPreviewDismissedSessionsAtom, (prev: Set<string>) => {
+        if (!prev.has(sid)) return prev
+        const next = new Set(prev)
+        next.delete(sid)
+        return next
+      })
+      store.set(pendingWriteToolsAtom, (prev) => {
+        if (!prev.has(sid)) return prev
+        const next = new Map(prev)
+        next.delete(sid)
+        return next
+      })
+      autoPreviewSeq.set(sid, (autoPreviewSeq.get(sid) ?? 0) + 1)
     })
   )
 
@@ -302,6 +351,107 @@ function startAgentListeners(store: Store): void {
         next.set(sid, { ...existing, toolActivities: activities })
         return next
       })
+    })
+  )
+
+  // auto-preview: when a write/edit tool fires, auto-open the preview panel
+  // for its target file. Path is pre-resolved on tool_start (so the panel
+  // open at tool_result is instant); panel actually opens on tool_result so
+  // the displayed content is the post-write state.
+  //
+  // Backend tools declare their target by overriding Tool::preview_target_path
+  // (see agent/tools/tool.rs). The dispatcher includes it as `previewTarget`
+  // in the activity payload, so this listener never needs a hardcoded
+  // WRITE_TOOLS Set (Proma's main maintenance footgun).
+  reg(
+    listen<{ conversationId: string; activity: any }>('chat:stream-tool-activity', ({ payload }) => {
+      const sid = payload.conversationId
+      const ev = payload.activity
+
+      if (ev.type === 'tool_start') {
+        const target = ev.previewTarget
+        const toolCallId = ev.toolCallId
+        if (typeof target !== 'string' || !target || !toolCallId) return
+
+        // Bump seq for this session and capture for the async resolver.
+        const seq = (autoPreviewSeq.get(sid) ?? 0) + 1
+        autoPreviewSeq.set(sid, seq)
+
+        // Mark write in flight immediately so the progress indicator can
+        // render even before path resolution completes. The string stored
+        // is the raw (unresolved) path; the resolver will overwrite with
+        // the absolute path once it lands.
+        store.set(pendingWriteToolsAtom, (prev) => {
+          const next = new Map(prev)
+          const inner = new Map(next.get(sid) ?? new Map<string, string>())
+          inner.set(toolCallId, target)
+          next.set(sid, inner)
+          return next
+        })
+
+        // Resolve path → mount/relPath via the chip-resolver IPC. Batched
+        // by the backend; a single call here is fine. Drop the result if
+        // the seq has moved (session changed, stream completed, etc.).
+        void invoke<ChipResolutionIpcPayload[]>('preview_resolve_chips', {
+          paths: [target],
+          sessionId: sid,
+        })
+          .then((results) => {
+            if (autoPreviewSeq.get(sid) !== seq) return
+            const r = results[0]
+            if (!r || !r.exists || !r.mountId || !r.relPath || !r.absolutePath) return
+            const name = r.relPath.split('/').pop() ?? r.relPath
+            const resolved: PreviewFileTarget = {
+              mountId: r.mountId,
+              relPath: r.relPath,
+              name,
+              sessionId: sid,
+              absolutePath: r.absolutePath,
+            }
+            resolvedWriteTargets.set(toolCallId, resolved)
+            // Also update pendingWriteTools with the absolute path so the
+            // progress indicator can match against PreviewSurface.target.
+            store.set(pendingWriteToolsAtom, (prev) => {
+              const inner = prev.get(sid)
+              if (!inner || !inner.has(toolCallId)) return prev
+              const next = new Map(prev)
+              const nextInner = new Map(inner)
+              nextInner.set(toolCallId, r.absolutePath!)
+              next.set(sid, nextInner)
+              return next
+            })
+          })
+          .catch(() => { /* swallow — pending entry will clear on tool_result */ })
+      } else if (ev.type === 'tool_result') {
+        const toolCallId = ev.toolCallId
+        if (!toolCallId) return
+        const resolved = resolvedWriteTargets.get(toolCallId)
+        resolvedWriteTargets.delete(toolCallId)
+
+        // Clear pending entry regardless of success — the progress
+        // indicator should stop on either path.
+        store.set(pendingWriteToolsAtom, (prev) => {
+          const inner = prev.get(sid)
+          if (!inner || !inner.has(toolCallId)) return prev
+          const next = new Map(prev)
+          const nextInner = new Map(inner)
+          nextInner.delete(toolCallId)
+          if (nextInner.size === 0) next.delete(sid)
+          else next.set(sid, nextInner)
+          return next
+        })
+
+        // Don't pop the panel if the tool failed — agent will likely retry.
+        if (ev.isError) return
+        if (!resolved) return
+
+        // Gate: user preference + dismiss memory + still viewing this session.
+        if (!store.get(autoPreviewEnabledAtom)) return
+        if (store.get(autoPreviewDismissedSessionsAtom).has(sid)) return
+        if (store.get(currentAgentSessionIdAtom) !== sid) return
+
+        store.set(openPreviewAction, resolved)
+      }
     })
   )
 
