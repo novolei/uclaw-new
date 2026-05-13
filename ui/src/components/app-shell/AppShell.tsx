@@ -40,7 +40,7 @@ import { attachWorkspaceDirectory, pathIsDirectory, copyFileIntoWorkspace, onBud
 import { workspaceFilesVersionAtom, workspaceAttachedDirsMapAtom } from '@/atoms/agent-atoms'
 import { firedBudgetThresholdsAtom } from '@/atoms/cost'
 import { TabSessionSyncer } from './TabSessionSyncer'
-import { useWorkspaceSwipe } from '@/hooks/useWorkspaceSwipe'
+import { useWorkspaceArrowSwitch } from '@/hooks/useWorkspaceSwipe'
 import { WorkspaceTabCleaner } from './WorkspaceTabCleaner'
 
 export interface AppShellProps {
@@ -55,11 +55,11 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
   const showRightPanel = appMode === 'agent' && !!currentSessionId
 
-  // Magic Mouse / trackpad horizontal swipe → switch workspace.
-  // Mounted at root so the gesture is recognized anywhere except inside
-  // editable text surfaces (chat input, code editor). See hook for
-  // threshold / cooldown details.
-  useWorkspaceSwipe()
+  // Shift+ArrowLeft / Shift+ArrowRight to cycle workspaces (Windows /
+  // external-keyboard fallback for users without a touchpad).
+  // Trackpad swipe is scoped to the LeftSidebar — see useWorkspaceSwipe
+  // mount inside LeftSidebar.tsx.
+  useWorkspaceArrowSwitch()
 
   // Tab navigation atoms — used by handleSearchResultSelect
   const [tabs, setTabs] = useAtom(tabsAtom)

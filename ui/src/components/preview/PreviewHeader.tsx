@@ -133,27 +133,30 @@ export function PreviewHeader({ target }: PreviewHeaderProps): React.ReactElemen
     <header
       className={cn(
         'flex items-center gap-2 flex-shrink-0',
-        'h-[44px] px-3',
-        'border-b border-border bg-popover/95 backdrop-blur-[2px]',
+        'h-[34px] px-3',
+        'border-b border-border tabbar-bg',
       )}
     >
       <FileTypeIcon
         name={target?.name ?? 'unknown'}
         isDirectory={false}
-        size={15}
+        size={14}
         className="shrink-0"
       />
-      <div className="flex-1 min-w-0 flex flex-col leading-tight">
-        <div className="text-[13px] font-medium text-foreground truncate">
+      <div className="flex-1 min-w-0 flex items-baseline gap-2">
+        <span
+          className="text-[12.5px] font-medium text-foreground truncate"
+          title={absolutePath || (target?.name ?? '')}
+        >
           {target?.name ?? '未选中文件'}
-        </div>
+        </span>
         {prettyParent && (
-          <div
-            className="text-[10.5px] text-muted-foreground/75 truncate font-mono tabular-nums"
+          <span
+            className="hidden md:inline text-[10.5px] text-muted-foreground/70 truncate font-mono tabular-nums"
             title={absolutePath}
           >
             {prettyParent}
-          </div>
+          </span>
         )}
       </div>
       {absolutePath && (

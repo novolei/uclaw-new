@@ -8,10 +8,11 @@
  */
 
 import * as React from 'react'
-import { useAtom } from 'jotai'
+import { useAtom, useAtomValue } from 'jotai'
 import {
   expandedPathsAtomFamily,
   fileTreeAtomFamily,
+  filesRailRefreshTickAtom,
 } from '@/atoms/files-rail-atoms'
 import { filesRailReadDir } from '@/lib/tauri-bridge'
 import {
@@ -44,9 +45,21 @@ export function useFileTree(mountId: string, sessionId: string | null = null): U
     }
   }, [mountId, sessionId, setTree])
 
+  // Header ↻ button bumps filesRailRefreshTickAtom; observe it so every
+  // visible mount refetches when the tick changes (idle reload remains
+  // the trigger for first-mount fetches).
+  const refreshTick = useAtomValue(filesRailRefreshTickAtom)
+  const prevTickRef = React.useRef(refreshTick)
   React.useEffect(() => {
-    if (tree.status === 'idle') void reload()
-  }, [tree.status, reload])
+    if (tree.status === 'idle') {
+      void reload()
+      return
+    }
+    if (refreshTick !== prevTickRef.current) {
+      prevTickRef.current = refreshTick
+      void reload()
+    }
+  }, [tree.status, reload, refreshTick])
 
   const isExpanded = React.useCallback(
     (relPath: string) => expanded.has(relPath),

@@ -81,13 +81,44 @@ export function TextEditor(props: EditorProps): React.ReactElement {
     filePathRef.current = filePath
   }, [onSave, filePath])
 
-  const handleSave = React.useCallback(async () => {
+  // In-flight save guard mirrors MarkdownRichEditor's: keeping more than
+  // one save in-flight against the same file races their stale
+  // expected_mtime_ms values and produces phantom conflict warnings.
+  const savingRef = React.useRef(false)
+  const pendingContentRef = React.useRef<string | null>(null)
+
+  const handleSave = React.useCallback(async (): Promise<SaveOutcome> => {
     const content = viewRef.current?.state.doc.toString() ?? ''
-    const outcome = await onSaveRef.current(content)
-    if (outcome.kind === 'saved') {
-      recordSelfWrite({ filePath: filePathRef.current, mtimeMs: outcome.mtimeMs })
+    if (savingRef.current) {
+      // Already saving — stash the latest snapshot for the loop owner.
+      pendingContentRef.current = content
+      // Synthesize a "saved" outcome for the auto-debounce caller; the
+      // loop will produce the real outcome that bumps mtime / dirty state.
+      return { kind: 'saved', mtimeMs: 0 }
     }
-    return outcome
+    savingRef.current = true
+    let lastOutcome: SaveOutcome = { kind: 'saved', mtimeMs: 0 }
+    try {
+      let toSave: string | null = content
+      while (toSave !== null) {
+        const md: string = toSave
+        const outcome = await onSaveRef.current(md)
+        lastOutcome = outcome
+        if (outcome.kind === 'saved') {
+          recordSelfWrite({ filePath: filePathRef.current, mtimeMs: outcome.mtimeMs })
+        } else {
+          // Conflict / needs-approval / error — stop the loop, surface the
+          // outcome to the caller (Cmd-S sees it for explicit-save mode).
+          break
+        }
+        const next: string | null = pendingContentRef.current
+        pendingContentRef.current = null
+        toSave = next !== null && next !== md ? next : null
+      }
+    } finally {
+      savingRef.current = false
+    }
+    return lastOutcome
   }, [recordSelfWrite])
 
   // Build the initial state ONCE on filePath change (re-mount on file switch)

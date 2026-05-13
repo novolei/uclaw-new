@@ -56,6 +56,27 @@ export const activeWorkspaceCwdAtom = atom<string | null>((get) => {
  */
 export const workspaceSwitchDirectionAtom = atom<'forward' | 'backward'>('forward')
 
+/**
+ * Active swipe-gesture state. Non-null while the user is actively
+ * dragging the LeftSidebar to switch workspaces; null when at rest
+ * (so AnimatePresence's normal cross-pass animation takes over).
+ *
+ * `offsetPx` is the *visual* translation of the current workspace
+ * (after rubber-band damping). Positive = current slides RIGHT
+ * (previous workspace peeks in from the LEFT); negative = current
+ * slides LEFT (next workspace peeks in from the RIGHT).
+ *
+ * `previewWorkspaceId` is which workspace is currently being
+ * revealed alongside — needed because the renderer can't recompute
+ * direction every frame without knowing the gesture intent.
+ */
+export interface SwipeGestureState {
+  offsetPx: number
+  containerWidth: number
+  previewWorkspaceId: string | null
+}
+export const swipeGestureAtom = atom<SwipeGestureState | null>(null)
+
 // Sessions grouped by workspace id: { [workspaceId]: WorkspaceSession[] }
 export const workspaceSessionsAtom = atom<Record<string, WorkspaceSession[]>>({})
 
@@ -122,16 +143,28 @@ export const reorderWorkspacesAtom = atom(
 // Action: select a workspace and persist to backend
 // Also computes the slide direction (forward vs backward) BEFORE the
 // active workspace flips, so the UI animates from the correct side.
+//
+// Callers that know the user's gesture direction (swipe / arrow keys
+// that wrap around) can pass `{ id, direction }` to override the
+// sortOrder-comparison heuristic — otherwise wrapping from the last
+// workspace forward to the first would visually slide BACKWARD because
+// the new sortOrder index is lower.
 export const selectWorkspaceAtom = atom(
   null,
-  async (get, set, id: string) => {
+  async (get, set, input: string | { id: string; direction?: 'forward' | 'backward' }) => {
+    const id = typeof input === 'string' ? input : input.id
+    const dirOverride = typeof input === 'object' ? input.direction : undefined
     const prevId = get(activeWorkspaceIdAtom)
     if (prevId !== id) {
-      const list = get(workspacesAtom)
-      const prevIdx = list.findIndex((w) => w.id === prevId)
-      const currIdx = list.findIndex((w) => w.id === id)
-      if (prevIdx !== -1 && currIdx !== -1) {
-        set(workspaceSwitchDirectionAtom, currIdx > prevIdx ? 'forward' : 'backward')
+      if (dirOverride) {
+        set(workspaceSwitchDirectionAtom, dirOverride)
+      } else {
+        const list = get(workspacesAtom)
+        const prevIdx = list.findIndex((w) => w.id === prevId)
+        const currIdx = list.findIndex((w) => w.id === id)
+        if (prevIdx !== -1 && currIdx !== -1) {
+          set(workspaceSwitchDirectionAtom, currIdx > prevIdx ? 'forward' : 'backward')
+        }
       }
     }
     set(activeWorkspaceIdAtom, id)

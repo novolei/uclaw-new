@@ -15,7 +15,9 @@ import { visibleTabsAtom, activeTabIdAtom } from '@/atoms/tab-atoms'
 import {
   previewPanelOpenAtom,
   previewPanelSplitRatioAtom,
+  selectedPreviewFileAtom,
 } from '@/atoms/preview-panel-atoms'
+import { currentAgentWorkspaceIdAtom } from '@/atoms/agent-atoms'
 import { PreviewPanel } from '@/components/preview/PreviewPanel'
 import { Panel } from '@/components/app-shell/Panel'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
@@ -31,8 +33,24 @@ export function MainArea(): React.ReactElement {
   const activeTabId = useAtomValue(activeTabIdAtom)
   const setActiveTabId = useSetAtom(activeTabIdAtom)
   const previewOpen = useAtomValue(previewPanelOpenAtom)
+  const setPreviewOpen = useSetAtom(previewPanelOpenAtom)
+  const setSelectedPreviewFile = useSetAtom(selectedPreviewFileAtom)
+  const currentWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
   const [splitRatio, setSplitRatio] = useAtom(previewPanelSplitRatioAtom)
   const draggingRef = React.useRef(false)
+
+  // Reset the preview panel when the active workspace changes. The previously
+  // selected file lived in the OLD workspace's mount tree — keeping the panel
+  // open after switch surfaces a stale file (or a noisy "loading" state for a
+  // path that the new workspace can't resolve). Future opens (via openPreview
+  // from the rail) re-mount the panel with the new file.
+  const prevWorkspaceRef = React.useRef(currentWorkspaceId)
+  React.useEffect(() => {
+    if (prevWorkspaceRef.current === currentWorkspaceId) return
+    prevWorkspaceRef.current = currentWorkspaceId
+    setPreviewOpen(false)
+    setSelectedPreviewFile(null)
+  }, [currentWorkspaceId, setPreviewOpen, setSelectedPreviewFile])
 
   // [FLASH-DEBUG] 监控 tabs 变化，如果 tabs.length 变为 0 说明所有标签被卸载
   React.useEffect(() => {

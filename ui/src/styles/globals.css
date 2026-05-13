@@ -1946,3 +1946,159 @@ html[data-chat-font-size="lg"] .chat-content td { font-size: 16.5px; }
   background: hsl(var(--muted) / 0.4);
   font-weight: 600;
 }
+
+/* ─── TipTap markdown preview — code-block + lowlight syntax highlighting ─── */
+/* The preview wraps EditorContent in `prose prose-sm`, which on its own ships
+   a near-white code-block bg + near-white text under light themes — making
+   code invisible. We override the prose tokens with explicit theme-aware
+   foreground/background overlays, then style the lowlight `.hljs-*` tokens
+   with hsl() values that read on both light and dark backgrounds. */
+
+.tiptap-markdown-preview pre {
+  background: hsl(var(--foreground) / 0.045) !important;
+  border: 1px solid hsl(var(--border) / 0.6);
+  color: hsl(var(--foreground)) !important;
+  border-radius: 6px;
+  padding: 0.85em 1em;
+  overflow-x: auto;
+}
+
+.tiptap-markdown-preview pre code,
+.tiptap-markdown-preview pre code.hljs {
+  background: transparent !important;
+  color: inherit !important;
+  padding: 0 !important;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.tiptap-markdown-preview :not(pre) > code {
+  background: hsl(var(--foreground) / 0.07);
+  color: hsl(var(--foreground));
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+/* Lowlight emits hljs-* class names but ships no CSS theme. These rules
+   give the most common tokens a visible color across all 11 themes. Hues
+   chosen at ~45-50% lightness so they read on both light and dark surfaces;
+   dark-theme overrides bump lightness for the offenders that sit too dim. */
+
+.tiptap-markdown-preview .hljs-comment,
+.tiptap-markdown-preview .hljs-quote {
+  color: hsl(var(--muted-foreground));
+  font-style: italic;
+}
+
+.tiptap-markdown-preview .hljs-keyword,
+.tiptap-markdown-preview .hljs-selector-tag,
+.tiptap-markdown-preview .hljs-literal,
+.tiptap-markdown-preview .hljs-section,
+.tiptap-markdown-preview .hljs-link {
+  color: hsl(212 80% 47%);
+  font-weight: 500;
+}
+
+.tiptap-markdown-preview .hljs-string,
+.tiptap-markdown-preview .hljs-doctag,
+.tiptap-markdown-preview .hljs-regexp {
+  color: hsl(140 50% 38%);
+}
+
+.tiptap-markdown-preview .hljs-number,
+.tiptap-markdown-preview .hljs-symbol,
+.tiptap-markdown-preview .hljs-bullet,
+.tiptap-markdown-preview .hljs-meta {
+  color: hsl(20 80% 45%);
+}
+
+.tiptap-markdown-preview .hljs-built_in,
+.tiptap-markdown-preview .hljs-type,
+.tiptap-markdown-preview .hljs-class .hljs-title {
+  color: hsl(280 50% 50%);
+}
+
+.tiptap-markdown-preview .hljs-title,
+.tiptap-markdown-preview .hljs-name,
+.tiptap-markdown-preview .hljs-tag {
+  color: hsl(340 60% 47%);
+}
+
+.tiptap-markdown-preview .hljs-attr,
+.tiptap-markdown-preview .hljs-attribute,
+.tiptap-markdown-preview .hljs-variable,
+.tiptap-markdown-preview .hljs-template-variable {
+  color: hsl(35 80% 42%);
+}
+
+.tiptap-markdown-preview .hljs-deletion {
+  color: hsl(0 70% 50%);
+  background: hsl(0 70% 50% / 0.08);
+}
+
+.tiptap-markdown-preview .hljs-addition {
+  color: hsl(140 50% 35%);
+  background: hsl(140 50% 35% / 0.08);
+}
+
+/* Dark themes: bump lightness on common tokens so they don't sit dim
+   against dark popovers. */
+.theme-ocean-dark .tiptap-markdown-preview .hljs-keyword,
+.theme-forest-dark .tiptap-markdown-preview .hljs-keyword,
+.theme-slate-dark .tiptap-markdown-preview .hljs-keyword,
+.theme-qingye .tiptap-markdown-preview .hljs-keyword,
+.theme-black .tiptap-markdown-preview .hljs-keyword,
+.theme-the-finals .tiptap-markdown-preview .hljs-keyword,
+.dark .tiptap-markdown-preview .hljs-keyword {
+  color: hsl(212 90% 70%);
+}
+
+.theme-ocean-dark .tiptap-markdown-preview .hljs-string,
+.theme-forest-dark .tiptap-markdown-preview .hljs-string,
+.theme-slate-dark .tiptap-markdown-preview .hljs-string,
+.theme-qingye .tiptap-markdown-preview .hljs-string,
+.theme-black .tiptap-markdown-preview .hljs-string,
+.theme-the-finals .tiptap-markdown-preview .hljs-string,
+.dark .tiptap-markdown-preview .hljs-string {
+  color: hsl(140 50% 65%);
+}
+
+.theme-ocean-dark .tiptap-markdown-preview .hljs-number,
+.theme-forest-dark .tiptap-markdown-preview .hljs-number,
+.theme-slate-dark .tiptap-markdown-preview .hljs-number,
+.theme-qingye .tiptap-markdown-preview .hljs-number,
+.theme-black .tiptap-markdown-preview .hljs-number,
+.theme-the-finals .tiptap-markdown-preview .hljs-number,
+.dark .tiptap-markdown-preview .hljs-number {
+  color: hsl(28 90% 65%);
+}
+
+.theme-ocean-dark .tiptap-markdown-preview .hljs-built_in,
+.theme-forest-dark .tiptap-markdown-preview .hljs-built_in,
+.theme-slate-dark .tiptap-markdown-preview .hljs-built_in,
+.theme-qingye .tiptap-markdown-preview .hljs-built_in,
+.theme-black .tiptap-markdown-preview .hljs-built_in,
+.theme-the-finals .tiptap-markdown-preview .hljs-built_in,
+.dark .tiptap-markdown-preview .hljs-built_in {
+  color: hsl(280 60% 75%);
+}
+
+.theme-ocean-dark .tiptap-markdown-preview .hljs-name,
+.theme-forest-dark .tiptap-markdown-preview .hljs-name,
+.theme-slate-dark .tiptap-markdown-preview .hljs-name,
+.theme-qingye .tiptap-markdown-preview .hljs-name,
+.theme-black .tiptap-markdown-preview .hljs-name,
+.theme-the-finals .tiptap-markdown-preview .hljs-name,
+.theme-ocean-dark .tiptap-markdown-preview .hljs-tag,
+.theme-forest-dark .tiptap-markdown-preview .hljs-tag,
+.theme-slate-dark .tiptap-markdown-preview .hljs-tag,
+.theme-qingye .tiptap-markdown-preview .hljs-tag,
+.theme-black .tiptap-markdown-preview .hljs-tag,
+.theme-the-finals .tiptap-markdown-preview .hljs-tag,
+.dark .tiptap-markdown-preview .hljs-name,
+.dark .tiptap-markdown-preview .hljs-tag {
+  color: hsl(340 75% 70%);
+}

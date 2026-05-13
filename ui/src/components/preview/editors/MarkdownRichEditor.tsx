@@ -110,10 +110,55 @@ export function MarkdownRichEditor(props: EditorProps): React.ReactElement {
   const hasConflict = conflicts.has(filePath)
   const filePathRef = React.useRef(filePath)
   const onSaveRef = React.useRef(onSave)
+  // useEditor()'s onUpdate closure is created ONCE — `hasConflict` captured
+  // at editor creation would be stale forever, so the "pause auto-save while
+  // conflict is showing" guard never fires. Bridge through a ref instead.
+  const hasConflictRef = React.useRef(hasConflict)
+  // In-flight save guard: keeping more than one save in-flight against the
+  // same file races them — save B captures a stale `expected_mtime_ms` from
+  // before save A's response landed, so the backend reports a phantom
+  // "file was changed" conflict even though only the editor itself touched
+  // the file. We track the in-flight state and queue the LATEST content as
+  // a single follow-up save once the current one returns.
+  const savingRef = React.useRef(false)
+  const pendingContentRef = React.useRef<string | null>(null)
   React.useEffect(() => {
     filePathRef.current = filePath
     onSaveRef.current = onSave
-  }, [filePath, onSave])
+    hasConflictRef.current = hasConflict
+  }, [filePath, onSave, hasConflict])
+
+  /** Run a save, then drain any content that arrived during the save. */
+  const runSaveLoop = React.useCallback(async (content: string) => {
+    if (savingRef.current) {
+      // Already running — just remember the latest content; the loop
+      // owner will pick it up after the current save finishes.
+      pendingContentRef.current = content
+      return
+    }
+    savingRef.current = true
+    try {
+      let toSave: string | null = content
+      while (toSave !== null) {
+        const md: string = toSave
+        const outcome = await onSaveRef.current(md)
+        if (outcome.kind === 'saved') {
+          recordSelfWrite({ filePath: filePathRef.current, mtimeMs: outcome.mtimeMs })
+        }
+        // If onUpdate stashed newer content while this save was in flight,
+        // run ONCE more with the latest snapshot. Always saves the user's
+        // freshest content before going idle.
+        const next: string | null = pendingContentRef.current
+        pendingContentRef.current = null
+        toSave = next !== null && next !== md ? next : null
+      }
+    } finally {
+      savingRef.current = false
+    }
+  }, [recordSelfWrite])
+  // Stash so the editor's onUpdate closure can call the latest version.
+  const runSaveLoopRef = React.useRef(runSaveLoop)
+  React.useEffect(() => { runSaveLoopRef.current = runSaveLoop }, [runSaveLoop])
 
   const editor = useEditor({
     extensions: [
@@ -134,14 +179,17 @@ export function MarkdownRichEditor(props: EditorProps): React.ReactElement {
       const md = htmlToMd(html)
       onContentChange?.(md, md !== initialContent)
 
-      // Auto-save (paused while a conflict is showing)
-      if (hasConflict) return
+      // Auto-save (paused while a conflict is showing — read via ref so
+      // the value is fresh; the closure captured at editor creation would
+      // see the initial false forever).
+      if (hasConflictRef.current) return
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
-      autoSaveTimer.current = setTimeout(async () => {
-        const outcome = await onSaveRef.current(md)
-        if (outcome.kind === 'saved') {
-          recordSelfWrite({ filePath: filePathRef.current, mtimeMs: outcome.mtimeMs })
-        }
+      autoSaveTimer.current = setTimeout(() => {
+        // Delegate to the in-flight-aware save loop instead of firing
+        // saves directly; concurrent saves used to race their stale
+        // `expected_mtime_ms` values against each other and produce
+        // phantom conflict warnings during normal typing.
+        void runSaveLoopRef.current(md)
       }, AUTO_SAVE_DEBOUNCE_MS)
     },
   })
@@ -154,7 +202,7 @@ export function MarkdownRichEditor(props: EditorProps): React.ReactElement {
   }, [editor])
 
   return (
-    <div className="h-full w-full overflow-auto p-4 prose prose-sm dark:prose-invert max-w-none">
+    <div className="tiptap-markdown-preview h-full w-full overflow-auto p-4 prose prose-sm dark:prose-invert max-w-none">
       <EditorContent editor={editor} />
     </div>
   )

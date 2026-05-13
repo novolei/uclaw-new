@@ -13,9 +13,14 @@
  */
 
 import * as React from 'react'
-import { useSetAtom } from 'jotai'
+import { useAtomValue, useSetAtom } from 'jotai'
 import { invoke } from '@tauri-apps/api/core'
-import { setConflictAction } from '@/atoms/preview-editor-atoms'
+import {
+  lastSelfWriteMtimeAtom,
+  setConflictAction,
+  clearConflictAction,
+  recordSelfWriteAction,
+} from '@/atoms/preview-editor-atoms'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { TextEditor, type SaveOutcome } from './TextEditor'
 import { MarkdownEditor } from './MarkdownEditor'
@@ -46,9 +51,15 @@ interface WriteResultIpc {
 }
 
 const NEW_FILE_MTIME_SENTINEL = -1
+/** Mirror of preview/commands.rs FORCE_OVERWRITE_SENTINEL. Tells the
+ *  backend "skip the optimistic mtime check, write my content as-is". */
+const FORCE_OVERWRITE_SENTINEL = -2
 
 export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs, isMarkdown, language }: Props): React.ReactElement {
   const setConflict = useSetAtom(setConflictAction)
+  const clearConflict = useSetAtom(clearConflictAction)
+  const recordSelfWrite = useSetAtom(recordSelfWriteAction)
+  const lastSelfWriteMap = useAtomValue(lastSelfWriteMtimeAtom)
   // `baseline` is the on-disk content at last load/save. Updated ONLY on:
   //   - filePath change (re-snap from props)
   //   - successful save (promote current content to new baseline)
@@ -88,22 +99,49 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
           expectedMtimeMs: mtimeMs === 0 ? NEW_FILE_MTIME_SENTINEL : mtimeMs,
         })
         if (result.kind === 'saved') {
-          setMtimeMs(result.mtimeMs ?? 0)
-          setBaseline(latest)  // promote saved content to new baseline
-          return { kind: 'saved', mtimeMs: result.mtimeMs ?? 0 }
+          const newMtime = result.mtimeMs ?? 0
+          setMtimeMs(newMtime)
+          setBaseline(latest)
+          recordSelfWrite({ filePath, mtimeMs: newMtime })
+          return { kind: 'saved', mtimeMs: newMtime }
         }
         if (result.kind === 'conflict') {
+          // Self-write echo guard: if the "external" mtime the backend
+          // reported equals one we just wrote ourselves, this isn't a
+          // real conflict — it's the editor's own previous save round-
+          // tripping back through a stale cached mtime. Resync silently.
+          const externalMtime = result.currentMtimeMs ?? 0
+          const lastSelf = lastSelfWriteMap.get(filePath)
+          if (lastSelf !== undefined && lastSelf === externalMtime) {
+            setMtimeMs(externalMtime)
+            // Retry the save with the fresh mtime so the user's edit lands.
+            const retry = await invoke<WriteResultIpc>('preview_write_text', {
+              mountId: target.mountId,
+              relPath: target.relPath,
+              sessionId: target.sessionId ?? null,
+              content: latest,
+              expectedMtimeMs: externalMtime,
+            })
+            if (retry.kind === 'saved') {
+              const retryMtime = retry.mtimeMs ?? 0
+              setMtimeMs(retryMtime)
+              setBaseline(latest)
+              recordSelfWrite({ filePath, mtimeMs: retryMtime })
+              return { kind: 'saved', mtimeMs: retryMtime }
+            }
+            // If retry also conflicts, fall through to surface the banner.
+          }
           setConflict({
             filePath,
             conflict: {
               externalContent: result.currentContent ?? '',
-              externalMtimeMs: result.currentMtimeMs ?? 0,
+              externalMtimeMs: externalMtime,
             },
           })
           return {
             kind: 'conflict',
             externalContent: result.currentContent ?? '',
-            externalMtimeMs: result.currentMtimeMs ?? 0,
+            externalMtimeMs: externalMtime,
           }
         }
         if (result.kind === 'needsApproval') {
@@ -116,16 +154,48 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
         setSaving(false)
       }
     },
-    [filePath, target, mtimeMs, setConflict],
+    [filePath, target, mtimeMs, setConflict, lastSelfWriteMap, recordSelfWrite],
   )
 
   const handleOverwrite = React.useCallback(async () => {
-    // Force-save with current local content. Server will check mtime;
-    // because the user clicked "覆盖", we expect this to succeed against
-    // the latest disk state. If it still conflicts (extremely rare race),
-    // the banner will refresh.
-    await handleSave(content)
-  }, [content, handleSave])
+    // The user clicked 覆盖 — pass FORCE_OVERWRITE_SENTINEL so the
+    // backend skips the optimistic mtime check. Earlier versions tried
+    // to compute the right `expected` (editor mtime, then conflict's
+    // external mtime); both still raced against in-flight writes from
+    // concurrent auto-saves and looped right back into another conflict.
+    // Force-overwrite removes the loop.
+    setSaving(true)
+    try {
+      const result = await invoke<WriteResultIpc>('preview_write_text', {
+        mountId: target.mountId,
+        relPath: target.relPath,
+        sessionId: target.sessionId ?? null,
+        content,
+        expectedMtimeMs: FORCE_OVERWRITE_SENTINEL,
+      })
+      if (result.kind === 'saved') {
+        const newMtime = result.mtimeMs ?? 0
+        setMtimeMs(newMtime)
+        setBaseline(content)
+        recordSelfWrite({ filePath, mtimeMs: newMtime })
+        clearConflict(filePath)
+      } else if (result.kind === 'conflict') {
+        // Force-overwrite shouldn't return Conflict (sentinel skips the
+        // check) — surface anything that does as a refresh of the banner.
+        setConflict({
+          filePath,
+          conflict: {
+            externalContent: result.currentContent ?? '',
+            externalMtimeMs: result.currentMtimeMs ?? 0,
+          },
+        })
+      }
+    } catch (err) {
+      console.error('[preview] overwrite failed', err)
+    } finally {
+      setSaving(false)
+    }
+  }, [filePath, content, target, recordSelfWrite, clearConflict, setConflict])
 
   const handleDiscard = React.useCallback((externalContent: string, externalMtimeMs: number) => {
     setBaseline(externalContent)  // also update baseline on discard

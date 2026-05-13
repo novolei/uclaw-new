@@ -3,9 +3,10 @@
  */
 
 import * as React from 'react'
-import { X, FileText } from 'lucide-react'
+import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ImageLightbox } from '@/components/ui/image-lightbox'
+import { FileTypeIcon } from '@/components/file-browser/FileTypeIcon'
 
 interface AttachmentPreviewItemProps {
   filename: string
@@ -21,12 +22,6 @@ function isImage(mediaType: string): boolean {
 
 function truncateName(name: string, max: number = 20): string {
   return name.length > max ? name.slice(0, max - 3) + '...' : name
-}
-
-function fileExtBadge(filename: string): string {
-  const dot = filename.lastIndexOf('.')
-  if (dot < 0 || dot === filename.length - 1) return ''
-  return filename.slice(dot + 1).toUpperCase().slice(0, 4)
 }
 
 export function AttachmentPreviewItem({
@@ -75,7 +70,6 @@ export function AttachmentPreviewItem({
     )
   }
 
-  const ext = fileExtBadge(filename)
   return (
     <div
       className={cn(
@@ -87,15 +81,7 @@ export function AttachmentPreviewItem({
       )}
       title={filename}
     >
-      <span
-        className={cn(
-          'inline-flex items-center justify-center shrink-0',
-          'h-[16px] min-w-[22px] px-1 rounded-sm',
-          'bg-primary/12 text-primary text-[9.5px] font-semibold tracking-wide tabular-nums',
-        )}
-      >
-        {ext || <FileText className="size-3" />}
-      </span>
+      <FileTypeIcon name={filename} isDirectory={false} size={14} className="shrink-0" />
       <span className="max-w-[160px] truncate leading-tight">{truncateName(filename)}</span>
       <button
         type="button"

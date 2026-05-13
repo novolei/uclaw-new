@@ -8,6 +8,7 @@
 
 export type RendererKind =
   | 'image'
+  | 'video'
   | 'markdown'
   | 'code'
   | 'pdf'
@@ -29,6 +30,13 @@ export interface ClassificationResult {
 /** Image file extensions handled by `<ImageRenderer>` via the asset protocol. */
 export const IMAGE_EXTS: ReadonlySet<string> = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico',
+])
+
+/** Video file extensions handled by `<VideoRenderer>` via the asset protocol.
+ *  Only formats the `<video>` element plays out-of-the-box on macOS / Windows
+ *  without a custom decoder. avi / mkv route to BinaryFallback instead. */
+export const VIDEO_EXTS: ReadonlySet<string> = new Set([
+  'mp4', 'm4v', 'mov', 'webm', 'ogg', 'ogv',
 ])
 
 /** Markdown file extensions handled by `<MarkdownRenderer>`. */
@@ -73,6 +81,7 @@ export const CODE_EXTS: ReadonlyMap<string, string> = new Map([
  */
 export const ALL_PREVIEWABLE_EXTS: ReadonlySet<string> = new Set<string>([
   ...IMAGE_EXTS,
+  ...VIDEO_EXTS,
   ...MD_EXTS,
   'pdf',
   'docx', 'xlsx', 'pptx',
@@ -107,6 +116,7 @@ export function getExtension(filename: string): string {
 export function classifyExtension(filename: string): ClassificationResult {
   const ext = getExtension(filename)
   if (ext && IMAGE_EXTS.has(ext)) return { kind: 'image', ext }
+  if (ext && VIDEO_EXTS.has(ext)) return { kind: 'video', ext }
   if (ext && MD_EXTS.has(ext)) return { kind: 'markdown', ext }
   if (ext === 'pdf') return { kind: 'pdf', ext }
   if (ext === 'docx') return { kind: 'docx', ext }
