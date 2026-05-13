@@ -26,6 +26,10 @@ import {
   type ComposerMentionControllerHandle,
 } from '@/components/composer/ComposerMentionController'
 import { SpeechButton } from '@/components/ai-elements/speech-button'
+import { InlineRecorder } from '@/components/stt/InlineRecorder'
+import { FirstRunDialog } from '@/components/stt/FirstRunDialog'
+import { recordingStateAtom, sttSettingsAtom, modelStatusAtom } from '@/atoms/stt-atoms'
+import { invoke } from '@tauri-apps/api/core'
 import { Button } from '@/components/ui/button'
 import {
   Tooltip,
@@ -97,6 +101,28 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
   const [thinkingEnabled, setThinkingEnabled] = useConversationThinkingEnabled()
   const setPendingAttachments = onSetPendingAttachments
   const [isDragOver, setIsDragOver] = React.useState(false)
+
+  // STT state
+  const [firstRunOpen, setFirstRunOpen] = React.useState(false)
+  const recordingState = useAtomValue(recordingStateAtom)
+  const sttSettings = useAtomValue(sttSettingsAtom)
+  const setModelStatus = useSetAtom(modelStatusAtom)
+
+  // Query model status on mount so SpeechButton can show indicator dot.
+  React.useEffect(() => {
+    void invoke('stt_model_status')
+      .then((s: unknown) => {
+        const status = s as { openflow_ready: boolean; openflow_model_dir: string }
+        setModelStatus(
+          status.openflow_ready
+            ? { kind: 'ready', modelDir: status.openflow_model_dir }
+            : { kind: 'not-downloaded', expectedDir: status.openflow_model_dir },
+        )
+      })
+      .catch(() => {
+        /* leave modelStatus = unknown */
+      })
+  }, [setModelStatus])
 
   const canSend = (content.trim().length > 0 || pendingAttachments.length > 0)
     && activeProviderModel !== null
@@ -194,10 +220,23 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
     // 附件清理由 ChatView 的 handleSend 负责
   }, [canSend, content, onSend])
 
-  /** 语音识别结果 */
+  /** 语音识别结果 — TipTap 光标位置插入 */
   const handleSpeechTranscript = React.useCallback((text: string): void => {
-    setContent(content + (content ? ' ' : '') + text)
-  }, [content, setContent])
+    const editor = composerEditorRef.current
+    if (editor) {
+      editor.commands.insertContent(text)
+    } else {
+      // Fallback: append to controlled value.
+      setContent(content + (content ? ' ' : '') + text)
+    }
+  }, [composerEditorRef, content, setContent])
+
+  /** 转写完成后按 autoSend 设置触发发送 */
+  const handleAfterTranscribe = React.useCallback((_text: string): void => {
+    if (sttSettings.autoSend) {
+      onSend(content.trim())
+    }
+  }, [content, onSend, sttSettings.autoSend])
 
   /** 粘贴文件回调 */
   const handlePasteFiles = React.useCallback((files: File[]): void => {
@@ -259,6 +298,7 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
   }, [])
 
   return (
+    <>
     <div className="px-2.5 pb-2.5 md:px-[18px] md:pb-[18px]" data-input-mode="chat">
         {/* 卡片式输入容器 — 对标 Cherry Studio: border-radius 17px, 0.5px border */}
         <div
@@ -357,7 +397,17 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
 
               <FeishuNotifyToggle sessionId={conversationId} />
 
-              <SpeechButton onTranscript={handleSpeechTranscript} />
+              <SpeechButton
+                composer="chat"
+                onTranscript={handleSpeechTranscript}
+                onAfterTranscribe={handleAfterTranscribe}
+                onShowDownloadDialog={() => setFirstRunOpen(true)}
+              />
+              <InlineRecorder
+                state={recordingState}
+                onStop={() => { window.dispatchEvent(new CustomEvent('uclaw:stt-stop')) }}
+                onCancel={() => { window.dispatchEvent(new CustomEvent('uclaw:stt-cancel')) }}
+              />
 
               <ToolSelectorPopover />
 
@@ -408,5 +458,11 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
           </div>
         </div>
     </div>
+    <FirstRunDialog
+      open={firstRunOpen}
+      onOpenChange={setFirstRunOpen}
+      onReady={() => { window.dispatchEvent(new CustomEvent('uclaw:stt-start-after-ready')) }}
+    />
+    </>
   )
 }
