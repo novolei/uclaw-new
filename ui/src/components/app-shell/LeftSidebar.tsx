@@ -1093,19 +1093,43 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
 }
 
 function AutomationSlideOver({ onClose }: { onClose: () => void }): React.ReactElement {
+  // Esc key closes the modal (common UX expectation; advertised by the
+  // close button's title attribute).
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
   // Portal to document.body to escape any ancestor stacking context
   // (LeftSidebar / AppShell wrappers use transform/contain that trap z-index).
-  // Without this, the AgentView right rail (z-60, mounted at a higher
-  // stacking-context root) renders above this slide-over even at z-99999.
-  // Z-index bumped to 100 to clear common rail/modal layers without the
-  // arbitrary 99999 we used while diagnosing.
+  // Centered modal layout (max-w-5xl, ~85vh) so it feels like a full
+  // welcome-style panel rather than a narrow drawer — fits the spec list,
+  // marketplace grid, and YAML paste textarea comfortably side-by-side.
   return createPortal(
-    <div className="fixed inset-0 z-[100] flex">
-      <div className="flex-1" onClick={onClose} />
-      <div className="w-[360px] h-full bg-background border-l border-border shadow-2xl flex flex-col">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center p-6"
+      onClick={onClose}
+    >
+      {/* Backdrop overlay (the parent div catches clicks via onClick={onClose}).
+          A separate semi-transparent layer underneath the modal to dim the page. */}
+      <div className="absolute inset-0 bg-foreground/20 backdrop-blur-sm" />
+      {/* Modal panel — clicks here must NOT bubble to backdrop */}
+      <div
+        className="relative w-full max-w-5xl h-[85vh] bg-background border border-border rounded-xl shadow-2xl flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-3 border-b border-border flex-shrink-0">
           <span className="text-[14px] font-semibold">Automations</span>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-[18px] leading-none">&times;</button>
+          <button
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground text-[20px] leading-none w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent"
+            title="关闭 (Esc)"
+          >
+            &times;
+          </button>
         </div>
         <div className="flex-1 overflow-hidden">
           <AutomationHubComponent />
