@@ -224,8 +224,21 @@ impl ChatDelegate {
         }));
     }
 
-    /// Emit a tool call start to the frontend
-    fn emit_tool_start(&self, name: &str, id: &str, input: &serde_json::Value) {
+    /// Emit a tool call start to the frontend.
+    ///
+    /// `preview_target` carries the file path the tool will write, when
+    /// the tool overrides `Tool::preview_target_path`. The frontend's
+    /// auto-preview listener uses this to open the preview panel without
+    /// keeping a hardcoded list of "write-ish" tool names — adding a new
+    /// mutating tool only requires implementing the trait method, not
+    /// touching frontend code.
+    fn emit_tool_start(
+        &self,
+        name: &str,
+        id: &str,
+        input: &serde_json::Value,
+        preview_target: Option<&str>,
+    ) {
         let _ = self.app_handle.emit("chat:stream-tool-activity", serde_json::json!({
             "conversationId": self.conversation_id,
             "activity": {
@@ -233,6 +246,7 @@ impl ChatDelegate {
                 "toolName": name,
                 "toolCallId": id,
                 "input": input,
+                "previewTarget": preview_target,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }
         }));
@@ -1004,7 +1018,9 @@ impl LoopDelegate for ChatDelegate {
                         step_index = ?tc.arguments.get("step_index"),
                         "Soft-blocking plan_update done:true with no mutation evidence"
                     );
-                    self.emit_tool_start(&tc.name, &tc.id, &tc.arguments);
+                    // No preview_target for the soft-block path — the tool
+                    // call is being short-circuited, no write will happen.
+                    self.emit_tool_start(&tc.name, &tc.id, &tc.arguments, None);
                     self.emit_tool_result(
                         &tc.name,
                         &tc.id,
@@ -1140,8 +1156,12 @@ impl LoopDelegate for ChatDelegate {
                         }
                     }
 
-                    // Emit tool start
-                    self.emit_tool_start(&tc.name, &tc.id, &tc.arguments);
+                    // Emit tool start. Surface preview_target so the
+                    // frontend's auto-preview listener can pre-stake +
+                    // open the panel without keeping a hardcoded
+                    // "write-ish tool name" list (drives PR auto-preview).
+                    let preview_target = tool.preview_target_path(&tc.arguments);
+                    self.emit_tool_start(&tc.name, &tc.id, &tc.arguments, preview_target.as_deref());
                     tracing::info!(tool = %tc.name, id = %tc.id, "Executing tool");
 
                     // ─── Path-aware sandbox (Phase 3) ───────────────────
