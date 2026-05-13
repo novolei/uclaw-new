@@ -1,0 +1,8 @@
+type: automation
+name: x
+version: 0.1.0
+author: x
+description: x
+system_prompt: x
+subscriptions:
+  - { type: schedule }
