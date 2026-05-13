@@ -401,3 +401,166 @@ User clicks "我的应用" tab (Phase 3a)
 - Avatar / icon rendering as lucide icon (Phase 4)
 - Apps "我的应用" tab content (Phase 3b — needs MCP/Skill registries)
 - Cross-registry deduplication (multi-registry feature)
+
+---
+
+## 13. uClaw Design DNA — design specifics (added 2026-05-14)
+
+The user explicitly asked: "前端 Markthub 的 UI 可以参考 Hello-halo，但是也需要有 uClaw 的自己的特色，需要遵循整个 app 的 UI 风格并对 UI UX 做进一步的创新和优化".
+
+The bare hello-halo port (sections 5-9 above) would feel pasted-in. This section overlays uClaw design DNA + concrete innovations.
+
+### 13.1 Visual identity contract (non-negotiable)
+
+Following the design audit completed 2026-05-14:
+
+| Rule | What | Why |
+|---|---|---|
+| **Theme tokens only** | `bg-content-area`, `bg-card`, `text-foreground`, `text-muted-foreground`, `border-border/50`, `text-success / text-warning / text-danger` and their `-bg` variants | uClaw ships 11 themes (warm-paper, qingye, forest-*, etc.). Hardcoded `bg-zinc-X` / `text-gray-X` / `text-green-500` etc. break under 4 of them. Even semantic colors must use tokens — see `--success / --warning / --danger` in globals.css |
+| **Radius hierarchy** | Main panel `rounded-2xl`, content cards `rounded-xl`, buttons/pills `rounded-md` or `rounded-full` | Phase 1 AutomationHub used `rounded-lg` (button-sized) on cards — looks slightly off. Match SettingsCard's `rounded-xl` |
+| **Shadow restraint** | `shadow-xl` only on the topmost panel; cards use `border-border/50` for separation, NO shadow | Stacking shadows creates depth confusion. Layer hierarchy comes from the `p-2` gap between sidebar+content, not nested shadows |
+| **Motion: ≤ 150ms, no bounce** | `transition-colors duration-100` for hover, `motion/react` with `duration: 0.22, ease: [0.32, 0.72, 0, 1]` for dialog/state transitions | Matches the SettingsDialog signature feel — fast, decellerating, no overshoot. Spring physics reserved for spatial workspace switching only |
+| **Type scale: literal px** | `text-[28px]` hero, `text-[14px]` body, `text-[13px]` rows, `text-[11px]` group headers, `text-[10px]` meta | uClaw doesn't use Tailwind's semantic text sizes — everything is `text-[Npx]`. Headings `font-semibold`, labels `font-medium`, body unweighted |
+| **Padding rhythm** | Container `px-6 py-5`, card rows `px-4 py-3.5`, sidebar items `px-3 py-2`, dense list `px-3 py-1.5` | These exact values come from SettingsCard / SettingsNav patterns |
+| **Hover fills** | `hover:bg-muted/60` or `hover:bg-accent/30`, never `hover:bg-gray-100` | `/60` alpha works on every theme surface |
+| **Active item pattern** | 2px primary bar at left edge: `absolute left-0 top-1.5 bottom-1.5 w-[2px] bg-primary rounded-r` + `bg-muted text-foreground font-medium` on the item itself | This is SettingsNav's active state — it's our canonical "selected" indicator |
+
+### 13.2 Architectural differences vs. hello-halo
+
+uClaw's marketplace IS NOT a sibling tab to "my apps" with split-pane layout (hello-halo's `AppsPage` pattern). Instead it lives inside the existing **MainArea view-replacement** mechanism (the same one Phase 3a's AutomationHub already uses via `automationPanelOpenAtom`).
+
+| hello-halo | uClaw Phase 3a equivalent |
+|---|---|
+| `AppsPage.tsx` with top tab bar (我的数字人 / 我的应用 / 应用商店) | Single top sub-nav strip inside the existing MainArea view, integrated where AutomationHub's current header bar sits. No new top-level page. |
+| Three full-screen tabs | Three sub-views within the Automation MainArea view, switched by an internal atom (`automationSubviewAtom: 'humans' \| 'apps' \| 'store'`) |
+| Store detail = full-page replacement of grid | Store detail = SAME MainArea view, sub-view atom switches `store` → `store-detail` |
+| `StoreInstallDialog` = modal | uClaw 3-step **Install Wizard** — replaces detail body in place (each step is a state of the same sub-view), with progress dots and Esc-back navigation |
+
+This means the user always remains anchored to the Automation tab in LeftSidebar — no separate top-of-app navigation. Matches how Settings is structured (one settings dialog, internal nav, no app-level tabs).
+
+### 13.3 uClaw-specific innovations (v1 — included in Phase 3a)
+
+**A. Three-step Install Wizard, not a dialog.** 30% of hello-halo's StoreInstallDialog complexity comes from cramming scope + config form + progress into one modal that resizes. uClaw splits into 3 chronological steps:
+
+```
+[1 ●─2─3]  选择空间          [继续 →]
+[1─2 ●─3]  填写配置          [← 返回] [继续 →]
+[1─2─3 ●]  确认 + 安装        [← 返回] [安装]
+```
+
+Step transitions use the standard 0.22s `[0.32, 0.72, 0, 1]` ease. Progress dots are `w-2 h-2 rounded-full` (filled `bg-primary` for current, `bg-muted` for upcoming, `bg-primary/40` for completed). Esc = back, Enter = continue.
+
+**B. Try-install sandbox (the standout feature).** Each store detail page has TWO CTAs: 「正式安装」(commit install) and 「试装到沙盒」(try in sandbox). Try-install creates an ephemeral workspace `试用-{slug}-{timestamp}`, installs the spec there with auto-generated config defaults, and surfaces a banner: "试用中 · 5 分钟后自动清理 · [保留并选择正式空间] [立即丢弃]". This is genuinely novel — none of hello-halo / standard app stores offer it. Implementation: leverages existing workspace creation + AutomationHub manual trigger + auto-cleanup task.
+
+**C. "Featured" row above search.** A 3-card horizontal scrolling row at the top of the store, showing curated picks. Phase 3a hard-codes the featured list (3-5 slugs chosen from the official DHP registry); Phase 4 may make it remote-driven. Each featured card is `w-[320px] h-[180px]` — larger than grid cards, with the icon area more prominent. Marks something special is happening above the routine grid scroll.
+
+**D. Smart filter chips with counts.** Category chips show item count: `Social · 12`, `Productivity · 8`. Counts come from the `query_marketplace` result aggregation. Active chip uses `bg-primary/10 text-primary border border-primary/30`, inactive uses `bg-muted text-muted-foreground border border-border/50`.
+
+**E. Pet awareness on install success.** When install_marketplace_human succeeds, fire a one-shot `chat:pet-celebrate` Tauri event. PetWidget already listens for stream events; add a "celebrate" frame (or reuse existing success animation). This connects the marketplace to uClaw's emotional identity without being intrusive.
+
+**F. Sticky CTA bar on detail page.** The install button stays visible at the top of the detail view as user scrolls through the 8 sections. `sticky top-0 z-10 backdrop-blur-md bg-content-area/95 border-b border-border/50`. Mirrors how the settings dialog's section header stays sticky.
+
+**G. View-tabs at the top of detail page (not all sections stacked).** Instead of hello-halo's 8-section vertical scroll, the detail page has 4 sub-tabs: `概览 / 配置 / 依赖 / 提示词`. Information density per-screen is higher, scrolling is shorter, and the System Prompt (often huge) doesn't dominate the page. Each tab transitions with 0.22s opacity fade.
+
+**H. Empty state copy mirrors WelcomeView's tone.** Not "No apps found", but `市场里还没有匹配的数字员工 — 试试别的关键词，或浏览全部分类`. Warm but action-oriented — the WelcomeView signature.
+
+### 13.4 Deferred to v2 polish (not Phase 3a)
+
+- **Auto-uninstall sandbox after N minutes** — Phase 3a relies on user "保留 / 丢弃" choice; Phase 3b adds the timer
+- **Featured row as remote config** — Phase 3a hardcodes
+- **In-card dependency tooltip** — Phase 3a shows raw count, hover tooltip in Phase 4
+- **Compare mode (2 specs side-by-side)** — Phase 4 polish
+- **Recent searches / install history** — Phase 4
+- **CJK-aware FTS** — Phase 4 (trigram is good enough for Phase 3a)
+
+### 13.5 Component-level styling reference
+
+Quick-look table for the implementer:
+
+```tsx
+// Container (matches MainArea convention)
+<div className="bg-content-area rounded-2xl shadow-xl overflow-hidden flex flex-col h-full">
+
+// Sub-nav strip (Humans / Apps / Store)
+<div className="flex items-center gap-1 px-6 py-3 border-b border-border/50">
+  {tabs.map(t => (
+    <button className={cn(
+      "relative px-3 py-1.5 text-[13px] rounded-md transition-colors",
+      active === t.id
+        ? "bg-muted text-foreground font-medium"
+        : "text-muted-foreground hover:text-foreground hover:bg-accent/30"
+    )}>
+      {active === t.id && <span className="absolute left-0 top-2 bottom-2 w-[2px] bg-primary rounded-r" />}
+      {t.label}
+    </button>
+  ))}
+</div>
+
+// Featured row (hero band)
+<div className="px-6 pt-4 pb-2">
+  <div className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2">
+    今日推荐
+  </div>
+  <div className="flex gap-3 overflow-x-auto pb-1 -mx-6 px-6">
+    {featured.map(item => <FeaturedCard ... />)}
+  </div>
+</div>
+
+// Card (StoreCard)
+<button className={cn(
+  "w-full text-left p-4",
+  "rounded-xl border border-border/50 bg-card",
+  "hover:border-primary/40 hover:bg-secondary/50",
+  "transition-colors"
+)}>
+  <div className="flex items-start justify-between gap-2 mb-1">
+    <div className="flex items-center gap-2 min-w-0">
+      <div className="w-7 h-7 rounded-md bg-primary/10 flex items-center justify-center text-[11px]">
+        {item.icon || '🤖'}
+      </div>
+      <span className="text-[13px] font-medium truncate">{item.name}</span>
+      <AppTypeBadge type={item.appType} />
+    </div>
+    <span className="text-[10px] text-muted-foreground tabular-nums">v{item.version}</span>
+  </div>
+  <p className="text-[11px] text-muted-foreground">by {item.author}</p>
+  <p className="text-[12px] text-muted-foreground mt-2 line-clamp-2">{item.description}</p>
+  {item.tags.length > 0 && (
+    <div className="flex flex-wrap gap-1 mt-3">
+      {item.tags.slice(0, 3).map(tag => (
+        <span className="text-[10px] px-2 py-0.5 rounded-full bg-secondary text-muted-foreground">
+          {tag}
+        </span>
+      ))}
+    </div>
+  )}
+</button>
+
+// Detail sub-nav
+<div className="sticky top-0 z-10 backdrop-blur-md bg-content-area/95 border-b border-border/50">
+  <div className="flex items-center gap-1 px-6 py-2">
+    {['概览', '配置', '依赖', '提示词'].map(tab => ...)}
+  </div>
+</div>
+
+// Install Wizard step dots
+<div className="flex items-center gap-2">
+  {[1, 2, 3].map(i => (
+    <div className={cn(
+      "w-2 h-2 rounded-full transition-colors",
+      i === step ? "bg-primary" : i < step ? "bg-primary/40" : "bg-muted"
+    )} />
+  ))}
+</div>
+```
+
+### 13.6 Tracking: what to flag during implementation
+
+Each commit's spec-reviewer pass should explicitly check:
+
+1. **No hardcoded color classes.** `grep -nE "bg-(zinc|gray|slate|stone|neutral|green|red|amber|blue|yellow)-[0-9]" ui/src/components/automation/<new file>` returns empty.
+2. **Card radius is `rounded-xl`.** Not `rounded-lg`.
+3. **No `transition-all` outside the search-input focus animation.**
+4. **Theme switch test.** A reviewer should swap to warm-paper + qingye + ocean-light and visually verify nothing breaks.
+5. **Motion uses `motion/react` for state transitions, not pure CSS.**
+6. **Empty states use the WelcomeView pattern** (centered, dimmed icon, action-link, no PetWidget).
