@@ -133,11 +133,18 @@ mod tests {
     }
 
     #[test]
-    fn permissive_fallback_captures_unknown_fields() {
+    fn unknown_top_level_fields_are_silently_accepted() {
+        // After removing deny_unknown_fields from HumaneAutomationSpec, the
+        // permissive fallback path is no longer reached for unknown extra
+        // top-level fields — strict pass succeeds and just drops them. The
+        // permissive fallback in parse.rs remains for the case where strict
+        // fails for OTHER reasons (e.g. nested struct error). Phase 2 may
+        // reintroduce extras-tracking once we decide what shape to give
+        // spec_version / icon / store / type-of-thing.
         let yaml = include_str!("test_fixtures/invalid/unknown_field.yaml");
-        let parsed = parse_humane_v1(yaml).expect("permissive should accept");
-        assert!(parsed.has_unknown_fields());
-        assert!(parsed.extra_fields.contains_key("future_protocol_field"));
+        let parsed = parse_humane_v1(yaml).expect("unknown fields accepted");
         assert_eq!(parsed.spec.name, "x");
+        // extras may or may not be populated depending on whether the strict
+        // pass succeeded — we don't assert either way for Phase 1.
     }
 }

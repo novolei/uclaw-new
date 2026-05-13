@@ -24,8 +24,15 @@ fn must_be_automation(value: &str, _: &()) -> garde::Result {
 // Top-level spec (spec § 4.1)
 // ---------------------------------------------------------------------------
 
+// `deny_unknown_fields` removed: real DHP marketplace specs include fields
+// uClaw Phase 1 doesn't model (spec_version, icon, store, type-of-thing).
+// Strict-mode rejection broke installation of every real spec and the
+// permissive fallback in parse.rs::parse_humane_v1 had its own
+// "serde_json re-parse loses field rename" bug. Simpler model: silently
+// accept extra top-level fields, garde still validates the fields we DO
+// model. Phase 2 may reinstate strict mode once Phase 1 surveys all
+// extra-field shapes and types them.
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
-#[serde(deny_unknown_fields)]
 pub struct HumaneAutomationSpec {
     #[serde(rename = "type")]
     #[garde(custom(must_be_automation))]
