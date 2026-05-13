@@ -5,9 +5,25 @@ use std::collections::HashMap;
 #[serde(rename_all = "camelCase")]
 pub struct RegistrySource {
     pub id: String,
+    /// Primary base URL. The adapter appends `/index.json` and
+    /// `/{entry.path}/spec.yaml` to this.
     pub url: String,
+    /// Optional fallback base URLs tried in order when `url` fails (TLS
+    /// handshake, 5xx, timeout). All must use the same path layout as `url`.
+    /// Currently used to add the Gitee mirror for GFW-affected users.
+    #[serde(default)]
+    pub fallback_urls: Vec<String>,
     #[serde(default)]
     pub name: Option<String>,
+}
+
+impl RegistrySource {
+    /// Iterator over `url` then each `fallback_urls` in order — the order
+    /// the adapter should try them.
+    pub fn url_candidates(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.url.as_str())
+            .chain(self.fallback_urls.iter().map(String::as_str))
+    }
 }
 
 impl Default for RegistrySource {
@@ -15,6 +31,12 @@ impl Default for RegistrySource {
         Self {
             id: "halo".into(),
             url: "https://raw.githubusercontent.com/novolei/digital-human-protocol/main".into(),
+            // Gitee mirror — uses the same {base}/index.json + {base}/{path}/spec.yaml
+            // layout. Added because raw.githubusercontent.com is unreliable from
+            // China (GFW intermittently kills TLS handshakes to it).
+            fallback_urls: vec![
+                "https://gitee.com/novolei/digital-human-protocol/raw/main".into(),
+            ],
             name: Some("Digital Human Protocol (官方)".into()),
         }
     }

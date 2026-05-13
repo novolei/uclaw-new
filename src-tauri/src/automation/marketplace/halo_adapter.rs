@@ -14,27 +14,69 @@ fn http_client() -> Result<reqwest::Client> {
         .map_err(|e| anyhow!("build reqwest client: {}", e))
 }
 
+/// Try a list of base URLs in order. Returns `(body, base_that_worked)` on
+/// first success. Collected errors from earlier attempts are joined in the
+/// final Err message so we don't drop diagnostic signal.
+///
+/// Takes owned `String` bases to keep the async future Send-clean
+/// (borrowed `&str` lifetimes interact poorly with reqwest's future
+/// auto-traits across await points in some toolchain versions).
+async fn fetch_with_fallback(
+    client: &reqwest::Client,
+    bases: Vec<String>,
+    relative_path: &str,
+) -> Result<(String, String)> {
+    let mut errors: Vec<String> = Vec::new();
+    for base in bases {
+        let url = format!(
+            "{}/{}",
+            base.trim_end_matches('/'),
+            relative_path.trim_start_matches('/'),
+        );
+        match client.get(&url).send().await {
+            Err(e) => {
+                errors.push(format!("{}: send failed: {}", base, e));
+                continue;
+            }
+            Ok(resp) => {
+                if !resp.status().is_success() {
+                    errors.push(format!("{}: HTTP {}", base, resp.status()));
+                    continue;
+                }
+                match resp.text().await {
+                    Err(e) => {
+                        errors.push(format!("{}: body read failed: {}", base, e));
+                        continue;
+                    }
+                    Ok(body) => return Ok((body, base)),
+                }
+            }
+        }
+    }
+    Err(anyhow!(
+        "all registry mirrors failed for /{}: {}",
+        relative_path,
+        errors.join("; ")
+    ))
+}
+
 /// Fetch the registry index.
 ///
 /// Halo protocol: `GET {source.url}/index.json` → [`RegistryIndex`].
-/// Mirrors `HaloAdapter.fetchIndex()` from hello-halo.
+/// Falls back through `source.fallback_urls` in order (e.g. Gitee mirror)
+/// if the primary base returns an error (TLS handshake fail, 5xx, timeout).
+/// Mirrors `HaloAdapter.fetchIndex()` from hello-halo, extended with
+/// mirror fallback for GFW-affected users.
 pub async fn fetch_index(source: &RegistrySource) -> Result<RegistryIndex> {
-    let url = format!("{}/index.json", source.url.trim_end_matches('/'));
     let client = http_client()?;
-    let resp = client
-        .get(&url)
-        .send()
+    let bases: Vec<String> = source.url_candidates().map(String::from).collect();
+    let (body, base_used) = fetch_with_fallback(&client, bases, "index.json")
         .await
-        .with_context(|| format!("GET {} failed", url))?;
-    if !resp.status().is_success() {
-        return Err(anyhow!("registry index HTTP {}: {}", resp.status(), url));
-    }
-    let body = resp
-        .text()
-        .await
-        .with_context(|| format!("body read failed: {}", url))?;
+        .with_context(|| "fetch registry index")?;
+    tracing::info!(base = %base_used, "registry index fetched");
+
     let index: RegistryIndex = serde_json::from_str(&body)
-        .with_context(|| format!("registry index JSON parse failed: {}", url))?;
+        .with_context(|| format!("registry index JSON parse failed (from {})", base_used))?;
 
     // Duplicate-slug check (mirrors hello-halo halo.adapter.ts behaviour).
     let mut seen: HashSet<&str> = HashSet::new();
@@ -50,25 +92,34 @@ pub async fn fetch_index(source: &RegistrySource) -> Result<RegistryIndex> {
 /// Fetch a single app's `spec.yaml`.
 ///
 /// Halo protocol: `GET {source.url}/{entry.path}/spec.yaml` → raw YAML string.
-/// `entry.download_url` takes precedence when present.
+/// `entry.download_url` takes precedence when present (no fallback —
+/// download_url is a registry-explicit absolute URL).
+/// When using the default {base}/{path}/spec.yaml shape, falls back through
+/// `source.fallback_urls` exactly like fetch_index.
 pub async fn fetch_spec_yaml(source: &RegistrySource, entry: &RegistryEntry) -> Result<String> {
-    let url = entry.download_url.clone().unwrap_or_else(|| {
-        format!(
-            "{}/{}/spec.yaml",
-            source.url.trim_end_matches('/'),
-            entry.path
-        )
-    });
     let client = http_client()?;
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .with_context(|| format!("GET {} failed", url))?;
-    if !resp.status().is_success() {
-        return Err(anyhow!("spec.yaml HTTP {}: {}", resp.status(), url));
+
+    // Explicit download_url — single URL, no fallback (caller already chose).
+    if let Some(url) = &entry.download_url {
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .with_context(|| format!("GET {} failed", url))?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("spec.yaml HTTP {}: {}", resp.status(), url));
+        }
+        return resp
+            .text()
+            .await
+            .with_context(|| format!("body read failed: {}", url));
     }
-    resp.text()
+
+    // Default shape — try mirrors in order.
+    let relative = format!("{}/spec.yaml", entry.path.trim_matches('/'));
+    let bases: Vec<String> = source.url_candidates().map(String::from).collect();
+    let (body, _base_used) = fetch_with_fallback(&client, bases, &relative)
         .await
-        .with_context(|| format!("body read failed: {}", url))
+        .with_context(|| format!("fetch spec.yaml for slug '{}'", entry.slug))?;
+    Ok(body)
 }

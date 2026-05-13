@@ -13,7 +13,12 @@ use crate::automation::runtime::AppRuntimeService;
 /// installs full automations.
 pub async fn list_humans(registry_url: Option<String>) -> Result<Vec<MarketplaceItem>> {
     let source = match registry_url {
-        Some(url) => RegistrySource { id: "custom".into(), url, name: None },
+        Some(url) => RegistrySource {
+            id: "custom".into(),
+            url,
+            fallback_urls: vec![],
+            name: None,
+        },
         None => RegistrySource::default(),
     };
     let index = halo_adapter::fetch_index(&source).await?;
@@ -31,7 +36,12 @@ pub async fn install_human(
     slug: &str,
 ) -> Result<HumaneSpecRow> {
     let source = match registry_url {
-        Some(url) => RegistrySource { id: "custom".into(), url, name: None },
+        Some(url) => RegistrySource {
+            id: "custom".into(),
+            url,
+            fallback_urls: vec![],
+            name: None,
+        },
         None => RegistrySource::default(),
     };
     let index = halo_adapter::fetch_index(&source).await?;
