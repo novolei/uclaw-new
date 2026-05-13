@@ -88,6 +88,7 @@ fn main() {
                 let pending_ask_users = state.pending_ask_users.clone();
                 let pending_exit_plans = state.pending_exit_plans.clone();
                 let files_rail_service = state.files_rail_service.clone();
+                let db_for_runtime = state.db.clone();
 
                 // 在后台异步执行服务注册和启动
                 tauri::async_runtime::spawn(async move {
@@ -208,6 +209,30 @@ fn main() {
                     // FilesRailService — always registered (not gated on memubot_config)
                     service_manager.register(files_rail_service).await;
                     tracing::info!("[Stage 3] FilesRailService registered");
+
+                    // AppRuntimeService — always registered; activates enabled Humane specs
+                    {
+                        use uclaw_core::automation::{
+                            runtime::AppRuntimeService,
+                            sources::{
+                                CustomSource, FileSource, RssSource, ScheduleSource,
+                                WebhookSource, WebpageSource, WecomSource,
+                            },
+                        };
+                        let app_runtime_svc = AppRuntimeService::new(
+                            db_for_runtime.clone(),
+                            Arc::new(ScheduleSource::new()),
+                            Arc::new(FileSource::new()),
+                            Arc::new(WebhookSource::with_global_registry()),
+                            Arc::new(WebpageSource::new()),
+                            Arc::new(RssSource::new()),
+                            Arc::new(WecomSource::new()),
+                            Arc::new(CustomSource::new()),
+                            infra_service.clone(),
+                        );
+                        service_manager.register(app_runtime_svc).await;
+                        tracing::info!("[Stage 3] AppRuntimeService registered");
+                    }
 
                     // Stage 4: 启动所有已注册服务
                     tracing::info!("[Stage 4] Starting all registered services...");
