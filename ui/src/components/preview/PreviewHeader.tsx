@@ -16,6 +16,7 @@ import { X, FolderOpen, Copy, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { closePreviewAction, type PreviewFileTarget } from '@/atoms/preview-panel-atoms'
 import { FileTypeIcon } from '@/components/file-browser/FileTypeIcon'
+import { FocusModeButton } from '@/components/focus-mode/FocusModeButton'
 
 interface PreviewHeaderProps {
   target: PreviewFileTarget | null
@@ -159,6 +160,7 @@ export function PreviewHeader({ target }: PreviewHeaderProps): React.ReactElemen
           </span>
         )}
       </div>
+      <FocusModeButton />
       {absolutePath && (
         <HeaderButton
           ariaLabel={copied ? '路径已复制' : '复制完整路径'}
