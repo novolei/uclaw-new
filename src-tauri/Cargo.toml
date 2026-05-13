@@ -91,6 +91,11 @@ dirs = "6"
 # YAML for SKILL.md
 serde_yml = "0.0.12"
 
+# Validation (Humane automation schema)
+garde = { version = "0.20", features = ["derive", "pattern", "serde"] }
+# File-source pattern matching (Humane Phase 1 Task 16)
+globset = "0.4"
+
 # Regex for grep tool
 regex = "1"
 
