@@ -11,6 +11,7 @@
  */
 
 import * as React from 'react'
+import { createPortal } from 'react-dom'
 import { useAtom, useSetAtom, useAtomValue } from 'jotai'
 import { toast } from 'sonner'
 import { Pin, PinOff, Settings, Plus, Trash2, Pencil, ChevronDown, ChevronRight, Plug, Zap, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, Hammer, LoaderCircle, Bot } from 'lucide-react'
@@ -1092,8 +1093,14 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
 }
 
 function AutomationSlideOver({ onClose }: { onClose: () => void }): React.ReactElement {
-  return (
-    <div className="fixed inset-0 z-50 flex">
+  // Portal to document.body to escape any ancestor stacking context
+  // (LeftSidebar / AppShell wrappers use transform/contain that trap z-index).
+  // Without this, the AgentView right rail (z-60, mounted at a higher
+  // stacking-context root) renders above this slide-over even at z-99999.
+  // Z-index bumped to 100 to clear common rail/modal layers without the
+  // arbitrary 99999 we used while diagnosing.
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex">
       <div className="flex-1" onClick={onClose} />
       <div className="w-[360px] h-full bg-background border-l border-border shadow-2xl flex flex-col">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
@@ -1104,7 +1111,8 @@ function AutomationSlideOver({ onClose }: { onClose: () => void }): React.ReactE
           <AutomationHubComponent />
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
