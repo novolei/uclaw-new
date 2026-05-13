@@ -33,8 +33,10 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 bytes = "1"
 
 # STT — local SenseVoice ONNX (vendored from if2Ai openflow)
-# ort load-dynamic resolves onnxruntime at runtime; ~3min cold compile on first build.
-ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "ndarray", "half"] }
+# 默认 features 含 download-binaries：cargo build 自动下载 onnxruntime
+# tarball 并静态链接（不走 dlopen，运行时无需 libonnxruntime.dylib）。
+# 首次 build 多 ~30s + binary 多 ~30MB，换跨平台零额外步骤。
+ort = { version = "=2.0.0-rc.10", features = ["ndarray", "half"] }
 realfft = "3"
 ndarray = "0.16"
 half = "2"
