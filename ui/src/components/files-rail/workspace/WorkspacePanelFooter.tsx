@@ -82,14 +82,14 @@ export function WorkspacePanelFooter({ workspaceId }: Props): React.ReactElement
     <footer className="flex-shrink-0 flex items-center gap-2 px-2 py-2 border-t border-border bg-popover">
       <FooterButton
         label="添加文件"
-        icon={<Paperclip className="size-3.5" />}
+        icon={<Paperclip className="size-4" />}
         onClick={handleAddFile}
         disabled={disabled || busy !== null}
         title={disabledTitle}
       />
       <FooterButton
         label="附加文件夹"
-        icon={<FolderPlus className="size-3.5" />}
+        icon={<FolderPlus className="size-4" />}
         onClick={handleAttachDir}
         disabled={disabled || busy !== null}
         title={disabledTitle}
@@ -118,9 +118,9 @@ function FooterButton({
       disabled={disabled}
       title={title}
       className={cn(
-        'flex-1 inline-flex items-center justify-center gap-1.5 h-7 px-2',
+        'flex-1 inline-flex items-center justify-center gap-2 h-10 px-3',
         'rounded-md border border-border/60 bg-foreground/[0.02]',
-        'text-[11.5px] text-muted-foreground',
+        'text-[12px] text-muted-foreground',
         'transition-colors',
         !disabled && 'hover:bg-foreground/[0.06] hover:border-border hover:text-foreground',
         disabled && 'opacity-40 cursor-not-allowed',
