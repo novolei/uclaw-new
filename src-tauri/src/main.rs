@@ -522,7 +522,6 @@ fn main() {
             uclaw_core::stt::commands::stt_get_settings,
             uclaw_core::stt::commands::stt_save_settings,
             uclaw_core::stt::commands::stt_list_microphones,
-            uclaw_core::stt::commands::stt_ensure_runtime,
         ])
         .run(tauri::generate_context!())
         .expect("error while running uClaw");
