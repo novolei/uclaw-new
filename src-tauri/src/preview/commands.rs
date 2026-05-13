@@ -5,10 +5,33 @@ use super::resolver::{read_capped, resolve_chip_candidate, resolve_path, write_a
 use super::types::{ChipResolution, PreviewBytes, WriteResult, MAX_PREVIEW_BYTES};
 use crate::app::AppState;
 use crate::error::Error;
+use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 use tauri::State;
+use tokio::sync::Mutex as TokioMutex;
+
+/// Per-target-path async mutex map used to serialise `preview_write_text`
+/// invocations against the same file. Without this lock, two concurrent
+/// auto-saves race: save A's `File::create` truncates the file while
+/// save B is reading metadata + content for its conflict response, so
+/// save B observed an empty file and reported `current_content: ""` to
+/// the frontend (which then surfaced an empty diff and corrupted the
+/// editor when the user clicked "discard mine"). Lock granularity is
+/// per resolved target path so unrelated files never block each other.
+static WRITE_LOCKS: OnceLock<TokioMutex<HashMap<PathBuf, Arc<TokioMutex<()>>>>> = OnceLock::new();
+
+async fn acquire_write_lock(path: &Path) -> Arc<TokioMutex<()>> {
+    let map = WRITE_LOCKS.get_or_init(|| TokioMutex::new(HashMap::new()));
+    let mut guard = map.lock().await;
+    guard
+        .entry(path.to_path_buf())
+        .or_insert_with(|| Arc::new(TokioMutex::new(())))
+        .clone()
+}
 
 #[tauri::command]
 pub async fn preview_read_bytes(
@@ -37,7 +60,14 @@ pub async fn preview_resolve_chips(
     Ok(out)
 }
 
+/// `expected_mtime_ms` sentinel: file does not exist yet (caller wants
+/// to create it).
 const NEW_FILE_MTIME_SENTINEL: i64 = -1;
+/// `expected_mtime_ms` sentinel: skip the optimistic-concurrency check
+/// and overwrite whatever's on disk. Used by the conflict banner's
+/// 覆盖 button — the user has explicitly chosen "I don't care what's
+/// on disk now, write my version".
+const FORCE_OVERWRITE_SENTINEL: i64 = -2;
 
 #[tauri::command]
 pub async fn preview_write_text(
@@ -78,6 +108,27 @@ pub async fn preview_write_text(
         // Approved — proceed to step 4.
     }
 
+    // Acquire the per-file write lock. From here through write_atomic
+    // we hold it, so concurrent saves against the same path serialize:
+    // no save observes another save mid-truncate, and the conflict-read
+    // path (below) always sees a complete file.
+    let path_lock = acquire_write_lock(&target).await;
+    let _write_guard = path_lock.lock().await;
+
+    // Force-overwrite sentinel: skip the mtime check entirely. Used by
+    // the conflict banner's 覆盖 action.
+    if expected_mtime_ms == FORCE_OVERWRITE_SENTINEL {
+        // Ensure the parent dir exists (rare, but possible if the file
+        // was deleted while the conflict banner was open).
+        if let Some(parent) = target.parent() {
+            if !parent.exists() {
+                fs::create_dir_all(parent).map_err(Error::Io)?;
+            }
+        }
+        let (mtime_ms, size) = write_atomic(&target, &content)?;
+        return Ok(WriteResult::Saved { mtime_ms, size });
+    }
+
     // 4. Check existing mtime against expected (optimistic concurrency).
     let existing_mtime = match fs::metadata(&target) {
         Ok(meta) => meta
@@ -110,6 +161,8 @@ pub async fn preview_write_text(
 
     if existing_mtime != expected_mtime_ms {
         // Conflict — return current content for the banner's "View diff".
+        // Reading INSIDE the lock guarantees we see a fully-flushed file
+        // (no mid-truncate race vs another save).
         let mut current = String::new();
         let f = fs::File::open(&target)
             .map_err(|e| Error::Internal(format!("conflict read open: {}", e)))?;

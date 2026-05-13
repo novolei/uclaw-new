@@ -16,7 +16,6 @@ import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { invoke } from '@tauri-apps/api/core'
 import {
-  conflictsAtom,
   lastSelfWriteMtimeAtom,
   setConflictAction,
   clearConflictAction,
@@ -52,12 +51,14 @@ interface WriteResultIpc {
 }
 
 const NEW_FILE_MTIME_SENTINEL = -1
+/** Mirror of preview/commands.rs FORCE_OVERWRITE_SENTINEL. Tells the
+ *  backend "skip the optimistic mtime check, write my content as-is". */
+const FORCE_OVERWRITE_SENTINEL = -2
 
 export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs, isMarkdown, language }: Props): React.ReactElement {
   const setConflict = useSetAtom(setConflictAction)
   const clearConflict = useSetAtom(clearConflictAction)
   const recordSelfWrite = useSetAtom(recordSelfWriteAction)
-  const conflicts = useAtomValue(conflictsAtom)
   const lastSelfWriteMap = useAtomValue(lastSelfWriteMtimeAtom)
   // `baseline` is the on-disk content at last load/save. Updated ONLY on:
   //   - filePath change (re-snap from props)
@@ -157,13 +158,12 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
   )
 
   const handleOverwrite = React.useCallback(async () => {
-    // The user clicked 覆盖 — they explicitly want their version to land
-    // regardless of what changed on disk. Use the EXTERNAL mtime (from
-    // the conflict atom) as expected so the backend's optimistic check
-    // passes; the previous version of this handler reused the editor's
-    // stale `mtimeMs` and looped right back into a conflict.
-    const conflict = conflicts.get(filePath)
-    const expected = conflict?.externalMtimeMs ?? mtimeMs
+    // The user clicked 覆盖 — pass FORCE_OVERWRITE_SENTINEL so the
+    // backend skips the optimistic mtime check. Earlier versions tried
+    // to compute the right `expected` (editor mtime, then conflict's
+    // external mtime); both still raced against in-flight writes from
+    // concurrent auto-saves and looped right back into another conflict.
+    // Force-overwrite removes the loop.
     setSaving(true)
     try {
       const result = await invoke<WriteResultIpc>('preview_write_text', {
@@ -171,7 +171,7 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
         relPath: target.relPath,
         sessionId: target.sessionId ?? null,
         content,
-        expectedMtimeMs: expected === 0 ? NEW_FILE_MTIME_SENTINEL : expected,
+        expectedMtimeMs: FORCE_OVERWRITE_SENTINEL,
       })
       if (result.kind === 'saved') {
         const newMtime = result.mtimeMs ?? 0
@@ -180,7 +180,8 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
         recordSelfWrite({ filePath, mtimeMs: newMtime })
         clearConflict(filePath)
       } else if (result.kind === 'conflict') {
-        // Disk changed AGAIN between conflict + overwrite — refresh banner.
+        // Force-overwrite shouldn't return Conflict (sentinel skips the
+        // check) — surface anything that does as a refresh of the banner.
         setConflict({
           filePath,
           conflict: {
@@ -190,12 +191,11 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
         })
       }
     } catch (err) {
-      // Surface to the user via the banner's own error state next render.
       console.error('[preview] overwrite failed', err)
     } finally {
       setSaving(false)
     }
-  }, [conflicts, filePath, content, target, mtimeMs, recordSelfWrite, clearConflict, setConflict])
+  }, [filePath, content, target, recordSelfWrite, clearConflict, setConflict])
 
   const handleDiscard = React.useCallback((externalContent: string, externalMtimeMs: number) => {
     setBaseline(externalContent)  // also update baseline on discard
