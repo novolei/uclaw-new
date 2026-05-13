@@ -29,6 +29,7 @@ import { AgentStatusBar } from './AgentStatusBar'
 import { AskUserBanner } from './AskUserBanner'
 import { ExitPlanModeBanner } from './ExitPlanModeBanner'
 import { PlanModeDashedBorder } from './PlanModeDashedBorder'
+import { PetWidget } from './PetWidget'
 import { ProviderModelSelector } from '@/components/chat/ProviderModelSelector'
 import { AttachmentPreviewItem } from '@/components/chat/AttachmentPreviewItem'
 import { RichTextInput } from '@/components/ai-elements/rich-text-input'
@@ -82,6 +83,8 @@ import {
   workspaceAttachedDirsMapAtom,
   agentSessionAttachedDirsMapAtom,
   workspaceFilesVersionAtom,
+  composerFocusedAtom,
+  composerHasTextAtom,
 } from '@/atoms/agent-atoms'
 import type { AgentContextStatus } from '@/atoms/agent-atoms'
 import { activeProviderModelAtom } from '@/atoms/active-model'
@@ -311,6 +314,24 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       return map
     })
   }, [sessionId, setDraftsMap])
+  // ── composer state atoms (PetWidget) ──
+  const setComposerFocused = useSetAtom(composerFocusedAtom)
+  const setComposerHasText = useSetAtom(composerHasTextAtom)
+
+  // Reset composer has-text atom when the active session changes.
+  // composerFocusedAtom self-heals via TipTap's onBlur on unmount; no reset needed.
+  React.useEffect(() => {
+    setComposerHasText(false)
+  }, [sessionId, setComposerHasText])
+
+  const handleComposerChange = React.useCallback((v: string) => {
+    setInputContent(v)
+    setComposerHasText(v.trim().length > 0)
+  }, [setInputContent, setComposerHasText])
+
+  const handleComposerFocus = React.useCallback(() => setComposerFocused(true), [setComposerFocused])
+  const handleComposerBlur  = React.useCallback(() => setComposerFocused(false), [setComposerFocused])
+
   const draftHtmlMap = useAtomValue(agentSessionDraftHtmlAtom)
   const setDraftHtmlMap = useSetAtom(agentSessionDraftHtmlAtom)
   const inputHtmlContent = draftHtmlMap.get(sessionId) ?? ''
@@ -764,6 +785,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     // 没有任何视觉反馈（见 PR #99 dogfood 反馈）。
     if (effectiveText === '/compact' && pendingFiles.length === 0) {
       setInputContent('')
+      setComposerHasText(false)
       handleCompactRef.current?.()
       return
     }
@@ -801,6 +823,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       // 2. 清空输入框
       setInputContent('')
       setInputHtmlContent('')
+      setComposerHasText(false)
       setPromptSuggestions((prev) => {
         if (!prev.has(sessionId)) return prev
         const map = new Map(prev)
@@ -980,6 +1003,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
     setInputContent('')
     setInputHtmlContent('')
+    setComposerHasText(false)
 
     sendAgentMessage(input)
       .then(() => {
@@ -1400,7 +1424,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         <div className="px-2.5 pb-2.5 md:px-[18px] md:pb-[18px]" data-input-mode="agent">
           <div
             className={cn(
-              'rounded-[17px] border-[0.5px] border-border bg-background/70 backdrop-blur-sm transition-all duration-200',
+              'relative rounded-[17px] border-[0.5px] border-border bg-background/70 backdrop-blur-sm transition-all duration-200',
               isPlanMode && !isDragOver && 'plan-mode-border',
               isDragOver && 'border-[2px] border-dashed border-[#2ecc71] bg-[#2ecc71]/[0.03]'
             )}
@@ -1408,6 +1432,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
           >
+            {/* Pet anchored to the entire composer card's top — sits above all
+                inner banners (model warning, attachment preview, agent suggestion,
+                sticky user message, etc.). bottom:100% references this card's top. */}
+            <PetWidget />
             {isPlanMode && !isDragOver && <PlanModeDashedBorder />}
             {/* 未配置模型提示 */}
             {!activeProviderModel && (
@@ -1461,7 +1489,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             <div className="relative">
               <RichTextInput
                 value={inputContent}
-                onChange={setInputContent}
+                onChange={handleComposerChange}
+                onFocus={handleComposerFocus}
+                onBlur={handleComposerBlur}
                 onSubmit={handleSend}
                 onPasteFiles={handlePasteFiles}
                 onPasteLongText={handlePasteLongText}

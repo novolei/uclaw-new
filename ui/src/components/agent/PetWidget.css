@@ -1,0 +1,58 @@
+/*
+ * Positioning + per-character anchor correction.
+ *
+ * Anchor strategy:
+ *   widget bottom = composer.top  (via position: absolute; bottom: 100%)
+ *   img.transform: translateY(--feet-offset) — pushes the rendered character
+ *   down within its canvas so the bottom of the visible character aligns with
+ *   the widget bottom (= composer top).
+ *
+ * --feet-offset values measured from idle-state alpha bbox, deepest across all
+ * frames (see spec §动画节奏设计 / §锚点与样式):
+ *   Astro:  feet at row 673/720 → 6.39% empty below → 6.4%
+ *   Clawby: paws at row 591/720 → 17.78% empty below → 17.8%
+ */
+.pet-widget {
+  position: absolute;
+  right: 16px;
+  bottom: 100%;
+  width: 100px;
+  height: 100px;
+  /* High z-index ensures the pet renders ABOVE the composer's background, borders,
+     and TipTap editor surface. Without this, the feet (which extend slightly into
+     the composer area via translateY) get occluded by the input box's white bg. */
+  z-index: 50;
+  pointer-events: auto;
+  cursor: pointer;
+  /* Defensive: ensure the pet (extending UP/OUT of parent via bottom:100%) is
+     never clipped by a parent overflow. */
+  overflow: visible;
+}
+
+.pet-widget .pet-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity 280ms ease-in-out;
+  pointer-events: none;
+  transform: translateY(var(--feet-offset, 0%));
+}
+
+.pet-widget .pet-layer.active {
+  opacity: 1;
+}
+
+.pet-widget[data-char="astro"] .pet-layer { --feet-offset: 6.4%; }
+.pet-widget[data-char="clawby"] .pet-layer { --feet-offset: 17.8%; }
+
+/* Tablet / mobile: scale down */
+@media (max-width: 640px) {
+  .pet-widget {
+    width: 56px;
+    height: 56px;
+    right: 8px;
+  }
+}
