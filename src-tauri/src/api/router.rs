@@ -3,12 +3,15 @@ use axum::{
     routing::{get, post, patch, delete},
     http::StatusCode,
     Json,
+    extract::{Path, Request},
+    body::Bytes,
 };
 use tower_http::cors::{CorsLayer, Any};
 use tower_http::trace::TraceLayer;
 use tower_http::catch_panic::CatchPanicLayer;
 
 use crate::api::auth::{HttpServerState, ApiErrorBody};
+use crate::automation::sources::webhook::{global_registry, verify_signature};
 
 /// Build the main API router with all routes and middleware
 pub fn build_router(state: HttpServerState) -> Router {
@@ -75,6 +78,13 @@ pub fn build_router(state: HttpServerState) -> Router {
     let ws_routes = Router::new()
         .route("/ws", get(super::ws::ws_handler));
 
+    // Automation webhook ingress (no auth — verified via HMAC-SHA256 signature)
+    let automation_routes = Router::new()
+        .route(
+            "/automation/webhook/{spec_id}/{sub_id}/*tail",
+            post(automation_webhook_handler),
+        );
+
     // ─── Assemble Router ─────────────────────────────────────────────────
     Router::new()
         .route("/api/health", get(health_check))
@@ -86,6 +96,7 @@ pub fn build_router(state: HttpServerState) -> Router {
         .nest("/api", agent_routes)
         .nest("/api", auth_protected)
         .nest("/api", ws_routes)
+        .nest("/api", automation_routes)
         .layer(CatchPanicLayer::new())
         .layer(trace)
         .layer(cors)
@@ -99,6 +110,55 @@ async fn health_check() -> Json<serde_json::Value> {
         "version": env!("CARGO_PKG_VERSION"),
         "name": "uClaw API",
     }))
+}
+
+/// POST /api/automation/webhook/:spec_id/:sub_id/*tail
+///
+/// Public (no JWT) but optionally HMAC-SHA256 verified.
+/// Signature header: `X-Humane-Signature: sha256=<hex>` (optional).
+/// Returns 404 if the (spec_id, sub_id) pair is not registered,
+/// 401 if a secret is configured and the signature is absent/wrong.
+async fn automation_webhook_handler(
+    Path((spec_id, sub_id, _tail)): Path<(String, String, String)>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiErrorBody>)> {
+    let registry = global_registry();
+    let guard = registry.read().await;
+    let entry = guard
+        .get(&(spec_id.clone(), sub_id.clone()))
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiErrorBody::new("not_found", "webhook subscription not found")),
+            )
+        })?;
+
+    // Verify signature when secret is set
+    if let Some(secret) = &entry.secret {
+        let sig_header = headers
+            .get("x-humane-signature")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !verify_signature(secret, &body, sig_header) {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(ApiErrorBody::new("unauthorized", "invalid or missing signature")),
+            ));
+        }
+    }
+
+    // Parse body as JSON (fall back to raw string on failure)
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap_or_else(|_| {
+        serde_json::json!({ "raw": String::from_utf8_lossy(&body).as_ref() })
+    });
+
+    let callback = entry.callback.clone();
+    // Drop the read guard before calling the callback (may block)
+    drop(guard);
+    callback(spec_id, sub_id, payload);
+
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 /// POST /api/auth/refresh — refresh a JWT token
