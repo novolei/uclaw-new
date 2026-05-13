@@ -152,7 +152,7 @@ export default function SettingsPanel() {
           <ChannelSettings />
         ) : (
           <ScrollArea className="flex-1">
-            <div className="max-w-[640px] mx-auto px-6 py-5">
+            <div className="max-w-[800px] mx-auto px-6 py-5">
               <SettingsContent tab={activeTab} />
             </div>
           </ScrollArea>

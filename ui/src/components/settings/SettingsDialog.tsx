@@ -41,7 +41,8 @@ export function SettingsDialog() {
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.992 }}
                 transition={{ duration: 0.22, ease: DIALOG_EASE }}
-                className="w-[900px] h-[600px] bg-background shadow-2xl rounded-2xl overflow-hidden"
+                style={{ width: 'min(85vw, 1200px)', height: 'min(85vh, 800px)' }}
+                className="bg-background shadow-2xl rounded-2xl overflow-hidden"
               >
                 <DialogPrimitive.Title className="sr-only">设置</DialogPrimitive.Title>
                 <SettingsPanel />
