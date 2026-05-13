@@ -14,7 +14,7 @@ export const SECTION_DESCRIPTION_CLASS = 'text-sm text-muted-foreground mt-1'
 export const CARD_CLASS = 'rounded-xl overflow-hidden bg-card border border-border/50'
 
 /** 卡片内行 */
-export const ROW_CLASS = 'flex items-center justify-between px-4 py-3'
+export const ROW_CLASS = 'flex items-center justify-between px-4 py-3.5'
 
 /** 分隔线 */
 export const DIVIDER_CLASS = 'border-border/50'

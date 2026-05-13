@@ -1,7 +1,8 @@
 import * as React from 'react'
-import { useAtom } from 'jotai'
+import { useAtom, useAtomValue } from 'jotai'
 import { settingsTabAtom, settingsOpenAtom, type SettingsTab } from '@/atoms/settings-tab'
 import { hasUpdateAtom } from '@/atoms/updater'
+import { modelStatusAtom } from '@/atoms/stt-atoms'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { ToolsTab } from './ToolsTab'
 import { GeneralTab } from './GeneralTab'
@@ -45,6 +46,8 @@ export default function SettingsPanel() {
   const [activeTab, setActiveTab] = useAtom(settingsTabAtom)
   const [, setOpen] = useAtom(settingsOpenAtom)
   const [hasUpdate] = useAtom(hasUpdateAtom)
+  const modelStatus = useAtomValue(modelStatusAtom)
+  const sttNeedsDownload = modelStatus.kind === 'not-downloaded'
 
   const TAB_LABEL: Record<SettingsTab, string> = {
     connectivity: '服务商与用量',
@@ -74,7 +77,7 @@ export default function SettingsPanel() {
           active={activeTab}
           onChange={setActiveTab}
           hasUpdate={hasUpdate}
-          sttNeedsDownload={false /* Task 7 wires this from modelStatusAtom */}
+          sttNeedsDownload={sttNeedsDownload}
         />
 
         {/* Right content */}
