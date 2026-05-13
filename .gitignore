@@ -1,5 +1,6 @@
 # Embedded Python runtime (downloaded by setup-python-env.sh)
-src-tauri/pyembed/
+# 不带尾斜杠 — 同时捕获目录和误提交的 symlink（曾踩过自指 symlink 的坑）
+src-tauri/pyembed
 
 # Rust build artifacts
 src-tauri/target/
