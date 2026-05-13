@@ -70,7 +70,8 @@ import { WorkspaceRail } from '@/components/workspace/WorkspaceRail'
 import { WorkspaceHeader } from '@/components/workspace/WorkspaceHeader'
 import { WorkspaceSwitcherBar } from '@/components/workspace/WorkspaceSwitcherBar'
 import { AutomationHub as AutomationHubComponent } from '@/components/automation/AutomationHub'
-import { syncWorkspaceSessionsAtom, refreshWorkspacesAtom, activeWorkspaceIdAtom, workspacesAtom, workspaceSwitchDirectionAtom } from '@/atoms/workspace'
+import { syncWorkspaceSessionsAtom, refreshWorkspacesAtom, activeWorkspaceIdAtom, workspacesAtom, workspaceSwitchDirectionAtom, swipeGestureAtom } from '@/atoms/workspace'
+import { getWorkspaceIcon } from '@/lib/workspace-icons'
 import { MoveSessionDialog } from '@/components/agent/MoveSessionDialog'
 import {
   AlertDialog,
@@ -114,9 +115,40 @@ const workspaceSlideVariants: Variants = {
     x: dir === 'forward' ? '-100%' : '100%',
   }),
 }
+
+/**
+ * Compact destination card shown while the swipe gesture is active.
+ * Renders the workspace's icon + name + tilde-trimmed path so the
+ * user gets immediate feedback about which workspace they're sliding
+ * toward, without needing to render the full session list (the
+ * workspace's session data lives in atoms keyed by the *active*
+ * workspace; surfacing another workspace's data would require a
+ * deeper atom refactor — out of scope for the gesture polish).
+ */
+function GesturePreviewCard({ workspaceId }: { workspaceId: string }): React.ReactElement | null {
+  const workspaces = useAtomValue(workspacesAtom)
+  const ws = workspaces.find((w) => w.id === workspaceId)
+  if (!ws) return null
+  const Icon = getWorkspaceIcon(ws.icon)
+  const home = ws.path?.match(/^(?:\/Users\/[^/]+|\/home\/[^/]+)\/(.*)$/)
+  const displayPath = home ? `~/${home[1]}` : ws.path ?? ''
+  return (
+    <div className="flex flex-col items-center justify-center h-full w-full px-6 select-none">
+      <div className="size-14 rounded-2xl bg-foreground/[0.06] ring-1 ring-foreground/[0.05] flex items-center justify-center mb-3">
+        <Icon className="size-7 text-foreground/70" />
+      </div>
+      <div className="text-[14px] font-semibold text-foreground/90 truncate max-w-full">{ws.name}</div>
+      {displayPath && (
+        <div className="mt-1 text-[10.5px] text-muted-foreground/65 font-mono tabular-nums truncate max-w-full">
+          {displayPath}
+        </div>
+      )}
+    </div>
+  )
+}
 import type { ActiveView } from '@/atoms/active-view'
 import type { ConversationMeta } from '@/lib/chat-types'
-import type { AgentSessionMeta, WorkspaceCapabilities } from '@/lib/agent-types'
+import type { AgentSessionMeta, AgentWorkspace, WorkspaceCapabilities } from '@/lib/agent-types'
 import {
   getWorkspaceCapabilities,
   listConversations as listConversationsIPC,
@@ -141,6 +173,99 @@ interface SidebarItemProps {
   active?: boolean
   suffix?: React.ReactNode
   onClick?: () => void
+}
+
+/**
+ * Renders the agent-mode sidebar body with Arc-style cross-pass on
+ * workspace flip + iOS-style gesture-driven slide while the user is
+ * actively swiping. Three coordinated layers:
+ *
+ *  1. The destination preview card (only when gesture active) — slides
+ *     in from the side opposite the current workspace, positioned at
+ *     `offsetPx ± containerWidth` so it stays attached to the edge of
+ *     the moving workspace.
+ *  2. The current workspace's content inside AnimatePresence:
+ *       - Gesture active → animate.x = offsetPx, transition.duration = 0
+ *         (follow the finger 1:1 minus rubber band).
+ *       - Gesture cleared, workspace unchanged → spring back to x: 0.
+ *       - Gesture committed (workspace flipped) → AnimatePresence
+ *         fires the cross-pass via the slide variants.
+ */
+interface SidebarBodyProps {
+  activeWorkspaceId: string | null
+  switchDirection: 'forward' | 'backward'
+  activeTabId: string | null
+  agentSessions: AgentSessionMeta[]
+  handleSelectAgentSession: (id: string, title: string) => void
+  handleRequestDelete: (id: string) => void
+  workspaces: AgentWorkspace[]
+}
+function SidebarBodyWithGesture({
+  activeWorkspaceId,
+  switchDirection,
+  activeTabId,
+  agentSessions,
+  handleSelectAgentSession,
+  handleRequestDelete,
+}: SidebarBodyProps): React.ReactElement {
+  const gesture = useAtomValue(swipeGestureAtom)
+  const isGestureActive = gesture !== null
+  const offsetPx = gesture?.offsetPx ?? 0
+  const containerWidth = gesture?.containerWidth ?? 0
+  const previewWorkspaceId = gesture?.previewWorkspaceId ?? null
+  // Preview is glued to the trailing edge of the current workspace:
+  //   offsetPx > 0 (current sliding right) → preview enters from LEFT  (offsetPx − width)
+  //   offsetPx < 0 (current sliding left)  → preview enters from RIGHT (offsetPx + width)
+  const previewOffsetPx = offsetPx === 0 || !gesture
+    ? 0
+    : offsetPx > 0
+      ? offsetPx - containerWidth
+      : offsetPx + containerWidth
+
+  return (
+    <div className="relative flex-1 min-h-0 overflow-hidden">
+      {previewWorkspaceId && (
+        <div
+          className="absolute inset-0 flex flex-col bg-background pointer-events-none"
+          style={{
+            transform: `translate3d(${previewOffsetPx}px, 0, 0)`,
+            willChange: 'transform',
+          }}
+        >
+          <GesturePreviewCard workspaceId={previewWorkspaceId} />
+        </div>
+      )}
+      <AnimatePresence custom={switchDirection} initial={false}>
+        <motion.div
+          key={activeWorkspaceId ?? 'no-ws'}
+          custom={switchDirection}
+          variants={workspaceSlideVariants}
+          initial="enter"
+          animate={isGestureActive ? { x: offsetPx } : 'center'}
+          exit="exit"
+          transition={
+            isGestureActive
+              ? { duration: 0 }
+              : { type: 'spring', stiffness: 380, damping: 36, mass: 0.7 }
+          }
+          className="absolute inset-0 flex flex-col bg-background"
+          style={{ willChange: 'transform' }}
+        >
+          <WorkspaceHeader />
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+            <WorkspaceRail
+              activeSessionId={activeTabId}
+              onSelectSession={(id) => {
+                const session = agentSessions.find((s) => s.id === id)
+                handleSelectAgentSession(id, session?.title ?? '')
+              }}
+              onDeleteSession={(id) => handleRequestDelete(id)}
+            />
+          </div>
+        </motion.div>
+      </AnimatePresence>
+    </div>
+  )
 }
 
 function SidebarItem({ icon, label, active, suffix, onClick }: SidebarItemProps): React.ReactElement {
@@ -814,39 +939,22 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
 
       {/* 主内容区：对话/会话列表 */}
       {mode === 'agent' ? (
-        // Arc-style cross-pass: AnimatePresence with mode="sync" (default)
-        // keeps OUT-going + IN-coming workspaces both mounted briefly so
-        // they can slide past each other. The wrapper is relative +
-        // overflow-hidden so the off-screen portions are clipped; each
-        // motion.div is absolute inset-0 to share the same slot.
-        // `custom={switchDirection}` propagates the slide direction into
-        // exit variants (which run after React removed the child).
-        <div className="relative flex-1 min-h-0 overflow-hidden">
-          <AnimatePresence custom={switchDirection} initial={false}>
-            <motion.div
-              key={activeWorkspaceId ?? 'no-ws'}
-              custom={switchDirection}
-              variants={workspaceSlideVariants}
-              initial="enter"
-              animate="center"
-              exit="exit"
-              transition={{ duration: 0.32, ease: [0.32, 0.72, 0, 1] }}
-              className="absolute inset-0 flex flex-col"
-            >
-              <WorkspaceHeader />
-              <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-                <WorkspaceRail
-                  activeSessionId={activeTabId ?? null}
-                  onSelectSession={(id) => {
-                    const session = agentSessions.find((s) => s.id === id)
-                    handleSelectAgentSession(id, session?.title ?? '')
-                  }}
-                  onDeleteSession={(id) => handleRequestDelete(id)}
-                />
-              </div>
-            </motion.div>
-          </AnimatePresence>
-        </div>
+        // Three rendering modes share the same absolute slot:
+        //   1. Idle: AnimatePresence cross-pass on workspace flip.
+        //   2. Active swipe gesture: current sidebar follows the finger
+        //      (rubber-band damped); a "destination card" of the preview
+        //      workspace slides in alongside.
+        //   3. Snap-back: gesture cleared without commit → spring back
+        //      to translateX 0.
+        <SidebarBodyWithGesture
+          activeWorkspaceId={activeWorkspaceId ?? null}
+          switchDirection={switchDirection}
+          activeTabId={activeTabId ?? null}
+          agentSessions={agentSessions}
+          handleSelectAgentSession={handleSelectAgentSession}
+          handleRequestDelete={handleRequestDelete}
+          workspaces={workspaces}
+        />
       ) : (
         <div className="flex-1 overflow-y-auto px-3 pt-2 pb-3 scrollbar-none">
           {conversationGroups.map((group) => (

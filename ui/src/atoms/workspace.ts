@@ -56,6 +56,27 @@ export const activeWorkspaceCwdAtom = atom<string | null>((get) => {
  */
 export const workspaceSwitchDirectionAtom = atom<'forward' | 'backward'>('forward')
 
+/**
+ * Active swipe-gesture state. Non-null while the user is actively
+ * dragging the LeftSidebar to switch workspaces; null when at rest
+ * (so AnimatePresence's normal cross-pass animation takes over).
+ *
+ * `offsetPx` is the *visual* translation of the current workspace
+ * (after rubber-band damping). Positive = current slides RIGHT
+ * (previous workspace peeks in from the LEFT); negative = current
+ * slides LEFT (next workspace peeks in from the RIGHT).
+ *
+ * `previewWorkspaceId` is which workspace is currently being
+ * revealed alongside — needed because the renderer can't recompute
+ * direction every frame without knowing the gesture intent.
+ */
+export interface SwipeGestureState {
+  offsetPx: number
+  containerWidth: number
+  previewWorkspaceId: string | null
+}
+export const swipeGestureAtom = atom<SwipeGestureState | null>(null)
+
 // Sessions grouped by workspace id: { [workspaceId]: WorkspaceSession[] }
 export const workspaceSessionsAtom = atom<Record<string, WorkspaceSession[]>>({})
 

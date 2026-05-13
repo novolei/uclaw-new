@@ -18,14 +18,15 @@ import {
   workspacesAtom,
   activeWorkspaceIdAtom,
   selectWorkspaceAtom,
+  swipeGestureAtom,
 } from '@/atoms/workspace'
 
-/** Cumulative |deltaX| (in px) that must accumulate before firing. */
-const SWIPE_THRESHOLD = 80
-/** ms between two switches. Prevents one drag-out swipe from firing twice. */
-const COOLDOWN_MS = 700
-/** ms of inactivity after which the accumulated delta resets to 0. */
-const ACCUMULATOR_RESET_MS = 120
+/** Fraction of the sidebar width the user must drag past to commit. */
+const COMMIT_FRACTION = 0.28
+/** ms of no wheel events that ends a gesture (settle phase begins). */
+const GESTURE_END_IDLE_MS = 130
+/** ms between two switches (prevents momentum-wheel double-firing). */
+const COOLDOWN_MS = 600
 /** Horizontal magnitude must dominate vertical by this factor to count. */
 const HORIZONTAL_DOMINANCE = 1.6
 
@@ -47,13 +48,31 @@ function isInsideEditable(target: EventTarget | null): boolean {
 }
 
 /**
+ * Apple-style rubber-band damping: returns a softened delta that grows
+ * sub-linearly past the natural travel range. `c` controls the
+ * stickiness — Apple's UIScrollView uses ~0.55.
+ */
+function rubberBand(distance: number, range: number, c = 0.55): number {
+  if (range <= 0) return 0
+  const sign = Math.sign(distance)
+  const abs = Math.abs(distance)
+  // d/(1 + c*d/range) approaches range/c asymptotically as d → ∞.
+  return sign * (abs / (1 + (c * abs) / range))
+}
+
+/**
  * Listen for horizontal swipe / wheel gestures on `scopeRef.current` only.
- * If the ref is null at mount time (or never set), the hook is a no-op.
+ * Drives `swipeGestureAtom` with the live offset (rubber-band damped past
+ * the commit threshold) so the LeftSidebar can render BOTH the current
+ * and the about-to-arrive workspace, sliding past each other under the
+ * finger. On gesture end (idle 130 ms): commits if past threshold,
+ * snaps back otherwise.
  */
 export function useWorkspaceSwipe(scopeRef: React.RefObject<HTMLElement | null>): void {
   const workspaces = useAtomValue(workspacesAtom)
   const activeId = useAtomValue(activeWorkspaceIdAtom)
   const selectWorkspace = useSetAtom(selectWorkspaceAtom)
+  const setGesture = useSetAtom(swipeGestureAtom)
 
   const workspacesRef = React.useRef(workspaces)
   const activeIdRef = React.useRef(activeId)
@@ -64,53 +83,108 @@ export function useWorkspaceSwipe(scopeRef: React.RefObject<HTMLElement | null>)
     const el = scopeRef.current
     if (!el) return
 
-    let accumDeltaX = 0
-    let lastWheelAt = 0
+    // Raw accumulator: signed wheel delta accumulated during this gesture.
+    // Positive = user pushed wheel RIGHT (intent: forward / next workspace).
+    let accumRaw = 0
     let cooldownUntil = 0
+    let endTimer: ReturnType<typeof setTimeout> | null = null
+    let isTracking = false
+
+    /** Called when the gesture has been idle long enough to settle. */
+    const settle = (): void => {
+      isTracking = false
+      const list = workspacesRef.current
+      const currIdx = list.findIndex((w) => w.id === activeIdRef.current)
+      const width = el.clientWidth
+      if (list.length === 0 || currIdx === -1 || width === 0) {
+        setGesture(null)
+        accumRaw = 0
+        return
+      }
+      const commitDist = width * COMMIT_FRACTION
+      const step = accumRaw > 0 ? 1 : -1
+      if (Math.abs(accumRaw) >= commitDist) {
+        const targetIdx = (currIdx + step + list.length) % list.length
+        const target = list[targetIdx]
+        if (target && target.id !== activeIdRef.current) {
+          // Commit: clearing the gesture lets AnimatePresence's cross-pass
+          // animate the rest of the way under control of the variants.
+          setGesture(null)
+          void selectWorkspace({ id: target.id, direction: step > 0 ? 'forward' : 'backward' })
+          cooldownUntil = performance.now() + COOLDOWN_MS
+        } else {
+          setGesture(null)
+        }
+      } else {
+        // Snap back. Clearing the atom triggers the renderer's spring
+        // transition back to translateX: 0.
+        setGesture(null)
+      }
+      accumRaw = 0
+    }
 
     const onWheel = (e: WheelEvent): void => {
       const now = performance.now()
       if (now < cooldownUntil) return
 
-      if (now - lastWheelAt > ACCUMULATOR_RESET_MS) accumDeltaX = 0
-      lastWheelAt = now
-
       const dx = e.deltaX
       const dy = e.deltaY
-      if (Math.abs(dx) < Math.abs(dy) * HORIZONTAL_DOMINANCE) return
+
+      // Vertical-dominant motion: end any in-flight gesture and bail.
+      if (Math.abs(dx) < Math.abs(dy) * HORIZONTAL_DOMINANCE) {
+        if (isTracking) {
+          if (endTimer) { clearTimeout(endTimer); endTimer = null }
+          settle()
+        }
+        return
+      }
       if (isInsideEditable(e.target)) return
 
-      accumDeltaX += dx
-      if (Math.abs(accumDeltaX) < SWIPE_THRESHOLD) return
+      // Stop the browser's built-in horizontal scroll-back navigation.
+      e.preventDefault()
+      isTracking = true
+      accumRaw += dx
 
+      // Compute displayed offset with rubber band past commit distance.
       const list = workspacesRef.current
       const currIdx = list.findIndex((w) => w.id === activeIdRef.current)
-      if (currIdx === -1 || list.length === 0) {
-        accumDeltaX = 0
-        return
-      }
-      // Positive deltaX = swipe RIGHT on the trackpad → next workspace.
-      // Wrap around at boundaries so the workspace ring is endless.
-      const step = accumDeltaX > 0 ? 1 : -1
-      const targetIdx = (currIdx + step + list.length) % list.length
-      const target = list[targetIdx]
-      if (!target || target.id === activeIdRef.current) {
-        accumDeltaX = 0
-        return
+      const width = el.clientWidth
+      if (currIdx === -1 || width === 0) return
+
+      const commitDist = width * COMMIT_FRACTION
+      let displayed = -accumRaw // negate so positive accum (rightward swipe) → negative offset (current slides left)
+      if (Math.abs(displayed) > commitDist) {
+        const sign = Math.sign(displayed)
+        const overshoot = Math.abs(displayed) - commitDist
+        displayed = sign * (commitDist + rubberBand(overshoot, width - commitDist))
       }
 
-      e.preventDefault()
-      // Pass gesture direction explicitly so the wrap (last → first)
-      // still slides in the gesture direction instead of inverting
-      // because of sortOrder comparison.
-      void selectWorkspace({ id: target.id, direction: step > 0 ? 'forward' : 'backward' })
-      cooldownUntil = now + COOLDOWN_MS
-      accumDeltaX = 0
+      // Direction & preview workspace.
+      const step = accumRaw > 0 ? 1 : -1
+      const targetIdx = (currIdx + step + list.length) % list.length
+      const previewId = list[targetIdx]?.id ?? null
+
+      setGesture({
+        offsetPx: displayed,
+        containerWidth: width,
+        previewWorkspaceId: previewId,
+      })
+
+      // Reset the end timer.
+      if (endTimer) clearTimeout(endTimer)
+      endTimer = setTimeout(() => {
+        endTimer = null
+        settle()
+      }, GESTURE_END_IDLE_MS)
     }
 
     el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
-  }, [scopeRef, selectWorkspace])
+    return () => {
+      el.removeEventListener('wheel', onWheel)
+      if (endTimer) clearTimeout(endTimer)
+      setGesture(null)
+    }
+  }, [scopeRef, selectWorkspace, setGesture])
 }
 
 /**
