@@ -74,7 +74,7 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
   // CLAUDE.md's composer-parity rule. The backend `search_workspace_files_
   // for_mention` IPC resolves conversation_id → space_id via the
   // conversations table fallback, so this works without an agent session.
-  const composerTextareaRef = React.useRef<HTMLTextAreaElement | null>(null)
+  const composerEditorRef = React.useRef<import('@tiptap/core').Editor | null>(null)
   const mentionControllerRef = React.useRef<ComposerMentionControllerHandle | null>(null)
 
   // 从 Map atom 读写草稿
@@ -297,13 +297,13 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
               placeholder={sendWithCmdEnter ? '输入消息... (⌘/Ctrl+Enter 发送，Enter 换行，@ 文件，/ Skill)' : '输入消息... (Enter 发送，Shift+Enter 换行，@ 文件，/ Skill)'}
               autoFocusTrigger={conversationId}
               sendWithCmdEnter={sendWithCmdEnter}
-              textareaRef={composerTextareaRef}
+              editorRef={composerEditorRef}
               onKeyDownIntercept={(e) =>
                 mentionControllerRef.current?.handleKeyDown(e) ?? false}
             />
             <ComposerMentionController
               ref={mentionControllerRef}
-              textareaRef={composerTextareaRef}
+              editorRef={composerEditorRef}
               value={content}
               setValue={setContent}
               sessionId={conversationId}

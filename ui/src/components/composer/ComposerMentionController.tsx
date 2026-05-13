@@ -1,81 +1,76 @@
 /**
- * ComposerMentionController — glues `useComposerMentionTrigger` to the
- * data sources (skills + files) and renders the popup. Provides:
+ * ComposerMentionController — glues `useEditorMentionTrigger` to the data
+ * sources (skills + files) and renders the popup.
  *
- *   - An imperative ref the parent calls in textarea's onKeyDown to
- *     intercept ↑↓ Enter Esc when the popup is open.
- *   - A `commitReplacement(text)` callback the parent triggers when a
- *     row is selected; it splices the textarea value.
- *
- * Why is this a component and not a hook? It needs to render React
- * (the popup itself). A "headless hook + popup component" split would
- * duplicate the items+selectedIndex state across two surfaces. Keeping
- * it bundled here means AgentView + ChatInput each just drop in one
- * component + one ref + one onKeyDown call.
+ * 2026-05-13 TipTap port: editor-instance-driven instead of textarea-ref-
+ * driven. The popup component (ComposerMentionPopup), data fetching, and
+ * keyboard intercept all stay the same shape — only the commit path
+ * changes from a string-splice to a `insertMentionChip` TipTap command.
  */
 import * as React from 'react'
 import { useAtomValue } from 'jotai'
+import type { Editor } from '@tiptap/core'
 import { activeWorkspaceIdAtom } from '@/atoms/workspace'
 import { listInvocableSkills, searchWorkspaceFilesForMention } from '@/lib/tauri-bridge'
 import type { InvocableSkill, WorkspaceFileMatch } from '@/lib/types'
-import { useComposerMentionTrigger, type MentionTrigger } from '@/hooks/useComposerMentionTrigger'
+import { useEditorMentionTrigger } from '@/hooks/useEditorMentionTrigger'
 import { ComposerMentionPopup } from './ComposerMentionPopup'
+import type { MentionChipKind } from './MentionChipNode'
 import { Sparkles, FileText, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface Props {
-  /** Ref to the textarea this controller drives. */
-  textareaRef: React.RefObject<HTMLTextAreaElement | null>
-  /** Current textarea value. */
+  /** Ref to the TipTap editor this controller drives. Replaces the
+   *  pre-TipTap `textareaRef` — the trigger detection now reads
+   *  `editor.state.selection.from` instead of `textarea.selectionStart`. */
+  editorRef: React.MutableRefObject<Editor | null>
+  /** Current serialized value (unchanged role — `setValue` still gets
+   *  called when the editor emits onUpdate, threaded through props). */
   value: string
-  /** Setter for the textarea value (caller's controlled state). */
+  /** Setter for the serialized value (still string-typed — chips
+   *  serialize back to their inline form). */
   setValue: (v: string) => void
   /** The agent session id — required to resolve workspace root +
    *  attached_dirs on the backend for the `@` file search. */
   sessionId: string | null
   /** If true, controller is disabled — popup never opens. Used when
-   *  the textarea itself is disabled (no model selected, mid-stream
+   *  the editor itself is disabled (no model selected, mid-stream
    *  with no interrupt, etc.). */
   disabled?: boolean
 }
 
 export interface ComposerMentionControllerHandle {
   /** Returns true if the keyboard event was consumed by the popup.
-   *  Caller's onKeyDown must early-return when true. */
-  handleKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => boolean
+   *  Caller's onKeyDownIntercept must return this. */
+  handleKeyDown: (e: React.KeyboardEvent<HTMLElement>) => boolean
 }
 
 type Row =
   | { kind: 'skill'; data: InvocableSkill }
   | { kind: 'file'; data: WorkspaceFileMatch }
 
-/** Format a skill's slash insertion. Falls back to title-as-is for
- *  learned skills whose title isn't ASCII-slash-able — the backend
- *  resolves Chinese / unicode titles via `normalize_title_for_dedup`
- *  so any title is technically valid; readability is the only concern. */
-function skillInsertText(s: InvocableSkill): string {
-  return `/${s.name}`
-}
-
-/** Format a file insertion. We insert the absolute path so the agent
- *  loop's path-policy can reason about it; the visual representation
- *  in chat (when a file_path chip renderer is wired) can shorten it. */
-function fileInsertText(f: WorkspaceFileMatch): string {
-  return `@${f.absolutePath}`
-}
-
 export const ComposerMentionController = React.forwardRef<
   ComposerMentionControllerHandle,
   Props
 >(function ComposerMentionController(
-  { textareaRef, value, setValue, sessionId, disabled },
+  { editorRef, value: _value, setValue: _setValue, sessionId, disabled },
   ref,
 ) {
   const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
-  const { trigger, close, commitReplacement } = useComposerMentionTrigger({
-    textareaRef,
-    value,
+  // Trigger detection is scoped to the current editor instance. The
+  // hook reads ProseMirror positions through the editor's state.
+  // We rebind whenever the editor instance changes (e.g. on first
+  // mount when useEditor returns null then the real instance).
+  const [editor, setEditor] = React.useState<Editor | null>(editorRef.current)
+  React.useEffect(() => {
+    // Poll the ref one frame after mount — useEditor's instance becomes
+    // available after RichTextInput's useEffect runs. Cheaper than a
+    // mutation observer; identical result.
+    const id = requestAnimationFrame(() => setEditor(editorRef.current))
+    return () => cancelAnimationFrame(id)
   })
+
+  const { trigger, close } = useEditorMentionTrigger({ editor })
 
   const [rows, setRows] = React.useState<Row[]>([])
   const [selectedIndex, setSelectedIndex] = React.useState(0)
@@ -107,9 +102,8 @@ export const ComposerMentionController = React.forwardRef<
           setRows(filtered.slice(0, 30).map((s) => ({ kind: 'skill' as const, data: s })))
           setSelectedIndex(0)
         } else {
-          // '@' — files + learned-skill fallback (the spec'd dual-mode
-          // selected by the user). Run both in parallel; files first
-          // in the popup since they're the primary use case.
+          // '@' — files + learned-skill fallback (the CJK-title fallback
+          // selected in the PR #130 scope discussion).
           if (!sessionId) {
             setRows([])
             return
@@ -120,8 +114,6 @@ export const ComposerMentionController = React.forwardRef<
           ])
           if (seq !== fetchSeqRef.current) return
           const q = trigger.query.toLowerCase()
-          // Only show learned skills under @ — static/borrowed are
-          // already slash-typeable and don't need the fallback.
           const matchedSkills = (
             q
               ? skills.filter(
@@ -131,7 +123,7 @@ export const ComposerMentionController = React.forwardRef<
                       || s.description.toLowerCase().includes(q)),
                 )
               : skills.filter((s) => s.provenance === 'learned')
-          ).slice(0, 5) // small slice — files dominate the popup
+          ).slice(0, 5)
           const combined: Row[] = [
             ...files.map((f) => ({ kind: 'file' as const, data: f })),
             ...matchedSkills.map((s) => ({ kind: 'skill' as const, data: s })),
@@ -141,8 +133,6 @@ export const ComposerMentionController = React.forwardRef<
         }
       } catch (err) {
         if (seq !== fetchSeqRef.current) return
-        // Don't toast — the popup just shows empty. Common cause is
-        // an in-flight session_id that just got swapped out.
         console.warn('[composer-mention] fetch failed:', err)
         setRows([])
       }
@@ -152,29 +142,33 @@ export const ComposerMentionController = React.forwardRef<
   const open = !disabled && trigger != null
   const hasRows = rows.length > 0
 
+  // Commit: dispatch TipTap's insertMentionChip command. It replaces
+  // the trigger char + query span with an atomic chip node. The chip's
+  // `value` attr is what serializes back to wire format on next
+  // onUpdate, so the parent's `setValue(string)` flow stays unchanged.
   const commitRow = React.useCallback(
     (row: Row) => {
-      const insertText
-        = row.kind === 'skill' ? skillInsertText(row.data) : fileInsertText(row.data)
-      const { newValue, newCursor } = commitReplacement(insertText)
-      setValue(newValue)
-      // Restore focus + caret on the next tick — setValue is async so
-      // we wait for React to flush before touching selectionStart.
-      requestAnimationFrame(() => {
-        const ta = textareaRef.current
-        if (ta) {
-          ta.focus()
-          ta.setSelectionRange(newCursor, newCursor)
-        }
+      const ed = editorRef.current
+      if (!ed || !trigger) return
+      const kind: MentionChipKind = row.kind === 'skill' ? 'skill' : 'file'
+      const display = row.kind === 'skill' ? row.data.name : row.data.name
+      const value = row.kind === 'skill' ? row.data.name : row.data.absolutePath
+      ed.commands.insertMentionChip({
+        kind,
+        display,
+        value,
+        from: trigger.triggerStart,
+        to: trigger.cursorPos,
       })
+      ed.commands.focus()
     },
-    [commitReplacement, setValue, textareaRef],
+    [editorRef, trigger],
   )
 
   React.useImperativeHandle(
     ref,
     () => ({
-      handleKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      handleKeyDown: (e: React.KeyboardEvent<HTMLElement>): boolean => {
         if (!open) return false
         if (e.key === 'Escape') {
           e.preventDefault()
@@ -182,8 +176,6 @@ export const ComposerMentionController = React.forwardRef<
           return true
         }
         if (!hasRows) {
-          // No rows → only Escape is meaningful. Let Tab/Enter pass
-          // through so the user can still submit / move focus.
           return false
         }
         if (e.key === 'ArrowDown') {
@@ -303,8 +295,4 @@ function FileRow({
       </div>
     </>
   )
-}
-
-function _useTriggerRef(_t: MentionTrigger | null): void {
-  // Reserved for future debug instrumentation hook.
 }

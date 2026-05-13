@@ -49,6 +49,7 @@
     "@tauri-apps/plugin-updater": "^2.10.1",
     "@tiptap/extension-code-block-lowlight": "^3.23.2",
     "@tiptap/extension-link": "^3.23.2",
+    "@tiptap/extension-placeholder": "^3.23.2",
     "@tiptap/react": "^3.23.2",
     "@tiptap/starter-kit": "^3.23.2",
     "@xmldom/xmldom": "^0.8.13",
