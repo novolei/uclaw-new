@@ -43,7 +43,7 @@ impl<R: tauri::Runtime> Tool for LoadSkillTool<R> {
     }
 
     fn description(&self) -> &str {
-        "Load full content of a named skill (use after skill_search picks a match)."
+        "Load full content of a named skill (use after skill_search picks a match). Apply the returned prompt body to the current task."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
