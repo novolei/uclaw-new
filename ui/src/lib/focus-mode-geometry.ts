@@ -12,8 +12,14 @@ export const ISLAND_RIGHT_WIDTH = 400
 export const ISLAND_EDGE_GAP = 12
 /** Top band reserved for the titlebar drag region + TabBar — hot zone is excluded here. */
 export const TOP_EXCLUDE = 84
-/** Hot zone width near the screen edge (in CSS px). */
-export const HOT_ZONE_WIDTH = 32
+/** Hot zone width near the screen edge (in CSS px).
+ *  Narrowed 32 → 8 (2026-05-13 fix): with the wider 32px hot zone the
+ *  island would slide in BEFORE the user had time to register the glow
+ *  hint, since the glow peaks at 32px (same distance). Now the user
+ *  hovers across the glow ramp (160 → 32 px), sees the breathing edge
+ *  light, and the island only triggers in the final 8px sliver right
+ *  at the screen edge — a clearer "you must really mean it" gesture. */
+export const HOT_ZONE_WIDTH = 8
 
 /**
  * Returns true if `(x, y)` falls inside the bounding box of the floating
