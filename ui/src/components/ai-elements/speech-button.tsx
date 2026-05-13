@@ -20,6 +20,7 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { useSttRecording } from '@/hooks/useSttRecording'
+import { useShortcut } from '@/hooks/useShortcut'
 import { modelStatusAtom, type ComposerKind } from '@/atoms/stt-atoms'
 
 interface SpeechButtonProps {
@@ -59,6 +60,16 @@ export function SpeechButton({
     }
     await stt.start()
   }, [modelStatus.kind, onShowDownloadDialog, stt])
+
+  // Global shortcut → only the chat-side instance responds, to avoid double-fire
+  // when both ChatInput and AgentView mount their SpeechButton.
+  useShortcut({
+    id: 'toggle-stt-recording',
+    handler: () => {
+      void handleClick()
+    },
+    disabled: composer !== 'chat',
+  })
 
   // Window-event bus for InlineRecorder + FirstRunDialog wiring (Task 14).
   React.useEffect(() => {

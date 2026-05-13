@@ -93,6 +93,13 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     mac: 'Alt+F',
     win: 'Alt+F',
   },
+  {
+    id: 'toggle-stt-recording',
+    label: '语音输入开/关',
+    group: 'Agent',
+    mac: 'Cmd+Shift+M',
+    win: 'Ctrl+Shift+M',
+  },
 ]
 
 /** 快速查找表 */
