@@ -45,6 +45,22 @@ export const activeWorkspaceCwdAtom = atom<string | null>((get) => {
 })
 
 /**
+ * Cross-surface git-branch sync tick.
+ *
+ * Bumped after any in-app action that changes the workspace's current
+ * git branch (e.g. `SidebarGitActions`'s "create branch" flow). Consumers
+ * who cache `gitCurrentBranch(cwd)` results in local React state include
+ * this tick in their probe dependency array so they re-fetch and stay
+ * in sync — needed because PR #132 moves `GitActionsPicker` to the
+ * sidebar but `BranchPicker` (which displays the branch name) stays
+ * in the composer.
+ *
+ * One atom + one extra `useEffect` dep — no event bus or pub-sub
+ * needed for the current N=2 consumers.
+ */
+export const branchSyncTickAtom = atom<number>(0)
+
+/**
  * Direction of the most-recent workspace switch — used by the UI to
  * pick which side an iOS-style slide animation enters from.
  * - `forward`  = moved to a later workspace in sortOrder → slide IN from right

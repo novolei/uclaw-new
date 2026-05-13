@@ -61,6 +61,12 @@ type Props = {
    *  usable in environments without a workbench (settings page, etc). */
   onOpenWorkbench?: () => void
   className?: string
+  /** Visual placement context. Default `'composer'` preserves the original
+   *  in-toolbar chip style. `'sidebar'` switches to the lighter, lower-
+   *  emphasis style used in `LeftSidebar` (mirrors the MCP·Skills row
+   *  aesthetic) and flips the popover to open to the right instead of
+   *  above. See spec §3.2 for the per-aspect table. */
+  variant?: 'composer' | 'sidebar'
 }
 
 type Mode =
@@ -89,7 +95,9 @@ export function GitActionsPicker({
   onBranchChange,
   onOpenWorkbench,
   className,
+  variant = 'composer',
 }: Props) {
+  const isSidebar = variant === 'sidebar'
   const [open, setOpen] = React.useState(false)
   const [mode, setMode] = React.useState<Mode>({ kind: 'menu' })
   const [commitMessage, setCommitMessage] = React.useState('')
@@ -279,10 +287,23 @@ export function GitActionsPicker({
           type="button"
           disabled={disabled}
           className={cn(
-            'window-no-drag inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60',
-            noRepo
-              ? 'border-amber-200 bg-amber-50 text-amber-800 hover:border-amber-300 hover:bg-amber-100'
-              : 'border-border/70 text-muted-foreground hover:border-border hover:bg-accent hover:text-accent-foreground',
+            'window-no-drag transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+            // Variant: composer uses the original chip style; sidebar
+            // borrows BranchPicker's lighter aesthetic so the row sits
+            // visually flush with MCP·Skills (per spec §3.2).
+            isSidebar
+              ? cn(
+                  'flex items-center gap-1.5 rounded-[10px] px-3 py-2 text-[12px]',
+                  noRepo
+                    ? 'text-amber-600 hover:bg-amber-500/12 hover:text-amber-500'
+                    : 'text-foreground/50 hover:bg-foreground/[0.04] hover:text-foreground/70',
+                )
+              : cn(
+                  'inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[12px] font-medium',
+                  noRepo
+                    ? 'border-amber-200 bg-amber-50 text-amber-800 hover:border-amber-300 hover:bg-amber-100'
+                    : 'border-border/70 text-muted-foreground hover:border-border hover:bg-accent hover:text-accent-foreground',
+                ),
             className,
           )}
           data-window-no-drag="true"
@@ -290,23 +311,30 @@ export function GitActionsPicker({
           title={noRepo ? '当前目录尚未初始化 Git — 点击查看初始化选项' : undefined}
         >
           {noRepo ? (
-            <Sparkles className="h-3.5 w-3.5" strokeWidth={1.75} />
+            <Sparkles className={cn(isSidebar ? 'h-[13px] w-[13px]' : 'h-3.5 w-3.5')} strokeWidth={1.75} />
           ) : (
-            <GitCommitHorizontal className="h-3.5 w-3.5" strokeWidth={1.75} />
+            <GitCommitHorizontal className={cn(isSidebar ? 'h-[13px] w-[13px]' : 'h-3.5 w-3.5')} strokeWidth={1.75} />
           )}
           <span>{noRepo ? '初始化 Git' : '提交'}</span>
-          <ChevronDown className={cn('h-3 w-3', noRepo ? 'text-amber-600' : 'text-muted-foreground')} />
+          <ChevronDown
+            className={cn(
+              isSidebar ? 'h-[11px] w-[11px] text-foreground/30' : 'h-3 w-3',
+              !isSidebar && (noRepo ? 'text-amber-600' : 'text-muted-foreground'),
+            )}
+          />
         </button>
       </PopoverTrigger>
       <PopoverContent
-        align="center"
-        sideOffset={12}
+        side={isSidebar ? 'right' : 'top'}
+        align={isSidebar ? 'start' : 'center'}
+        sideOffset={isSidebar ? 8 : 12}
         collisionPadding={16}
         className={cn(
           'w-[240px] overflow-hidden rounded-2xl border border-border/70 bg-popover/96 p-0 text-[13px] text-popover-foreground backdrop-blur-2xl backdrop-saturate-150',
           'shadow-[0_2px_4px_rgba(0,0,0,0.04),0_8px_20px_rgba(0,0,0,0.08),0_24px_56px_rgba(0,0,0,0.16),0_0_0_0.5px_rgba(0,0,0,0.04)]',
           'origin-[var(--radix-popover-content-transform-origin)] transition-all duration-200 ease-out',
-          'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:slide-in-from-top-1',
+          'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+          isSidebar ? 'data-[state=open]:slide-in-from-left-1' : 'data-[state=open]:slide-in-from-top-1',
           'data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95',
         )}
       >
