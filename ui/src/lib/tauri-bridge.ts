@@ -1212,16 +1212,6 @@ export const browserTakeScreenshot = (tabId: string): Promise<string> =>
   invoke<string>('browser_take_screenshot', { tab_id: tabId })
 
 // ─── Automation (Phase 3) ─────────────────────────────────────────────
-export interface AutomationSpecRow {
-  id: string
-  name: string
-  description: string
-  tomlContent: string
-  enabled: boolean
-  createdAt: number
-  updatedAt: number
-}
-
 export interface AutomationActivity {
   id: string
   specId: string
@@ -1244,15 +1234,6 @@ export interface AutomationActivity {
   resumedFromActivityId: string | null
   resumedFromEscalationId: string | null
 }
-
-export const installAutomation = (tomlContent: string): Promise<AutomationSpecRow> =>
-  invoke<AutomationSpecRow>('install_automation', { tomlContent })
-
-export const listAutomations = (): Promise<AutomationSpecRow[]> =>
-  invoke<AutomationSpecRow[]>('list_automations')
-
-export const triggerAutomationManual = (specId: string): Promise<boolean> =>
-  invoke<boolean>('trigger_automation_manual', { specId })
 
 export const getAutomationActivity = (specId: string, limit?: number): Promise<AutomationActivity[]> =>
   invoke<AutomationActivity[]>('get_automation_activity', { specId, limit })

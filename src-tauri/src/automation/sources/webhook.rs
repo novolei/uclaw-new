@@ -92,9 +92,7 @@ pub fn verify_signature(secret: &str, body: &[u8], signature_header: &str) -> bo
     let mut mac =
         Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
     mac.update(body);
-    let expected = mac.finalize().into_bytes();
-    // Constant-time comparison via hmac's verify_slice
-    expected.as_slice() == got.as_slice()
+    mac.verify_slice(&got).is_ok()
 }
 
 #[cfg(test)]

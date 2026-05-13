@@ -3,8 +3,7 @@ use async_trait::async_trait;
 use cron::Schedule;
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::automation::protocol::humane_v1::Subscription;
@@ -17,6 +16,19 @@ impl ScheduleSource {
     pub fn new() -> Self {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl Drop for ScheduleSource {
+    fn drop(&mut self) {
+        // Best-effort abort all running task handles to prevent leaks.
+        // Callers should call detach() for each key before drop in normal
+        // operation; this is a safety net for abnormal teardown.
+        if let Ok(mut map) = self.tasks.try_lock() {
+            for (_, handle) in map.drain() {
+                handle.abort();
+            }
         }
     }
 }
@@ -77,13 +89,13 @@ impl SubscriptionSource for ScheduleSource {
             }
         });
 
-        self.tasks.lock().await.insert(key, handle);
+        self.tasks.lock().unwrap().insert(key, handle);
         Ok(())
     }
 
     async fn detach(&self, spec_id: &str, sub_id: &str) -> anyhow::Result<()> {
         let key = (spec_id.to_string(), sub_id.to_string());
-        if let Some(h) = self.tasks.lock().await.remove(&key) {
+        if let Some(h) = self.tasks.lock().unwrap().remove(&key) {
             h.abort();
         }
         Ok(())

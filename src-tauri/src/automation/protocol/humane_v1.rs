@@ -60,12 +60,14 @@ pub struct HumaneAutomationSpec {
     pub output: Option<OutputConfig>,
     #[garde(dive)]
     pub escalation: Option<EscalationConfig>,
+    // Permissions are validated at runtime against the user-granted set, not at parse time.
     #[garde(skip)]
     #[serde(default)]
     pub permissions: Vec<Permission>,
     #[garde(dive)]
     #[serde(default)]
     pub browser_login: Vec<BrowserLoginEntry>,
+    // i18n strings are free-form display text; no schema constraint is meaningful here.
     #[garde(skip)]
     #[serde(default)]
     pub i18n: HashMap<String, I18nLocaleBlock>,

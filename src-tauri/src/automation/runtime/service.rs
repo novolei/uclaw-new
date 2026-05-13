@@ -255,7 +255,7 @@ impl AppRuntimeService {
             let tag = Self::source_tag(sub).to_string();
 
             // Build the callback that funnels fire events into execute_run.
-            let svc = Arc::new(self.weak_ref());
+            let svc = self.weak_ref();
             let sub_id_cb = sub_id.clone();
             let cb: TriggerCallback = Arc::new(move |sid: String, _sub: String, payload: serde_json::Value| {
                 let svc = svc.clone();

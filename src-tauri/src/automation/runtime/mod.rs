@@ -3,9 +3,6 @@ pub mod execute;
 pub mod prompt;
 pub mod service;
 
-// Legacy runtime (AutomationRuntime) preserved for Task 16+.
-mod legacy_runtime;
-pub use legacy_runtime::AutomationRuntime;
 pub use service::{AppRuntimeService, EscalationRow};
 
 use crate::automation::protocol::humane_v1::Permission;

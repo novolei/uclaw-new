@@ -3,7 +3,7 @@ use axum::{
     routing::{get, post, patch, delete},
     http::StatusCode,
     Json,
-    extract::{Path, Request},
+    extract::Path,
     body::Bytes,
 };
 use tower_http::cors::{CorsLayer, Any};

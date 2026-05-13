@@ -5,9 +5,5 @@ pub mod memory;
 pub mod permissions;
 pub mod protocol;
 pub mod runtime;
-pub mod service;
 pub mod sources;
-pub mod spec;
 pub mod tools;
-
-pub use service::AutomationService;

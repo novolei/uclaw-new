@@ -5424,15 +5424,6 @@ pub async fn update_badge_count(
 
 // ─── Automation Commands (Phase 3) ──────────────────────────────────────────
 
-#[tauri::command]
-pub async fn install_automation(
-    state: State<'_, AppState>,
-    toml_content: String,
-) -> Result<crate::automation::spec::AutomationSpecRow, Error> {
-    state.automation_service.install(&toml_content).await
-        .map_err(|e| Error::Internal(e))
-}
-
 // list_automations — upgraded to return Vec<HumaneSpecRow> (new V20 schema)
 #[tauri::command]
 pub async fn list_automations(
