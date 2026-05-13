@@ -132,8 +132,11 @@ function GesturePreviewCard({ workspaceId }: { workspaceId: string }): React.Rea
   const Icon = getWorkspaceIcon(ws.icon)
   const home = ws.path?.match(/^(?:\/Users\/[^/]+|\/home\/[^/]+)\/(.*)$/)
   const displayPath = home ? `~/${home[1]}` : ws.path ?? ''
+  // Anchored card layout: absolute fill + flex-center (instead of relying on
+  // h-full inside a flex parent, which collapsed to content-height on some
+  // layouts and made the icon drift far from center).
   return (
-    <div className="flex flex-col items-center justify-center h-full w-full px-6 select-none">
+    <div className="absolute inset-0 flex flex-col items-center justify-center px-6 text-center select-none">
       <div className="size-14 rounded-2xl bg-foreground/[0.06] ring-1 ring-foreground/[0.05] flex items-center justify-center mb-3">
         <Icon className="size-7 text-foreground/70" />
       </div>
@@ -226,7 +229,7 @@ function SidebarBodyWithGesture({
     <div className="relative flex-1 min-h-0 overflow-hidden">
       {previewWorkspaceId && (
         <div
-          className="absolute inset-0 flex flex-col bg-background pointer-events-none"
+          className="absolute inset-0 bg-background pointer-events-none"
           style={{
             transform: `translate3d(${previewOffsetPx}px, 0, 0)`,
             willChange: 'transform',

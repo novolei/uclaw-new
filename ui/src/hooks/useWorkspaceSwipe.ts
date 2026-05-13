@@ -23,9 +23,15 @@ import {
 
 /** Fraction of the sidebar width the user must drag past to commit. */
 const COMMIT_FRACTION = 0.35
+/** Visual amplification applied to the wheel-driven offset. Above 1.0
+ *  means the same wheel input moves the panel further — gives the
+ *  destination card more presence even before the user crosses the
+ *  commit threshold, so the transition reads as deliberate and
+ *  visible rather than "what just happened?". */
+const VISUAL_AMPLIFY = 1.4
 /** Fraction of width before rubber-band damping kicks in. Below this the
  *  motion is 1:1 with the wheel — most swipes finish before reaching it. */
-const RUBBER_BAND_FROM = 0.55
+const RUBBER_BAND_FROM = 0.65
 /** ms of no wheel events that ends a gesture (settle phase begins). */
 const GESTURE_END_IDLE_MS = 90
 /** ms between two switches (prevents momentum-wheel double-firing). */
@@ -156,11 +162,12 @@ export function useWorkspaceSwipe(scopeRef: React.RefObject<HTMLElement | null>)
       const width = el.clientWidth
       if (currIdx === -1 || width === 0) return
 
-      // Free-travel band: 1:1 follow up to RUBBER_BAND_FROM (e.g. 55%).
-      // Past that we lightly rubber-band so the user feels the boundary
-      // without it interrupting normal swipes (which finish well before).
+      // Visual offset = -accumRaw (negate so positive wheel = current
+      // slides LEFT) × amplification (so the destination card gets more
+      // visible space per unit of wheel input). Past `freeRange` of
+      // width the motion gets rubber-band damping for the boundary feel.
       const freeRange = width * RUBBER_BAND_FROM
-      let displayed = -accumRaw // negate so positive accum (rightward swipe) → negative offset (current slides left)
+      let displayed = -accumRaw * VISUAL_AMPLIFY
       if (Math.abs(displayed) > freeRange) {
         const sign = Math.sign(displayed)
         const overshoot = Math.abs(displayed) - freeRange
@@ -216,10 +223,15 @@ export function useWorkspaceArrowSwitch(): void {
       if (e.metaKey || e.ctrlKey || e.altKey) return
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
 
-      // Don't fight text selection / caret moves inside editable surfaces.
+      // Don't fight text-cursor moves when the user is actually typing.
+      // Check the keydown's TARGET — a synthetic-focus check on
+      // document.activeElement was too aggressive: editable surfaces
+      // (chat input, TipTap) hold focus across workspace switches, so
+      // the very first switch caused subsequent presses to bail.
+      // The event target is the element with caret focus at the moment
+      // of the press — sufficient to distinguish "typing" from "shortcut".
       const target = e.target instanceof Element ? (e.target as HTMLElement) : null
       if (target && isInsideEditable(target)) return
-      if (document.activeElement instanceof HTMLElement && isInsideEditable(document.activeElement)) return
 
       const list = workspacesRef.current
       const currIdx = list.findIndex((w) => w.id === activeIdRef.current)
