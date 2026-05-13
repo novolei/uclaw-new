@@ -1,16 +1,15 @@
 /**
- * useWorkspaceSwipe — macOS Magic Mouse / trackpad horizontal-swipe
- * gesture for switching workspaces, mirroring how macOS swipes between
- * Spaces with a two-finger horizontal trackpad gesture.
+ * useWorkspaceSwipe / useWorkspaceArrowSwitch — switch workspaces via
+ * (a) macOS Magic Mouse / trackpad horizontal-swipe scoped to a single
+ *     element (the LeftSidebar), and
+ * (b) Shift+ArrowLeft / Shift+ArrowRight keyboard shortcut window-wide
+ *     (Windows / external-keyboard fallback for users without a
+ *     touchpad).
  *
- * macOS WebKit emits `wheel` events with `deltaX` for horizontal
- * scroll/swipe gestures. We listen window-level, filter aggressively
- * to avoid triggering on vertical scrolls in chat / file lists, and
- * accumulate horizontal delta until it crosses a threshold — then
- * advance the active workspace by ±1 in the sortOrder. A cooldown
- * prevents a single long swipe from firing multiple switches.
- *
- * Mount once at AppShell level.
+ * Both wrap around at the boundaries — going RIGHT past the last
+ * workspace lands on the first; going LEFT past the first lands on
+ * the last. This matches the dot indicator at the bottom of the
+ * LeftSidebar that visualises the workspaces as a ring.
  */
 
 import * as React from 'react'
@@ -47,18 +46,24 @@ function isInsideEditable(target: EventTarget | null): boolean {
   return false
 }
 
-export function useWorkspaceSwipe(): void {
+/**
+ * Listen for horizontal swipe / wheel gestures on `scopeRef.current` only.
+ * If the ref is null at mount time (or never set), the hook is a no-op.
+ */
+export function useWorkspaceSwipe(scopeRef: React.RefObject<HTMLElement | null>): void {
   const workspaces = useAtomValue(workspacesAtom)
   const activeId = useAtomValue(activeWorkspaceIdAtom)
   const selectWorkspace = useSetAtom(selectWorkspaceAtom)
 
-  // Stable refs so the wheel listener doesn't re-attach on every render.
   const workspacesRef = React.useRef(workspaces)
   const activeIdRef = React.useRef(activeId)
   workspacesRef.current = workspaces
   activeIdRef.current = activeId
 
   React.useEffect(() => {
+    const el = scopeRef.current
+    if (!el) return
+
     let accumDeltaX = 0
     let lastWheelAt = 0
     let cooldownUntil = 0
@@ -67,43 +72,29 @@ export function useWorkspaceSwipe(): void {
       const now = performance.now()
       if (now < cooldownUntil) return
 
-      // Reset accumulator between distinct gestures.
       if (now - lastWheelAt > ACCUMULATOR_RESET_MS) accumDeltaX = 0
       lastWheelAt = now
 
       const dx = e.deltaX
       const dy = e.deltaY
-
-      // Require horizontal-dominant motion. Vertical scroll inside any
-      // pane (chat, file list, code) must not switch workspace.
       if (Math.abs(dx) < Math.abs(dy) * HORIZONTAL_DOMINANCE) return
-
-      // Don't hijack scrolling inside editable text surfaces.
       if (isInsideEditable(e.target)) return
 
       accumDeltaX += dx
-
       if (Math.abs(accumDeltaX) < SWIPE_THRESHOLD) return
 
-      // Compute the target workspace.
       const list = workspacesRef.current
       const currIdx = list.findIndex((w) => w.id === activeIdRef.current)
-      if (currIdx === -1) {
+      if (currIdx === -1 || list.length === 0) {
         accumDeltaX = 0
         return
       }
-      // Positive deltaX = swipe RIGHT on the trackpad (content moves left)
-      // = "go to the workspace on the right" = next workspace.
+      // Positive deltaX = swipe RIGHT on the trackpad → next workspace.
+      // Wrap around at boundaries so the workspace ring is endless.
       const step = accumDeltaX > 0 ? 1 : -1
-      const targetIdx = currIdx + step
-      if (targetIdx < 0 || targetIdx >= list.length) {
-        // Hit a boundary — reset so a bigger swipe doesn't overshoot
-        // multiple cells at once.
-        accumDeltaX = 0
-        return
-      }
+      const targetIdx = (currIdx + step + list.length) % list.length
       const target = list[targetIdx]
-      if (!target) {
+      if (!target || target.id === activeIdRef.current) {
         accumDeltaX = 0
         return
       }
@@ -114,9 +105,51 @@ export function useWorkspaceSwipe(): void {
       accumDeltaX = 0
     }
 
-    // `passive: false` so we can preventDefault (stops the browser's
-    // built-in horizontal scroll-back navigation on overshoots).
-    window.addEventListener('wheel', onWheel, { passive: false })
-    return () => window.removeEventListener('wheel', onWheel)
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [scopeRef, selectWorkspace])
+}
+
+/**
+ * Window-level Shift+ArrowLeft / Shift+ArrowRight to cycle workspaces.
+ * Wraps around. Skipped when the focused element is editable so it
+ * doesn't hijack text-cursor moves inside chat / code editors.
+ */
+export function useWorkspaceArrowSwitch(): void {
+  const workspaces = useAtomValue(workspacesAtom)
+  const activeId = useAtomValue(activeWorkspaceIdAtom)
+  const selectWorkspace = useSetAtom(selectWorkspaceAtom)
+
+  const workspacesRef = React.useRef(workspaces)
+  const activeIdRef = React.useRef(activeId)
+  workspacesRef.current = workspaces
+  activeIdRef.current = activeId
+
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!e.shiftKey) return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+
+      // Don't fight text selection / caret moves inside editable surfaces.
+      const target = e.target instanceof Element ? (e.target as HTMLElement) : null
+      if (target && isInsideEditable(target)) return
+      if (document.activeElement instanceof HTMLElement && isInsideEditable(document.activeElement)) return
+
+      const list = workspacesRef.current
+      const currIdx = list.findIndex((w) => w.id === activeIdRef.current)
+      if (currIdx === -1 || list.length === 0) return
+
+      const step = e.key === 'ArrowRight' ? 1 : -1
+      const targetIdx = (currIdx + step + list.length) % list.length
+      const next = list[targetIdx]
+      if (!next || next.id === activeIdRef.current) return
+
+      e.preventDefault()
+      void selectWorkspace(next.id)
+    }
+
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   }, [selectWorkspace])
 }

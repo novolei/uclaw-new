@@ -16,6 +16,7 @@ import { toast } from 'sonner'
 import { Pin, PinOff, Settings, Plus, Trash2, Pencil, ChevronDown, ChevronRight, Plug, Zap, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, Hammer, LoaderCircle, Bot } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
+import { useWorkspaceSwipe } from '@/hooks/useWorkspaceSwipe'
 import { ModeSwitcher } from './ModeSwitcher'
 import { UserAvatar } from '@/components/chat/UserAvatar'
 import { activeViewAtom } from '@/atoms/active-view'
@@ -183,6 +184,12 @@ function groupByDate<T extends { updatedAt: number }>(items: T[]): Array<{ label
 }
 
 export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
+  // Magic Mouse / trackpad horizontal swipe → switch workspace, scoped
+  // to this sidebar so swipes inside chat / preview / files-rail don't
+  // hijack the gesture (same wrap-around as Shift+←/→ at AppShell level).
+  const sidebarRef = React.useRef<HTMLDivElement | null>(null)
+  useWorkspaceSwipe(sidebarRef)
+
   const [activeView, setActiveView] = useAtom(activeViewAtom)
   const setSettingsTab = useSetAtom(settingsTabAtom)
   const setSettingsOpen = useSetAtom(settingsOpenAtom)
@@ -746,7 +753,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
 
   // ===== 展开状态 =====
   return (
-    <div className="relative h-full flex flex-col bg-background rounded-2xl shadow-xl transition-[width] duration-300" style={{ width: width ?? 280, minWidth: 180, flexShrink: 1 }}>
+    <div ref={sidebarRef} className="relative h-full flex flex-col bg-background rounded-2xl shadow-xl transition-[width] duration-300" style={{ width: width ?? 280, minWidth: 180, flexShrink: 1 }}>
       {/* 顶部独立拖拽条：absolute + z-1 让它叠在 sidebar 内容之上，
           WKWebView 的文本选择层不会再抢占拖拽。 */}
       <div data-tauri-drag-region aria-hidden="true" className="sidebar-window-drag-strip h-[30px]" />
