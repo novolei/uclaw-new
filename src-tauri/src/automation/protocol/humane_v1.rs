@@ -54,12 +54,23 @@ pub struct HumaneAutomationSpec {
     #[garde(dive)]
     #[serde(default)]
     pub filters: Vec<FilterRule>,
-    #[garde(dive)]
-    pub memory_schema: Option<MemorySchema>,
+    // memory_schema and escalation in production DHP specs are loose
+    // configuration objects whose exact shape varies (memory_schema is a
+    // {field_name: {type, description}} map; escalation is {enabled,
+    // timeout_hours} or other free form). Our Phase 1 strict structs only
+    // matched one possible shape and rejected most real-world specs. Store
+    // as raw JSON for Phase 1 — Phase 2 will type these once we've surveyed
+    // enough live specs to know what shapes need first-class support.
+    // MemorySchema and EscalationConfig structs are kept below for the
+    // future strict path; they're #[allow(dead_code)] for now.
+    #[garde(skip)]
+    #[serde(default)]
+    pub memory_schema: Option<serde_json::Value>,
     #[garde(dive)]
     pub output: Option<OutputConfig>,
-    #[garde(dive)]
-    pub escalation: Option<EscalationConfig>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub escalation: Option<serde_json::Value>,
     // Permissions are validated at runtime against the user-granted set, not at parse time.
     #[garde(skip)]
     #[serde(default)]
@@ -246,6 +257,10 @@ pub struct Requires {
 // MemorySchema — spec § 4.4
 // ---------------------------------------------------------------------------
 
+/// Strict MemorySchema shape — preserved for Phase 2 typing work but
+/// currently unused (the live field on HumaneAutomationSpec accepts
+/// arbitrary JSON). See the comment near memory_schema above.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct MemorySchema {
     #[garde(length(min = 1))]
@@ -272,6 +287,10 @@ pub struct OutputConfig {
 // EscalationConfig + EscalationChoice — spec § 4.4
 // ---------------------------------------------------------------------------
 
+/// Strict EscalationConfig shape — preserved for Phase 2 typing work but
+/// currently unused (the live field on HumaneAutomationSpec accepts
+/// arbitrary JSON). See the comment near escalation above.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct EscalationConfig {
     #[garde(length(min = 1))]
@@ -384,20 +403,47 @@ mod tests {
     }
 
     #[test]
-    fn escalation_requires_min_2_choices() {
-        let bad = r#"
+    fn escalation_accepts_arbitrary_json_shape() {
+        // Real DHP marketplace specs use various escalation shapes (e.g.
+        // `{enabled: true, timeout_hours: 24}` in ai-daily-news), not the
+        // {description, choices} form our Phase 1 strict struct expected.
+        // The field is now stored as raw JSON; strict shape revisits in Phase 2.
+        let dhp_style = r#"
 type: automation
-name: Bad
-version: 0.1.0
-author: x
+name: AI Daily News
+version: 1.0.0
+author: openkursar
 description: x
 system_prompt: x
 escalation:
-  description: pick one
-  choices:
-    - { id: only, label: Only }
+  enabled: true
+  timeout_hours: 24
 "#;
-        let spec: HumaneAutomationSpec = serde_yml::from_str(bad).expect("parses");
-        assert!(spec.validate().is_err(), "escalation with 1 choice should fail validation");
+        let spec: HumaneAutomationSpec = serde_yml::from_str(dhp_style).expect("parses");
+        spec.validate().expect("validates");
+        assert!(spec.escalation.is_some());
+    }
+
+    #[test]
+    fn memory_schema_accepts_field_map_shape() {
+        // DHP-style: memory_schema is a map of field-name → {type, description}
+        let dhp_style = r#"
+type: automation
+name: Test
+version: 1.0.0
+author: x
+description: x
+system_prompt: x
+memory_schema:
+  last_run_date:
+    type: string
+    description: 最后一次运行的日期
+  last_news_count:
+    type: number
+    description: 上次推送的新闻条数
+"#;
+        let spec: HumaneAutomationSpec = serde_yml::from_str(dhp_style).expect("parses");
+        spec.validate().expect("validates");
+        assert!(spec.memory_schema.is_some());
     }
 }
