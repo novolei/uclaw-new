@@ -21,6 +21,7 @@ import { AgentMessages } from './AgentMessages'
 import { AgentHeader } from './AgentHeader'
 import { BrowserPreviewOverlay } from './BrowserPreviewOverlay'
 import { ContextUsageBadge } from './ContextUsageBadge'
+import { AutoPreviewPopover } from './AutoPreviewPopover'
 import { StrategyPresetSelector } from './StrategyPresetSelector'
 import { PermissionBanner } from './PermissionBanner'
 import { PermissionModeSelector } from './PermissionModeSelector'
@@ -1539,6 +1540,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                   onCompact={handleCompact}
                 />
                 <StrategyPresetSelector sessionId={sessionId} />
+                <AutoPreviewPopover />
                 {/* <FeishuNotifyToggle sessionId={sessionId} /> */}
 
                 <GitChipsRow />

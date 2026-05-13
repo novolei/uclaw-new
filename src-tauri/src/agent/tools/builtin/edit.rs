@@ -116,6 +116,10 @@ impl Tool for EditTool {
         "Edit a file via search-replace or line insertion. Pass an array of edits; for insertion set old_text='' and supply insert_line (1-based)."
     }
 
+    fn preview_target_path(&self, args: &serde_json::Value) -> Option<String> {
+        args.get("path").and_then(|v| v.as_str()).map(String::from)
+    }
+
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",

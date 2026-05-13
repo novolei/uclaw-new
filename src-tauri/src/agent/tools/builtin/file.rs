@@ -70,6 +70,11 @@ impl Tool for WriteFileTool {
     fn description(&self) -> &str {
         "Write content to a file. Creates the file if it doesn't exist, overwrites if it does."
     }
+
+    fn preview_target_path(&self, args: &serde_json::Value) -> Option<String> {
+        args.get("path").and_then(|v| v.as_str()).map(String::from)
+    }
+
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",

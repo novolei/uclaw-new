@@ -9,12 +9,16 @@
  */
 
 import * as React from 'react'
-import { useSetAtom } from 'jotai'
+import { useAtomValue, useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { invoke } from '@tauri-apps/api/core'
-import { X, FolderOpen, Copy, Check } from 'lucide-react'
+import { X, FolderOpen, Copy, Check, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { closePreviewAction, type PreviewFileTarget } from '@/atoms/preview-panel-atoms'
+import {
+  closePreviewAction,
+  pendingWriteToolsAtom,
+  type PreviewFileTarget,
+} from '@/atoms/preview-panel-atoms'
 import { FileTypeIcon } from '@/components/file-browser/FileTypeIcon'
 
 interface PreviewHeaderProps {
@@ -98,6 +102,21 @@ export function PreviewHeader({ target }: PreviewHeaderProps): React.ReactElemen
   const [copied, setCopied] = React.useState(false)
   const copyResetTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Show a spinner when there is an in-flight write tool targeting the file
+  // currently being previewed. The pendingWriteToolsAtom map is populated by
+  // the auto-preview listener on tool_start and cleared on tool_result.
+  const pendingWrites = useAtomValue(pendingWriteToolsAtom)
+  const sid = target?.sessionId ?? null
+  const writeInFlight = React.useMemo(() => {
+    if (!sid || !absolutePath) return false
+    const inner = pendingWrites.get(sid)
+    if (!inner) return false
+    for (const path of inner.values()) {
+      if (path === absolutePath) return true
+    }
+    return false
+  }, [pendingWrites, sid, absolutePath])
+
   React.useEffect(() => {
     return () => {
       if (copyResetTimer.current) clearTimeout(copyResetTimer.current)
@@ -150,6 +169,16 @@ export function PreviewHeader({ target }: PreviewHeaderProps): React.ReactElemen
         >
           {target?.name ?? '未选中文件'}
         </span>
+        {writeInFlight && (
+          <span
+            className="inline-flex items-center gap-1 text-[10.5px] text-muted-foreground/80 shrink-0"
+            title="Agent 正在写入此文件"
+            aria-live="polite"
+          >
+            <Loader2 size={10} className="animate-spin" />
+            <span>写入中</span>
+          </span>
+        )}
         {prettyParent && (
           <span
             className="hidden md:inline text-[10.5px] text-muted-foreground/70 truncate font-mono tabular-nums"

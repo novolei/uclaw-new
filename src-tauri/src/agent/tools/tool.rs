@@ -152,6 +152,21 @@ pub trait Tool: Send + Sync {
     fn path_args<'a>(&self, _arguments: &'a serde_json::Value) -> Vec<&'a str> {
         Vec::new()
     }
+
+    /// If this tool **writes** to a file, return the path it will write.
+    /// Drives the auto-preview popup: the dispatcher includes this string
+    /// in the `chat:stream-tool-activity` event payload so the frontend
+    /// can open the preview panel without having to maintain a hardcoded
+    /// `Set<toolName>` of "write-ish" tools (the failure mode Proma's
+    /// auto-preview suffers from — renaming `Write` → `write_v2` silently
+    /// disables the trigger).
+    ///
+    /// Default returns `None` — non-mutating tools (search/grep/web/...)
+    /// inherit this. WriteFile, Edit, and other mutating tools override
+    /// to extract their path from `args`.
+    fn preview_target_path(&self, _args: &serde_json::Value) -> Option<String> {
+        None
+    }
 }
 
 /// Tool registry

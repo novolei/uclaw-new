@@ -80,7 +80,47 @@ export const openPreviewAction = atom(null, (get, set, payload: PreviewFileTarge
   set(previewPanelOpenAtom, true)
 })
 
-/** Write-only action: close the panel, keep the selection for re-open. */
+/**
+ * Auto-preview toggle — when true, the preview panel opens automatically
+ * when the agent writes or edits a file. Persisted to localStorage so the
+ * user's preference survives reload. Mirrors Proma's `autoPreview` localStorage
+ * key but scoped to Agent mode only (Chat mode has no tool calls).
+ */
+export const autoPreviewEnabledAtom = atomWithStorage<boolean>(
+  'uclaw-auto-preview-enabled',
+  true,
+)
+
+/**
+ * Sessions where the user has manually dismissed the auto-opened preview
+ * during the current turn. While a session id is in this set, auto-preview
+ * stays quiet — the user already said "not now". Cleared by the next user
+ * message for that session so the *next* turn's writes can pop the panel
+ * again. Improves over Proma which reopens on every write.
+ *
+ * Not persisted — per-turn intent should not survive reload.
+ */
+export const autoPreviewDismissedSessionsAtom = atom<Set<string>>(new Set<string>())
+
+/**
+ * Map<sessionId, Map<toolCallId, absolutePath>> — write tool calls
+ * currently in flight (tool_start seen, tool_result not yet). Drives the
+ * progress indicator in `PreviewSurface` header so the user sees that the
+ * agent is actively writing the file they're previewing.
+ *
+ * Not persisted — in-flight state has no meaning across reload.
+ */
+export const pendingWriteToolsAtom = atom<Map<string, Map<string, string>>>(new Map())
+
+/**
+ * Write-only action: close the panel, keep the selection for re-open.
+ *
+ * Also stamps the current target's session into autoPreviewDismissedSessionsAtom
+ * so the auto-preview listener stays quiet for the rest of the turn. This is
+ * the manual-dismiss path (close button + Esc); workspace-switch and similar
+ * programmatic closes bypass this action by writing previewPanelOpenAtom
+ * directly.
+ */
 export const closePreviewAction = atom(null, (get, set) => {
   const currentTarget = get(selectedPreviewFileAtom)
   const buffers = get(dirtyBuffersAtom)
@@ -93,6 +133,15 @@ export const closePreviewAction = atom(null, (get, set) => {
     const next = new Map(buffers)
     next.delete(currentPath)
     set(dirtyBuffersAtom, next)
+  }
+  const sid = currentTarget?.sessionId ?? null
+  if (sid) {
+    set(autoPreviewDismissedSessionsAtom, (prev: Set<string>) => {
+      if (prev.has(sid)) return prev
+      const next = new Set(prev)
+      next.add(sid)
+      return next
+    })
   }
   set(previewPanelOpenAtom, false)
 })
