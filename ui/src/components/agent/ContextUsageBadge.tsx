@@ -120,6 +120,7 @@ export function ContextUsageBadge({
   outputTokens,
   cacheReadTokens,
   cacheCreationTokens,
+  costUsd,
   contextWindow,
   skillsTokens,
   isCompacting,
@@ -132,11 +133,12 @@ export function ContextUsageBadge({
     outputTokens?: number
     cacheReadTokens?: number
     cacheCreationTokens?: number
+    costUsd?: number
     contextWindow?: number
     skillsTokens?: number
   } | null>(null)
   if (inputTokens && inputTokens > 0) {
-    stableRef.current = { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, contextWindow, skillsTokens }
+    stableRef.current = { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUsd, contextWindow, skillsTokens }
   }
 
   const [open, setOpen] = React.useState(false)
@@ -179,6 +181,7 @@ export function ContextUsageBadge({
   const displayOutput = hasCurrent ? outputTokens : stable?.outputTokens
   const displayCacheRead = hasCurrent ? cacheReadTokens : stable?.cacheReadTokens
   const displayCacheCreation = hasCurrent ? cacheCreationTokens : stable?.cacheCreationTokens
+  const displayCost = hasCurrent ? costUsd : stable?.costUsd
   // skillsTokens comes in via the agent:context_stats event, which fires
   // independently of usage_update. Always prefer the current prop value
   // (don't gate on hasCurrent); fall back to stable cache for session switch.
@@ -203,6 +206,22 @@ export function ContextUsageBadge({
   const percent = displayWindow
     ? Math.round((displayTokens / displayWindow) * 100)
     : undefined
+
+  // 缓存命中率 — 占总输入的比例（含本轮新增的缓存写入）。> 0 才显示。
+  const cacheHitRatio = (displayCacheRead ?? 0) > 0
+    ? Math.round(((displayCacheRead ?? 0) / displayTokens) * 100)
+    : 0
+
+  // 等效"省下的"输入 token 估算：缓存读取以 10% 输入价计费（Anthropic 当前
+  // 比例），所以省下的等效 input token ≈ cacheRead × 0.9。粗略展示用。
+  const cacheSavedInput = Math.round((displayCacheRead ?? 0) * 0.9)
+
+  // 货币格式：$0.0023 / $0.123 / $1.23 — 自适应小数位
+  const formatCost = (usd: number): string => {
+    if (usd >= 1) return `$${usd.toFixed(2)}`
+    if (usd >= 0.01) return `$${usd.toFixed(3)}`
+    return `$${usd.toFixed(4)}`
+  }
 
   const handleCompactClick = (): void => {
     if (isProcessing) return
@@ -234,47 +253,91 @@ export function ContextUsageBadge({
         side="top"
         align="center"
         sideOffset={8}
-        className="w-auto min-w-[220px] p-2.5"
+        className="w-auto min-w-[260px] p-2.5"
         onMouseEnter={cancelClose}
         onMouseLeave={scheduleClose}
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
-        <div className="flex flex-col gap-1.5">
-          {pureInput > 0 && <DetailRow label="输入" value={pureInput.toLocaleString()} />}
-          {displayOutput ? <DetailRow label="输出" value={displayOutput.toLocaleString()} /> : null}
-          {displayCacheCreation ? <DetailRow label="缓存写入" value={displayCacheCreation.toLocaleString()} /> : null}
-          {displayCacheRead ? <DetailRow label="缓存读取" value={displayCacheRead.toLocaleString()} /> : null}
-          {displaySkills != null && displaySkills > 0 ? (
-            <DetailRow label="技能" value={displaySkills.toLocaleString()} />
-          ) : null}
-
-          {displayWindow ? (
-            <>
-              <div className="h-px bg-border my-0.5" />
+        <div className="flex flex-col gap-2">
+          {/* 输入构成 */}
+          <div className="flex flex-col gap-1">
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground/70 font-semibold">
+              输入构成
+            </div>
+            {pureInput > 0 && <DetailRow label="新输入" value={pureInput.toLocaleString()} />}
+            {displayCacheCreation ? (
+              <DetailRow label="缓存写入" value={displayCacheCreation.toLocaleString()} />
+            ) : null}
+            {displayCacheRead ? (
               <DetailRow
-                label="上下文"
+                label="缓存读取"
                 value={
                   <span className="inline-flex items-center gap-1.5">
-                    {formatTokens(displayTokens)} / {formatTokens(displayWindow)}
-                    {displayWindow >= 1_000_000 && (
+                    <span>{displayCacheRead.toLocaleString()}</span>
+                    {cacheHitRatio > 0 && (
                       <span
-                        className="rounded-sm bg-primary/15 text-primary px-1 py-0 text-[9.5px] font-semibold uppercase tracking-wider"
-                        title="1M context window beta enabled for this model"
+                        className="rounded-sm bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 px-1 py-0 text-[9.5px] font-semibold tabular-nums"
+                        title={`本轮 ${cacheHitRatio}% 输入命中缓存，约省 ${cacheSavedInput.toLocaleString()} 输入 token`}
                       >
-                        1M
+                        {cacheHitRatio}% 命中
                       </span>
                     )}
                   </span>
                 }
-                emphasized
               />
-              {percent != null && (
+            ) : null}
+            {displayOutput ? <DetailRow label="输出" value={displayOutput.toLocaleString()} /> : null}
+            {displaySkills != null && displaySkills > 0 ? (
+              <DetailRow label="技能 manifest" value={displaySkills.toLocaleString()} />
+            ) : null}
+          </div>
+
+          {/* 上下文窗口 */}
+          {displayWindow ? (
+            <>
+              <div className="h-px bg-border" />
+              <div className="flex flex-col gap-1">
+                <div className="text-[10px] uppercase tracking-widest text-muted-foreground/70 font-semibold">
+                  上下文窗口
+                </div>
                 <DetailRow
-                  label="占用"
-                  value={`${percent}%`}
-                  emphasized={isWarning}
+                  label="已用 / 总量"
+                  value={
+                    <span className="inline-flex items-center gap-1.5">
+                      {formatTokens(displayTokens)} / {formatTokens(displayWindow)}
+                      {displayWindow >= 1_000_000 && (
+                        <span
+                          className="rounded-sm bg-primary/15 text-primary px-1 py-0 text-[9.5px] font-semibold uppercase tracking-wider"
+                          title="1M context window beta enabled for this model"
+                        >
+                          1M
+                        </span>
+                      )}
+                    </span>
+                  }
+                  emphasized
                 />
-              )}
+                {percent != null && (
+                  <DetailRow
+                    label="占用"
+                    value={`${percent}%`}
+                    emphasized={isWarning}
+                  />
+                )}
+              </div>
+            </>
+          ) : null}
+
+          {/* 费用 */}
+          {displayCost != null && displayCost > 0 ? (
+            <>
+              <div className="h-px bg-border" />
+              <div className="flex flex-col gap-1">
+                <div className="text-[10px] uppercase tracking-widest text-muted-foreground/70 font-semibold">
+                  本轮成本
+                </div>
+                <DetailRow label="USD" value={formatCost(displayCost)} emphasized />
+              </div>
             </>
           ) : null}
 
