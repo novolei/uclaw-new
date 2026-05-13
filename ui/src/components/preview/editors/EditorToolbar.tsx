@@ -13,7 +13,6 @@ import { cn } from '@/lib/utils'
 import {
   markdownEditorModeAtom,
   dirtyBuffersAtom,
-  conflictsAtom,
 } from '@/atoms/preview-editor-atoms'
 
 interface Props {
@@ -27,12 +26,10 @@ interface Props {
 export function EditorToolbar({ filePath, isMarkdown, saveMode, saving }: Props): React.ReactElement {
   const [mdMode, setMdMode] = useAtom(markdownEditorModeAtom)
   const dirty = useAtomValue(dirtyBuffersAtom).has(filePath)
-  const conflicted = useAtomValue(conflictsAtom).has(filePath)
 
   // Save state pill
-  let state: 'dirty' | 'saving' | 'saved' | 'auto' | 'conflict' = 'saved'
-  if (conflicted) state = 'conflict'
-  else if (saving) state = 'saving'
+  let state: 'dirty' | 'saving' | 'saved' | 'auto' = 'saved'
+  if (saving) state = 'saving'
   else if (saveMode === 'explicit' && dirty) state = 'dirty'
   else if (saveMode === 'auto') state = 'auto'
 
@@ -61,10 +58,7 @@ export function EditorToolbar({ filePath, isMarkdown, saveMode, saving }: Props)
   )
 }
 
-function SaveStatePill({ state }: { state: 'dirty' | 'saving' | 'saved' | 'auto' | 'conflict' }) {
-  if (state === 'conflict') {
-    return <span className="text-amber-600 dark:text-amber-300">⚠ 文件已更改</span>
-  }
+function SaveStatePill({ state }: { state: 'dirty' | 'saving' | 'saved' | 'auto' }) {
   if (state === 'saving') {
     return <span className="text-muted-foreground">保存中…</span>
   }

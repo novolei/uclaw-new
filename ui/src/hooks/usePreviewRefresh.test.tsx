@@ -4,6 +4,7 @@ import { Provider, createStore } from 'jotai'
 import * as React from 'react'
 import { usePreviewRefresh } from './usePreviewRefresh'
 import { bumpPreviewRefreshAtom } from '@/atoms/preview-atoms'
+import { setDirtyBufferAction, clearDirtyBufferAction } from '@/atoms/preview-editor-atoms'
 
 // Tauri event subscription is mocked to capture the registered handler so the
 // test can synthesize events without touching the real bus. The shared
@@ -77,6 +78,59 @@ describe('usePreviewRefresh', () => {
     })
     await act(async () => { await Promise.resolve() })
     act(() => emit('tauri://focus', undefined))
+    expect(result.current).toBe(1)
+  })
+
+  // Dirty-guard regression suite (if2Ai port, 2026-05-13).
+  // The user's in-progress draft must never be silently overwritten by a
+  // refetch — neither from the agent's own writes nor from window-focus
+  // refreshes. Without these guards the editor would clobber unsaved
+  // markdown edits the moment the watcher / focus event arrived.
+
+  it('skips agent:file-written bump when the path is dirty', async () => {
+    store.set(setDirtyBufferAction, {
+      filePath: '/x/a.ts',
+      content: 'draft',
+      baselineMtimeMs: 1,
+    })
+    const { result } = renderHook(() => usePreviewRefresh('/x/a.ts'), {
+      wrapper: wrapper(store),
+    })
+    await act(async () => { await Promise.resolve() })
+    act(() => emit('agent:file-written', { path: '/x/a.ts' }))
+    expect(result.current).toBe(0)
+  })
+
+  it('skips tauri://focus bump when the path is dirty', async () => {
+    store.set(setDirtyBufferAction, {
+      filePath: '/x/a.ts',
+      content: 'draft',
+      baselineMtimeMs: 1,
+    })
+    const { result } = renderHook(() => usePreviewRefresh('/x/a.ts'), {
+      wrapper: wrapper(store),
+    })
+    await act(async () => { await Promise.resolve() })
+    act(() => emit('tauri://focus', undefined))
+    expect(result.current).toBe(0)
+  })
+
+  it('resumes bumping once the path is cleaned', async () => {
+    store.set(setDirtyBufferAction, {
+      filePath: '/x/a.ts',
+      content: 'draft',
+      baselineMtimeMs: 1,
+    })
+    const { result } = renderHook(() => usePreviewRefresh('/x/a.ts'), {
+      wrapper: wrapper(store),
+    })
+    await act(async () => { await Promise.resolve() })
+    // Dirty: bump skipped.
+    act(() => emit('agent:file-written', { path: '/x/a.ts' }))
+    expect(result.current).toBe(0)
+    // Cleaned (e.g. after a successful save): bump fires.
+    act(() => store.set(clearDirtyBufferAction, '/x/a.ts'))
+    act(() => emit('agent:file-written', { path: '/x/a.ts' }))
     expect(result.current).toBe(1)
   })
 })
