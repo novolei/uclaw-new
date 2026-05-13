@@ -722,13 +722,23 @@ To prevent scope creep, the following are **deferred**:
 
 ## 10. Phasing & Migration Plan
 
+Re-sequenced 2026-05-14 after Phase 1 merged. The Phase 3 marketplace work
+splits into UI-first (3a) and backend-completeness (3b) sub-phases so users
+get the visible hello-halo-equivalent store UX before deep multi-registry
+plumbing lands.
+
 | Phase | Scope | Migrations |
 |---|---|---|
-| **1 (this spec)** | Humane spec model + full runtime + file/paste import | V20a, V20b, V20c, V21 |
-| 2 | Hardening: timeouts, configurable concurrency, `memory_graph` indexer | (none expected) |
-| 3 | Marketplace + workspace scan | V23 |
-| 4 | Frontend rework (full UI suite) + FTS | V22 |
+| **1 (merged)** | Humane spec model + full runtime + file/paste import | V20a, V20b, V20c, V21 |
+| **3a (next — Marketplace UI Port)** | Port hello-halo store UI: 3-tab AppsPage (我的数字人 / 我的应用 / 应用商店) + StoreHeader (search + type + category filters) + StoreCard/Grid + StoreDetail (8 sections: deps, logins, config schema preview, system prompt) + StoreInstallDialog (config form + space scope + progress). Backend gains local SQLite cache (V23 partial — `automation_marketplace_items` + `registry_sync_state`), `get_marketplace_detail` / paged `query_marketplace` / `check_marketplace_updates` commands. Still single-registry (DHP) — multi-source is 3b. | V23 (partial) |
+| 2 (after 3a) | Hardening: timeouts, configurable concurrency, `memory_graph` indexer, `escalation.timeout` auto-expire, WeCom signature, InfraEvent enum extension | (none expected) |
+| 3b (Marketplace completion) | Multi-registry config (5 built-ins + user-added) + proxy adapters (Smithery / MCP Registry / SkillHub) + local hello-halo workspace scan | V23 (complete: `automation_registries` table) |
+| 4 (FTS + remaining UI) | FTS over `automation_specs` (Phase 1 escalations / specs / activities) + remaining minor UI polish | V22 |
 | 6+ | Optional avatar/voice "skin" layer | separate roadmap |
+
+The 3a slot was created by user demand on 2026-05-14 after Phase 1 surfaced
+that the existing MarketplaceModal was visually inadequate compared to
+hello-halo's StoreView. See `docs/superpowers/specs/2026-05-14-marketplace-ui-port-design.md`.
 
 ---
 
