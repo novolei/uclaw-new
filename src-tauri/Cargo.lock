@@ -1431,6 +1431,7 @@ dependencies = [
  "regex",
  "serde",
  "smallvec",
+ "url",
 ]
 
 [[package]]

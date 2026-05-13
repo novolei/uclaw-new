@@ -92,7 +92,7 @@ dirs = "6"
 serde_yml = "0.0.12"
 
 # Validation (Humane automation schema)
-garde = { version = "0.20", features = ["derive", "pattern", "serde"] }
+garde = { version = "0.20", features = ["derive", "pattern", "serde", "url"] }
 # File-source pattern matching (Humane Phase 1 Task 16)
 globset = "0.4"
 
