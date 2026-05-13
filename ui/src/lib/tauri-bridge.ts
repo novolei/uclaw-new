@@ -1225,14 +1225,24 @@ export interface AutomationSpecRow {
 export interface AutomationActivity {
   id: string
   specId: string
-  runId: string
-  trigger: string
-  status: 'running' | 'completed' | 'failed' | 'cancelled'
-  result: string | null
-  error: string | null
-  durationMs: number
-  createdAt: number
+  subscriptionId: string | null
+  triggerSourceType: 'schedule' | 'file' | 'webhook' | 'webpage' | 'rss' | 'wecom' | 'custom' | 'manual' | string
+  triggerPayloadJson: string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'waiting_user' | 'filtered_out' | 'deferred_phase_2' | string
+  errorText: string | null
+  queuedAt: number
+  startedAt: number | null
   completedAt: number | null
+  durationMs: number
+  llmIterations: number
+  llmTokensIn: number
+  llmTokensOut: number
+  toolCallsJson: string
+  reportText: string | null
+  reportOutcome: string | null
+  escalationId: string | null
+  resumedFromActivityId: string | null
+  resumedFromEscalationId: string | null
 }
 
 export const installAutomation = (tomlContent: string): Promise<AutomationSpecRow> =>
