@@ -82,4 +82,37 @@ describe('ShortcutSettings — data-driven keybinding panel', () => {
 
     expect(store.get(shortcutOverridesAtom)).toEqual({})
   })
+
+  it('Backspace alone during capture clears the binding (sets to "未绑定")', () => {
+    const store = createStore()
+    renderWithProviders(<ShortcutSettings />, { store })
+
+    const chips = screen.getAllByRole('button', { name: /点击录入新组合/ })
+    fireEvent.click(chips[0]!)
+    // Press Backspace alone (no modifiers) — should clear, not capture as Cmd+Backspace etc.
+    fireEvent.keyDown(window, { code: 'Backspace', bubbles: true })
+
+    const next = store.get(shortcutOverridesAtom)
+    expect(Object.keys(next).length).toBe(1)
+    const override = next[Object.keys(next)[0]!]!
+    // The platform field is set to empty string — empty string means "explicitly unbound",
+    // distinct from "no override" (default). Row should now show 未绑定 button.
+    if (isMac) {
+      expect(override.mac).toBe('')
+    } else {
+      expect(override.win).toBe('')
+    }
+  })
+
+  it('does NOT include shortcuts that were removed from SHORTCUT_DEFINITIONS', () => {
+    // The 9 "ghost" entries (no handler anywhere) were cleaned out. Settings
+    // must not surface them anymore — otherwise users could "rebind" a key
+    // combo that points to nothing.
+    renderWithProviders(<ShortcutSettings />)
+    expect(screen.queryByText('关闭标签页')).toBeNull()
+    expect(screen.queryByText('搜索对话')).toBeNull()
+    expect(screen.queryByText('停止生成')).toBeNull()
+    expect(screen.queryByText('切换思考模式')).toBeNull()
+    expect(screen.queryByText('切换侧面板')).toBeNull()
+  })
 })

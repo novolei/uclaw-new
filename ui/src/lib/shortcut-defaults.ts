@@ -23,6 +23,17 @@ const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(na
 /**
  * 所有快捷键定义
  */
+/**
+ * Only shortcuts with a real handler are listed below. Earlier this file
+ * also contained 9 "ghost" entries (close-tab, next-tab, prev-tab,
+ * open-shortcuts, search-conversations, clear-input, stop-generation,
+ * toggle-thinking, toggle-side-panel) — each declared a binding but had
+ * no `useShortcut({ id: ... })` site anywhere, so pressing the combo did
+ * nothing AND exposing them in Settings → 快捷键 misled users into
+ * thinking they could be rebound. Removed 2026-05-13. The Esc-stops-
+ * generation behaviour is unrelated to this registry; `shortcut-registry`
+ * placeholder + custom `proma:stop-generation` window event drive it.
+ */
 export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   // ─── 导航 ───
   {
@@ -40,42 +51,14 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     win: 'Ctrl+Shift+N',
   },
   {
-    id: 'close-tab',
-    label: '关闭标签页',
-    group: '导航',
-    mac: 'Cmd+W',
-    win: 'Ctrl+W',
-  },
-  {
-    id: 'next-tab',
-    label: '下一个标签页',
-    group: '导航',
-    mac: 'Cmd+]',
-    win: 'Ctrl+Tab',
-  },
-  {
-    id: 'prev-tab',
-    label: '上一个标签页',
-    group: '导航',
-    mac: 'Cmd+[',
-    win: 'Ctrl+Shift+Tab',
-  },
-  {
     id: 'open-settings',
     label: '打开设置',
     group: '导航',
     mac: 'Cmd+,',
     win: 'Ctrl+,',
   },
-  {
-    id: 'open-shortcuts',
-    label: '快捷键设置',
-    group: '导航',
-    mac: 'Cmd+K Cmd+S',
-    win: 'Ctrl+K Ctrl+S',
-  },
 
-  // ─── 工作区切换 ───
+  // ─── 工作区切换 (导航 group) ───
   ...Array.from({ length: 9 }, (_, i) => ({
     id: `switch-workspace-${i + 1}`,
     label: `切换到第 ${i + 1} 个工作区`,
@@ -92,13 +75,6 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     mac: 'Cmd+K',
     win: 'Ctrl+K',
   },
-  {
-    id: 'search-conversations',
-    label: '搜索对话',
-    group: '搜索',
-    mac: 'Cmd+Shift+F',
-    win: 'Ctrl+Shift+F',
-  },
 
   // ─── 编辑 ───
   {
@@ -108,36 +84,8 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     mac: 'Cmd+L',
     win: 'Ctrl+L',
   },
-  {
-    id: 'clear-input',
-    label: '清空输入',
-    group: '编辑',
-    mac: 'Cmd+Shift+Backspace',
-    win: 'Ctrl+Shift+Backspace',
-  },
 
   // ─── Agent ───
-  {
-    id: 'stop-generation',
-    label: '停止生成',
-    group: 'Agent',
-    mac: 'Escape',
-    win: 'Escape',
-  },
-  {
-    id: 'toggle-thinking',
-    label: '切换思考模式',
-    group: 'Agent',
-    mac: 'Cmd+Shift+T',
-    win: 'Ctrl+Shift+T',
-  },
-  {
-    id: 'toggle-side-panel',
-    label: '切换侧面板',
-    group: 'Agent',
-    mac: 'Cmd+Shift+B',
-    win: 'Ctrl+Shift+B',
-  },
   {
     id: 'toggle-focus-mode',
     label: '专注模式',
@@ -191,4 +139,68 @@ export function formatShortcut(shortcut: string): string {
       .replace(/Ctrl\+/g, '⌃')
   }
   return shortcut
+}
+
+/** A single visual token inside a kbd cluster. `mod` = modifier (rendered
+ *  with the larger / dedicated style); `key` = the final key (letter,
+ *  digit, punctuation, named key like Enter / Escape). */
+export interface ShortcutToken {
+  kind: 'mod' | 'key'
+  /** What to render in the kbd cell — already platform-translated
+   *  (Mac → glyphs ⌘ ⇧ ⌥ ⌃; Windows → "Ctrl" / "Shift" / "Alt" text). */
+  display: string
+}
+
+/**
+ * Parse a uClaw shortcut string ("Cmd+Shift+P" / "Alt+F" / "Cmd+1") into
+ * a list of tokens for the kbd-cluster UI. Each modifier becomes its own
+ * `mod` token, the final part becomes a `key` token. Empty / null input
+ * returns an empty array (the UI shows "unbound" state).
+ */
+export function parseShortcutTokens(shortcut: string | undefined | null): ShortcutToken[] {
+  if (!shortcut) return []
+  const parts = shortcut.split('+').map((p) => p.trim()).filter(Boolean)
+  if (parts.length === 0) return []
+  const last = parts[parts.length - 1]!
+  const mods = parts.slice(0, -1)
+  const tokens: ShortcutToken[] = mods.map((m) => ({
+    kind: 'mod',
+    display: modSymbol(m),
+  }))
+  tokens.push({ kind: 'key', display: keySymbol(last) })
+  return tokens
+}
+
+function modSymbol(mod: string): string {
+  const m = mod.toLowerCase()
+  if (isMac) {
+    if (m === 'cmd' || m === 'meta' || m === '⌘') return '⌘'
+    if (m === 'shift' || m === '⇧') return '⇧'
+    if (m === 'alt' || m === 'option' || m === '⌥') return '⌥'
+    if (m === 'ctrl' || m === 'control' || m === '⌃') return '⌃'
+  }
+  // Windows / Linux: keep the words
+  if (m === 'cmd' || m === 'meta') return 'Meta'
+  if (m === 'ctrl' || m === 'control') return 'Ctrl'
+  if (m === 'shift') return 'Shift'
+  if (m === 'alt' || m === 'option') return 'Alt'
+  return mod
+}
+
+function keySymbol(key: string): string {
+  // Named keys → friendly glyphs / labels
+  const named: Record<string, string> = {
+    arrowleft: '←',
+    arrowright: '→',
+    arrowup: '↑',
+    arrowdown: '↓',
+    escape: 'Esc',
+    enter: '↵',
+    backspace: '⌫',
+    space: 'Space',
+    tab: '⇥',
+  }
+  const lower = key.toLowerCase()
+  if (named[lower]) return named[lower]
+  return key.length === 1 ? key.toUpperCase() : key
 }
