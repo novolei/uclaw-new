@@ -26,6 +26,7 @@ pub mod channels;
 pub mod providers;
 pub mod workspace;
 pub mod safety;
+pub mod stt;
 pub mod memu;
 pub mod proactive;
 

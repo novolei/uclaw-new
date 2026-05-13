@@ -34,7 +34,7 @@ bytes = "1"
 
 # STT — local SenseVoice ONNX (vendored from if2Ai openflow)
 # ort load-dynamic resolves onnxruntime at runtime; ~3min cold compile on first build.
-ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "ndarray"] }
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "ndarray", "half"] }
 realfft = "3"
 ndarray = "0.16"
 half = "2"
