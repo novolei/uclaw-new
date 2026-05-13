@@ -72,13 +72,6 @@ pub struct HumaneAutomationSpec {
 }
 
 // ---------------------------------------------------------------------------
-// Stub types — placeholders replaced in Tasks 3-4
-//
-// garde derive does not support unit structs, so we implement Validate
-// manually for each stub. All stubs are trivially valid (no constraints yet).
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Subscription discriminated union — spec § 4.2
 // ---------------------------------------------------------------------------
 
@@ -165,86 +158,163 @@ pub struct CustomSubscription {
     pub config: serde_json::Value,
 }
 
-/// InputDef — Task 4 replaces with full struct.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct InputDef; // placeholder
+// ---------------------------------------------------------------------------
+// Permission enum — spec § 4.3
+// ---------------------------------------------------------------------------
 
-impl garde::Validate for InputDef {
-    type Context = ();
-    fn validate_into(&self, _ctx: &(), _parent: &mut dyn FnMut() -> garde::Path, _report: &mut garde::Report) {}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Permission {
+    AiBrowser,
+    Notification,
+    Filesystem,
+    Network,
+    Shell,
+    #[serde(other)]
+    Unknown,
 }
 
-/// FilterRule — Task 4 replaces with full struct.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct FilterRule; // placeholder
+// ---------------------------------------------------------------------------
+// FilterRule — spec § 4.3
+// ---------------------------------------------------------------------------
 
-impl garde::Validate for FilterRule {
-    type Context = ();
-    fn validate_into(&self, _ctx: &(), _parent: &mut dyn FnMut() -> garde::Path, _report: &mut garde::Report) {}
+fn valid_op(op: &str, _: &()) -> garde::Result {
+    if matches!(op, "eq" | "ne" | "contains" | "matches" | "gt" | "lt") {
+        Ok(())
+    } else {
+        Err(garde::Error::new(format!("unsupported op: {}", op)))
+    }
 }
 
-/// MemorySchema — Task 4 replaces with full struct.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct MemorySchema; // placeholder
-
-impl garde::Validate for MemorySchema {
-    type Context = ();
-    fn validate_into(&self, _ctx: &(), _parent: &mut dyn FnMut() -> garde::Path, _report: &mut garde::Report) {}
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct FilterRule {
+    #[garde(length(min = 1))]
+    pub field: String,
+    #[garde(custom(valid_op))]
+    pub op: String,
+    #[garde(skip)]
+    pub value: serde_json::Value,
 }
 
-/// OutputConfig — Task 4 replaces with full struct.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct OutputConfig; // placeholder
+// ---------------------------------------------------------------------------
+// InputDef — spec § 4.3
+// ---------------------------------------------------------------------------
 
-impl garde::Validate for OutputConfig {
-    type Context = ();
-    fn validate_into(&self, _ctx: &(), _parent: &mut dyn FnMut() -> garde::Path, _report: &mut garde::Report) {}
+fn valid_input_type(t: &str, _: &()) -> garde::Result {
+    if matches!(t, "string" | "number" | "boolean" | "secret") {
+        Ok(())
+    } else {
+        Err(garde::Error::new(format!("unsupported input type: {}", t)))
+    }
 }
 
-/// EscalationConfig — Task 4 replaces with full struct.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct EscalationConfig; // placeholder
-
-impl garde::Validate for EscalationConfig {
-    type Context = ();
-    fn validate_into(&self, _ctx: &(), _parent: &mut dyn FnMut() -> garde::Path, _report: &mut garde::Report) {}
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct InputDef {
+    #[garde(length(min = 1))]
+    pub key: String,
+    #[garde(length(min = 1))]
+    pub label: String,
+    #[garde(custom(valid_input_type))]
+    pub r#type: String,
+    #[garde(skip)]
+    #[serde(default)]
+    pub default: Option<serde_json::Value>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub required: bool,
+    #[garde(skip)]
+    pub description: Option<String>,
 }
 
-/// Permission — Task 4 replaces with full enum (§ 4.3).
-/// Unit struct stub; simple.yaml declares no permissions so this never deserialises in Task 2 tests.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Permission; // placeholder
+// ---------------------------------------------------------------------------
+// Requires — spec § 4.3
+// ---------------------------------------------------------------------------
 
-impl garde::Validate for Permission {
-    type Context = ();
-    fn validate_into(&self, _ctx: &(), _parent: &mut dyn FnMut() -> garde::Path, _report: &mut garde::Report) {}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Validate)]
+pub struct Requires {
+    #[garde(skip)]
+    #[serde(default)]
+    pub mcps: Vec<String>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
-/// BrowserLoginEntry — Task 4 replaces with full struct.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct BrowserLoginEntry; // placeholder
+// ---------------------------------------------------------------------------
+// MemorySchema — spec § 4.4
+// ---------------------------------------------------------------------------
 
-impl garde::Validate for BrowserLoginEntry {
-    type Context = ();
-    fn validate_into(&self, _ctx: &(), _parent: &mut dyn FnMut() -> garde::Path, _report: &mut garde::Report) {}
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct MemorySchema {
+    #[garde(length(min = 1))]
+    pub description: String,
+    #[garde(skip)]
+    #[serde(default)]
+    pub initial: Option<String>,
 }
 
-/// Requires — Task 3 replaces with full struct.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Requires; // placeholder
+// ---------------------------------------------------------------------------
+// OutputConfig — spec § 4.4
+// ---------------------------------------------------------------------------
 
-impl garde::Validate for Requires {
-    type Context = ();
-    fn validate_into(&self, _ctx: &(), _parent: &mut dyn FnMut() -> garde::Path, _report: &mut garde::Report) {}
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct OutputConfig {
+    #[garde(skip)]
+    #[serde(default)]
+    pub channels: Vec<String>,
+    #[garde(skip)]
+    pub default_level: Option<String>,
 }
 
-/// I18nLocaleBlock — Task 4 replaces with full struct.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct I18nLocaleBlock; // placeholder
+// ---------------------------------------------------------------------------
+// EscalationConfig + EscalationChoice — spec § 4.4
+// ---------------------------------------------------------------------------
 
-impl garde::Validate for I18nLocaleBlock {
-    type Context = ();
-    fn validate_into(&self, _ctx: &(), _parent: &mut dyn FnMut() -> garde::Path, _report: &mut garde::Report) {}
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct EscalationConfig {
+    #[garde(length(min = 1))]
+    pub description: String,
+    #[garde(length(min = 2), dive)]
+    pub choices: Vec<EscalationChoice>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct EscalationChoice {
+    #[garde(length(min = 1))]
+    pub id: String,
+    #[garde(length(min = 1))]
+    pub label: String,
+    #[garde(skip)]
+    pub description: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// BrowserLoginEntry — spec § 4.4
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct BrowserLoginEntry {
+    #[garde(url)]
+    pub url: String,
+    #[garde(length(min = 1))]
+    pub label: String,
+}
+
+// ---------------------------------------------------------------------------
+// I18nLocaleBlock — spec § 4.4
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Validate)]
+pub struct I18nLocaleBlock {
+    #[garde(skip)]
+    #[serde(default)]
+    pub name: Option<String>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub description: Option<String>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub system_prompt: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -294,5 +364,38 @@ mod tests {
         let yaml = "type: automation\nname: x\nversion: 0.1.0\nauthor: x\ndescription: x\nsystem_prompt: x\nsubscriptions:\n  - { type: schedule }";
         let spec: HumaneAutomationSpec = serde_yml::from_str(yaml).unwrap();
         assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn full_featured_round_trip() {
+        let yaml = include_str!("test_fixtures/valid/full_featured.yaml");
+        let spec: HumaneAutomationSpec = serde_yml::from_str(yaml).expect("parses");
+        spec.validate().expect("validates");
+
+        // Serialize back and re-parse — idempotency
+        let yaml2 = serde_yml::to_string(&spec).expect("re-serialises");
+        let spec2: HumaneAutomationSpec = serde_yml::from_str(&yaml2).expect("re-parses");
+        spec2.validate().expect("re-validates");
+        // Serialise spec2 again — must equal yaml2 byte-for-byte (deterministic round trip)
+        let yaml3 = serde_yml::to_string(&spec2).expect("third serialise");
+        assert_eq!(yaml2, yaml3, "non-deterministic round trip");
+    }
+
+    #[test]
+    fn escalation_requires_min_2_choices() {
+        let bad = r#"
+type: automation
+name: Bad
+version: 0.1.0
+author: x
+description: x
+system_prompt: x
+escalation:
+  description: pick one
+  choices:
+    - { id: only, label: Only }
+"#;
+        let spec: HumaneAutomationSpec = serde_yml::from_str(bad).expect("parses");
+        assert!(spec.validate().is_err(), "escalation with 1 choice should fail validation");
     }
 }
