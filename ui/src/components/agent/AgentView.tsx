@@ -1424,7 +1424,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         <div className="px-2.5 pb-2.5 md:px-[18px] md:pb-[18px]" data-input-mode="agent">
           <div
             className={cn(
-              'rounded-[17px] border-[0.5px] border-border bg-background/70 backdrop-blur-sm transition-all duration-200',
+              'relative rounded-[17px] border-[0.5px] border-border bg-background/70 backdrop-blur-sm transition-all duration-200',
               isPlanMode && !isDragOver && 'plan-mode-border',
               isDragOver && 'border-[2px] border-dashed border-[#2ecc71] bg-[#2ecc71]/[0.03]'
             )}
@@ -1432,6 +1432,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
           >
+            {/* Pet anchored to the entire composer card's top — sits above all
+                inner banners (model warning, attachment preview, agent suggestion,
+                sticky user message, etc.). bottom:100% references this card's top. */}
+            <PetWidget />
             {isPlanMode && !isDragOver && <PlanModeDashedBorder />}
             {/* 未配置模型提示 */}
             {!activeProviderModel && (
@@ -1483,7 +1487,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             )}
 
             <div className="relative">
-              <PetWidget />
               <RichTextInput
                 value={inputContent}
                 onChange={handleComposerChange}
