@@ -35,3 +35,6 @@ package-lock.json
 .claire/
 .claude/worktrees/
 .claude/
+
+# Superpowers brainstorming session files (visual companion mockups)
+.superpowers/

@@ -42,6 +42,9 @@ import { firedBudgetThresholdsAtom } from '@/atoms/cost'
 import { TabSessionSyncer } from './TabSessionSyncer'
 import { useWorkspaceArrowSwitch } from '@/hooks/useWorkspaceSwipe'
 import { WorkspaceTabCleaner } from './WorkspaceTabCleaner'
+import { focusModeAtom } from '@/atoms/focus-mode-atoms'
+import { useFocusModeShortcut } from '@/hooks/useFocusModeShortcut'
+import { FocusModeOverlay } from '@/components/focus-mode/FocusModeOverlay'
 
 export interface AppShellProps {
   /** Context 值，用于传递给子组件 */
@@ -54,6 +57,8 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const isPanelOpen = useAtomValue(currentSessionSidePanelOpenAtom)
   const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
   const showRightPanel = appMode === 'agent' && !!currentSessionId
+  const focusMode = useAtomValue(focusModeAtom)
+  useFocusModeShortcut()  // global Alt+F binding
 
   // Shift+ArrowLeft / Shift+ArrowRight to cycle workspaces (Windows /
   // external-keyboard fallback for users without a touchpad).
@@ -276,10 +281,12 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
       <div className="titlebar-drag-region fixed top-0 left-0 right-0 h-[50px] z-50" />
 
       <div className="shell-bg h-screen w-screen flex overflow-hidden bg-gradient-to-br from-zinc-50 to-zinc-100 dark:from-zinc-950 dark:to-zinc-900">
-        {/* 左侧边栏：可折叠，带圆角和内边距 */}
-        <div className="sidebar-wrapper p-2 pr-0 relative z-[60]">
-          <LeftSidebar />
-        </div>
+        {/* 左侧边栏：focus mode 下隐藏，由 FocusModeOverlay 接管 */}
+        {!focusMode && (
+          <div className="sidebar-wrapper p-2 pr-0 relative z-[60]">
+            <LeftSidebar />
+          </div>
+        )}
 
         {/* 中间容器：主内容区域。Wrapper 自身可拖拽 (8px padding 区域)，
             TabBar 行也在 drag 区域内 (空白处可拖动窗口)。Click targets
@@ -298,8 +305,8 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
           </div>
         </div>
 
-        {/* 右侧边栏：Agent 文件面板，带圆角和内边距 */}
-        {showRightPanel && (
+        {/* 右侧边栏：Agent 文件面板，带圆角和内边距；focus mode 下同样隐藏 */}
+        {!focusMode && showRightPanel && (
           <div className={cn('right-panel-wrapper relative z-[60] transition-[padding] duration-300 ease-in-out', isPanelOpen ? 'p-2 pl-0' : 'p-0')}>
             <RightSidePanel />
           </div>
@@ -307,6 +314,11 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
 
         {/* Global ⌘K search palette — mounts at root so it works from any view */}
         <SearchPalette onSelect={handleSearchResultSelect} />
+
+        {/* Focus Mode overlay — null when off, otherwise renders the two
+            floating-island re-mounts of LeftSidebar / RightSidePanel + the
+            two edge glow indicators. */}
+        <FocusModeOverlay />
 
         {/* Global tool-approval modal — listens for `agent:need_approval`
             IPC events. Must be mounted exactly once at the root, otherwise
