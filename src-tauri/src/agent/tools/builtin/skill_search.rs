@@ -128,7 +128,7 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
     }
 
     fn description(&self) -> &str {
-        "Search learned skills by keywords. Returns top-N matches with one-line summaries. Use this when facing a problem similar to one you've solved before — load the full skill content via load_skill afterward if a match looks promising."
+        "Search learned skills by keywords. Returns top-N matches; load full content via load_skill if a match looks promising. Set lite=true when enumerating many skills (>5) to save tokens."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -137,7 +137,7 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Keywords describing the current task / problem (English works better than Chinese)."
+                    "description": "Keywords describing the task. English works better than Chinese."
                 },
                 "top_k": {
                     "type": "integer",
@@ -149,7 +149,12 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
                 "category": {
                     "type": "string",
                     "enum": ["repair", "optimize", "innovate"],
-                    "description": "Optional. Restrict results to skills tagged with this category. If absent, search all categories."
+                    "description": "Restrict to skills tagged with this category."
+                },
+                "lite": {
+                    "type": "boolean",
+                    "description": "When true returns only {name, provenance, summary} per hit (saves ~70% tokens). Set this when user asks 'list/enumerate all my skills'; leave false when investigating a specific problem.",
+                    "default": false
                 }
             },
             "required": ["query"]
@@ -421,7 +426,8 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
             }
         }
 
-        // Emit agent:skill-recalled event
+        // Emit agent:skill-recalled event — always with the FULL hit shape
+        // so the UI can still render rich chips even when the LLM saw lite.
         let tool_call_id = params["_tool_call_id"]
             .as_str()
             .unwrap_or("")
@@ -435,10 +441,34 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
             "timestamp": chrono::Utc::now().to_rfc3339(),
         }));
 
-        Ok(ToolOutput::new(
-            serde_json::to_value(&hits).unwrap_or(json!([])),
-            start.elapsed().as_millis() as u64,
-        ))
+        // Lite mode: slim each hit to {name, provenance, summary} before
+        // serializing back to the LLM. The full SearchHit shape (with
+        // relevance/quality/match_reasons/warnings/cited_count/node_id/
+        // matched_signals) is ~100-150 tokens per row; the lite shape is
+        // ~25-40 tokens — for a top_k=20 enumeration query, that's
+        // ~1500-2000 tokens saved.
+        //
+        // Summaries also get truncated harder (200 → 100 chars) under
+        // lite, because the use case is "give me the catalog" not "help
+        // me decide which one to load".
+        let lite = params["lite"].as_bool().unwrap_or(false);
+        let body = if lite {
+            let slim: Vec<serde_json::Value> = hits
+                .iter()
+                .map(|h| {
+                    let summary = truncate_summary(&h.summary, 100);
+                    json!({
+                        "name": h.name,
+                        "provenance": h.provenance,
+                        "summary": summary,
+                    })
+                })
+                .collect();
+            serde_json::to_value(&slim).unwrap_or(json!([]))
+        } else {
+            serde_json::to_value(&hits).unwrap_or(json!([]))
+        };
+        Ok(ToolOutput::new(body, start.elapsed().as_millis() as u64))
     }
 }
 
@@ -1262,5 +1292,72 @@ mod tests {
                 warnings, hit["name"],
             );
         }
+    }
+
+    /// Lite mode (PR 2026-05-13 token-cost optim): when `lite: true`, the
+    /// tool output drops to {name, provenance, summary} per hit — no
+    /// relevance / quality / final_score / match_reasons / warnings /
+    /// cited_count / node_id / matched_signals. For top_k=20 enumeration
+    /// queries this saves ~1500-2000 tokens. The summary cap also tightens
+    /// from 200 → 100 chars.
+    #[tokio::test]
+    async fn lite_mode_returns_slim_hits() {
+        let store = fresh_store();
+        let _id = make_learned_node_with_keywords(&store, "lite-skill", &["target"], 7);
+
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        let tool = SkillSearchTool::new(
+            registry, Arc::clone(&store), app.handle().clone(),
+            "test-session".into(), "default".into(),
+        );
+
+        let out = tool.execute(json!({ "query": "target", "lite": true })).await.unwrap();
+        let hits = out.result.as_array().unwrap();
+        assert_eq!(hits.len(), 1);
+        let hit = &hits[0];
+        let obj = hit.as_object().unwrap();
+        // Must keep: name, provenance, summary.
+        assert!(obj.contains_key("name"));
+        assert!(obj.contains_key("provenance"));
+        assert!(obj.contains_key("summary"));
+        // Must drop: everything else.
+        for absent in [
+            "relevance", "quality", "final_score",
+            "match_reasons", "warnings",
+            "cited_count", "node_id", "matched_signals",
+        ] {
+            assert!(
+                !obj.contains_key(absent),
+                "lite hit must not include `{}`; got keys: {:?}",
+                absent, obj.keys().collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    /// Default (lite=false / absent) preserves the full SearchHit shape
+    /// so existing integrations keep working.
+    #[tokio::test]
+    async fn default_mode_returns_full_hits() {
+        let store = fresh_store();
+        let _id = make_learned_node_with_keywords(&store, "fat-skill", &["target"], 5);
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        let tool = SkillSearchTool::new(
+            registry, Arc::clone(&store), app.handle().clone(),
+            "test-session".into(), "default".into(),
+        );
+
+        let out = tool.execute(json!({ "query": "target" })).await.unwrap();
+        let hits = out.result.as_array().unwrap();
+        assert_eq!(hits.len(), 1);
+        let obj = hits[0].as_object().unwrap();
+        // Full shape: must keep the richer fields.
+        assert!(obj.contains_key("relevance"));
+        assert!(obj.contains_key("quality"));
+        assert!(obj.contains_key("final_score"));
+        // node_id is in the rich shape (it's the field skill_search uses
+        // to track which learned skill to bump usage on).
+        assert!(obj.contains_key("node_id"));
     }
 }

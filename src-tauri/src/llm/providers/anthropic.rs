@@ -198,11 +198,48 @@ impl AnthropicProvider {
             "messages": self.convert_messages(messages),
         });
 
+        // System + tools: emit with explicit `cache_control: ephemeral`
+        // markers on the LAST block of each so Anthropic prompt caching
+        // engages. The system prompt + manifest + tool definitions are
+        // stable across turns within an agent loop, so cache reads should
+        // dominate after the first call (10x cheaper than fresh input).
+        //
+        // Spec: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+        //
+        // The `system` field is sent as an array of content blocks (not a
+        // bare string) so the breakpoint can live on the last block.
+        // Anthropic API accepts both forms; the array form is required to
+        // attach cache_control.
+        //
+        // Each cache breakpoint requires >= 1024 tokens (Sonnet/Haiku) of
+        // content before it. For uClaw the system prompt + skills manifest
+        // is typically 1.5-2K tokens and 22 tool defs are 6-8K tokens, so
+        // both pass the threshold comfortably. Below 1024 the API simply
+        // ignores the breakpoint (no error) so this stays safe when the
+        // manifest is empty.
         if let Some(sys) = &system {
-            body["system"] = serde_json::json!(sys);
+            body["system"] = serde_json::json!([
+                {
+                    "type": "text",
+                    "text": sys,
+                    "cache_control": { "type": "ephemeral" },
+                }
+            ]);
         }
         if !tools.is_empty() {
-            body["tools"] = serde_json::json!(self.convert_tools(tools));
+            let mut converted = self.convert_tools(tools);
+            // Mark the LAST tool with cache_control so everything up to
+            // and including it gets cached. Subsequent turns with the
+            // same tool list pay the cache-read rate (~10% of fresh).
+            if let Some(last) = converted.last_mut() {
+                if let Some(obj) = last.as_object_mut() {
+                    obj.insert(
+                        "cache_control".to_string(),
+                        serde_json::json!({ "type": "ephemeral" }),
+                    );
+                }
+            }
+            body["tools"] = serde_json::json!(converted);
         }
         if stream {
             body["stream"] = serde_json::json!(true);

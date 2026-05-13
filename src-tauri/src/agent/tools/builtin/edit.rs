@@ -113,38 +113,23 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Edit a file by searching and replacing text, or inserting text at a specific line. \
-         Provide an array of edits, each with 'old_text' and 'new_text'. \
-         For search-replace: set 'old_text' to the exact text to find and 'new_text' to the replacement. \
-         For insertion: set 'old_text' to empty string, provide 'new_text' and optionally 'insert_line' (1-based)."
+        "Edit a file via search-replace or line insertion. Pass an array of edits; for insertion set old_text='' and supply insert_line (1-based)."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Relative or absolute path to the file to edit"
-                },
+                "path": { "type": "string", "description": "File path." },
                 "edits": {
                     "type": "array",
-                    "description": "Array of edit operations to apply sequentially",
+                    "description": "Edits applied in order.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "old_text": {
-                                "type": "string",
-                                "description": "Text to search for (exact match). Empty string for insert mode."
-                            },
-                            "new_text": {
-                                "type": "string",
-                                "description": "Replacement text, or text to insert"
-                            },
-                            "insert_line": {
-                                "type": "integer",
-                                "description": "Line number for insertion (1-based). Only used when old_text is empty."
-                            }
+                            "old_text": { "type": "string", "description": "Exact text to find; empty = insert mode." },
+                            "new_text": { "type": "string", "description": "Replacement or text to insert." },
+                            "insert_line": { "type": "integer", "description": "1-based line for insertion (only when old_text is empty)." }
                         },
                         "required": ["old_text", "new_text"]
                     }

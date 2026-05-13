@@ -5007,12 +5007,20 @@ pub async fn send_agent_message(
             };
 
             let registry = skills_registry_for_manifest.read().await;
+            // Manifest budget reduced 1500 → 800 tokens (PR 2026-05-13
+            // token-cost optim). At 1500 the manifest fit ~30 entries
+            // and ate ~10% of a typical input window every turn even
+            // when the agent never read it. 800 tokens fits the 12-15
+            // most relevant by E3 ranking, which is what users actually
+            // skim before delegating to skill_search anyway. The
+            // `skill_search` tool covers the rest of the catalog on
+            // demand.
             let manifest = crate::skills_manifest::build_skills_manifest(
                 &registry,
                 &memory_graph_store_for_manifest,
                 "default",
                 30,
-                1500,
+                800,
                 strategy_bias,
                 if workspace_tags.is_empty() { None } else { Some(workspace_tags.as_slice()) },
             );
