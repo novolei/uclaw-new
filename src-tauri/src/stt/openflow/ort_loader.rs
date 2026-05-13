@@ -12,7 +12,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 
 /// onnxruntime version paired with ort = "2.0.0-rc.10".
-pub const ONNXRUNTIME_VERSION: &str = "1.20.1";
+///
+/// ort rc.10 在 src/lib.rs:168 处 hard-check 加载的 dylib 的 `GetVersionString()`
+/// 必须返回 `1.22.x`。1.20.x 会触发 "not compatible" panic。
+///
+/// Microsoft GitHub release 中 1.22.x 系列目前只有 1.22.0（1.22.1/1.22.2 均 404，
+/// 2026-05-14 实测）。后续 ort 升级到下个 major rc 时再同步 bump 此常量。
+pub const ONNXRUNTIME_VERSION: &str = "1.22.0";
 
 /// Microsoft GitHub release base URL.
 const RELEASE_BASE: &str =
@@ -79,7 +85,12 @@ fn detect_platform() -> Result<PlatformInfo> {
 
 fn install_root() -> Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("home dir not found"))?;
-    Ok(home.join(".uclaw").join("onnxruntime"))
+    // 版本隔离：~/.uclaw/onnxruntime/{version}/libonnxruntime.dylib
+    // ort 升级换版本时旧目录无害留下（用户可手动清理），新版本走干净状态。
+    Ok(home
+        .join(".uclaw")
+        .join("onnxruntime")
+        .join(ONNXRUNTIME_VERSION))
 }
 
 /// Return the path where libonnxruntime is (or will be) installed.
@@ -341,11 +352,18 @@ mod tests {
     }
 
     #[test]
-    fn install_root_is_under_home_uclaw() {
+    fn install_root_is_under_home_uclaw_versioned() {
         let root = install_root().unwrap();
         let s = root.to_string_lossy();
         assert!(s.contains(".uclaw"), "install_root should contain .uclaw: {}", s);
-        assert!(s.ends_with("onnxruntime"), "install_root should end with onnxruntime: {}", s);
+        // 版本隔离：路径以 onnxruntime/{ONNXRUNTIME_VERSION} 结尾
+        let suffix = format!("onnxruntime/{}", ONNXRUNTIME_VERSION);
+        assert!(
+            s.ends_with(&suffix),
+            "install_root should end with {}: {}",
+            suffix,
+            s
+        );
     }
 
     #[test]
