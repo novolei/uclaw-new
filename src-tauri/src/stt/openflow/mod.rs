@@ -4,8 +4,10 @@
 //! docs/third-party-licenses/open-flow-LICENSE.md。
 
 pub mod decoder;
+pub mod downloader;
 pub mod engine;
 pub mod onnx_inference;
 pub mod preprocess;
 
+pub use downloader::{download_all, SenseVoicePreset};
 pub use engine::{default_sensevoice_dir, model_is_ready, OpenFlowAsrEngine};
