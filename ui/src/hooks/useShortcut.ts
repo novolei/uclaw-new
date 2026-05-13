@@ -40,6 +40,12 @@ function parseShortcut(shortcut: string): {
 
 /**
  * 检查键盘事件是否匹配快捷键
+ *
+ * Alt-modifier 在 macOS 上有坑：Option+F 输出 `e.key = 'ƒ'`（系统级字符替换），
+ * Option+A 输出 'å'，等等 —— 用 e.key 比对 'f' / 'a' 永远 false。
+ * 解决方案：当快捷键里带 Alt（或 Mac 的 Option）且 key 是 [a-z0-9] 时，
+ * 改用 `e.code`（物理键位，'KeyF' / 'Digit3'）比对，绕过 OS 的字符转译。
+ * 其它情况（Cmd/Ctrl 组合、特殊键如 Escape / Backspace）继续走 e.key 路径。
  */
 function matchesShortcut(
   e: KeyboardEvent,
@@ -54,6 +60,14 @@ function matchesShortcut(
   if (parsed.ctrl !== modCtrl) return false
   if (parsed.alt !== e.altKey) return false
   if (parsed.shift !== e.shiftKey) return false
+
+  // Alt + 单字母/数字 → 用 e.code 绕过 Mac Option-字符替换
+  if (parsed.alt && /^[a-z0-9]$/.test(parsed.key)) {
+    const expectedCode = /^[0-9]$/.test(parsed.key)
+      ? `Digit${parsed.key}`
+      : `Key${parsed.key.toUpperCase()}`
+    return e.code === expectedCode
+  }
 
   return e.key.toLowerCase() === parsed.key
 }

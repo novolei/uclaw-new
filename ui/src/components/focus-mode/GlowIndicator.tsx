@@ -22,10 +22,17 @@ import {
 
 interface Props { side: 'left' | 'right' }
 
-/** Distance at which the glow starts to brighten. */
-const FADE_START_PX = 80
-/** Distance at which the glow reaches full opacity. */
-const FADE_PEAK_PX = 16
+/** Distance at which the glow starts to brighten.
+ *  Bumped 80 → 160 (2026-05-13 fix) so the user sees the glow earlier
+ *  during cursor approach. The original 80px window was too narrow:
+ *  the island itself takes over at 32px, leaving only ~50px of "glow
+ *  visible" distance — easy to fly past unnoticed. */
+const FADE_START_PX = 160
+/** Distance at which the glow reaches full opacity.
+ *  Aligned with the hot-zone trigger distance (32px) so the glow peaks
+ *  at the exact moment the floating island starts to slide in — smooth
+ *  handoff from "you can summon me" hint to "I'm coming". */
+const FADE_PEAK_PX = 32
 
 function proximityOpacity(dist: number): number {
   if (dist > FADE_START_PX) return 0

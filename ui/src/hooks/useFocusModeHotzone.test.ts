@@ -37,11 +37,11 @@ describe('useFocusModeHotzone', () => {
     setViewport(ORIG_W, ORIG_H)
   })
 
-  it('reveals left when mouse enters left hot zone (x <= 32, y > 84)', () => {
+  it('reveals left when mouse enters left hot zone (x <= 8, y > 84)', () => {
     const store = createStore()
     store.set(focusModeAtom, true)
     renderHook(() => useFocusModeHotzone(), { wrapper: wrapper(store) })
-    act(() => fireMouseMove(20, 200))
+    act(() => fireMouseMove(5, 200))
     expect(store.get(focusRevealSideAtom)).toBe('left')
   })
 
@@ -49,15 +49,26 @@ describe('useFocusModeHotzone', () => {
     const store = createStore()
     store.set(focusModeAtom, true)
     renderHook(() => useFocusModeHotzone(), { wrapper: wrapper(store) })
-    act(() => fireMouseMove(1430, 200))   // 1440 - 10 = right hot zone
+    act(() => fireMouseMove(1435, 200))   // 1440 - 5 = right hot zone
     expect(store.get(focusRevealSideAtom)).toBe('right')
+  })
+
+  it('does NOT reveal when mouse is in the glow band but outside the hot zone', () => {
+    // The new HOT_ZONE_WIDTH = 8; the glow band visually starts at 160px
+    // but should not yet trigger the island. Hovering at x=20 (glow-visible
+    // but past the 8px hot zone) must NOT slide the island in.
+    const store = createStore()
+    store.set(focusModeAtom, true)
+    renderHook(() => useFocusModeHotzone(), { wrapper: wrapper(store) })
+    act(() => fireMouseMove(20, 200))
+    expect(store.get(focusRevealSideAtom)).toBeNull()
   })
 
   it('does NOT reveal when y < TOP_EXCLUDE (84)', () => {
     const store = createStore()
     store.set(focusModeAtom, true)
     renderHook(() => useFocusModeHotzone(), { wrapper: wrapper(store) })
-    act(() => fireMouseMove(20, 50))      // in left hot zone X-wise, but y < 84
+    act(() => fireMouseMove(5, 50))       // in left hot zone X-wise, but y < 84
     expect(store.get(focusRevealSideAtom)).toBeNull()
   })
 
@@ -65,7 +76,7 @@ describe('useFocusModeHotzone', () => {
     const store = createStore()
     store.set(focusModeAtom, true)
     renderHook(() => useFocusModeHotzone(), { wrapper: wrapper(store) })
-    act(() => fireMouseMove(20, 200))         // reveal left
+    act(() => fireMouseMove(5, 200))          // reveal left
     expect(store.get(focusRevealSideAtom)).toBe('left')
     act(() => fireMouseMove(600, 200))        // mouse leaves region
     expect(store.get(focusRevealSideAtom)).toBe('left')  // not yet
@@ -77,10 +88,10 @@ describe('useFocusModeHotzone', () => {
     const store = createStore()
     store.set(focusModeAtom, true)
     renderHook(() => useFocusModeHotzone(), { wrapper: wrapper(store) })
-    act(() => fireMouseMove(20, 200))
+    act(() => fireMouseMove(5, 200))
     act(() => fireMouseMove(600, 200))        // leave region; 200ms timer starts
     act(() => vi.advanceTimersByTime(100))
-    act(() => fireMouseMove(150, 200))        // back inside island
+    act(() => fireMouseMove(150, 200))        // back inside island bounding box
     act(() => vi.advanceTimersByTime(200))    // full window passes
     expect(store.get(focusRevealSideAtom)).toBe('left')  // still revealed
   })
@@ -108,7 +119,7 @@ describe('useFocusModeHotzone', () => {
     const store = createStore()
     store.set(focusModeAtom, false)
     renderHook(() => useFocusModeHotzone(), { wrapper: wrapper(store) })
-    act(() => fireMouseMove(20, 200))
+    act(() => fireMouseMove(5, 200))
     expect(store.get(focusRevealSideAtom)).toBeNull()
     expect(store.get(focusMousePosAtom)).toEqual({ x: 0, y: 0 })
   })

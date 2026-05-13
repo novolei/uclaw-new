@@ -2,24 +2,24 @@
  * FloatingIsland — visual wrapper that animates a sidebar into / out of
  * a rounded "island" over the central preview area. The sidebar component
  * (LeftSidebar / RightSidePanel) is passed as `children` and rendered
- * unmodified — this wrapper only handles positioning + animation + the
- * click-outside-to-unpin contract.
+ * unmodified — this wrapper only handles positioning + animation.
  *
- * Click-outside detection uses a capture-phase document listener and
- * explicitly EXCLUDES Radix portal nodes ([data-radix-portal] /
- * data-radix-popper-content-wrapper / [role="dialog"]) so that
- * dropdowns, tooltips, and the global ApprovalModal can be interacted
- * with without un-pinning the island.
+ * Reveal lifecycle (2026-05-13: click-auto-pin removed):
+ *   - The island shows while `focusRevealSideAtom === side`. The hotzone
+ *     hook owns the show/hide state machine entirely via mouse position.
+ *   - Clicking INSIDE the island no longer pins it. Moving the mouse out
+ *     starts the 200ms leave timer like any other exit — the user can
+ *     click a session row, then drift the mouse back to the preview and
+ *     the island auto-hides 200ms later, just like hovering away.
+ *   - `focusRevealPinnedAtom` is retained but currently unused — kept
+ *     for a possible future "explicit pin button" affordance.
  */
 
 import * as React from 'react'
-import { useAtomValue, useSetAtom } from 'jotai'
+import { useAtomValue } from 'jotai'
 import { AnimatePresence, motion, type Variants } from 'motion/react'
 import { cn } from '@/lib/utils'
-import {
-  focusRevealSideAtom,
-  focusRevealPinnedAtom,
-} from '@/atoms/focus-mode-atoms'
+import { focusRevealSideAtom } from '@/atoms/focus-mode-atoms'
 import {
   ISLAND_EDGE_GAP,
   ISLAND_LEFT_WIDTH,
@@ -40,41 +40,10 @@ const islandVariants: Variants = {
   shown: { x: 0, opacity: 1, scale: 1 },
 }
 
-/** Returns true if `target` is inside a Radix-managed floating overlay
- *  (portal / popper / dialog). These nodes are visually OUTSIDE the
- *  island in the DOM but are logically "inside the same interaction" —
- *  clicking them must not un-pin. */
-function isInsideRadixPortal(target: Element | null): boolean {
-  if (!target) return false
-  return Boolean(
-    target.closest('[data-radix-portal]') ||
-    target.closest('[data-radix-popper-content-wrapper]') ||
-    target.closest('[role="dialog"]') ||
-    target.closest('[role="menu"]') ||
-    target.closest('[role="tooltip"]'),
-  )
-}
-
 export function FloatingIsland({ side, children }: Props): React.ReactElement {
   const reveal = useAtomValue(focusRevealSideAtom)
-  const setPinned = useSetAtom(focusRevealPinnedAtom)
   const islandRef = React.useRef<HTMLDivElement>(null)
   const visible = reveal === side
-
-  React.useEffect(() => {
-    if (!visible) return
-    const onDocClick = (e: MouseEvent) => {
-      const target = e.target as Element | null
-      if (isInsideRadixPortal(target)) return
-      if (islandRef.current?.contains(target)) {
-        setPinned(true)
-      } else {
-        setPinned(false)
-      }
-    }
-    document.addEventListener('click', onDocClick, true)
-    return () => document.removeEventListener('click', onDocClick, true)
-  }, [visible, setPinned])
 
   const width = side === 'left' ? ISLAND_LEFT_WIDTH : ISLAND_RIGHT_WIDTH
   const sidePos = side === 'left' ? `left-3` : `right-3`

@@ -69,8 +69,21 @@ export function useFocusModeHotzone(): void {
         e.clientX <= HOT_ZONE_WIDTH && e.clientY >= TOP_EXCLUDE
       const inRightZone =
         e.clientX >= w - HOT_ZONE_WIDTH && e.clientY >= TOP_EXCLUDE
-      const inLeftIsland = isInsideIslandRect('left', e.clientX, e.clientY, w, h)
-      const inRightIsland = isInsideIslandRect('right', e.clientX, e.clientY, w, h)
+      // The island's bounding-box is only relevant when that side is
+      // ALREADY visible — it's the "keep open while mouse is inside the
+      // open island" guard. Treating an unrevealed island's would-be
+      // rect as a trigger zone (the previous behaviour) effectively
+      // made the entire 280/400 px strip a hot zone, which is exactly
+      // what the user complained about ("浮岛在灯条没出现就弹出来"). The
+      // narrow 8 px hot zone is the only thing that should TRIGGER a
+      // reveal; the island rect only EXTENDS the keep-open region once
+      // the island is on screen.
+      const inLeftIsland =
+        revealRef.current === 'left' &&
+        isInsideIslandRect('left', e.clientX, e.clientY, w, h)
+      const inRightIsland =
+        revealRef.current === 'right' &&
+        isInsideIslandRect('right', e.clientX, e.clientY, w, h)
 
       const wantLeft = inLeftZone || inLeftIsland
       const wantRight = inRightZone || inRightIsland

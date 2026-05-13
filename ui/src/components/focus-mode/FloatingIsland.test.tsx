@@ -32,7 +32,14 @@ describe('FloatingIsland', () => {
     expect(screen.queryByText('left-children')).toBeNull()
   })
 
-  it('clicking inside the island sets pinned = true', async () => {
+  it('clicking inside the island does NOT auto-pin (2026-05-13 fix)', async () => {
+    // Previous behaviour: clicking any element inside the island set
+    // focusRevealPinnedAtom = true, which then froze the hotzone leave
+    // timer and the island stuck on screen until clicked outside.
+    // New behaviour: plain clicks do not pin. Hotzone's 200ms leave timer
+    // fires the moment the mouse exits the island region — the user can
+    // click a session row and then drift the mouse back to the preview
+    // and the island will auto-hide.
     const store = createStore()
     store.set(focusRevealSideAtom, 'left')
     const { user } = renderWithProviders(
@@ -41,7 +48,8 @@ describe('FloatingIsland', () => {
       </FloatingIsland>,
       { store },
     )
+    expect(store.get(focusRevealPinnedAtom)).toBe(false)
     await user.click(screen.getByText('inside-button'))
-    expect(store.get(focusRevealPinnedAtom)).toBe(true)
+    expect(store.get(focusRevealPinnedAtom)).toBe(false)
   })
 })
