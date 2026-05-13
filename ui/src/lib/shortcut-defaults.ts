@@ -138,6 +138,13 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     mac: 'Cmd+Shift+B',
     win: 'Ctrl+Shift+B',
   },
+  {
+    id: 'toggle-focus-mode',
+    label: '专注模式',
+    group: 'Agent',
+    mac: 'Alt+F',
+    win: 'Alt+F',
+  },
 ]
 
 /** 快速查找表 */
