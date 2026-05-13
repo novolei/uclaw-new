@@ -1460,6 +1460,14 @@ export interface PreviewBytes {
   mtimeMs: number
 }
 
+// ── STT ──────────────────────────────────────────────────────────────────
+
+/** Pre-warm: download ONNX Runtime dylib if missing, set ORT_DYLIB_PATH.
+ *  Idempotent — returns quickly when already cached.
+ *  Listen to `stt:runtime_progress` for {phase, downloaded, total} updates. */
+export const sttEnsureRuntime = (): Promise<string> =>
+  invoke('stt_ensure_runtime')
+
 export async function previewReadBytes(
   mountId: string,
   relPath: string,

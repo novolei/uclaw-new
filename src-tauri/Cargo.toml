@@ -39,6 +39,11 @@ realfft = "3"
 ndarray = "0.16"
 half = "2"
 once_cell = "1"
+# ORT dynamic loader — tarball/zip extraction for libonnxruntime download
+flate2 = "1"
+tar = "0.4"
+zip = "2"
+futures-util = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

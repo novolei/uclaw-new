@@ -220,6 +220,33 @@ pub async fn stt_download_model(
     Ok(result_dir.to_string_lossy().to_string())
 }
 
+// ── ONNX Runtime pre-warm ────────────────────────────────────────────────
+
+/// 下载 ONNX Runtime dylib 并设置 ORT_DYLIB_PATH；幂等，已下载时立即返回路径。
+/// 过程中通过 `stt:runtime_progress` 事件推送 `{phase, downloaded, total}` 进度。
+#[tauri::command]
+pub async fn stt_ensure_runtime(
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let handle = app.clone();
+    let progress: crate::stt::openflow::ort_loader::ProgressCallback =
+        std::sync::Arc::new(move |phase: &str, done: u64, total: Option<u64>| {
+            let _ = tauri::Emitter::emit(
+                &handle,
+                "stt:runtime_progress",
+                serde_json::json!({
+                    "phase": phase,
+                    "downloaded": done,
+                    "total": total,
+                }),
+            );
+        });
+    crate::stt::openflow::ort_loader::ensure_onnxruntime(Some(progress))
+        .await
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| e.to_string())
+}
+
 // ── Microphones (browser-side enumeration in v0; Tauri stub for future) ─
 
 #[derive(Debug, Clone, Serialize)]
