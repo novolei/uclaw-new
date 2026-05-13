@@ -76,6 +76,18 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
   const filePath = target.absolutePath ?? `${target.mountId}::${target.relPath}`
   const saveMode: 'explicit' | 'auto' = isMarkdown ? 'auto' : 'explicit'
 
+  // mtimeMs ALSO lives in a ref so handleSave reads the absolute-latest
+  // value synchronously, with no React-commit timing window. The state
+  // version is only used by render-time consumers (toolbar pill, etc.).
+  // Bug repro before this ref existed: save A returned T1 + setMtimeMs(T1)
+  // queued; before React committed, save B fired with the still-T0
+  // useCallback closure; backend returned conflict because disk was T1.
+  const mtimeMsRef = React.useRef(initialMtimeMs)
+  const setMtimeBoth = React.useCallback((next: number) => {
+    mtimeMsRef.current = next
+    setMtimeMs(next)
+  }, [])
+
   // Only reset baseline/content/mtime when the file ITSELF changes (filePath).
   // Don't reset on every initialContent / initialMtimeMs prop update —
   // useFileBytes refetches on watcher events would otherwise silently
@@ -83,24 +95,35 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
   React.useEffect(() => {
     setBaseline(initialContent)
     setContent(initialContent)
+    mtimeMsRef.current = initialMtimeMs
     setMtimeMs(initialMtimeMs)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filePath])
+
+  // lastSelfWriteMap also goes through a ref so the conflict-echo check
+  // sees the absolute-latest entry — the React-state version trails the
+  // jotai atom by one render in the worst case.
+  const lastSelfWriteMapRef = React.useRef(lastSelfWriteMap)
+  React.useEffect(() => {
+    lastSelfWriteMapRef.current = lastSelfWriteMap
+  }, [lastSelfWriteMap])
 
   const handleSave = React.useCallback(
     async (latest: string): Promise<SaveOutcome> => {
       setSaving(true)
       try {
+        // Read mtime from the ref (fresh) instead of useState closure.
+        const expected = mtimeMsRef.current === 0 ? NEW_FILE_MTIME_SENTINEL : mtimeMsRef.current
         const result = await invoke<WriteResultIpc>('preview_write_text', {
           mountId: target.mountId,
           relPath: target.relPath,
           sessionId: target.sessionId ?? null,
           content: latest,
-          expectedMtimeMs: mtimeMs === 0 ? NEW_FILE_MTIME_SENTINEL : mtimeMs,
+          expectedMtimeMs: expected,
         })
         if (result.kind === 'saved') {
           const newMtime = result.mtimeMs ?? 0
-          setMtimeMs(newMtime)
+          setMtimeBoth(newMtime)
           setBaseline(latest)
           recordSelfWrite({ filePath, mtimeMs: newMtime })
           return { kind: 'saved', mtimeMs: newMtime }
@@ -111,9 +134,9 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
           // real conflict — it's the editor's own previous save round-
           // tripping back through a stale cached mtime. Resync silently.
           const externalMtime = result.currentMtimeMs ?? 0
-          const lastSelf = lastSelfWriteMap.get(filePath)
+          const lastSelf = lastSelfWriteMapRef.current.get(filePath)
           if (lastSelf !== undefined && lastSelf === externalMtime) {
-            setMtimeMs(externalMtime)
+            setMtimeBoth(externalMtime)
             // Retry the save with the fresh mtime so the user's edit lands.
             const retry = await invoke<WriteResultIpc>('preview_write_text', {
               mountId: target.mountId,
@@ -124,7 +147,7 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
             })
             if (retry.kind === 'saved') {
               const retryMtime = retry.mtimeMs ?? 0
-              setMtimeMs(retryMtime)
+              setMtimeBoth(retryMtime)
               setBaseline(latest)
               recordSelfWrite({ filePath, mtimeMs: retryMtime })
               return { kind: 'saved', mtimeMs: retryMtime }
@@ -154,7 +177,12 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
         setSaving(false)
       }
     },
-    [filePath, target, mtimeMs, setConflict, lastSelfWriteMap, recordSelfWrite],
+    // mtimeMs / lastSelfWriteMap removed from deps — they're read via
+    // refs above, so handleSave can stay STABLE across saves. Without
+    // this stability, `onSaveRef.current` updates raced React commits
+    // and led to phantom "file changed on disk" warnings on the second
+    // save attempt, even when only the editor was writing.
+    [filePath, target, setConflict, recordSelfWrite, setMtimeBoth],
   )
 
   const handleOverwrite = React.useCallback(async () => {
@@ -175,7 +203,7 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
       })
       if (result.kind === 'saved') {
         const newMtime = result.mtimeMs ?? 0
-        setMtimeMs(newMtime)
+        setMtimeBoth(newMtime)
         setBaseline(content)
         recordSelfWrite({ filePath, mtimeMs: newMtime })
         clearConflict(filePath)
@@ -200,9 +228,9 @@ export function EditorSurface({ target, initialContent, mtimeMs: initialMtimeMs,
   const handleDiscard = React.useCallback((externalContent: string, externalMtimeMs: number) => {
     setBaseline(externalContent)  // also update baseline on discard
     setContent(externalContent)
-    setMtimeMs(externalMtimeMs)
+    setMtimeBoth(externalMtimeMs)  // keep ref + state in sync so the next save reads the discarded mtime
     // Editor will re-mount with new initialContent via the key prop below.
-  }, [])
+  }, [setMtimeBoth])
 
   const handleViewDiff = React.useCallback((local: string, external: string) => {
     setDiffPayload({ local, external })
