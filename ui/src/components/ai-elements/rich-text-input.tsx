@@ -49,6 +49,10 @@ interface RichTextInputProps {
    *  Returning `true` consumes the event; the built-in handlers are
    *  skipped. Drives `/` and `@` popup keyboard nav. */
   onKeyDownIntercept?: (e: React.KeyboardEvent<HTMLDivElement>) => boolean
+  /** Called when the editor gains focus. Used by PetWidget for composer state. */
+  onFocus?: () => void
+  /** Called when the editor loses focus. Used by PetWidget for composer state. */
+  onBlur?: () => void
 }
 
 export function RichTextInput({
@@ -63,6 +67,8 @@ export function RichTextInput({
   sendWithCmdEnter,
   editorRef,
   onKeyDownIntercept,
+  onFocus,
+  onBlur,
 }: RichTextInputProps): React.ReactElement {
   // Keep callback refs so the editor's once-created handlers see the
   // latest props without re-creating the editor (which would lose
@@ -73,12 +79,16 @@ export function RichTextInput({
   const onPasteLongTextRef = React.useRef(onPasteLongText)
   const longTextThresholdRef = React.useRef(longTextPasteThreshold)
   const sendWithCmdEnterRef = React.useRef(sendWithCmdEnter)
+  const onFocusRef = React.useRef(onFocus)
+  const onBlurRef = React.useRef(onBlur)
   React.useEffect(() => { onSubmitRef.current = onSubmit }, [onSubmit])
   React.useEffect(() => { onChangeRef.current = onChange }, [onChange])
   React.useEffect(() => { onPasteFilesRef.current = onPasteFiles }, [onPasteFiles])
   React.useEffect(() => { onPasteLongTextRef.current = onPasteLongText }, [onPasteLongText])
   React.useEffect(() => { longTextThresholdRef.current = longTextPasteThreshold }, [longTextPasteThreshold])
   React.useEffect(() => { sendWithCmdEnterRef.current = sendWithCmdEnter }, [sendWithCmdEnter])
+  React.useEffect(() => { onFocusRef.current = onFocus }, [onFocus])
+  React.useEffect(() => { onBlurRef.current = onBlur }, [onBlur])
 
   const editor = useEditor({
     extensions: [
@@ -117,6 +127,8 @@ export function RichTextInput({
       const text = serializeDocToWireText(ed.getJSON())
       onChangeRef.current(text)
     },
+    onFocus: () => { onFocusRef.current?.() },
+    onBlur: () => { onBlurRef.current?.() },
     editorProps: {
       attributes: {
         // Match the pre-TipTap textarea visual rhythm: same paddings,

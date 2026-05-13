@@ -82,6 +82,8 @@ import {
   workspaceAttachedDirsMapAtom,
   agentSessionAttachedDirsMapAtom,
   workspaceFilesVersionAtom,
+  composerFocusedAtom,
+  composerHasTextAtom,
 } from '@/atoms/agent-atoms'
 import type { AgentContextStatus } from '@/atoms/agent-atoms'
 import { activeProviderModelAtom } from '@/atoms/active-model'
@@ -311,6 +313,24 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       return map
     })
   }, [sessionId, setDraftsMap])
+  // ── composer state atoms (PetWidget) ──
+  const setComposerFocused = useSetAtom(composerFocusedAtom)
+  const setComposerHasText = useSetAtom(composerHasTextAtom)
+
+  // Reset composer has-text atom when the active session changes.
+  // composerFocusedAtom self-heals via TipTap's onBlur on unmount; no reset needed.
+  React.useEffect(() => {
+    setComposerHasText(false)
+  }, [sessionId, setComposerHasText])
+
+  const handleComposerChange = React.useCallback((v: string) => {
+    setInputContent(v)
+    setComposerHasText(v.trim().length > 0)
+  }, [setInputContent, setComposerHasText])
+
+  const handleComposerFocus = React.useCallback(() => setComposerFocused(true), [setComposerFocused])
+  const handleComposerBlur  = React.useCallback(() => setComposerFocused(false), [setComposerFocused])
+
   const draftHtmlMap = useAtomValue(agentSessionDraftHtmlAtom)
   const setDraftHtmlMap = useSetAtom(agentSessionDraftHtmlAtom)
   const inputHtmlContent = draftHtmlMap.get(sessionId) ?? ''
@@ -764,6 +784,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     // 没有任何视觉反馈（见 PR #99 dogfood 反馈）。
     if (effectiveText === '/compact' && pendingFiles.length === 0) {
       setInputContent('')
+      setComposerHasText(false)
       handleCompactRef.current?.()
       return
     }
@@ -801,6 +822,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       // 2. 清空输入框
       setInputContent('')
       setInputHtmlContent('')
+      setComposerHasText(false)
       setPromptSuggestions((prev) => {
         if (!prev.has(sessionId)) return prev
         const map = new Map(prev)
@@ -980,6 +1002,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
     setInputContent('')
     setInputHtmlContent('')
+    setComposerHasText(false)
 
     sendAgentMessage(input)
       .then(() => {
@@ -1461,7 +1484,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             <div className="relative">
               <RichTextInput
                 value={inputContent}
-                onChange={setInputContent}
+                onChange={handleComposerChange}
+                onFocus={handleComposerFocus}
+                onBlur={handleComposerBlur}
                 onSubmit={handleSend}
                 onPasteFiles={handlePasteFiles}
                 onPasteLongText={handlePasteLongText}
