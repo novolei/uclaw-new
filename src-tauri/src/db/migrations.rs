@@ -1206,11 +1206,20 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     // Wrapped in its own transaction inside run_v20 — failure here is fatal
     // (unlike the ALTER-only migrations above) because V20 replaces the tables
     // entirely and partial execution would leave an inconsistent schema.
-    tracing::debug!("Running migration V20: Humane automation schema rewrite");
-    run_v20(conn)?;
+    //
+    // info! (not debug!) so the line is visible at the default WARN+ tracing
+    // filter — silent V20 failures are a documented pain point.
+    tracing::info!("Running migration V20: Humane automation schema rewrite");
+    if let Err(e) = run_v20(conn) {
+        tracing::error!(error = %e, "V20 FAILED — Humane automation features will not work");
+        return Err(e);
+    }
     // V21: three Humane behavior tables that FK into the V20 schema.
-    tracing::debug!("Running migration V21: automation_subscriptions, automation_memory, automation_escalations");
-    run_v21(conn)?;
+    tracing::info!("Running migration V21: automation_subscriptions, automation_memory, automation_escalations");
+    if let Err(e) = run_v21(conn) {
+        tracing::error!(error = %e, "V21 FAILED — automation escalations / subscriptions / memory tables missing");
+        return Err(e);
+    }
     tracing::info!("Database migrations complete");
     Ok(())
 }

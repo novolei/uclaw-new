@@ -245,7 +245,9 @@ impl AppState {
 
         // Run migrations
         if let Ok(conn) = db.lock() {
-            crate::db::migrations::run(&conn).ok();
+            if let Err(e) = crate::db::migrations::run(&conn) {
+                tracing::error!(error = %e, "DATABASE MIGRATION FAILED — app may be in inconsistent state");
+            }
         }
 
         let session_manager = SessionManager::new(db.clone());
