@@ -9,11 +9,11 @@ import * as React from 'react'
 import { useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { Paperclip, FolderPlus } from 'lucide-react'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { cn } from '@/lib/utils'
 import {
   attachWorkspaceDirectory,
   copyFileIntoWorkspace,
-  openFileDialog,
   openFolderDialog,
 } from '@/lib/tauri-bridge'
 import { workspaceAttachedDirsMapAtom } from '@/atoms/agent-atoms'
@@ -30,13 +30,18 @@ export function WorkspacePanelFooter({ workspaceId }: Props): React.ReactElement
     if (!workspaceId || busy) return
     setBusy('addFile')
     try {
-      const result = await openFileDialog()
-      if (!result.files || result.files.length === 0) return
+      // The previous `openFileDialog` helper invoked a non-existent
+      // `open_file_dialog` Tauri command and silently swallowed the
+      // error, so the button appeared dead. Use the plugin-dialog
+      // primitive directly (same pattern as openFolderDialog).
+      const selected = await openDialog({ multiple: true, directory: false })
+      if (!selected) return
+      const paths = Array.isArray(selected) ? selected : [selected]
+      const validPaths = paths.filter((p): p is string => typeof p === 'string')
+      if (validPaths.length === 0) return
       let added = 0
-      for (const f of result.files) {
+      for (const src of validPaths) {
         try {
-          // openFileDialog returns objects with a `path` field on Tauri v2.
-          const src = (f && typeof f === 'object' && 'path' in f) ? (f as { path: string }).path : String(f)
           await copyFileIntoWorkspace(workspaceId, src)
           added++
         } catch (err) {
@@ -48,6 +53,10 @@ export function WorkspacePanelFooter({ workspaceId }: Props): React.ReactElement
       if (added > 0) {
         toast.success(`已添加 ${added} 个文件到工作区`)
       }
+    } catch (err) {
+      toast.error('打开文件选择器失败', {
+        description: err instanceof Error ? err.message : String(err),
+      })
     } finally {
       setBusy(null)
     }
