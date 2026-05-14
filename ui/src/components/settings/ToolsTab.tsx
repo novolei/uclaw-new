@@ -1,10 +1,12 @@
 /**
- * ToolsTab — composes ToolSettings + PermissionsSettings + SkillsSettings.
+ * ToolsTab — composes ToolSettings + PermissionsSettings.
+ *
+ * 学得技能与 MCP 已迁至万花筒（技能 / 集成模块）。本 tab 只剩工作区
+ * skill 标签、活动技能调试面板、工具权限。
  */
 import * as React from 'react'
 import { ToolSettings } from './ToolSettings'
 import { PermissionsSettings } from './PermissionsSettings'
-import { SkillsSettings } from './SkillsSettings'
 
 export function ToolsTab(): React.ReactElement {
   return (
@@ -14,9 +16,6 @@ export function ToolsTab(): React.ReactElement {
       </section>
       <section data-settings-section="工具权限">
         <PermissionsSettings />
-      </section>
-      <section data-settings-section="已学技能">
-        <SkillsSettings />
       </section>
     </div>
   )
