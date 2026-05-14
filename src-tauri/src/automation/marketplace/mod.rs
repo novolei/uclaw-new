@@ -479,6 +479,28 @@ fn registry_entry_for(slug: &str, item: &MarketplaceItem) -> RegistryEntry {
     }
 }
 
+/// Given the MCP ids an automation requires, return the ones uClaw cannot
+/// satisfy — i.e. not resolvable via the built-in capability_map AND not
+/// present as an installed standalone MCP. (3b-δ replaces capability_map with
+/// a configurable table; this function's installed-MCP check is additive.)
+fn missing_capabilities(conn: &rusqlite::Connection, mcp_ids: &[String]) -> Vec<String> {
+    let installed: std::collections::HashSet<String> = conn
+        .prepare("SELECT slug FROM marketplace_standalone_installs WHERE item_type = 'mcp'")
+        .and_then(|mut s| {
+            s.query_map([], |r| r.get::<_, String>(0))
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        })
+        .unwrap_or_default();
+    mcp_ids
+        .iter()
+        .filter(|id| {
+            crate::automation::capability_map::resolve_capability(id).is_none()
+                && !installed.contains(*id)
+        })
+        .cloned()
+        .collect()
+}
+
 #[derive(Debug, PartialEq)]
 enum InstallRoute {
     Automation,
@@ -759,12 +781,10 @@ pub async fn install_automation(
         })
         .unwrap_or_default();
 
-    let mut missing_caps: Vec<String> = Vec::new();
-    for mcp_id in &mcp_ids {
-        if crate::automation::capability_map::resolve_capability(mcp_id).is_none() {
-            missing_caps.push(mcp_id.clone());
-        }
-    }
+    let missing_caps: Vec<String> = {
+        let conn = runtime.db.lock().unwrap();
+        missing_capabilities(&conn, &mcp_ids)
+    };
     if !missing_caps.is_empty() {
         // Warn but don't abort — Phase 3b-γ will offer a real install path.
         let msg = format!(
@@ -1076,6 +1096,26 @@ mod tests {
         let empty_dir = tmp.path().join("skill-empty");
         std::fs::create_dir_all(&empty_dir).unwrap();
         assert_eq!(super::read_skill_description(&empty_dir), None);
+    }
+
+    #[test]
+    fn capability_check_recognises_installed_mcp() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO marketplace_standalone_installs \
+                (slug, item_type, version, installed_at, mcp_server_id) \
+                VALUES ('postgres-mcp', 'mcp', '1.0.0', 0, 'srv-1')",
+            [],
+        ).unwrap();
+
+        // ai-browser resolves via capability_map; postgres-mcp via installed table;
+        // unknown-mcp resolves nowhere → reported missing.
+        let missing = super::missing_capabilities(
+            &conn,
+            &["ai-browser".to_string(), "postgres-mcp".to_string(), "unknown-mcp".to_string()],
+        );
+        assert_eq!(missing, vec!["unknown-mcp".to_string()]);
     }
 
     #[test]
