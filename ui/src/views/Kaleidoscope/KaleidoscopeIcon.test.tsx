@@ -3,11 +3,6 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { KaleidoscopeIcon } from './KaleidoscopeIcon'
 
-// Mock lottie-react so the test doesn't need a real canvas/animation runtime.
-vi.mock('lottie-react', () => ({
-  default: () => <div data-testid="lottie-stub" />,
-}))
-
 describe('KaleidoscopeIcon', () => {
   it('renders the static fallback when no animationData is provided', () => {
     render(<KaleidoscopeIcon />)

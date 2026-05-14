@@ -5,11 +5,6 @@ import { WorkspaceSwitcherBar } from './WorkspaceSwitcherBar'
 import { workspacesAtom, activeWorkspaceIdAtom, type WorkspaceInfo } from '@/atoms/workspace'
 import { topLevelViewAtom } from '@/atoms/top-level-view'
 
-// Mock lottie-react so the test doesn't need a real canvas/animation runtime.
-vi.mock('lottie-react', () => ({
-  default: () => <div data-testid="lottie-stub" />,
-}))
-
 vi.mock('@/lib/tauri-bridge', () => ({
   setActiveWorkspaceId: vi.fn(),
   listSpaces: vi.fn().mockResolvedValue([]),

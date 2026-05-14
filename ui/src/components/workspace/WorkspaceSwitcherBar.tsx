@@ -311,6 +311,7 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
   const refresh = useSetAtom(refreshWorkspacesAtom)
   const agentSessions = useAtomValue(agentSessionsAtom)
   const indicatorMap = useAtomValue(agentSessionIndicatorMapAtom)
+  const topLevelView = useAtomValue(topLevelViewAtom)
   const setTopLevelView = useSetAtom(topLevelViewAtom)
 
   const [createOpen, setCreateOpen] = React.useState(false)
@@ -489,6 +490,7 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
               dots 之间用一条竖 hairline 隔开。 */}
           <KaleidoscopeIcon
             size={28}
+            active={topLevelView === 'kaleidoscope'}
             onClick={() => setTopLevelView('kaleidoscope')}
           />
           <div className="w-px h-[18px] bg-border/60 shrink-0" aria-hidden />

@@ -1,9 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
-
-// Mock lottie-react so the test doesn't need a real canvas/animation runtime.
-vi.mock('lottie-react', () => ({
-  default: () => <div data-testid="lottie-stub" />,
-}))
+import { describe, it, expect } from 'vitest'
 import { createStore } from 'jotai'
 import { renderWithProviders, screen } from '@/test-utils/render'
 import { FocusModeOverlay } from './FocusModeOverlay'
