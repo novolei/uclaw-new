@@ -123,3 +123,59 @@ pub async fn fetch_spec_yaml(source: &RegistrySource, entry: &RegistryEntry) -> 
         .with_context(|| format!("fetch spec.yaml for slug '{}'", entry.slug))?;
     Ok(body)
 }
+
+/// Fetch a single file from a skill bundle inside an automation package.
+/// Resolves to `{base}/{entry.path}/skills/{skill_id}/{filename}`.
+/// Returns the body bytes. Text files go through `.bytes()` so binary
+/// resources (rare today but legal in a bundle) work too.
+///
+/// Uses the same mirror-fallback pattern as fetch_spec_yaml — Gitee
+/// fallback applies automatically for GFW-affected users.
+pub async fn fetch_skill_file(
+    source: &RegistrySource,
+    entry: &RegistryEntry,
+    skill_id: &str,
+    filename: &str,
+) -> Result<Vec<u8>> {
+    let client = http_client()?;
+    let relative = format!(
+        "{}/skills/{}/{}",
+        entry.path.trim_matches('/'),
+        skill_id,
+        filename,
+    );
+    let bases: Vec<String> = source.url_candidates().map(String::from).collect();
+
+    let mut errors: Vec<String> = Vec::new();
+    for base in bases {
+        let url = format!(
+            "{}/{}",
+            base.trim_end_matches('/'),
+            relative.trim_start_matches('/'),
+        );
+        match client.get(&url).send().await {
+            Err(e) => {
+                errors.push(format!("{}: send failed: {}", base, e));
+                continue;
+            }
+            Ok(resp) => {
+                if !resp.status().is_success() {
+                    errors.push(format!("{}: HTTP {}", base, resp.status()));
+                    continue;
+                }
+                match resp.bytes().await {
+                    Err(e) => {
+                        errors.push(format!("{}: body read failed: {}", base, e));
+                        continue;
+                    }
+                    Ok(body) => return Ok(body.to_vec()),
+                }
+            }
+        }
+    }
+    Err(anyhow!(
+        "all registry mirrors failed for /{}: {}",
+        relative,
+        errors.join("; ")
+    ))
+}
