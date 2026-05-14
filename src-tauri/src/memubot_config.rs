@@ -22,6 +22,9 @@ pub struct MemubotConfig {
     /// Proactive 场景配置
     #[serde(default)]
     pub scenarios: ScenariosConfig,
+    /// Automation runtime configuration (cost caps + retention).
+    #[serde(default)]
+    pub automation: AutomationConfig,
     /// Maximum wall-clock seconds the agent loop may run for a single
     /// user message before forcibly terminating. Default 600s (10 min).
     /// Override via settings → Advanced (or edit ~/.uclaw/memubot_config.json).
@@ -109,6 +112,25 @@ pub struct ObservabilityConfig {
     pub enable_tracing: bool,
 }
 
+/// Automation runtime configuration — cost guardrails + run-session retention.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutomationConfig {
+    /// Hard USD cap for a single run. When cumulative cost crosses this,
+    /// the run terminates as ErrorTerminal.
+    pub per_run_cost_cap_usd: f64,
+    /// Hard USD cap for all automation runs in a calendar day (UTC). When
+    /// the day's total is at/over this, new runs do not start.
+    pub per_day_cost_cap_usd: f64,
+    /// Per-spec, the number of most-recent run-session transcripts to keep.
+    /// Older run-sessions are pruned (agent_messages + agent_session row
+    /// deleted, automation_activities.session_id set NULL); the ledger row
+    /// itself is never deleted.
+    pub retention_runs_per_spec: u32,
+    /// Max agentic-loop iterations for an automation run.
+    pub max_iterations: usize,
+}
+
 /// 三种 Proactive 场景的统一配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -184,6 +206,7 @@ impl Default for MemubotConfig {
             context: ContextConfig::default(),
             observability: ObservabilityConfig::default(),
             scenarios: ScenariosConfig::default(),
+            automation: AutomationConfig::default(),
             agent_loop_timeout_secs: 600,
         }
     }
@@ -310,6 +333,17 @@ impl Default for ObservabilityConfig {
     }
 }
 
+impl Default for AutomationConfig {
+    fn default() -> Self {
+        Self {
+            per_run_cost_cap_usd: 1.00,
+            per_day_cost_cap_usd: 10.00,
+            retention_runs_per_spec: 50,
+            max_iterations: 50,
+        }
+    }
+}
+
 // ─── 加载与保存 ──────────────────────────────────────────────────────────
 
 /// 配置文件名
@@ -404,5 +438,19 @@ mod tests {
         let json = r#"{}"#;
         let config: MemubotConfig = serde_json::from_str(json).unwrap();
         assert!(config.scenarios.conversation_learning.enabled);
+    }
+
+    #[test]
+    fn automation_config_has_defaults() {
+        let c = AutomationConfig::default();
+        assert!(c.per_run_cost_cap_usd > 0.0);
+        assert!(c.per_day_cost_cap_usd > 0.0);
+        assert!(c.retention_runs_per_spec >= 1);
+    }
+
+    #[test]
+    fn memubot_config_includes_automation_section() {
+        let config: MemubotConfig = serde_json::from_str("{}").unwrap();
+        assert!(config.automation.per_run_cost_cap_usd > 0.0);
     }
 }
