@@ -68,6 +68,29 @@ pub fn check_per_day(day_total_usd: f64, cap: CostCapConfig) -> CostCapDecision 
     }
 }
 
+/// Sum of today's (UTC) automation cost from cost_records. Best-effort —
+/// returns 0.0 on any error.
+///
+/// Phase 2a note: this sums ALL cost_records for the UTC day, not just
+/// automation-origin ones. A precise per-origin split (join cost_records →
+/// agent_sessions.metadata_json origin) is a Phase 2b refinement; for 2a
+/// the day cap acts as a combined automation+chat budget.
+pub fn day_total_usd(conn: &rusqlite::Connection) -> f64 {
+    use chrono::{Datelike, TimeZone, Utc};
+    let now = Utc::now();
+    let day_start = Utc
+        .with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
+        .single()
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(0);
+    conn.query_row(
+        "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_records WHERE created_at >= ?1",
+        [day_start],
+        |r| r.get::<_, f64>(0),
+    )
+    .unwrap_or(0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,5 +126,19 @@ mod tests {
     fn per_day_denies_at_or_over_cap() {
         assert_eq!(check_per_day(10.00, cap()), CostCapDecision::DenyPerDay);
         assert_eq!(check_per_day(12.50, cap()), CostCapDecision::DenyPerDay);
+    }
+
+    #[test]
+    fn day_total_usd_sums_todays_records() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO cost_records (id, session_id, model, input_tokens, output_tokens, cost_usd, created_at)
+             VALUES ('c1', 's1', 'm', 100, 50, 0.25, ?1), ('c2', 's1', 'm', 100, 50, 0.75, ?1)",
+            [now],
+        ).unwrap();
+        let total = day_total_usd(&conn);
+        assert!((total - 1.00).abs() < 1e-6, "expected 1.00, got {}", total);
     }
 }

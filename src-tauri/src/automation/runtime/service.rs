@@ -1,21 +1,19 @@
 //! AppRuntimeService — orchestrates spec activation, subscription wiring,
-//! activity tracking, filter evaluation, and escalation resolution.
+//! activity tracking, filter evaluation, run execution, and escalation
+//! resolution.
 //!
-//! # Phase 1 scope
+//! # execute_run pipeline (Phase 2a, design §D4)
 //!
-//! `execute_run` implements the full TRIGGER → FILTER → PERSIST pipeline but
-//! defers the agentic loop call to Phase 2.  The deliberate stopping point is
-//! after filter evaluation: if filters pass we acquire a per-spec semaphore,
-//! log the deferred intent, mark the activity row `deferred_phase_2`, and
-//! release the semaphore.
+//! `execute_run` runs the full pipeline: TRIGGER → FILTER → per-spec
+//! semaphore → per-day cost-cap check → run-session creation + ledger link →
+//! provider resolution → `AutomationDelegate` build → `run_agentic_loop` →
+//! `CompletionGate` → activity-status mapping → transcript persist →
+//! retention prune.
 //!
-//! # Phase 2 deliverable
-//!
-//! Replace the `deferred_phase_2` block in `execute_run` with a call to
-//! `run_agentic_loop(&delegate, &mut ctx, &config)`.  The key architectural
-//! question deferred to Phase 2: should `AutomationDelegate::call_llm` be
-//! composed with `ChatDelegate`, duplicate its logic, or introduce a new
-//! abstraction?  That decision belongs to the Phase 2 design review, NOT here.
+//! The run-session is created and the ledger row linked EARLY (before
+//! provider resolution) so a provider-resolution failure still leaves a
+//! linked, observable run behind — it is marked `failed` and `execute_run`
+//! returns `Ok(())` rather than panicking.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
@@ -24,19 +22,24 @@ use std::time::Instant;
 use async_trait::async_trait;
 use tokio::sync::{Mutex as TokioMutex, RwLock, Semaphore};
 
+use crate::agent::types::{AgenticLoopConfig, ChatMessage, LoopOutcome, ReasoningContext};
 use crate::automation::activity::{
     insert_activity, AutomationActivity, ActivityStatus, TriggerSource,
 };
 use crate::automation::filters;
 use crate::automation::manager::HumaneSpecRow;
 use crate::automation::memory::MemoryStore as AutomationMemoryStore;
-use crate::automation::protocol::humane_v1::{HumaneAutomationSpec, Subscription};
+use crate::automation::protocol::humane_v1::{HumaneAutomationSpec, Permission, Subscription};
 use crate::automation::protocol::parse::parse_humane_v1;
+use crate::automation::runtime::cost::{self, CostCapConfig, CostCapDecision, CostCapState};
+use crate::automation::runtime::execute::AutomationDelegate;
+use crate::automation::runtime::{prompt, run_session, AutoContinueConfig, CompletionGate, PermissionSet};
 use crate::automation::sources::{
     CustomSource, FileSource, RssSource, ScheduleSource, SubscriptionSource,
     TriggerCallback, WebhookSource, WebpageSource, WecomSource,
 };
 use crate::infra::InfraService;
+use crate::memubot_config::AutomationConfig;
 use crate::providers::service::ProviderService;
 use crate::services::{ManagedService, ServiceHealth, ServiceStatus};
 
@@ -45,6 +48,65 @@ use crate::services::{ManagedService, ServiceHealth, ServiceStatus};
 /// Maximum concurrent runs per spec (Phase 1 hard-code; Phase 2 makes this
 /// configurable via `HumaneAutomationSpec.config_schema`).
 const PER_SPEC_CONCURRENCY: usize = 2;
+
+// ─── HumaneToolSchema ─────────────────────────────────────────────────────────
+
+/// Schema-only `Tool` wrapper for the four Humane tools (report_to_user,
+/// notify_user, request_escalation, memory).
+///
+/// `AutomationDelegate::execute_tool_calls` dispatches the Humane tools by
+/// NAME — before the registry's `other =>` fallthrough arm — so this
+/// wrapper's `execute()` is never reached. Its only job is to make the
+/// Humane tools appear in `ToolRegistry::list_definitions()` so the LLM is
+/// told they are available to call. The base built-in tools are real `Tool`
+/// impls; these four are advertisement-only.
+struct HumaneToolSchema {
+    name: String,
+    description: String,
+    input_schema: serde_json::Value,
+}
+
+impl HumaneToolSchema {
+    /// Build from a `humane_tool_schemas()` entry: `{name, description, input_schema}`.
+    fn from_value(v: &serde_json::Value) -> Self {
+        Self {
+            name: v.get("name").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            description: v
+                .get("description")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string(),
+            input_schema: v
+                .get("input_schema")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({"type": "object"})),
+        }
+    }
+}
+
+#[async_trait]
+impl crate::agent::tools::tool::Tool for HumaneToolSchema {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.input_schema.clone()
+    }
+    async fn execute(
+        &self,
+        _params: serde_json::Value,
+    ) -> Result<crate::agent::tools::tool::ToolOutput, crate::agent::tools::tool::ToolError> {
+        // Unreachable in practice: AutomationDelegate handles the four Humane
+        // tools by name before the ToolRegistry `other =>` arm is consulted.
+        Err(crate::agent::tools::tool::ToolError::Execution(format!(
+            "Humane tool '{}' is delegate-dispatched, not registry-dispatched",
+            self.name
+        )))
+    }
+}
 
 // ─── EscalationRow ───────────────────────────────────────────────────────────
 
@@ -315,21 +377,9 @@ impl AppRuntimeService {
         Ok(())
     }
 
-    /// Core run pipeline (Option A — Phase 1 stub).
-    ///
-    /// # Phase 2 TODO
-    ///
-    /// Replace steps 6-7 below with:
-    /// ```text
-    /// let delegate = AutomationDelegate::new(spec, config, db.clone(), infra.clone());
-    /// let mut ctx  = build_initial_message(&spec, &payload_json);
-    /// let outcome  = run_agentic_loop(&delegate, &mut ctx, &auto_continue_cfg).await;
-    /// match outcome {
-    ///     LoopOutcome::Success { report } => mark completed + store report,
-    ///     LoopOutcome::Failure { error }  => mark failed + store error,
-    ///     LoopOutcome::Escalated { esc }  => insert escalation row + mark waiting_user,
-    /// }
-    /// ```
+    /// Core run pipeline: TRIGGER → FILTER → PERSIST → run-session →
+    /// `run_agentic_loop` → `CompletionGate` → activity-status mapping.
+    /// See the module-level doc for the full step sequence.
     pub async fn execute_run(
         &self,
         spec_id: &str,
@@ -433,19 +483,233 @@ impl AppRuntimeService {
         let sem = self.semaphore_for(spec_id).await;
         let _permit = sem.acquire().await.map_err(|e| anyhow::anyhow!("semaphore: {}", e))?;
 
-        // ── 6-7. Phase 1 stub: log deferred intent + mark activity ───────────
-        // TODO(Phase 2): replace these two steps with run_agentic_loop call.
-        // See module-level doc for the full Phase 2 interface sketch.
+        // ── 6. per-day cost cap check ────────────────────────────────────────
+        // TODO(2b): read caps from MemubotConfig.automation once threaded into
+        // AppRuntimeService — for now use the AutomationConfig defaults.
+        let auto_cfg = AutomationConfig::default();
+        let cost_cap = CostCapConfig {
+            per_run_usd: auto_cfg.per_run_cost_cap_usd,
+            per_day_usd: auto_cfg.per_day_cost_cap_usd,
+        };
+        {
+            let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+            let day_total = cost::day_total_usd(&conn);
+            if cost::check_per_day(day_total, cost_cap) == CostCapDecision::DenyPerDay {
+                drop(conn);
+                tracing::warn!(
+                    "[AppRuntimeService] per-day cost cap reached (${:.4} >= ${:.2}) — skipping run for spec {}",
+                    day_total, cost_cap.per_day_usd, spec_id
+                );
+                self.update_activity_status(
+                    &activity_id,
+                    "failed",
+                    Some("per-day cost cap reached"),
+                )?;
+                return Ok(());
+            }
+        }
+
+        // ── 7. create the run-session + link the ledger row ──────────────────
+        // Done EARLY (before provider resolution) so a provider failure still
+        // leaves a linked run-session behind — the run is observable either way.
+        let started_ms = chrono::Utc::now().timestamp_millis();
+        let (session_id, workspace_root) = {
+            let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+            run_session::ensure_automations_space(&conn)
+                .map_err(|e| anyhow::anyhow!("ensure automations space: {}", e))?;
+            let space_id = run_session::resolve_home_space(&conn, spec_id)
+                .map_err(|e| anyhow::anyhow!("resolve home space: {}", e))?;
+            let session_id = run_session::create_run_session(
+                &conn,
+                spec_id,
+                &space_id,
+                trigger_source.as_db_str(),
+                &activity_id,
+            )
+            .map_err(|e| anyhow::anyhow!("create run session: {}", e))?;
+            conn.execute(
+                "UPDATE automation_activities
+                 SET session_id = ?2, status = 'running', started_at = ?3
+                 WHERE id = ?1",
+                rusqlite::params![activity_id, session_id, started_ms],
+            )
+            .map_err(|e| anyhow::anyhow!("link session to activity: {}", e))?;
+
+            // Resolve the run's working directory: the space's path if it has
+            // one, else a per-spec dir under ~/Documents/workground/automations.
+            let space_path: Option<String> = conn
+                .query_row(
+                    "SELECT path FROM spaces WHERE id = ?1",
+                    rusqlite::params![space_id],
+                    |r| r.get(0),
+                )
+                .ok()
+                .flatten();
+            let workspace_root = match space_path {
+                Some(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+                _ => {
+                    let dir = dirs::home_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                        .join("Documents/workground/automations")
+                        .join(spec_id);
+                    let _ = std::fs::create_dir_all(&dir);
+                    dir
+                }
+            };
+            (session_id, workspace_root)
+        };
+
         tracing::info!(
-            "[AppRuntimeService] phase 1 deferred: would invoke agentic loop for spec={}, activity={}, payload={}",
-            spec_id, activity_id,
-            serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into()),
+            "[AppRuntimeService] run-session {} created for spec {} (activity {})",
+            session_id, spec_id, activity_id
         );
 
-        // New status value introduced in Phase 1: `deferred_phase_2`
-        self.update_activity_status(&activity_id, "deferred_phase_2", None)?;
+        // ── 8. resolve the LLM provider + model ──────────────────────────────
+        // A resolution failure (no active model / no API key) is NOT fatal to
+        // the pipeline: the run-session already exists + is linked, so mark
+        // the activity `failed` and return Ok — never panic or propagate.
+        let (llm, model) = match self.resolve_run_provider().await {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!(
+                    "[AppRuntimeService] provider resolution failed for spec {}: {}",
+                    spec_id, e
+                );
+                self.update_activity_status(
+                    &activity_id,
+                    "failed",
+                    Some(&format!("resolve provider: {}", e)),
+                )?;
+                return Ok(());
+            }
+        };
 
-        // ── 8. semaphore released (via _permit Drop) ─────────────────────────
+        // ── 9. build the delegate + reasoning context ────────────────────────
+        let permissions = match self.load_permission_set(spec_id) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    "[AppRuntimeService] permission load failed for spec {}: {}",
+                    spec_id, e
+                );
+                self.update_activity_status(
+                    &activity_id,
+                    "failed",
+                    Some(&format!("load permissions: {}", e)),
+                )?;
+                return Ok(());
+            }
+        };
+
+        let memory_text = self.memory.read(spec_id).await.unwrap_or_default();
+        let system_prompt = prompt::build_system_prompt(&spec);
+        let initial_message = prompt::build_initial_message_with_memory(
+            None,
+            &payload,
+            &serde_json::json!({}),
+            None,
+            &memory_text,
+        );
+        let mut reason_ctx = ReasoningContext::new(system_prompt);
+        reason_ctx.messages.push(ChatMessage::user(&initial_message));
+
+        let tools = self.build_automation_tool_registry(&workspace_root);
+        let delegate = AutomationDelegate {
+            spec_id: spec_id.to_string(),
+            activity_id: activity_id.clone(),
+            session_id: session_id.clone(),
+            permissions,
+            memory: self.memory.clone(),
+            db: self.db.clone(),
+            gate: Arc::new(TokioMutex::new(None)),
+            auto_continue: AutoContinueConfig::default(),
+            llm,
+            model,
+            tools,
+            cost: Arc::new(CostCapState::new(cost_cap)),
+            workspace_root,
+        };
+
+        // ── 10. run the agentic loop ─────────────────────────────────────────
+        let outcome = crate::agent::agentic_loop::run_agentic_loop(
+            &delegate,
+            &mut reason_ctx,
+            &AgenticLoopConfig::default(),
+        )
+        .await;
+
+        // ── 11. map terminal state → activity row + persist transcript ───────
+        let gate = delegate.gate.lock().await.clone();
+        let completed_ms = chrono::Utc::now().timestamp_millis();
+        {
+            let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+            // Persist the transcript regardless of outcome.
+            if let Err(e) = run_session::persist_transcript(&conn, &session_id, &reason_ctx.messages) {
+                tracing::warn!(
+                    "[AppRuntimeService] transcript persist failed for session {}: {}",
+                    session_id, e
+                );
+            }
+            match gate {
+                // report_to_user already set status='completed' in the delegate.
+                Some(CompletionGate::Reported { .. }) => {}
+                Some(CompletionGate::Escalated { escalation_id }) => {
+                    conn.execute(
+                        "UPDATE automation_activities
+                         SET status = 'waiting_user', escalation_id = ?2, completed_at = ?3
+                         WHERE id = ?1",
+                        rusqlite::params![activity_id, escalation_id, completed_ms],
+                    )
+                    .map_err(|e| anyhow::anyhow!("activity escalation update: {}", e))?;
+                }
+                Some(CompletionGate::ErrorTerminal(msg)) => {
+                    conn.execute(
+                        "UPDATE automation_activities
+                         SET status = 'failed', error_text = ?2, completed_at = ?3
+                         WHERE id = ?1",
+                        rusqlite::params![activity_id, msg, completed_ms],
+                    )
+                    .map_err(|e| anyhow::anyhow!("activity failure update: {}", e))?;
+                }
+                // LoopExhausted, or no gate set: derive an error from the outcome.
+                Some(CompletionGate::LoopExhausted) | None => {
+                    let err_text = match &outcome {
+                        LoopOutcome::Failure { error } => error.clone(),
+                        LoopOutcome::MaxIterations => {
+                            "loop reached max iterations without report_to_user".to_string()
+                        }
+                        _ => "loop ended without report".to_string(),
+                    };
+                    conn.execute(
+                        "UPDATE automation_activities
+                         SET status = 'failed', error_text = ?2, completed_at = ?3
+                         WHERE id = ?1",
+                        rusqlite::params![activity_id, err_text, completed_ms],
+                    )
+                    .map_err(|e| anyhow::anyhow!("activity failure update: {}", e))?;
+                }
+            }
+
+            // ── 12. retention prune (best-effort) ────────────────────────────
+            let keep = AutomationConfig::default().retention_runs_per_spec;
+            match run_session::prune_old_run_sessions(&conn, spec_id, keep) {
+                Ok(n) if n > 0 => tracing::info!(
+                    "[AppRuntimeService] pruned {} old run-session(s) for spec {}",
+                    n, spec_id
+                ),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(
+                    "[AppRuntimeService] run-session prune failed for spec {}: {}",
+                    spec_id, e
+                ),
+            }
+        }
+
+        tracing::info!(
+            "[AppRuntimeService] run complete for spec {} (activity {}, session {})",
+            spec_id, activity_id, session_id
+        );
+        // ── semaphore released (via _permit Drop) ────────────────────────────
         Ok(())
     }
 
@@ -862,6 +1126,106 @@ impl AppRuntimeService {
         Ok(())
     }
 
+    // ── run-pipeline helpers (Phase 2a, design §D4) ─────────────────────────
+
+    /// Load the resolved [`PermissionSet`] for a spec: the spec's declared
+    /// permissions (`HumaneAutomationSpec.permissions`) plus the user-level
+    /// `permissions_granted` / `permissions_denied` overrides stored as JSON
+    /// string arrays in `automation_specs`. Mirrors the granted/denied parse
+    /// in [`Self::set_permission`].
+    fn load_permission_set(&self, spec_id: &str) -> anyhow::Result<PermissionSet> {
+        let (spec_json, pg_str, pd_str): (String, String, String) = {
+            let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+            conn.query_row(
+                "SELECT spec_json, permissions_granted, permissions_denied
+                 FROM automation_specs WHERE id = ?1",
+                rusqlite::params![spec_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(|e| anyhow::anyhow!("spec not found '{}': {}", spec_id, e))?
+        };
+
+        let spec = Self::parse_humane_spec(&spec_json)?;
+        let granted_strs: Vec<String> = serde_json::from_str(&pg_str)
+            .map_err(|e| anyhow::anyhow!("parse permissions_granted: {}", e))?;
+        let denied_strs: Vec<String> = serde_json::from_str(&pd_str)
+            .map_err(|e| anyhow::anyhow!("parse permissions_denied: {}", e))?;
+
+        // Permission derives Deserialize with #[serde(other)] => unknown
+        // strings parse to Permission::Unknown rather than erroring.
+        let to_perms = |strs: &[String]| -> Vec<Permission> {
+            strs.iter()
+                .map(|s| {
+                    serde_json::from_value(serde_json::Value::String(s.clone()))
+                        .unwrap_or(Permission::Unknown)
+                })
+                .collect()
+        };
+
+        Ok(PermissionSet {
+            spec: spec.permissions.clone(),
+            granted: to_perms(&granted_strs),
+            denied: to_perms(&denied_strs),
+        })
+    }
+
+    /// Build the headless tool set for an automation run: the AppHandle-free
+    /// base built-in tools rooted at `workspace_root`, plus the four Humane
+    /// tools as advertisement-only schemas (see [`HumaneToolSchema`]).
+    ///
+    /// The interactive-chat tools that require a Tauri `AppHandle`
+    /// (`ask_user`, `exit_plan_mode`, `plan`, `self_eval`, `skill_search`,
+    /// `load_skill`, browser tools) are intentionally excluded — a headless
+    /// automation run has no window to drive them.
+    fn build_automation_tool_registry(
+        &self,
+        workspace_root: &std::path::Path,
+    ) -> Arc<crate::agent::tools::tool::ToolRegistry> {
+        use crate::agent::tools::builtin;
+        let mut tools = crate::agent::tools::tool::ToolRegistry::new();
+        let ws = workspace_root.to_path_buf();
+        tools.register(builtin::file::ReadFileTool::new(ws.clone()));
+        tools.register(builtin::file::WriteFileTool::new(ws.clone()));
+        tools.register(builtin::search::GrepTool::new(ws.clone()));
+        tools.register(builtin::search::GlobTool::new(ws.clone()));
+        tools.register(builtin::web::WebFetchTool::new());
+        tools.register(builtin::web::HttpRequestTool::new());
+        tools.register(builtin::edit::EditTool::new(ws.clone()));
+        tools.register(builtin::shell::BashTool::new(ws.clone()));
+        // Advertise the four Humane tools to the LLM. They are dispatched by
+        // name in AutomationDelegate::execute_tool_calls, so these wrappers
+        // exist purely so list_definitions() includes them.
+        for schema in crate::automation::tools::humane_tool_schemas() {
+            tools.register(HumaneToolSchema::from_value(&schema));
+        }
+        Arc::new(tools)
+    }
+
+    /// Resolve the LLM provider + model id for an automation run from the
+    /// app's [`ProviderService`]. Mirrors the chat send-message path's
+    /// `get_active_llm_config` → `llm_config_from_provider` → `create_provider`
+    /// chain. Errors (no active model / no API key) propagate so the caller
+    /// can mark the run `failed` gracefully.
+    async fn resolve_run_provider(
+        &self,
+    ) -> anyhow::Result<(Arc<dyn crate::llm::LlmProvider>, String)> {
+        let (provider_id, model, api_key, base_url) = self
+            .provider_service
+            .get_active_llm_config()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("no active LLM model configured"))?;
+        // 8192 / 0.7 mirror the chat path's defaults; automation has no
+        // per-message override surface.
+        let llm_config =
+            crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 8192, 0.7);
+        if llm_config.api_key.is_empty() && llm_config.provider != "ollama" {
+            anyhow::bail!("no API key configured for provider '{}'", provider_id);
+        }
+        let llm = crate::llm::create_provider(&llm_config)
+            .map_err(|e| anyhow::anyhow!("create provider: {}", e))?;
+        Ok((llm, model))
+    }
+
     /// Load all spec IDs marked `enabled = 1` from the DB.
     fn load_enabled_spec_ids(&self) -> anyhow::Result<Vec<String>> {
         let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
@@ -1095,8 +1459,35 @@ mod tests {
             .unwrap()
         };
 
-        // New Phase 1 status value.
-        assert_eq!(row.1, "deferred_phase_2");
+        // execute_run now invokes the real pipeline — the Phase 1
+        // `deferred_phase_2` stub is gone. With a bare-temp-dir
+        // ProviderService (no API key), the run ends `failed` after
+        // provider resolution, but the ledger row is always inserted.
+        assert!(!row.0.is_empty(), "activity row id must be set");
+        assert_ne!(row.1, "deferred_phase_2", "stub status must be gone");
+    }
+
+    // ── Test 2b: execute_run creates a run-session and links the activity ────
+
+    #[tokio::test]
+    async fn execute_run_creates_run_session_and_links_activity() {
+        let conn = open_test_db();
+        insert_test_spec(&conn, "rs", minimal_spec_json());
+        let svc = make_service(conn);
+        svc.activate("rs").await.unwrap();
+        svc.execute_run("rs", None, serde_json::json!({"trigger": "manual"}))
+            .await
+            .unwrap();
+
+        let (status, session_id): (String, Option<String>) = {
+            let db = svc.db.lock().unwrap();
+            db.query_row(
+                "SELECT status, session_id FROM automation_activities WHERE spec_id = 'rs'",
+                [], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).unwrap()
+        };
+        assert_ne!(status, "deferred_phase_2", "execute_run must invoke the loop");
+        assert!(session_id.is_some(), "run-session must be created and linked");
     }
 
     // ── Test 3: filter rejection marks activity filtered_out ─────────────────
