@@ -5679,6 +5679,17 @@ pub async fn marketplace_category_counts(
     .map_err(|e| Error::Internal(e.to_string()))
 }
 
+/// Returns every installed marketplace automation with its bundled skills and
+/// resolved capability status. Drives the AppsView card list.
+#[tauri::command]
+pub async fn list_installed_marketplace_automations(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::automation::marketplace::types::InstalledAutomation>, Error> {
+    crate::automation::marketplace::list_installed(&state.runtime_service)
+        .await
+        .map_err(|e| Error::Internal(format!("{:#}", e)))
+}
+
 // list_marketplace_humans kept as deprecated wrapper for backward compat — Phase 3b removes
 #[tauri::command]
 pub async fn list_marketplace_humans(

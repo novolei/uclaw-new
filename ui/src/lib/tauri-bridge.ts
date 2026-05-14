@@ -1417,6 +1417,34 @@ export const marketplaceCategoryCounts = (
 export const listMarketplaceHumans = (registryUrl?: string): Promise<MarketplaceItem[]> =>
   invoke<MarketplaceItem[]>('list_marketplace_humans', { registryUrl })
 
+export interface InstalledSkillBrief {
+  skillId: string
+  description: string | null
+  installPath: string
+  fileCount: number
+}
+
+export type CapabilityStatus = 'mapped' | 'missing'
+
+export interface CapabilityCheck {
+  mcpId: string
+  status: CapabilityStatus
+  mappedTo: string | null
+}
+
+export interface InstalledAutomation {
+  slug: string
+  name: string
+  version: string
+  icon: string | null
+  category: string
+  bundledSkills: InstalledSkillBrief[]
+  requiredCapabilities: CapabilityCheck[]
+}
+
+export const listInstalledMarketplaceAutomations = (): Promise<InstalledAutomation[]> =>
+  invoke<InstalledAutomation[]>('list_installed_marketplace_automations')
+
 // ─── Badge ────────────────────────────────────────────────────────────
 export const updateBadgeCount = (count: number): Promise<boolean> =>
   invoke<boolean>('update_badge_count', { count })

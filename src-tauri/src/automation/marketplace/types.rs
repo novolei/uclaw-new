@@ -188,3 +188,46 @@ pub struct MarketplaceInstallProgress {
     pub percent: u8,          // 0..=100
     pub message: Option<String>,
 }
+
+// ─── Installed Automations (for AppsView card list) ───────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledSkillBrief {
+    pub skill_id: String,
+    /// Populated from SKILL.md in Phase 3b-β; None for now.
+    pub description: Option<String>,
+    /// Absolute FS path where the skill directory lives.
+    pub install_path: String,
+    pub file_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CapabilityStatus {
+    Mapped,
+    Missing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityCheck {
+    pub mcp_id: String,
+    pub status: CapabilityStatus,
+    /// Human-readable label when status = Mapped (e.g. "uClaw 内建浏览器").
+    pub mapped_to: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledAutomation {
+    pub slug: String,
+    pub name: String,
+    pub version: String,
+    /// Icon identifier from the registry entry (not present in parsed spec).
+    pub icon: Option<String>,
+    /// Category from registry entry; defaults to "other" when absent.
+    pub category: String,
+    pub bundled_skills: Vec<InstalledSkillBrief>,
+    pub required_capabilities: Vec<CapabilityCheck>,
+}

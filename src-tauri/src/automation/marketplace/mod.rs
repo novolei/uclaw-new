@@ -197,6 +197,146 @@ pub async fn check_updates_cached(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// Synchronous core of `list_installed_marketplace_automations` — separated so
+/// unit tests can drive it without an AppRuntimeService.
+///
+/// Joins `automation_specs` (marketplace rows only) × `automation_installed_skills`
+/// × `automation_marketplace_items` (for icon + category). Capability resolution
+/// is performed in-process via `capability_map`.
+pub fn list_installed_inner(
+    conn: &rusqlite::Connection,
+    skills_root: &std::path::Path,
+) -> Result<Vec<types::InstalledAutomation>> {
+    use crate::automation::capability_map;
+    use crate::automation::protocol::parse::parse_humane_v1;
+    use types::{CapabilityCheck, CapabilityStatus, InstalledAutomation, InstalledSkillBrief};
+
+    // source_ref shape: `marketplace://halo/<slug>` — we extract the slug as the
+    // last path segment. LEFT JOIN against the registry cache to recover icon +
+    // category (those fields live in the index, not in the stored spec YAML).
+    let mut stmt = conn.prepare(
+        "SELECT
+            s.source_ref,
+            s.name,
+            s.version,
+            s.spec_yaml,
+            COALESCE(m.icon,     NULL)    AS icon,
+            COALESCE(m.category, 'other') AS category
+         FROM automation_specs s
+         LEFT JOIN automation_marketplace_items m
+             ON m.registry_id = 'halo'
+             AND m.slug = SUBSTR(s.source_ref, LENGTH('marketplace://halo/') + 1)
+         WHERE s.source = 'marketplace'
+         ORDER BY s.updated_at DESC",
+    )?;
+
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, Option<String>>(4)?,
+            r.get::<_, String>(5)?,
+        ))
+    })?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let (source_ref, name, version, spec_yaml, icon, category) = row?;
+        // Extract slug from the last '/' segment of source_ref.
+        let slug = source_ref
+            .rsplit('/')
+            .next()
+            .ok_or_else(|| anyhow!("malformed source_ref: {}", source_ref))?
+            .to_string();
+
+        // Parse the stored YAML to reach requires.mcps. Failure is non-fatal:
+        // return empty capability list so AppsView can still render the card.
+        let mcp_ids: Vec<String> = match parse_humane_v1(&spec_yaml) {
+            Ok(parsed) => parsed
+                .spec
+                .requires
+                .as_ref()
+                .and_then(|r| r.get("mcps").and_then(|s| s.as_array()))
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!(slug = %slug, error = %e, "list_installed: parse failed — capability list empty");
+                vec![]
+            }
+        };
+
+        let required_capabilities: Vec<CapabilityCheck> = mcp_ids
+            .into_iter()
+            .map(|mcp_id| match capability_map::resolve_capability(&mcp_id) {
+                Some(cap) => CapabilityCheck {
+                    mcp_id,
+                    status: CapabilityStatus::Mapped,
+                    mapped_to: Some(capability_map::human_label(cap).to_string()),
+                },
+                None => CapabilityCheck {
+                    mcp_id,
+                    status: CapabilityStatus::Missing,
+                    mapped_to: None,
+                },
+            })
+            .collect();
+
+        // Bundled skills — one row per skill in automation_installed_skills.
+        let mut skills_stmt = conn.prepare(
+            "SELECT skill_id, file_count FROM automation_installed_skills \
+                WHERE automation_slug = ? ORDER BY skill_id",
+        )?;
+        let skill_rows = skills_stmt.query_map(rusqlite::params![&slug], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        let mut bundled_skills: Vec<InstalledSkillBrief> = Vec::new();
+        for s in skill_rows {
+            let (skill_id, file_count) = s?;
+            let install_path = skills_root
+                .join("_marketplace")
+                .join(&slug)
+                .join(&skill_id)
+                .to_string_lossy()
+                .to_string();
+            bundled_skills.push(InstalledSkillBrief {
+                skill_id,
+                description: None, // Phase 3b-β reads SKILL.md
+                install_path,
+                file_count,
+            });
+        }
+
+        out.push(InstalledAutomation {
+            slug,
+            name,
+            version,
+            icon,
+            category,
+            bundled_skills,
+            required_capabilities,
+        });
+    }
+    Ok(out)
+}
+
+/// Async wrapper consumed by the Tauri command.
+pub async fn list_installed(
+    runtime: &crate::automation::runtime::AppRuntimeService,
+) -> Result<Vec<types::InstalledAutomation>> {
+    let skills_root = dirs::home_dir()
+        .ok_or_else(|| anyhow!("no home dir"))?
+        .join(".uclaw")
+        .join("skills");
+    let conn = runtime.db.lock().unwrap();
+    list_installed_inner(&conn, &skills_root)
+}
+
 /// Synchronous core of uninstall — separated so unit tests can drive it
 /// without an AppRuntimeService.
 pub fn uninstall_human_inner(
@@ -630,5 +770,66 @@ mod tests {
             .filter(|id| resolve_capability(id).is_none())
             .collect();
         assert_eq!(missing, vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn list_installed_joins_specs_and_skills_correctly() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+
+        // YAML with two requires.mcps entries: one known (ai-browser) and one unknown.
+        let spec_yaml = r#"
+spec_version: "1"
+name: X
+version: 1.0.0
+author: t
+description: t
+type: automation
+system_prompt: x
+config_schema: []
+requires:
+  mcps:
+    - id: ai-browser
+      reason: r
+    - id: nonexistent-mcp
+      reason: r
+"#;
+
+        conn.execute(
+            "INSERT INTO automation_specs \
+                (id, name, version, author, description, system_prompt, spec_yaml, spec_json, \
+                 source, source_ref, created_at, updated_at) \
+             VALUES ('a-id', 'X', '1.0.0', 't', 't', 'x', ?1, '{}', \
+                     'marketplace', 'marketplace://halo/a', 0, 0)",
+            rusqlite::params![spec_yaml],
+        ).expect("insert spec — V20 schema columns");
+
+        conn.execute(
+            "INSERT INTO automation_installed_skills VALUES (?, ?, ?, ?)",
+            rusqlite::params!["a", "skill-1", 0_i64, 2_i64],
+        ).unwrap();
+
+        let result = super::list_installed_inner(&conn, std::path::Path::new("/tmp/uclaw-test"))
+            .expect("query ok");
+
+        assert_eq!(result.len(), 1);
+        let r = &result[0];
+        assert_eq!(r.slug, "a");
+        assert_eq!(r.name, "X");
+        assert_eq!(r.bundled_skills.len(), 1);
+        assert_eq!(r.bundled_skills[0].skill_id, "skill-1");
+        assert_eq!(r.required_capabilities.len(), 2);
+        // ai-browser is a known capability → Mapped
+        assert!(matches!(
+            r.required_capabilities[0].status,
+            super::types::CapabilityStatus::Mapped
+        ));
+        // nonexistent-mcp is unknown → Missing
+        assert!(matches!(
+            r.required_capabilities[1].status,
+            super::types::CapabilityStatus::Missing
+        ));
+        // With no marketplace cache row, category defaults to 'other'.
+        assert_eq!(r.category, "other");
     }
 }
