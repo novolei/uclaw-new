@@ -1,8 +1,11 @@
 import * as React from 'react'
+import { useAtomValue } from 'jotai'
 import { cn } from '@/lib/utils'
 import { AppTypeBadge } from './AppTypeBadge'
 import { CategoryIcon } from './category-icon'
 import type { MarketplaceItem } from '@/lib/tauri-bridge'
+import { userLocaleAtom } from '@/atoms/marketplace'
+import { localizeEntry } from '@/lib/marketplace-i18n'
 
 const MAX_VISIBLE_TAGS = 2
 
@@ -14,9 +17,9 @@ interface Props {
 }
 
 export function StoreCard({ item, hasUpdate, isInstalled, onClick }: Props): React.ReactElement {
-  // TODO Task 5: localize via locale + item.i18n
-  const displayName = item.name
-  const displayDesc = item.description
+  const locale = useAtomValue(userLocaleAtom)
+  const displayName = localizeEntry('name', item.name, item.i18n, locale)
+  const displayDesc = localizeEntry('description', item.description, item.i18n, locale)
   const visibleTags = item.tags.slice(0, MAX_VISIBLE_TAGS)
   const hiddenTagCount = item.tags.length - visibleTags.length
 
