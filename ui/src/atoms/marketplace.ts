@@ -1,23 +1,6 @@
 import { atom } from 'jotai'
 import { atomWithStorage } from 'jotai/utils'
-import type { MarketplaceItem } from '@/lib/tauri-bridge'
-
-// MarketplaceUpdate / MarketplaceDetail / etc. are defined in Task 6 (tauri-bridge.ts).
-// Until then we use minimal local stubs to keep this file self-compiling.
-// Task 6 will replace these with imports from @/lib/tauri-bridge.
-export interface MarketplaceUpdate {
-  slug: string
-  installedVersion: string
-  latestVersion: string
-}
-export interface MarketplaceDetail {
-  item: MarketplaceItem
-  specYaml: string
-  parsedSpecJson: unknown | null
-  requiresMcps: string[]
-  requiresSkills: string[]
-  installedVersion: string | null
-}
+import type { MarketplaceItem, MarketplaceUpdate, MarketplaceDetail } from '@/lib/tauri-bridge'
 
 // Type filter — All / Digital Human / Skill / MCP
 export type MarketplaceItemTypeFilter = 'all' | 'automation' | 'skill' | 'mcp'
