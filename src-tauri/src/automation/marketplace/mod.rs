@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod halo_adapter;
 mod skill_install;
+mod standalone_install;
 pub mod types;
 
 pub use cache::category_counts_cached;
