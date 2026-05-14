@@ -34,9 +34,10 @@ import { ProviderModelSelector } from '@/components/chat/ProviderModelSelector'
 import { AttachmentPreviewItem } from '@/components/chat/AttachmentPreviewItem'
 import { RichTextInput } from '@/components/ai-elements/rich-text-input'
 import { SpeechButton } from '@/components/ai-elements/speech-button'
-import { InlineRecorder } from '@/components/stt/InlineRecorder'
+import { SttModal } from '@/components/stt/SttModal'
 import { FirstRunDialog } from '@/components/stt/FirstRunDialog'
-import { recordingStateAtom, sttSettingsAtom, modelStatusAtom } from '@/atoms/stt-atoms'
+import { modelStatusAtom } from '@/atoms/stt-atoms'
+import { smartJoin } from '@/lib/stt/punctuation'
 import { invoke } from '@tauri-apps/api/core'
 import {
   ComposerMentionController,
@@ -360,8 +361,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
   // STT state
   const [firstRunOpen, setFirstRunOpen] = React.useState(false)
-  const recordingState = useAtomValue(recordingStateAtom)
-  const sttSettings = useAtomValue(sttSettingsAtom)
   const setModelStatus = useSetAtom(modelStatusAtom)
 
   // Query model status on mount so SpeechButton can show indicator dot.
@@ -722,26 +721,17 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     addFilesAsAttachments(files)
   }, [addFilesAsAttachments])
 
-  /** 语音识别结果 — TipTap 光标位置插入 */
-  const handleSpeechTranscript = React.useCallback((text: string): void => {
+  const handleSegmentFinalized = React.useCallback((text: string): void => {
     const editor = composerEditorRef.current
-    if (editor) {
+    if (editor && editor.isFocused) {
       editor.commands.insertContent(text)
     } else {
-      // Fallback: append to controlled value.
-      setInputContent(inputContent + (inputContent ? ' ' : '') + text)
+      setInputContent(smartJoin(inputContent, text))
     }
   }, [composerEditorRef, inputContent, setInputContent])
 
   // handleSend is defined below; use a ref to avoid use-before-declaration.
   const handleSendRef = React.useRef<(() => Promise<void>) | null>(null)
-
-  /** 转写完成后按 autoSend 设置触发发送 */
-  const handleAfterTranscribe = React.useCallback((_text: string): void => {
-    if (sttSettings.autoSend) {
-      void handleSendRef.current?.()
-    }
-  }, [sttSettings.autoSend])
 
   /** 粘贴超长文本 → 转为附件 */
   const handlePasteLongText = React.useCallback((text: string): void => {
@@ -1085,8 +1075,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       })
   }, [inputContent, pendingFiles, sessionId, activeProviderModel, agentChannelId, agentModelId, currentWorkspaceId, workspaces, streaming, suggestion, currentStrategy, store, setStreamingStates, setPendingFiles, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, setMessages])
 
-  // Wire handleSendRef so handleAfterTranscribe can call handleSend without
-  // use-before-declaration.
+  // Wire handleSendRef — kept for Task 12 cleanup.
   React.useEffect(() => {
     handleSendRef.current = handleSend
   }, [handleSend])
@@ -1633,14 +1622,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                 <GitChipsRow />
                 <SpeechButton
                   composer="agent"
-                  onTranscript={handleSpeechTranscript}
-                  onAfterTranscribe={handleAfterTranscribe}
                   onShowDownloadDialog={() => setFirstRunOpen(true)}
-                />
-                <InlineRecorder
-                  state={recordingState}
-                  onStop={() => { window.dispatchEvent(new CustomEvent('uclaw:stt-stop')) }}
-                  onCancel={() => { window.dispatchEvent(new CustomEvent('uclaw:stt-cancel')) }}
                 />
               </div>
 
@@ -1710,6 +1692,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+    <SttModal composer="agent" onSegmentFinalized={handleSegmentFinalized} />
     <FirstRunDialog
       open={firstRunOpen}
       onOpenChange={setFirstRunOpen}
