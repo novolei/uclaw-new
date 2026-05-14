@@ -635,15 +635,22 @@ impl AppRuntimeService {
         };
 
         // ── 10. run the agentic loop ─────────────────────────────────────────
+        let loop_config = AgenticLoopConfig {
+            max_iterations: auto_cfg.max_iterations,
+            ..AgenticLoopConfig::default()
+        };
         let outcome = crate::agent::agentic_loop::run_agentic_loop(
             &delegate,
             &mut reason_ctx,
-            &AgenticLoopConfig::default(),
+            &loop_config,
         )
         .await;
 
         // ── 11. map terminal state → activity row + persist transcript ───────
-        let gate = delegate.gate.lock().await.clone();
+        let gate = delegate.gate.lock().await.clone().or_else(|| {
+            matches!(outcome, LoopOutcome::MaxIterations)
+                .then_some(CompletionGate::LoopExhausted)
+        });
         let completed_ms = chrono::Utc::now().timestamp_millis();
         {
             let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
