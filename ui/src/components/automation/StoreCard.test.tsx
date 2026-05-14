@@ -17,7 +17,7 @@ describe('StoreCard', () => {
     const { getByText } = renderWithProviders(<StoreCard item={makeItem()} onClick={() => {}} />)
     expect(getByText('AI News')).toBeInTheDocument()
     expect(getByText('by a')).toBeInTheDocument()
-    expect(getByText('v1.0.0')).toBeInTheDocument()
+    expect(getByText(/v1\.0\.0/)).toBeInTheDocument()
     expect(getByText('desc')).toBeInTheDocument()
   })
   test('shows "已安装" badge when isInstalled', () => {

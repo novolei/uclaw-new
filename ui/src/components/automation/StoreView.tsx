@@ -19,6 +19,7 @@ import {
   queryMarketplace,
   refreshMarketplace,
   checkMarketplaceUpdates,
+  marketplaceCategoryCounts,
 } from '@/lib/tauri-bridge'
 
 const PAGE_SIZE = 20
@@ -50,18 +51,13 @@ export function StoreView(): React.ReactElement {
         setHasMore(result.hasMore)
         setTotal(result.total)
         setPage(pageNum)
-        const cats: Record<string, number> = {}
-        for (const it of result.items) {
-          cats[it.category] = (cats[it.category] ?? 0) + 1
-        }
-        setCounts((prev) => ({ ...prev, ...cats }))
       } catch (err) {
         setLoadError(String(err))
       } finally {
         setLoading(false)
       }
     },
-    [filters, setItems, setHasMore, setTotal, setPage, setLoading, setLoadError, setCounts],
+    [filters, setItems, setHasMore, setTotal, setPage, setLoading, setLoadError],
   )
 
   // Reload when filters change
@@ -69,6 +65,18 @@ export function StoreView(): React.ReactElement {
     void loadPage(0, true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters.search, filters.itemType, filters.category])
+
+  // Category chip counts: aggregate the entire post-itemType+post-search corpus
+  // server-side. Independent of `filters.category` on purpose — that's what
+  // makes the chip count + ordering stable across category clicks.
+  React.useEffect(() => {
+    marketplaceCategoryCounts(
+      filters.itemType === 'all' ? undefined : filters.itemType,
+      filters.search || undefined,
+    )
+      .then(setCounts)
+      .catch((err) => console.warn('[StoreView] category counts failed:', err))
+  }, [filters.itemType, filters.search, setCounts])
 
   // Initial updates check
   React.useEffect(() => {
