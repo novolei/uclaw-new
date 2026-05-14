@@ -10,6 +10,7 @@ import { vi } from 'vitest'
 export interface InstalledStubs {
   emitData: (chunk: Blob) => void
   emitStop: () => void
+  emitPcm: (pcm: Float32Array) => void
   setVolume: (v: number) => void
   cleanup: () => void
 }
@@ -18,6 +19,20 @@ export function installAudioStubs(): InstalledStubs {
   const dataListeners: Array<(e: BlobEvent) => void> = []
   const stopListeners: Array<() => void> = []
   let volumeByte = 0
+  const workletPorts: Array<{ onmessage: ((e: MessageEvent) => void) | null }> = []
+
+  // ── AudioWorkletNode (mock) ──────────────────────────────────────────────
+  class MockAudioWorkletNode {
+    port: { onmessage: ((e: MessageEvent) => void) | null }
+    constructor() {
+      this.port = { onmessage: null }
+      workletPorts.push(this.port)
+    }
+    connect() {}
+    disconnect() {}
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(globalThis as any).AudioWorkletNode = MockAudioWorkletNode
 
   // ── MediaRecorder ───────────────────────────────────────────────────────
   class MockMediaRecorder {
@@ -64,6 +79,7 @@ export function installAudioStubs(): InstalledStubs {
   class MockAudioContext {
     sampleRate = 16000
     state: AudioContextState = 'running'
+    audioWorklet = { addModule: (_url: string) => Promise.resolve() }
     createAnalyser() {
       return new MockAnalyser()
     }
@@ -110,12 +126,16 @@ export function installAudioStubs(): InstalledStubs {
     emitStop() {
       stopListeners.forEach((l) => l())
     },
+    emitPcm(pcm: Float32Array) {
+      workletPorts.forEach((p) => p.onmessage?.({ data: pcm } as MessageEvent))
+    },
     setVolume(v: number) {
       volumeByte = Math.max(0, Math.min(255, v))
     },
     cleanup() {
       dataListeners.length = 0
       stopListeners.length = 0
+      workletPorts.length = 0
       Object.defineProperty(navigator, 'mediaDevices', {
         configurable: true,
         value: undefined,
