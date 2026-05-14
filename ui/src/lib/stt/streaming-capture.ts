@@ -18,8 +18,13 @@ export interface StreamingCapture {
   getSegmentPcmBase64: () => string
   /** 清空当前段累积 buffer（段定稿后调）。 */
   resetSegment: () => void
-  /** 0..1 实时峰值音量。 */
+  /** 0..1 实时整体响度（时域 RMS）。用于静音检测。 */
   getVolume: () => number
+  /**
+   * 把人声频段切成 bandCount 段，每段返回 0..1 的能量值。
+   * 各段相互独立（不同频率内容），用来驱动 EQ 风格的音量条。
+   */
+  getFrequencyBands: (bandCount: number) => number[]
 }
 
 export async function createStreamingCapture(): Promise<StreamingCapture> {
@@ -28,6 +33,7 @@ export async function createStreamingCapture(): Promise<StreamingCapture> {
   let workletNode: AudioWorkletNode | null = null
   let analyser: AnalyserNode | null = null
   let volumeBuf: Uint8Array<ArrayBuffer> | null = null
+  let freqBuf: Uint8Array<ArrayBuffer> | null = null
   // 当前段累积的 Float32 块。
   let segmentChunks: Float32Array[] = []
 
@@ -63,6 +69,8 @@ export async function createStreamingCapture(): Promise<StreamingCapture> {
     source.connect(analyser)
     // 时域波形用 fftSize 长度的缓冲（getByteTimeDomainData 填满 fftSize 个采样）。
     volumeBuf = new Uint8Array(analyser.fftSize)
+    // 频域用 frequencyBinCount 长度的缓冲（getByteFrequencyData）。
+    freqBuf = new Uint8Array(analyser.frequencyBinCount)
   }
 
   const stop = (): void => {
@@ -87,6 +95,7 @@ export async function createStreamingCapture(): Promise<StreamingCapture> {
     workletNode = null
     analyser = null
     volumeBuf = null
+    freqBuf = null
     segmentChunks = []
   }
 
@@ -135,5 +144,31 @@ export async function createStreamingCapture(): Promise<StreamingCapture> {
     return Math.max(0, Math.min(1, rms * 3))
   }
 
-  return { start, stop, getSegmentPcmBase64, resetSegment, getVolume }
+  // 人声相关的 FFT bin 范围：16kHz / fftSize=256 → 每 bin 62.5Hz，
+  // 取 bin 1..64 ≈ 62Hz–4kHz（人声基频 + 共振峰主要落在这里）。
+  const VOICE_BIN_LO = 1
+  const VOICE_BIN_HI = 64
+
+  const getFrequencyBands = (bandCount: number): number[] => {
+    if (!analyser || !freqBuf || bandCount <= 0) {
+      return new Array(Math.max(0, bandCount)).fill(0)
+    }
+    analyser.getByteFrequencyData(freqBuf)
+    const span = VOICE_BIN_HI - VOICE_BIN_LO
+    const bands: number[] = []
+    for (let b = 0; b < bandCount; b++) {
+      const start = VOICE_BIN_LO + Math.floor((span * b) / bandCount)
+      const end = VOICE_BIN_LO + Math.floor((span * (b + 1)) / bandCount)
+      let sum = 0
+      for (let i = start; i < end; i++) sum += freqBuf[i]!
+      const avg = sum / Math.max(1, end - start) / 255 // 0..1
+      // 高频天然更弱，按段号做温和增益爬坡，让高频条也活跃（1.0 → 2.4）。
+      const gain = 1 + (bandCount > 1 ? b / (bandCount - 1) : 0) * 1.4
+      // sqrt 感知曲线把低值区拉开 + 增益，再 clamp。
+      bands.push(Math.max(0, Math.min(1, Math.sqrt(avg) * gain)))
+    }
+    return bands
+  }
+
+  return { start, stop, getSegmentPcmBase64, resetSegment, getVolume, getFrequencyBands }
 }

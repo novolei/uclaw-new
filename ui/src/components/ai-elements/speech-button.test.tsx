@@ -39,7 +39,7 @@ describe('SpeechButton', () => {
     store.set(modelStatusAtom, { kind: 'ready', modelDir: '/m' })
     store.set(activeComposerAtom, 'chat')
     store.set(sttModalStateAtom, {
-      kind: 'listening', segmentStartedMs: Date.now(), volume: 0, interimText: '',
+      kind: 'listening', segmentStartedMs: Date.now(), volume: 0, bands: [], interimText: '',
     })
     const spy = vi.fn()
     window.addEventListener('uclaw:stt-end', spy)
@@ -63,7 +63,7 @@ describe('SpeechButton', () => {
     store.set(modelStatusAtom, { kind: 'ready', modelDir: '/m' })
     store.set(activeComposerAtom, 'agent')
     store.set(sttModalStateAtom, {
-      kind: 'listening', segmentStartedMs: Date.now(), volume: 0, interimText: '',
+      kind: 'listening', segmentStartedMs: Date.now(), volume: 0, bands: [], interimText: '',
     })
     const startSpy = vi.fn()
     const endSpy = vi.fn()

@@ -24,6 +24,8 @@ export const VOLUME_SAMPLE_INTERVAL_MS = 80
 export const MIN_SEGMENT_MS = 800
 /** 音量高于此值视为「有人在说话」。 */
 export const VOICE_VOLUME_THRESHOLD = 0.04
+/** EQ 音量条的段数。 */
+export const BAR_COUNT = 7
 
 export type StartResult = 'started' | 'busy' | 'needs-download' | 'permission-denied' | 'error'
 
@@ -153,6 +155,7 @@ export function useSttStreamingSession(
       const cap = captureRef.current
       if (!cap) return
       const v = cap.getVolume()
+      const bands = cap.getFrequencyBands(BAR_COUNT)
       const now = Date.now()
       if (v > VOICE_VOLUME_THRESHOLD) lastVoiceMsRef.current = now
 
@@ -194,6 +197,7 @@ export function useSttStreamingSession(
                 kind: 'listening',
                 segmentStartedMs: segmentStartedMsRef.current,
                 volume: 0,
+                bands: [],
                 interimText: '',
               })
               startRetranscribeLoop()
@@ -202,9 +206,9 @@ export function useSttStreamingSession(
         return
       }
 
-      // 普通帧：刷新音量。
+      // 普通帧：刷新音量 + EQ 频段。
       setState((prev) =>
-        prev.kind === 'listening' ? { ...prev, volume: v } : prev,
+        prev.kind === 'listening' ? { ...prev, volume: v, bands } : prev,
       )
     }, VOLUME_SAMPLE_INTERVAL_MS)
   }, [
@@ -242,7 +246,7 @@ export function useSttStreamingSession(
     lastVoiceMsRef.current = now
     interimTextRef.current = ''
     endingRef.current = false
-    setState({ kind: 'listening', segmentStartedMs: now, volume: 0, interimText: '' })
+    setState({ kind: 'listening', segmentStartedMs: now, volume: 0, bands: [], interimText: '' })
     startRetranscribeLoop()
     startVolumeLoop()
     return 'started'

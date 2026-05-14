@@ -18,7 +18,15 @@ export type ComposerKind = 'chat' | 'agent'
 export type SttModalState =
   | { kind: 'idle' }
   | { kind: 'requesting-permission' }
-  | { kind: 'listening'; segmentStartedMs: number; volume: number; interimText: string }
+  | {
+      kind: 'listening'
+      segmentStartedMs: number
+      /** 整体响度（时域 RMS），用于静音检测。 */
+      volume: number
+      /** EQ 音量条的逐段能量值（各段独立，0..1）。 */
+      bands: number[]
+      interimText: string
+    }
   | { kind: 'finalizing'; volume: number }
   | { kind: 'permission-denied' }
   | { kind: 'error'; message: string }

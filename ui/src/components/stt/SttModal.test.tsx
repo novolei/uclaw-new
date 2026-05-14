@@ -37,7 +37,7 @@ describe('SttModal', () => {
   it('renders the panel + glow when listening', () => {
     const store = createStore()
     store.set(sttModalStateAtom, {
-      kind: 'listening', segmentStartedMs: Date.now(), volume: 0.3, interimText: '你好世界',
+      kind: 'listening', segmentStartedMs: Date.now(), volume: 0.3, bands: [0.2,0.6,0.4,0.8,0.3,0.5,0.1], interimText: '你好世界',
     })
     const { container } = renderWith(store)
     expect(container.querySelector('.stt-modal-overlay')).not.toBeNull()
@@ -48,7 +48,7 @@ describe('SttModal', () => {
   it('shows the placeholder when listening with empty interim text', () => {
     const store = createStore()
     store.set(sttModalStateAtom, {
-      kind: 'listening', segmentStartedMs: Date.now(), volume: 0, interimText: '',
+      kind: 'listening', segmentStartedMs: Date.now(), volume: 0, bands: [], interimText: '',
     })
     renderWith(store)
     expect(screen.getByText('请开始说话')).toBeInTheDocument()

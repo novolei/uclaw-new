@@ -17,6 +17,7 @@ const mockCapture = {
   getSegmentPcmBase64: vi.fn().mockReturnValue('AAAA'),
   resetSegment: vi.fn(),
   getVolume: vi.fn().mockReturnValue(0),
+  getFrequencyBands: vi.fn().mockReturnValue([0, 0, 0, 0, 0, 0, 0]),
 }
 vi.mock('@/lib/stt/streaming-capture', () => ({
   createStreamingCapture: vi.fn(async () => mockCapture),
