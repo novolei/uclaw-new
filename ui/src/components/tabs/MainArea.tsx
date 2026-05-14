@@ -39,8 +39,22 @@ export function MainArea(): React.ReactElement {
   const setSelectedPreviewFile = useSetAtom(selectedPreviewFileAtom)
   const currentWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
   const [splitRatio, setSplitRatio] = useAtom(previewPanelSplitRatioAtom)
-  const automationOpen = useAtomValue(automationPanelOpenAtom)
+  const [automationOpen, setAutomationOpen] = useAtom(automationPanelOpenAtom)
   const draggingRef = React.useRef(false)
+
+  // Auto-close AutomationsView when the user picks a different session/tab
+  // in LeftSidebar (Bug 3 from 2026-05-14 polish round). Watching activeTabId
+  // covers chat / agent / browser tabs — they're the only routes a user
+  // explicitly navigates to from the sidebar conversation list. AutomationsView
+  // remains open while the user moves within it (humans/apps/store sub-tabs
+  // don't touch activeTabId).
+  const prevTabIdRef = React.useRef<string | null>(activeTabId)
+  React.useEffect(() => {
+    if (prevTabIdRef.current !== activeTabId && automationOpen) {
+      setAutomationOpen(false)
+    }
+    prevTabIdRef.current = activeTabId
+  }, [activeTabId, automationOpen, setAutomationOpen])
 
   // Reset the preview panel when the active workspace changes. The previously
   // selected file lived in the OLD workspace's mount tree — keeping the panel

@@ -7,7 +7,9 @@ import {
   marketplaceItemsAtom,
   marketplaceSelectedSlugAtom,
   automationsSubviewAtom,
+  marketplaceUpdatesAtom,
 } from '@/atoms/marketplace'
+import { humaneSpecsAtom } from '@/atoms/automation'
 
 // Phase 3a hardcoded featured list — Phase 4 makes this remote-driven.
 const FEATURED_SLUGS = [
@@ -19,6 +21,8 @@ const FEATURED_SLUGS = [
 
 export function StoreFeaturedRow(): React.ReactElement | null {
   const items = useAtomValue(marketplaceItemsAtom)
+  const updates = useAtomValue(marketplaceUpdatesAtom)
+  const installedSpecs = useAtomValue(humaneSpecsAtom)
   const setSelectedSlug = useSetAtom(marketplaceSelectedSlugAtom)
   const setSubview = useSetAtom(automationsSubviewAtom)
 
@@ -26,6 +30,16 @@ export function StoreFeaturedRow(): React.ReactElement | null {
     () => FEATURED_SLUGS.map((slug) => items.find((i) => i.slug === slug)).filter((x): x is NonNullable<typeof x> => x !== undefined),
     [items],
   )
+
+  const updateSlugs = React.useMemo(() => new Set(updates.map((u) => u.slug)), [updates])
+  const installedSlugs = React.useMemo(() => {
+    return new Set(
+      installedSpecs
+        .filter((s) => s.source === 'marketplace' && s.sourceRef)
+        .map((s) => /^marketplace:\/\/[^/]+\/(.+)$/.exec(s.sourceRef ?? '')?.[1] ?? null)
+        .filter((x): x is string => x !== null),
+    )
+  }, [installedSpecs])
 
   if (featured.length === 0) return null
 
@@ -60,7 +74,19 @@ export function StoreFeaturedRow(): React.ReactElement | null {
                   <span className="text-[14px] font-semibold truncate">{item.i18nName ?? item.name}</span>
                   <AppTypeBadge type={item.appType} />
                 </div>
-                <span className="text-[11px] text-muted-foreground">by {item.author}</span>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[11px] text-muted-foreground">by {item.author}</span>
+                  {installedSlugs.has(item.slug) && !updateSlugs.has(item.slug) && (
+                    <span className="px-1.5 py-[1px] rounded-md bg-success-bg text-success text-[10px] font-medium">
+                      已安装
+                    </span>
+                  )}
+                  {updateSlugs.has(item.slug) && (
+                    <span className="px-1.5 py-[1px] rounded-md bg-warning-bg text-warning text-[10px] font-medium">
+                      有更新
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
             <p className="text-[12px] text-muted-foreground line-clamp-2">

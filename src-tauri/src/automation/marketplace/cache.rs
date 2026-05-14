@@ -217,13 +217,19 @@ pub fn query_items(
         bind_params.push(Box::new(c.to_string()));
     }
 
+    // SQLite FTS5's MATCH operator requires the bare virtual-table name —
+    // it does NOT accept aliases. Phase 3a's earlier "JOIN ... fts ON" with
+    // "fts MATCH ?" threw `no such column: fts` at runtime. Use the full
+    // table name in both the JOIN columns and the MATCH clause.
     let (fts_join, fts_where, fts_order) = match search {
         Some(q) if !q.trim().is_empty() => {
             bind_params.push(Box::new(q.trim().to_string()));
             (
-                "JOIN automation_marketplace_fts fts ON fts.slug = i.slug AND fts.registry_id = i.registry_id",
-                Some("fts MATCH ?"),
-                "fts.rank",
+                "JOIN automation_marketplace_fts \
+                   ON automation_marketplace_fts.slug = i.slug \
+                  AND automation_marketplace_fts.registry_id = i.registry_id",
+                Some("automation_marketplace_fts MATCH ?"),
+                "automation_marketplace_fts.rank",
             )
         }
         _ => ("", None, "i.updated_at_index DESC, i.name ASC"),

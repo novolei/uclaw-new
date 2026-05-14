@@ -269,6 +269,24 @@ pub async fn install_human(
 
     emit("installing", 60, Some("安装到数据库"));
     let source_ref = format!("marketplace://{}/{}", source.id, slug);
+
+    // Re-install dedup: delete any existing row pointing at this source_ref.
+    // install_humane_spec_from_source generates a fresh UUID per call, so
+    // without this we'd accumulate duplicates every time the user clicks
+    // "重新安装". CASCADE on the V20 schema handles activities / V21 tables.
+    {
+        let conn = runtime.db.lock().unwrap();
+        let removed: i64 = conn
+            .execute(
+                "DELETE FROM automation_specs WHERE source = 'marketplace' AND source_ref = ?1",
+                rusqlite::params![source_ref],
+            )
+            .unwrap_or(0) as i64;
+        if removed > 0 {
+            tracing::info!(slug = %slug, removed, "marketplace re-install: dropped existing spec row before reinstall");
+        }
+    }
+
     let row = runtime
         .install_humane_spec_from_source(&yaml, "marketplace", Some(source_ref))
         .await

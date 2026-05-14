@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useAtom } from 'jotai'
+import { useAtom, useSetAtom } from 'jotai'
 import { motion, AnimatePresence } from 'motion/react'
 import { cn } from '@/lib/utils'
 import { AutomationHub } from '@/components/automation/AutomationHub'
@@ -7,6 +7,8 @@ import { AppsTab } from '@/components/automation/AppsTab'
 import { StoreView } from '@/components/automation/StoreView'
 import { StoreDetail } from '@/components/automation/StoreDetail'
 import { automationsSubviewAtom } from '@/atoms/marketplace'
+import { humaneSpecsAtom } from '@/atoms/automation'
+import { listAutomationsHumane } from '@/lib/tauri-bridge'
 
 const TABS: { id: 'humans' | 'apps' | 'store'; label: string }[] = [
   { id: 'humans', label: '我的数字人' },
@@ -16,6 +18,20 @@ const TABS: { id: 'humans' | 'apps' | 'store'; label: string }[] = [
 
 export function AutomationsView(): React.ReactElement {
   const [subview, setSubview] = useAtom(automationsSubviewAtom)
+  const setHumaneSpecs = useSetAtom(humaneSpecsAtom)
+
+  // Load installed specs ONCE on AutomationsView mount, regardless of which
+  // subview the user lands on. Previously this only happened when AutomationHub
+  // ('我的数字人') mounted via its own refresh() — meaning a user who opened
+  // straight to '应用商店' saw cards with NO '已安装' badges because
+  // humaneSpecsAtom was still []. StoreGrid / StoreFeaturedRow both rely on
+  // this atom to compute installed-slug set; loading here makes badges work
+  // immediately on any subview entry.
+  React.useEffect(() => {
+    listAutomationsHumane()
+      .then(setHumaneSpecs)
+      .catch((err) => console.warn('[AutomationsView] failed to load installed specs:', err))
+  }, [setHumaneSpecs])
 
   // Normalise 'store-detail' to 'store' for tab highlighting
   const activeTab = subview === 'store-detail' ? 'store' : subview
