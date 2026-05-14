@@ -5,6 +5,8 @@
 - **Owner**: Ryan
 - **Related**: `WorkspaceSwitcherBar.tsx`, `AutomationsView.tsx`, `MemoryGraphView.tsx`, `SettingsPanel.tsx`
 
+> **设计变更（2026-05-14 Phase 1.1）：** 入口图标从彩色篮子换成单色 lucide `Aperture` + `motion` hover 旋转；automation 三模块（数字人/应用商店/我的应用）完成迁移，直接渲染 `AutomationHub`/`StoreView`/`AppsTab`；万花筒 rail 与主区改为 `rounded-2xl` 浮卡布局；旧 `AutomationsView` + `automationPanelOpenAtom` 退役。详见 `plans/2026-05-14-kaleidoscope-phase1-fixes.md`。
+
 ---
 
 ## 1. 背景与动机
@@ -68,7 +70,7 @@ export const kaleidoscopeModuleAtom = atom<KaleidoscopeModuleId>('humans')
 ```
 
 - `appModeAtom`（`'chat' | 'agent'`）保留不动 — 但只在 `topLevelViewAtom === 'workspace'` 时生效
-- `automationPanelOpenAtom` 保留作为遗留入口（agent 模式下的快速跳转），但点击后会**置 `topLevelViewAtom = 'kaleidoscope'` 并选中 'humans' 模块**，原 `AutomationsView` 不再单独渲染
+- **Phase 1.1 已退役：** `automationPanelOpenAtom` 已删除；旧 `AutomationsView.tsx` 已退役删除；chat 窗口 LeftSidebar 的「Automations」按钮 `onClick` 改为 `setKaleidoscopeModule('humans') + setTopLevelView('kaleidoscope')`，即直接跳转到万花筒的数字人模块，不再单独渲染 `AutomationsView`
 
 ### 4.2 视图切换
 
@@ -147,8 +149,12 @@ ui/src/
 
 ### 5.1 KaleidoscopeShell 布局
 
-- 总宽：fill window；rail = **120px** 固定，main area = `1fr`
-- Rail 背景 `bg-background` 叠 `bg-muted/30`（与现有 `LeftSidebar.tsx` 的取色一致），main `bg-background`，分界 1px `border-border`
+> **Phase 1.1 实装：** 以下描述反映已 ship 代码，替换原方案（平铺背景 + 实线分界）。
+
+- KaleidoscopeShell 根容器：`flex flex-1 min-w-0 min-h-0`，**无背景色**，让 AppShell 的 `shell-bg` 渐变透出 `p-2` padding 间隙
+- Rail：包裹在 `p-2 pr-0` 容器里，本身是 `w-[120px] h-full rounded-2xl shadow-xl` 浮卡
+- 主区：包裹在 `p-2` 容器里，内层一张 `h-full rounded-2xl shadow-xl bg-content-area overflow-hidden relative` 卡片
+- 对齐 chat 窗口的浮卡视觉系统（两者都是 `rounded-2xl shadow-xl` 浮卡，`p-2` 间隙露出 `shell-bg` 渐变）
 
 ### 5.2 Rail 结构（从上至下）
 
@@ -201,9 +207,9 @@ ui/src/
 
 ---
 
-## 6. 入口图标 + CSS 动画
+## 6. 入口图标 + 动画
 
-> **设计变更（2026-05-14）：** 原方案是 Lottie 动画 + 静态 SVG fallback。评估用户下载的 Lottie 文件后发现三个硬伤：颜色 baked-in 无法适配 11 主题、5s 连续角色动画与「hover 微交互」模型不契合、视觉语义不符。**改为纯 CSS 动画**：零新依赖、GPU 加速、颜色全走 theme token 自动适配所有主题。`lottie-react` 依赖取消。
+> **设计变更（2026-05-14）：** 原方案是 Lottie 动画 + 静态 SVG fallback，后调整为彩色渐变篮子 + CSS keyframes。Phase 1.1 再次更新：彩色篮子 + `kaleido-*` CSS keyframes 全部移除，改为单色 lucide `Aperture` + `motion` hover 旋转。
 
 ### 6.1 组件契约
 
@@ -212,49 +218,50 @@ ui/src/
 interface KaleidoscopeIconProps {
   active?: boolean              // 当前是否在 Kaleidoscope surface
   onClick?: () => void
-  size?: number                 // default 30
 }
 ```
 
-`KaleidoscopeIcon` 是自包含组件：`<button>` + 内联 SVG 彩色小篮子（30×30，`bg-gradient-to-br from-primary to-accent` 背板，SVG 内描 `text-primary-foreground`）。不再有独立的 `KaleidoscopeIconFallback` 组件 —— Lottie 取消后「fallback」概念消失，SVG 直接内联进 `KaleidoscopeIcon`。
+`KaleidoscopeIcon` 是自包含组件：`<button>` + lucide `Aperture` glyph（`size-7 rounded-md`），与 workspace 图标同款处理：
+- 默认：`text-foreground/55`
+- hover：亮度提升 + `bg-foreground/[0.05]` 底色
+- active=true：`bg-primary/15 text-primary`
 
 行为：
-- **idle** — 渐变背板 3.5s 一呼一吸的 glow（`animate-kaleido-idle-breath`）
-- **hover** — 整体 `scale(1.06)`，idle glow 停止；篮子 `<g>` 600ms 摆头一次（`group-hover:animate-kaleido-basket-wobble`）；sparkle `<g>` 800ms 闪烁循环（`group-hover:animate-kaleido-sparkle-twinkle`）
-- **active=true** — `ring-2 ring-primary/40` 外圈，表示当前身处 Kaleidoscope surface
-- **click** — `active:scale-[0.92]` tap-down → `onClick` → `setTopLevelView('kaleidoscope')` → 200ms cross-dissolve
+- **hover** — 用 `motion`（`motion/react`，已在依赖栈）让光圈缓慢旋转（`rotate: 0→360`，`repeat: Infinity, duration: 2.6s, linear`），鼠标离开平滑归位（`duration: 0.4s, easeOut`）
+- **idle** — 无常驻动画（无 breathing glow，无 CSS keyframes）
+- **active=true** — `bg-primary/15 text-primary` 高亮态，表示当前身处 Kaleidoscope surface
+- **click** — `onClick` → `setTopLevelView('kaleidoscope')`
 
 ### 6.2 动画实现
 
-- 三个 keyframes 定义在 `tailwind.config.js` 的 `theme.extend.keyframes` + `animation`（与现有 `slide-in-from-top` 等同列）：`kaleido-idle-breath` / `kaleido-basket-wobble` / `kaleido-sparkle-twinkle`
-- 全部跑在 `transform` / `opacity` / `filter:drop-shadow` 上 —— GPU 加速
-- SVG 内 `<g>` 元素用 `style={{ transformBox: 'fill-box', transformOrigin: 'center' }}` 让旋转/缩放绕自身中心（SVG transform-origin 默认是坐标原点，必须显式纠正）
+- hover 旋转由 `motion/react` 的 `useAnimation` + `motion.div` 驱动，不使用 CSS keyframes
+- 之前的 `kaleido-idle-breath` / `kaleido-basket-wobble` / `kaleido-sparkle-twinkle` 三个 tailwind keyframes 已从 `tailwind.config.js` 移除
 - 颜色全部 theme token，11 主题自动适配；无写死颜色
-- 测试环境下 `prefers-reduced-motion: reduce`（已在 `setup.ts`）会让 `motion` 跳过动画；CSS animation 本身在 jsdom 不执行，组件测试只断言 button / label / onClick / active ring / size 契约
+- 测试环境下 `prefers-reduced-motion: reduce` 会让 `motion` 跳过动画；组件测试只断言 button / label / onClick / active 样式契约
 
 ### 6.3 依赖
 
-- **无新增依赖**。`lottie-react` 不再引入；`vite.config.ts` 不需要新增 chunk。
+- **无新增依赖**。`motion/react`（`motion ^12.38.0`）已在依赖栈；`lottie-react` 未引入；`kaleido-*` keyframes 已从 `tailwind.config.js` 删除。
 
 ---
 
 ## 7. 模块详细规格
 
-### 7.1 数字人（Humans）— 复用
-- 直接 wrap 现有 `AutomationHub` 组件（AutomationsView 的 'humans' 子视图内容）
-- 替换原 tab 切换为 `KaleidoscopeRail` 导航
-- header CTA：`+ 新建数字人` → 调起现有创建向导
-- 详情：点卡片 → 右抽屉显示运行历史 / 触发条件 / 编辑
+### 7.1 数字人（Humans）— 复用 ✅ Phase 1.1 已完成迁移
 
-### 7.2 应用商店（Store）— 复用
-- 原样吸收 `StoreView` + `StoreDetail` + `InstallWizard`
-- 当前 `automationsSubviewAtom` 的 4 个状态 (`humans` / `apps` / `store` / `store-detail`) 中的后两个继续生效，由 `StoreModule` 内部管理
+- **Phase 1.1 实装：** 直接渲染现有 `AutomationHub` 组件，模块用 `absolute inset-0` 让组件铺满，**不套 `ModuleHeader`**（`AutomationHub` 自带 header；`ModuleHeader` 仅 `ComingSoonModule` 仍在用）
+- `KaleidoscopeRail` 导航替代原 tab 切换
+- 数据流、创建向导等保持原 `AutomationHub` 不变
+
+### 7.2 应用商店（Store）— 复用 ✅ Phase 1.1 已完成迁移
+
+- **Phase 1.1 实装：** 直接渲染 `StoreView` + `StoreDetail`，按 `automationsSubviewAtom`（`'store'` / `'store-detail'`）切换；模块用 `absolute inset-0` 铺满，**不套 `ModuleHeader`**（`StoreView` 自带 header）
+- `automationsSubviewAtom` 的 `store` / `store-detail` 两个状态继续由 `StoreModule` 内部管理
 - 不改动现有 marketplace 数据流
 
-### 7.3 我的应用（Apps）— 复用
-- Wrap `AppsTab`
-- 卡片右上角 1×1 状态徽章：active / idle / error
-- 详情抽屉：配置 / 卸载 / 重启
+### 7.3 我的应用（Apps）— 复用 ✅ Phase 1.1 已完成迁移
+
+- **Phase 1.1 实装：** 直接渲染 `AppsTab`，模块用 `absolute inset-0` 铺满，**不套 `ModuleHeader`**（`AppsTab` 自带 header）
 
 ### 7.4 产出（Artifacts）— 新做
 - 数据源：调 `list_workspace_files` Tauri 命令（或新增），列出 `~/Documents/workground/` 下文件

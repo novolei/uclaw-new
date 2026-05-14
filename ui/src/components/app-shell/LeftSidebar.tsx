@@ -1102,7 +1102,6 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
       {deleteDialog}
       {moveDialog}
 
-
     </div>
   )
 }

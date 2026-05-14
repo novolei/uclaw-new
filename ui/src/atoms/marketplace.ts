@@ -20,7 +20,7 @@ export const userLocaleAtom = atomWithStorage<string>(
 // Type filter — All / Digital Human / Skill / MCP
 export type MarketplaceItemTypeFilter = 'all' | 'automation' | 'skill' | 'mcp'
 
-// 3-sub-view atom for AutomationsView (我的数字人 / 我的应用 / 应用商店)
+// 子视图 atom：被万花筒的 automation 模块（StoreModule / AutomationHub）用于 store ↔ store-detail 切换
 export type AutomationsSubview = 'humans' | 'apps' | 'store' | 'store-detail'
 
 export const automationsSubviewAtom = atomWithStorage<AutomationsSubview>(
