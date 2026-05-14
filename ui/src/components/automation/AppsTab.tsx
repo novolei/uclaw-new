@@ -7,13 +7,17 @@ import { CategoryIcon } from './category-icon'
 import {
   listInstalledMarketplaceAutomations,
   uninstallMarketplaceHuman,
+  checkMarketplaceUpdates,
   type InstalledAutomation,
 } from '@/lib/tauri-bridge'
+import { UpgradeModal } from './UpgradeModal'
 
 export function AppsTab(): React.ReactElement {
   const [items, setItems] = React.useState<InstalledAutomation[] | null>(null)
   const [expanded, setExpanded] = React.useState<string | null>(null)
   const [loading, setLoading] = React.useState(false)
+  const [updateSlugs, setUpdateSlugs] = React.useState<Set<string>>(new Set())
+  const [upgradeTarget, setUpgradeTarget] = React.useState<InstalledAutomation | null>(null)
 
   const reload = React.useCallback(async () => {
     setLoading(true)
@@ -31,6 +35,15 @@ export function AppsTab(): React.ReactElement {
   React.useEffect(() => {
     void reload()
   }, [reload])
+
+  // Fetch available updates alongside the installed list
+  React.useEffect(() => {
+    checkMarketplaceUpdates()
+      .then((updates) => setUpdateSlugs(new Set(updates.map((u) => u.slug))))
+      .catch(() => {
+        // Non-fatal: badge simply won't appear if update check fails
+      })
+  }, [])
 
   const handleUninstall = async (item: InstalledAutomation) => {
     if (!window.confirm(`确定卸载 ${item.name} 吗？\n会一并删除依赖的 skill 文件。`)) return
@@ -98,6 +111,15 @@ export function AppsTab(): React.ReactElement {
                   <Trash2 size={12} />
                   卸载
                 </button>
+                {updateSlugs.has(item.slug) && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setUpgradeTarget(item) }}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-primary hover:bg-primary/10 transition-colors"
+                  >
+                    升级
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setExpanded(isOpen ? null : item.slug)}
@@ -172,6 +194,16 @@ export function AppsTab(): React.ReactElement {
           )
         })}
       </div>
+      {upgradeTarget && (
+        <UpgradeModal
+          slug={upgradeTarget.slug}
+          name={upgradeTarget.name}
+          currentVersion={upgradeTarget.version}
+          installedSkillIds={upgradeTarget.bundledSkills.map((s) => s.skillId)}
+          onClose={() => setUpgradeTarget(null)}
+          onUpgraded={() => { void reload() }}
+        />
+      )}
     </div>
   )
 }

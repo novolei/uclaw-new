@@ -5,6 +5,8 @@ import { renderWithProviders } from '@/test-utils/render'
 vi.mock('@/lib/tauri-bridge', () => ({
   listInstalledMarketplaceAutomations: vi.fn(),
   uninstallMarketplaceHuman: vi.fn(),
+  // AppsTab now calls checkMarketplaceUpdates on mount; resolve to empty so no upgrade buttons appear
+  checkMarketplaceUpdates: vi.fn().mockResolvedValue([]),
 }))
 
 import { AppsTab } from './AppsTab'
