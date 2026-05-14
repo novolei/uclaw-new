@@ -8,6 +8,23 @@ import { automationsSubviewAtom } from '@/atoms/marketplace'
 vi.mock('@/lib/tauri-bridge', () => ({
   getUserProfile: vi.fn().mockResolvedValue({ userName: 'User', avatar: null }),
   listAutomationsHumane: vi.fn().mockResolvedValue([]),
+  listLearnedSkills: vi.fn().mockResolvedValue([]),
+  toggleLearnedSkill: vi.fn().mockResolvedValue(undefined),
+  deleteLearnedSkill: vi.fn().mockResolvedValue(undefined),
+  proposeSkillConsolidation: vi.fn().mockResolvedValue({ clusters: [] }),
+  backfillSkillKeywords: vi.fn().mockResolvedValue({ backfilledSkills: 0, totalLearnedSkills: 0, keywordsInserted: 0 }),
+  listSkills: vi.fn().mockResolvedValue([]),
+  toggleSkill: vi.fn().mockResolvedValue(true),
+  forkSkillToUser: vi.fn().mockResolvedValue(''),
+  reloadSkills: vi.fn().mockResolvedValue([]),
+  listMcpServers: vi.fn().mockResolvedValue([]),
+  listMcpTools: vi.fn().mockResolvedValue([]),
+  addMcpServer: vi.fn().mockResolvedValue({}),
+  updateMcpServer: vi.fn().mockResolvedValue({}),
+  removeMcpServer: vi.fn().mockResolvedValue(true),
+  toggleMcpServer: vi.fn().mockResolvedValue(true),
+  restartMcpServer: vi.fn().mockResolvedValue(true),
+  connectMcpServer: vi.fn().mockResolvedValue(true),
 }))
 
 // automation 组件子树重 —— stub 掉，本测试只关心 KaleidoscopeShell 的模块路由。
@@ -22,6 +39,12 @@ vi.mock('@/components/automation/StoreDetail', () => ({
 }))
 vi.mock('@/components/automation/AppsTab', () => ({
   AppsTab: () => <div data-testid="apps-tab" />,
+}))
+vi.mock('@/components/memory/MemoryGraphView', () => ({
+  MemoryGraphView: () => <div data-testid="memory-graph-view" />,
+}))
+vi.mock('@/components/settings/SkillConsolidationDialog', () => ({
+  SkillConsolidationDialog: () => null,
 }))
 
 describe('KaleidoscopeShell', () => {
@@ -55,9 +78,30 @@ describe('KaleidoscopeShell', () => {
     expect(screen.getByTestId('apps-tab')).toBeInTheDocument()
   })
 
-  it('renders the ComingSoon placeholder for a not-yet-built module', () => {
+  it('renders MemoryGraphView for the memory module', () => {
+    const store = createStore()
+    store.set(kaleidoscopeModuleAtom, 'memory')
+    renderWithProviders(<KaleidoscopeShell />, { store })
+    expect(screen.getByTestId('memory-graph-view')).toBeInTheDocument()
+  })
+
+  it('renders SkillsModule for the skills module', async () => {
     const store = createStore()
     store.set(kaleidoscopeModuleAtom, 'skills')
+    renderWithProviders(<KaleidoscopeShell />, { store })
+    expect(await screen.findByRole('heading', { name: '技能' })).toBeInTheDocument()
+  })
+
+  it('renders IntegrationsModule for the integrations module', async () => {
+    const store = createStore()
+    store.set(kaleidoscopeModuleAtom, 'integrations')
+    renderWithProviders(<KaleidoscopeShell />, { store })
+    expect(await screen.findByText('集成 · MCP')).toBeInTheDocument()
+  })
+
+  it('renders the ComingSoon placeholder for a not-yet-built module', () => {
+    const store = createStore()
+    store.set(kaleidoscopeModuleAtom, 'artifacts')
     renderWithProviders(<KaleidoscopeShell />, { store })
     expect(screen.getByText('即将到来 · Phase 2')).toBeInTheDocument()
     expect(screen.queryByTestId('automation-hub')).not.toBeInTheDocument()

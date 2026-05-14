@@ -632,6 +632,9 @@ export const listMcpServers = (): Promise<McpServerInfo[]> =>
 export const addMcpServer = (input: McpServerInput): Promise<McpServerInfo> =>
   invoke('add_mcp_server', { input });
 
+export const updateMcpServer = (id: string, input: McpServerInput): Promise<McpServerInfo> =>
+  invoke('update_mcp_server', { id, input });
+
 export const removeMcpServer = (id: string): Promise<boolean> =>
   invoke('remove_mcp_server', { id });
 

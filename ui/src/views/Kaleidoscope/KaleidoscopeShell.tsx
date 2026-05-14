@@ -20,6 +20,9 @@ import { KaleidoscopeRail } from './KaleidoscopeRail'
 import { HumansModule } from './modules/Humans/HumansModule'
 import { StoreModule } from './modules/Store/StoreModule'
 import { AppsModule } from './modules/Apps/AppsModule'
+import { MemoryModule } from './modules/Memory/MemoryModule'
+import { SkillsModule } from './modules/Skills/SkillsModule'
+import { IntegrationsModule } from './modules/Integrations/IntegrationsModule'
 import { ComingSoonModule } from './modules/ComingSoonModule'
 
 export function KaleidoscopeShell(): React.ReactElement {
@@ -59,6 +62,12 @@ export function KaleidoscopeShell(): React.ReactElement {
                 <StoreModule />
               ) : moduleId === 'apps' ? (
                 <AppsModule />
+              ) : moduleId === 'memory' ? (
+                <MemoryModule />
+              ) : moduleId === 'skills' ? (
+                <SkillsModule />
+              ) : moduleId === 'integrations' ? (
+                <IntegrationsModule />
               ) : (
                 <ComingSoonModule moduleId={moduleId} />
               )}

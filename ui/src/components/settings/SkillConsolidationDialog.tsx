@@ -1,6 +1,6 @@
 /**
  * SkillConsolidationDialog — preview & apply a LLM-proposed merge plan
- * for learned skills. Opened from SkillsSettings.
+ * for learned skills. Opened from the Kaleidoscope Skills module.
  */
 
 import * as React from 'react'

@@ -2052,7 +2052,7 @@ pub async fn list_mcp_servers(state: State<'_, AppState>) -> Result<Vec<McpServe
         .map(|(id, st, err)| (id, (st, err)))
         .collect();
     Ok(mgr.all_servers().into_iter().map(|c| {
-        let (status_enum, _err) = statuses.get(&c.id)
+        let (status_enum, err) = statuses.get(&c.id)
             .cloned()
             .unwrap_or((crate::mcp::McpServerStatus::Disconnected, None));
         let status = match status_enum {
@@ -2065,11 +2065,14 @@ pub async fn list_mcp_servers(state: State<'_, AppState>) -> Result<Vec<McpServe
             id: c.id.clone(),
             name: c.name.clone(),
             description: c.description.clone(),
+            transport_type: c.transport_type.clone(),
             command: c.command.clone(),
             args: c.args.clone(),
             env: Some(c.env.clone()),
+            url: c.url.clone(),
             enabled: c.enabled,
             auto_approve: c.auto_approve,
+            error_message: err,
             status: status.into(),
         }
     }).collect())
@@ -2080,27 +2083,87 @@ pub async fn add_mcp_server(state: State<'_, AppState>, input: McpServerInput) -
     let config = crate::mcp::McpServerConfig {
         id: input.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         name: input.name.clone(),
-        description: input.description,
-        transport_type: crate::mcp::TransportType::Stdio,
-        command: input.command,
-        args: input.args.unwrap_or_default(),
-        env: input.env.unwrap_or_default(),
-        url: None,
+        description: input.description.clone(),
+        transport_type: input.transport_type.clone().unwrap_or_default(),
+        command: input.command.clone(),
+        args: input.args.clone().unwrap_or_default(),
+        env: input.env.clone().unwrap_or_default(),
+        url: input.url.clone(),
         enabled: true,
-        auto_approve: false,
+        auto_approve: input.auto_approve.unwrap_or(false),
     };
     let mut mgr = state.mcp_manager.write().await;
-    mgr.add_server(config.clone()).map_err(|e| Error::InvalidInput(e))?;
+    mgr.add_server(config.clone()).map_err(Error::InvalidInput)?;
     Ok(McpServerInfo {
         id: config.id,
         name: config.name,
         description: config.description,
+        transport_type: config.transport_type,
         command: config.command,
         args: config.args,
         env: Some(config.env),
+        url: config.url,
         enabled: config.enabled,
         auto_approve: config.auto_approve,
+        error_message: None,
         status: "disconnected".into(),
+    })
+}
+
+#[tauri::command]
+pub async fn update_mcp_server(
+    state: State<'_, AppState>,
+    id: String,
+    input: McpServerInput,
+) -> Result<McpServerInfo, Error> {
+    let mut mgr = state.mcp_manager.write().await;
+    // 保留 enabled —— 编辑表单不拥有这个状态(卡片/抽屉的开关才管它)。
+    let enabled = mgr
+        .all_servers()
+        .into_iter()
+        .find(|c| c.id == id)
+        .map(|c| c.enabled)
+        .ok_or_else(|| Error::NotFound(format!("MCP server '{}' not found", id)))?;
+    let config = crate::mcp::McpServerConfig {
+        id: id.clone(),
+        name: input.name.clone(),
+        description: input.description.clone(),
+        transport_type: input.transport_type.clone().unwrap_or_default(),
+        command: input.command.clone(),
+        args: input.args.clone().unwrap_or_default(),
+        env: input.env.clone().unwrap_or_default(),
+        url: input.url.clone(),
+        enabled,
+        auto_approve: input.auto_approve.unwrap_or(false),
+    };
+    mgr.update_server(&id, config.clone()).map_err(Error::InvalidInput)?;
+    // update_server only rewrites config — read the actual in-memory status
+    // so the return value isn't stale for an already-connected server.
+    let (actual_status, actual_err) = mgr
+        .all_server_statuses()
+        .into_iter()
+        .find(|(sid, _, _)| sid == &id)
+        .map(|(_, st, err)| (st, err))
+        .unwrap_or((crate::mcp::McpServerStatus::Disconnected, None));
+    let status = match actual_status {
+        crate::mcp::McpServerStatus::Disconnected => "disconnected",
+        crate::mcp::McpServerStatus::Connecting => "connecting",
+        crate::mcp::McpServerStatus::Connected => "connected",
+        crate::mcp::McpServerStatus::Error => "error",
+    };
+    Ok(McpServerInfo {
+        id: config.id,
+        name: config.name,
+        description: config.description,
+        transport_type: config.transport_type,
+        command: config.command,
+        args: config.args,
+        env: Some(config.env),
+        url: config.url,
+        enabled: config.enabled,
+        auto_approve: config.auto_approve,
+        error_message: actual_err,
+        status: status.into(),
     })
 }
 
@@ -2198,7 +2261,7 @@ pub async fn get_workspace_capabilities(
             .map(|(id, st, err)| (id, (st, err)))
             .collect();
         mgr.all_servers().into_iter().map(|c| {
-            let (status_enum, _err) = statuses.get(&c.id)
+            let (status_enum, err) = statuses.get(&c.id)
                 .cloned()
                 .unwrap_or((crate::mcp::McpServerStatus::Disconnected, None));
             let status = match status_enum {
@@ -2211,11 +2274,14 @@ pub async fn get_workspace_capabilities(
                 id: c.id.clone(),
                 name: c.name.clone(),
                 description: c.description.clone(),
+                transport_type: c.transport_type.clone(),
                 command: c.command.clone(),
                 args: c.args.clone(),
                 env: Some(c.env.clone()),
+                url: c.url.clone(),
                 enabled: c.enabled,
                 auto_approve: c.auto_approve,
+                error_message: err,
                 status: status.into(),
             }
         }).collect()

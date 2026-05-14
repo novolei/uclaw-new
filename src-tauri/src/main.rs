@@ -322,6 +322,7 @@ fn main() {
             // MCP
             uclaw_core::tauri_commands::list_mcp_servers,
             uclaw_core::tauri_commands::add_mcp_server,
+            uclaw_core::tauri_commands::update_mcp_server,
             uclaw_core::tauri_commands::remove_mcp_server,
             uclaw_core::tauri_commands::toggle_mcp_server,
             uclaw_core::tauri_commands::connect_mcp_server,

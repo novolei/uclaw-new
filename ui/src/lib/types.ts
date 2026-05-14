@@ -847,15 +847,20 @@ export interface MemoryClearResponse {
 
 // ─── MCP ────────────────────────────────────────────────────────────────
 
+export type McpTransportType = 'stdio' | 'http';
+
 export interface McpServerInfo {
   id: string;
   name: string;
   description: string;
+  transportType: McpTransportType;
   command: string;
   args: string[];
   env?: Record<string, string>;
+  url?: string | null;
   enabled: boolean;
   autoApprove: boolean;
+  errorMessage?: string | null;
   status: string;
 }
 
@@ -866,6 +871,9 @@ export interface McpServerInput {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  transportType?: McpTransportType;
+  url?: string | null;
+  autoApprove?: boolean;
 }
 
 // ─── Built-in Skills ────────────────────────────────────────────────────

@@ -402,11 +402,14 @@ pub struct McpServerInfo {
     pub id: String,
     pub name: String,
     pub description: String,
+    pub transport_type: crate::mcp::TransportType,
     pub command: String,
     pub args: Vec<String>,
     pub env: Option<std::collections::HashMap<String, String>>,
+    pub url: Option<String>,
     pub enabled: bool,
     pub auto_approve: bool,
+    pub error_message: Option<String>,
     pub status: String,
 }
 
@@ -419,6 +422,9 @@ pub struct McpServerInput {
     pub command: String,
     pub args: Option<Vec<String>>,
     pub env: Option<std::collections::HashMap<String, String>>,
+    pub transport_type: Option<crate::mcp::TransportType>,
+    pub url: Option<String>,
+    pub auto_approve: Option<bool>,
 }
 
 // ─── Skills ────────────────────────────────────────────────────────────
@@ -1077,11 +1083,14 @@ mod workspace_capabilities_tests {
                 id: "srv-1".into(),
                 name: "github".into(),
                 description: "GitHub MCP".into(),
+                transport_type: crate::mcp::TransportType::Stdio,
                 command: "uvx".into(),
                 args: vec!["mcp-server-github".into()],
                 env: None,
+                url: None,
                 enabled: true,
                 auto_approve: false,
+                error_message: None,
                 status: "connected".into(),
             }],
             skills: vec![SkillInfo {
