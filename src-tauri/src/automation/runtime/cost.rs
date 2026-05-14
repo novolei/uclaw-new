@@ -26,6 +26,8 @@ impl CostCapState {
     pub fn new(cap: CostCapConfig) -> Self {
         Self {
             accumulated_micro: AtomicU64::new(0),
+            // Truncate fractional micro-dollars: rounds the cap down by < $0.00001,
+            // the safe direction (the cap trips slightly early, never late).
             per_run_micro: (cap.per_run_usd * MICRO_PER_USD) as u64,
         }
     }
@@ -34,7 +36,7 @@ impl CostCapState {
     pub fn add(&self, cost_usd: f64) -> f64 {
         let delta = (cost_usd.max(0.0) * MICRO_PER_USD) as u64;
         let prev = self.accumulated_micro.fetch_add(delta, Ordering::Relaxed);
-        (prev + delta) as f64 / MICRO_PER_USD
+        prev.saturating_add(delta) as f64 / MICRO_PER_USD
     }
 
     /// Current accumulated cost in USD.
