@@ -230,6 +230,38 @@ fn write_installed_skill_rows(
     }
 }
 
+/// Best-effort read of a bundled skill's `description` from its SKILL.md
+/// YAML frontmatter. Returns None on any problem — a bad SKILL.md must never
+/// break the AppsTab list. Deliberately does NOT reuse skills::parse_skill_md,
+/// which validates the skill name + enforces activation limits and would
+/// reject otherwise-fine marketplace skills.
+fn read_skill_description(skill_dir: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(skill_dir.join("SKILL.md")).ok()?;
+    let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+    let trimmed = content.trim_start_matches(['\n', '\r']);
+    let after_open = trimmed.strip_prefix("---")?;
+    // Skip to the end of the opening fence line.
+    let after_open_line = &after_open[after_open.find('\n')? + 1..];
+    // Find the closing fence: a line that is exactly "---".
+    let close = after_open_line
+        .lines()
+        .scan(0usize, |offset, line| {
+            let here = *offset;
+            *offset += line.len() + 1; // +1 for the '\n'
+            Some((here, line))
+        })
+        .find(|(_, line)| line.trim() == "---")
+        .map(|(here, _)| here)?;
+    let yaml_str = &after_open_line[..close];
+
+    #[derive(serde::Deserialize)]
+    struct Frontmatter {
+        description: Option<String>,
+    }
+    let fm: Frontmatter = serde_yml::from_str(yaml_str).ok()?;
+    fm.description.filter(|d| !d.trim().is_empty())
+}
+
 /// Synchronous core of `list_installed_marketplace_automations` — separated so
 /// unit tests can drive it without an AppRuntimeService.
 ///
@@ -331,16 +363,15 @@ pub fn list_installed_inner(
         let mut bundled_skills: Vec<InstalledSkillBrief> = Vec::new();
         for s in skill_rows {
             let (skill_id, file_count) = s?;
-            let install_path = skills_root
+            let install_dir = skills_root
                 .join("_marketplace")
                 .join(&slug)
-                .join(&skill_id)
-                .to_string_lossy()
-                .to_string();
+                .join(&skill_id);
+            let description = read_skill_description(&install_dir);
             bundled_skills.push(InstalledSkillBrief {
                 skill_id,
-                description: None, // Phase 3b-β reads SKILL.md
-                install_path,
+                description,
+                install_path: install_dir.to_string_lossy().to_string(),
                 file_count,
             });
         }
@@ -835,6 +866,39 @@ mod tests {
             .collect();
 
         assert_eq!(rows, vec![("skill-a".to_string(), 2_i64)], "stale skill-b row must be gone, skill-a refreshed");
+    }
+
+    #[test]
+    fn read_skill_description_parses_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp.path().join("skill-a");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        // Happy path: frontmatter with a description.
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: skill-a\ndescription: Collects search data\n---\n\nBody.\n",
+        ).unwrap();
+        assert_eq!(
+            super::read_skill_description(&skill_dir),
+            Some("Collects search data".to_string()),
+        );
+
+        // Frontmatter without a description field → None.
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: skill-a\n---\n\nBody.\n",
+        ).unwrap();
+        assert_eq!(super::read_skill_description(&skill_dir), None);
+
+        // Malformed frontmatter (no closing fence) → None, never panics.
+        std::fs::write(skill_dir.join("SKILL.md"), "---\nname: skill-a\nBody with no close").unwrap();
+        assert_eq!(super::read_skill_description(&skill_dir), None);
+
+        // Missing SKILL.md entirely → None.
+        let empty_dir = tmp.path().join("skill-empty");
+        std::fs::create_dir_all(&empty_dir).unwrap();
+        assert_eq!(super::read_skill_description(&empty_dir), None);
     }
 
     #[test]
