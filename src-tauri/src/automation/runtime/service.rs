@@ -37,6 +37,7 @@ use crate::automation::sources::{
     TriggerCallback, WebhookSource, WebpageSource, WecomSource,
 };
 use crate::infra::InfraService;
+use crate::providers::service::ProviderService;
 use crate::services::{ManagedService, ServiceHealth, ServiceStatus};
 
 // ─── constants ────────────────────────────────────────────────────────────────
@@ -78,7 +79,7 @@ pub struct AppRuntimeService {
     /// Automation-scoped file-based memory store.
     pub memory: Arc<AutomationMemoryStore>,
     /// Provider service — resolves the LlmProvider + model for a run.
-    pub provider_service: Arc<crate::providers::service::ProviderService>,
+    pub provider_service: Arc<ProviderService>,
 
     /// Per-spec semaphore; inserted lazily on first `activate`.
     semaphores: Arc<RwLock<HashMap<String, Arc<Semaphore>>>>,
@@ -106,7 +107,7 @@ impl AppRuntimeService {
         custom: Arc<CustomSource>,
         infra: Arc<InfraService>,
         memory: Arc<AutomationMemoryStore>,
-        provider_service: Arc<crate::providers::service::ProviderService>,
+        provider_service: Arc<ProviderService>,
     ) -> Arc<Self> {
         let svc = Arc::new(Self {
             db,
@@ -1050,7 +1051,7 @@ mod tests {
             Arc::new(CustomSource::new()),
             Arc::new(InfraService::new()),
             Arc::new(crate::automation::memory::MemoryStore::new(memory_root)),
-            Arc::new(crate::providers::service::ProviderService::new(&tmp).expect("test provider service")),
+            Arc::new(ProviderService::new(&tmp).expect("test provider service")),
         )
     }
 
