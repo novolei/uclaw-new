@@ -160,6 +160,9 @@ export function useSttStreamingSession(
         silentFor > settings.silenceThresholdMs &&
         interimTextRef.current.trim() !== '' &&
         segmentAge > MIN_SEGMENT_MS &&
+        // 不在重转写途中才定稿——保证定稿启动时没有 in-flight 的段内转写，
+        // 配合下面的 clearInterval，定稿期间不会有「旧段重转写结果」回写串台。
+        !transcribeInFlightRef.current &&
         !silenceFinalizeInProgressRef.current &&
         !endingRef.current
 

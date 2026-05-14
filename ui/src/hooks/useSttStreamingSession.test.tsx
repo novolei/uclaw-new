@@ -221,11 +221,13 @@ describe('useSttStreamingSession — silence finalize', () => {
       vi.advanceTimersByTime(1500)
       await Promise.resolve(); await Promise.resolve()
     })
-    // now go silent for > silenceThresholdMs
+    // now go silent for > silenceThresholdMs. advanceTimersByTimeAsync flushes
+    // microtasks between each timer callback, so the in-flight re-transcribe
+    // resolves (clearing transcribeInFlightRef) before the finalize-eligible
+    // volume tick — and the finalize promise chain resolves too.
     mockCapture.getVolume.mockReturnValue(0)
     await act(async () => {
-      vi.advanceTimersByTime(2000)
-      await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(2100)
     })
     expect(finalized).toEqual(['这是一段话。']) // regularizePunctuation appended 。
     expect(mockCapture.resetSegment).toHaveBeenCalled()
