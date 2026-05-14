@@ -24,6 +24,7 @@ import {
 } from '@/atoms/automation'
 import { automationsSubviewAtom } from '@/atoms/marketplace'
 import { kaleidoscopeModuleAtom } from '@/atoms/kaleidoscope'
+import { useOpenSession } from '@/hooks/useOpenSession'
 import {
   listAutomationsHumane,
   triggerAutomationManualHumane,
@@ -52,11 +53,23 @@ function statusIcon(status: AutomationActivity['status']): React.ReactElement {
 
 // ─── ActivityRow ──────────────────────────────────────────────────────────────
 
-function ActivityRow({ a }: { a: AutomationActivity }): React.ReactElement {
+export function ActivityRow({
+  a,
+  onOpen,
+}: {
+  a: AutomationActivity
+  onOpen: (sessionId: string) => void
+}): React.ReactElement {
   const d = a.durationMs > 0 ? `${(a.durationMs / 1000).toFixed(1)}s` : ''
   const subtitle = a.reportText ?? a.errorText ?? ''
+  const clickable = a.sessionId !== null
   return (
-    <div className="flex items-start gap-2 py-1">
+    <div
+      className={`flex items-start gap-2 py-1 ${clickable ? 'cursor-pointer hover:bg-accent/40 rounded -mx-1 px-1' : ''}`}
+      onClick={() => { if (a.sessionId) onOpen(a.sessionId) }}
+      role={clickable ? 'button' : undefined}
+      title={clickable ? '在 Agent 视图中查看此次运行' : undefined}
+    >
       <div className="mt-0.5">{statusIcon(a.status)}</div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
@@ -93,6 +106,7 @@ function AutomationCard({
   const [triggering, setTriggering] = React.useState(false)
   const [togglingEnabled, setTogglingEnabled] = React.useState(false)
   const [deleting, setDeleting] = React.useState(false)
+  const openSession = useOpenSession()
 
   const isExpanded = selectedId === spec.id
   const specActivities = activities[spec.id] ?? []
@@ -247,7 +261,15 @@ function AutomationCard({
           {specActivities.length === 0 ? (
             <p className="text-[11px] text-muted-foreground py-2">暂无运行记录。</p>
           ) : (
-            specActivities.map((a) => <ActivityRow key={a.id} a={a} />)
+            specActivities.map((a) => (
+              <ActivityRow
+                key={a.id}
+                a={a}
+                onOpen={(sessionId) =>
+                  openSession('agent', sessionId, `${spec.name} · 运行`)
+                }
+              />
+            ))
           )}
         </div>
       )}
