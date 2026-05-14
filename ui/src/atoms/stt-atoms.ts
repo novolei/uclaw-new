@@ -3,8 +3,7 @@
  *
  * - `sttModalStateAtom`: the finite-state machine the streaming modal reads.
  * - `activeComposerAtom`: cross-composer lock — only one composer can record at a time.
- * - `sttSettingsAtom`: user-tunable settings; persisted to localStorage now,
- *    will round-trip to backend stt_save_settings in Task 15.
+ * - `sttSettingsAtom`: user-tunable settings; persisted to localStorage via atomWithStorage.
  * - `modelStatusAtom`: cached model-readiness result from `stt_model_status`.
  */
 import { atom } from 'jotai'

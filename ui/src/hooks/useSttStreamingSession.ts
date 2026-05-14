@@ -65,6 +65,9 @@ export function useSttStreamingSession(
   // opts.onSegmentFinalized 用 ref 持有，避免 effect/interval 闭包过期。
   const onSegmentFinalizedRef = useRef(opts.onSegmentFinalized)
   onSegmentFinalizedRef.current = opts.onSegmentFinalized
+  // active 的当前值用 ref 持有，供卸载 cleanup 闭包读取最新值。
+  const activeRef = useRef(active)
+  activeRef.current = active
 
   const clearTimers = useCallback(() => {
     if (retranscribeTimerRef.current) {
@@ -258,8 +261,10 @@ export function useSttStreamingSession(
     if (endingRef.current) return
     endingRef.current = true
     clearTimers()
-    // 若当前段有内容，先定稿一次。
-    if (interimTextRef.current.trim() !== '') {
+    // 若当前段有内容、且静音定稿没在进行中，先自己定稿一次。
+    // 静音定稿进行中时跳过——那个 in-flight 的 finalizeSegment 会负责这段，
+    // 否则 end() 会对同一段再定稿一次，导致文本被追加两遍。
+    if (!silenceFinalizeInProgressRef.current && interimTextRef.current.trim() !== '') {
       setState({ kind: 'finalizing', volume: 0 })
       try {
         await finalizeSegment()
@@ -284,8 +289,14 @@ export function useSttStreamingSession(
       clearTimers()
       captureRef.current?.stop()
       captureRef.current = null
+      // 若本 composer 持有当前会话，卸载时一并复位共享原子，
+      // 否则切到另一个 composer 时它的 SttModal 会读到残留状态、渲染出幽灵 modal。
+      if (activeRef.current === composer) {
+        setActive(null)
+        setState({ kind: 'idle' })
+      }
     }
-  }, [clearTimers])
+  }, [clearTimers, composer, setActive, setState])
 
   return { state, start, end, cancel }
 }

@@ -166,8 +166,9 @@ export function SttSettings(): React.ReactElement {
               ]}
             />
           </SettingsRow>
-          {/* Use Switch directly with aria-label so tests can query by accessible name */}
-          <SettingsRow label="转写完成后自动发送">
+          {/* Use Switch directly with aria-label so tests can query by accessible name.
+              autoSend 的「会话结束即发送」行为尚未在流式 modal 里接线——开关仅记录偏好。 */}
+          <SettingsRow label="结束语音输入后自动发送（即将支持）">
             <Switch
               aria-label="自动发送"
               checked={settings.autoSend}
