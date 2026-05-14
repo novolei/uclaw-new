@@ -13,7 +13,7 @@
 import * as React from 'react'
 import { useAtom, useSetAtom, useAtomValue } from 'jotai'
 import { toast } from 'sonner'
-import { Pin, PinOff, Settings, Plus, Trash2, Pencil, ChevronDown, ChevronRight, Plug, Zap, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, Hammer, LoaderCircle, Bot } from 'lucide-react'
+import { Pin, PinOff, Settings, Plus, Trash2, Pencil, ChevronDown, ChevronRight, Plug, Zap, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, Hammer, LoaderCircle, Bot, Palmtree } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { useWorkspaceSwipe } from '@/hooks/useWorkspaceSwipe'
@@ -72,6 +72,7 @@ import { WorkspaceSwitcherBar } from '@/components/workspace/WorkspaceSwitcherBa
 // AutomationHub is rendered by MainArea (see atoms/automation::automationPanelOpenAtom)
 import { syncWorkspaceSessionsAtom, refreshWorkspacesAtom, activeWorkspaceIdAtom, workspacesAtom, workspaceSwitchDirectionAtom, swipeGestureAtom } from '@/atoms/workspace'
 import { automationPanelOpenAtom } from '@/atoms/automation'
+import { homeOfficePanelOpenAtom } from '@/atoms/home-office-atoms'
 import { getWorkspaceIcon } from '@/lib/workspace-icons'
 import { MoveSessionDialog } from '@/components/agent/MoveSessionDialog'
 import {
@@ -354,6 +355,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   const setSettingsTab = useSetAtom(settingsTabAtom)
   const setSettingsOpen = useSetAtom(settingsOpenAtom)
   const [automationPanelOpen, setAutomationPanelOpen] = useAtom(automationPanelOpenAtom)
+  const [, setHomeOfficeOpen] = useAtom(homeOfficePanelOpenAtom)
   const [activeItem, setActiveItem] = React.useState<SidebarItemId>('all-chats')
   const [conversations, setConversations] = useAtom(conversationsAtom)
   const [currentConversationId, setCurrentConversationId] = useAtom(currentConversationIdAtom)
@@ -1059,6 +1061,21 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
           >
             <Bot className="size-3.5 shrink-0" />
             <span className="flex-1 text-left">Automations</span>
+          </button>
+        </div>
+      )}
+      {mode === 'agent' && (
+        <div className="px-3 pb-1">
+          <button
+            type="button"
+            onClick={() => setHomeOfficeOpen(true)}
+            className="w-full flex items-center gap-2 px-3 py-1.5 rounded-md
+                       text-[12px] text-foreground/60 hover:text-foreground
+                       hover:bg-foreground/[0.04] transition-colors titlebar-no-drag"
+            title="Home Office"
+          >
+            <Palmtree className="size-3.5 shrink-0" />
+            <span className="flex-1 text-left">Home Office</span>
           </button>
         </div>
       )}
