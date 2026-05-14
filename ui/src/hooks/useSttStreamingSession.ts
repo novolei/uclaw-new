@@ -157,7 +157,7 @@ export function useSttStreamingSession(
       const silentFor = now - lastVoiceMsRef.current
       const segmentAge = now - segmentStartedMsRef.current
       const shouldFinalize =
-        silentFor > settings.silenceThresholdMs &&
+        silentFor > (settings.silenceThresholdMs ?? 1800) &&
         interimTextRef.current.trim() !== '' &&
         segmentAge > MIN_SEGMENT_MS &&
         // 不在重转写途中才定稿——保证定稿启动时没有 in-flight 的段内转写，
