@@ -8,8 +8,11 @@
  *  - 能力组：技能 / 集成 / 记忆
  *  - 底部两段（结构/高度对齐 chat 窗口 LeftSidebar 底部）：
  *    · 返回 + ✦ 装饰行 —— border-t 自带分割线，px-3 py-2（= chat switcher 行规格）
- *    · User / Settings 行 —— px-3 pb-3 pt-2（= chat User 行规格），无独立分割线
- *  - 返回按钮 size-8 主色处理，与 chat 窗口 KaleidoscopeIcon 入口成对、同尺寸
+ *    · User 行 —— px-3 pb-3 pt-2（= chat User 行规格），无独立分割线
+ *  - 返回按钮 size-8、默认无背景、hover 才出 bg-primary/10 —— 与 chat 窗口
+ *    KaleidoscopeIcon 入口成对、同尺寸同处理
+ *  - User 行：受 120px 宽度所限只保留头像 + 用户名（去掉设置齿轮图标，整行
+ *    仍可点击打开设置），头像 size-28 + 文字 text-sm 与 chat 窗口一致
  *
  * 每个模块条目 = lucide 图标 + 中文标签竖排。选中态：资产组用 primary tint，
  * 能力组用 accent tint。全部走 theme token。
@@ -17,7 +20,7 @@
 import * as React from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import {
-  ArrowLeft, Sparkles, Settings,
+  ArrowLeft, Sparkles,
   Bot, Store, LayoutGrid, FileText, Zap, Plug, Brain,
   type LucideIcon,
 } from 'lucide-react'
@@ -68,7 +71,7 @@ function RailItem({ id, label, group, active, onSelect }: RailItemProps): React.
           ? group === 'asset'
             ? 'bg-primary/[0.18] border border-primary/35 text-foreground'
             : 'bg-accent/[0.18] border border-accent/35 text-foreground'
-          : 'border border-transparent text-muted-foreground hover:bg-muted/30',
+          : 'border border-transparent text-muted-foreground hover:bg-foreground/10 hover:text-foreground',
       )}
     >
       <Icon className={cn('size-[22px]', !active && 'opacity-70')} aria-hidden />
@@ -119,15 +122,16 @@ export function KaleidoscopeRail(): React.ReactElement {
       {/* ── 底部两段（结构/高度对齐 chat 窗口 LeftSidebar 底部）── */}
 
       {/* ① 返回 + ✦ 装饰行 —— border-t 自带单条分割线，px-3 py-2（= chat switcher 行规格）。
-          返回按钮 size-8 主色处理，与 chat 窗口的 KaleidoscopeIcon 入口成对、同尺寸。 */}
+          返回按钮 size-8、默认无背景、hover 才出 bg-primary/10 —— 与 chat 窗口的
+          KaleidoscopeIcon 入口成对、同尺寸同处理。 */}
       <div className="shrink-0 px-3 py-2 border-t border-border/40 flex items-center justify-between">
         <button
           type="button"
           onClick={() => setTopLevelView('workspace')}
           aria-label="返回主窗口"
           className="titlebar-no-drag inline-flex items-center justify-center
-                     size-8 rounded-md bg-primary/10 text-primary
-                     hover:bg-primary/20 transition-colors shrink-0"
+                     size-8 rounded-md text-primary
+                     hover:bg-primary/10 transition-colors shrink-0"
         >
           <ArrowLeft className="size-[18px]" />
         </button>
@@ -139,22 +143,22 @@ export function KaleidoscopeRail(): React.ReactElement {
         />
       </div>
 
-      {/* ② User / Settings 行 —— px-3 pb-3 pt-2（= chat User 行规格），无独立分割线。
-          内容尺寸按 120px rail 宽度适配（avatar 24 / text-xs），高度节奏与 chat 一致。 */}
+      {/* ② User 行 —— px-3 pb-3 pt-2（= chat User 行规格），无独立分割线。
+          120px 宽度装不下「头像 + 用户名 + 齿轮」，去掉齿轮图标（整行仍可点击
+          打开设置），头像 size-28 + 文字 text-sm 与 chat 窗口完全一致。 */}
       <div className="shrink-0 px-3 pb-3 pt-2">
         <button
           type="button"
           aria-label="设置"
           onClick={() => setSettingsOpen(true)}
-          className="titlebar-no-drag w-full flex items-center gap-2 px-2.5 py-2
+          className="titlebar-no-drag w-full flex items-center gap-3 px-3 py-2
                      rounded-[10px] text-foreground/70 hover:bg-foreground/[0.04]
                      hover:text-foreground transition-colors"
         >
-          <UserAvatar avatar={userProfile.avatar} size={24} />
-          <span className="flex-1 min-w-0 text-xs truncate text-left">
+          <UserAvatar avatar={userProfile.avatar} size={28} />
+          <span className="flex-1 min-w-0 text-sm truncate text-left">
             {userProfile.userName}
           </span>
-          <Settings className="size-4 shrink-0 text-foreground/40" />
         </button>
       </div>
     </div>

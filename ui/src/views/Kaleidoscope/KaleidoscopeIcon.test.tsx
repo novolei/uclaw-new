@@ -17,23 +17,22 @@ describe('KaleidoscopeIcon', () => {
     expect(onClick).toHaveBeenCalledOnce()
   })
 
-  it('applies the idle background tint only when not active', () => {
+  it('shows a solid background only when active', () => {
     const { rerender } = render(<KaleidoscopeIcon active={false} />)
     const btn = screen.getByRole('button', { name: '打开万花筒' })
-    // idle: bg-primary/10 ; active: bg-primary/20. Assert on bg-primary/10 —
-    // it appears only in the idle state (active has no /10), whereas
-    // bg-primary/20 also lives in the idle `hover:` variant so it can't
-    // distinguish the two.
-    expect(btn.className).toMatch(/bg-primary\/10/)
+    // idle: no standalone bg, only a `hover:bg-primary/10` variant.
+    // active: a solid `bg-primary/20`. Assert on /20 — it exists only in the
+    // active state (idle has no /20 at all).
+    expect(btn.className).not.toMatch(/bg-primary\/20/)
     rerender(<KaleidoscopeIcon active />)
-    expect(btn.className).not.toMatch(/bg-primary\/10/)
+    expect(btn.className).toMatch(/bg-primary\/20/)
   })
 
-  it('bursts confetti on click', async () => {
+  it('bursts confetti on hover', async () => {
     const user = userEvent.setup()
     render(<KaleidoscopeIcon />)
     expect(screen.queryByTestId('kaleidoscope-confetti')).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '打开万花筒' }))
+    await user.hover(screen.getByRole('button', { name: '打开万花筒' }))
     expect(screen.getByTestId('kaleidoscope-confetti')).toBeInTheDocument()
   })
 })
