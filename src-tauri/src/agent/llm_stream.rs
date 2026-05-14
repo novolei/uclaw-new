@@ -4,12 +4,15 @@
 //! ChatDelegate (IPC-emitting) and the headless AutomationDelegate (no-op
 //! sink) can reuse one implementation.
 
-use crate::agent::retry::AgentRetryEvent;
-use crate::agent::types::{ChatMessage, RespondOutput, ToolDefinition};
+use crate::agent::retry::{AgentRetryEvent, BudgetDecision, RetryBudget};
+use crate::agent::types::{ChatMessage, RespondOutput, ResponseMetadata, StreamDelta, ToolCall, ToolDefinition};
 use crate::error::Error;
+use crate::llm::stream_error::{classify_stream_error, StreamErrorKind};
 use crate::llm::CompletionConfig;
 use crate::llm::LlmProvider;
 use async_trait::async_trait;
+use chrono::Utc;
+use futures::StreamExt;
 use std::time::Duration;
 
 /// Side-effects a streaming completion produces. The interactive delegate
@@ -53,11 +56,6 @@ pub async fn stream_completion(
     config: &CompletionConfig,
     sink: &dyn StreamSink,
 ) -> Result<RespondOutput, Error> {
-    use crate::agent::retry::{BudgetDecision, RetryBudget};
-    use crate::agent::types::{ResponseMetadata, StreamDelta, ToolCall};
-    use crate::llm::stream_error::{classify_stream_error, StreamErrorKind};
-    use futures::StreamExt;
-
     let mut retry_budget = RetryBudget::for_agent_loop();
     'stream_attempt: loop {
         match llm.stream(messages.clone(), tools.clone(), config).await {
@@ -178,7 +176,7 @@ pub async fn stream_completion(
                                             }
                                             sink.on_retry_event(AgentRetryEvent::Attempt {
                                                 attempt: retry_budget.attempts(),
-                                                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                                                timestamp_ms: Utc::now().timestamp_millis(),
                                                 reason,
                                             });
                                             continue 'stream_attempt;
@@ -186,6 +184,7 @@ pub async fn stream_completion(
                                         BudgetDecision::Exhausted => {
                                             tracing::error!(error = %e,
                                                 attempts = retry_budget.attempts(),
+                                                elapsed_wait_ms = retry_budget.elapsed_wait().as_millis() as u64,
                                                 "Stream failed after exhausting retry budget");
                                             sink.on_stream_reset();
                                             sink.on_retry_event(AgentRetryEvent::Exhausted {
@@ -253,7 +252,7 @@ pub async fn stream_completion(
                                 }
                                 sink.on_retry_event(AgentRetryEvent::Attempt {
                                     attempt: retry_budget.attempts(),
-                                    timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                                    timestamp_ms: Utc::now().timestamp_millis(),
                                     reason,
                                 });
                                 continue 'stream_attempt;
@@ -287,14 +286,13 @@ mod tests {
     use std::sync::Mutex;
 
     /// A fake LlmProvider that yields a scripted list of StreamDeltas.
-    /// Uses `Arc` to avoid requiring `Error: Clone`.
     struct ScriptedProvider {
-        deltas: std::sync::Arc<Vec<StreamDelta>>,
+        deltas: Vec<StreamDelta>,
     }
 
     impl ScriptedProvider {
         fn new(deltas: Vec<StreamDelta>) -> Self {
-            Self { deltas: std::sync::Arc::new(deltas) }
+            Self { deltas }
         }
     }
 
@@ -384,6 +382,23 @@ mod tests {
                 assert_eq!(tool_calls[0].name, "bash");
             }
             other => panic!("expected ToolCalls, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_ending_without_done_uses_stream_ended_fallback() {
+        let provider = ScriptedProvider::new(vec![
+            StreamDelta::TextDelta { text: "partial".into() },
+            // no Done delta — stream just ends
+        ]);
+        let sink = RecordingSink::default();
+        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink).await.unwrap();
+        match out {
+            RespondOutput::Text { text, metadata, .. } => {
+                assert_eq!(text, "partial");
+                assert_eq!(metadata.finish_reason.as_deref(), Some("stream_ended"));
+            }
+            other => panic!("expected Text, got {:?}", other),
         }
     }
 }
