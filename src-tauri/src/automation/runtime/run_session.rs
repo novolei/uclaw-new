@@ -6,7 +6,7 @@
 //! into agent_messages, and pruning old run-sessions per spec.
 
 use crate::agent::types::{ChatMessage, MessageRole};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 /// The fixed id of the auto-created shared "Automations" home space.
 pub const AUTOMATIONS_SPACE_ID: &str = "automations";
@@ -54,7 +54,7 @@ pub fn create_run_session(
          ORDER BY s.created_at DESC LIMIT 1",
         rusqlite::params![spec_id, session_id],
         |r| r.get(0),
-    ).ok();
+    ).optional()?;
 
     let metadata = serde_json::json!({
         "origin": format!("automation:{}", trigger_tag),
@@ -74,6 +74,9 @@ pub fn create_run_session(
 }
 
 /// Persist a finished run's transcript into agent_messages (bulk, post-loop).
+/// Must be called at most once per `session_id`; message ids are keyed as
+/// `<session_id>-<idx>` so a second call would PK-collide (the D4 design
+/// calls this exactly once, after the loop completes).
 pub fn persist_transcript(
     conn: &Connection,
     session_id: &str,
@@ -110,6 +113,8 @@ pub fn prune_old_run_sessions(
     spec_id: &str,
     keep: u32,
 ) -> rusqlite::Result<usize> {
+    // NOTE: run-sessions not linked via automation_activities.session_id are
+    // not pruned (consistent with D4's link-after-create flow).
     let mut stmt = conn.prepare(
         "SELECT s.id FROM agent_sessions s
          JOIN automation_activities a ON a.session_id = s.id
@@ -126,14 +131,16 @@ pub fn prune_old_run_sessions(
         &[]
     };
 
+    let tx = conn.unchecked_transaction()?;
     for sid in to_prune {
-        conn.execute(
+        tx.execute(
             "UPDATE automation_activities SET session_id = NULL WHERE session_id = ?1",
             [sid],
         )?;
-        conn.execute("DELETE FROM agent_messages WHERE session_id = ?1", [sid])?;
-        conn.execute("DELETE FROM agent_sessions WHERE id = ?1", [sid])?;
+        tx.execute("DELETE FROM agent_messages WHERE session_id = ?1", [sid])?;
+        tx.execute("DELETE FROM agent_sessions WHERE id = ?1", [sid])?;
     }
+    tx.commit()?;
     Ok(to_prune.len())
 }
 
