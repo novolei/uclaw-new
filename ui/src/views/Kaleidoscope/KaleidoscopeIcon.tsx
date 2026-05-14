@@ -68,7 +68,7 @@ export function KaleidoscopeIcon({
         lottieRef={lottieRef}
         animationData={animationData}
         autoplay={false}
-        loop
+        loop={false}
         style={{ width: size, height: size }}
       />
     </LottieErrorBoundary>

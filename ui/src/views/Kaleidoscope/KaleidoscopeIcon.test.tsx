@@ -11,6 +11,7 @@ vi.mock('lottie-react', () => ({
 describe('KaleidoscopeIcon', () => {
   it('renders the static fallback when no animationData is provided', () => {
     render(<KaleidoscopeIcon />)
+    // aria-label "万花筒" lives on the fallback <div role="img"> — asserts the static SVG rendered
     expect(screen.getByLabelText('万花筒')).toBeInTheDocument()
     expect(screen.queryByTestId('lottie-stub')).not.toBeInTheDocument()
   })
