@@ -97,8 +97,8 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     id: 'toggle-stt-recording',
     label: '语音输入开/关',
     group: 'Agent',
-    mac: 'Cmd+Shift+M',
-    win: 'Ctrl+Shift+M',
+    mac: 'Alt+S',
+    win: 'Alt+S',
   },
 ]
 

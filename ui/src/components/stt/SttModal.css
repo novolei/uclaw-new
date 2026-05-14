@@ -1,0 +1,65 @@
+/* ===== SttModal — 辉光漫散射 + 颗粒噪点 ===== */
+
+/* overlay：模糊身后内容 */
+.stt-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: hsl(var(--background) / 0.35);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* modal 容器 */
+.stt-modal-panel {
+  position: relative;
+  width: min(640px, 90vw);
+  border-radius: 20px;
+  overflow: hidden;
+  background: hsl(var(--popover));
+  border: 1px solid hsl(var(--border) / 0.6);
+  box-shadow: 0 24px 70px hsl(var(--foreground) / 0.18);
+}
+
+/* 辉光层：多个径向渐变叠加，色用主题 token，大幅 blur + 缓慢漂移 */
+.stt-modal-glow {
+  position: absolute;
+  inset: -40%;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 60% 45% at 70% 18%, hsl(var(--primary) / 0.40), transparent 70%),
+    radial-gradient(ellipse 55% 40% at 28% 82%, hsl(var(--accent) / 0.30), transparent 70%);
+  filter: blur(44px);
+  animation: stt-glow-drift 22s ease-in-out infinite;
+}
+
+@keyframes stt-glow-drift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(3%, -3%) scale(1.08); }
+}
+
+/* 颗粒噪点叠层 */
+.stt-modal-grain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.05;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+
+/* 内容层 */
+.stt-modal-content {
+  position: relative;
+  z-index: 1;
+  padding: 22px 24px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stt-modal-glow {
+    animation: none;
+  }
+}

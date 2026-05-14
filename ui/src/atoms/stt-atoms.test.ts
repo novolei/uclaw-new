@@ -1,24 +1,16 @@
 import { describe, it, expect } from 'vitest'
 import { createStore } from 'jotai'
 import {
-  recordingStateAtom,
   activeComposerAtom,
   sttSettingsAtom,
   modelStatusAtom,
   sttModalStateAtom,
-  type RecordingState,
   type SttSettings,
   type ModelStatus,
   type SttModalState,
 } from './stt-atoms'
 
 describe('stt-atoms', () => {
-  it('recordingStateAtom defaults to idle', () => {
-    const store = createStore()
-    const state: RecordingState = store.get(recordingStateAtom)
-    expect(state.kind).toBe('idle')
-  })
-
   it('activeComposerAtom defaults to null (single-session lock)', () => {
     const store = createStore()
     expect(store.get(activeComposerAtom)).toBeNull()
