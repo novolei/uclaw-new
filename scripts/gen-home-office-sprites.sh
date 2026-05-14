@@ -15,7 +15,7 @@ set -euo pipefail
 
 PROJECT="${GCP_PROJECT:-project-ec32b5be-e193-4a7a-9c5}"
 REGION="us-central1"
-MODEL="veo-3-fast-generate-preview"
+MODEL="veo-3.0-fast-generate-001"
 OUT_DIR="ui/public/home-office/sprites/lofi-girl"
 TMP_DIR=".cache/home-office-sprites"
 mkdir -p "$OUT_DIR" "$TMP_DIR"
@@ -53,12 +53,15 @@ for entry in "${ASSETS[@]}"; do
   if [ ! -f "$MP4" ]; then
     TOKEN=$(gcloud auth print-access-token)
     RESP=$(curl -sS -X POST \
-      --resolve us-central1-aiplatform.googleapis.com:443:142.250.0.95 \
       -H "Authorization: Bearer $TOKEN" \
       -H "Content-Type: application/json" \
       "https://us-central1-aiplatform.googleapis.com/v1/projects/$PROJECT/locations/$REGION/publishers/google/models/$MODEL:predictLongRunning" \
       -d "{\"instances\":[{\"prompt\":\"$PROMPT\"}],\"parameters\":{\"aspectRatio\":\"16:9\",\"durationSeconds\":8}}")
-    OP_NAME=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['name'])")
+    OP_NAME=$(echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); n=d.get('name'); e=d.get('error',{}).get('message') if d.get('error') else None;
+import sys as _s
+if n: print(n)
+else: _s.stderr.write(f'API error: {e or d}\n'); _s.exit(1)")
+    if [ -z "$OP_NAME" ]; then echo "    failed to start op for $NAME"; exit 1; fi
     # Poll until done
     while true; do
       sleep 8
