@@ -40,13 +40,18 @@ export function KaleidoscopeShell(): React.ReactElement {
 
   return (
     <div className="flex flex-1 min-w-0 min-h-0">
-      {/* rail 浮卡 —— p-2 pr-0 对齐 chat 窗口 sidebar-wrapper */}
-      <div className="p-2 pr-0 shrink-0">
+      {/* rail 浮卡 —— p-2 pr-0 对齐 chat 窗口 sidebar-wrapper.
+          data-tauri-drag-region: the p-2 gutter + the rail's non-button areas
+          (36px traffic-light spacer, inter-button gaps) become window-drag
+          surface. Rail buttons already carry titlebar-no-drag to opt out. */}
+      <div data-tauri-drag-region className="titlebar-drag-region p-2 pr-0 shrink-0">
         <KaleidoscopeRail />
       </div>
-      {/* 主区浮卡 */}
-      <div className="flex-1 min-w-0 min-h-0 p-2">
-        <div className="h-full rounded-2xl shadow-xl bg-content-area overflow-hidden relative">
+      {/* 主区浮卡 —— data-tauri-drag-region makes the p-2 gutter draggable;
+          the content card below opts out (titlebar-no-drag) so modules +
+          their buttons stay clickable. Mirrors the workspace main-panel. */}
+      <div data-tauri-drag-region className="titlebar-drag-region flex-1 min-w-0 min-h-0 p-2">
+        <div className="titlebar-no-drag h-full rounded-2xl shadow-xl bg-content-area overflow-hidden relative">
           <AnimatePresence mode="wait">
             <motion.div
               key={moduleId}
