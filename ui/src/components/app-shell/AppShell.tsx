@@ -14,6 +14,7 @@ import { RightSidePanel } from './RightSidePanel'
 import { MainArea } from '@/components/tabs/MainArea'
 import { AppShellProvider, type AppShellContextType } from '@/contexts/AppShellContext'
 import { ApprovalModal } from '@/components/ApprovalModal'
+import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { AskUserBanner } from '@/components/agent/AskUserBanner'
 import { ExitPlanModeBanner } from '@/components/agent/ExitPlanModeBanner'
 import { ModeBanner } from '@/components/agent/ModeBanner'
@@ -352,6 +353,11 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
             time; the bug was hidden because `bash` was in the global
             auto-approve whitelist short-circuiting the resolver.) */}
         <ApprovalModal />
+
+        {/* Settings dialog — mounted at AppShell level (outside the surface
+            switch) so it's reachable from BOTH the workspace surface AND the
+            Kaleidoscope surface (KaleidoscopeRail has a settings button). */}
+        <SettingsDialog />
 
         {/* Global escalation modal — shows when a humane spec requests a
             human decision. Dequeues one at a time; resolves via
