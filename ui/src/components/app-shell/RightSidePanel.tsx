@@ -10,7 +10,8 @@ import { useAtomValue, useSetAtom } from 'jotai'
 import { listen } from '@tauri-apps/api/event'
 import { FolderOpen, Users, ListChecks, History, Globe } from 'lucide-react'
 import { appModeAtom } from '@/atoms/app-mode'
-import { currentAgentSessionIdAtom, agentSessionPathMapAtom, workspaceActiveRightPanelTabMapAtom } from '@/atoms/agent-atoms'
+import { currentAgentSessionIdAtom, agentSessionPathMapAtom, workspaceActiveRightPanelTabMapAtom, agentSessionsAtom } from '@/atoms/agent-atoms'
+import { isAutomationSession } from '@/components/workspace/WorkspaceRail'
 import { activeWorkspaceIdAtom, workspaceSwitchDirectionAtom } from '@/atoms/workspace'
 import { motion, AnimatePresence, type Variants } from 'motion/react'
 
@@ -33,6 +34,18 @@ import { TrajectoryReel } from '@/components/agent/TrajectoryReel'
 import { BrowserViewer } from '@/components/agent/BrowserViewer'
 
 export type ActiveTab = 'files' | 'teams' | 'plan' | 'trajectory' | 'browser'
+
+/**
+ * Which right-panel tabs to show. For automation run-sessions, teams +
+ * browser are hidden — files/plan/trajectory always matter for a run, but
+ * a run rarely uses teams or browser, and the precise per-run capability
+ * map is a Phase 2b refinement (design §0.6).
+ */
+export function visibleTabs(isAutomationRun: boolean): ActiveTab[] {
+  return isAutomationRun
+    ? ['files', 'plan', 'trajectory']
+    : ['files', 'teams', 'plan', 'trajectory', 'browser']
+}
 
 interface TabButtonProps {
   isActive: boolean
@@ -82,6 +95,12 @@ export function RightSidePanel(): React.ReactElement | null {
   const activeTab: ActiveTab = activeWorkspaceId
     ? (tabMap.get(activeWorkspaceId) ?? 'files')
     : 'files'
+
+  const sessions = useAtomValue(agentSessionsAtom)
+  const currentSession = sessions.find((s) => s.id === currentSessionId) ?? null
+  const isAutomationRun = currentSession ? isAutomationSession(currentSession) : false
+  const tabs = visibleTabs(isAutomationRun)
+  const effectiveTab: ActiveTab = tabs.includes(activeTab) ? activeTab : 'files'
 
   const setActiveTab = React.useCallback((tab: ActiveTab) => {
     if (!activeWorkspaceId) return
@@ -135,36 +154,46 @@ export function RightSidePanel(): React.ReactElement | null {
           so users can still drag the window from the panel's top edge. */}
       <div data-tauri-drag-region className="h-[8px] flex-shrink-0 titlebar-drag-region" />
       <div className="titlebar-no-drag flex items-center gap-1 px-2 pb-1.5 border-b border-border/40 flex-shrink-0">
-        <TabButton
-          isActive={activeTab === 'files'}
-          onClick={() => setActiveTab('files')}
-          icon={<FolderOpen size={13} />}
-          label="Files"
-        />
-        <TabButton
-          isActive={activeTab === 'teams'}
-          onClick={() => setActiveTab('teams')}
-          icon={<Users size={13} />}
-          label="Teams"
-        />
-        <TabButton
-          isActive={activeTab === 'plan'}
-          onClick={() => setActiveTab('plan')}
-          icon={<ListChecks size={13} />}
-          label="Plan"
-        />
-        <TabButton
-          isActive={activeTab === 'trajectory'}
-          onClick={() => setActiveTab('trajectory')}
-          icon={<History size={13} />}
-          label="Trajectory"
-        />
-        <TabButton
-          isActive={activeTab === 'browser'}
-          onClick={() => setActiveTab('browser')}
-          icon={<Globe size={13} />}
-          label="Browser"
-        />
+        {tabs.includes('files') && (
+          <TabButton
+            isActive={effectiveTab === 'files'}
+            onClick={() => setActiveTab('files')}
+            icon={<FolderOpen size={13} />}
+            label="Files"
+          />
+        )}
+        {tabs.includes('teams') && (
+          <TabButton
+            isActive={effectiveTab === 'teams'}
+            onClick={() => setActiveTab('teams')}
+            icon={<Users size={13} />}
+            label="Teams"
+          />
+        )}
+        {tabs.includes('plan') && (
+          <TabButton
+            isActive={effectiveTab === 'plan'}
+            onClick={() => setActiveTab('plan')}
+            icon={<ListChecks size={13} />}
+            label="Plan"
+          />
+        )}
+        {tabs.includes('trajectory') && (
+          <TabButton
+            isActive={effectiveTab === 'trajectory'}
+            onClick={() => setActiveTab('trajectory')}
+            icon={<History size={13} />}
+            label="Trajectory"
+          />
+        )}
+        {tabs.includes('browser') && (
+          <TabButton
+            isActive={effectiveTab === 'browser'}
+            onClick={() => setActiveTab('browser')}
+            icon={<Globe size={13} />}
+            label="Browser"
+          />
+        )}
       </div>
 
       {/* Tab content — `key` combines workspace + active tab so:
@@ -175,7 +204,7 @@ export function RightSidePanel(): React.ReactElement | null {
           WorkspaceFilesView keep their internal state). */}
       <AnimatePresence mode="wait" custom={switchDirection} initial={false}>
         <motion.div
-          key={`${activeWorkspaceId ?? 'no-ws'}:${activeTab}`}
+          key={`${activeWorkspaceId ?? 'no-ws'}:${effectiveTab}`}
           custom={switchDirection}
           variants={rightPanelSlideVariants}
           initial="enter"
@@ -184,13 +213,13 @@ export function RightSidePanel(): React.ReactElement | null {
           transition={{ duration: 0.26, ease: [0.32, 0.72, 0, 1] }}
           className="flex-1 min-h-0 overflow-auto titlebar-no-drag"
         >
-          {activeTab === 'files' && (
+          {effectiveTab === 'files' && (
             <WorkspaceFilesView sessionId={currentSessionId} sessionPath={sessionPath} />
           )}
-          {activeTab === 'teams' && (
+          {effectiveTab === 'teams' && (
             <AgentTeamsPanel />
           )}
-          {activeTab === 'plan' && (
+          {effectiveTab === 'plan' && (
             plan ? (
               <PlanViewer planContent={plan.content} planFilename={plan.filename} />
             ) : (
@@ -199,10 +228,10 @@ export function RightSidePanel(): React.ReactElement | null {
               </div>
             )
           )}
-          {activeTab === 'trajectory' && (
+          {effectiveTab === 'trajectory' && (
             <TrajectoryReel sessionId={currentSessionId} />
           )}
-          {activeTab === 'browser' && (
+          {effectiveTab === 'browser' && (
             <BrowserViewer />
           )}
         </motion.div>
