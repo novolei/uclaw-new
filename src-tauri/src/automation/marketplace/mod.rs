@@ -2,6 +2,7 @@ pub mod cache;
 pub mod halo_adapter;
 pub mod types;
 
+pub use cache::category_counts_cached;
 pub use types::{
     EntryI18n, MarketplaceDetail, MarketplaceInstallProgress, MarketplaceItem,
     MarketplaceQueryResult, MarketplaceUpdate, RegistryEntry, RegistryIndex, RegistrySource,

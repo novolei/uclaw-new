@@ -6,7 +6,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::halo_adapter;
 use super::types::{EntryI18n, MarketplaceItem, MarketplaceQueryResult, RegistryEntry, RegistrySource};
@@ -370,6 +370,50 @@ pub fn category_counts(
     Ok(out)
 }
 
+/// Category → count aggregation that is independent of any category filter and
+/// optionally scoped by item_type + full-text search. Used by StoreHeader to
+/// show stable chip counts that don't change when the user clicks a chip.
+pub fn category_counts_cached(
+    conn: &Connection,
+    item_type: Option<&str>,
+    search: Option<&str>,
+) -> Result<HashMap<String, i64>> {
+    let mut sql = String::from("SELECT i.category, COUNT(*) FROM automation_marketplace_items i");
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    if let Some(q) = search {
+        // FTS5 MATCH requires the bare virtual-table name — aliases are rejected at runtime.
+        sql.push_str(
+            " JOIN automation_marketplace_fts \
+                ON automation_marketplace_fts.slug = i.slug \
+               AND automation_marketplace_fts.registry_id = i.registry_id",
+        );
+        sql.push_str(" WHERE automation_marketplace_fts MATCH ?");
+        params.push(Box::new(q.to_string()));
+    } else {
+        sql.push_str(" WHERE 1=1");
+    }
+
+    if let Some(t) = item_type {
+        sql.push_str(" AND i.item_type = ?");
+        params.push(Box::new(t.to_string()));
+    }
+
+    sql.push_str(" GROUP BY i.category");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt.query_map(param_refs.as_slice(), |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    })?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let (cat, n) = row?;
+        out.insert(cat, n);
+    }
+    Ok(out)
+}
+
 /// Fetch a single item's full detail row, including cached spec_yaml.
 /// If spec_yaml is None, caller should fetch it via halo_adapter and cache it.
 pub fn get_item_with_spec(
@@ -483,6 +527,40 @@ mod tests {
         assert_eq!(result.total, 0);
         assert!(result.items.is_empty());
         assert!(!result.has_more);
+    }
+
+    #[test]
+    fn category_counts_cached_ignores_category_filter_and_respects_type() {
+        let conn = setup();
+        // Two categories, two types
+        conn.execute(
+            "INSERT INTO automation_marketplace_items (registry_id, slug, name, version, author, description, item_type, category, cached_at) VALUES ('halo', 'a1', 'A', '1.0', 'x', 'd', 'automation', 'social', 1)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO automation_marketplace_items (registry_id, slug, name, version, author, description, item_type, category, cached_at) VALUES ('halo', 'a2', 'B', '1.0', 'x', 'd', 'automation', 'productivity', 1)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO automation_marketplace_items (registry_id, slug, name, version, author, description, item_type, category, cached_at) VALUES ('halo', 's1', 'C', '1.0', 'x', 'd', 'skill', 'social', 1)",
+            [],
+        ).unwrap();
+
+        // No filter — all three rows across two categories
+        let counts = category_counts_cached(&conn, None, None).unwrap();
+        assert_eq!(counts.get("social"), Some(&2));
+        assert_eq!(counts.get("productivity"), Some(&1));
+
+        // Filtering by item_type=automation — only automation rows
+        let counts_auto = category_counts_cached(&conn, Some("automation"), None).unwrap();
+        assert_eq!(counts_auto.get("social"), Some(&1));
+        assert_eq!(counts_auto.get("productivity"), Some(&1));
+        assert!(counts_auto.get("skill").is_none());
+
+        // Filtering by item_type=skill — only skill row
+        let counts_skill = category_counts_cached(&conn, Some("skill"), None).unwrap();
+        assert_eq!(counts_skill.get("social"), Some(&1));
+        assert!(counts_skill.get("productivity").is_none());
     }
 
     #[test]

@@ -1404,6 +1404,12 @@ export const installMarketplaceHuman = (
     slug, spaceId, userConfig, progressChannel,
   })
 
+export const marketplaceCategoryCounts = (
+  itemType?: string,
+  search?: string,
+): Promise<Record<string, number>> =>
+  invoke<Record<string, number>>('marketplace_category_counts', { itemType, search })
+
 // Deprecated — kept until Phase 3b removes. New code uses queryMarketplace + filter('automation')
 export const listMarketplaceHumans = (registryUrl?: string): Promise<MarketplaceItem[]> =>
   invoke<MarketplaceItem[]>('list_marketplace_humans', { registryUrl })
