@@ -276,49 +276,40 @@ pub async fn install_human(
         .join(".uclaw")
         .join("skills");
     // Parse spec here so we can inspect requires.skills before installing.
-    let staged = match crate::automation::protocol::parse::parse_humane_v1(&yaml) {
-        Ok(parsed) => {
-            match skill_install::fetch_bundled_skills(&source, &{
-                let path = format!("packages/digital-humans/{}", slug);
-                RegistryEntry {
-                    slug: slug.to_string(),
-                    name: item.name.clone(),
-                    version: item.version.clone(),
-                    author: item.author.clone(),
-                    description: item.description.clone(),
-                    app_type: item.app_type.clone(),
-                    format: None,
-                    path,
-                    download_url: None,
-                    size_bytes: None,
-                    checksum: None,
-                    category: item.category.clone(),
-                    tags: item.tags.clone(),
-                    icon: item.icon.clone(),
-                    locale: item.locale.clone(),
-                    min_app_version: item.min_app_version.clone(),
-                    requires_mcps: vec![],
-                    requires_skills: vec![],
-                    updated_at: None,
-                    i18n: Default::default(),
-                    meta: serde_json::Value::Null,
-                }
-            }, &parsed.spec, &skills_root).await {
-                Ok(s) => s,
-                Err(e) => {
-                    skill_install::cleanup_staging(
-                        &skills_root.join(".staging").join(slug),
-                    );
-                    return Err(e);
-                }
-            }
+    let parsed = crate::automation::protocol::parse::parse_humane_v1(&yaml)
+        .with_context(|| format!("parse spec.yaml for {} during fetching_skills phase", slug))?;
+    let staged = match skill_install::fetch_bundled_skills(&source, &{
+        let path = format!("packages/digital-humans/{}", slug);
+        RegistryEntry {
+            slug: slug.to_string(),
+            name: item.name.clone(),
+            version: item.version.clone(),
+            author: item.author.clone(),
+            description: item.description.clone(),
+            app_type: item.app_type.clone(),
+            format: None,
+            path,
+            download_url: None,
+            size_bytes: None,
+            checksum: None,
+            category: item.category.clone(),
+            tags: item.tags.clone(),
+            icon: item.icon.clone(),
+            locale: item.locale.clone(),
+            min_app_version: item.min_app_version.clone(),
+            requires_mcps: vec![],
+            requires_skills: vec![],
+            updated_at: None,
+            i18n: Default::default(),
+            meta: serde_json::Value::Null,
         }
+    }, &parsed.spec, &skills_root).await {
+        Ok(s) => s,
         Err(e) => {
-            // Spec parse failed — log and proceed without bundled skills.
-            // install_humane_spec_from_source will also try to parse and may succeed
-            // or fail with its own error; we don't block install on this.
-            tracing::warn!(slug = %slug, error = %e, "spec parse in fetching_skills failed; skipping bundled skill fetch");
-            vec![]
+            skill_install::cleanup_staging(
+                &skills_root.join(".staging").join(slug),
+            );
+            return Err(e);
         }
     };
     tracing::info!(slug = %slug, count = staged.len(), "bundled skills staged");
