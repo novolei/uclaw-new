@@ -14,10 +14,11 @@ import { SkillEvolutionTab } from '@/components/settings/SkillEvolutionTab'
 import { cn } from '@/lib/utils'
 import type { UnifiedSkill } from './SkillsModule'
 
-const PROVENANCE_BADGE: Record<'bundled' | 'user' | 'project', { label: string; className: string }> = {
-  bundled: { label: 'Bundled', className: 'bg-primary/10 text-primary border-primary/20' },
-  user:    { label: 'User',    className: 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400' },
-  project: { label: 'Project', className: 'bg-muted text-muted-foreground border-border' },
+const PROVENANCE_BADGE: Record<'bundled' | 'user' | 'project' | 'marketplace', { label: string; className: string }> = {
+  bundled:     { label: 'Bundled',     className: 'bg-primary/10 text-primary border-primary/20' },
+  user:        { label: 'User',        className: 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400' },
+  project:     { label: 'Project',     className: 'bg-muted text-muted-foreground border-border' },
+  marketplace: { label: 'Marketplace', className: 'bg-accent/10 text-accent-foreground border-accent/20' },
 }
 
 function formatDate(s: string): string {

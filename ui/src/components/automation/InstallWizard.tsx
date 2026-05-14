@@ -47,14 +47,20 @@ export function InstallWizard(): React.ReactElement | null {
     if (!state.slug || !state.spaceId) return
     setState((s) => ({ ...s, step: 'progress', progress: { phase: 'fetching_spec', percent: 5 } }))
     try {
-      const row = await installMarketplaceHuman(
+      const outcome = await installMarketplaceHuman(
         state.slug,
         state.spaceId,
         state.userConfig,
         `install_progress_${state.slug}`,
       )
-      setSpecs((prev) => [row, ...prev.filter((s) => s.id !== row.id)])
-      toast.success(`已安装 ${row.name}`)
+      // Only the automation path returns a spec row to merge into the list.
+      if (outcome.kind === 'automation') {
+        const row = outcome.spec
+        setSpecs((prev) => [row, ...prev.filter((s) => s.id !== row.id)])
+        toast.success(`已安装 ${row.name}`)
+      } else {
+        toast.success(`已安装 ${state.slug}`)
+      }
       setTimeout(close, 800)
     } catch (err) {
       setState((s) => ({ ...s, error: String(err) }))

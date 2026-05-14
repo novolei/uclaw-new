@@ -450,6 +450,7 @@ fn main() {
             uclaw_core::tauri_commands::list_marketplace_humans,
             uclaw_core::tauri_commands::install_marketplace_human,
             uclaw_core::tauri_commands::uninstall_marketplace_human,
+            uclaw_core::tauri_commands::list_standalone_installs,
             uclaw_core::tauri_commands::query_marketplace,
             uclaw_core::tauri_commands::marketplace_category_counts,
             uclaw_core::tauri_commands::get_marketplace_detail,

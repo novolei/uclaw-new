@@ -5701,6 +5701,15 @@ pub async fn install_marketplace_human(
 }
 
 #[tauri::command]
+pub async fn list_standalone_installs(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::automation::marketplace::types::StandaloneInstall>, Error> {
+    let conn = state.runtime_service.db.lock().unwrap();
+    crate::automation::marketplace::list_standalone_inner(&conn)
+        .map_err(|e| Error::Internal(format!("{:#}", e)))
+}
+
+#[tauri::command]
 pub async fn uninstall_marketplace_human(
     state: tauri::State<'_, AppState>,
     slug: String,
