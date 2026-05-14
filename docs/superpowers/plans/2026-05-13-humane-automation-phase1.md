@@ -12,6 +12,17 @@
 
 **Honest commit count:** ~22 commits. If your team caps PR size lower, split this plan at the **Task 14 boundary** into Phase 1A (data + parser + migrations, Tasks 0-13) and Phase 1B (runtime + sources + tools + frontend, Tasks 14-22). The split is clean: 1A leaves the runtime untouched on the legacy path; 1B builds the new runtime against 1A's schema.
 
+> **Post-execution note (2026-05-14):** Phase 1 has shipped — `src-tauri/src/automation/`
+> now carries the new `protocol/` `runtime/` `sources/` `tools/` `memory/` structure.
+> This plan is preserved as the **historical Phase 1 execution record** and is not
+> rewritten. One thing has since changed: the frontend touchpoints (Task 20
+> `AutomationHub.tsx`, Task 21 `EscalationModal`) executed as written, but the
+> automation / marketplace UI has since been **migrated into the Kaleidoscope surface**
+> — `AutomationHub` now renders inside the Kaleidoscope `HumansModule`, the legacy
+> `AutomationsView` + `automationPanelOpenAtom` are retired. The backend (Tasks 0–19)
+> is unaffected. See the design doc's §10.1 (frontend-surfacing note) and
+> `docs/superpowers/specs/2026-05-14-kaleidoscope-design.md`.
+
 ---
 
 ## File Structure Overview

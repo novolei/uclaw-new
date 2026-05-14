@@ -722,23 +722,48 @@ To prevent scope creep, the following are **deferred**:
 
 ## 10. Phasing & Migration Plan
 
-Re-sequenced 2026-05-14 after Phase 1 merged. The Phase 3 marketplace work
-splits into UI-first (3a) and backend-completeness (3b) sub-phases so users
-get the visible hello-halo-equivalent store UX before deep multi-registry
-plumbing lands.
+Re-sequenced 2026-05-14 after Phase 1 merged; updated again 2026-05-14 after
+Phase 3a shipped and the **Kaleidoscope surface** absorbed the automation /
+marketplace UI (see §10.1 Frontend surfacing).
 
 | Phase | Scope | Migrations |
 |---|---|---|
 | **1 (merged)** | Humane spec model + full runtime + file/paste import | V20a, V20b, V20c, V21 |
-| **3a (next — Marketplace UI Port)** | Port hello-halo store UI: 3-tab AppsPage (我的数字人 / 我的应用 / 应用商店) + StoreHeader (search + type + category filters) + StoreCard/Grid + StoreDetail (8 sections: deps, logins, config schema preview, system prompt) + StoreInstallDialog (config form + space scope + progress). Backend gains local SQLite cache (V23 partial — `automation_marketplace_items` + `registry_sync_state`), `get_marketplace_detail` / paged `query_marketplace` / `check_marketplace_updates` commands. Still single-registry (DHP) — multi-source is 3b. | V23 (partial) |
-| 2 (after 3a) | Hardening: timeouts, configurable concurrency, `memory_graph` indexer, `escalation.timeout` auto-expire, WeCom signature, InfraEvent enum extension | (none expected) |
+| **3a (merged — Marketplace UI Port)** | hello-halo store UI ported: `StoreHeader` (search + type + category filters) + `StoreCard`/`StoreGrid` + `StoreDetail` (overview / config / deps / prompts) + `InstallWizard` (scope → config → confirm). Backend local SQLite cache (V23 partial — `automation_marketplace_items` + `registry_sync_state`), `get_marketplace_detail` / paged `query_marketplace` / `check_marketplace_updates`. Single-registry (DHP). Followed by the marketplace-i18n + stable-category-counts fixes. **Surfacing was then superseded** by the Kaleidoscope migration — see §10.1. | V23 (partial) |
+| 2 | Hardening: timeouts, configurable concurrency, `memory_graph` indexer, `escalation.timeout` auto-expire, WeCom signature, InfraEvent enum extension | (none expected) |
 | 3b (Marketplace completion) | Multi-registry config (5 built-ins + user-added) + proxy adapters (Smithery / MCP Registry / SkillHub) + local hello-halo workspace scan | V23 (complete: `automation_registries` table) |
-| 4 (FTS + remaining UI) | FTS over `automation_specs` (Phase 1 escalations / specs / activities) + remaining minor UI polish | V22 |
+| 4 (FTS + remaining UI) | FTS over `automation_specs` (escalations / specs / activities) + remaining minor UI polish | V22 |
 | 6+ | Optional avatar/voice "skin" layer | separate roadmap |
 
 The 3a slot was created by user demand on 2026-05-14 after Phase 1 surfaced
-that the existing MarketplaceModal was visually inadequate compared to
+that the original `MarketplaceModal` was visually inadequate compared to
 hello-halo's StoreView. See `docs/superpowers/specs/2026-05-14-marketplace-ui-port-design.md`.
+
+### 10.1 Frontend surfacing — Kaleidoscope migration (2026-05-14)
+
+The 数字人 / 应用商店 / 我的应用 views were **originally** planned (Phase 3a) as a
+chat-window 3-tab AppsPage rendered by `AutomationsView` (`automationPanelOpenAtom`).
+After Phase 3a shipped, the **Kaleidoscope surface** — a second top-level surface
+parallel to the chat/agent workspace — absorbed them. The 3 tabs became 3 separate
+rail modules in the Kaleidoscope shell:
+
+- `HumansModule` → `AutomationHub` （数字人）
+- `StoreModule` → `StoreView` / `StoreDetail` （应用商店）
+- `AppsModule` → `AppsTab` （我的应用）
+
+`AutomationsView` + `automationPanelOpenAtom` are **retired/deleted**; the chat-window
+LeftSidebar "Automations" entry now opens the Kaleidoscope surface (`topLevelViewAtom`
+= `'kaleidoscope'`, `kaleidoscopeModuleAtom` = `'humans'`). The marketplace UI
+components themselves (`StoreView` / `StoreHeader` / `StoreCard`/`Grid` / `StoreDetail`
+/ `InstallWizard`) are **unchanged** — only their mount point moved.
+
+**The backend Humane runtime / protocol / DB schema is entirely unaffected** by this
+migration — it was purely a frontend re-surfacing. Anything below (§2–§9, §11–§13)
+describing the runtime, spec model, tools, and tables still holds verbatim.
+
+See `docs/superpowers/specs/2026-05-14-kaleidoscope-design.md` (esp. §4.1, §7.1–§7.3,
+§10.1) and `docs/superpowers/plans/2026-05-14-kaleidoscope-phase1.md` +
+`...-phase1-fixes.md`.
 
 ---
 
