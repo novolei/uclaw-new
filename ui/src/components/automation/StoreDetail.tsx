@@ -131,9 +131,12 @@ export function StoreDetail(): React.ReactElement {
     localizeEntry('description', item.description, item.i18n, locale)
 
   const openInstallWizard = () => {
+    // skill/mcp aren't workspace-scoped — start at 'config' to skip the scope step
+    const initialStep = item.appType === 'skill' || item.appType === 'mcp' ? 'config' : 'scope'
     setWizard({
-      step: 'scope',
+      step: initialStep,
       slug: item.slug,
+      appType: item.appType,
       spaceId: null,
       userConfig: {},
       progress: null,
