@@ -29,10 +29,20 @@ const LANGUAGE_OPTIONS: Array<{ value: Language; label: string }> = [
   { value: 'ko', label: '韩文' },
 ]
 
+const SILENCE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '1200', label: '1.2 秒（灵敏）' },
+  { value: '1800', label: '1.8 秒（默认）' },
+  { value: '2400', label: '2.4 秒（宽松）' },
+  { value: '3000', label: '3.0 秒（很宽松）' },
+]
+
 export function SttSettings(): React.ReactElement {
   const [modelStatus, setModelStatus] = useAtom(modelStatusAtom)
   const [settings, setSettings] = useAtom(sttSettingsAtom)
   const [devices, setDevices] = React.useState<MediaDeviceInfo[]>([])
+
+  // 兜底：旧 localStorage 值可能缺 silenceThresholdMs。
+  const silenceThresholdMs = settings.silenceThresholdMs ?? 1800
 
   React.useEffect(() => {
     void invoke('stt_model_status')
@@ -156,12 +166,22 @@ export function SttSettings(): React.ReactElement {
               ]}
             />
           </SettingsRow>
-          {/* Use Switch directly with aria-label so tests can query by accessible name */}
-          <SettingsRow label="转写完成后自动发送">
+          {/* Use Switch directly with aria-label so tests can query by accessible name.
+              autoSend 的「会话结束即发送」行为尚未在流式 modal 里接线——开关仅记录偏好。 */}
+          <SettingsRow label="结束语音输入后自动发送（即将支持）">
             <Switch
               aria-label="自动发送"
               checked={settings.autoSend}
               onCheckedChange={(v: boolean) => setSettings({ ...settings, autoSend: v })}
+            />
+          </SettingsRow>
+          <SettingsRow label="静音多久后自动录入">
+            <SettingsSelect
+              value={String(silenceThresholdMs)}
+              onValueChange={(v: string) =>
+                setSettings({ ...settings, silenceThresholdMs: Number(v) })
+              }
+              options={SILENCE_OPTIONS}
             />
           </SettingsRow>
         </SettingsCard>

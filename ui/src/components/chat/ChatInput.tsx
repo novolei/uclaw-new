@@ -26,9 +26,10 @@ import {
   type ComposerMentionControllerHandle,
 } from '@/components/composer/ComposerMentionController'
 import { SpeechButton } from '@/components/ai-elements/speech-button'
-import { InlineRecorder } from '@/components/stt/InlineRecorder'
+import { SttModal } from '@/components/stt/SttModal'
 import { FirstRunDialog } from '@/components/stt/FirstRunDialog'
-import { recordingStateAtom, sttSettingsAtom, modelStatusAtom } from '@/atoms/stt-atoms'
+import { modelStatusAtom } from '@/atoms/stt-atoms'
+import { smartJoin } from '@/lib/stt/punctuation'
 import { invoke } from '@tauri-apps/api/core'
 import { Button } from '@/components/ui/button'
 import {
@@ -104,8 +105,6 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
 
   // STT state
   const [firstRunOpen, setFirstRunOpen] = React.useState(false)
-  const recordingState = useAtomValue(recordingStateAtom)
-  const sttSettings = useAtomValue(sttSettingsAtom)
   const setModelStatus = useSetAtom(modelStatusAtom)
 
   // Query model status on mount so SpeechButton can show indicator dot.
@@ -220,23 +219,14 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
     // 附件清理由 ChatView 的 handleSend 负责
   }, [canSend, content, onSend])
 
-  /** 语音识别结果 — TipTap 光标位置插入 */
-  const handleSpeechTranscript = React.useCallback((text: string): void => {
+  const handleSegmentFinalized = React.useCallback((text: string): void => {
     const editor = composerEditorRef.current
-    if (editor) {
+    if (editor && editor.isFocused) {
       editor.commands.insertContent(text)
     } else {
-      // Fallback: append to controlled value.
-      setContent(content + (content ? ' ' : '') + text)
+      setContent(smartJoin(content, text))
     }
   }, [composerEditorRef, content, setContent])
-
-  /** 转写完成后按 autoSend 设置触发发送 */
-  const handleAfterTranscribe = React.useCallback((_text: string): void => {
-    if (sttSettings.autoSend) {
-      onSend(content.trim())
-    }
-  }, [content, onSend, sttSettings.autoSend])
 
   /** 粘贴文件回调 */
   const handlePasteFiles = React.useCallback((files: File[]): void => {
@@ -399,14 +389,7 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
 
               <SpeechButton
                 composer="chat"
-                onTranscript={handleSpeechTranscript}
-                onAfterTranscribe={handleAfterTranscribe}
                 onShowDownloadDialog={() => setFirstRunOpen(true)}
-              />
-              <InlineRecorder
-                state={recordingState}
-                onStop={() => { window.dispatchEvent(new CustomEvent('uclaw:stt-stop')) }}
-                onCancel={() => { window.dispatchEvent(new CustomEvent('uclaw:stt-cancel')) }}
               />
 
               <ToolSelectorPopover />
@@ -458,6 +441,7 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
           </div>
         </div>
     </div>
+    <SttModal composer="chat" onSegmentFinalized={handleSegmentFinalized} />
     <FirstRunDialog
       open={firstRunOpen}
       onOpenChange={setFirstRunOpen}

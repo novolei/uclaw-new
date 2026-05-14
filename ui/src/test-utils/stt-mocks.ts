@@ -1,5 +1,5 @@
 /**
- * stt-mocks — jsdom-safe mocks for MediaRecorder / AudioContext / AnalyserNode.
+ * stt-mocks — jsdom-safe mocks for AudioContext / AudioWorkletNode / mediaDevices.
  *
  * jsdom (vitest's default env) doesn't ship browser audio APIs, so STT-related
  * tests must stub them. These helpers install minimal-but-realistic mocks on
@@ -8,52 +8,29 @@
 import { vi } from 'vitest'
 
 export interface InstalledStubs {
-  emitData: (chunk: Blob) => void
-  emitStop: () => void
+  emitPcm: (pcm: Float32Array) => void
   setVolume: (v: number) => void
   cleanup: () => void
 }
 
 export function installAudioStubs(): InstalledStubs {
-  const dataListeners: Array<(e: BlobEvent) => void> = []
-  const stopListeners: Array<() => void> = []
   let volumeByte = 0
+  const workletPorts: Array<{ onmessage: ((e: MessageEvent) => void) | null }> = []
 
-  // ── MediaRecorder ───────────────────────────────────────────────────────
-  class MockMediaRecorder {
-    state: 'inactive' | 'recording' | 'paused' = 'inactive'
-    ondataavailable: ((e: BlobEvent) => void) | null = null
-    onstop: (() => void) | null = null
-    mimeType: string
-    constructor(_stream: MediaStream, opts?: MediaRecorderOptions) {
-      this.mimeType = opts?.mimeType ?? 'audio/webm'
+  // ── AudioWorkletNode (mock) ──────────────────────────────────────────────
+  class MockAudioWorkletNode {
+    port: { onmessage: ((e: MessageEvent) => void) | null }
+    constructor() {
+      this.port = { onmessage: null }
+      workletPorts.push(this.port)
     }
-    start() {
-      this.state = 'recording'
-    }
-    stop() {
-      this.state = 'inactive'
-      const stopFn = () => {
-        if (this.onstop) this.onstop()
-        stopListeners.forEach((l) => l())
-      }
-      stopFn()
-    }
-    addEventListener(ev: string, cb: EventListenerOrEventListenerObject) {
-      if (ev === 'dataavailable')
-        dataListeners.push(cb as (e: BlobEvent) => void)
-      if (ev === 'stop') stopListeners.push(cb as () => void)
-    }
-    static isTypeSupported(_t: string) {
-      return true
-    }
+    connect() {}
+    disconnect() {}
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ;(globalThis as any).MediaRecorder = MockMediaRecorder
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ;(globalThis as any).BlobEvent = Event
+  ;(globalThis as any).AudioWorkletNode = MockAudioWorkletNode
 
-  // ── AudioContext (only what audio-capture.ts uses) ──────────────────────
+  // ── AudioContext (only what streaming-capture.ts uses) ──────────────────
   class MockAnalyser {
     fftSize = 256
     frequencyBinCount = 128
@@ -64,6 +41,7 @@ export function installAudioStubs(): InstalledStubs {
   class MockAudioContext {
     sampleRate = 16000
     state: AudioContextState = 'running'
+    audioWorklet = { addModule: (_url: string) => Promise.resolve() }
     createAnalyser() {
       return new MockAnalyser()
     }
@@ -102,20 +80,14 @@ export function installAudioStubs(): InstalledStubs {
   })
 
   return {
-    emitData(chunk: Blob) {
-      dataListeners.forEach((l) =>
-        l({ data: chunk } as unknown as BlobEvent),
-      )
-    },
-    emitStop() {
-      stopListeners.forEach((l) => l())
+    emitPcm(pcm: Float32Array) {
+      workletPorts.forEach((p) => p.onmessage?.({ data: pcm } as MessageEvent))
     },
     setVolume(v: number) {
       volumeByte = Math.max(0, Math.min(255, v))
     },
     cleanup() {
-      dataListeners.length = 0
-      stopListeners.length = 0
+      workletPorts.length = 0
       Object.defineProperty(navigator, 'mediaDevices', {
         configurable: true,
         value: undefined,

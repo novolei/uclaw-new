@@ -42,6 +42,12 @@ describe('SttSettings', () => {
   it('shows shortcut hint linking to keyboard settings', () => {
     const store = createStore()
     renderWithProviders(<SttSettings />, { store })
-    expect(screen.getByText(/Cmd\+Shift\+M|Ctrl\+Shift\+M|⌘\+Shift\+M|⌘⇧M/)).not.toBeNull()
+    expect(screen.getByText(/Alt\+S|⌥S/)).not.toBeNull()
+  })
+
+  it('renders silence threshold select with default value', () => {
+    const store = createStore()
+    renderWithProviders(<SttSettings />, { store })
+    expect(screen.getByText('1.8 秒（默认）')).not.toBeNull()
   })
 })

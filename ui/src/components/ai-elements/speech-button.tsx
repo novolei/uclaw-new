@@ -1,17 +1,12 @@
 /**
- * SpeechButton — toggle for inline voice recording in the chat / agent composer.
+ * SpeechButton — 聊天 / agent composer 里的语音输入开关按钮。
  *
- * - Click while `modelStatus.kind !== 'ready'` → opens FirstRunDialog (caller-supplied).
- * - Click while ready & idle → starts recording via useSttRecording.
- * - Click while recording → stops + transcribes (alias for InlineRecorder's check button).
- *
- * The actual InlineRecorder UI is rendered by the parent composer so it sits in
- * the action row between SpeechButton and the next tool.
- *
- * Window events drive integration with InlineRecorder + FirstRunDialog (Task 13/14):
- *   - 'uclaw:stt-stop'              → if recording, stop + transcribe
- *   - 'uclaw:stt-cancel'            → if recording, drop audio
- *   - 'uclaw:stt-start-after-ready' → if idle, start recording (fired by FirstRunDialog when download completes)
+ * 点击 / 快捷键 → 开或关流式语音 modal（SttModal）。SpeechButton 本身不持有
+ * 录音会话——会话由 SttModal 内部的 useSttStreamingSession 持有。两者通过
+ * window 事件桥接：
+ *   - 'uclaw:stt-start' → SttModal 调 session.start()
+ *   - 'uclaw:stt-end'   → SttModal 调 session.end()
+ *   - 'uclaw:stt-start-after-ready' → 模型下载完后由 FirstRunDialog 派发
  */
 import * as React from 'react'
 import { Mic, MicOff } from 'lucide-react'
@@ -19,92 +14,64 @@ import { useAtomValue } from 'jotai'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
-import { useSttRecording } from '@/hooks/useSttRecording'
 import { useShortcut } from '@/hooks/useShortcut'
-import { modelStatusAtom, type ComposerKind } from '@/atoms/stt-atoms'
+import {
+  modelStatusAtom,
+  sttModalStateAtom,
+  activeComposerAtom,
+  type ComposerKind,
+} from '@/atoms/stt-atoms'
 
 interface SpeechButtonProps {
   composer?: ComposerKind
-  onTranscript: (text: string) => void
-  /** Called when the user clicks the mic and the model isn't downloaded yet. */
+  /** 点击麦克风但模型还没下载时调用。 */
   onShowDownloadDialog?: () => void
-  /** Optional callback after a successful transcript — used by parent to trigger auto-send. */
-  onAfterTranscribe?: (text: string) => void
 }
 
 export function SpeechButton({
   composer = 'chat',
-  onTranscript,
   onShowDownloadDialog,
-  onAfterTranscribe,
 }: SpeechButtonProps): React.ReactElement {
   const modelStatus = useAtomValue(modelStatusAtom)
-  const handleTranscript = React.useCallback(
-    (text: string) => {
-      onTranscript(text)
-      onAfterTranscribe?.(text)
-    },
-    [onTranscript, onAfterTranscribe],
-  )
-  const stt = useSttRecording(composer, { onTranscribe: handleTranscript })
+  const modalState = useAtomValue(sttModalStateAtom)
+  const activeComposer = useAtomValue(activeComposerAtom)
 
-  const handleClick = React.useCallback(async () => {
-    if (stt.state.kind === 'recording') {
-      await stt.stop()
+  // 本 composer 的 modal 是否开着。
+  const isOpenHere = modalState.kind !== 'idle' && activeComposer === composer
+  // 别的 composer 占用中。
+  const isBusyElsewhere =
+    modalState.kind !== 'idle' && activeComposer !== null && activeComposer !== composer
+
+  const handleClick = React.useCallback(() => {
+    if (isBusyElsewhere) return
+    if (isOpenHere) {
+      window.dispatchEvent(new CustomEvent('uclaw:stt-end'))
       return
     }
-    if (stt.state.kind === 'transcribing') return
     if (modelStatus.kind !== 'ready') {
       onShowDownloadDialog?.()
       return
     }
-    await stt.start()
-  }, [modelStatus.kind, onShowDownloadDialog, stt])
+    window.dispatchEvent(new CustomEvent('uclaw:stt-start'))
+  }, [isBusyElsewhere, isOpenHere, modelStatus.kind, onShowDownloadDialog])
 
-  // Global shortcut → only the chat-side instance responds, to avoid double-fire
-  // when both ChatInput and AgentView mount their SpeechButton.
+  // 全局快捷键 → 只有 chat-side 实例响应，避免两个 composer 都挂时双触发。
   useShortcut({
     id: 'toggle-stt-recording',
-    handler: () => {
-      void handleClick()
-    },
+    handler: handleClick,
     disabled: composer !== 'chat',
   })
 
-  // Window-event bus for InlineRecorder + FirstRunDialog wiring (Task 14).
-  React.useEffect(() => {
-    const handleStop = () => {
-      if (stt.state.kind === 'recording') void stt.stop()
-    }
-    const handleCancel = () => {
-      if (stt.state.kind === 'recording') stt.cancel()
-    }
-    const handleStartAfterReady = () => {
-      if (stt.state.kind === 'idle') void stt.start()
-    }
-    window.addEventListener('uclaw:stt-stop', handleStop)
-    window.addEventListener('uclaw:stt-cancel', handleCancel)
-    window.addEventListener('uclaw:stt-start-after-ready', handleStartAfterReady)
-    return () => {
-      window.removeEventListener('uclaw:stt-stop', handleStop)
-      window.removeEventListener('uclaw:stt-cancel', handleCancel)
-      window.removeEventListener('uclaw:stt-start-after-ready', handleStartAfterReady)
-    }
-  }, [stt])
-
-  const recording =
-    stt.state.kind === 'recording' || stt.state.kind === 'transcribing'
-
   const tooltipText =
     modelStatus.kind === 'ready'
-      ? recording
-        ? '点击停止录音'
+      ? isOpenHere
+        ? '结束语音输入'
         : '语音输入'
       : modelStatus.kind === 'downloading'
         ? `模型下载中… ${modelStatus.percent}%`
         : '语音输入（点击下载模型）'
 
-  const Icon = stt.state.kind === 'permission-denied' ? MicOff : Mic
+  const Icon = modalState.kind === 'permission-denied' ? MicOff : Mic
 
   return (
     <Tooltip>
@@ -117,20 +84,18 @@ export function SpeechButton({
           onClick={handleClick}
           className={cn(
             'size-[30px] rounded-full transition-colors relative',
-            recording
+            isOpenHere
               ? 'text-primary bg-primary/10 hover:bg-primary/20'
               : 'text-foreground/60 hover:text-foreground',
           )}
         >
           <Icon className="size-5" />
-          {/* "半启用" 小点：未下载且非录音中时显示 */}
-          {modelStatus.kind === 'not-downloaded' && !recording && (
+          {modelStatus.kind === 'not-downloaded' && !isOpenHere && (
             <span
               aria-hidden
               className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary"
             />
           )}
-          {/* 下载中：右下角百分比角标 */}
           {modelStatus.kind === 'downloading' && (
             <span
               aria-hidden
