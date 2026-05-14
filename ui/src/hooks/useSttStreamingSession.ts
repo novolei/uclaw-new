@@ -1,0 +1,213 @@
+/**
+ * useSttStreamingSession — 流式语音 modal 的会话编排 FSM。
+ *
+ * 替代 useSttRecording。驱动 SttModal：claim 跨 composer 锁、启停 streaming-capture、
+ * 段内每 ~1.5s 重转写做实时预览（Task 5）、静音超时把段定稿并通过 onSegmentFinalized
+ * 回调追加到聊天输入框（Task 6）。
+ */
+import { useCallback, useEffect, useRef } from 'react'
+import { useAtom, useAtomValue } from 'jotai'
+import { invoke } from '@tauri-apps/api/core'
+import {
+  sttModalStateAtom,
+  activeComposerAtom,
+  modelStatusAtom,
+  sttSettingsAtom,
+  type ComposerKind,
+  type SttModalState,
+} from '@/atoms/stt-atoms'
+import { createStreamingCapture, type StreamingCapture } from '@/lib/stt/streaming-capture'
+import { regularizePunctuation } from '@/lib/stt/punctuation'
+
+export const RETRANSCRIBE_INTERVAL_MS = 1500
+export const VOLUME_SAMPLE_INTERVAL_MS = 80
+export const MIN_SEGMENT_MS = 800
+/** 音量高于此值视为「有人在说话」。 */
+export const VOICE_VOLUME_THRESHOLD = 0.04
+
+export type StartResult = 'started' | 'busy' | 'needs-download' | 'permission-denied' | 'error'
+
+interface UseSttStreamingSessionOptions {
+  /** 每段定稿后调用，参数是规整过标点的文本。由调用方追加到聊天输入框。 */
+  onSegmentFinalized?: (text: string) => void
+}
+
+export interface SttSessionHandle {
+  state: SttModalState
+  start: () => Promise<StartResult>
+  /** 主动结束：定稿当前未完成段（若有），然后关闭。 */
+  end: () => Promise<void>
+  /** 取消：丢弃当前段，直接关闭。 */
+  cancel: () => void
+}
+
+export function useSttStreamingSession(
+  composer: ComposerKind,
+  opts: UseSttStreamingSessionOptions = {},
+): SttSessionHandle {
+  const [sharedState, setState] = useAtom(sttModalStateAtom)
+  const [active, setActive] = useAtom(activeComposerAtom)
+  const state: SttModalState =
+    active === composer || active === null ? sharedState : { kind: 'idle' }
+  const modelStatus = useAtomValue(modelStatusAtom)
+  const settings = useAtomValue(sttSettingsAtom)
+
+  const captureRef = useRef<StreamingCapture | null>(null)
+  const retranscribeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const volumeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const transcribeInFlightRef = useRef(false)
+  const lastVoiceMsRef = useRef(0)
+  const segmentStartedMsRef = useRef(0)
+  const interimTextRef = useRef('')
+  const endingRef = useRef(false)
+  // opts.onSegmentFinalized 用 ref 持有，避免 effect/interval 闭包过期。
+  const onSegmentFinalizedRef = useRef(opts.onSegmentFinalized)
+  onSegmentFinalizedRef.current = opts.onSegmentFinalized
+
+  const clearTimers = useCallback(() => {
+    if (retranscribeTimerRef.current) {
+      clearInterval(retranscribeTimerRef.current)
+      retranscribeTimerRef.current = null
+    }
+    if (volumeTimerRef.current) {
+      clearInterval(volumeTimerRef.current)
+      volumeTimerRef.current = null
+    }
+  }, [])
+
+  const teardown = useCallback(() => {
+    clearTimers()
+    captureRef.current?.stop()
+    captureRef.current = null
+    transcribeInFlightRef.current = false
+    interimTextRef.current = ''
+    endingRef.current = false
+  }, [clearTimers])
+
+  // 转写当前段一次，返回原始文本（不加标点）。失败抛错。
+  const transcribeSegment = useCallback(async (): Promise<string> => {
+    const cap = captureRef.current
+    if (!cap) return ''
+    const audio = cap.getSegmentPcmBase64()
+    if (audio === '') return ''
+    const result = (await invoke('stt_transcribe', {
+      request: {
+        audio_bytes_base64: audio,
+        language: settings.language === 'auto' ? null : settings.language,
+        sample_rate: 16000,
+      },
+    })) as { text: string }
+    return result.text
+  }, [settings.language])
+
+  // ── Task 5 会填充：startRetranscribeLoop ─────────────────────────
+  const startRetranscribeLoop = useCallback(() => {
+    // placeholder — Task 5 实现
+  }, [])
+
+  // ── Task 6 会填充：finalizeSegment + 静音检测 ────────────────────
+  const finalizeSegment = useCallback(async (): Promise<void> => {
+    // Task 6 实现：转写当前段 → regularizePunctuation → onSegmentFinalized
+    // → resetSegment → 重置 interim/segment 计时 → 回 listening
+    const cap = captureRef.current
+    if (!cap) return
+    try {
+      const raw = await transcribeSegment()
+      const text = regularizePunctuation(raw, settings.language)
+      if (text) onSegmentFinalizedRef.current?.(text)
+    } finally {
+      cap.resetSegment()
+      interimTextRef.current = ''
+      segmentStartedMsRef.current = Date.now()
+      lastVoiceMsRef.current = Date.now()
+    }
+  }, [transcribeSegment, settings.language])
+
+  const startVolumeLoop = useCallback(() => {
+    // Task 6 会扩展为「采样音量 + 静音检测」。骨架先只刷 volume。
+    volumeTimerRef.current = setInterval(() => {
+      const cap = captureRef.current
+      if (!cap) return
+      const v = cap.getVolume()
+      setState((prev) =>
+        prev.kind === 'listening' ? { ...prev, volume: v } : prev,
+      )
+    }, VOLUME_SAMPLE_INTERVAL_MS)
+  }, [setState])
+
+  const start = useCallback(async (): Promise<StartResult> => {
+    if (active !== null && active !== composer) return 'busy'
+    if (modelStatus.kind !== 'ready') return 'needs-download'
+    setActive(composer)
+    setState({ kind: 'requesting-permission' })
+    let cap: StreamingCapture
+    try {
+      cap = await createStreamingCapture()
+      await cap.start(settings.microphoneDeviceId)
+    } catch (e) {
+      setActive(null)
+      const name = (e as { name?: string })?.name
+      if (name === 'NotAllowedError' || name === 'SecurityError') {
+        setState({ kind: 'permission-denied' })
+        return 'permission-denied'
+      }
+      setState({ kind: 'error', message: String((e as Error)?.message ?? e) })
+      setTimeout(() => setState({ kind: 'idle' }), 1500)
+      return 'error'
+    }
+    captureRef.current = cap
+    const now = Date.now()
+    segmentStartedMsRef.current = now
+    lastVoiceMsRef.current = now
+    interimTextRef.current = ''
+    endingRef.current = false
+    setState({ kind: 'listening', segmentStartedMs: now, volume: 0, interimText: '' })
+    startRetranscribeLoop()
+    startVolumeLoop()
+    return 'started'
+  }, [
+    active,
+    composer,
+    modelStatus.kind,
+    settings.microphoneDeviceId,
+    setActive,
+    setState,
+    startRetranscribeLoop,
+    startVolumeLoop,
+  ])
+
+  const end = useCallback(async (): Promise<void> => {
+    if (endingRef.current) return
+    endingRef.current = true
+    clearTimers()
+    // 若当前段有内容，先定稿一次。
+    if (interimTextRef.current.trim() !== '') {
+      setState({ kind: 'finalizing', volume: 0 })
+      try {
+        await finalizeSegment()
+      } catch {
+        // 定稿失败也照常关闭，已定稿的段不丢。
+      }
+    }
+    teardown()
+    setActive(null)
+    setState({ kind: 'idle' })
+  }, [clearTimers, finalizeSegment, setActive, setState, teardown])
+
+  const cancel = useCallback(() => {
+    teardown()
+    setActive(null)
+    setState({ kind: 'idle' })
+  }, [setActive, setState, teardown])
+
+  // 卸载时清理。
+  useEffect(() => {
+    return () => {
+      clearTimers()
+      captureRef.current?.stop()
+      captureRef.current = null
+    }
+  }, [clearTimers])
+
+  return { state, start, end, cancel }
+}
