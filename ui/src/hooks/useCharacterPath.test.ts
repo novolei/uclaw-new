@@ -16,8 +16,8 @@ function wrapper(store: ReturnType<typeof createStore>) {
 }
 
 describe('useCharacterPath', () => {
-  beforeEach(() => vi.useFakeTimers())
-  afterEach(() => vi.useRealTimers())
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
 
   it('starts walking when state changes to thinking', () => {
     const store = createStore()
