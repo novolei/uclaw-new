@@ -14,6 +14,12 @@ import { SkillEvolutionTab } from '@/components/settings/SkillEvolutionTab'
 import { cn } from '@/lib/utils'
 import type { UnifiedSkill } from './SkillsModule'
 
+const PROVENANCE_BADGE: Record<'bundled' | 'user' | 'project', { label: string; className: string }> = {
+  bundled: { label: 'Bundled', className: 'bg-primary/10 text-primary border-primary/20' },
+  user:    { label: 'User',    className: 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400' },
+  project: { label: 'Project', className: 'bg-muted text-muted-foreground border-border' },
+}
+
 function formatDate(s: string): string {
   if (!s) return ''
   const d = new Date(s)
@@ -83,6 +89,13 @@ export function SkillDetail({
             <span className="rounded-full bg-accent/15 border border-accent/35 px-2 py-0.5 text-[10px] text-accent-foreground">
               {skill.kind === 'learned' ? '学得' : '内置'}
             </span>
+            {skill.kind === 'builtin' && skill.raw.provenance && (
+              <span
+                className={`rounded-full border px-2 py-0.5 text-[10px] ${PROVENANCE_BADGE[skill.raw.provenance].className}`}
+              >
+                {PROVENANCE_BADGE[skill.raw.provenance].label}
+              </span>
+            )}
           </div>
           {skill.kind === 'learned' ? (
             <div className="mt-1 text-[11px] text-muted-foreground tabular-nums">
