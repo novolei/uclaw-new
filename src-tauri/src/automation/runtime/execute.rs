@@ -11,8 +11,12 @@ use crate::automation::tools::{
     report_to_user::ReportInput,
     request_escalation::RequestEscalationInput,
 };
+use crate::agent::tools::tool::ToolRegistry;
+use crate::automation::runtime::cost::CostCapState;
 use crate::error::Error;
+use crate::llm::LlmProvider;
 use async_trait::async_trait;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -34,15 +38,15 @@ pub struct AutomationDelegate {
     pub gate: Arc<Mutex<Option<CompletionGate>>>,
     pub auto_continue: AutoContinueConfig,
     /// LLM provider resolved from the app's ProviderService.
-    pub llm: Arc<dyn crate::llm::LlmProvider>,
+    pub llm: Arc<dyn LlmProvider>,
     /// Model id for this run.
     pub model: String,
     /// Full base tool set + the four Humane tool schemas.
-    pub tools: Arc<crate::agent::tools::tool::ToolRegistry>,
+    pub tools: Arc<ToolRegistry>,
     /// Per-run cost accumulator + cap.
-    pub cost: Arc<crate::automation::runtime::cost::CostCapState>,
+    pub cost: Arc<CostCapState>,
     /// Working directory the run operates in (file/edit/search base + shell cwd).
-    pub workspace_root: std::path::PathBuf,
+    pub workspace_root: PathBuf,
 }
 
 #[async_trait]
@@ -290,9 +294,9 @@ mod tests {
             db: Arc::new(std::sync::Mutex::new(conn)),
             gate: Arc::new(Mutex::new(None)),
             auto_continue: AutoContinueConfig::default(),
-            llm: tests_support::fake_llm(),
+            llm: test_support::fake_llm(),
             model: "claude-sonnet-4-6".to_string(),
-            tools: tests_support::empty_tool_registry(),
+            tools: test_support::empty_tool_registry(),
             cost: Arc::new(CostCapState::new(CostCapConfig {
                 per_run_usd: 1.00,
                 per_day_usd: 10.00,
@@ -301,11 +305,12 @@ mod tests {
         }
     }
 
-    mod tests_support {
+    mod test_support {
         use std::sync::Arc;
         use async_trait::async_trait;
+        use crate::agent::tools::tool::ToolRegistry;
         use crate::agent::types::{ChatMessage, RespondOutput, StreamDelta, ToolDefinition};
-        use crate::llm::CompletionConfig;
+        use crate::llm::{CompletionConfig, LlmProvider};
         use crate::error::Error;
 
         /// Minimal LlmProvider stub for tests that exercise execute_tool_calls
@@ -315,7 +320,7 @@ mod tests {
         struct NoopLlm;
 
         #[async_trait]
-        impl crate::llm::LlmProvider for NoopLlm {
+        impl LlmProvider for NoopLlm {
             async fn complete(
                 &self,
                 _messages: Vec<ChatMessage>,
@@ -335,12 +340,12 @@ mod tests {
             }
         }
 
-        pub fn fake_llm() -> Arc<dyn crate::llm::LlmProvider> {
+        pub fn fake_llm() -> Arc<dyn LlmProvider> {
             Arc::new(NoopLlm)
         }
 
-        pub fn empty_tool_registry() -> Arc<crate::agent::tools::tool::ToolRegistry> {
-            Arc::new(crate::agent::tools::tool::ToolRegistry::new())
+        pub fn empty_tool_registry() -> Arc<ToolRegistry> {
+            Arc::new(ToolRegistry::new())
         }
     }
 
