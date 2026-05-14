@@ -15,6 +15,7 @@ import {
   type DetailSubTab,
 } from '@/atoms/marketplace'
 import { getMarketplaceDetail } from '@/lib/tauri-bridge'
+import { InstallWizard } from './InstallWizard'
 
 const TABS: { id: DetailSubTab; label: string }[] = [
   { id: 'overview', label: '概览' },
@@ -80,7 +81,7 @@ export function StoreDetail(): React.ReactElement {
   }
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div className="relative flex flex-col h-full overflow-hidden">
       {/* Sticky header */}
       <div className="sticky top-0 z-10 backdrop-blur-md bg-content-area/95 border-b border-border/50">
         <div className="flex items-center gap-3 px-6 py-3">
@@ -259,6 +260,7 @@ export function StoreDetail(): React.ReactElement {
           </motion.div>
         </AnimatePresence>
       </div>
+      <InstallWizard />
     </div>
   )
 }
