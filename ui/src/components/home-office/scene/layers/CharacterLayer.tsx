@@ -7,6 +7,7 @@ import {
   characterDirectionAtom,
   characterMotionAtom,
   homeOfficeStateAtom,
+  type Direction,
 } from '@/atoms/home-office-atoms'
 import { resolveSpriteKey } from '../dir-utils'
 import { loadAnimatedWebpCached } from '../sprite-loader'
@@ -20,11 +21,11 @@ const SPRITE_H = 160
 
 function spriteUrlForMotion(
   motion: 'walk' | 'pose',
-  direction: string,
+  direction: Direction,
   state: string,
 ): { url: string; flipX: boolean } {
   if (motion === 'walk') {
-    const { key, flipX } = resolveSpriteKey(direction as never)
+    const { key, flipX } = resolveSpriteKey(direction)
     return { url: `${SPRITE_BASE}/${key}.webp`, flipX }
   }
   // Pose maps off state. 'tool_activity' visually shares 'thinking' pose.
@@ -56,8 +57,8 @@ export function CharacterLayer({ width, height }: Props) {
       } else if (spriteRef.current) {
         animatorRef.current = new WebpAnimator(spriteRef.current, frames, 24)
       }
-    }).catch(() => {
-      // Loader handles fallback; if it still rejects, silently skip.
+    }).catch(err => {
+      console.warn('HomeOffice: sprite load failed', url, err)
     })
     return () => { cancelled = true }
   }, [motion, direction, state])
