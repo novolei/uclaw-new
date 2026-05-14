@@ -93,9 +93,25 @@ pub struct HumaneAutomationSpec {
     #[garde(dive)]
     #[serde(default)]
     pub config_schema: Vec<InputDef>,
-    #[garde(dive)]
+    // requires used to be `Requires { mcps: Vec<String>, skills: Vec<String> }`
+    // — Phase 1 mirror. DHP marketplace specs use a richer shape:
+    //   requires:
+    //     mcps:
+    //       - id: ai-browser
+    //         reason: ...
+    //     skills:
+    //       - id: xhs-search
+    //         reason: ...
+    //         bundled: true
+    //         files: [...]
+    // Strict struct rejected every browser-using spec (xiaohongshu, boss-job,
+    // bilibili, etc.). Phase 3a lenient — store as JSON; the registry-level
+    // `requires_mcps` / `requires_skills` string arrays on RegistryEntry
+    // (from index.json) are what we surface in StoreDetail's "依赖" tab.
+    // Phase 3b will type this richer shape properly.
+    #[garde(skip)]
     #[serde(default)]
-    pub requires: Requires,
+    pub requires: Option<serde_json::Value>,
     #[garde(dive)]
     #[serde(default)]
     pub filters: Vec<FilterRule>,
@@ -120,9 +136,14 @@ pub struct HumaneAutomationSpec {
     #[garde(skip)]
     #[serde(default)]
     pub permissions: Vec<Permission>,
-    #[garde(dive)]
+    // browser_login: real DHP specs use `[{url, label}]` matching our struct,
+    // but the strict BrowserLoginEntry's `#[garde(url)]` + `length(min=1)`
+    // rejects entries with unusual URL shapes (e.g. localhost:port, mobile
+    // deep-links). Phase 3a lenient — accept any JSON shape. Phase 4 may
+    // reinstate strict validation once we survey deployed labels/urls.
+    #[garde(skip)]
     #[serde(default)]
-    pub browser_login: Vec<BrowserLoginEntry>,
+    pub browser_login: serde_json::Value,
     // i18n strings are free-form display text; no schema constraint is meaningful here.
     #[garde(skip)]
     #[serde(default)]

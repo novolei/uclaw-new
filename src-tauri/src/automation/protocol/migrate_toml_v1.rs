@@ -86,13 +86,13 @@ pub fn migrate_legacy_toml(toml_content: &str) -> Result<MigratedSpec, MigrateEr
         system_prompt: legacy.task,
         subscriptions,
         config_schema: vec![],
-        requires: Default::default(),
+        requires: None,
         filters: vec![],
         memory_schema: None,
         output: None,
         escalation: None,
         permissions: vec![],
-        browser_login: vec![],
+        browser_login: serde_json::Value::Null,
         i18n: HashMap::new(),
     };
 

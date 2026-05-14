@@ -106,10 +106,22 @@ pub async fn get_marketplace_detail_cached(
         yaml
     };
 
-    // Parse the YAML (best-effort — None if parse fails so UI can still render)
-    let parsed_spec_json = crate::automation::protocol::parse::parse_humane_v1(&spec_yaml)
-        .ok()
-        .and_then(|p| serde_json::to_value(&p.spec).ok());
+    // Parse the YAML (best-effort — None if parse fails so UI can still render
+    // the rest of the detail). Surface the error to cargo logs so we can see
+    // which marketplace specs trip our schema and fix the parser tactically.
+    let parsed_spec_json = match crate::automation::protocol::parse::parse_humane_v1(&spec_yaml) {
+        Ok(p) => match serde_json::to_value(&p.spec) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(slug = %slug, error = %e, "spec.yaml parsed but serde_json::to_value failed");
+                None
+            }
+        },
+        Err(e) => {
+            tracing::warn!(slug = %slug, error = %e, "spec.yaml parse failed — config preview will fall back");
+            None
+        }
+    };
 
     // Extract dependencies from cached requires_json
     let requires: serde_json::Value =
