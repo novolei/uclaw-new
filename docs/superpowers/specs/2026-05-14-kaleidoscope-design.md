@@ -31,7 +31,7 @@ uClaw 当前的主窗口集中承担两种心智：
 - 收编以下现有零散入口：Automations、Marketplace、Memory Graph、Skills（重设计）、MCP（重设计）
 - 新增 Artifacts 模块（按 session / 应用分组的产出浏览器）
 - 用 Arc 风窄轨设计 + uClaw 主题 token，11 个主题完整自适应
-- 入口图标用 Lottie 实现 hover 动画，保留静态 SVG 作为 fallback
+- 入口图标用纯 CSS 实现 hover 动画（零新依赖、GPU 加速、theme-token 自适应）
 
 ### 非目标
 - **不**重写 Settings 面板 — Settings 继续负责"参数"（LLM API keys、主题、快捷键、provider 配置）
@@ -92,7 +92,7 @@ ui/src/
     Kaleidoscope/                     (新)
       KaleidoscopeShell.tsx           ← 整合 rail + main area + 底部三段
       KaleidoscopeRail.tsx            ← 7 模块导航 + 底部 ←/✦
-      KaleidoscopeIcon.tsx            ← Lottie 包装 (hover/active/fallback)
+      KaleidoscopeIcon.tsx            ← 自包含：button + 内联 SVG + CSS hover 动画
       atoms.ts                        ← 模块本地 atoms（详情抽屉、筛选等）
       modules/
         Humans/
@@ -183,7 +183,9 @@ ui/src/
 
 ---
 
-## 6. 入口图标 + Lottie 动画
+## 6. 入口图标 + CSS 动画
+
+> **设计变更（2026-05-14）：** 原方案是 Lottie 动画 + 静态 SVG fallback。评估用户下载的 Lottie 文件后发现三个硬伤：颜色 baked-in 无法适配 11 主题、5s 连续角色动画与「hover 微交互」模型不契合、视觉语义不符。**改为纯 CSS 动画**：零新依赖、GPU 加速、颜色全走 theme token 自动适配所有主题。`lottie-react` 依赖取消。
 
 ### 6.1 组件契约
 
@@ -196,24 +198,25 @@ interface KaleidoscopeIconProps {
 }
 ```
 
+`KaleidoscopeIcon` 是自包含组件：`<button>` + 内联 SVG 彩色小篮子（30×30，`bg-gradient-to-br from-primary to-accent` 背板，SVG 内描 `text-primary-foreground`）。不再有独立的 `KaleidoscopeIconFallback` 组件 —— Lottie 取消后「fallback」概念消失，SVG 直接内联进 `KaleidoscopeIcon`。
+
 行为：
-- 加载 `/src/assets/lottie/kaleidoscope-icon.json`（用户后续提供 Lottie 文件）
-- 默认暂停 frame 0
-- `onMouseEnter` → `lottieRef.current?.play()`
-- `onMouseLeave` → `lottieRef.current?.setDirection(-1); lottieRef.current?.play()` 回到 frame 0
-- `active=true` → 跳到结尾帧并 hold；具体帧号在 Lottie 文件到位后由用户提供（约定输入：hover 入场段、循环段、结尾定格帧三段帧号），Phase 1 阶段允许此参数缺失（active 态退化为 fallback SVG 的 ring-2 外圈）
-- onClick → `setTopLevelView('kaleidoscope')`，触发 200ms cross-dissolve
+- **idle** — 渐变背板 3.5s 一呼一吸的 glow（`animate-kaleido-idle-breath`）
+- **hover** — 整体 `scale(1.06)`，idle glow 停止；篮子 `<g>` 600ms 摆头一次（`group-hover:animate-kaleido-basket-wobble`）；sparkle `<g>` 800ms 闪烁循环（`group-hover:animate-kaleido-sparkle-twinkle`）
+- **active=true** — `ring-2 ring-primary/40` 外圈，表示当前身处 Kaleidoscope surface
+- **click** — `active:scale-[0.92]` tap-down → `onClick` → `setTopLevelView('kaleidoscope')` → 200ms cross-dissolve
 
-### 6.2 Fallback
+### 6.2 动画实现
 
-- Lottie JSON 加载失败 → 渲染内联 SVG（设计稿 v2 的彩色小篮子，30×30，linear-gradient `from-primary to-accent`，内部 fill `--primary-foreground`）
-- 用 `<ErrorBoundary>` 包裹 Lottie 部分，捕获到错误回退到 SVG
-- Fallback 路径保留 CSS hover 效果（scale 1.06 + glow），保证体验不缩水
+- 三个 keyframes 定义在 `tailwind.config.js` 的 `theme.extend.keyframes` + `animation`（与现有 `slide-in-from-top` 等同列）：`kaleido-idle-breath` / `kaleido-basket-wobble` / `kaleido-sparkle-twinkle`
+- 全部跑在 `transform` / `opacity` / `filter:drop-shadow` 上 —— GPU 加速
+- SVG 内 `<g>` 元素用 `style={{ transformBox: 'fill-box', transformOrigin: 'center' }}` 让旋转/缩放绕自身中心（SVG transform-origin 默认是坐标原点，必须显式纠正）
+- 颜色全部 theme token，11 主题自动适配；无写死颜色
+- 测试环境下 `prefers-reduced-motion: reduce`（已在 `setup.ts`）会让 `motion` 跳过动画；CSS animation 本身在 jsdom 不执行，组件测试只断言 button / label / onClick / active ring / size 契约
 
 ### 6.3 依赖
 
-- 新增 `lottie-react` npm 包（~50kb gzip）
-- 加入 `vite.config.ts` 的 `vendor` manual chunk（与 `jotai/clsx/tailwind-merge` 同列）
+- **无新增依赖**。`lottie-react` 不再引入；`vite.config.ts` 不需要新增 chunk。
 
 ---
 
@@ -328,7 +331,6 @@ click → 80ms scale(0.92) tap-down
 
 | 情况 | 行为 |
 |---|---|
-| Lottie 加载失败 | ErrorBoundary 回退到静态 SVG，保留 CSS hover |
 | memU 未启动（`appState.memu_client === None`） | 记忆模块显示"memU 未连接，依赖此模块需启动" + 跳 Settings 按钮 |
 | Skills 数据为空 | 空态卡："你的 Agent 还没学到技能 — 让它处理几次任务就会积累" |
 | MCP 服务器列表为空 | 空态卡：" 没有集成 — 点 + 添加，让 Agent 接入 Slack/GitHub/Notion" |
@@ -344,13 +346,13 @@ click → 80ms scale(0.92) tap-down
 - `KaleidoscopeShell` 切换模块时 main area key 变更，子组件正确卸载 / 挂载
 - `topLevelViewAtom = 'kaleidoscope'` 时不渲染 `WorkspaceShell`，反之亦然
 - `appModeAtom` 在 Kaleidoscope 期间值保持（切回 workspace 后还是切走前的 chat 或 agent）
-- `KaleidoscopeIcon` 在 Lottie JSON 加载失败时降级到 SVG 渲染（mock `lottie-react` import）
+- `KaleidoscopeIcon` 渲染 button + `打开万花筒` aria-label、`onClick` 触发、`active` 时挂 `ring-2`、`size` prop 生效
 - 7 个模块的空态分支都要测一遍（mock 各自的 atom / Tauri 命令返回空）
 
 ### 11.2 不测的内容
 
 - 主题视觉走查：人工 + 截图归档（无法自动化）
-- Lottie 实际动画播放：依赖运行时 Canvas，不在 jsdom 范围（仅测组件契约）
+- CSS hover 动画实际播放：jsdom 不执行 CSS animation（仅测组件契约，不测动画帧）
 
 ### 11.3 Rust 后端
 
@@ -365,10 +367,10 @@ click → 80ms scale(0.92) tap-down
 - `topLevelViewAtom` + `kaleidoscopeModuleAtom`
 - `WorkspaceShell` 提取：把 `MainArea.tsx` 中现有的 `chat / agent / automationOpen` 三分支条件渲染整体移入 `WorkspaceShell.tsx`，对外只暴露 `<WorkspaceShell />`，行为零变化（move-only ~50 行）
 - `KaleidoscopeShell` + `KaleidoscopeRail` + 底部三段
-- `KaleidoscopeIcon`（Lottie 包装 + SVG fallback；Lottie JSON 可暂时缺失，纯走 fallback 也能跑）
+- `KaleidoscopeIcon`（自包含：button + 内联 SVG + 纯 CSS hover 动画；keyframes 在 `tailwind.config.js`）
 - 入口图标接入 `WorkspaceSwitcherBar`
 - 1 个占位模块 `HumansModule`（只 wrap 现有 `AutomationHub`，验证整条链路）
-- 测试：状态切换 + 入口点击 + fallback 渲染
+- 测试：状态切换 + 入口点击 + 图标契约（button/label/onClick/active/size）
 
 ### Phase 2 — 现有模块迁移（PR #2，约 1-2 天）
 - `StoreModule`（吸收 StoreView/StoreDetail）
@@ -392,7 +394,6 @@ click → 80ms scale(0.92) tap-down
 
 | 风险 | 缓解 |
 |---|---|
-| Lottie 文件尚未到位 | Fallback SVG 完整可用，骨架可独立 ship |
 | 主题适配走查工作量大（11 × 7 = 77 张） | Phase 3 集中走查；前两期写代码时严格使用 token，问题会少 |
 | 从 Settings 提取 Skills/MCP 改动 Settings 现有 UI | 在 Settings 保留"完整管理请去万花筒"的提示卡（一行说明 + 跳转按钮），不破坏现有用户流 |
 | memU 未启动用户记忆模块体验 | 空态卡 + 跳 Settings 引导，不崩 |
@@ -416,7 +417,7 @@ click → 80ms scale(0.92) tap-down
 - [ ] 点击 `WorkspaceSwitcherBar` 最左入口图标 → 全屏切换到 Kaleidoscope
 - [ ] 在 Kaleidoscope 内点 ← 返回 → 回到原 chat / agent 子模式
 - [ ] 7 个模块的 Rail 切换正常，main area 内容随 `kaleidoscopeModuleAtom` 更新
-- [ ] Lottie 文件不在的情况下，入口图标用静态 SVG 渲染并保留 hover 效果
+- [ ] 入口图标 hover 有 CSS 动画（篮子摆头 + sparkle 闪烁），idle 有呼吸 glow，无新增依赖
 - [ ] 4 个有特色的主题（warm-paper / qingye / forest-dark / the-finals）下截图无明显视觉问题
 - [ ] memU 未启动时记忆模块显示引导卡，不崩
 - [ ] Phase 1 PR 能独立 ship 且不破坏现有 chat / agent / Settings 体验
