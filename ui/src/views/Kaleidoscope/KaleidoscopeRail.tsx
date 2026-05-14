@@ -6,10 +6,10 @@
  *  - 资产组：数字人 / 应用商店 / 我的应用 / 产出
  *  - 36px hairline 分组分隔
  *  - 能力组：技能 / 集成 / 记忆
- *  - 1px 分割线
- *  - 44px 行：← 返回主窗口（左）+ ✦ 装饰标识（右，不可交互）
- *  - 1px 分割线
- *  - 48px User / Settings 行（沿用 LeftSidebar 底部规格）
+ *  - 底部两段（结构/高度对齐 chat 窗口 LeftSidebar 底部）：
+ *    · 返回 + ✦ 装饰行 —— border-t 自带分割线，px-3 py-2（= chat switcher 行规格）
+ *    · User / Settings 行 —— px-3 pb-3 pt-2（= chat User 行规格），无独立分割线
+ *  - 返回按钮 size-8 主色处理，与 chat 窗口 KaleidoscopeIcon 入口成对、同尺寸
  *
  * 每个模块条目 = lucide 图标 + 中文标签竖排。选中态：资产组用 primary tint，
  * 能力组用 accent tint。全部走 theme token。
@@ -116,22 +116,20 @@ export function KaleidoscopeRail(): React.ReactElement {
         ))}
       </div>
 
-      {/* ── 底部三段（沿用 chat 窗口结构） ── */}
+      {/* ── 底部两段（结构/高度对齐 chat 窗口 LeftSidebar 底部）── */}
 
-      {/* 分割线 */}
-      <div className="h-px bg-border mx-2.5 shrink-0" />
-
-      {/* ① 返回 + 装饰行 (44px) */}
-      <div className="h-11 shrink-0 px-3 flex items-center justify-between">
+      {/* ① 返回 + ✦ 装饰行 —— border-t 自带单条分割线，px-3 py-2（= chat switcher 行规格）。
+          返回按钮 size-8 主色处理，与 chat 窗口的 KaleidoscopeIcon 入口成对、同尺寸。 */}
+      <div className="shrink-0 px-3 py-2 border-t border-border/40 flex items-center justify-between">
         <button
           type="button"
           onClick={() => setTopLevelView('workspace')}
           aria-label="返回主窗口"
           className="titlebar-no-drag inline-flex items-center justify-center
-                     size-7 rounded-[7px] bg-primary/15 border border-primary/35
-                     text-primary hover:bg-primary/25 transition-colors"
+                     size-8 rounded-md bg-primary/10 text-primary
+                     hover:bg-primary/20 transition-colors shrink-0"
         >
-          <ArrowLeft className="size-3.5" />
+          <ArrowLeft className="size-[18px]" />
         </button>
         {/* 装饰标识 —— 非交互 */}
         <Sparkles
@@ -141,24 +139,22 @@ export function KaleidoscopeRail(): React.ReactElement {
         />
       </div>
 
-      {/* 分割线 */}
-      <div className="h-px bg-border mx-2.5 shrink-0" />
-
-      {/* ② User / Settings 行 (48px) */}
-      <div className="h-12 shrink-0 px-2 flex items-center">
+      {/* ② User / Settings 行 —— px-3 pb-3 pt-2（= chat User 行规格），无独立分割线。
+          内容尺寸按 120px rail 宽度适配（avatar 24 / text-xs），高度节奏与 chat 一致。 */}
+      <div className="shrink-0 px-3 pb-3 pt-2">
         <button
           type="button"
           aria-label="设置"
           onClick={() => setSettingsOpen(true)}
-          className="titlebar-no-drag w-full flex items-center gap-1.5 px-1.5 py-2
+          className="titlebar-no-drag w-full flex items-center gap-2 px-2.5 py-2
                      rounded-[10px] text-foreground/70 hover:bg-foreground/[0.04]
                      hover:text-foreground transition-colors"
         >
-          <UserAvatar avatar={userProfile.avatar} size={22} />
-          <span className="flex-1 min-w-0 text-[11px] truncate text-left">
+          <UserAvatar avatar={userProfile.avatar} size={24} />
+          <span className="flex-1 min-w-0 text-xs truncate text-left">
             {userProfile.userName}
           </span>
-          <Settings className="size-3.5 shrink-0 text-foreground/40" />
+          <Settings className="size-4 shrink-0 text-foreground/40" />
         </button>
       </div>
     </div>
