@@ -11,7 +11,6 @@ use crate::automation::marketplace::types::{RegistryEntry, RegistrySource};
 use crate::automation::protocol::humane_v1::HumaneAutomationSpec;
 
 /// One bundled skill's files, fetched and ready to commit.
-#[allow(dead_code)]
 pub struct StagedSkill {
     pub skill_id: String,
     pub file_count: i64,
@@ -87,7 +86,6 @@ pub async fn fetch_bundled_skills(
 
 /// Atomically promote the staging dir into the real marketplace skills tree.
 /// Removes any pre-existing tree at the destination first (re-install case).
-#[allow(dead_code)]
 pub fn commit_staged_skills(slug: &str, skills_root: &Path) -> Result<PathBuf> {
     let staging = skills_root.join(".staging").join(slug);
     if !staging.exists() {

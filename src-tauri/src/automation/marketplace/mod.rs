@@ -469,8 +469,14 @@ pub async fn install_human(
         .join(".uclaw")
         .join("skills");
     // Parse spec here so we can inspect requires.skills before installing.
-    let parsed = crate::automation::protocol::parse::parse_humane_v1(&yaml)
-        .with_context(|| format!("parse spec.yaml for {} during fetching_skills phase", slug))?;
+    let parsed = match crate::automation::protocol::parse::parse_humane_v1(&yaml) {
+        Ok(p) => p,
+        Err(e) => {
+            let msg = format!("spec.yaml 解析失败：{:#}", e);
+            emit("fetching_skills", 25, Some(&msg));
+            return Err(anyhow!("parse spec.yaml for {} during fetching_skills phase: {:#}", slug, e));
+        }
+    };
     let staged = match skill_install::fetch_bundled_skills(&source, &{
         let path = format!("packages/digital-humans/{}", slug);
         RegistryEntry {
@@ -583,15 +589,26 @@ pub async fn install_human(
         .with_context(|| "commit staged skills")?;
 
     // Record one row per staged skill into automation_installed_skills (V22).
+    // Best-effort: the V22 table is diagnostic-only; the runtime behaviour
+    // (skill discoverability via SkillsRegistry scan dir) does not depend on
+    // these rows. A failed insert must not roll back the already-committed
+    // staging dir rename or the automation_specs row.
     {
         let conn = runtime.db.lock().unwrap();
         for s in &staged {
-            conn.execute(
+            if let Err(e) = conn.execute(
                 "INSERT OR REPLACE INTO automation_installed_skills \
                     (automation_slug, skill_id, installed_at, file_count) \
                     VALUES (?, ?, ?, ?)",
                 rusqlite::params![slug, s.skill_id, now_secs, s.file_count],
-            )?;
+            ) {
+                tracing::error!(
+                    slug = %slug,
+                    skill_id = %s.skill_id,
+                    error = %e,
+                    "failed to record installed skill — install continues, AppsTab may show stale state until reinstall"
+                );
+            }
         }
     }
 
