@@ -1,10 +1,11 @@
-import { describe, test, expect, vi } from 'vitest'
+import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '@/test-utils/render'
 
 vi.mock('@/lib/tauri-bridge', () => ({
   listInstalledMarketplaceAutomations: vi.fn(),
   uninstallMarketplaceHuman: vi.fn(),
+  listStandaloneInstalls: vi.fn(),
   // AppsTab now calls checkMarketplaceUpdates on mount; resolve to empty so no upgrade buttons appear
   checkMarketplaceUpdates: vi.fn().mockResolvedValue([]),
 }))
@@ -13,7 +14,13 @@ import { AppsTab } from './AppsTab'
 import {
   listInstalledMarketplaceAutomations,
   uninstallMarketplaceHuman,
+  listStandaloneInstalls,
 } from '@/lib/tauri-bridge'
+
+beforeEach(() => {
+  // Default standalone list to [] so existing tests are unaffected
+  ;(listStandaloneInstalls as ReturnType<typeof vi.fn>).mockResolvedValue([])
+})
 
 const sampleData = [
   {
@@ -73,5 +80,20 @@ describe('AppsTab', () => {
     fireEvent.click(getByText('卸载'))
     await waitFor(() => expect(uninstallMarketplaceHuman).toHaveBeenCalledWith('xhs-monitor'))
     expect(await findByText(/暂无已安装的数字人/)).toBeInTheDocument()
+  })
+
+  test('renders standalone installs section with uninstall', async () => {
+    ;(listInstalledMarketplaceAutomations as ReturnType<typeof vi.fn>).mockResolvedValueOnce([])
+    ;(listStandaloneInstalls as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { slug: 'summariser', itemType: 'skill', version: '1.0.0', installedAt: 0, mcpServerId: null },
+      { slug: 'pg-mcp', itemType: 'mcp', version: '2.0.0', installedAt: 0, mcpServerId: 'srv-1' },
+    ])
+    ;(uninstallMarketplaceHuman as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined)
+
+    const { findByText, getAllByText } = renderWithProviders(<AppsTab />)
+    expect(await findByText('summariser')).toBeInTheDocument()
+    expect(await findByText('pg-mcp')).toBeInTheDocument()
+    fireEvent.click(getAllByText('卸载')[0])
+    await waitFor(() => expect(uninstallMarketplaceHuman).toHaveBeenCalled())
   })
 })
