@@ -306,6 +306,19 @@ impl AppState {
         std::fs::create_dir_all(&user_skills_dir).ok();
         skills_reg.add_scan_dir(user_skills_dir, crate::skills::SkillProvenance::User);
 
+        // Marketplace — recovery path: any _marketplace/<slug>/ dirs that exist on disk
+        // (e.g. after a backup restore or across cold starts) are registered here so
+        // SkillsRegistry stays in sync with the FS even if DB rows were already present.
+        let marketplace_root = data_dir.join("skills").join("_marketplace");
+        if let Ok(entries) = std::fs::read_dir(&marketplace_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    skills_reg.add_scan_dir(path, crate::skills::SkillProvenance::Marketplace);
+                }
+            }
+        }
+
         // Project — dev-mode-only fallback. In a bundled app `current_dir()`
         // is the launch dir which won't contain a skills tree, so this is
         // effectively a no-op in production. The Bundled tier covers the

@@ -5623,6 +5623,7 @@ pub async fn install_marketplace_human(
         &slug,
         space_id,
         user_config,
+        state.skills_registry.clone(),
         progress_channel,
     )
     .await

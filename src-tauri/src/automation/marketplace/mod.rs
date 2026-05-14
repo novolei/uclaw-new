@@ -10,9 +10,12 @@ pub use types::{
 };
 
 use anyhow::{anyhow, Context, Result};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::automation::manager::HumaneSpecRow;
 use crate::automation::runtime::AppRuntimeService;
+use crate::skills::SkillsRegistry;
 
 /// List all automation-type entries from a registry. Defaults to the DHP registry.
 /// Non-automation entries (skill / mcp / extension) are filtered out — Phase 1 only
@@ -202,6 +205,7 @@ pub async fn install_human(
     slug: &str,
     space_id: Option<String>,
     user_config: Option<serde_json::Value>,
+    skills_registry: Arc<RwLock<SkillsRegistry>>,
     progress_channel: Option<String>,
 ) -> Result<HumaneSpecRow> {
     use tauri::Emitter;
@@ -377,6 +381,40 @@ pub async fn install_human(
         );
     }
     let _ = space_id; // Phase 3b will wire this
+
+    // NEW: registering_skills phase — commit staged skills + register with SkillsRegistry.
+    emit("registering_skills", 80, Some("注册 skill 与扫描目录"));
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    // Atomic promotion of staged skills into the real tree.
+    let _final_dir = skill_install::commit_staged_skills(slug, &skills_root)
+        .with_context(|| "commit staged skills")?;
+
+    // Record one row per staged skill into automation_installed_skills (V22).
+    {
+        let conn = runtime.db.lock().unwrap();
+        for s in &staged {
+            conn.execute(
+                "INSERT OR REPLACE INTO automation_installed_skills \
+                    (automation_slug, skill_id, installed_at, file_count) \
+                    VALUES (?, ?, ?, ?)",
+                rusqlite::params![slug, s.skill_id, now_secs, s.file_count],
+            )?;
+        }
+    }
+
+    // Register the per-automation scan root with SkillsRegistry so the
+    // freshly installed skills become discoverable without an app restart.
+    if !staged.is_empty() {
+        let scan_root = skills_root.join("_marketplace").join(slug);
+        let mut reg = skills_registry.write().await;
+        reg.add_scan_dir(scan_root, crate::skills::SkillProvenance::Marketplace);
+        // Trigger rediscovery so the new skills are active in this process.
+        let _ = reg.discover();
+    }
 
     emit("activating", 90, Some("激活订阅"));
     let _ = runtime.activate(&row.id).await;
