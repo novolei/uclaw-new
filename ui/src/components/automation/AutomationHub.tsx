@@ -354,15 +354,18 @@ export function AutomationHub(): React.ReactElement {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border/50">
+      {/* Header — carries titlebar-drag-region directly: -webkit-app-region
+          does NOT cascade from KaleidoscopeShell's wrapper through the
+          content card, so the drag class must sit on the actual header bar
+          (mirrors AgentHeader). The title area + empty middle become
+          window-drag surface; the action buttons opt back out below. */}
+      <div className="titlebar-drag-region flex items-center justify-between px-3 py-2 border-b border-border/50">
         <div className="flex items-center gap-2">
           <Zap size={14} className="text-yellow-500" />
           <span className="text-[13px] font-semibold">Automations</span>
           {loading && <Loader size={11} className="animate-spin text-muted-foreground" />}
         </div>
-        {/* titlebar-no-drag: header action buttons stay clickable; the
-            header's empty middle stays window-drag surface. */}
+        {/* titlebar-no-drag: header action buttons stay clickable. */}
         <div className="titlebar-no-drag flex items-center gap-1">
           <button
             onClick={refresh}

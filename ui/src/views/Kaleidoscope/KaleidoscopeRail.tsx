@@ -87,9 +87,13 @@ export function KaleidoscopeRail(): React.ReactElement {
   const userProfile = useAtomValue(userProfileAtom)
 
   return (
-    <div className="w-[120px] h-full shrink-0 flex flex-col bg-background rounded-2xl shadow-xl overflow-hidden">
-      {/* 红绿灯让位 */}
-      <div className="h-9 shrink-0" />
+    // titlebar-drag-region on the rail card itself + the traffic-light
+    // spacer below: -webkit-app-region does NOT cascade from the wrapper, so
+    // the drag class must sit on the actual elements. Rail buttons opt back
+    // out with titlebar-no-drag.
+    <div className="titlebar-drag-region w-[120px] h-full shrink-0 flex flex-col bg-background rounded-2xl shadow-xl overflow-hidden">
+      {/* 红绿灯让位 —— 顶部留白拖拽区 */}
+      <div className="h-9 shrink-0 titlebar-drag-region" />
 
       {/* 主导航 */}
       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center gap-[18px] pt-3">

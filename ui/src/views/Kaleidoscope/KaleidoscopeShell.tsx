@@ -47,14 +47,14 @@ export function KaleidoscopeShell(): React.ReactElement {
       <div data-tauri-drag-region className="titlebar-drag-region p-2 pr-0 shrink-0">
         <KaleidoscopeRail />
       </div>
-      {/* 主区浮卡 —— data-tauri-drag-region makes this wrapper (incl. the
-          content card below) app-region:drag. Mirrors the workspace
-          main-panel: there is NO blanket titlebar-no-drag on the card —
-          instead each module's interactive elements + scrollable bodies
-          opt out individually with titlebar-no-drag, exactly how the
-          workspace keeps its welcome-panel top bar draggable while its
-          buttons stay clickable. That leaves every module's header empty
-          space (between title and action buttons) as window-drag surface. */}
+      {/* 主区浮卡 —— this wrapper carries titlebar-drag-region, so the p-2
+          gutter around the content card is window-drag surface.
+          -webkit-app-region does NOT cascade through the content card, so
+          a module's own header is NOT draggable just by living inside this
+          wrapper — each module that wants a draggable header puts
+          titlebar-drag-region directly on its header bar (AutomationHub,
+          ModuleHeader) and opts its action buttons back out with
+          titlebar-no-drag. Mirrors AgentHeader. */}
       <div data-tauri-drag-region className="titlebar-drag-region relative flex-1 min-w-0 min-h-0 p-2">
         <div className="h-full rounded-2xl shadow-xl bg-content-area overflow-hidden relative">
           <AnimatePresence mode="wait">
