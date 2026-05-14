@@ -23,6 +23,7 @@ import {
   type AutomationActivity,
 } from '@/atoms/automation'
 import { automationsSubviewAtom } from '@/atoms/marketplace'
+import { kaleidoscopeModuleAtom } from '@/atoms/kaleidoscope'
 import {
   listAutomationsHumane,
   triggerAutomationManualHumane,
@@ -259,6 +260,7 @@ function AutomationCard({
 export function AutomationHub(): React.ReactElement {
   const [specs, setSpecs] = useAtom(humaneSpecsAtom)
   const setSubview = useSetAtom(automationsSubviewAtom)
+  const setKaleidoscopeModule = useSetAtom(kaleidoscopeModuleAtom)
   const [yamlInput, setYamlInput] = React.useState('')
   const [installing, setInstalling] = React.useState(false)
   const [loading, setLoading] = React.useState(false)
@@ -350,7 +352,7 @@ export function AutomationHub(): React.ReactElement {
           />
           <div className="flex items-center gap-2 justify-end">
             <button
-              onClick={() => setSubview('store')}
+              onClick={() => { setSubview('store'); setKaleidoscopeModule('store') }}
               className="flex items-center gap-1 px-3 py-1.5 rounded text-[11px] border border-border text-foreground hover:bg-accent transition-colors"
             >
               <Store size={11} />
