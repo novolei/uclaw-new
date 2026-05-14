@@ -29,7 +29,11 @@ export function ModuleHeader({
   actions,
 }: ModuleHeaderProps): React.ReactElement {
   return (
-    <div className="flex items-start justify-between gap-4 px-8 pt-7 pb-4">
+    // titlebar-drag-region directly on the header row: -webkit-app-region
+    // does NOT cascade from KaleidoscopeShell's wrapper through the content
+    // card, so the drag class must sit on the actual header element. The
+    // title block becomes window-drag surface; `actions` opts back out.
+    <div className="titlebar-drag-region flex items-start justify-between gap-4 px-8 pt-7 pb-4">
       <div className="min-w-0">
         <div className="text-[11px] uppercase tracking-[0.5px] text-muted-foreground">
           {GROUP_LABEL[group]}
