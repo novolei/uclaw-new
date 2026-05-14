@@ -20,6 +20,16 @@ import { McpServerCard } from './McpServerCard'
 import { McpDetailDrawer } from './McpDetailDrawer'
 import { McpTemplateLibrary } from './McpTemplateLibrary'
 import { McpEditorModal, type McpEditorTarget } from './McpEditorModal'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 
 interface McpToolRow {
   serverId: string
@@ -34,6 +44,7 @@ export function IntegrationsModule(): React.ReactElement {
   const [drawerOpen, setDrawerOpen] = React.useState(false)
   const [templateOpen, setTemplateOpen] = React.useState(false)
   const [editorTarget, setEditorTarget] = React.useState<McpEditorTarget | null>(null)
+  const [pendingRemove, setPendingRemove] = React.useState<McpServerInfo | null>(null)
   const initialized = React.useRef(false)
 
   const refetch = React.useCallback(async () => {
@@ -95,10 +106,13 @@ export function IntegrationsModule(): React.ReactElement {
     }
   }
 
-  const onRemove = async (server: McpServerInfo) => {
+  const onConfirmRemove = async () => {
+    if (!pendingRemove) return
+    const target = pendingRemove
+    setPendingRemove(null)
     try {
-      await removeMcpServer(server.id)
-      toast.success(`已移除「${server.name}」`)
+      await removeMcpServer(target.id)
+      toast.success(`已移除「${target.name}」`)
       setDrawerOpen(false)
       setSelectedId(null)
       await refetch()
@@ -173,7 +187,7 @@ export function IntegrationsModule(): React.ReactElement {
         onOpenChange={setDrawerOpen}
         onToggleEnabled={(s, next) => void onToggleEnabled(s, next)}
         onRestart={(s) => void onRestart(s)}
-        onRemove={(s) => void onRemove(s)}
+        onRemove={(s) => setPendingRemove(s)}
         onEdit={onEdit}
       />
 
@@ -188,6 +202,34 @@ export function IntegrationsModule(): React.ReactElement {
         onOpenChange={(open) => !open && setEditorTarget(null)}
         onSaved={() => void refetch()}
       />
+
+      <AlertDialog
+        open={pendingRemove !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingRemove(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>移除集成？</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>即将移除 MCP server「{pendingRemove?.name ?? ''}」，它的配置会从 mcp_servers.json 删除。</p>
+                <p>你之后可以重新添加它。</p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => void onConfirmRemove()}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              移除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

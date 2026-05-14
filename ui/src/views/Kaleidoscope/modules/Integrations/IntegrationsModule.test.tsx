@@ -27,13 +27,14 @@ const listMcpTools = vi.fn()
 const addMcpServer = vi.fn()
 const updateMcpServer = vi.fn()
 const connectMcpServer = vi.fn()
+const removeMcpServer = vi.fn()
 
 vi.mock('@/lib/tauri-bridge', () => ({
   listMcpServers: (...a: unknown[]) => listMcpServers(...a),
   listMcpTools: (...a: unknown[]) => listMcpTools(...a),
   addMcpServer: (...a: unknown[]) => addMcpServer(...a),
   updateMcpServer: (...a: unknown[]) => updateMcpServer(...a),
-  removeMcpServer: vi.fn().mockResolvedValue(true),
+  removeMcpServer: (...a: unknown[]) => removeMcpServer(...a),
   toggleMcpServer: vi.fn().mockResolvedValue(true),
   restartMcpServer: vi.fn().mockResolvedValue(true),
   connectMcpServer: (...a: unknown[]) => connectMcpServer(...a),
@@ -46,6 +47,7 @@ describe('IntegrationsModule', () => {
     addMcpServer.mockReset().mockResolvedValue({ ...serversFixture[0], id: 'new-id', name: 'newsrv' })
     updateMcpServer.mockReset().mockResolvedValue({ ...serversFixture[0], id: 'new-id', name: 'newsrv' })
     connectMcpServer.mockReset().mockResolvedValue(true)
+    removeMcpServer.mockReset().mockResolvedValue(true)
   })
 
   it('renders one card per MCP server', async () => {
@@ -105,5 +107,21 @@ describe('IntegrationsModule', () => {
     await user.click(within(dialog).getByRole('button', { name: /测试连接并保存/ }))
     await waitFor(() => expect(updateMcpServer).toHaveBeenCalledTimes(1))
     expect(addMcpServer).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks for confirmation before removing a server', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<IntegrationsModule />)
+    await waitFor(() => expect(screen.getByText('github')).toBeInTheDocument())
+    // 打开抽屉
+    await user.click(screen.getByText('github'))
+    const drawer = await screen.findByRole('dialog')
+    // 点抽屉里的「移除」—— 不应立即删除,而是弹确认框
+    await user.click(within(drawer).getByRole('button', { name: '移除' }))
+    expect(removeMcpServer).not.toHaveBeenCalled()
+    // 确认框出现(alertdialog),点它的「移除」才真正删除
+    const confirm = await screen.findByRole('alertdialog')
+    await user.click(within(confirm).getByRole('button', { name: '移除' }))
+    await waitFor(() => expect(removeMcpServer).toHaveBeenCalledWith('gh'))
   })
 })
