@@ -26,6 +26,8 @@ import { TabBar } from './TabBar'
 import { TabContent } from './TabContent'
 import { automationPanelOpenAtom } from '@/atoms/automation'
 import { AutomationsView } from '@/views/AutomationsView'
+import { homeOfficePanelOpenAtom } from '@/atoms/home-office-atoms'
+import { HomeOfficeView } from '@/components/home-office/HomeOfficeView'
 
 const MIN_CHAT_RATIO = 0.30
 const MAX_CHAT_RATIO = 0.80
@@ -40,6 +42,7 @@ export function MainArea(): React.ReactElement {
   const currentWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
   const [splitRatio, setSplitRatio] = useAtom(previewPanelSplitRatioAtom)
   const [automationOpen, setAutomationOpen] = useAtom(automationPanelOpenAtom)
+  const [homeOfficeOpen, setHomeOfficeOpen] = useAtom(homeOfficePanelOpenAtom)
   const draggingRef = React.useRef(false)
 
   // Auto-close AutomationsView when the user picks a different session/tab
@@ -155,13 +158,24 @@ export function MainArea(): React.ReactElement {
   )
 
 
+  React.useEffect(() => {
+    if (!homeOfficeOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setHomeOfficeOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [homeOfficeOpen, setHomeOfficeOpen])
+
   return (
     <>
       <Panel
         variant="grow"
         className="bg-content-area rounded-2xl shadow-xl"
       >
-        {automationOpen ? (
+        {homeOfficeOpen ? (
+          <HomeOfficeView />
+        ) : automationOpen ? (
           <AutomationsView />
         ) : previewOpen ? (
           <div className="flex flex-1 min-h-0" data-preview-split>
