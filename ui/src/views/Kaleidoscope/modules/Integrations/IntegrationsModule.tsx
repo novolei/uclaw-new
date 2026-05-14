@@ -148,7 +148,11 @@ export function IntegrationsModule(): React.ReactElement {
         }
       />
 
-      <div className="flex-1 min-h-0 overflow-y-auto px-8 pb-8">
+      {/* titlebar-no-drag: the scrollable body holds the MCP card grid +
+          "添加集成" buttons — it opts out of the window-drag region so
+          scrolling + clicks work. ModuleHeader's title area stays draggable;
+          its actions slot is already titlebar-no-drag. See KaleidoscopeShell. */}
+      <div className="titlebar-no-drag flex-1 min-h-0 overflow-y-auto px-8 pb-8">
         {!loading && servers.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <div className="rounded-lg border border-dashed border-border bg-muted/10 px-8 py-10 text-center">

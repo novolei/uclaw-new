@@ -361,7 +361,9 @@ export function AutomationHub(): React.ReactElement {
           <span className="text-[13px] font-semibold">Automations</span>
           {loading && <Loader size={11} className="animate-spin text-muted-foreground" />}
         </div>
-        <div className="flex items-center gap-1">
+        {/* titlebar-no-drag: header action buttons stay clickable; the
+            header's empty middle stays window-drag surface. */}
+        <div className="titlebar-no-drag flex items-center gap-1">
           <button
             onClick={refresh}
             className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
@@ -381,7 +383,7 @@ export function AutomationHub(): React.ReactElement {
 
       {/* Install panel */}
       {showInstall && (
-        <div className="p-3 border-b border-border/50 flex flex-col gap-2">
+        <div className="titlebar-no-drag p-3 border-b border-border/50 flex flex-col gap-2">
           <p className="text-[11px] text-muted-foreground">粘贴 Humane YAML 规约：</p>
           <textarea
             value={yamlInput}
@@ -414,8 +416,10 @@ export function AutomationHub(): React.ReactElement {
         </div>
       )}
 
-      {/* Spec list */}
-      <div className="flex-1 overflow-auto p-2 flex flex-col gap-2">
+      {/* Spec list — titlebar-no-drag: the scrollable body opts out of the
+          window-drag region so scrolling + the cards/buttons inside stay
+          interactive (a drag region swallows scroll on macOS WKWebView). */}
+      <div className="titlebar-no-drag flex-1 overflow-auto p-2 flex flex-col gap-2">
         {specs.length === 0 ? (
           <div className="text-center py-8">
             <Zap size={24} className="mx-auto text-muted-foreground/30 mb-2" />

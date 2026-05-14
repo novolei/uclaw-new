@@ -12,7 +12,10 @@ import { MemoryGraphView } from '@/components/memory/MemoryGraphView'
 
 export function MemoryModule(): React.ReactElement {
   return (
-    <div className="absolute inset-0">
+    // titlebar-no-drag: MemoryGraphView is a full-bleed <canvas> with its own
+    // mousedown/move/up drag-pan handlers — a window-drag region over it would
+    // hijack every node-drag / pan gesture. The whole module opts out.
+    <div className="titlebar-no-drag absolute inset-0">
       <MemoryGraphView />
     </div>
   )

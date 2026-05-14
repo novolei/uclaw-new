@@ -64,13 +64,17 @@ export function AppsTab(): React.ReactElement {
     }
   }
 
+  // titlebar-no-drag on every root branch: AppsTab's root IS the scroll
+  // container and holds all interactive content (expand/uninstall/upgrade
+  // buttons) — it opts out of the window-drag region wholesale, mirroring
+  // the workspace pattern. See KaleidoscopeShell.
   if (loading && items === null) {
-    return <div className="px-6 py-8 text-[12px] text-muted-foreground">加载中…</div>
+    return <div className="titlebar-no-drag px-6 py-8 text-[12px] text-muted-foreground">加载中…</div>
   }
 
   if (!items || (items.length === 0 && standaloneItems.length === 0)) {
     return (
-      <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
+      <div className="titlebar-no-drag flex flex-col items-center justify-center px-6 py-16 text-center">
         <div className="text-[14px] text-foreground mb-2">暂无已安装的数字人</div>
         <div className="text-[12px] text-muted-foreground">
           去「应用商店」装一个，或者关闭此面板回到聊天。
@@ -80,7 +84,7 @@ export function AppsTab(): React.ReactElement {
   }
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto px-6 py-4">
+    <div className="titlebar-no-drag flex flex-col h-full overflow-y-auto px-6 py-4">
       <div className="text-[11px] text-muted-foreground mb-3 leading-relaxed">
         以下是已安装数字人随附的 skill / 能力依赖，以及从商店单独安装的技能和 MCP。
       </div>
