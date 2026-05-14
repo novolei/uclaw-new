@@ -72,14 +72,28 @@ export const kaleidoscopeModuleAtom = atom<KaleidoscopeModuleId>('humans')
 
 ### 4.2 视图切换
 
+顶层 surface 切换在 **`AppShell.tsx`** 层 —— 这是唯一能实现「全窗口接管」的位置。`AppShell` 渲染 `LeftSidebar` + `MainArea` + `RightSidePanel` 三件套作为兄弟节点；万花筒是整个 workspace 的并行 surface，必须在它们的共同父层切换，否则只能换掉中间面板、workspace 的左右栏仍在（与 mockup 不符）。
+
 ```tsx
-// MainArea.tsx (重构后)
-const view = useAtomValue(topLevelViewAtom)
-return view === 'kaleidoscope' ? <KaleidoscopeShell /> : <WorkspaceShell />
+// AppShell.tsx (重构后)
+const topLevelView = useAtomValue(topLevelViewAtom)
+// shell-bg flex 容器内：
+{topLevelView === 'kaleidoscope' ? (
+  <KaleidoscopeShell />            // 全窗口接管
+) : (
+  <>                               // 原 workspace 三件套
+    {!focusMode && <LeftSidebar/>}
+    <div className="main-panel…"><ModeBanner/><MainArea/></div>
+    {!focusMode && showRightPanel && <RightSidePanel/>}
+  </>
+)}
+// 始终挂载的全局组件（SearchPalette / FocusModeOverlay / ApprovalModal / …）保持在 switch 之外
 ```
 
-- `WorkspaceShell` 是 move-only 重构产物 — 容纳当前 `MainArea.tsx` 里 chat / agent / automation / homeOffice / preview 全部分支与相关 hooks（约 170 行整体搬迁）；`MainArea.tsx` 仅保留 `<Panel>` 外壳 + `<SettingsDialog>` + 顶层 switch
-- 切换动画：200ms cross-dissolve，用 `motion` 的 `AnimatePresence mode="wait"`（与 `AutomationsView.tsx` 已有子视图淡入淡出模式一致 — uClaw 已依赖 `motion ^12.38.0`）
+- `MainArea.tsx` 回归为纯 workspace 容器：`<Panel><WorkspaceShell /></Panel>` + `<SettingsDialog />`，**不含**顶层 switch
+- `WorkspaceShell` 是 move-only 重构产物 — 容纳当前 `MainArea.tsx` 里 chat / agent / automation / homeOffice / preview 全部分支与相关 hooks（约 170 行整体搬迁）
+- 切换动画：200ms cross-dissolve，用 `motion` 的 `AnimatePresence mode="wait"`（与 `AutomationsView.tsx` 已有子视图淡入淡出模式一致 — uClaw 已依赖 `motion ^12.38.0`），包在 `AppShell` 的 switch 上
+- `AppShell` 在 uClaw 现有测试体系里无单测（IPC listener 太重）；surface switch 的验证走 Task 9 手动走查 —— 与该层既有测试姿态一致
 
 ### 4.3 文件组织
 
@@ -122,6 +136,10 @@ ui/src/
 入口图标接入：
 - `ui/src/components/workspace/WorkspaceSwitcherBar.tsx`：最左位置渲染 `<KaleidoscopeIcon />`，紧跟一条 vertical hairline 再接 workspace dots
 - 点击 → `setTopLevelView('kaleidoscope')`
+
+顶层 switch 接入：
+- `ui/src/components/app-shell/AppShell.tsx`：`shell-bg` flex 容器内按 `topLevelViewAtom` 二选一（见 §4.2）
+- `ui/src/components/tabs/MainArea.tsx`：回归纯 workspace 容器，不含顶层 switch
 
 ---
 

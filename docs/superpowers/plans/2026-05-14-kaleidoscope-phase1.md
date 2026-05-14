@@ -1790,3 +1790,49 @@ Note: `WorkspaceSwitcherBar.tsx` already calls `<KaleidoscopeIcon size={28} acti
 Steps: `cd ui && npm uninstall lottie-react` → 删除 vite.config.ts 里的 `lottie` chunk 判断块（Task 3 加的那段注释 + if）→ 删除 setup.ts 末尾的 lottie-react mock 块和顶部 `import { createElement } from 'react'`（确认 `createElement` 在 setup.ts 别处未使用）→ `npx tsc --noEmit` clean → `npm test -- --run` 全绿（0 失败，无新 error）→ commit `chore(kaleidoscope): remove lottie-react dependency`。
 
 顺序：必须 Task A 先（让 KaleidoscopeIcon 不再 import lottie），再 Task B（卸依赖）。否则 Task B 卸了依赖 Task A 还没改 KaleidoscopeIcon，编译会断。
+
+---
+
+## Addendum 2: 顶层 switch 提到 AppShell —— 真正的全窗口接管（2026-05-14）
+
+**背景：** 最终全量审查发现 Task 8 把 `topLevelViewAtom` switch 放在 `MainArea`，但 `AppShell` 把 `LeftSidebar` / `MainArea` / `RightSidePanel` 当兄弟节点渲染 —— 只换 `MainArea` 内容时 workspace 的左右栏仍在，万花筒被挤成「中间面板」，与 5 轮 mockup 批准的「全窗口接管」不符。修复：把 switch 提到 `AppShell` 层。spec §4.2 / §4.3 已同步更新。
+
+### Task C: 顶层 surface switch 从 MainArea 提到 AppShell
+
+**Files:**
+- Modify: `ui/src/components/app-shell/AppShell.tsx`
+- Modify: `ui/src/components/tabs/MainArea.tsx`（回退为纯 workspace 容器）
+- Delete: `ui/src/components/tabs/MainArea.test.tsx`（它测的 switch 移走了；`AppShell` 在 uClaw 无单测，switch 验证走 Task 9 手动走查）
+
+**Step 1 — 改 `AppShell.tsx`：**
+- import `useAtomValue`（已 import）、`topLevelViewAtom` from `@/atoms/top-level-view`、`KaleidoscopeShell` from `@/views/Kaleidoscope/KaleidoscopeShell`、`motion, AnimatePresence` from `motion/react`
+- 组件体内加 `const topLevelView = useAtomValue(topLevelViewAtom)`
+- 在 `shell-bg` flex 容器内：把现有的「`{!focusMode && <LeftSidebar/>}` + `<div className="main-panel…">…</div>` + `{!focusMode && showRightPanel && <RightSidePanel/>}`」三件套用 `AnimatePresence mode="wait"` 包成 surface 切换。`key={topLevelView}` 的 `motion.div`（`initial/animate/exit` opacity，`duration:0.2 ease:[0.32,0.72,0,1]`，`className` 让它 `flex-1` 充满或 `contents` —— 用 `className="contents"` 让 motion.div 不破坏 flex 布局；若 `contents` 与 motion 不兼容则用一个 `flex flex-1 min-w-0` 包裹）。`kaleidoscope` 分支渲染 `<KaleidoscopeShell />`（需 `flex-1 min-w-0` 充满），`workspace` 分支渲染原三件套 fragment。
+- **始终挂载的全局组件**（`SearchPalette` / `FocusModeOverlay` / `ApprovalModal` / `EscalationModal` / `AskUserBanner` / `ExitPlanModeBanner` / `TabSessionSyncer` / `WorkspaceTabCleaner` / `titlebar-drag-region`）**保持在 switch 之外**，不受 surface 切换影响。
+- 实现者须先完整读 `AppShell.tsx` 的 return 块，精确判断 `contents` vs wrapper div 哪个不破坏现有 flex 布局；以现有布局零回归为准。
+
+**Step 2 — 回退 `MainArea.tsx`：** 改回纯 workspace 容器，与 Task 2 完成时的形态一致：
+
+```tsx
+import * as React from 'react'
+import { Panel } from '@/components/app-shell/Panel'
+import { SettingsDialog } from '@/components/settings/SettingsDialog'
+import { WorkspaceShell } from '@/views/Workspace/WorkspaceShell'
+
+export function MainArea(): React.ReactElement {
+  return (
+    <>
+      <Panel variant="grow" className="bg-content-area rounded-2xl shadow-xl">
+        <WorkspaceShell />
+      </Panel>
+      <SettingsDialog />
+    </>
+  )
+}
+```
+
+**Step 3 — `git rm ui/src/components/tabs/MainArea.test.tsx`**
+
+**Step 4 — 验证：** `npx tsc --noEmit` clean；`npm test -- --run` 全绿（0 失败，~582 测试 —— 比之前少 2 个，因为删了 MainArea.test.tsx 的 2 个 switch 测试，无新 error）；手动确认（dev）点入口图标 → 全窗口换成 Kaleidoscope（workspace 左右栏消失），点 ← 返回 → workspace 三件套回来。
+
+**Step 5 — commit** `refactor(kaleidoscope): lift surface switch to AppShell for full-window takeover`
