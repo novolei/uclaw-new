@@ -5,7 +5,7 @@
 //! (with origin + prev_run chain metadata), persisting the loop transcript
 //! into agent_messages, and pruning old run-sessions per spec.
 
-use crate::agent::types::{ChatMessage, MessageRole};
+use crate::agent::types::{ChatMessage, ContentBlock, MessageRole};
 use rusqlite::{Connection, OptionalExtension};
 
 /// The fixed id of the auto-created shared "Automations" home space.
@@ -89,7 +89,26 @@ pub fn persist_transcript(
             MessageRole::User => "user",
             MessageRole::Assistant => "assistant",
         };
-        let content = serde_json::to_string(&msg.content).unwrap_or_else(|_| "[]".into());
+        // The Agent view renders user/system messages as a plain `content`
+        // string (matches the normal send_agent_message INSERT) but renders
+        // assistant messages from a JSON ContentBlock array (thinking /
+        // tool_use / tool_result). Match that per-role so the run-session
+        // transcript renders the same as a normal session — a JSON array in
+        // a user message's `content` would otherwise show as raw text.
+        let content = match msg.role {
+            MessageRole::User | MessageRole::System => msg
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            MessageRole::Assistant => {
+                serde_json::to_string(&msg.content).unwrap_or_else(|_| "[]".into())
+            }
+        };
         let id = format!("{}-{}", session_id, idx);
         conn.execute(
             "INSERT INTO agent_messages (id, session_id, role, content, created_at)

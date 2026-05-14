@@ -197,6 +197,12 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
                         artifact_count = input.artifacts.len(),
                         "automation run reported"
                     );
+                    // Push the tool_result so the terminal tool_use is a
+                    // balanced exchange — without it the run-session view
+                    // renders report_to_user as a perpetually-pending call.
+                    reason_ctx.messages.push(ChatMessage::user_tool_result(
+                        &call.id, &input.text, false,
+                    ));
                     return Ok(Some(LoopOutcome::Response {
                         text: input.text,
                         usage: None,
@@ -240,6 +246,11 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
                         escalation_id = %escalation_id,
                         "automation escalation requested"
                     );
+                    // Balance the terminal tool_use with a tool_result (see
+                    // the report_to_user arm).
+                    reason_ctx.messages.push(ChatMessage::user_tool_result(
+                        &call.id, "escalated", false,
+                    ));
                     return Ok(Some(LoopOutcome::Response {
                         text: "escalated".into(),
                         usage: None,
