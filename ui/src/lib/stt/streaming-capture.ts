@@ -27,7 +27,7 @@ export async function createStreamingCapture(): Promise<StreamingCapture> {
   let audioContext: AudioContext | null = null
   let workletNode: AudioWorkletNode | null = null
   let analyser: AnalyserNode | null = null
-  let volumeBuf: Uint8Array | null = null
+  let volumeBuf: Uint8Array<ArrayBuffer> | null = null
   // 当前段累积的 Float32 块。
   let segmentChunks: Float32Array[] = []
 
@@ -96,8 +96,7 @@ export async function createStreamingCapture(): Promise<StreamingCapture> {
         pcm[offset++] = s < 0 ? Math.round(s * 0x8000) : Math.round(s * 0x7fff)
       }
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const bytes = new Uint8Array((pcm as any).buffer)
+    const bytes = new Uint8Array(pcm.buffer)
     const CHUNK = 0x8000
     let str = ''
     for (let i = 0; i < bytes.length; i += CHUNK) {
@@ -117,9 +116,7 @@ export async function createStreamingCapture(): Promise<StreamingCapture> {
 
   const getVolume = (): number => {
     if (!analyser || !volumeBuf) return 0
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const a = analyser as any
-    a.getByteFrequencyData(volumeBuf)
+    analyser.getByteFrequencyData(volumeBuf)
     let sum = 0
     for (let i = 0; i < volumeBuf.length; i++) sum += volumeBuf[i]!
     const avg = sum / volumeBuf.length
