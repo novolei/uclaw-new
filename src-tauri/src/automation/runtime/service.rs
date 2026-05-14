@@ -77,6 +77,8 @@ pub struct AppRuntimeService {
     pub infra: Arc<InfraService>,
     /// Automation-scoped file-based memory store.
     pub memory: Arc<AutomationMemoryStore>,
+    /// Provider service — resolves the LlmProvider + model for a run.
+    pub provider_service: Arc<crate::providers::service::ProviderService>,
 
     /// Per-spec semaphore; inserted lazily on first `activate`.
     semaphores: Arc<RwLock<HashMap<String, Arc<Semaphore>>>>,
@@ -104,6 +106,7 @@ impl AppRuntimeService {
         custom: Arc<CustomSource>,
         infra: Arc<InfraService>,
         memory: Arc<AutomationMemoryStore>,
+        provider_service: Arc<crate::providers::service::ProviderService>,
     ) -> Arc<Self> {
         let svc = Arc::new(Self {
             db,
@@ -116,6 +119,7 @@ impl AppRuntimeService {
             custom,
             infra,
             memory,
+            provider_service,
             semaphores: Arc::new(RwLock::new(HashMap::new())),
             attached: Arc::new(TokioMutex::new(HashMap::new())),
             status: Arc::new(StdMutex::new(ServiceStatus::Stopped)),
@@ -1046,6 +1050,7 @@ mod tests {
             Arc::new(CustomSource::new()),
             Arc::new(InfraService::new()),
             Arc::new(crate::automation::memory::MemoryStore::new(memory_root)),
+            Arc::new(crate::providers::service::ProviderService::new(&tmp).expect("test provider service")),
         )
     }
 
