@@ -6,7 +6,7 @@ pub mod types;
 
 pub use cache::category_counts_cached;
 pub use types::{
-    EntryI18n, MarketplaceDetail, MarketplaceInstallProgress, MarketplaceItem,
+    EntryI18n, InstallOutcome, MarketplaceDetail, MarketplaceInstallProgress, MarketplaceItem,
     MarketplaceQueryResult, MarketplaceUpdate, RegistryEntry, RegistryIndex, RegistrySource,
 };
 
@@ -14,7 +14,6 @@ use anyhow::{anyhow, Context, Result};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::automation::manager::HumaneSpecRow;
 use crate::automation::runtime::AppRuntimeService;
 use crate::skills::SkillsRegistry;
 
@@ -451,9 +450,225 @@ pub async fn uninstall_human(
     Ok(())
 }
 
-/// Install a single registry entry. Returns the installed HumaneSpecRow.
+/// Build a RegistryEntry from a slug + MarketplaceItem — deduplicates the inline
+/// RegistryEntry literals that appear in install_automation and the standalone fns.
+fn registry_entry_for(slug: &str, item: &MarketplaceItem) -> RegistryEntry {
+    let path = format!("packages/digital-humans/{}", slug);
+    RegistryEntry {
+        slug: slug.to_string(),
+        name: item.name.clone(),
+        version: item.version.clone(),
+        author: item.author.clone(),
+        description: item.description.clone(),
+        app_type: item.app_type.clone(),
+        format: None,
+        path,
+        download_url: None,
+        size_bytes: item.size_bytes,
+        checksum: None,
+        category: item.category.clone(),
+        tags: item.tags.clone(),
+        icon: item.icon.clone(),
+        locale: item.locale.clone(),
+        min_app_version: item.min_app_version.clone(),
+        requires_mcps: vec![],
+        requires_skills: vec![],
+        updated_at: None,
+        i18n: Default::default(),
+        meta: serde_json::Value::Null,
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum InstallRoute {
+    Automation,
+    Skill,
+    Mcp,
+    Unsupported,
+}
+
+fn route_install_type(app_type: &str) -> InstallRoute {
+    match app_type {
+        "automation" => InstallRoute::Automation,
+        "skill" => InstallRoute::Skill,
+        "mcp" => InstallRoute::Mcp,
+        _ => InstallRoute::Unsupported,
+    }
+}
+
+/// Install dispatcher — resolves the registry item, routes by type.
+pub async fn install_marketplace_item(
+    runtime: &AppRuntimeService,
+    app_handle: tauri::AppHandle,
+    slug: &str,
+    space_id: Option<String>,
+    user_config: Option<serde_json::Value>,
+    skills_registry: Arc<RwLock<SkillsRegistry>>,
+    mcp_manager: crate::mcp::SharedMcpManager,
+    progress_channel: Option<String>,
+) -> Result<InstallOutcome> {
+    let source = RegistrySource::default();
+    let _ = cache::sync_registry(&runtime.db, &source, false).await;
+    let item = {
+        let conn = runtime.db.lock().unwrap();
+        cache::get_item_with_spec(&conn, &source.id, slug)?
+            .ok_or_else(|| anyhow!("slug not found in registry: {}", slug))?
+            .0
+    };
+    match route_install_type(item.app_type.as_str()) {
+        InstallRoute::Automation => {
+            install_automation(runtime, app_handle, slug, space_id, user_config, skills_registry, progress_channel).await
+        }
+        InstallRoute::Skill => {
+            install_standalone_skill(runtime, app_handle, slug, skills_registry, progress_channel).await
+        }
+        InstallRoute::Mcp => {
+            install_standalone_mcp(runtime, app_handle, slug, user_config, mcp_manager, progress_channel).await
+        }
+        InstallRoute::Unsupported => Err(anyhow!("marketplace item type '{}' is not installable", item.app_type)),
+    }
+}
+
+async fn install_standalone_skill(
+    runtime: &AppRuntimeService,
+    app_handle: tauri::AppHandle,
+    slug: &str,
+    skills_registry: Arc<RwLock<SkillsRegistry>>,
+    progress_channel: Option<String>,
+) -> Result<InstallOutcome> {
+    use tauri::Emitter;
+    let source = RegistrySource::default();
+    let emit = |phase: &str, percent: u8, message: Option<&str>| {
+        if let Some(ch) = &progress_channel {
+            let _ = app_handle.emit(ch, MarketplaceInstallProgress {
+                phase: phase.into(), slug: slug.to_string(), percent,
+                message: message.map(String::from),
+            });
+        }
+    };
+
+    emit("fetching_spec", 20, Some("拉取 spec.yaml"));
+    let (item, cached_yaml, _, _) = {
+        let conn = runtime.db.lock().unwrap();
+        cache::get_item_with_spec(&conn, &source.id, slug)?
+            .ok_or_else(|| anyhow!("slug not found: {}", slug))?
+    };
+    let yaml = match cached_yaml {
+        Some(y) => y,
+        None => {
+            let entry = registry_entry_for(slug, &item);
+            halo_adapter::fetch_spec_yaml(&source, &entry).await?
+        }
+    };
+
+    emit("parsing", 40, Some("解析 skill spec"));
+    let spec: crate::automation::protocol::humane_v1::HumaneAutomationSpec =
+        serde_yml::from_str(&yaml).with_context(|| format!("parse spec.yaml for skill {}", slug))?;
+    crate::automation::protocol::humane_v1::validate_common(&spec)
+        .map_err(|e| anyhow!("invalid skill spec for {}: {}", slug, e))?;
+
+    emit("installing", 70, Some("写入 SKILL.md"));
+    let skill_md = standalone_install::render_skill_md(&spec);
+    let skills_root = dirs::home_dir().ok_or_else(|| anyhow!("no home dir"))?
+        .join(".uclaw").join("skills");
+    let install_dir = standalone_install::install_skill_files(slug, &skill_md, &skills_root)?;
+
+    emit("registering_skills", 85, Some("注册 skill 扫描目录"));
+    {
+        let standalone_root = skills_root.join("_marketplace").join("_standalone");
+        let mut reg = skills_registry.write().await;
+        reg.add_scan_dir(standalone_root, crate::skills::SkillProvenance::Marketplace);
+        let _ = reg.discover();
+    }
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    {
+        let conn = runtime.db.lock().unwrap();
+        if let Err(e) = conn.execute(
+            "INSERT OR REPLACE INTO marketplace_standalone_installs \
+                (slug, item_type, version, installed_at, mcp_server_id) VALUES (?,?,?,?,NULL)",
+            rusqlite::params![slug, "skill", item.version, now_secs],
+        ) {
+            tracing::error!(slug = %slug, error = %e, "failed to record standalone skill install");
+        }
+    }
+
+    emit("complete", 100, Some("完成"));
+    Ok(InstallOutcome::Skill { slug: slug.to_string(), install_path: install_dir.to_string_lossy().to_string() })
+}
+
+async fn install_standalone_mcp(
+    runtime: &AppRuntimeService,
+    app_handle: tauri::AppHandle,
+    slug: &str,
+    user_config: Option<serde_json::Value>,
+    mcp_manager: crate::mcp::SharedMcpManager,
+    progress_channel: Option<String>,
+) -> Result<InstallOutcome> {
+    use tauri::Emitter;
+    let source = RegistrySource::default();
+    let emit = |phase: &str, percent: u8, message: Option<&str>| {
+        if let Some(ch) = &progress_channel {
+            let _ = app_handle.emit(ch, MarketplaceInstallProgress {
+                phase: phase.into(), slug: slug.to_string(), percent,
+                message: message.map(String::from),
+            });
+        }
+    };
+
+    emit("fetching_spec", 20, Some("拉取 spec.yaml"));
+    let (item, cached_yaml, _, _) = {
+        let conn = runtime.db.lock().unwrap();
+        cache::get_item_with_spec(&conn, &source.id, slug)?
+            .ok_or_else(|| anyhow!("slug not found: {}", slug))?
+    };
+    let yaml = match cached_yaml {
+        Some(y) => y,
+        None => {
+            let entry = registry_entry_for(slug, &item);
+            halo_adapter::fetch_spec_yaml(&source, &entry).await?
+        }
+    };
+
+    emit("parsing", 50, Some("解析 mcp spec"));
+    let spec: crate::automation::protocol::humane_v1::HumaneAutomationSpec =
+        serde_yml::from_str(&yaml).with_context(|| format!("parse spec.yaml for mcp {}", slug))?;
+    crate::automation::protocol::humane_v1::validate_common(&spec)
+        .map_err(|e| anyhow!("invalid mcp spec for {}: {}", slug, e))?;
+    let block = spec.mcp_server.clone()
+        .ok_or_else(|| anyhow!("mcp spec {} missing mcp_server block", slug))?;
+
+    emit("installing", 75, Some("注册 MCP server"));
+    let cfg = standalone_install::build_mcp_config(
+        slug, &spec, &block, &user_config.unwrap_or(serde_json::Value::Null),
+    );
+    let mcp_server_id = cfg.id.clone();
+    {
+        let mut mgr = mcp_manager.write().await;
+        mgr.add_server(cfg).map_err(|e| anyhow!("MCP manager add_server failed: {}", e))?;
+    }
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    {
+        let conn = runtime.db.lock().unwrap();
+        if let Err(e) = conn.execute(
+            "INSERT OR REPLACE INTO marketplace_standalone_installs \
+                (slug, item_type, version, installed_at, mcp_server_id) VALUES (?,?,?,?,?)",
+            rusqlite::params![slug, "mcp", item.version, now_secs, mcp_server_id],
+        ) {
+            tracing::error!(slug = %slug, error = %e, "failed to record standalone mcp install");
+        }
+    }
+
+    emit("complete", 100, Some("完成"));
+    Ok(InstallOutcome::Mcp { slug: slug.to_string(), mcp_server_id })
+}
+
+/// Install a single automation registry entry. Returns InstallOutcome::Automation.
 /// source_ref takes the form `marketplace://halo/{slug}` per spec § 5 URI convention.
-pub async fn install_human(
+pub async fn install_automation(
     runtime: &AppRuntimeService,
     app_handle: tauri::AppHandle,
     slug: &str,
@@ -461,7 +676,7 @@ pub async fn install_human(
     user_config: Option<serde_json::Value>,
     skills_registry: Arc<RwLock<SkillsRegistry>>,
     progress_channel: Option<String>,
-) -> Result<HumaneSpecRow> {
+) -> Result<InstallOutcome> {
     use tauri::Emitter;
 
     let source = RegistrySource::default();
@@ -497,30 +712,7 @@ pub async fn install_human(
     let yaml = if let Some(y) = cached_yaml {
         y
     } else {
-        let path = format!("packages/digital-humans/{}", slug);
-        let entry = RegistryEntry {
-            slug: slug.to_string(),
-            name: item.name.clone(),
-            version: item.version.clone(),
-            author: item.author.clone(),
-            description: item.description.clone(),
-            app_type: item.app_type.clone(),
-            format: None,
-            path,
-            download_url: None,
-            size_bytes: None,
-            checksum: None,
-            category: "other".into(),
-            tags: vec![],
-            icon: None,
-            locale: None,
-            min_app_version: None,
-            requires_mcps: vec![],
-            requires_skills: vec![],
-            updated_at: None,
-            i18n: Default::default(),
-            meta: serde_json::Value::Null,
-        };
+        let entry = registry_entry_for(slug, &item);
         let yaml = halo_adapter::fetch_spec_yaml(&source, &entry).await?;
         let conn = runtime.db.lock().unwrap();
         cache::cache_spec_yaml(&conn, &source.id, slug, &yaml)?;
@@ -542,32 +734,7 @@ pub async fn install_human(
             return Err(anyhow!("parse spec.yaml for {} during fetching_skills phase: {:#}", slug, e));
         }
     };
-    let staged = match skill_install::fetch_bundled_skills(&source, &{
-        let path = format!("packages/digital-humans/{}", slug);
-        RegistryEntry {
-            slug: slug.to_string(),
-            name: item.name.clone(),
-            version: item.version.clone(),
-            author: item.author.clone(),
-            description: item.description.clone(),
-            app_type: item.app_type.clone(),
-            format: None,
-            path,
-            download_url: None,
-            size_bytes: None,
-            checksum: None,
-            category: item.category.clone(),
-            tags: item.tags.clone(),
-            icon: item.icon.clone(),
-            locale: item.locale.clone(),
-            min_app_version: item.min_app_version.clone(),
-            requires_mcps: vec![],
-            requires_skills: vec![],
-            updated_at: None,
-            i18n: Default::default(),
-            meta: serde_json::Value::Null,
-        }
-    }, &parsed.spec, &skills_root).await {
+    let staged = match skill_install::fetch_bundled_skills(&source, &registry_entry_for(slug, &item), &parsed.spec, &skills_root).await {
         Ok(s) => s,
         Err(e) => {
             skill_install::cleanup_staging(
@@ -678,12 +845,21 @@ pub async fn install_human(
     emit("complete", 100, Some("已安装"));
     let _ = app_handle.emit("chat:pet-celebrate", serde_json::json!({"slug": slug}));
 
-    Ok(row)
+    Ok(InstallOutcome::Automation { spec: row })
 }
 
 #[cfg(test)]
 mod tests {
     use super::types::*;
+
+    #[test]
+    fn route_install_type_classifies_all_cases() {
+        assert_eq!(super::route_install_type("automation"), super::InstallRoute::Automation);
+        assert_eq!(super::route_install_type("skill"), super::InstallRoute::Skill);
+        assert_eq!(super::route_install_type("mcp"), super::InstallRoute::Mcp);
+        assert_eq!(super::route_install_type("extension"), super::InstallRoute::Unsupported);
+        assert_eq!(super::route_install_type("garbage"), super::InstallRoute::Unsupported);
+    }
 
     #[test]
     fn uninstall_removes_rows_and_files() {

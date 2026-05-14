@@ -5682,14 +5682,15 @@ pub async fn install_marketplace_human(
     space_id: Option<String>,
     user_config: Option<serde_json::Value>,
     progress_channel: Option<String>,
-) -> Result<crate::automation::manager::HumaneSpecRow, Error> {
-    crate::automation::marketplace::install_human(
+) -> Result<crate::automation::marketplace::InstallOutcome, Error> {
+    crate::automation::marketplace::install_marketplace_item(
         &state.runtime_service,
         app_handle,
         &slug,
         space_id,
         user_config,
         state.skills_registry.clone(),
+        state.mcp_manager.clone(),
         progress_channel,
     )
     .await

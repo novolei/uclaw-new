@@ -8,8 +8,6 @@
 //! Lives in its own module — parallel to skill_install.rs (3b-α's bundled-skill
 //! staging) — so mod.rs stays focused on orchestration.
 
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

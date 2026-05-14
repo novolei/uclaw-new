@@ -189,6 +189,16 @@ pub struct MarketplaceInstallProgress {
     pub message: Option<String>,
 }
 
+/// Result of installing any marketplace item. The automation path carries the
+/// installed spec row; skill/mcp paths carry a lighter confirmation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum InstallOutcome {
+    Automation { spec: crate::automation::manager::HumaneSpecRow },
+    Skill { slug: String, install_path: String },
+    Mcp { slug: String, mcp_server_id: String },
+}
+
 // ─── Installed Automations (for AppsView card list) ───────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
