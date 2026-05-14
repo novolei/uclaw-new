@@ -24,8 +24,6 @@ import { PreviewPanel } from '@/components/preview/PreviewPanel'
 import WelcomeView from '@/views/WelcomeView'
 import { TabBar } from '@/components/tabs/TabBar'
 import { TabContent } from '@/components/tabs/TabContent'
-import { automationPanelOpenAtom } from '@/atoms/automation'
-import { AutomationsView } from '@/views/AutomationsView'
 import { homeOfficePanelOpenAtom } from '@/atoms/home-office-atoms'
 import { HomeOfficeView } from '@/components/home-office/HomeOfficeView'
 
@@ -41,23 +39,8 @@ export function WorkspaceShell(): React.ReactElement {
   const setSelectedPreviewFile = useSetAtom(selectedPreviewFileAtom)
   const currentWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
   const [splitRatio, setSplitRatio] = useAtom(previewPanelSplitRatioAtom)
-  const [automationOpen, setAutomationOpen] = useAtom(automationPanelOpenAtom)
   const [homeOfficeOpen, setHomeOfficeOpen] = useAtom(homeOfficePanelOpenAtom)
   const draggingRef = React.useRef(false)
-
-  // Auto-close AutomationsView when the user picks a different session/tab
-  // in LeftSidebar (Bug 3 from 2026-05-14 polish round). Watching activeTabId
-  // covers chat / agent / browser tabs — they're the only routes a user
-  // explicitly navigates to from the sidebar conversation list. AutomationsView
-  // remains open while the user moves within it (humans/apps/store sub-tabs
-  // don't touch activeTabId).
-  const prevTabIdRef = React.useRef<string | null>(activeTabId)
-  React.useEffect(() => {
-    if (prevTabIdRef.current !== activeTabId && automationOpen) {
-      setAutomationOpen(false)
-    }
-    prevTabIdRef.current = activeTabId
-  }, [activeTabId, automationOpen, setAutomationOpen])
 
   // Reset the preview panel when the active workspace changes. The previously
   // selected file lived in the OLD workspace's mount tree — keeping the panel
@@ -167,7 +150,6 @@ export function WorkspaceShell(): React.ReactElement {
   }, [homeOfficeOpen, setHomeOfficeOpen])
 
   if (homeOfficeOpen) return <HomeOfficeView />
-  if (automationOpen) return <AutomationsView />
   if (previewOpen) {
     return (
       <div className="flex flex-1 min-h-0" data-preview-split>

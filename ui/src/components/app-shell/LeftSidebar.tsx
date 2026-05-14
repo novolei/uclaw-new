@@ -69,10 +69,10 @@ import { useSyncActiveTabSideEffects } from '@/hooks/useSyncActiveTabSideEffects
 import { WorkspaceRail } from '@/components/workspace/WorkspaceRail'
 import { WorkspaceHeader } from '@/components/workspace/WorkspaceHeader'
 import { WorkspaceSwitcherBar } from '@/components/workspace/WorkspaceSwitcherBar'
-// AutomationHub is rendered by MainArea (see atoms/automation::automationPanelOpenAtom)
 import { syncWorkspaceSessionsAtom, refreshWorkspacesAtom, activeWorkspaceIdAtom, workspacesAtom, workspaceSwitchDirectionAtom, swipeGestureAtom } from '@/atoms/workspace'
-import { automationPanelOpenAtom } from '@/atoms/automation'
 import { homeOfficePanelOpenAtom } from '@/atoms/home-office-atoms'
+import { topLevelViewAtom } from '@/atoms/top-level-view'
+import { kaleidoscopeModuleAtom } from '@/atoms/kaleidoscope'
 import { getWorkspaceIcon } from '@/lib/workspace-icons'
 import { MoveSessionDialog } from '@/components/agent/MoveSessionDialog'
 import {
@@ -354,7 +354,8 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   const [activeView, setActiveView] = useAtom(activeViewAtom)
   const setSettingsTab = useSetAtom(settingsTabAtom)
   const setSettingsOpen = useSetAtom(settingsOpenAtom)
-  const [automationPanelOpen, setAutomationPanelOpen] = useAtom(automationPanelOpenAtom)
+  const setTopLevelView = useSetAtom(topLevelViewAtom)
+  const setKaleidoscopeModule = useSetAtom(kaleidoscopeModuleAtom)
   const [, setHomeOfficeOpen] = useAtom(homeOfficePanelOpenAtom)
   const [activeItem, setActiveItem] = React.useState<SidebarItemId>('all-chats')
   const [conversations, setConversations] = useAtom(conversationsAtom)
@@ -1053,7 +1054,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
         <div className="px-3 pb-1">
           <button
             type="button"
-            onClick={() => setAutomationPanelOpen(true)}
+            onClick={() => { setKaleidoscopeModule('humans'); setTopLevelView('kaleidoscope') }}
             className="w-full flex items-center gap-2 px-3 py-1.5 rounded-md
                        text-[12px] text-foreground/60 hover:text-foreground
                        hover:bg-foreground/[0.04] transition-colors titlebar-no-drag"
@@ -1101,11 +1102,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
       {deleteDialog}
       {moveDialog}
 
-      {/* Automation Hub is rendered by MainArea as a full main-area view
-          when `automationPanelOpenAtom` is true — see MainArea.tsx.
-          Reference to setAutomationPanelOpen kept to satisfy ESLint:
-          the button at line ~1053 still calls it. */}
-      {void automationPanelOpen}
+
     </div>
   )
 }
