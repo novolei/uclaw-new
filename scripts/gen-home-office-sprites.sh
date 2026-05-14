@@ -62,15 +62,43 @@ import sys as _s
 if n: print(n)
 else: _s.stderr.write(f'API error: {e or d}\n'); _s.exit(1)")
     if [ -z "$OP_NAME" ]; then echo "    failed to start op for $NAME"; exit 1; fi
-    # Poll until done
+    # Poll via fetchPredictOperation (Vertex AI Veo long-running pattern)
+    POLL_URL="https://us-central1-aiplatform.googleapis.com/v1/projects/$PROJECT/locations/$REGION/publishers/google/models/$MODEL:fetchPredictOperation"
+    POLL_COUNT=0
     while true; do
-      sleep 8
-      OP=$(curl -sS -H "Authorization: Bearer $(gcloud auth print-access-token)" \
-        "https://us-central1-aiplatform.googleapis.com/v1/$OP_NAME")
-      DONE=$(echo "$OP" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('done',False))")
+      sleep 10
+      POLL_COUNT=$((POLL_COUNT + 1))
+      if [ "$POLL_COUNT" -gt 60 ]; then
+        echo "    timeout polling op after 10 min"
+        exit 1
+      fi
+      OP=$(curl -sS -X POST \
+        -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+        -H "Content-Type: application/json" \
+        "$POLL_URL" \
+        -d "{\"operationName\":\"$OP_NAME\"}")
+      DONE=$(echo "$OP" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('done', False))" 2>/dev/null || echo "False")
       if [ "$DONE" = "True" ]; then
-        URI=$(echo "$OP" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['response']['videos'][0]['gcsUri'])")
-        gsutil cp "$URI" "$MP4"
+        # Veo returns videos as bytesBase64Encoded in the inline response.
+        # Decode and write to MP4 via python.
+        echo "$OP" | python3 -c "
+import json, sys, base64
+d = json.load(sys.stdin)
+videos = d.get('response', {}).get('videos', [])
+if not videos:
+    sys.stderr.write(f'no videos in response: {json.dumps(d)[:300]}\n')
+    sys.exit(1)
+v = videos[0]
+if 'bytesBase64Encoded' in v:
+    data = base64.b64decode(v['bytesBase64Encoded'])
+    open('$MP4', 'wb').write(data)
+elif 'gcsUri' in v:
+    import subprocess
+    subprocess.check_call(['gsutil', 'cp', v['gcsUri'], '$MP4'])
+else:
+    sys.stderr.write(f'unknown video format: {list(v.keys())}\n')
+    sys.exit(1)
+"
         break
       fi
     done
