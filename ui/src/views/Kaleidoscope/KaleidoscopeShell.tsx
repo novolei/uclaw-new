@@ -50,7 +50,7 @@ export function KaleidoscopeShell(): React.ReactElement {
       {/* 主区浮卡 —— data-tauri-drag-region makes the p-2 gutter draggable;
           the content card below opts out (titlebar-no-drag) so modules +
           their buttons stay clickable. Mirrors the workspace main-panel. */}
-      <div data-tauri-drag-region className="titlebar-drag-region flex-1 min-w-0 min-h-0 p-2">
+      <div data-tauri-drag-region className="titlebar-drag-region relative flex-1 min-w-0 min-h-0 p-2">
         <div className="titlebar-no-drag h-full rounded-2xl shadow-xl bg-content-area overflow-hidden relative">
           <AnimatePresence mode="wait">
             <motion.div
@@ -79,6 +79,17 @@ export function KaleidoscopeShell(): React.ReactElement {
             </motion.div>
           </AnimatePresence>
         </div>
+        {/* Window-drag handle over every module's top header band. The card
+            above is titlebar-no-drag (so modules + buttons stay clickable),
+            which also makes its header non-draggable — this strip restores
+            it: pointer-events-none lets clicks fall straight through to the
+            header buttons, while app-region:drag is inherited from the
+            data-tauri-drag-region parent, so the band drags the window.
+            Sized to the card's ~50px header strip (top-2 = the p-2 gutter). */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute left-2 right-2 top-2 h-[44px]"
+        />
       </div>
     </div>
   )
