@@ -26,8 +26,8 @@ describe('stt-atoms', () => {
     const store = createStore()
     const s: SttSettings = store.get(sttSettingsAtom)
     expect(s.language).toBe('auto')
-    expect(s.autoSend).toBe(false)
     expect(s.microphoneDeviceId).toBeNull()
+    expect(s.silenceThresholdMs).toBe(1800)
   })
 
   it('modelStatusAtom defaults to unknown then can be set to ready', () => {

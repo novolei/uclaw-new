@@ -204,7 +204,7 @@ describe('useSttStreamingSession — silence finalize', () => {
     vi.useFakeTimers()
     const store = readyStore()
     store.set(sttSettingsAtom, {
-      language: 'zh', autoSend: false, microphoneDeviceId: null, silenceThresholdMs: 1800,
+      language: 'zh', microphoneDeviceId: null, silenceThresholdMs: 1800,
     })
     invokeMock.mockResolvedValue({ text: '这是一段话' })
     const finalized: string[] = []

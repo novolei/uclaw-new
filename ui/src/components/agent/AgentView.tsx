@@ -728,6 +728,8 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     } else {
       setInputContent(smartJoin(inputContent, text))
     }
+    // 转写文本落地后聚焦输入框（光标置末），让用户直接回车发送。
+    editor?.commands.focus('end')
   }, [composerEditorRef, inputContent, setInputContent])
 
   /** 粘贴超长文本 → 转为附件 */
