@@ -21,18 +21,33 @@ export type RecordingState =
   | { kind: 'error'; message: string }
   | { kind: 'permission-denied' }
 
+/**
+ * 流式语音 modal 的状态机。替代 RecordingState（Task 12 删除旧的）。
+ * modal 在 kind !== 'idle' 时挂载。
+ */
+export type SttModalState =
+  | { kind: 'idle' }
+  | { kind: 'requesting-permission' }
+  | { kind: 'listening'; segmentStartedMs: number; volume: number; interimText: string }
+  | { kind: 'finalizing'; volume: number }
+  | { kind: 'permission-denied' }
+  | { kind: 'error'; message: string }
+
 export type Language = 'auto' | 'zh' | 'en' | 'yue' | 'ja' | 'ko'
 
 export interface SttSettings {
   language: Language
   autoSend: boolean
   microphoneDeviceId: string | null
+  /** 静音多久（ms）触发段定稿。默认 1800。 */
+  silenceThresholdMs: number
 }
 
 const DEFAULT_SETTINGS: SttSettings = {
   language: 'auto',
   autoSend: false,
   microphoneDeviceId: null,
+  silenceThresholdMs: 1800,
 }
 
 export type ModelStatus =
@@ -46,3 +61,4 @@ export const recordingStateAtom = atom<RecordingState>({ kind: 'idle' })
 export const activeComposerAtom = atom<ComposerKind | null>(null)
 export const sttSettingsAtom = atomWithStorage<SttSettings>('uclaw.stt.settings', DEFAULT_SETTINGS)
 export const modelStatusAtom = atom<ModelStatus>({ kind: 'unknown' })
+export const sttModalStateAtom = atom<SttModalState>({ kind: 'idle' })
