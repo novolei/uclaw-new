@@ -314,6 +314,36 @@ pub async fn install_human(
     };
     tracing::info!(slug = %slug, count = staged.len(), "bundled skills staged");
 
+    // NEW: validating_caps phase
+    emit("validating_caps", 50, Some("校验能力依赖"));
+    let mcp_ids: Vec<String> = parsed
+        .spec
+        .requires
+        .as_ref()
+        .and_then(|r| r.get("mcps").and_then(|s| s.as_array()))
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut missing_caps: Vec<String> = Vec::new();
+    for mcp_id in &mcp_ids {
+        if crate::automation::capability_map::resolve_capability(mcp_id).is_none() {
+            missing_caps.push(mcp_id.clone());
+        }
+    }
+    if !missing_caps.is_empty() {
+        // Warn but don't abort — Phase 3b-γ will offer a real install path.
+        let msg = format!(
+            "automation 声明依赖 MCP {:?}，但 uClaw 暂不支持，安装完成但可能无法运行",
+            missing_caps
+        );
+        emit("validating_caps", 55, Some(&msg));
+        tracing::warn!(missing = ?missing_caps, slug = %slug, "capability validation warnings");
+    }
+
     emit("installing", 60, Some("安装到数据库"));
     let source_ref = format!("marketplace://{}/{}", source.id, slug);
 
@@ -451,5 +481,21 @@ mod tests {
         assert_eq!(entry.category, "other");
         assert!(entry.tags.is_empty());
         assert!(entry.requires_mcps.is_empty());
+    }
+
+    #[test]
+    fn capability_validation_collects_missing_ids() {
+        // We test the matching logic directly (not via the async install_human
+        // which would require a live HTTP server). install_human's loop is a
+        // thin wrapper around resolve_capability — proving the wrapper here is
+        // sufficient given Task 2 already covers resolve_capability itself.
+        use crate::automation::capability_map::resolve_capability;
+        let inputs = vec!["ai-browser", "foo", "bar", "ai-browser"];
+        let missing: Vec<&str> = inputs
+            .iter()
+            .copied()
+            .filter(|id| resolve_capability(id).is_none())
+            .collect();
+        assert_eq!(missing, vec!["foo", "bar"]);
     }
 }
