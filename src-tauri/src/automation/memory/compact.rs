@@ -3,7 +3,7 @@
 //! module records the archive in the DB so the UI / future promotion logic
 //! can see the compaction history.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 /// Record a compaction: append `archive_path` to compacted_archives_json and
 /// refresh last_updated_at. Idempotent-insert (UPSERT) on spec_id.
@@ -19,14 +19,20 @@ pub fn record_compaction(
             [spec_id],
             |r| r.get(0),
         )
-        .ok();
+        .optional()?;
 
     let mut archives: Vec<String> = existing
-        .and_then(|j| serde_json::from_str(&j).ok())
+        .and_then(|j| {
+            serde_json::from_str::<Vec<String>>(&j)
+                .map_err(|e| tracing::warn!(spec_id, error = %e, "compacted_archives_json malformed — resetting"))
+                .ok()
+        })
         .unwrap_or_default();
     archives.push(archive_path.to_string());
     let archives_json = serde_json::to_string(&archives).unwrap_or_else(|_| "[]".into());
 
+    // NOTE(2b): `bytes` is left at 0 — current-memory-size tracking is a
+    // Phase 2b refinement; nothing reads `bytes` today.
     conn.execute(
         "INSERT INTO automation_memory (spec_id, last_updated_at, compacted_archives_json, bytes)
          VALUES (?1, ?2, ?3, 0)
@@ -35,6 +41,7 @@ pub fn record_compaction(
             compacted_archives_json = ?3",
         rusqlite::params![spec_id, now_ms, archives_json],
     )?;
+    tracing::debug!(spec_id, archive_path, "compaction recorded");
     Ok(())
 }
 
