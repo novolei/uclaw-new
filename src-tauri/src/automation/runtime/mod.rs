@@ -25,4 +25,4 @@ pub struct PermissionSet {
 pub use auto_continue::{AutoContinueConfig, CompletionGate};
 pub use cost::{CostCapConfig, CostCapState, CostCapDecision};
 pub use execute::AutomationDelegate;
-pub use prompt::{build_initial_message, build_system_prompt, EscalationResolution};
+pub use prompt::{build_initial_message, build_initial_message_with_memory, build_system_prompt, EscalationResolution};
