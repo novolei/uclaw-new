@@ -549,6 +549,18 @@ pub async fn install_marketplace_item(
     }
 }
 
+/// Reject slugs that aren't a plain single path segment — defends the
+/// _marketplace/_standalone/<slug>/ join against path traversal from a
+/// malformed registry entry. DHP slugs are lowercase kebab-case.
+fn is_safe_slug(slug: &str) -> bool {
+    !slug.is_empty()
+        && slug.len() <= 128
+        && slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        && slug != "."
+        && slug != ".."
+        && !slug.contains("..")
+}
+
 async fn install_standalone_skill(
     runtime: &AppRuntimeService,
     app_handle: tauri::AppHandle,
@@ -556,6 +568,9 @@ async fn install_standalone_skill(
     skills_registry: Arc<RwLock<SkillsRegistry>>,
     progress_channel: Option<String>,
 ) -> Result<InstallOutcome> {
+    if !is_safe_slug(slug) {
+        return Err(anyhow!("unsafe slug rejected: {:?}", slug));
+    }
     use tauri::Emitter;
     let source = RegistrySource::default();
     let emit = |phase: &str, percent: u8, message: Option<&str>| {
@@ -605,13 +620,11 @@ async fn install_standalone_skill(
         .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     {
         let conn = runtime.db.lock().unwrap();
-        if let Err(e) = conn.execute(
+        conn.execute(
             "INSERT OR REPLACE INTO marketplace_standalone_installs \
                 (slug, item_type, version, installed_at, mcp_server_id) VALUES (?,?,?,?,NULL)",
             rusqlite::params![slug, "skill", item.version, now_secs],
-        ) {
-            tracing::error!(slug = %slug, error = %e, "failed to record standalone skill install");
-        }
+        ).with_context(|| format!("record standalone install for {}", slug))?;
     }
 
     emit("complete", 100, Some("完成"));
@@ -626,6 +639,9 @@ async fn install_standalone_mcp(
     mcp_manager: crate::mcp::SharedMcpManager,
     progress_channel: Option<String>,
 ) -> Result<InstallOutcome> {
+    if !is_safe_slug(slug) {
+        return Err(anyhow!("unsafe slug rejected: {:?}", slug));
+    }
     use tauri::Emitter;
     let source = RegistrySource::default();
     let emit = |phase: &str, percent: u8, message: Option<&str>| {
@@ -673,13 +689,11 @@ async fn install_standalone_mcp(
         .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     {
         let conn = runtime.db.lock().unwrap();
-        if let Err(e) = conn.execute(
+        conn.execute(
             "INSERT OR REPLACE INTO marketplace_standalone_installs \
                 (slug, item_type, version, installed_at, mcp_server_id) VALUES (?,?,?,?,?)",
             rusqlite::params![slug, "mcp", item.version, now_secs, mcp_server_id],
-        ) {
-            tracing::error!(slug = %slug, error = %e, "failed to record standalone mcp install");
-        }
+        ).with_context(|| format!("record standalone install for {}", slug))?;
     }
 
     emit("complete", 100, Some("完成"));
@@ -890,6 +904,9 @@ pub fn uninstall_standalone_skill_inner(
     skills_root: &std::path::Path,
     slug: &str,
 ) -> Result<()> {
+    if !is_safe_slug(slug) {
+        return Err(anyhow!("unsafe slug rejected: {:?}", slug));
+    }
     let dir = skills_root.join("_marketplace").join("_standalone").join(slug);
     if dir.exists() {
         std::fs::remove_dir_all(&dir).with_context(|| format!("remove {}", dir.display()))?;
@@ -1300,5 +1317,16 @@ requires:
         ));
         // With no marketplace cache row, category defaults to 'other'.
         assert_eq!(r.category, "other");
+    }
+
+    #[test]
+    fn is_safe_slug_rejects_traversal() {
+        assert!(super::is_safe_slug("xhs-monitor"));
+        assert!(super::is_safe_slug("my_skill.v2"));
+        assert!(!super::is_safe_slug("../../etc"));
+        assert!(!super::is_safe_slug(".."));
+        assert!(!super::is_safe_slug("a/b"));
+        assert!(!super::is_safe_slug(""));
+        assert!(!super::is_safe_slug("has space"));
     }
 }
