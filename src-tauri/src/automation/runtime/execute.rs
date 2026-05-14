@@ -262,7 +262,14 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
                         }
                         "compact" => {
                             let p = self.memory.compact(&self.spec_id).await?;
-                            p.to_string_lossy().into_owned()
+                            let path_str = p.to_string_lossy().into_owned();
+                            {
+                                let conn = self.db.lock().unwrap();
+                                let _ = crate::automation::memory::record_compaction(
+                                    &conn, &self.spec_id, &path_str,
+                                );
+                            }
+                            path_str
                         }
                         _ => "unknown memory op".into(),
                     };
