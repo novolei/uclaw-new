@@ -60,6 +60,8 @@ export function useSttStreamingSession(
   const segmentStartedMsRef = useRef(0)
   const interimTextRef = useRef('')
   const endingRef = useRef(false)
+  /** 静音定稿进行中的锁 — 防止同一段被多次定稿。 */
+  const silenceFinalizeInProgressRef = useRef(false)
   // opts.onSegmentFinalized 用 ref 持有，避免 effect/interval 闭包过期。
   const onSegmentFinalizedRef = useRef(opts.onSegmentFinalized)
   onSegmentFinalizedRef.current = opts.onSegmentFinalized
@@ -82,6 +84,7 @@ export function useSttStreamingSession(
     transcribeInFlightRef.current = false
     interimTextRef.current = ''
     endingRef.current = false
+    silenceFinalizeInProgressRef.current = false
   }, [clearTimers])
 
   // 转写当前段一次，返回原始文本（不加标点）。失败抛错。
@@ -143,16 +146,69 @@ export function useSttStreamingSession(
   }, [transcribeSegment, settings.language])
 
   const startVolumeLoop = useCallback(() => {
-    // Task 6 会扩展为「采样音量 + 静音检测」。骨架先只刷 volume。
     volumeTimerRef.current = setInterval(() => {
       const cap = captureRef.current
       if (!cap) return
       const v = cap.getVolume()
+      const now = Date.now()
+      if (v > VOICE_VOLUME_THRESHOLD) lastVoiceMsRef.current = now
+
+      // 静音定稿判定：静音够久 + 当前段有内容 + 段时长够（防气音误触发）。
+      const silentFor = now - lastVoiceMsRef.current
+      const segmentAge = now - segmentStartedMsRef.current
+      const shouldFinalize =
+        silentFor > settings.silenceThresholdMs &&
+        interimTextRef.current.trim() !== '' &&
+        segmentAge > MIN_SEGMENT_MS &&
+        !silenceFinalizeInProgressRef.current &&
+        !endingRef.current
+
+      if (shouldFinalize) {
+        // 进 finalizing：暂停重转写循环，定稿，再恢复。
+        silenceFinalizeInProgressRef.current = true
+        if (retranscribeTimerRef.current) {
+          clearInterval(retranscribeTimerRef.current)
+          retranscribeTimerRef.current = null
+        }
+        setState({ kind: 'finalizing', volume: v })
+        void finalizeSegment()
+          .catch(() => {
+            // 定稿失败：进 error 态 1500ms 后关闭，已定稿的段不丢。
+            silenceFinalizeInProgressRef.current = false
+            teardown()
+            setActive(null)
+            setState({ kind: 'error', message: '转写失败' })
+            setTimeout(() => setState({ kind: 'idle' }), 1500)
+          })
+          .then(() => {
+            // 成功：回 listening，重启重转写循环。
+            silenceFinalizeInProgressRef.current = false
+            if (captureRef.current && !endingRef.current) {
+              setState({
+                kind: 'listening',
+                segmentStartedMs: segmentStartedMsRef.current,
+                volume: 0,
+                interimText: '',
+              })
+              startRetranscribeLoop()
+            }
+          })
+        return
+      }
+
+      // 普通帧：刷新音量。
       setState((prev) =>
         prev.kind === 'listening' ? { ...prev, volume: v } : prev,
       )
     }, VOLUME_SAMPLE_INTERVAL_MS)
-  }, [setState])
+  }, [
+    settings.silenceThresholdMs,
+    finalizeSegment,
+    startRetranscribeLoop,
+    setState,
+    setActive,
+    teardown,
+  ])
 
   const start = useCallback(async (): Promise<StartResult> => {
     if (active !== null && active !== composer) return 'busy'

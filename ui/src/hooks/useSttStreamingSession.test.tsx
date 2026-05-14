@@ -6,6 +6,7 @@ import {
   sttModalStateAtom,
   activeComposerAtom,
   modelStatusAtom,
+  sttSettingsAtom,
 } from '@/atoms/stt-atoms'
 import { useSttStreamingSession } from './useSttStreamingSession'
 
@@ -189,5 +190,68 @@ describe('useSttStreamingSession — retranscribe loop', () => {
       resolveInvoke?.({ text: 'ok' })
       await Promise.resolve()
     })
+  })
+})
+
+describe('useSttStreamingSession — silence finalize', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockCapture.getSegmentPcmBase64.mockReturnValue('AAAA')
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('finalizes a segment after silence, emits punctuated text, resets, stays listening', async () => {
+    vi.useFakeTimers()
+    const store = readyStore()
+    store.set(sttSettingsAtom, {
+      language: 'zh', autoSend: false, microphoneDeviceId: null, silenceThresholdMs: 1800,
+    })
+    invokeMock.mockResolvedValue({ text: '这是一段话' })
+    const finalized: string[] = []
+    const { result } = renderHook(
+      () => useSttStreamingSession('chat', { onSegmentFinalized: (t) => finalized.push(t) }),
+      { wrapper: wrapper(store) },
+    )
+    await act(async () => {
+      await result.current.start()
+    })
+    // voice present → one retranscribe tick fills interimText
+    mockCapture.getVolume.mockReturnValue(0.5)
+    await act(async () => {
+      vi.advanceTimersByTime(1500)
+      await Promise.resolve(); await Promise.resolve()
+    })
+    // now go silent for > silenceThresholdMs
+    mockCapture.getVolume.mockReturnValue(0)
+    await act(async () => {
+      vi.advanceTimersByTime(2000)
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+    })
+    expect(finalized).toEqual(['这是一段话。']) // regularizePunctuation appended 。
+    expect(mockCapture.resetSegment).toHaveBeenCalled()
+    expect(store.get(sttModalStateAtom).kind).toBe('listening')
+    const s = store.get(sttModalStateAtom)
+    if (s.kind === 'listening') expect(s.interimText).toBe('')
+  })
+
+  it('does not finalize on silence when the segment has no interim text', async () => {
+    vi.useFakeTimers()
+    const store = readyStore()
+    invokeMock.mockResolvedValue({ text: '' }) // nothing transcribed
+    const finalized: string[] = []
+    const { result } = renderHook(
+      () => useSttStreamingSession('chat', { onSegmentFinalized: (t) => finalized.push(t) }),
+      { wrapper: wrapper(store) },
+    )
+    await act(async () => {
+      await result.current.start()
+    })
+    mockCapture.getVolume.mockReturnValue(0)
+    await act(async () => {
+      vi.advanceTimersByTime(4000)
+      await Promise.resolve(); await Promise.resolve()
+    })
+    expect(finalized).toEqual([])
+    expect(store.get(sttModalStateAtom).kind).toBe('listening')
   })
 })
