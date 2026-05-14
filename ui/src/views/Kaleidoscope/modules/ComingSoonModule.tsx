@@ -15,10 +15,10 @@ export interface ComingSoonModuleProps {
 export function ComingSoonModule({
   moduleId,
 }: ComingSoonModuleProps): React.ReactElement {
-  const meta = KALEIDOSCOPE_MODULES.find((m) => m.id === moduleId)
+  const meta = KALEIDOSCOPE_MODULES.find((m) => m.id === moduleId)!
   return (
     <div className="flex flex-col h-full min-h-0">
-      <ModuleHeader group={meta?.group ?? 'asset'} title={meta?.label ?? '模块'} />
+      <ModuleHeader group={meta.group} title={meta.label} />
       <div className="flex-1 min-h-0 flex items-center justify-center">
         <div className="text-[13px] text-muted-foreground">即将到来 · Phase 2</div>
       </div>
