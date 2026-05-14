@@ -489,7 +489,6 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
           {/* Kaleidoscope 入口 —— 它不是一个 workspace，所以跟 workspace
               dots 之间用一条竖 hairline 隔开。 */}
           <KaleidoscopeIcon
-            size={28}
             active={topLevelView === 'kaleidoscope'}
             onClick={() => setTopLevelView('kaleidoscope')}
           />
