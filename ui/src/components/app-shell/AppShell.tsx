@@ -41,6 +41,7 @@ import { attachWorkspaceDirectory, pathIsDirectory, copyFileIntoWorkspace, onBud
 import { workspaceFilesVersionAtom, workspaceAttachedDirsMapAtom } from '@/atoms/agent-atoms'
 import { firedBudgetThresholdsAtom } from '@/atoms/cost'
 import { TabSessionSyncer } from './TabSessionSyncer'
+import { VersionWatermark } from './VersionWatermark'
 import { useWorkspaceArrowSwitch } from '@/hooks/useWorkspaceSwipe'
 import { WorkspaceTabCleaner } from './WorkspaceTabCleaner'
 import { focusModeAtom } from '@/atoms/focus-mode-atoms'
@@ -300,7 +301,13 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
             workspace 恢复标准三栏布局。always-mounted 的全局组件（SearchPalette、
             ApprovalModal 等）留在 switch 外，两个 surface 下均可用。 */}
         {topLevelView === 'kaleidoscope' ? (
-          <KaleidoscopeShell />
+          // relative z-[60] so Kaleidoscope content beats the z-50 titlebar
+          // drag-region overlay (AppShell.tsx:296) — the workspace panels below
+          // use the same pattern; without it the overlay swallows all pointer
+          // events in the top ~50px of every Kaleidoscope module.
+          <div className="relative z-[60] flex-1 min-w-0 min-h-0">
+            <KaleidoscopeShell />
+          </div>
         ) : (
           <>
             {/* 左侧边栏：focus mode 下隐藏，由 FocusModeOverlay 接管 */}
@@ -338,6 +345,9 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
 
         {/* Global ⌘K search palette — mounts at root so it works from any view */}
         <SearchPalette onSelect={handleSearchResultSelect} />
+
+        {/* Bottom-right build watermark (version + git commit). pointer-events-none. */}
+        <VersionWatermark />
 
         {/* Focus Mode overlay — null when off, otherwise renders the two
             floating-island re-mounts of LeftSidebar / RightSidePanel + the

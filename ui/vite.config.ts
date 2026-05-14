@@ -1,9 +1,30 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+
+// Build-time stamps for the bottom-right version watermark (VersionWatermark.tsx).
+// `__dirname` is the `ui/` dir; running `git` from there resolves whichever
+// repo/worktree the build was kicked off from — exactly the HEAD we want to show.
+const pkgVersion: string = JSON.parse(
+  readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'),
+).version;
+
+const commitHash: string = (() => {
+  try {
+    return execSync('git rev-parse --short HEAD', { cwd: __dirname }).toString().trim();
+  } catch {
+    return 'unknown';
+  }
+})();
 
 export default defineConfig({
   plugins: [react()],
+  define: {
+    __APP_VERSION__: JSON.stringify(pkgVersion),
+    __APP_COMMIT__: JSON.stringify(commitHash),
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
