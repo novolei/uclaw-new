@@ -16,7 +16,6 @@ import {
 } from './primitives'
 import { LABEL_CLASS } from './primitives/SettingsUIConstants'
 import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
 import { modelStatusAtom, sttSettingsAtom, type Language } from '@/atoms/stt-atoms'
 import { getShortcutForPlatform } from '@/lib/shortcut-defaults'
 
@@ -164,15 +163,6 @@ export function SttSettings(): React.ReactElement {
                   label: d.label || `Mic ${d.deviceId.slice(0, 8)}`,
                 })),
               ]}
-            />
-          </SettingsRow>
-          {/* Use Switch directly with aria-label so tests can query by accessible name.
-              autoSend 的「会话结束即发送」行为尚未在流式 modal 里接线——开关仅记录偏好。 */}
-          <SettingsRow label="结束语音输入后自动发送（即将支持）">
-            <Switch
-              aria-label="自动发送"
-              checked={settings.autoSend}
-              onCheckedChange={(v: boolean) => setSettings({ ...settings, autoSend: v })}
             />
           </SettingsRow>
           <SettingsRow label="静音多久后自动录入">

@@ -226,6 +226,8 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
     } else {
       setContent(smartJoin(content, text))
     }
+    // 转写文本落地后聚焦输入框（光标置末），让用户直接回车发送。
+    editor?.commands.focus('end')
   }, [composerEditorRef, content, setContent])
 
   /** 粘贴文件回调 */

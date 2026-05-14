@@ -37,6 +37,10 @@ export function installAudioStubs(): InstalledStubs {
     getByteFrequencyData(arr: Uint8Array) {
       arr.fill(volumeByte)
     }
+    // 时域波形：128 是静音中点，volumeByte 当作相对偏移幅度。
+    getByteTimeDomainData(arr: Uint8Array) {
+      arr.fill(Math.max(0, Math.min(255, 128 + volumeByte)))
+    }
   }
   class MockAudioContext {
     sampleRate = 16000

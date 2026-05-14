@@ -42,6 +42,11 @@ export async function createStreamingCapture(): Promise<StreamingCapture> {
       (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)({
       sampleRate: TARGET_SAMPLE_RATE,
     })
+    // 浏览器常把 AudioContext 创建为 suspended，此时 worklet 和 analyser 都收不到数据。
+    // modal 由用户手势（Alt+S / 点麦克风）唤起，resume 是允许的。
+    if (audioContext.state === 'suspended') {
+      await audioContext.resume()
+    }
     await audioContext.audioWorklet.addModule(WORKLET_URL)
 
     const source = audioContext.createMediaStreamSource(stream)
@@ -56,7 +61,8 @@ export async function createStreamingCapture(): Promise<StreamingCapture> {
     analyser = audioContext.createAnalyser()
     analyser.fftSize = 256
     source.connect(analyser)
-    volumeBuf = new Uint8Array(analyser.frequencyBinCount)
+    // 时域波形用 fftSize 长度的缓冲（getByteTimeDomainData 填满 fftSize 个采样）。
+    volumeBuf = new Uint8Array(analyser.fftSize)
   }
 
   const stop = (): void => {
@@ -116,11 +122,17 @@ export async function createStreamingCapture(): Promise<StreamingCapture> {
 
   const getVolume = (): number => {
     if (!analyser || !volumeBuf) return 0
-    analyser.getByteFrequencyData(volumeBuf)
-    let sum = 0
-    for (let i = 0; i < volumeBuf.length; i++) sum += volumeBuf[i]!
-    const avg = sum / volumeBuf.length
-    return Math.max(0, Math.min(1, avg / 255))
+    // 用时域波形的 RMS 当响度。频域平均会被大量空高频 bin 稀释成接近 0，
+    // 时域 RMS 才是真实的「人声大小」。
+    analyser.getByteTimeDomainData(volumeBuf)
+    let sumSq = 0
+    for (let i = 0; i < volumeBuf.length; i++) {
+      const dev = (volumeBuf[i]! - 128) / 128 // 居中归一化到 -1..1
+      sumSq += dev * dev
+    }
+    const rms = Math.sqrt(sumSq / volumeBuf.length) // 0..1，正常说话约 0.05–0.3
+    // 放大到可见区间再 clamp —— 说话时条能明显起伏，静音时接近 0。
+    return Math.max(0, Math.min(1, rms * 3))
   }
 
   return { start, stop, getSegmentPcmBase64, resetSegment, getVolume }
