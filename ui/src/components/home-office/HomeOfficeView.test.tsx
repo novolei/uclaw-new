@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { Provider, createStore } from 'jotai'
 import React from 'react'
 import { openZoneAtom, stickyNotesAtom } from '@/atoms/home-office-atoms'
+import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
 import { HomeOfficeView } from './HomeOfficeView'
 
 // Mock the PIXI scene — jsdom can't render WebGL
@@ -60,5 +61,13 @@ describe('HomeOfficeView', () => {
     store.set(openZoneAtom, 'music')
     renderWith(store)
     expect(screen.getByText('🎵 Music Gazebo')).toBeInTheDocument()
+  })
+
+  it('opens settings on uclaw:navigate event with detail=skills', () => {
+    const store = createStore()
+    renderWith(store)
+    fireEvent(window, new CustomEvent('uclaw:navigate', { detail: 'skills' }))
+    expect(store.get(settingsOpenAtom)).toBe(true)
+    expect(store.get(settingsTabAtom)).toBe('tools')
   })
 })
