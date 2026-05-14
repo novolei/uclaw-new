@@ -4,23 +4,31 @@ import userEvent from '@testing-library/user-event'
 import { KaleidoscopeIcon } from './KaleidoscopeIcon'
 
 describe('KaleidoscopeIcon', () => {
-  it('renders the static fallback when no animationData is provided', () => {
+  it('renders a button with the accessible label', () => {
     render(<KaleidoscopeIcon />)
-    // aria-label "万花筒" lives on the fallback <div role="img"> — asserts the static SVG rendered
-    expect(screen.getByLabelText('万花筒')).toBeInTheDocument()
-    expect(screen.queryByTestId('lottie-stub')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '打开万花筒' })).toBeInTheDocument()
   })
 
-  it('renders the Lottie player when animationData is provided', () => {
-    render(<KaleidoscopeIcon animationData={{ v: '5.0.0', fr: 30, layers: [] }} />)
-    expect(screen.getByTestId('lottie-stub')).toBeInTheDocument()
-  })
-
-  it('is a button with an accessible label and fires onClick', async () => {
+  it('fires onClick when clicked', async () => {
     const onClick = vi.fn()
     const user = userEvent.setup()
     render(<KaleidoscopeIcon onClick={onClick} />)
     await user.click(screen.getByRole('button', { name: '打开万花筒' }))
     expect(onClick).toHaveBeenCalledOnce()
+  })
+
+  it('applies the active ring only when active', () => {
+    const { rerender } = render(<KaleidoscopeIcon active={false} />)
+    const btn = screen.getByRole('button', { name: '打开万花筒' })
+    expect(btn.className).not.toMatch(/ring-2/)
+    rerender(<KaleidoscopeIcon active />)
+    expect(btn.className).toMatch(/ring-2/)
+  })
+
+  it('honours the size prop', () => {
+    render(<KaleidoscopeIcon size={48} />)
+    const btn = screen.getByRole('button', { name: '打开万花筒' })
+    expect(btn.style.width).toBe('48px')
+    expect(btn.style.height).toBe('48px')
   })
 })
