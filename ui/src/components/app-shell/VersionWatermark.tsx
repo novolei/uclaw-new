@@ -13,7 +13,7 @@ export function VersionWatermark(): React.ReactElement {
   return (
     <div
       aria-hidden="true"
-      className="fixed bottom-1 right-1.5 z-[9999] pointer-events-none select-none
+      className="fixed bottom-6 right-6 z-[9999] pointer-events-none select-none
                  font-mono text-[10px] leading-none text-muted-foreground/40"
     >
       v{__APP_VERSION__} · {__APP_COMMIT__}

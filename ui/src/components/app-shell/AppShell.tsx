@@ -305,7 +305,11 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
           // drag-region overlay (AppShell.tsx:296) — the workspace panels below
           // use the same pattern; without it the overlay swallows all pointer
           // events in the top ~50px of every Kaleidoscope module.
-          <div className="relative z-[60] flex-1 min-w-0 min-h-0">
+          // `flex` is required (not just flex-1): KaleidoscopeShell's root is
+          // `flex flex-1 min-h-0` and needs a flex parent to actually fill the
+          // height — without it the shell sizes to content and leaves a blank
+          // strip at the bottom of the window.
+          <div className="relative z-[60] flex flex-1 min-w-0 min-h-0">
             <KaleidoscopeShell />
           </div>
         ) : (
