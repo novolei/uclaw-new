@@ -18,6 +18,7 @@ import {
 } from '@/atoms/marketplace'
 import { getMarketplaceDetail } from '@/lib/tauri-bridge'
 import { InstallWizard } from './InstallWizard'
+import { UpgradeModal } from './UpgradeModal'
 import {
   localizeEntry,
   localizeSpec,
@@ -52,6 +53,7 @@ export function StoreDetail(): React.ReactElement {
   const setSubview = useSetAtom(automationsSubviewAtom)
   const setWizard = useSetAtom(installWizardAtom)
   const [promptExpanded, setPromptExpanded] = React.useState(false)
+  const [showUpgrade, setShowUpgrade] = React.useState(false)
   const locale = useAtomValue(userLocaleAtom)
 
   // Load detail when slug changes
@@ -143,17 +145,32 @@ export function StoreDetail(): React.ReactElement {
             <span className="text-[11px] text-muted-foreground">by {item.author} · {item.category}</span>
           </div>
           {item.appType === 'automation' ? (
-            <button
-              type="button"
-              onClick={openInstallWizard}
-              className={cn(
-                'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium',
-                'bg-primary text-primary-foreground hover:bg-primary/90 transition-colors',
-              )}
-            >
-              <Download size={12} />
-              {isInstalled && !hasUpdate ? '重新安装' : hasUpdate ? '更新到 v' + item.version : '安装'}
-            </button>
+            hasUpdate ? (
+              // Update available: open UpgradeModal instead of the install wizard
+              <button
+                type="button"
+                onClick={() => setShowUpgrade(true)}
+                className={cn(
+                  'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium',
+                  'bg-primary text-primary-foreground hover:bg-primary/90 transition-colors',
+                )}
+              >
+                <Download size={12} />
+                升级到 v{item.version}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={openInstallWizard}
+                className={cn(
+                  'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium',
+                  'bg-primary text-primary-foreground hover:bg-primary/90 transition-colors',
+                )}
+              >
+                <Download size={12} />
+                {isInstalled ? '重新安装' : '安装'}
+              </button>
+            )
           ) : (
             <span className="text-[11px] text-muted-foreground italic">
               {item.appType.toUpperCase()} 安装在 Phase 3b 开放
@@ -294,6 +311,23 @@ export function StoreDetail(): React.ReactElement {
         </AnimatePresence>
       </div>
       <InstallWizard />
+      {showUpgrade && detail && (
+        // Pass installedSkillIds=[] here: StoreDetail doesn't hold the installed bundled-skill
+        // list. The diff will show every new bundled skill as "added" — acceptable for the
+        // store-side preview. The AppsTab path passes the accurate installed list.
+        <UpgradeModal
+          slug={item.slug}
+          name={displayName}
+          currentVersion={installedVersion ?? ''}
+          installedSkillIds={[]}
+          onClose={() => setShowUpgrade(false)}
+          onUpgraded={() => {
+            setShowUpgrade(false)
+            // Re-fetch detail so installedVersion reflects the new version
+            void getMarketplaceDetail(item.slug).then(setDetail).catch(() => {})
+          }}
+        />
+      )}
     </div>
   )
 }

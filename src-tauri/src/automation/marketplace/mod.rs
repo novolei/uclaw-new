@@ -197,6 +197,71 @@ pub async fn check_updates_cached(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// Replace all `automation_installed_skills` rows for a slug with the given set.
+/// DELETE-then-INSERT inside one connection is effectively atomic for our
+/// single-writer SQLite. Best-effort: the V22 table is diagnostic-only, so a
+/// failure here is logged but never rolls back the already-committed install.
+fn write_installed_skill_rows(
+    conn: &rusqlite::Connection,
+    slug: &str,
+    staged: &[(String, i64)], // (skill_id, file_count)
+    now_secs: i64,
+) {
+    if let Err(e) = conn.execute(
+        "DELETE FROM automation_installed_skills WHERE automation_slug = ?1",
+        rusqlite::params![slug],
+    ) {
+        tracing::error!(slug = %slug, error = %e, "failed to clear prior installed-skill rows");
+    }
+    for (skill_id, file_count) in staged {
+        if let Err(e) = conn.execute(
+            "INSERT OR REPLACE INTO automation_installed_skills \
+                (automation_slug, skill_id, installed_at, file_count) \
+                VALUES (?, ?, ?, ?)",
+            rusqlite::params![slug, skill_id, now_secs, file_count],
+        ) {
+            tracing::error!(
+                slug = %slug,
+                skill_id = %skill_id,
+                error = %e,
+                "failed to record installed skill — install continues, AppsTab may show stale state until reinstall"
+            );
+        }
+    }
+}
+
+/// Best-effort read of a bundled skill's `description` from its SKILL.md
+/// YAML frontmatter. Returns None on any problem — a bad SKILL.md must never
+/// break the AppsTab list. Deliberately does NOT reuse skills::parse_skill_md,
+/// which validates the skill name + enforces activation limits and would
+/// reject otherwise-fine marketplace skills.
+fn read_skill_description(skill_dir: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(skill_dir.join("SKILL.md")).ok()?;
+    let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+    let trimmed = content.trim_start_matches(['\n', '\r']);
+    let after_open = trimmed.strip_prefix("---")?;
+    // Skip to the end of the opening fence line.
+    let after_open_line = &after_open[after_open.find('\n')? + 1..];
+    // Find the closing fence: a line that is exactly "---".
+    let close = after_open_line
+        .lines()
+        .scan(0usize, |offset, line| {
+            let here = *offset;
+            *offset += line.len() + 1; // +1 for the '\n'
+            Some((here, line))
+        })
+        .find(|(_, line)| line.trim() == "---")
+        .map(|(here, _)| here)?;
+    let yaml_str = &after_open_line[..close];
+
+    #[derive(serde::Deserialize)]
+    struct Frontmatter {
+        description: Option<String>,
+    }
+    let fm: Frontmatter = serde_yml::from_str(yaml_str).ok()?;
+    fm.description.filter(|d| !d.trim().is_empty())
+}
+
 /// Synchronous core of `list_installed_marketplace_automations` — separated so
 /// unit tests can drive it without an AppRuntimeService.
 ///
@@ -298,16 +363,15 @@ pub fn list_installed_inner(
         let mut bundled_skills: Vec<InstalledSkillBrief> = Vec::new();
         for s in skill_rows {
             let (skill_id, file_count) = s?;
-            let install_path = skills_root
+            let install_dir = skills_root
                 .join("_marketplace")
                 .join(&slug)
-                .join(&skill_id)
-                .to_string_lossy()
-                .to_string();
+                .join(&skill_id);
+            let description = read_skill_description(&install_dir);
             bundled_skills.push(InstalledSkillBrief {
                 skill_id,
-                description: None, // Phase 3b-β reads SKILL.md
-                install_path,
+                description,
+                install_path: install_dir.to_string_lossy().to_string(),
                 file_count,
             });
         }
@@ -588,28 +652,13 @@ pub async fn install_human(
     let _final_dir = skill_install::commit_staged_skills(slug, &skills_root)
         .with_context(|| "commit staged skills")?;
 
-    // Record one row per staged skill into automation_installed_skills (V22).
-    // Best-effort: the V22 table is diagnostic-only; the runtime behaviour
-    // (skill discoverability via SkillsRegistry scan dir) does not depend on
-    // these rows. A failed insert must not roll back the already-committed
-    // staging dir rename or the automation_specs row.
     {
         let conn = runtime.db.lock().unwrap();
-        for s in &staged {
-            if let Err(e) = conn.execute(
-                "INSERT OR REPLACE INTO automation_installed_skills \
-                    (automation_slug, skill_id, installed_at, file_count) \
-                    VALUES (?, ?, ?, ?)",
-                rusqlite::params![slug, s.skill_id, now_secs, s.file_count],
-            ) {
-                tracing::error!(
-                    slug = %slug,
-                    skill_id = %s.skill_id,
-                    error = %e,
-                    "failed to record installed skill — install continues, AppsTab may show stale state until reinstall"
-                );
-            }
-        }
+        let rows: Vec<(String, i64)> = staged
+            .iter()
+            .map(|s| (s.skill_id.clone(), s.file_count))
+            .collect();
+        write_installed_skill_rows(&conn, slug, &rows, now_secs);
     }
 
     // Register the per-automation scan root with SkillsRegistry so the
@@ -787,6 +836,69 @@ mod tests {
             .filter(|id| resolve_capability(id).is_none())
             .collect();
         assert_eq!(missing, vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn registering_skills_clears_stale_rows() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+
+        // Simulate a prior install with skills {A, B}.
+        conn.execute(
+            "INSERT INTO automation_installed_skills VALUES ('auto-x', 'skill-a', 0, 1)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO automation_installed_skills VALUES ('auto-x', 'skill-b', 0, 1)",
+            [],
+        ).unwrap();
+
+        // Simulate an upgrade whose staged set is only {A}: the registering_skills
+        // logic must DELETE all prior rows for the slug, then re-insert just {A}.
+        super::write_installed_skill_rows(&conn, "auto-x", &[("skill-a".to_string(), 2_i64)], 1715000000);
+
+        let rows: Vec<(String, i64)> = conn
+            .prepare("SELECT skill_id, file_count FROM automation_installed_skills WHERE automation_slug = 'auto-x' ORDER BY skill_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        assert_eq!(rows, vec![("skill-a".to_string(), 2_i64)], "stale skill-b row must be gone, skill-a refreshed");
+    }
+
+    #[test]
+    fn read_skill_description_parses_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp.path().join("skill-a");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        // Happy path: frontmatter with a description.
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: skill-a\ndescription: Collects search data\n---\n\nBody.\n",
+        ).unwrap();
+        assert_eq!(
+            super::read_skill_description(&skill_dir),
+            Some("Collects search data".to_string()),
+        );
+
+        // Frontmatter without a description field → None.
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: skill-a\n---\n\nBody.\n",
+        ).unwrap();
+        assert_eq!(super::read_skill_description(&skill_dir), None);
+
+        // Malformed frontmatter (no closing fence) → None, never panics.
+        std::fs::write(skill_dir.join("SKILL.md"), "---\nname: skill-a\nBody with no close").unwrap();
+        assert_eq!(super::read_skill_description(&skill_dir), None);
+
+        // Missing SKILL.md entirely → None.
+        let empty_dir = tmp.path().join("skill-empty");
+        std::fs::create_dir_all(&empty_dir).unwrap();
+        assert_eq!(super::read_skill_description(&empty_dir), None);
     }
 
     #[test]
