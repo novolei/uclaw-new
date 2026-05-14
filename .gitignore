@@ -39,3 +39,6 @@ package-lock.json
 
 # Superpowers brainstorming session files (visual companion mockups)
 .superpowers/
+
+# Veo sprite generation intermediate output
+.cache/

@@ -30,7 +30,7 @@ ASSETS=(
   "pose-thinking|lofi girl sitting cross-legged with an open book in lap, head tilted thoughtfully, miyazaki ghibli watercolor style"
   "pose-typing|lofi girl seated at a wooden writing desk, leaning forward writing in a journal with a quill, miyazaki ghibli watercolor style"
   "pose-success|lofi girl standing with both arms raised, joyful grin, miyazaki ghibli watercolor style"
-  "pose-error|lofi girl seated hugging knees, head bowed, sad expression, miyazaki ghibli watercolor style"
+  "pose-error|lofi girl sitting on grass with hands covering ears, slight worried expression, miyazaki ghibli watercolor style"
 )
 
 BG="solid uniform vivid pure green chromakey background (#00FF00), no other elements"
