@@ -17,6 +17,14 @@ vi.mock('@/lib/tauri-bridge', () => ({
   toggleSkill: vi.fn().mockResolvedValue(true),
   forkSkillToUser: vi.fn().mockResolvedValue(''),
   reloadSkills: vi.fn().mockResolvedValue([]),
+  listMcpServers: vi.fn().mockResolvedValue([]),
+  listMcpTools: vi.fn().mockResolvedValue([]),
+  addMcpServer: vi.fn().mockResolvedValue({}),
+  updateMcpServer: vi.fn().mockResolvedValue({}),
+  removeMcpServer: vi.fn().mockResolvedValue(true),
+  toggleMcpServer: vi.fn().mockResolvedValue(true),
+  restartMcpServer: vi.fn().mockResolvedValue(true),
+  connectMcpServer: vi.fn().mockResolvedValue(true),
 }))
 
 // automation 组件子树重 —— stub 掉，本测试只关心 KaleidoscopeShell 的模块路由。
@@ -82,6 +90,13 @@ describe('KaleidoscopeShell', () => {
     store.set(kaleidoscopeModuleAtom, 'skills')
     renderWithProviders(<KaleidoscopeShell />, { store })
     expect(await screen.findByRole('heading', { name: '技能' })).toBeInTheDocument()
+  })
+
+  it('renders IntegrationsModule for the integrations module', async () => {
+    const store = createStore()
+    store.set(kaleidoscopeModuleAtom, 'integrations')
+    renderWithProviders(<KaleidoscopeShell />, { store })
+    expect(await screen.findByText('集成 · MCP')).toBeInTheDocument()
   })
 
   it('renders the ComingSoon placeholder for a not-yet-built module', () => {
