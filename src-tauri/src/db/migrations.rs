@@ -1149,6 +1149,22 @@ CREATE TABLE IF NOT EXISTS automation_registry_sync (
 );
 ";
 
+/// V25 — marketplace_standalone_installs.
+///
+/// Tracks standalone (non-bundled) skill and MCP marketplace installs so the
+/// AppsTab can list them and uninstall can find what to remove. `mcp_server_id`
+/// links a `type: mcp` install to its mcp_servers.json entry; NULL for skills.
+/// (V24 is claimed by the parallel Automation Phase 2a branch.)
+const SQL_V25: &str = "
+CREATE TABLE IF NOT EXISTS marketplace_standalone_installs (
+    slug          TEXT PRIMARY KEY,
+    item_type     TEXT NOT NULL,
+    version       TEXT NOT NULL,
+    installed_at  INTEGER NOT NULL,
+    mcp_server_id TEXT
+);
+";
+
 pub fn run_v23a(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.execute_batch(V23A_MARKETPLACE_CACHE)
 }
@@ -1321,6 +1337,14 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     if let Err(e) = run_v23a(conn) {
         tracing::error!(error = %e, "V23a FAILED — marketplace cache unavailable");
         return Err(e);
+    }
+    // V25: marketplace_standalone_installs — tracks standalone skill/MCP installs.
+    // (V24 is reserved by the parallel Automation Phase 2a branch.)
+    tracing::debug!("Running migration V25: marketplace_standalone_installs");
+    for stmt in SQL_V25.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V25 stmt skipped: {} :: {}", e, stmt);
+        }
     }
     tracing::info!("Database migrations complete");
     Ok(())
@@ -1938,5 +1962,41 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         super::run(&conn).expect("first run");
         super::run(&conn).expect("second run must not error (CREATE IF NOT EXISTS)");
+    }
+
+    #[test]
+    fn v25_creates_marketplace_standalone_installs_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("migrations run");
+
+        conn.execute(
+            "INSERT INTO marketplace_standalone_installs \
+                (slug, item_type, version, installed_at, mcp_server_id) \
+                VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params!["my-skill", "skill", "1.0.0", 1715000000_i64, Option::<String>::None],
+        ).expect("skill row insert ok");
+
+        conn.execute(
+            "INSERT INTO marketplace_standalone_installs \
+                (slug, item_type, version, installed_at, mcp_server_id) \
+                VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params!["my-mcp", "mcp", "2.0.0", 1715000000_i64, Some("srv-uuid-123")],
+        ).expect("mcp row insert ok");
+
+        // slug is PK — duplicate must error.
+        let dup = conn.execute(
+            "INSERT INTO marketplace_standalone_installs \
+                (slug, item_type, version, installed_at, mcp_server_id) \
+                VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params!["my-skill", "skill", "1.0.1", 1715000001_i64, Option::<String>::None],
+        );
+        assert!(dup.is_err(), "slug PK must reject duplicate");
+    }
+
+    #[test]
+    fn v25_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error");
     }
 }
