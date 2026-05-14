@@ -1,5 +1,4 @@
 // wired in Task 15 (AutomationDelegate)
-#[allow(dead_code)]
 #[derive(Debug, serde::Deserialize)]
 pub struct ReportInput {
     pub text: String,

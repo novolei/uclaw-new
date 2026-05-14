@@ -280,6 +280,7 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
                         spec_id = %self.spec_id,
                         channels = ?input.channels,
                         title = %input.title,
+                        body = %input.body,
                         level = %input.level,
                         "automation notify_user"
                     );
@@ -299,8 +300,9 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
                                 Ok(output) => {
                                     let result = serde_json::to_string(&output.result)
                                         .unwrap_or_else(|_| "{}".into());
+                                    let is_err = crate::agent::dispatcher::detect_soft_tool_error(&output.result);
                                     reason_ctx.messages.push(ChatMessage::user_tool_result(
-                                        &call.id, &result, false,
+                                        &call.id, &result, is_err,
                                     ));
                                 }
                                 Err(e) => {
