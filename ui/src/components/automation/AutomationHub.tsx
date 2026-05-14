@@ -7,7 +7,7 @@
  */
 
 import * as React from 'react'
-import { useAtom } from 'jotai'
+import { useAtom, useSetAtom } from 'jotai'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { toast } from 'sonner'
 import {
@@ -15,7 +15,6 @@ import {
   CheckCircle, XCircle, Loader, Filter, FileQuestion, AlertCircle,
   ToggleLeft, ToggleRight, Trash2, RefreshCw, Store,
 } from 'lucide-react'
-import { MarketplaceModal } from './MarketplaceModal'
 import {
   humaneSpecsAtom,
   automationActivitiesAtom,
@@ -23,6 +22,7 @@ import {
   type HumaneSpecRow,
   type AutomationActivity,
 } from '@/atoms/automation'
+import { automationsSubviewAtom } from '@/atoms/marketplace'
 import {
   listAutomationsHumane,
   triggerAutomationManualHumane,
@@ -258,11 +258,11 @@ function AutomationCard({
 
 export function AutomationHub(): React.ReactElement {
   const [specs, setSpecs] = useAtom(humaneSpecsAtom)
+  const setSubview = useSetAtom(automationsSubviewAtom)
   const [yamlInput, setYamlInput] = React.useState('')
   const [installing, setInstalling] = React.useState(false)
   const [loading, setLoading] = React.useState(false)
   const [showInstall, setShowInstall] = React.useState(false)
-  const [marketplaceOpen, setMarketplaceOpen] = React.useState(false)
 
   const refresh = React.useCallback(async () => {
     setLoading(true)
@@ -350,7 +350,7 @@ export function AutomationHub(): React.ReactElement {
           />
           <div className="flex items-center gap-2 justify-end">
             <button
-              onClick={() => setMarketplaceOpen(true)}
+              onClick={() => setSubview('store')}
               className="flex items-center gap-1 px-3 py-1.5 rounded text-[11px] border border-border text-foreground hover:bg-accent transition-colors"
             >
               <Store size={11} />
@@ -392,12 +392,6 @@ export function AutomationHub(): React.ReactElement {
           ))
         )}
       </div>
-
-      <MarketplaceModal
-        open={marketplaceOpen}
-        onClose={() => setMarketplaceOpen(false)}
-        onInstalled={(row) => setSpecs((prev) => [row, ...prev])}
-      />
     </div>
   )
 }

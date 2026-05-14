@@ -88,6 +88,17 @@ export function usePetStateSync(): void {
         successTimer.current = null
       }, SUCCESS_LINGER_MS)
     })
+    register('chat:pet-celebrate', () => {
+      if (successTimer.current) {
+        clearTimeout(successTimer.current)
+        successTimer.current = null
+      }
+      setPrimary('success')
+      successTimer.current = setTimeout(() => {
+        setPrimary('idle')
+        successTimer.current = null
+      }, SUCCESS_LINGER_MS)
+    })
     register('chat:stream-error', () => {
       if (successTimer.current) {
         clearTimeout(successTimer.current)

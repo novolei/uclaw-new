@@ -1083,6 +1083,57 @@ pub fn run_v21(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SQL_V21)
 }
 
+const V23A_MARKETPLACE_CACHE: &str = "
+CREATE TABLE IF NOT EXISTS automation_marketplace_items (
+    registry_id      TEXT NOT NULL,
+    slug             TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    version          TEXT NOT NULL,
+    author           TEXT NOT NULL,
+    description      TEXT NOT NULL,
+    item_type        TEXT NOT NULL,
+    category         TEXT NOT NULL DEFAULT 'other',
+    icon             TEXT,
+    tags_json        TEXT NOT NULL DEFAULT '[]',
+    locale           TEXT,
+    min_app_version  TEXT,
+    size_bytes       INTEGER,
+    checksum         TEXT,
+    requires_json    TEXT NOT NULL DEFAULT '{}',
+    i18n_json        TEXT NOT NULL DEFAULT '{}',
+    spec_yaml        TEXT,
+    updated_at_index TEXT,
+    cached_at        INTEGER NOT NULL,
+    PRIMARY KEY (registry_id, slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_marketplace_type     ON automation_marketplace_items(item_type);
+CREATE INDEX IF NOT EXISTS idx_marketplace_category ON automation_marketplace_items(category);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS automation_marketplace_fts USING fts5(
+    slug UNINDEXED,
+    registry_id UNINDEXED,
+    name,
+    description,
+    author,
+    tags,
+    tokenize = 'trigram'
+);
+
+CREATE TABLE IF NOT EXISTS automation_registry_sync (
+    registry_id    TEXT PRIMARY KEY,
+    last_synced_at INTEGER,
+    last_etag      TEXT,
+    last_modified  TEXT,
+    last_error     TEXT,
+    item_count     INTEGER NOT NULL DEFAULT 0
+);
+";
+
+pub fn run_v23a(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(V23A_MARKETPLACE_CACHE)
+}
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -1236,6 +1287,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::info!("Running migration V21: automation_subscriptions, automation_memory, automation_escalations");
     if let Err(e) = run_v21(conn) {
         tracing::error!(error = %e, "V21 FAILED — automation escalations / subscriptions / memory tables missing");
+        return Err(e);
+    }
+    // V23a: Marketplace cache (Phase 3a). Phase 3b extends to add the
+    // automation_registries table for multi-source support.
+    tracing::info!("Running migration V23a: marketplace cache (items + FTS + sync state)");
+    if let Err(e) = run_v23a(conn) {
+        tracing::error!(error = %e, "V23a FAILED — marketplace cache unavailable");
         return Err(e);
     }
     tracing::info!("Database migrations complete");
@@ -1787,5 +1845,30 @@ mod tests {
             "SELECT status FROM automation_specs WHERE id = 'bad'", [], |r| r.get(0)
         ).unwrap();
         assert_eq!(bad_status, "error");
+    }
+
+    #[test]
+    fn v23a_creates_marketplace_cache_tables() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        // Tables exist
+        for tbl in ["automation_marketplace_items", "automation_marketplace_fts", "automation_registry_sync"] {
+            let count: i64 = conn
+                .query_row(
+                    &format!("SELECT count(*) FROM sqlite_master WHERE type IN ('table','virtual table') AND name = '{}'", tbl),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert!(count >= 1, "{} should exist after V23a", tbl);
+        }
+        // FTS5 trigram tokenizer works
+        conn.execute("INSERT INTO automation_marketplace_fts(slug, registry_id, name, description, author, tags) VALUES('s', 'halo', 'AI News', 'curates news', 'a', 'ai,news')", []).unwrap();
+        let hits: i64 = conn.query_row(
+            "SELECT count(*) FROM automation_marketplace_fts WHERE automation_marketplace_fts MATCH 'news'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(hits, 1, "FTS5 trigram should match");
     }
 }

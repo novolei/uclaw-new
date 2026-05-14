@@ -1340,11 +1340,67 @@ export interface MarketplaceItem {
   i18nDescription: string | null
 }
 
+export interface MarketplaceQueryResult {
+  items: MarketplaceItem[]
+  total: number
+  hasMore: boolean
+}
+
+export interface MarketplaceDetail {
+  item: MarketplaceItem
+  specYaml: string
+  parsedSpecJson: unknown | null
+  requiresMcps: string[]
+  requiresSkills: string[]
+  installedVersion: string | null
+}
+
+export interface MarketplaceUpdate {
+  slug: string
+  installedVersion: string
+  latestVersion: string
+}
+
+export interface MarketplaceInstallProgress {
+  phase: 'fetching_spec' | 'parsing' | 'installing' | 'activating' | 'complete' | string
+  slug: string
+  percent: number
+  message: string | null
+}
+
+export const queryMarketplace = (
+  search?: string,
+  itemType?: string,
+  category?: string,
+  page?: number,
+  pageSize?: number,
+): Promise<MarketplaceQueryResult> =>
+  invoke<MarketplaceQueryResult>('query_marketplace', {
+    search, itemType, category, page, pageSize,
+  })
+
+export const getMarketplaceDetail = (slug: string): Promise<MarketplaceDetail> =>
+  invoke<MarketplaceDetail>('get_marketplace_detail', { slug })
+
+export const checkMarketplaceUpdates = (): Promise<MarketplaceUpdate[]> =>
+  invoke<MarketplaceUpdate[]>('check_marketplace_updates')
+
+export const refreshMarketplace = (): Promise<number> =>
+  invoke<number>('refresh_marketplace')
+
+export const installMarketplaceHuman = (
+  slug: string,
+  spaceId?: string,
+  userConfig?: Record<string, unknown>,
+  progressChannel?: string,
+): Promise<HumaneSpecRow> =>
+  invoke<HumaneSpecRow>('install_marketplace_human', {
+    slug, spaceId, userConfig, progressChannel,
+  })
+
+// Deprecated — kept until Phase 3b removes. New code uses queryMarketplace + filter('automation')
 export const listMarketplaceHumans = (registryUrl?: string): Promise<MarketplaceItem[]> =>
   invoke<MarketplaceItem[]>('list_marketplace_humans', { registryUrl })
-
-export const installMarketplaceHuman = (slug: string, registryUrl?: string): Promise<HumaneSpecRow> =>
-  invoke<HumaneSpecRow>('install_marketplace_human', { registryUrl, slug })
 
 // ─── Badge ────────────────────────────────────────────────────────────
 export const updateBadgeCount = (count: number): Promise<boolean> =>

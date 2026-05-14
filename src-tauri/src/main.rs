@@ -447,6 +447,10 @@ fn main() {
             uclaw_core::tauri_commands::compact_automation_memory,
             uclaw_core::tauri_commands::list_marketplace_humans,
             uclaw_core::tauri_commands::install_marketplace_human,
+            uclaw_core::tauri_commands::query_marketplace,
+            uclaw_core::tauri_commands::get_marketplace_detail,
+            uclaw_core::tauri_commands::check_marketplace_updates,
+            uclaw_core::tauri_commands::refresh_marketplace,
             // Files Rail Commands
             uclaw_core::files_rail::commands::files_rail_list_mounts,
             uclaw_core::files_rail::commands::files_rail_read_dir,

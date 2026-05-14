@@ -147,3 +147,47 @@ impl From<&RegistryEntry> for MarketplaceItem {
         }
     }
 }
+
+/// Page result from `query_marketplace` Tauri command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceQueryResult {
+    pub items: Vec<MarketplaceItem>,
+    pub total: u32,
+    pub has_more: bool,
+}
+
+/// Full detail surface for the StoreDetail view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceDetail {
+    pub item: MarketplaceItem,
+    /// Raw YAML — populated lazily from the registry on first detail view.
+    pub spec_yaml: String,
+    /// `spec_yaml` parsed via `parse_humane_v1` — None if parse failed
+    /// (UI shows the YAML in a "needs review" box).
+    pub parsed_spec_json: Option<serde_json::Value>,
+    pub requires_mcps: Vec<String>,
+    pub requires_skills: Vec<String>,
+    /// Current installed version, if any. None means not installed.
+    pub installed_version: Option<String>,
+}
+
+/// One row from `check_marketplace_updates`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceUpdate {
+    pub slug: String,
+    pub installed_version: String,
+    pub latest_version: String,
+}
+
+/// Tauri install_progress event payload streamed during install_marketplace_human.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceInstallProgress {
+    pub phase: String,        // 'fetching_spec' | 'parsing' | 'installing' | 'activating' | 'complete'
+    pub slug: String,
+    pub percent: u8,          // 0..=100
+    pub message: Option<String>,
+}
