@@ -5,6 +5,7 @@ import { ArrowLeft, Download, Loader2, AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { AppTypeBadge } from './AppTypeBadge'
+import { CategoryIcon } from './category-icon'
 import {
   marketplaceSelectedSlugAtom,
   marketplaceDetailAtom,
@@ -125,8 +126,8 @@ export function StoreDetail(): React.ReactElement {
           >
             <ArrowLeft size={16} />
           </button>
-          <div className="w-9 h-9 rounded-md bg-primary/10 flex items-center justify-center text-[14px]">
-            {item.icon ?? '🤖'}
+          <div className="w-9 h-9 rounded-lg bg-primary/8 flex items-center justify-center shrink-0">
+            <CategoryIcon name={item.icon ?? item.category} size={16} className="text-primary/80" />
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
