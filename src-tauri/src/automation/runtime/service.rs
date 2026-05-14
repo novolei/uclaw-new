@@ -652,6 +652,43 @@ impl AppRuntimeService {
                 .then_some(CompletionGate::LoopExhausted)
         });
         let completed_ms = chrono::Utc::now().timestamp_millis();
+
+        // Derive the failure text once — reused for the activity row's
+        // error_text AND the transcript's terminal marker below. None for
+        // the success (Reported) + escalation paths.
+        let failure_text: Option<String> = match &gate {
+            Some(CompletionGate::Reported { .. }) | Some(CompletionGate::Escalated { .. }) => None,
+            Some(CompletionGate::ErrorTerminal(msg)) => Some(msg.clone()),
+            Some(CompletionGate::LoopExhausted) | None => Some(match &outcome {
+                LoopOutcome::Failure { error } => error.clone(),
+                LoopOutcome::MaxIterations => {
+                    "loop reached max iterations without report_to_user".to_string()
+                }
+                LoopOutcome::Stopped | LoopOutcome::Cancelled => {
+                    "run stopped before completion".to_string()
+                }
+                _ => "loop ended without report".to_string(),
+            }),
+        };
+
+        // Append a clear terminal marker to the transcript so the run-session
+        // view shows how the run ended. report_to_user's tool_result already
+        // marks the success case; this covers escalation + every failure.
+        match &gate {
+            Some(CompletionGate::Escalated { .. }) => {
+                reason_ctx.messages.push(ChatMessage::user(
+                    "⏸️ Run paused — escalated for a user decision.",
+                ));
+            }
+            _ => {
+                if let Some(err) = &failure_text {
+                    reason_ctx
+                        .messages
+                        .push(ChatMessage::user(&format!("⚠️ Run failed: {}", err)));
+                }
+            }
+        }
+
         {
             let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
             // Persist the transcript regardless of outcome.
@@ -661,7 +698,7 @@ impl AppRuntimeService {
                     session_id, e
                 );
             }
-            match gate {
+            match &gate {
                 // report_to_user already set status='completed' in the delegate.
                 Some(CompletionGate::Reported { .. }) => {}
                 Some(CompletionGate::Escalated { escalation_id }) => {
@@ -673,28 +710,11 @@ impl AppRuntimeService {
                     )
                     .map_err(|e| anyhow::anyhow!("activity escalation update: {}", e))?;
                 }
-                Some(CompletionGate::ErrorTerminal(msg)) => {
-                    conn.execute(
-                        "UPDATE automation_activities
-                         SET status = 'failed', error_text = ?2, completed_at = ?3
-                         WHERE id = ?1",
-                        rusqlite::params![activity_id, msg, completed_ms],
-                    )
-                    .map_err(|e| anyhow::anyhow!("activity failure update: {}", e))?;
-                }
-                // LoopExhausted, or no gate set: derive an error from the outcome.
-                Some(CompletionGate::LoopExhausted) | None => {
-                    let err_text = match &outcome {
-                        LoopOutcome::Failure { error } => error.clone(),
-                        LoopOutcome::MaxIterations => {
-                            "loop reached max iterations without report_to_user".to_string()
-                        }
-                        LoopOutcome::Stopped
-                        | LoopOutcome::Cancelled => {
-                            "run stopped before completion".to_string()
-                        }
-                        _ => "loop ended without report".to_string(),
-                    };
+                // ErrorTerminal / LoopExhausted / no gate → failed; failure_text
+                // was derived above.
+                _ => {
+                    let err_text =
+                        failure_text.as_deref().unwrap_or("loop ended without report");
                     conn.execute(
                         "UPDATE automation_activities
                          SET status = 'failed', error_text = ?2, completed_at = ?3

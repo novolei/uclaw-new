@@ -43,7 +43,10 @@ export function ModuleHeader({
           </div>
         )}
       </div>
-      {actions && <div className="flex items-center gap-2 shrink-0">{actions}</div>}
+      {/* titlebar-no-drag: the action buttons must stay clickable while the
+          header's title area (left) stays window-drag surface — see
+          KaleidoscopeShell. */}
+      {actions && <div className="titlebar-no-drag flex items-center gap-2 shrink-0">{actions}</div>}
     </div>
   )
 }

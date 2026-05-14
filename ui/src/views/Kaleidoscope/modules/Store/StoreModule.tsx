@@ -20,7 +20,11 @@ export function StoreModule(): React.ReactElement {
   // slug is actually selected; otherwise fall back to the store grid.
   const showDetail = subview === 'store-detail' && selectedSlug !== null
   return (
-    <div className="absolute inset-0">
+    // titlebar-no-drag: StoreView/StoreDetail are dense, near-fully-interactive
+    // surfaces (search input, type/category chip rows, scroll body, install
+    // buttons) with no tall empty header band — the whole module opts out of
+    // the window-drag region. The p-2 gutter around the card stays draggable.
+    <div className="titlebar-no-drag absolute inset-0">
       {showDetail ? <StoreDetail /> : <StoreView />}
     </div>
   )

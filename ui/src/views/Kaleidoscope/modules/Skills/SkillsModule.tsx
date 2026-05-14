@@ -200,8 +200,13 @@ export function SkillsModule(): React.ReactElement {
         title="技能"
         subtitle={`学得 ${learned.length} · 内置 ${builtin.length}`}
       />
+      {/* titlebar-no-drag on the body branches: ModuleHeader above stays
+          window-drag surface (no actions → fully draggable); the body holds
+          SkillsList (search input, group toggles, skill rows) + SkillDetail
+          (fork/delete buttons, enable switch, scrollable detail), all of
+          which must stay interactive. See KaleidoscopeShell. */}
       {isEmpty ? (
-        <div className="flex-1 min-h-0 flex items-center justify-center">
+        <div className="titlebar-no-drag flex-1 min-h-0 flex items-center justify-center">
           <div className="rounded-lg border border-dashed border-border bg-muted/10 px-8 py-10 text-center">
             <div className="text-[13px] text-foreground/80">你的 Agent 还没学到技能</div>
             <div className="mt-1 text-[11.5px] text-muted-foreground">
@@ -210,7 +215,7 @@ export function SkillsModule(): React.ReactElement {
           </div>
         </div>
       ) : (
-        <div className="flex flex-1 min-h-0">
+        <div className="titlebar-no-drag flex flex-1 min-h-0">
           <SkillsList
             learned={learnedFiltered}
             builtin={builtinFiltered}
