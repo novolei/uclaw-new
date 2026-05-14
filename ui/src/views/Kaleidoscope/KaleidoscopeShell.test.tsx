@@ -23,6 +23,9 @@ vi.mock('@/components/automation/StoreDetail', () => ({
 vi.mock('@/components/automation/AppsTab', () => ({
   AppsTab: () => <div data-testid="apps-tab" />,
 }))
+vi.mock('@/components/memory/MemoryGraphView', () => ({
+  MemoryGraphView: () => <div data-testid="memory-graph-view" />,
+}))
 
 describe('KaleidoscopeShell', () => {
   it('renders the rail and the humans module (AutomationHub) by default', () => {
@@ -53,6 +56,13 @@ describe('KaleidoscopeShell', () => {
     store.set(kaleidoscopeModuleAtom, 'apps')
     renderWithProviders(<KaleidoscopeShell />, { store })
     expect(screen.getByTestId('apps-tab')).toBeInTheDocument()
+  })
+
+  it('renders MemoryGraphView for the memory module', () => {
+    const store = createStore()
+    store.set(kaleidoscopeModuleAtom, 'memory')
+    renderWithProviders(<KaleidoscopeShell />, { store })
+    expect(screen.getByTestId('memory-graph-view')).toBeInTheDocument()
   })
 
   it('renders the ComingSoon placeholder for a not-yet-built module', () => {
