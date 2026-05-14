@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod halo_adapter;
 pub mod types;
 
