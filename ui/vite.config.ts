@@ -57,11 +57,6 @@ export default defineConfig({
           ) {
             return 'vendor'
           }
-          // Lottie runtime — only the Kaleidoscope entry icon uses it.
-          // Own chunk so the ~50KB gzip cost is isolated from the main bundle.
-          if (id.includes('node_modules/lottie-react') || id.includes('node_modules/lottie-web')) {
-            return 'lottie'
-          }
           // Shiki: keep ONLY the core engine in a shared chunk; let Vite's natural
           // code-splitting handle each language/theme as its own dynamic-import chunk
           // (otherwise we force-bundle ~10 MB of shiki langs into one file and defeat

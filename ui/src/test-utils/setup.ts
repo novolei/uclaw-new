@@ -8,9 +8,8 @@
  */
 
 import '@testing-library/jest-dom/vitest'
-import { afterEach, vi } from 'vitest'
+import { afterEach } from 'vitest'
 import { cleanup } from '@testing-library/react'
-import { createElement } from 'react'
 
 afterEach(() => {
   cleanup()
@@ -68,11 +67,3 @@ class ResizeObserverStub {
 ;(window as unknown as { ResizeObserver: typeof ResizeObserverStub }).ResizeObserver =
   ResizeObserverStub
 
-// lottie-react → lottie-web touches canvas APIs jsdom lacks. Any test that
-// transitively imports KaleidoscopeIcon (via WorkspaceSwitcherBar → LeftSidebar
-// → FocusModeOverlay, etc.) crashes without this stub. Keep the data-testid
-// shape — KaleidoscopeIcon.test.tsx asserts the stub renders when animationData
-// is provided.
-vi.mock('lottie-react', () => ({
-  default: () => createElement('div', { 'data-testid': 'lottie-stub' }),
-}))
