@@ -91,10 +91,28 @@ export default {
           from: { transform: 'translateX(0)' },
           to: { transform: 'translateX(100%)' },
         },
+        'kaleido-idle-breath': {
+          '0%, 100%': { filter: 'drop-shadow(0 1px 2px hsl(var(--primary) / 0.35))' },
+          '50%': { filter: 'drop-shadow(0 1px 2px hsl(var(--primary) / 0.35)) drop-shadow(0 0 8px hsl(var(--primary) / 0.3))' },
+        },
+        'kaleido-basket-wobble': {
+          '0%, 100%': { transform: 'rotate(0deg)' },
+          '25%': { transform: 'rotate(-3deg)' },
+          '50%': { transform: 'rotate(0deg)' },
+          '75%': { transform: 'rotate(3deg)' },
+        },
+        'kaleido-sparkle-twinkle': {
+          '0%, 100%': { transform: 'scale(1)', opacity: '1' },
+          '30%': { transform: 'scale(1.4)', opacity: '1' },
+          '60%': { transform: 'scale(0.85)', opacity: '0.7' },
+        },
       },
       animation: {
         'in': 'slide-in-from-top 0.3s ease-out',
         'out': 'slide-out-to-right 0.2s ease-in',
+        'kaleido-idle-breath': 'kaleido-idle-breath 3.5s ease-in-out infinite',
+        'kaleido-basket-wobble': 'kaleido-basket-wobble 600ms ease-in-out',
+        'kaleido-sparkle-twinkle': 'kaleido-sparkle-twinkle 800ms ease-in-out infinite',
       },
     },
   },

@@ -66,3 +66,4 @@ class ResizeObserverStub {
 }
 ;(window as unknown as { ResizeObserver: typeof ResizeObserverStub }).ResizeObserver =
   ResizeObserverStub
+

@@ -47,6 +47,8 @@ import {
   agentSessionIndicatorMapAtom,
 } from '@/atoms/agent-atoms'
 import { WorkspaceCreateDialog } from './WorkspaceCreateDialog'
+import { topLevelViewAtom } from '@/atoms/top-level-view'
+import { KaleidoscopeIcon } from '@/views/Kaleidoscope/KaleidoscopeIcon'
 
 const isMac = typeof navigator !== 'undefined'
   && /Mac|iPod|iPhone|iPad/.test(navigator.userAgent)
@@ -309,6 +311,8 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
   const refresh = useSetAtom(refreshWorkspacesAtom)
   const agentSessions = useAtomValue(agentSessionsAtom)
   const indicatorMap = useAtomValue(agentSessionIndicatorMapAtom)
+  const topLevelView = useAtomValue(topLevelViewAtom)
+  const setTopLevelView = useSetAtom(topLevelViewAtom)
 
   const [createOpen, setCreateOpen] = React.useState(false)
 
@@ -482,6 +486,15 @@ export function WorkspaceSwitcherBar(): React.ReactElement {
     <>
       <TooltipProvider delayDuration={0}>
         <div className="flex items-center gap-1.5 px-3 py-2 border-t border-border/40">
+          {/* Kaleidoscope 入口 —— 它不是一个 workspace，所以跟 workspace
+              dots 之间用一条竖 hairline 隔开。 */}
+          <KaleidoscopeIcon
+            size={28}
+            active={topLevelView === 'kaleidoscope'}
+            onClick={() => setTopLevelView('kaleidoscope')}
+          />
+          <div className="w-px h-[18px] bg-border/60 shrink-0" aria-hidden />
+
           {/* Workspace icons or dots */}
           <div
             ref={iconsContainerRef}

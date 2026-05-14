@@ -1604,3 +1604,235 @@ EOF
 **待实现者注意的不确定点：**
 - `userProfileAtom` 的 import 路径：plan 写的是 `@/atoms/user-profile`，实现时以 `LeftSidebar.tsx` 顶部实际 import 为准（已在 Task 6 注明）。
 - `lottie-react` 版本号 `^2.4.1`：若 npm 上最新 major 已变，取当前稳定 major 即可，组件 API（`<Lottie animationData lottieRef autoplay loop />` + `LottieRefCurrentProps`）在 2.x 稳定。
+
+---
+
+## Addendum: Lottie → CSS 入口图标替换（2026-05-14）
+
+**背景：** 用户下载的 Lottie 文件（`space boy developer.json`）评估后不适用 —— 颜色 baked-in 无法适配 11 主题、5s 连续角色动画与 hover 微交互模型不契合、视觉语义不符。决定改为纯 CSS 动画，取消 `lottie-react` 依赖。Tasks 3/4 的 Lottie 部分由下面两个任务取代（spec §6 已同步更新）。
+
+### Task A: 重写 `KaleidoscopeIcon` 为纯 CSS 动画 + 删除 `KaleidoscopeIconFallback`
+
+**Files:**
+- Modify: `ui/tailwind.config.js`（加 3 个 keyframes + animation utilities）
+- Rewrite: `ui/src/views/Kaleidoscope/KaleidoscopeIcon.tsx`
+- Rewrite: `ui/src/views/Kaleidoscope/KaleidoscopeIcon.test.tsx`
+- Delete: `ui/src/views/Kaleidoscope/KaleidoscopeIconFallback.tsx`
+- Delete: `ui/src/views/Kaleidoscope/KaleidoscopeIconFallback.test.tsx`
+
+`tailwind.config.js` —— 在 `theme.extend.keyframes` 追加：
+
+```js
+        'kaleido-idle-breath': {
+          '0%, 100%': { filter: 'drop-shadow(0 1px 2px hsl(var(--primary) / 0.35))' },
+          '50%': { filter: 'drop-shadow(0 1px 2px hsl(var(--primary) / 0.35)) drop-shadow(0 0 8px hsl(var(--primary) / 0.3))' },
+        },
+        'kaleido-basket-wobble': {
+          '0%, 100%': { transform: 'rotate(0deg)' },
+          '25%': { transform: 'rotate(-3deg)' },
+          '50%': { transform: 'rotate(0deg)' },
+          '75%': { transform: 'rotate(3deg)' },
+        },
+        'kaleido-sparkle-twinkle': {
+          '0%, 100%': { transform: 'scale(1)', opacity: '1' },
+          '30%': { transform: 'scale(1.4)', opacity: '1' },
+          '60%': { transform: 'scale(0.85)', opacity: '0.7' },
+        },
+```
+
+在 `theme.extend.animation` 追加：
+
+```js
+        'kaleido-idle-breath': 'kaleido-idle-breath 3.5s ease-in-out infinite',
+        'kaleido-basket-wobble': 'kaleido-basket-wobble 600ms ease-in-out',
+        'kaleido-sparkle-twinkle': 'kaleido-sparkle-twinkle 800ms ease-in-out infinite',
+```
+
+`KaleidoscopeIcon.tsx` 全文（自包含，内联 SVG，无 Lottie/ErrorBoundary）：
+
+```tsx
+/**
+ * KaleidoscopeIcon — 万花筒入口图标（WorkspaceSwitcherBar 最左）。
+ *
+ * 彩色小篮子 + sparkle，纯 SVG + CSS 动画（无 Lottie 依赖）：
+ *  - idle：渐变背板 3.5s 一呼一吸的 glow
+ *  - hover：整体 scale 1.06，idle glow 停止；篮子 600ms 摆头一次；sparkle 800ms 闪烁循环
+ *  - active（身处万花筒 surface）：ring-2 外圈
+ *  - 全部 transform/opacity/filter —— GPU 加速；颜色走 theme token，11 主题自适应
+ */
+import * as React from 'react'
+import { cn } from '@/lib/utils'
+
+export interface KaleidoscopeIconProps {
+  /** 当前是否身处万花筒 surface（影响 active 视觉态）。 */
+  active?: boolean
+  onClick?: () => void
+  /** 外框边长 px，默认 30。 */
+  size?: number
+}
+
+/** SVG <g> 的 transform 必须绕自身中心 —— SVG transform-origin 默认是坐标原点。 */
+const G_TRANSFORM: React.CSSProperties = {
+  transformBox: 'fill-box',
+  transformOrigin: 'center',
+}
+
+export function KaleidoscopeIcon({
+  active = false,
+  onClick,
+  size = 30,
+}: KaleidoscopeIconProps): React.ReactElement {
+  const svgSize = Math.round(size * 0.6)
+  return (
+    <button
+      type="button"
+      aria-label="打开万花筒"
+      aria-current={active ? 'true' : undefined}
+      onClick={onClick}
+      style={{ width: size, height: size }}
+      className={cn(
+        'group titlebar-no-drag inline-flex items-center justify-center rounded-[8px] shrink-0',
+        'bg-gradient-to-br from-primary to-accent',
+        'transition-transform duration-200 ease-out',
+        'hover:scale-[1.06] active:scale-[0.92]',
+        'animate-kaleido-idle-breath hover:animate-none',
+        active && 'ring-2 ring-primary/40',
+      )}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        width={svgSize}
+        height={svgSize}
+        fill="none"
+        className="text-primary-foreground"
+        aria-hidden
+      >
+        {/* basket body —— hover 时 600ms 摆头一次 */}
+        <g
+          style={G_TRANSFORM}
+          className="group-hover:animate-kaleido-basket-wobble"
+        >
+          <path
+            d="M5 10 Q5 9 6 9 H18 Q19 9 19 10 L18 19 Q17.8 20 17 20 H7 Q6.2 20 6 19 Z"
+            fill="currentColor"
+            opacity="0.95"
+          />
+          <path d="M5 10 H19" stroke="currentColor" strokeWidth="1.4" opacity="0.6" />
+          <ellipse cx="12" cy="9" rx="5.5" ry="0.9" fill="currentColor" opacity="0.4" />
+        </g>
+        {/* sparkle —— hover 时 800ms 闪烁循环 */}
+        <g
+          style={G_TRANSFORM}
+          className="group-hover:animate-kaleido-sparkle-twinkle"
+        >
+          <path
+            d="M16.5 4 L17.2 5.5 L18.8 6.2 L17.2 6.9 L16.5 8.4 L15.8 6.9 L14.2 6.2 L15.8 5.5 Z"
+            fill="currentColor"
+          />
+          <circle cx="19.5" cy="3.5" r="0.7" fill="currentColor" opacity="0.85" />
+        </g>
+      </svg>
+    </button>
+  )
+}
+```
+
+`KaleidoscopeIcon.test.tsx` 全文（无 lottie mock，测组件契约）：
+
+```tsx
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { KaleidoscopeIcon } from './KaleidoscopeIcon'
+
+describe('KaleidoscopeIcon', () => {
+  it('renders a button with the accessible label', () => {
+    render(<KaleidoscopeIcon />)
+    expect(screen.getByRole('button', { name: '打开万花筒' })).toBeInTheDocument()
+  })
+
+  it('fires onClick when clicked', async () => {
+    const onClick = vi.fn()
+    const user = userEvent.setup()
+    render(<KaleidoscopeIcon onClick={onClick} />)
+    await user.click(screen.getByRole('button', { name: '打开万花筒' }))
+    expect(onClick).toHaveBeenCalledOnce()
+  })
+
+  it('applies the active ring only when active', () => {
+    const { rerender } = render(<KaleidoscopeIcon active={false} />)
+    const btn = screen.getByRole('button', { name: '打开万花筒' })
+    expect(btn.className).not.toMatch(/ring-2/)
+    rerender(<KaleidoscopeIcon active />)
+    expect(btn.className).toMatch(/ring-2/)
+  })
+
+  it('honours the size prop', () => {
+    render(<KaleidoscopeIcon size={48} />)
+    const btn = screen.getByRole('button', { name: '打开万花筒' })
+    expect(btn.style.width).toBe('48px')
+    expect(btn.style.height).toBe('48px')
+  })
+})
+```
+
+Steps: write the new test → run (old Lottie tests gone, new fail to compile until impl) → update tailwind.config.js → rewrite KaleidoscopeIcon.tsx → `git rm` the two Fallback files → `npx tsc --noEmit` clean → `npx vitest run src/views/Kaleidoscope/KaleidoscopeIcon.test.tsx` 4 pass → commit `feat(kaleidoscope): pure-CSS entry-icon animation, drop Lottie wrapper`.
+
+Note: `WorkspaceSwitcherBar.tsx` already calls `<KaleidoscopeIcon size={28} active={...} onClick={...} />` with NO `animationData` — so it needs **no change**. After Task A, nothing in `src/` imports `lottie-react` except `setup.ts` (cleaned in Task B).
+
+### Task B: 移除 `lottie-react` 依赖 + vite chunk + setup.ts mock
+
+**Files:**
+- Modify: `ui/package.json` + `ui/package-lock.json`（`npm uninstall lottie-react`）
+- Modify: `ui/vite.config.ts`（删除 `lottie` chunk 块）
+- Modify: `ui/src/test-utils/setup.ts`（删除 `vi.mock('lottie-react', …)` 块 + 不再使用的 `createElement` import）
+
+Steps: `cd ui && npm uninstall lottie-react` → 删除 vite.config.ts 里的 `lottie` chunk 判断块（Task 3 加的那段注释 + if）→ 删除 setup.ts 末尾的 lottie-react mock 块和顶部 `import { createElement } from 'react'`（确认 `createElement` 在 setup.ts 别处未使用）→ `npx tsc --noEmit` clean → `npm test -- --run` 全绿（0 失败，无新 error）→ commit `chore(kaleidoscope): remove lottie-react dependency`。
+
+顺序：必须 Task A 先（让 KaleidoscopeIcon 不再 import lottie），再 Task B（卸依赖）。否则 Task B 卸了依赖 Task A 还没改 KaleidoscopeIcon，编译会断。
+
+---
+
+## Addendum 2: 顶层 switch 提到 AppShell —— 真正的全窗口接管（2026-05-14）
+
+**背景：** 最终全量审查发现 Task 8 把 `topLevelViewAtom` switch 放在 `MainArea`，但 `AppShell` 把 `LeftSidebar` / `MainArea` / `RightSidePanel` 当兄弟节点渲染 —— 只换 `MainArea` 内容时 workspace 的左右栏仍在，万花筒被挤成「中间面板」，与 5 轮 mockup 批准的「全窗口接管」不符。修复：把 switch 提到 `AppShell` 层。spec §4.2 / §4.3 已同步更新。
+
+### Task C: 顶层 surface switch 从 MainArea 提到 AppShell
+
+**Files:**
+- Modify: `ui/src/components/app-shell/AppShell.tsx`
+- Modify: `ui/src/components/tabs/MainArea.tsx`（回退为纯 workspace 容器）
+- Delete: `ui/src/components/tabs/MainArea.test.tsx`（它测的 switch 移走了；`AppShell` 在 uClaw 无单测，switch 验证走 Task 9 手动走查）
+
+**Step 1 — 改 `AppShell.tsx`：**
+- import `useAtomValue`（已 import）、`topLevelViewAtom` from `@/atoms/top-level-view`、`KaleidoscopeShell` from `@/views/Kaleidoscope/KaleidoscopeShell`、`motion, AnimatePresence` from `motion/react`
+- 组件体内加 `const topLevelView = useAtomValue(topLevelViewAtom)`
+- 在 `shell-bg` flex 容器内：把现有的「`{!focusMode && <LeftSidebar/>}` + `<div className="main-panel…">…</div>` + `{!focusMode && showRightPanel && <RightSidePanel/>}`」三件套用 `AnimatePresence mode="wait"` 包成 surface 切换。`key={topLevelView}` 的 `motion.div`（`initial/animate/exit` opacity，`duration:0.2 ease:[0.32,0.72,0,1]`，`className` 让它 `flex-1` 充满或 `contents` —— 用 `className="contents"` 让 motion.div 不破坏 flex 布局；若 `contents` 与 motion 不兼容则用一个 `flex flex-1 min-w-0` 包裹）。`kaleidoscope` 分支渲染 `<KaleidoscopeShell />`（需 `flex-1 min-w-0` 充满），`workspace` 分支渲染原三件套 fragment。
+- **始终挂载的全局组件**（`SearchPalette` / `FocusModeOverlay` / `ApprovalModal` / `EscalationModal` / `AskUserBanner` / `ExitPlanModeBanner` / `TabSessionSyncer` / `WorkspaceTabCleaner` / `titlebar-drag-region`）**保持在 switch 之外**，不受 surface 切换影响。
+- 实现者须先完整读 `AppShell.tsx` 的 return 块，精确判断 `contents` vs wrapper div 哪个不破坏现有 flex 布局；以现有布局零回归为准。
+
+**Step 2 — 回退 `MainArea.tsx`：** 改回纯 workspace 容器，与 Task 2 完成时的形态一致：
+
+```tsx
+import * as React from 'react'
+import { Panel } from '@/components/app-shell/Panel'
+import { SettingsDialog } from '@/components/settings/SettingsDialog'
+import { WorkspaceShell } from '@/views/Workspace/WorkspaceShell'
+
+export function MainArea(): React.ReactElement {
+  return (
+    <>
+      <Panel variant="grow" className="bg-content-area rounded-2xl shadow-xl">
+        <WorkspaceShell />
+      </Panel>
+      <SettingsDialog />
+    </>
+  )
+}
+```
+
+**Step 3 — `git rm ui/src/components/tabs/MainArea.test.tsx`**
+
+**Step 4 — 验证：** `npx tsc --noEmit` clean；`npm test -- --run` 全绿（0 失败，~582 测试 —— 比之前少 2 个，因为删了 MainArea.test.tsx 的 2 个 switch 测试，无新 error）；手动确认（dev）点入口图标 → 全窗口换成 Kaleidoscope（workspace 左右栏消失），点 ← 返回 → workspace 三件套回来。
+
+**Step 5 — commit** `refactor(kaleidoscope): lift surface switch to AppShell for full-window takeover`
