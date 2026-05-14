@@ -31,14 +31,6 @@ describe('SttSettings', () => {
     expect(screen.getAllByText(/自动/).length).toBeGreaterThan(0)
   })
 
-  it('auto-send toggle persists to sttSettingsAtom', () => {
-    const store = createStore()
-    renderWithProviders(<SttSettings />, { store })
-    const toggle = screen.getByRole('switch', { name: /自动发送/ })
-    fireEvent.click(toggle)
-    expect(store.get(sttSettingsAtom).autoSend).toBe(true)
-  })
-
   it('shows shortcut hint linking to keyboard settings', () => {
     const store = createStore()
     renderWithProviders(<SttSettings />, { store })

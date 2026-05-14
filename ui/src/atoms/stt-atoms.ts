@@ -27,7 +27,6 @@ export type Language = 'auto' | 'zh' | 'en' | 'yue' | 'ja' | 'ko'
 
 export interface SttSettings {
   language: Language
-  autoSend: boolean
   microphoneDeviceId: string | null
   /** 静音多久（ms）触发段定稿。默认 1800。 */
   silenceThresholdMs: number
@@ -35,7 +34,6 @@ export interface SttSettings {
 
 const DEFAULT_SETTINGS: SttSettings = {
   language: 'auto',
-  autoSend: false,
   microphoneDeviceId: null,
   silenceThresholdMs: 1800,
 }
