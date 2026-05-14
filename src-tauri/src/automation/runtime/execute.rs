@@ -16,21 +16,33 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// LoopDelegate for automation runs.
+/// LoopDelegate for automation runs — the first headless LoopDelegate.
 ///
-/// Handles the four Humane-specific tools (report_to_user, notify_user,
-/// request_escalation, memory) and stubs out fall-through for everything
-/// else. call_llm is not implemented here — AppRuntimeService (Task 18)
-/// injects the provider call.
+/// Drives run_agentic_loop with no Tauri AppHandle: streaming uses a
+/// NoopSink, the four Humane tools + the full base tool set are dispatched
+/// here, and cost is bounded by a per-run cap. Terminal state lands in
+/// `gate`; the transcript is persisted to agent_messages under `session_id`.
 pub struct AutomationDelegate {
     pub spec_id: String,
     pub activity_id: String,
+    /// The run's agent_session id — transcript rows are persisted under this.
+    pub session_id: String,
     pub permissions: PermissionSet,
     pub memory: Arc<MemoryStore>,
     pub db: Arc<std::sync::Mutex<rusqlite::Connection>>,
     /// Holds the terminal state once the run completes (report or escalation).
     pub gate: Arc<Mutex<Option<CompletionGate>>>,
     pub auto_continue: AutoContinueConfig,
+    /// LLM provider resolved from the app's ProviderService.
+    pub llm: Arc<dyn crate::llm::LlmProvider>,
+    /// Model id for this run.
+    pub model: String,
+    /// Full base tool set + the four Humane tool schemas.
+    pub tools: Arc<crate::agent::tools::tool::ToolRegistry>,
+    /// Per-run cost accumulator + cap.
+    pub cost: Arc<crate::automation::runtime::cost::CostCapState>,
+    /// Working directory the run operates in (file/edit/search base + shell cwd).
+    pub workspace_root: std::path::PathBuf,
 }
 
 #[async_trait]
@@ -268,14 +280,67 @@ mod tests {
         conn: rusqlite::Connection,
         perms: PermissionSet,
     ) -> AutomationDelegate {
+        use crate::automation::runtime::cost::{CostCapConfig, CostCapState};
         AutomationDelegate {
             spec_id: spec_id.to_string(),
             activity_id: activity_id.to_string(),
+            session_id: format!("sess-{}", activity_id),
             permissions: perms,
             memory: Arc::new(MemoryStore::new(tmp.path().to_path_buf())),
             db: Arc::new(std::sync::Mutex::new(conn)),
             gate: Arc::new(Mutex::new(None)),
             auto_continue: AutoContinueConfig::default(),
+            llm: tests_support::fake_llm(),
+            model: "claude-sonnet-4-6".to_string(),
+            tools: tests_support::empty_tool_registry(),
+            cost: Arc::new(CostCapState::new(CostCapConfig {
+                per_run_usd: 1.00,
+                per_day_usd: 10.00,
+            })),
+            workspace_root: tmp.path().to_path_buf(),
+        }
+    }
+
+    mod tests_support {
+        use std::sync::Arc;
+        use async_trait::async_trait;
+        use crate::agent::types::{ChatMessage, RespondOutput, StreamDelta, ToolDefinition};
+        use crate::llm::CompletionConfig;
+        use crate::error::Error;
+
+        /// Minimal LlmProvider stub for tests that exercise execute_tool_calls
+        /// (which never calls call_llm). Only `stream` needs a real body;
+        /// `complete` is stubbed with unimplemented!() because none of the 4
+        /// existing execute.rs tests ever reach call_llm.
+        struct NoopLlm;
+
+        #[async_trait]
+        impl crate::llm::LlmProvider for NoopLlm {
+            async fn complete(
+                &self,
+                _messages: Vec<ChatMessage>,
+                _tools: Vec<ToolDefinition>,
+                _config: &CompletionConfig,
+            ) -> Result<RespondOutput, Error> {
+                unimplemented!("NoopLlm::complete not called by execute.rs tests")
+            }
+
+            async fn stream(
+                &self,
+                _messages: Vec<ChatMessage>,
+                _tools: Vec<ToolDefinition>,
+                _config: &CompletionConfig,
+            ) -> Result<Box<dyn futures::Stream<Item = Result<StreamDelta, Error>> + Send + Unpin>, Error> {
+                Ok(Box::new(futures::stream::iter(Vec::<Result<StreamDelta, Error>>::new())))
+            }
+        }
+
+        pub fn fake_llm() -> Arc<dyn crate::llm::LlmProvider> {
+            Arc::new(NoopLlm)
+        }
+
+        pub fn empty_tool_registry() -> Arc<crate::agent::tools::tool::ToolRegistry> {
+            Arc::new(crate::agent::tools::tool::ToolRegistry::new())
         }
     }
 
