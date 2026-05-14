@@ -767,7 +767,7 @@ CREATE TABLE IF NOT EXISTS automation_activities_new (
     llm_tokens_in               INTEGER NOT NULL DEFAULT 0,
     llm_tokens_out              INTEGER NOT NULL DEFAULT 0,
 
-    tool_calls_json             TEXT NOT NULL DEFAULT '[]',
+    tool_calls_json             TEXT NOT NULL DEFAULT '[]',  -- dropped by V24
 
     report_text                 TEXT,
     report_outcome              TEXT,
@@ -1989,6 +1989,11 @@ mod tests {
             "SELECT COUNT(*) FROM pragma_table_info('agent_sessions') WHERE name = 'archived_at'",
             [], |r| r.get(0)).unwrap();
         assert_eq!(has_archived_at, 1, "agent_sessions.archived_at column missing");
+
+        let has_idx: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_act_session'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(has_idx, 1, "idx_act_session missing");
     }
 
     #[test]

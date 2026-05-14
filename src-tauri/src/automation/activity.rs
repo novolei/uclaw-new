@@ -279,7 +279,7 @@ impl ActivityStore {
 mod tests {
     use super::*;
 
-    fn setup_db_with_v21() -> rusqlite::Connection {
+    fn setup_test_db() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         // Run the full migration stack (including V24 which adds session_id /
         // report_artifacts_json and drops tool_calls_json).
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn roundtrip_activity() {
-        let conn = setup_db_with_v21();
+        let conn = setup_test_db();
         let activity = make_activity("a1");
         insert_activity(&conn, &activity).unwrap();
         let loaded = get_activity(&conn, "a1").unwrap().unwrap();
@@ -337,14 +337,14 @@ mod tests {
 
     #[test]
     fn get_activity_missing_returns_none() {
-        let conn = setup_db_with_v21();
+        let conn = setup_test_db();
         let result = get_activity(&conn, "nonexistent").unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn list_activities_for_spec_ordering_and_limit() {
-        let conn = setup_db_with_v21();
+        let conn = setup_test_db();
         // Insert 3 activities with distinct queued_at values.
         for (id, queued_at) in [("a1", 10i64), ("a2", 30i64), ("a3", 20i64)] {
             let mut a = make_activity(id);
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn activity_store_shim_complete_and_fail() {
-        let conn = setup_db_with_v21();
+        let conn = setup_test_db();
         let db = Arc::new(std::sync::Mutex::new(conn));
         let store = ActivityStore::new(Arc::clone(&db));
 
