@@ -91,6 +91,8 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
             model: self.model.clone(),
             max_tokens: 8192,
             temperature: 0.7,
+            // Mirrors the system-role message above; the Anthropic provider reads
+            // the message, not this field. Kept for OpenAI-provider parity.
             system_prompt: Some(reason_ctx.system_prompt.clone()),
             thinking_enabled: false,
         };
@@ -100,6 +102,7 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
             model = %self.model,
             message_count = messages.len(),
             tool_count = tools.len(),
+            force_text = reason_ctx.force_text,
             "automation run: calling LLM"
         );
 
