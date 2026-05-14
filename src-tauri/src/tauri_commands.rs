@@ -5645,6 +5645,21 @@ pub async fn refresh_marketplace(
     .map_err(|e| Error::Internal(format!("{:#}", e)))
 }
 
+#[tauri::command]
+pub async fn marketplace_category_counts(
+    state: State<'_, AppState>,
+    item_type: Option<String>,
+    search: Option<String>,
+) -> Result<std::collections::HashMap<String, i64>, Error> {
+    let conn = state.db.lock().unwrap();
+    crate::automation::marketplace::category_counts_cached(
+        &conn,
+        item_type.as_deref(),
+        search.as_deref(),
+    )
+    .map_err(|e| Error::Internal(e.to_string()))
+}
+
 // list_marketplace_humans kept as deprecated wrapper for backward compat — Phase 3b removes
 #[tauri::command]
 pub async fn list_marketplace_humans(

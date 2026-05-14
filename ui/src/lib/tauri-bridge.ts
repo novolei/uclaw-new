@@ -1323,6 +1323,13 @@ export const compactAutomationMemory = (specId: string): Promise<string> =>
 
 // ─── Marketplace ──────────────────────────────────────────────────────
 
+export interface EntryI18n {
+  name?: string | null
+  description?: string | null
+  // serde serializes this as snake_case inside HashMap values (not top-level camelCase)
+  system_prompt?: string | null
+}
+
 export interface MarketplaceItem {
   slug: string
   name: string
@@ -1336,8 +1343,7 @@ export interface MarketplaceItem {
   sizeBytes: number | null
   minAppVersion: string | null
   locale: string | null
-  i18nName: string | null
-  i18nDescription: string | null
+  i18n: Record<string, EntryI18n>
 }
 
 export interface MarketplaceQueryResult {
@@ -1397,6 +1403,12 @@ export const installMarketplaceHuman = (
   invoke<HumaneSpecRow>('install_marketplace_human', {
     slug, spaceId, userConfig, progressChannel,
   })
+
+export const marketplaceCategoryCounts = (
+  itemType?: string,
+  search?: string,
+): Promise<Record<string, number>> =>
+  invoke<Record<string, number>>('marketplace_category_counts', { itemType, search })
 
 // Deprecated — kept until Phase 3b removes. New code uses queryMarketplace + filter('automation')
 export const listMarketplaceHumans = (registryUrl?: string): Promise<MarketplaceItem[]> =>

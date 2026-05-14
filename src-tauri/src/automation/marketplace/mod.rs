@@ -2,6 +2,7 @@ pub mod cache;
 pub mod halo_adapter;
 pub mod types;
 
+pub use cache::category_counts_cached;
 pub use types::{
     EntryI18n, MarketplaceDetail, MarketplaceInstallProgress, MarketplaceItem,
     MarketplaceQueryResult, MarketplaceUpdate, RegistryEntry, RegistryIndex, RegistrySource,
@@ -367,12 +368,15 @@ mod tests {
     }
 
     #[test]
-    fn marketplace_item_resolves_en_us_i18n() {
+    fn marketplace_item_carries_full_i18n_map() {
         let idx: RegistryIndex = serde_json::from_str(SAMPLE_INDEX).unwrap();
         let item: MarketplaceItem = (&idx.apps[0]).into();
-        assert_eq!(item.i18n_name.as_deref(), Some("AI Daily News Digest"));
         assert_eq!(
-            item.i18n_description.as_deref(),
+            item.i18n.get("en-US").and_then(|x| x.name.as_deref()),
+            Some("AI Daily News Digest")
+        );
+        assert_eq!(
+            item.i18n.get("en-US").and_then(|x| x.description.as_deref()),
             Some("Auto-curates daily AI news.")
         );
     }
@@ -381,7 +385,7 @@ mod tests {
     fn marketplace_item_handles_missing_i18n() {
         let idx: RegistryIndex = serde_json::from_str(SAMPLE_INDEX).unwrap();
         let item: MarketplaceItem = (&idx.apps[1]).into();
-        assert_eq!(item.i18n_name, None);
+        assert!(item.i18n.is_empty());
     }
 
     #[test]

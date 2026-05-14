@@ -12,10 +12,29 @@ import {
   marketplaceDetailSubtabAtom,
   automationsSubviewAtom,
   installWizardAtom,
+  userLocaleAtom,
   type DetailSubTab,
 } from '@/atoms/marketplace'
 import { getMarketplaceDetail } from '@/lib/tauri-bridge'
 import { InstallWizard } from './InstallWizard'
+import {
+  localizeEntry,
+  localizeSpec,
+  localizeConfig,
+  localizeOption,
+  type SpecI18n,
+} from '@/lib/marketplace-i18n'
+
+interface ConfigSchemaEntry {
+  key: string
+  label: string
+  description?: string
+  placeholder?: string
+  type?: string
+  options?: Array<{ label: string; value: string }>
+  required?: boolean
+  default?: unknown
+}
 
 const TABS: { id: DetailSubTab; label: string }[] = [
   { id: 'overview', label: '概览' },
@@ -32,6 +51,7 @@ export function StoreDetail(): React.ReactElement {
   const setSubview = useSetAtom(automationsSubviewAtom)
   const setWizard = useSetAtom(installWizardAtom)
   const [promptExpanded, setPromptExpanded] = React.useState(false)
+  const locale = useAtomValue(userLocaleAtom)
 
   // Load detail when slug changes
   React.useEffect(() => {
@@ -69,6 +89,18 @@ export function StoreDetail(): React.ReactElement {
   const isInstalled = installedVersion !== null
   const hasUpdate = isInstalled && installedVersion !== item.version
 
+  // Narrow parsedSpecJson cautiously — only access what's needed.
+  const spec = (parsedSpecJson ?? null) as { i18n?: SpecI18n; config_schema?: ConfigSchemaEntry[] } | null
+  const specI18n = spec?.i18n
+
+  // Spec-level overlay wins; entry-level is the fallback.
+  const displayName =
+    localizeSpec('name', null, specI18n, locale) ||
+    localizeEntry('name', item.name, item.i18n, locale)
+  const displayDesc =
+    localizeSpec('description', null, specI18n, locale) ||
+    localizeEntry('description', item.description, item.i18n, locale)
+
   const openInstallWizard = () => {
     setWizard({
       step: 'scope',
@@ -98,7 +130,7 @@ export function StoreDetail(): React.ReactElement {
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <span className="text-[15px] font-semibold truncate">{item.i18nName ?? item.name}</span>
+              <span className="text-[15px] font-semibold truncate">{displayName}</span>
               <AppTypeBadge type={item.appType} />
               <span className="text-[11px] text-muted-foreground tabular-nums">v{item.version}</span>
               {hasUpdate && (
@@ -166,7 +198,7 @@ export function StoreDetail(): React.ReactElement {
               <div className="space-y-4">
                 <section>
                   <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2">描述</h3>
-                  <p className="text-[13px] text-foreground/90 leading-relaxed">{item.i18nDescription ?? item.description}</p>
+                  <p className="text-[13px] text-foreground/90 leading-relaxed">{displayDesc}</p>
                 </section>
                 {item.tags.length > 0 && (
                   <section>
@@ -193,7 +225,7 @@ export function StoreDetail(): React.ReactElement {
             {activeTab === 'config' && (
               <div>
                 <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2">配置项预览</h3>
-                <ConfigSchemaPreview parsedSpecJson={parsedSpecJson} />
+                <ConfigSchemaPreview parsedSpecJson={parsedSpecJson} specI18n={specI18n} locale={locale} />
               </div>
             )}
 
@@ -274,7 +306,15 @@ function Row({ label, value }: { label: string; value: string }): React.ReactEle
   )
 }
 
-function ConfigSchemaPreview({ parsedSpecJson }: { parsedSpecJson: unknown | null }): React.ReactElement {
+function ConfigSchemaPreview({
+  parsedSpecJson,
+  specI18n,
+  locale,
+}: {
+  parsedSpecJson: unknown | null
+  specI18n: SpecI18n | undefined
+  locale: string
+}): React.ReactElement {
   if (!parsedSpecJson) {
     return (
       <div className="flex items-start gap-2 p-3 rounded-md bg-warning-bg text-warning text-[12px]">
@@ -290,29 +330,42 @@ function ConfigSchemaPreview({ parsedSpecJson }: { parsedSpecJson: unknown | nul
   }
   return (
     <ul className="space-y-2">
-      {(schema as Array<Record<string, unknown>>).map((item, idx) => (
-        <li key={idx} className="px-3 py-2 rounded-md bg-card border border-border/50 text-[12px]">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="font-medium">{String(item.label ?? item.key)}</span>
-            <span className="text-[10px] text-muted-foreground px-1.5 py-[1px] rounded bg-muted">
-              {String(item.type ?? 'unknown')}
-            </span>
-            {item.required ? (
-              <span className="text-[10px] text-danger">必填</span>
-            ) : (
-              <span className="text-[10px] text-muted-foreground/70">可选</span>
+      {(schema as ConfigSchemaEntry[]).map((entry, idx) => {
+        const label = localizeConfig(entry.key, 'label', entry.label, specI18n, locale)
+        const description = localizeConfig(entry.key, 'description', entry.description, specI18n, locale)
+        return (
+          <li key={idx} className="px-3 py-2 rounded-md bg-card border border-border/50 text-[12px]">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="font-medium">{label || entry.key}</span>
+              <span className="text-[10px] text-muted-foreground px-1.5 py-[1px] rounded bg-muted">
+                {String(entry.type ?? 'unknown')}
+              </span>
+              {entry.required ? (
+                <span className="text-[10px] text-danger">必填</span>
+              ) : (
+                <span className="text-[10px] text-muted-foreground/70">可选</span>
+              )}
+            </div>
+            {description && (
+              <p className="text-[11px] text-muted-foreground">{description}</p>
             )}
-          </div>
-          {typeof item.description === 'string' && item.description && (
-            <p className="text-[11px] text-muted-foreground">{item.description}</p>
-          )}
-          {item.default != null && (
-            <p className="text-[11px] text-muted-foreground mt-1">
-              默认: <span className="font-mono">{String(item.default)}</span>
-            </p>
-          )}
-        </li>
-      ))}
+            {entry.options && entry.options.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">
+                {entry.options.map((opt) => (
+                  <span key={opt.value} className="text-[10px] px-1.5 py-[1px] rounded bg-muted text-muted-foreground">
+                    {localizeOption(entry.key, opt.value, opt.label, specI18n, locale)}
+                  </span>
+                ))}
+              </div>
+            )}
+            {entry.default != null && (
+              <p className="text-[11px] text-muted-foreground mt-1">
+                默认: <span className="font-mono">{String(entry.default)}</span>
+              </p>
+            )}
+          </li>
+        )
+      })}
     </ul>
   )
 }

@@ -2,6 +2,21 @@ import { atom } from 'jotai'
 import { atomWithStorage } from 'jotai/utils'
 import type { MarketplaceItem, MarketplaceUpdate, MarketplaceDetail } from '@/lib/tauri-bridge'
 
+// User locale for marketplace i18n overlays. Defaults to navigator.language so
+// first-time install matches the OS, and persists via atomWithStorage so a
+// future settings toggle (Phase 4) survives reloads.
+function detectInitialLocale(): string {
+  if (typeof navigator !== 'undefined' && navigator.language) {
+    return navigator.language
+  }
+  return 'en-US'
+}
+
+export const userLocaleAtom = atomWithStorage<string>(
+  'uclaw.marketplace.locale',
+  detectInitialLocale(),
+)
+
 // Type filter — All / Digital Human / Skill / MCP
 export type MarketplaceItemTypeFilter = 'all' | 'automation' | 'skill' | 'mcp'
 

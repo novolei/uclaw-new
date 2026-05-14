@@ -412,6 +412,13 @@ pub struct I18nLocaleBlock {
     #[garde(skip)]
     #[serde(default)]
     pub system_prompt: Option<String>,
+    // Per-locale overlay for config_schema. Shape: { key: { label?, description?,
+    // placeholder?, options? } }. Kept as raw JSON because per-input overlay shape
+    // varies (esp. `options` which is a value→label map). Frontend looks up entries
+    // by key — strict typing buys nothing here.
+    #[garde(skip)]
+    #[serde(default)]
+    pub config_schema: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -521,5 +528,44 @@ memory_schema:
         let spec: HumaneAutomationSpec = serde_yml::from_str(dhp_style).expect("parses");
         spec.validate().expect("validates");
         assert!(spec.memory_schema.is_some());
+    }
+
+    #[test]
+    fn parses_i18n_with_config_schema_overlay() {
+        // DHP-style: i18n.<locale>.config_schema overlays label/description/
+        // placeholder/options per input key. We keep it as raw JSON because the
+        // frontend only looks up entries by key.
+        let yaml = r#"
+type: automation
+name: Test
+version: 1.0.0
+author: test
+description: en desc
+system_prompt: irrelevant
+config_schema:
+  - key: keywords
+    label: Search Keywords
+    type: string
+    required: true
+    description: en desc
+i18n:
+  zh-CN:
+    name: 中文名
+    description: 中文描述
+    config_schema:
+      keywords:
+        label: 监控关键词
+        description: 中文描述
+        placeholder: 关键词
+        options:
+          opt_a: 选项A
+"#;
+        let spec: HumaneAutomationSpec = serde_yml::from_str(yaml).expect("parses");
+        spec.validate().expect("validates");
+        let zh = spec.i18n.get("zh-CN").expect("zh-CN present");
+        assert_eq!(zh.name.as_deref(), Some("中文名"));
+        let cs = zh.config_schema.as_ref().expect("config_schema present");
+        assert_eq!(cs["keywords"]["label"].as_str(), Some("监控关键词"));
+        assert_eq!(cs["keywords"]["options"]["opt_a"].as_str(), Some("选项A"));
     }
 }
