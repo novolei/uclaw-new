@@ -94,6 +94,7 @@ pub fn migrate_legacy_toml(toml_content: &str) -> Result<MigratedSpec, MigrateEr
         permissions: vec![],
         browser_login: serde_json::Value::Null,
         i18n: HashMap::new(),
+        mcp_server: None,
     };
 
     let yaml = serde_yml::to_string(&spec).map_err(|e| MigrateError::Yaml(e.to_string()))?;
