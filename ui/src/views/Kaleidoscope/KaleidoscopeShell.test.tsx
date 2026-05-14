@@ -3,7 +3,7 @@ import { renderWithProviders, screen } from '@/test-utils/render'
 import { createStore } from 'jotai'
 import { KaleidoscopeShell } from './KaleidoscopeShell'
 import { kaleidoscopeModuleAtom } from '@/atoms/kaleidoscope'
-import { automationsSubviewAtom } from '@/atoms/marketplace'
+import { automationsSubviewAtom, marketplaceSelectedSlugAtom } from '@/atoms/marketplace'
 
 vi.mock('@/lib/tauri-bridge', () => ({
   getUserProfile: vi.fn().mockResolvedValue({ userName: 'User', avatar: null }),
@@ -62,13 +62,27 @@ describe('KaleidoscopeShell', () => {
     expect(screen.queryByTestId('automation-hub')).not.toBeInTheDocument()
   })
 
-  it('renders StoreDetail when the store subview is store-detail', () => {
+  it('renders StoreDetail when subview is store-detail AND a slug is selected', () => {
     const store = createStore()
     store.set(kaleidoscopeModuleAtom, 'store')
     store.set(automationsSubviewAtom, 'store-detail')
+    store.set(marketplaceSelectedSlugAtom, 'some-slug')
     renderWithProviders(<KaleidoscopeShell />, { store })
     expect(screen.getByTestId('store-detail')).toBeInTheDocument()
     expect(screen.queryByTestId('store-view')).not.toBeInTheDocument()
+  })
+
+  it('falls back to StoreView when subview is store-detail but no slug is selected', () => {
+    // automationsSubviewAtom is persisted (atomWithStorage); a restart can
+    // restore 'store-detail' while the non-persisted slug atom is null. That
+    // orphan state must not strand StoreDetail on an unbreakable spinner.
+    const store = createStore()
+    store.set(kaleidoscopeModuleAtom, 'store')
+    store.set(automationsSubviewAtom, 'store-detail')
+    // marketplaceSelectedSlugAtom left at its default (null)
+    renderWithProviders(<KaleidoscopeShell />, { store })
+    expect(screen.getByTestId('store-view')).toBeInTheDocument()
+    expect(screen.queryByTestId('store-detail')).not.toBeInTheDocument()
   })
 
   it('renders AppsTab for the apps module', () => {
