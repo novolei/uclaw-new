@@ -1083,6 +1083,25 @@ pub fn run_v21(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SQL_V21)
 }
 
+/// V22 — automation_installed_skills.
+///
+/// Records which bundled skills each marketplace-installed automation pulled
+/// in. Read by AppsView to enumerate "what got installed alongside this
+/// automation" and by uninstall to delete the right files.
+///
+/// file_count is a cheap drift detector — diagnostic only in this PR.
+const SQL_V22: &str = "
+CREATE TABLE IF NOT EXISTS automation_installed_skills (
+    automation_slug TEXT NOT NULL,
+    skill_id        TEXT NOT NULL,
+    installed_at    INTEGER NOT NULL,
+    file_count      INTEGER NOT NULL,
+    PRIMARY KEY (automation_slug, skill_id)
+);
+CREATE INDEX IF NOT EXISTS idx_aut_inst_skills_slug
+    ON automation_installed_skills(automation_slug);
+";
+
 const V23A_MARKETPLACE_CACHE: &str = "
 CREATE TABLE IF NOT EXISTS automation_marketplace_items (
     registry_id      TEXT NOT NULL,
@@ -1288,6 +1307,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     if let Err(e) = run_v21(conn) {
         tracing::error!(error = %e, "V21 FAILED — automation escalations / subscriptions / memory tables missing");
         return Err(e);
+    }
+    // V22: automation_installed_skills — tracks bundled skills per automation.
+    tracing::debug!("Running migration V22: automation_installed_skills");
+    for stmt in SQL_V22.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V22 stmt skipped: {} :: {}", e, stmt);
+        }
     }
     // V23a: Marketplace cache (Phase 3a). Phase 3b extends to add the
     // automation_registries table for multi-source support.
@@ -1870,5 +1896,47 @@ mod tests {
             |r| r.get(0),
         ).unwrap();
         assert_eq!(hits, 1, "FTS5 trigram should match");
+    }
+
+    #[test]
+    fn v22_creates_automation_installed_skills_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("migrations run");
+
+        // Inserting a row should succeed.
+        conn.execute(
+            "INSERT INTO automation_installed_skills \
+                (automation_slug, skill_id, installed_at, file_count) \
+                VALUES (?, ?, ?, ?)",
+            rusqlite::params!["xhs-monitor", "xhs-search", 1715000000_i64, 2_i64],
+        )
+        .expect("insert ok");
+
+        // PK collision should error.
+        let dup = conn.execute(
+            "INSERT INTO automation_installed_skills \
+                (automation_slug, skill_id, installed_at, file_count) \
+                VALUES (?, ?, ?, ?)",
+            rusqlite::params!["xhs-monitor", "xhs-search", 1715000000_i64, 2_i64],
+        );
+        assert!(dup.is_err(), "PK should reject duplicate");
+
+        // The companion index must exist.
+        let idx_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type='index' AND name='idx_aut_inst_skills_slug'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx_count, 1);
+    }
+
+    #[test]
+    fn v22_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error (CREATE IF NOT EXISTS)");
     }
 }

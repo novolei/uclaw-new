@@ -1,4 +1,5 @@
 pub mod activity;
+pub mod capability_map;
 pub mod filters;
 pub mod manager;
 pub mod marketplace;

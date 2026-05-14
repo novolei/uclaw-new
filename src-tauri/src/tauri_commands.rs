@@ -2433,6 +2433,7 @@ pub async fn list_active_manifest_skills(
                         crate::skills::SkillProvenance::Bundled => "bundled",
                         crate::skills::SkillProvenance::User => "user",
                         crate::skills::SkillProvenance::Project => "project",
+                        crate::skills::SkillProvenance::Marketplace => "marketplace",
                     })
                     .unwrap_or("project")
                     .to_string()
@@ -5622,11 +5623,29 @@ pub async fn install_marketplace_human(
         &slug,
         space_id,
         user_config,
+        state.skills_registry.clone(),
         progress_channel,
     )
     .await
     .map_err(|e| {
         tracing::error!(slug = %slug, error = format!("{:#}", e), "install_marketplace_human failed");
+        Error::Internal(format!("{:#}", e))
+    })
+}
+
+#[tauri::command]
+pub async fn uninstall_marketplace_human(
+    state: tauri::State<'_, AppState>,
+    slug: String,
+) -> Result<(), Error> {
+    crate::automation::marketplace::uninstall_human(
+        &state.runtime_service,
+        state.skills_registry.clone(),
+        &slug,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(slug = %slug, error = format!("{:#}", e), "uninstall_marketplace_human failed");
         Error::Internal(format!("{:#}", e))
     })
 }
@@ -5658,6 +5677,17 @@ pub async fn marketplace_category_counts(
         search.as_deref(),
     )
     .map_err(|e| Error::Internal(e.to_string()))
+}
+
+/// Returns every installed marketplace automation with its bundled skills and
+/// resolved capability status. Drives the AppsView card list.
+#[tauri::command]
+pub async fn list_installed_marketplace_automations(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::automation::marketplace::types::InstalledAutomation>, Error> {
+    crate::automation::marketplace::list_installed(&state.runtime_service)
+        .await
+        .map_err(|e| Error::Internal(format!("{:#}", e)))
 }
 
 // list_marketplace_humans kept as deprecated wrapper for backward compat — Phase 3b removes

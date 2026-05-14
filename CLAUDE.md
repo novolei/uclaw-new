@@ -138,9 +138,11 @@ Track which V-number is claimed by which open PR before starting schema work:
 | V16 | persist 'default' workspace + heal orphan agent_sessions | merged (PR #75) |
 | V17 | spaces.sort_order + spaces.attached_dirs + agent_sessions.attached_dirs | merged (PR #76) |
 | V18 | agent_sessions.pinned_at — canonical pin state for the agent UI | merged (PR #92) |
-| V19 | spaces.skill_tags — per-workspace skill scoping (JSON tag array) | **claude/workspace-skill-tags** (open) |
-| V20 | rewrite automation_specs + activities + migrate legacy TOML | **humane-automation** (open) |
-| V21 | automation_subscriptions + automation_memory + automation_escalations | **humane-automation** (open) |
+| V19 | spaces.skill_tags — per-workspace skill scoping (JSON tag array) | merged |
+| V20 | rewrite automation_specs + activities + migrate legacy TOML | merged |
+| V21 | automation_subscriptions + automation_memory + automation_escalations | merged |
+| V22 | automation_installed_skills + idx_aut_inst_skills_slug | **this PR** (Phase 3b-α) |
+| V23a | Marketplace cache (Phase 3a) | merged |
 
 If you're adding a migration: pick the next number after both merged AND open PRs to avoid conflicts. Update this table in your PR.
 

@@ -228,6 +228,9 @@ pub enum SkillProvenance {
     /// In-repo `<cwd>/skills/` directory. Only populated during
     /// `cargo tauri dev` — production builds never see this tier.
     Project,
+    /// Installed by the marketplace as a side effect of installing an
+    /// automation. Lives under `~/.uclaw/skills/_marketplace/<automation_slug>/`.
+    Marketplace,
 }
 
 // ─── Loaded Skill ───────────────────────────────────────────────────────
@@ -506,6 +509,12 @@ impl SkillsRegistry {
         if !self.scan_dirs.iter().any(|(d, _)| d == &dir) {
             self.scan_dirs.push((dir, provenance));
         }
+    }
+
+    /// Remove a directory from the scan set. Used by uninstall to drop the
+    /// scan root when a marketplace automation is removed. No-op if not found.
+    pub fn remove_scan_dir(&mut self, dir: &Path) {
+        self.scan_dirs.retain(|(d, _)| d != dir);
     }
 
     /// Register a loaded skill.
@@ -1242,5 +1251,33 @@ Test.
         let loaded = reg.get_loaded("tdd").expect("registered");
         assert_eq!(loaded.provenance, SkillProvenance::Bundled,
             "recursed children inherit parent scan dir's provenance");
+    }
+
+    #[test]
+    fn remove_scan_dir_drops_directory_from_scan_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir_a = tmp.path().join("a");
+        let dir_b = tmp.path().join("b");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+
+        let mut reg = SkillsRegistry::new();
+        reg.add_scan_dir(dir_a.clone(), SkillProvenance::User);
+        reg.add_scan_dir(dir_b.clone(), SkillProvenance::Marketplace);
+        assert_eq!(reg.scan_dirs.len(), 2);
+
+        reg.remove_scan_dir(&dir_b);
+        assert_eq!(reg.scan_dirs.len(), 1);
+        assert_eq!(reg.scan_dirs[0].0, dir_a);
+
+        // Removing a non-existent dir is a no-op.
+        reg.remove_scan_dir(&tmp.path().join("nonexistent"));
+        assert_eq!(reg.scan_dirs.len(), 1);
+    }
+
+    #[test]
+    fn marketplace_provenance_serializes_lowercase() {
+        let json = serde_json::to_string(&SkillProvenance::Marketplace).unwrap();
+        assert_eq!(json, "\"marketplace\"");
     }
 }

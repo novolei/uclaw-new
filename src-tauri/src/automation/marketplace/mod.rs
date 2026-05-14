@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod halo_adapter;
+mod skill_install;
 pub mod types;
 
 pub use cache::category_counts_cached;
@@ -9,9 +10,12 @@ pub use types::{
 };
 
 use anyhow::{anyhow, Context, Result};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::automation::manager::HumaneSpecRow;
 use crate::automation::runtime::AppRuntimeService;
+use crate::skills::SkillsRegistry;
 
 /// List all automation-type entries from a registry. Defaults to the DHP registry.
 /// Non-automation entries (skill / mcp / extension) are filtered out — Phase 1 only
@@ -193,6 +197,195 @@ pub async fn check_updates_cached(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// Synchronous core of `list_installed_marketplace_automations` — separated so
+/// unit tests can drive it without an AppRuntimeService.
+///
+/// Joins `automation_specs` (marketplace rows only) × `automation_installed_skills`
+/// × `automation_marketplace_items` (for icon + category). Capability resolution
+/// is performed in-process via `capability_map`.
+pub fn list_installed_inner(
+    conn: &rusqlite::Connection,
+    skills_root: &std::path::Path,
+) -> Result<Vec<types::InstalledAutomation>> {
+    use crate::automation::capability_map;
+    use crate::automation::protocol::parse::parse_humane_v1;
+    use types::{CapabilityCheck, CapabilityStatus, InstalledAutomation, InstalledSkillBrief};
+
+    // source_ref shape: `marketplace://halo/<slug>` — we extract the slug as the
+    // last path segment. LEFT JOIN against the registry cache to recover icon +
+    // category (those fields live in the index, not in the stored spec YAML).
+    let mut stmt = conn.prepare(
+        "SELECT
+            s.source_ref,
+            s.name,
+            s.version,
+            s.spec_yaml,
+            COALESCE(m.icon,     NULL)    AS icon,
+            COALESCE(m.category, 'other') AS category
+         FROM automation_specs s
+         LEFT JOIN automation_marketplace_items m
+             ON m.registry_id = 'halo'
+             AND m.slug = SUBSTR(s.source_ref, LENGTH('marketplace://halo/') + 1)
+         WHERE s.source = 'marketplace'
+         ORDER BY s.updated_at DESC",
+    )?;
+
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, Option<String>>(4)?,
+            r.get::<_, String>(5)?,
+        ))
+    })?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let (source_ref, name, version, spec_yaml, icon, category) = row?;
+        // Extract slug from the last '/' segment of source_ref.
+        let slug = source_ref
+            .rsplit('/')
+            .next()
+            .ok_or_else(|| anyhow!("malformed source_ref: {}", source_ref))?
+            .to_string();
+
+        // Parse the stored YAML to reach requires.mcps. Failure is non-fatal:
+        // return empty capability list so AppsView can still render the card.
+        let mcp_ids: Vec<String> = match parse_humane_v1(&spec_yaml) {
+            Ok(parsed) => parsed
+                .spec
+                .requires
+                .as_ref()
+                .and_then(|r| r.get("mcps").and_then(|s| s.as_array()))
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!(slug = %slug, error = %e, "list_installed: parse failed — capability list empty");
+                vec![]
+            }
+        };
+
+        let required_capabilities: Vec<CapabilityCheck> = mcp_ids
+            .into_iter()
+            .map(|mcp_id| match capability_map::resolve_capability(&mcp_id) {
+                Some(cap) => CapabilityCheck {
+                    mcp_id,
+                    status: CapabilityStatus::Mapped,
+                    mapped_to: Some(capability_map::human_label(cap).to_string()),
+                },
+                None => CapabilityCheck {
+                    mcp_id,
+                    status: CapabilityStatus::Missing,
+                    mapped_to: None,
+                },
+            })
+            .collect();
+
+        // Bundled skills — one row per skill in automation_installed_skills.
+        let mut skills_stmt = conn.prepare(
+            "SELECT skill_id, file_count FROM automation_installed_skills \
+                WHERE automation_slug = ? ORDER BY skill_id",
+        )?;
+        let skill_rows = skills_stmt.query_map(rusqlite::params![&slug], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        let mut bundled_skills: Vec<InstalledSkillBrief> = Vec::new();
+        for s in skill_rows {
+            let (skill_id, file_count) = s?;
+            let install_path = skills_root
+                .join("_marketplace")
+                .join(&slug)
+                .join(&skill_id)
+                .to_string_lossy()
+                .to_string();
+            bundled_skills.push(InstalledSkillBrief {
+                skill_id,
+                description: None, // Phase 3b-β reads SKILL.md
+                install_path,
+                file_count,
+            });
+        }
+
+        out.push(InstalledAutomation {
+            slug,
+            name,
+            version,
+            icon,
+            category,
+            bundled_skills,
+            required_capabilities,
+        });
+    }
+    Ok(out)
+}
+
+/// Async wrapper consumed by the Tauri command.
+pub async fn list_installed(
+    runtime: &crate::automation::runtime::AppRuntimeService,
+) -> Result<Vec<types::InstalledAutomation>> {
+    let skills_root = dirs::home_dir()
+        .ok_or_else(|| anyhow!("no home dir"))?
+        .join(".uclaw")
+        .join("skills");
+    let conn = runtime.db.lock().unwrap();
+    list_installed_inner(&conn, &skills_root)
+}
+
+/// Synchronous core of uninstall — separated so unit tests can drive it
+/// without an AppRuntimeService.
+pub fn uninstall_human_inner(
+    conn: &rusqlite::Connection,
+    skills_root: &std::path::Path,
+    slug: &str,
+) -> Result<()> {
+    let source_ref = format!("marketplace://halo/{}", slug);
+    // Delete spec first — a subsequent FS error leaves no ghost "installed" spec row.
+    conn.execute(
+        "DELETE FROM automation_specs WHERE source = 'marketplace' AND source_ref = ?1",
+        rusqlite::params![source_ref],
+    )?;
+    conn.execute(
+        "DELETE FROM automation_installed_skills WHERE automation_slug = ?1",
+        rusqlite::params![slug],
+    )?;
+    let dir = skills_root.join("_marketplace").join(slug);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)
+            .with_context(|| format!("remove {}", dir.display()))?;
+    }
+    Ok(())
+}
+
+/// Public async entry point used by the Tauri command. Resolves runtime
+/// resources, calls the inner sync core, then drops the SkillsRegistry
+/// scan dir and triggers rediscovery.
+pub async fn uninstall_human(
+    runtime: &crate::automation::runtime::AppRuntimeService,
+    skills_registry: Arc<RwLock<SkillsRegistry>>,
+    slug: &str,
+) -> Result<()> {
+    let skills_root = dirs::home_dir()
+        .ok_or_else(|| anyhow!("no home dir"))?
+        .join(".uclaw")
+        .join("skills");
+    {
+        let conn = runtime.db.lock().unwrap();
+        uninstall_human_inner(&conn, &skills_root, slug)?;
+    }
+    {
+        let mut reg = skills_registry.write().await;
+        reg.remove_scan_dir(&skills_root.join("_marketplace").join(slug));
+        let _ = reg.discover();
+    }
+    Ok(())
+}
+
 /// Install a single registry entry. Returns the installed HumaneSpecRow.
 /// source_ref takes the form `marketplace://halo/{slug}` per spec § 5 URI convention.
 pub async fn install_human(
@@ -201,6 +394,7 @@ pub async fn install_human(
     slug: &str,
     space_id: Option<String>,
     user_config: Option<serde_json::Value>,
+    skills_registry: Arc<RwLock<SkillsRegistry>>,
     progress_channel: Option<String>,
 ) -> Result<HumaneSpecRow> {
     use tauri::Emitter;
@@ -268,6 +462,87 @@ pub async fn install_human(
         yaml
     };
 
+    // NEW: fetching_skills phase
+    emit("fetching_skills", 25, Some("拉取依赖 skill 文件"));
+    let skills_root = dirs::home_dir()
+        .ok_or_else(|| anyhow!("no home dir"))?
+        .join(".uclaw")
+        .join("skills");
+    // Parse spec here so we can inspect requires.skills before installing.
+    let parsed = match crate::automation::protocol::parse::parse_humane_v1(&yaml) {
+        Ok(p) => p,
+        Err(e) => {
+            let msg = format!("spec.yaml 解析失败：{:#}", e);
+            emit("fetching_skills", 25, Some(&msg));
+            return Err(anyhow!("parse spec.yaml for {} during fetching_skills phase: {:#}", slug, e));
+        }
+    };
+    let staged = match skill_install::fetch_bundled_skills(&source, &{
+        let path = format!("packages/digital-humans/{}", slug);
+        RegistryEntry {
+            slug: slug.to_string(),
+            name: item.name.clone(),
+            version: item.version.clone(),
+            author: item.author.clone(),
+            description: item.description.clone(),
+            app_type: item.app_type.clone(),
+            format: None,
+            path,
+            download_url: None,
+            size_bytes: None,
+            checksum: None,
+            category: item.category.clone(),
+            tags: item.tags.clone(),
+            icon: item.icon.clone(),
+            locale: item.locale.clone(),
+            min_app_version: item.min_app_version.clone(),
+            requires_mcps: vec![],
+            requires_skills: vec![],
+            updated_at: None,
+            i18n: Default::default(),
+            meta: serde_json::Value::Null,
+        }
+    }, &parsed.spec, &skills_root).await {
+        Ok(s) => s,
+        Err(e) => {
+            skill_install::cleanup_staging(
+                &skills_root.join(".staging").join(slug),
+            );
+            return Err(e);
+        }
+    };
+    tracing::info!(slug = %slug, count = staged.len(), "bundled skills staged");
+
+    // NEW: validating_caps phase
+    emit("validating_caps", 50, Some("校验能力依赖"));
+    let mcp_ids: Vec<String> = parsed
+        .spec
+        .requires
+        .as_ref()
+        .and_then(|r| r.get("mcps").and_then(|s| s.as_array()))
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut missing_caps: Vec<String> = Vec::new();
+    for mcp_id in &mcp_ids {
+        if crate::automation::capability_map::resolve_capability(mcp_id).is_none() {
+            missing_caps.push(mcp_id.clone());
+        }
+    }
+    if !missing_caps.is_empty() {
+        // Warn but don't abort — Phase 3b-γ will offer a real install path.
+        let msg = format!(
+            "automation 声明依赖 MCP {:?}，但 uClaw 暂不支持，安装完成但可能无法运行",
+            missing_caps
+        );
+        emit("validating_caps", 55, Some(&msg));
+        tracing::warn!(missing = ?missing_caps, slug = %slug, "capability validation warnings");
+    }
+
     emit("installing", 60, Some("安装到数据库"));
     let source_ref = format!("marketplace://{}/{}", source.id, slug);
 
@@ -302,6 +577,51 @@ pub async fn install_human(
     }
     let _ = space_id; // Phase 3b will wire this
 
+    // NEW: registering_skills phase — commit staged skills + register with SkillsRegistry.
+    emit("registering_skills", 80, Some("注册 skill 与扫描目录"));
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    // Atomic promotion of staged skills into the real tree.
+    let _final_dir = skill_install::commit_staged_skills(slug, &skills_root)
+        .with_context(|| "commit staged skills")?;
+
+    // Record one row per staged skill into automation_installed_skills (V22).
+    // Best-effort: the V22 table is diagnostic-only; the runtime behaviour
+    // (skill discoverability via SkillsRegistry scan dir) does not depend on
+    // these rows. A failed insert must not roll back the already-committed
+    // staging dir rename or the automation_specs row.
+    {
+        let conn = runtime.db.lock().unwrap();
+        for s in &staged {
+            if let Err(e) = conn.execute(
+                "INSERT OR REPLACE INTO automation_installed_skills \
+                    (automation_slug, skill_id, installed_at, file_count) \
+                    VALUES (?, ?, ?, ?)",
+                rusqlite::params![slug, s.skill_id, now_secs, s.file_count],
+            ) {
+                tracing::error!(
+                    slug = %slug,
+                    skill_id = %s.skill_id,
+                    error = %e,
+                    "failed to record installed skill — install continues, AppsTab may show stale state until reinstall"
+                );
+            }
+        }
+    }
+
+    // Register the per-automation scan root with SkillsRegistry so the
+    // freshly installed skills become discoverable without an app restart.
+    if !staged.is_empty() {
+        let scan_root = skills_root.join("_marketplace").join(slug);
+        let mut reg = skills_registry.write().await;
+        reg.add_scan_dir(scan_root, crate::skills::SkillProvenance::Marketplace);
+        // Trigger rediscovery so the new skills are active in this process.
+        let _ = reg.discover();
+    }
+
     emit("activating", 90, Some("激活订阅"));
     let _ = runtime.activate(&row.id).await;
 
@@ -314,6 +634,52 @@ pub async fn install_human(
 #[cfg(test)]
 mod tests {
     use super::types::*;
+
+    #[test]
+    fn uninstall_removes_rows_and_files() {
+        // Set up: temp skills root + in-memory DB with V22 + a fake _marketplace/<slug>/ tree.
+        let tmp = tempfile::tempdir().unwrap();
+        let skills_root = tmp.path().join("skills");
+        let target = skills_root.join("_marketplace").join("auto-x").join("skill-a");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("SKILL.md"), b"# A").unwrap();
+        // Untouched user-written skill — must survive uninstall.
+        let user_skill = skills_root.join("hand-written").join("SKILL.md");
+        std::fs::create_dir_all(user_skill.parent().unwrap()).unwrap();
+        std::fs::write(&user_skill, b"# H").unwrap();
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO automation_installed_skills VALUES (?, ?, ?, ?)",
+            rusqlite::params!["auto-x", "skill-a", 0_i64, 1_i64],
+        ).unwrap();
+        // V20 schema requires: id, name, version, author, description, system_prompt,
+        // spec_yaml, spec_json, created_at, updated_at (all NOT NULL); others have defaults.
+        conn.execute(
+            "INSERT INTO automation_specs \
+                (id, name, version, author, description, system_prompt, spec_yaml, spec_json, \
+                 source, source_ref, created_at, updated_at) \
+             VALUES ('auto-x-id', 'X', '1.0.0', 'test', 'desc', '', '', '{}', \
+                     'marketplace', 'marketplace://halo/auto-x', 0, 0)",
+            [],
+        ).expect("insert spec — V20 schema columns");
+
+        // Drive the uninstall — pass in the connection + skills_root directly.
+        super::uninstall_human_inner(&conn, &skills_root, "auto-x").unwrap();
+
+        // Assert: rows gone, marketplace dir gone, user skill untouched.
+        let spec_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM automation_specs WHERE source_ref = 'marketplace://halo/auto-x'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(spec_count, 0);
+        let inst_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM automation_installed_skills WHERE automation_slug = 'auto-x'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(inst_count, 0);
+        assert!(!skills_root.join("_marketplace").join("auto-x").exists());
+        assert!(user_skill.exists(), "user-written skill must survive");
+    }
 
     // Fixture mirrors the real index.json shape from
     // https://raw.githubusercontent.com/novolei/digital-human-protocol/main/index.json
@@ -405,5 +771,82 @@ mod tests {
         assert_eq!(entry.category, "other");
         assert!(entry.tags.is_empty());
         assert!(entry.requires_mcps.is_empty());
+    }
+
+    #[test]
+    fn capability_validation_collects_missing_ids() {
+        // We test the matching logic directly (not via the async install_human
+        // which would require a live HTTP server). install_human's loop is a
+        // thin wrapper around resolve_capability — proving the wrapper here is
+        // sufficient given Task 2 already covers resolve_capability itself.
+        use crate::automation::capability_map::resolve_capability;
+        let inputs = vec!["ai-browser", "foo", "bar", "ai-browser"];
+        let missing: Vec<&str> = inputs
+            .iter()
+            .copied()
+            .filter(|id| resolve_capability(id).is_none())
+            .collect();
+        assert_eq!(missing, vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn list_installed_joins_specs_and_skills_correctly() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+
+        // YAML with two requires.mcps entries: one known (ai-browser) and one unknown.
+        let spec_yaml = r#"
+spec_version: "1"
+name: X
+version: 1.0.0
+author: t
+description: t
+type: automation
+system_prompt: x
+config_schema: []
+requires:
+  mcps:
+    - id: ai-browser
+      reason: r
+    - id: nonexistent-mcp
+      reason: r
+"#;
+
+        conn.execute(
+            "INSERT INTO automation_specs \
+                (id, name, version, author, description, system_prompt, spec_yaml, spec_json, \
+                 source, source_ref, created_at, updated_at) \
+             VALUES ('a-id', 'X', '1.0.0', 't', 't', 'x', ?1, '{}', \
+                     'marketplace', 'marketplace://halo/a', 0, 0)",
+            rusqlite::params![spec_yaml],
+        ).expect("insert spec — V20 schema columns");
+
+        conn.execute(
+            "INSERT INTO automation_installed_skills VALUES (?, ?, ?, ?)",
+            rusqlite::params!["a", "skill-1", 0_i64, 2_i64],
+        ).unwrap();
+
+        let result = super::list_installed_inner(&conn, std::path::Path::new("/tmp/uclaw-test"))
+            .expect("query ok");
+
+        assert_eq!(result.len(), 1);
+        let r = &result[0];
+        assert_eq!(r.slug, "a");
+        assert_eq!(r.name, "X");
+        assert_eq!(r.bundled_skills.len(), 1);
+        assert_eq!(r.bundled_skills[0].skill_id, "skill-1");
+        assert_eq!(r.required_capabilities.len(), 2);
+        // ai-browser is a known capability → Mapped
+        assert!(matches!(
+            r.required_capabilities[0].status,
+            super::types::CapabilityStatus::Mapped
+        ));
+        // nonexistent-mcp is unknown → Missing
+        assert!(matches!(
+            r.required_capabilities[1].status,
+            super::types::CapabilityStatus::Missing
+        ));
+        // With no marketplace cache row, category defaults to 'other'.
+        assert_eq!(r.category, "other");
     }
 }
