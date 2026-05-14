@@ -43,6 +43,9 @@ const MODULE_ICON: Record<KaleidoscopeModuleId, LucideIcon> = {
   memory: Brain,
 }
 
+const ASSET_MODULES = KALEIDOSCOPE_MODULES.filter((m) => m.group === 'asset')
+const CAPABILITY_MODULES = KALEIDOSCOPE_MODULES.filter((m) => m.group === 'capability')
+
 interface RailItemProps {
   id: KaleidoscopeModuleId
   label: string
@@ -80,9 +83,6 @@ export function KaleidoscopeRail(): React.ReactElement {
   const setSettingsOpen = useSetAtom(settingsOpenAtom)
   const userProfile = useAtomValue(userProfileAtom)
 
-  const assetModules = KALEIDOSCOPE_MODULES.filter((m) => m.group === 'asset')
-  const capabilityModules = KALEIDOSCOPE_MODULES.filter((m) => m.group === 'capability')
-
   return (
     <div className="w-[120px] shrink-0 flex flex-col bg-background border-r border-border">
       {/* 红绿灯让位 */}
@@ -90,7 +90,7 @@ export function KaleidoscopeRail(): React.ReactElement {
 
       {/* 主导航 */}
       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center gap-[18px] pt-3">
-        {assetModules.map((m) => (
+        {ASSET_MODULES.map((m) => (
           <RailItem
             key={m.id}
             id={m.id}
@@ -104,7 +104,7 @@ export function KaleidoscopeRail(): React.ReactElement {
         {/* 分组分隔 */}
         <div className="w-9 h-px bg-border my-0.5" />
 
-        {capabilityModules.map((m) => (
+        {CAPABILITY_MODULES.map((m) => (
           <RailItem
             key={m.id}
             id={m.id}
@@ -148,6 +148,7 @@ export function KaleidoscopeRail(): React.ReactElement {
       <div className="h-12 shrink-0 px-2 flex items-center">
         <button
           type="button"
+          aria-label="设置"
           onClick={() => setSettingsOpen(true)}
           className="titlebar-no-drag w-full flex items-center gap-1.5 px-1.5 py-2
                      rounded-[10px] text-foreground/70 hover:bg-foreground/[0.04]
