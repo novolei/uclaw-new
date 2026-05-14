@@ -67,7 +67,14 @@ export function ActivityRow({
     <div
       className={`flex items-start gap-2 py-1 ${clickable ? 'cursor-pointer hover:bg-accent/40 rounded -mx-1 px-1' : ''}`}
       onClick={() => { if (a.sessionId) onOpen(a.sessionId) }}
+      onKeyDown={clickable ? (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          if (a.sessionId) onOpen(a.sessionId)
+        }
+      } : undefined}
       role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
       title={clickable ? '在 Agent 视图中查看此次运行' : undefined}
     >
       <div className="mt-0.5">{statusIcon(a.status)}</div>

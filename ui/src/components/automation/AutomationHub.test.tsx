@@ -28,4 +28,13 @@ describe('ActivityRow', () => {
     fireEvent.click(screen.getByText('manual'))
     expect(onOpen).not.toHaveBeenCalled()
   })
+
+  it('opens on Enter key when focused', () => {
+    const onOpen = vi.fn()
+    const { container } = render(<ActivityRow a={baseActivity} onOpen={onOpen} />)
+    const row = container.querySelector('[role="button"]')
+    expect(row).not.toBeNull()
+    fireEvent.keyDown(row!, { key: 'Enter' })
+    expect(onOpen).toHaveBeenCalledWith('sess-1')
+  })
 })
