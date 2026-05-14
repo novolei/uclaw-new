@@ -6,7 +6,8 @@ src-tauri/pyembed
 src-tauri/target/
 
 # Frontend
-ui/node_modules/
+# 不带尾斜杠 — 同时捕获目录和 git worktree 创建的 symlink
+ui/node_modules
 ui/.env
 ui/.env.local
 

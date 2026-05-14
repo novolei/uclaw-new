@@ -6,6 +6,7 @@
  */
 
 import { atom } from 'jotai'
+import { atomWithStorage } from 'jotai/utils'
 import * as bridge from '@/lib/tauri-bridge'
 
 // ===== localStorage 缓存键 =====
@@ -16,6 +17,16 @@ const STICKY_USER_MESSAGE_CACHE_KEY = 'uclaw-sticky-user-message'
 
 /** 是否显示用户消息悬浮置顶条 */
 export const stickyUserMessageEnabledAtom = atom<boolean>(true)
+
+/**
+ * 是否显示输入框上方的 Agent 状态条（AgentStatusBar）。
+ * 默认关闭——流式气泡内已有 AgentRunningIndicator，状态条属可选的额外信息密度。
+ * 用 atomWithStorage 自持久化，无需 initializeUiPreferences 接线。
+ */
+export const agentStatusBarEnabledAtom = atomWithStorage<boolean>(
+  'uclaw-agent-status-bar',
+  false,
+)
 
 // ===== 缓存读取 =====
 

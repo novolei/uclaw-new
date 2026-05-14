@@ -99,6 +99,7 @@ import { useOpenSession } from '@/hooks/useOpenSession'
 import { AgentSessionProvider } from '@/contexts/session-context'
 import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { sendWithCmdEnterAtom } from '@/atoms/shortcut-atoms'
+import { agentStatusBarEnabledAtom } from '@/atoms/ui-preferences'
 import type { AgentSendInput, AgentMessage, AgentPendingFile } from '@/lib/agent-types'
 import { fileToBase64 } from '@/lib/file-utils'
 import { createClipboardTextFile } from '@/lib/clipboard-attachment'
@@ -1394,6 +1395,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
   const allAskUserRequests = useAtomValue(allPendingAskUserRequestsAtom)
   const allExitPlanRequests = useAtomValue(allPendingExitPlanRequestsAtom)
+  const agentStatusBarEnabled = useAtomValue(agentStatusBarEnabledAtom)
   const hasBannerOverlay =
     (allAskUserRequests.get(sessionId)?.length ?? 0) > 0 ||
     (allExitPlanRequests.get(sessionId)?.length ?? 0) > 0
@@ -1470,8 +1472,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         {/* ExitPlanMode 计划审批横幅 */}
         <ExitPlanModeBanner sessionId={sessionId} />
 
-        {/* 任务执行状态条 — sticky 在输入栏正上方，agent 跑任务时常驻可见 */}
-        <AgentStatusBar sessionId={sessionId} />
+        {/* 任务执行状态条 — sticky 在输入栏正上方，agent 跑任务时常驻可见。
+            默认关闭，可在 设置 → 外观 中开启。 */}
+        {agentStatusBarEnabled && <AgentStatusBar sessionId={sessionId} />}
 
         {/* 输入区域 — 交互横幅显示时隐藏，由横幅替代 */}
         {!hasBannerOverlay && (

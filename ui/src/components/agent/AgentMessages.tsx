@@ -693,15 +693,15 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
 }
 
 /**
- * Agent 运行指示器 — 3 段式流转点 + 运行时间 + 可选累积统计。
+ * Agent 运行指示器 — 3×3 涟漪脉冲方块 + 运行时间 + 可选累积统计。
  *
  * Layer 3 of the agent status visibility upgrade. Lives inside the
  * streaming bubble (in-conversation cursor of "this turn is in progress").
  * Distinct visual rhythm from AgentStatusBar (which is the persistent
  * sticky bar above input).
  *
- * Visual: 3 dots cascade-pulsing left→right (ChatGPT-style typing
- * indicator), accent-colored, more modern than a generic spinner.
+ * Visual: the shared <Spinner> — a 3×3 grid of soft rounded squares that
+ * ripple-pulse outward from the centre, accent-coloured.
  */
 function AgentRunningIndicator({
   startedAt,
@@ -740,12 +740,8 @@ function AgentRunningIndicator({
 
   return (
     <div className="flex items-center gap-2 min-h-[28px]">
-      {/* 3-dot cascading pulse — modern typing-indicator style */}
-      <span className="flex items-center gap-[3px]" aria-label="正在执行">
-        <span className="size-1.5 rounded-full bg-primary/75 animate-pulse" style={{ animationDelay: '0ms', animationDuration: '1200ms' }} />
-        <span className="size-1.5 rounded-full bg-primary/75 animate-pulse" style={{ animationDelay: '200ms', animationDuration: '1200ms' }} />
-        <span className="size-1.5 rounded-full bg-primary/75 animate-pulse" style={{ animationDelay: '400ms', animationDuration: '1200ms' }} />
-      </span>
+      {/* 3×3 ripple-pulse grid spinner — see .spinner in globals.css */}
+      <Spinner size="sm" className="text-primary/75" aria-label="正在执行" />
       <span className="text-[13px] font-light text-muted-foreground/75 tabular-nums">
         Agent Running {formatTime(elapsed)}
       </span>
