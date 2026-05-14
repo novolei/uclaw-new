@@ -11,6 +11,7 @@ use crate::error::Error;
 use crate::safety::{SafetyManager, SafetyMode, ApprovalDecision};
 
 use crate::agent::retry::AgentRetryEvent;
+use crate::agent::llm_stream::StreamSink;
 
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
 /// It assembles the conversation context, delegates LLM calls, and executes tools.
@@ -502,8 +503,8 @@ impl ChatDelegate {
     }
 }
 
-#[async_trait::async_trait]
-impl crate::agent::llm_stream::StreamSink for ChatDelegate {
+#[async_trait]
+impl StreamSink for ChatDelegate {
     fn on_text_delta(&self, text: &str) {
         self.emit_text_delta(text);
     }
@@ -516,7 +517,7 @@ impl crate::agent::llm_stream::StreamSink for ChatDelegate {
     fn on_stream_reset(&self) {
         self.emit_stream_reset();
     }
-    fn on_retry_event(&self, event: crate::agent::retry::AgentRetryEvent) {
+    fn on_retry_event(&self, event: AgentRetryEvent) {
         self.emit_retry_event(event);
     }
     async fn sleep_or_abort(&self, delay: std::time::Duration) -> bool {
