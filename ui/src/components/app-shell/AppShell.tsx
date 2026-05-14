@@ -49,6 +49,8 @@ import { pendingEscalationsAtom } from '@/atoms/automation'
 import { resolveEscalation } from '@/lib/tauri-bridge'
 import { useAutomationEvents } from '@/hooks/useAutomationEvents'
 import { EscalationModal } from '@/components/automation/EscalationModal'
+import { topLevelViewAtom } from '@/atoms/top-level-view'
+import { KaleidoscopeShell } from '@/views/Kaleidoscope/KaleidoscopeShell'
 
 export interface AppShellProps {
   /** Context 值，用于传递给子组件 */
@@ -57,6 +59,7 @@ export interface AppShellProps {
 
 export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const appMode = useAtomValue(appModeAtom)
+  const topLevelView = useAtomValue(topLevelViewAtom)
   const currentSessionId = useAtomValue(currentAgentSessionIdAtom)
   const isPanelOpen = useAtomValue(currentSessionSidePanelOpenAtom)
   const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
@@ -292,35 +295,46 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
       <div className="titlebar-drag-region fixed top-0 left-0 right-0 h-[50px] z-50" />
 
       <div className="shell-bg h-screen w-screen flex overflow-hidden bg-gradient-to-br from-zinc-50 to-zinc-100 dark:from-zinc-950 dark:to-zinc-900">
-        {/* 左侧边栏：focus mode 下隐藏，由 FocusModeOverlay 接管 */}
-        {!focusMode && (
-          <div className="sidebar-wrapper p-2 pr-0 relative z-[60]">
-            <LeftSidebar />
+        {/* 顶层 surface 切换：kaleidoscope 接管整个窗口（不渲染左/右边栏）；
+            workspace 恢复标准三栏布局。always-mounted 的全局组件（SearchPalette、
+            ApprovalModal 等）留在 switch 外，两个 surface 下均可用。 */}
+        {topLevelView === 'kaleidoscope' ? (
+          <div className="flex-1 min-w-0 flex">
+            <KaleidoscopeShell />
           </div>
-        )}
+        ) : (
+          <>
+            {/* 左侧边栏：focus mode 下隐藏，由 FocusModeOverlay 接管 */}
+            {!focusMode && (
+              <div className="sidebar-wrapper p-2 pr-0 relative z-[60]">
+                <LeftSidebar />
+              </div>
+            )}
 
-        {/* 中间容器：主内容区域。Wrapper 自身可拖拽 (8px padding 区域)，
-            TabBar 行也在 drag 区域内 (空白处可拖动窗口)。Click targets
-            (TabBarItem, TabContent, WelcomeView) 各自带 titlebar-no-drag
-            在子层退出 drag 区域 — 不再用一个 broad 的 no-drag wrapper,
-            因为 WKWebView 的 drag-region 几何在父-no-drag/子-drag 的
-            嵌套下不可靠 (子的 drag 区域被父的 no-drag 吞掉)。 */}
-        <div data-tauri-drag-region className="main-panel titlebar-drag-region flex-1 min-w-0 p-2 relative z-[60]">
-          {/* 主题背景图层（仅特殊主题如 THE FINALS 使用，其他主题下为空） */}
-          <div aria-hidden="true" className="main-panel-bg pointer-events-none absolute inset-0 z-0" />
-          {/* 主内容区域（ModeBanner + MainArea — 没有 titlebar-no-drag 包裹,
-              让 TabBar 的 drag 区域不被父级 no-drag 吞掉) */}
-          <div className="relative z-10 flex flex-col h-full min-h-0 min-w-0">
-            <ModeBanner />
-            <MainArea />
-          </div>
-        </div>
+            {/* 中间容器：主内容区域。Wrapper 自身可拖拽 (8px padding 区域)，
+                TabBar 行也在 drag 区域内 (空白处可拖动窗口)。Click targets
+                (TabBarItem, TabContent, WelcomeView) 各自带 titlebar-no-drag
+                在子层退出 drag 区域 — 不再用一个 broad 的 no-drag wrapper,
+                因为 WKWebView 的 drag-region 几何在父-no-drag/子-drag 的
+                嵌套下不可靠 (子的 drag 区域被父的 no-drag 吞掉)。 */}
+            <div data-tauri-drag-region className="main-panel titlebar-drag-region flex-1 min-w-0 p-2 relative z-[60]">
+              {/* 主题背景图层（仅特殊主题如 THE FINALS 使用，其他主题下为空） */}
+              <div aria-hidden="true" className="main-panel-bg pointer-events-none absolute inset-0 z-0" />
+              {/* 主内容区域（ModeBanner + MainArea — 没有 titlebar-no-drag 包裹,
+                  让 TabBar 的 drag 区域不被父级 no-drag 吞掉) */}
+              <div className="relative z-10 flex flex-col h-full min-h-0 min-w-0">
+                <ModeBanner />
+                <MainArea />
+              </div>
+            </div>
 
-        {/* 右侧边栏：Agent 文件面板，带圆角和内边距；focus mode 下同样隐藏 */}
-        {!focusMode && showRightPanel && (
-          <div className={cn('right-panel-wrapper relative z-[60] transition-[padding] duration-300 ease-in-out', isPanelOpen ? 'p-2 pl-0' : 'p-0')}>
-            <RightSidePanel />
-          </div>
+            {/* 右侧边栏：Agent 文件面板，带圆角和内边距；focus mode 下同样隐藏 */}
+            {!focusMode && showRightPanel && (
+              <div className={cn('right-panel-wrapper relative z-[60] transition-[padding] duration-300 ease-in-out', isPanelOpen ? 'p-2 pl-0' : 'p-0')}>
+                <RightSidePanel />
+              </div>
+            )}
+          </>
         )}
 
         {/* Global ⌘K search palette — mounts at root so it works from any view */}
