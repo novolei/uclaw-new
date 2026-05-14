@@ -1230,3 +1230,64 @@ impl McpManager {
 
 /// Shared MCP manager for Tauri state
 pub type SharedMcpManager = Arc<RwLock<McpManager>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(id: &str, transport: TransportType) -> McpServerConfig {
+        McpServerConfig {
+            id: id.into(),
+            name: format!("srv-{id}"),
+            description: String::new(),
+            transport_type: transport,
+            command: "npx".into(),
+            args: vec!["-y".into()],
+            env: HashMap::new(),
+            url: None,
+            enabled: true,
+            auto_approve: false,
+        }
+    }
+
+    #[test]
+    fn add_server_preserves_transport_type_and_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = McpManager::new(dir.path());
+        let mut http = cfg("a", TransportType::Http);
+        http.url = Some("https://example.com/mcp".into());
+        mgr.add_server(http).unwrap();
+        let stored = mgr.all_servers().into_iter().find(|c| c.id == "a").unwrap();
+        assert_eq!(stored.transport_type, TransportType::Http);
+        assert_eq!(stored.url.as_deref(), Some("https://example.com/mcp"));
+    }
+
+    #[test]
+    fn update_server_rewrites_config_and_persists_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut mgr = McpManager::new(dir.path());
+            mgr.add_server(cfg("b", TransportType::Stdio)).unwrap();
+            let mut updated = cfg("b", TransportType::Http);
+            updated.url = Some("https://example.com/b".into());
+            updated.auto_approve = true;
+            mgr.update_server("b", updated).unwrap();
+        }
+        // Re-open from disk — confirms save_config persisted the update.
+        let mgr2 = McpManager::new(dir.path());
+        let stored = mgr2.all_servers().into_iter().find(|c| c.id == "b").unwrap();
+        assert_eq!(stored.transport_type, TransportType::Http);
+        assert_eq!(stored.url.as_deref(), Some("https://example.com/b"));
+        assert!(stored.auto_approve);
+    }
+
+    #[test]
+    fn update_server_missing_id_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = McpManager::new(dir.path());
+        let err = mgr
+            .update_server("nope", cfg("nope", TransportType::Stdio))
+            .unwrap_err();
+        assert!(err.contains("not found"));
+    }
+}
