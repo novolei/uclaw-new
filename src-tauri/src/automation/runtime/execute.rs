@@ -168,17 +168,19 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
             match call.name.as_str() {
                 "report_to_user" => {
                     let input: ReportInput = serde_json::from_value(call.arguments.clone())?;
-                    // Persist completion to the activity row.
+                    let artifacts_json = serde_json::to_string(&input.artifacts)
+                        .unwrap_or_else(|_| "[]".into());
                     {
                         let conn = self.db.lock().unwrap();
                         conn.execute(
                             "UPDATE automation_activities \
                              SET status='completed', report_text=?1, report_outcome=?2, \
-                                 completed_at=?3 \
-                             WHERE id=?4",
+                                 report_artifacts_json=?3, completed_at=?4 \
+                             WHERE id=?5",
                             rusqlite::params![
                                 input.text,
                                 input.outcome,
+                                artifacts_json,
                                 chrono::Utc::now().timestamp_millis(),
                                 self.activity_id,
                             ],
@@ -188,12 +190,11 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
                         text: input.text.clone(),
                         outcome: input.outcome.clone(),
                     });
-                    // TODO(humane-phase-2): emit InfraEvent::AutomationRunReported once
-                    // the InfraEventType enum is extended and bus subscribers designed.
                     tracing::info!(
                         spec_id = %self.spec_id,
                         activity_id = %self.activity_id,
                         outcome = %input.outcome,
+                        artifact_count = input.artifacts.len(),
                         "automation run reported"
                     );
                     return Ok(Some(LoopOutcome::Response {
@@ -272,32 +273,53 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
 
                 "notify_user" => {
                     let input: NotifyInput = serde_json::from_value(call.arguments.clone())?;
-                    // Phase 1: log only.
-                    // TODO(humane-phase-2): wire Tauri notification + WeCom channel dispatch.
+                    // Phase 2a: structured log of the notification intent.
+                    // Real channel dispatch (channels.rs broadcast) is wired
+                    // in Phase 2b when the delegate gains a ChannelManager handle.
                     tracing::info!(
+                        spec_id = %self.spec_id,
+                        channels = ?input.channels,
                         title = %input.title,
-                        body  = %input.body,
                         level = %input.level,
-                        "automation notify_user (channels not wired in Phase 1)"
+                        "automation notify_user"
                     );
                     reason_ctx.messages.push(ChatMessage::user_tool_result(
                         &call.id,
-                        "notified (phase 1: log only)",
+                        "notification logged (channel dispatch lands in Phase 2b)",
                         false,
                     ));
                 }
 
                 other => {
-                    // Phase 1 fall-through stub.
-                    // TODO(humane-phase-2): dispatch to base built-in tools via dispatcher.
-                    reason_ctx.messages.push(ChatMessage::user_tool_result(
-                        &call.id,
-                        &format!(
-                            "tool '{}' fall-through not implemented in Phase 1",
-                            other
-                        ),
-                        true,
-                    ));
+                    // Dispatch to the base built-in tool set via ToolRegistry.
+                    // Permission was already checked at the top of the loop.
+                    match self.tools.get(other) {
+                        Some(tool) => {
+                            match tool.execute(call.arguments.clone()).await {
+                                Ok(output) => {
+                                    let result = serde_json::to_string(&output.result)
+                                        .unwrap_or_else(|_| "{}".into());
+                                    reason_ctx.messages.push(ChatMessage::user_tool_result(
+                                        &call.id, &result, false,
+                                    ));
+                                }
+                                Err(e) => {
+                                    reason_ctx.messages.push(ChatMessage::user_tool_result(
+                                        &call.id,
+                                        &format!("tool '{}' error: {}", other, e),
+                                        true,
+                                    ));
+                                }
+                            }
+                        }
+                        None => {
+                            reason_ctx.messages.push(ChatMessage::user_tool_result(
+                                &call.id,
+                                &format!("tool '{}' not found in registry", other),
+                                true,
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -603,6 +625,38 @@ mod tests {
         delegate.on_usage(&usage, &ctx).await;
         // claude-sonnet pricing: $3 / 1M input → total ~= 3.0
         assert!(delegate.cost.total_usd() > 2.9);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test C5: report_to_user persists artifacts into report_artifacts_json
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn report_to_user_persists_artifacts_json() {
+        let tmp = TempDir::new().unwrap();
+        let conn = setup_db("spec-art", "act-art");
+        let delegate = make_delegate("spec-art", "act-art", &tmp, conn, PermissionSet::default());
+        let mut ctx = ReasoningContext::new("sys".into());
+
+        let calls = vec![make_tool_call(
+            "report_to_user",
+            json!({
+                "text": "done",
+                "outcome": "useful",
+                "artifacts": [
+                    { "kind": "file", "path": "out/report.md", "title": "Report" }
+                ]
+            }),
+        )];
+        delegate.execute_tool_calls(calls, &mut ctx).await.unwrap();
+
+        let conn2 = delegate.db.lock().unwrap();
+        let artifacts_json: String = conn2
+            .query_row(
+                "SELECT report_artifacts_json FROM automation_activities WHERE id='act-art'",
+                [], |r| r.get(0))
+            .unwrap();
+        assert!(artifacts_json.contains("report.md"));
+        assert!(artifacts_json.contains("\"kind\":\"file\""));
     }
 
     // -----------------------------------------------------------------------
