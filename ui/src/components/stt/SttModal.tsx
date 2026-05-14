@@ -108,15 +108,21 @@ export function SttModal({ composer, onSegmentFinalized }: SttModalProps): React
           {/* 音量条 + 控制行 */}
           {(state.kind === 'listening' || state.kind === 'finalizing') && (
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-[3px] h-4" aria-label="音量">
-                {BAR_HEIGHT_SCALES.map((scale, i) => (
-                  <span
-                    key={i}
-                    data-testid="stt-volume-bar"
-                    className="w-[3px] rounded-full bg-primary transition-all duration-100"
-                    style={{ height: `${Math.max(4, Math.round(volume * scale * 16))}px` }}
-                  />
-                ))}
+              <div className="flex items-center gap-[3px] h-6" aria-label="音量">
+                {BAR_HEIGHT_SCALES.map((scale, i) => {
+                  // 感知曲线：RMS 集中在低值区，开平方把它拉开，说话时条更跳。
+                  // 高度区间 3–22px：静音时是一条静止的细线，说话时明显起伏。
+                  const shaped = Math.sqrt(Math.max(0, Math.min(1, volume)))
+                  const h = Math.max(3, Math.round(shaped * scale * 22))
+                  return (
+                    <span
+                      key={i}
+                      data-testid="stt-volume-bar"
+                      className="w-[3px] rounded-full bg-primary transition-all duration-100"
+                      style={{ height: `${h}px` }}
+                    />
+                  )
+                })}
               </div>
               <div className="flex items-center gap-3">
                 <span className="text-[11px] text-muted-foreground/70">
