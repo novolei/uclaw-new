@@ -3,6 +3,7 @@ import { useAtomValue, useSetAtom } from 'jotai'
 import { Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AppTypeBadge } from './AppTypeBadge'
+import { CategoryIcon } from './category-icon'
 import {
   marketplaceItemsAtom,
   marketplaceSelectedSlugAtom,
@@ -65,14 +66,16 @@ export function StoreFeaturedRow(): React.ReactElement | null {
               'transition-colors text-left',
             )}
           >
-            <div className="flex items-center gap-2 mb-2">
-              <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-[18px]">
-                {item.icon ?? '🤖'}
+            <div className="flex items-start gap-3 mb-2 min-w-0">
+              <div className="w-10 h-10 rounded-lg bg-primary/8 flex items-center justify-center shrink-0">
+                <CategoryIcon name={item.icon ?? item.category} size={18} className="text-primary/80" />
               </div>
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[14px] font-semibold truncate">{item.i18nName ?? item.name}</span>
-                  <AppTypeBadge type={item.appType} />
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="text-[14px] font-semibold truncate flex-1 min-w-0">{item.i18nName ?? item.name}</span>
+                  <span className="shrink-0">
+                    <AppTypeBadge type={item.appType} />
+                  </span>
                 </div>
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <span className="text-[11px] text-muted-foreground">by {item.author}</span>

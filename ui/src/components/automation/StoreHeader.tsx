@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useAtom, useAtomValue } from 'jotai'
-import { Search, RotateCw } from 'lucide-react'
+import { Search, RotateCw, LayoutGrid } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   marketplaceFiltersAtom,
@@ -8,6 +8,7 @@ import {
   marketplaceLoadingAtom,
   type MarketplaceItemTypeFilter,
 } from '@/atoms/marketplace'
+import { CategoryIcon } from './category-icon'
 
 const TYPE_TABS: { id: MarketplaceItemTypeFilter; label: string }[] = [
   { id: 'all', label: '全部' },
@@ -115,12 +116,13 @@ export function StoreHeader({ onRefresh }: Props): React.ReactElement {
             type="button"
             onClick={() => setFilters((f) => ({ ...f, category: null }))}
             className={cn(
-              'shrink-0 px-2 py-0.5 rounded-full text-[11px] border transition-colors',
+              'shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium border transition-all',
               filters.category === null
-                ? 'bg-primary/10 text-primary border-primary/30'
-                : 'bg-muted text-muted-foreground border-border/50 hover:bg-muted/80',
+                ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                : 'bg-card text-muted-foreground border-border/50 hover:bg-muted hover:text-foreground',
             )}
           >
+            <LayoutGrid size={11} />
             全部
           </button>
           {categoryChips.map(([cat, count]) => {
@@ -132,13 +134,18 @@ export function StoreHeader({ onRefresh }: Props): React.ReactElement {
                 type="button"
                 onClick={() => setFilters((f) => ({ ...f, category: cat }))}
                 className={cn(
-                  'shrink-0 px-2 py-0.5 rounded-full text-[11px] border transition-colors tabular-nums',
+                  'shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium border transition-all tabular-nums',
                   active
-                    ? 'bg-primary/10 text-primary border-primary/30'
-                    : 'bg-muted text-muted-foreground border-border/50 hover:bg-muted/80',
+                    ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                    : 'bg-card text-muted-foreground border-border/50 hover:bg-muted hover:text-foreground',
                 )}
               >
-                {label} · {count}
+                <CategoryIcon name={cat} size={11} />
+                <span>{label}</span>
+                <span className={cn(
+                  'opacity-70',
+                  active ? '' : 'text-muted-foreground/60',
+                )}>· {count}</span>
               </button>
             )
           })}
