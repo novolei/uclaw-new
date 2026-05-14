@@ -2,7 +2,7 @@ import { useAtom, useAtomValue } from 'jotai'
 import { Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { themeModeAtom, themeStyleAtom, applyThemeToDOM, updateThemeMode, updateThemeStyle, systemIsDarkAtom } from '@/atoms/theme'
-import { stickyUserMessageEnabledAtom, updateStickyUserMessageEnabled } from '@/atoms/ui-preferences'
+import { stickyUserMessageEnabledAtom, updateStickyUserMessageEnabled, agentStatusBarEnabledAtom } from '@/atoms/ui-preferences'
 import { SettingsSection, SettingsToggle } from './primitives'
 import type { ThemeStyle } from '@/lib/chat-types'
 
@@ -192,6 +192,7 @@ export function AppearanceSettings() {
   const [themeStyle, setThemeStyleAtom] = useAtom(themeStyleAtom)
   const systemIsDark = useAtomValue(systemIsDarkAtom)
   const [stickyUserMessageEnabled, setStickyUserMessageEnabled] = useAtom(stickyUserMessageEnabledAtom)
+  const [agentStatusBarEnabled, setAgentStatusBarEnabled] = useAtom(agentStatusBarEnabledAtom)
 
   async function handleStickyToggle(enabled: boolean): Promise<void> {
     setStickyUserMessageEnabled(enabled)
@@ -283,6 +284,12 @@ export function AppearanceSettings() {
           description="Agent 运行时把最近一条用户消息精简后钉在输入框上方，作为上下文提示。"
           checked={stickyUserMessageEnabled}
           onCheckedChange={handleStickyToggle}
+        />
+        <SettingsToggle
+          label="Agent 状态条"
+          description="在输入框上方常驻显示一条 Agent 执行状态（阶段 / 工具 / 耗时 / token / 费用）。默认关闭——流式气泡内已有运行指示器。"
+          checked={agentStatusBarEnabled}
+          onCheckedChange={setAgentStatusBarEnabled}
         />
       </SettingsSection>
     </div>

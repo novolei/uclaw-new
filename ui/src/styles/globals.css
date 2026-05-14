@@ -1408,41 +1408,55 @@ html.theme-the-finals body::after {
   contain: none;
 }
 
-/* ===== Spinner 动画（SpinKit Grid）===== */
+/* ===== Spinner 动画（3×3 Ripple Pulse）=====
+   柔和圆角方块从中心向外涟漪式脉冲。缩放不到 0，网格轮廓始终可辨。
+   继承 currentColor，随 font-size 缩放。 */
 
-@keyframes spinner {
-  0%, 70%, 100% {
-    transform: scale3D(1, 1, 1);
+@keyframes spinner-ripple {
+  0%, 65%, 100% {
+    transform: scale(1);
+    opacity: 1;
   }
-  35% {
-    transform: scale3D(0, 0, 1);
+  32% {
+    transform: scale(0.38);
+    opacity: 0.32;
   }
 }
 
 .spinner {
-  width: 0.75em;
-  height: 0.75em;
+  width: 0.78em;
+  height: 0.78em;
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   grid-template-rows: repeat(3, 1fr);
-  gap: 0.075em;
+  gap: 0.08em;
 }
 
 .spinner-cube {
   background-color: currentColor;
-  animation: spinner 1.3s infinite ease-in-out;
+  border-radius: 24%;
+  animation: spinner-ripple 1.4s infinite cubic-bezier(0.45, 0, 0.55, 1);
+  will-change: transform, opacity;
 }
 
-/* 9 个 cube 的动画延迟（创建波浪效果） */
-.spinner-cube:nth-child(1) { animation-delay: 0.2s; }
-.spinner-cube:nth-child(2) { animation-delay: 0.3s; }
-.spinner-cube:nth-child(3) { animation-delay: 0.4s; }
-.spinner-cube:nth-child(4) { animation-delay: 0.1s; }
-.spinner-cube:nth-child(5) { animation-delay: 0.2s; }
-.spinner-cube:nth-child(6) { animation-delay: 0.3s; }
-.spinner-cube:nth-child(7) { animation-delay: 0s; }
-.spinner-cube:nth-child(8) { animation-delay: 0.1s; }
-.spinner-cube:nth-child(9) { animation-delay: 0.2s; }
+/* 从中心向外涟漪：中心 → 边 → 角。
+   grid index 1..9 对应 0 1 2 / 3 4 5 / 6 7 8 */
+.spinner-cube:nth-child(5) { animation-delay: 0s; }     /* 中心 */
+.spinner-cube:nth-child(2),
+.spinner-cube:nth-child(4),
+.spinner-cube:nth-child(6),
+.spinner-cube:nth-child(8) { animation-delay: 0.14s; }  /* 四边 */
+.spinner-cube:nth-child(1),
+.spinner-cube:nth-child(3),
+.spinner-cube:nth-child(7),
+.spinner-cube:nth-child(9) { animation-delay: 0.28s; }  /* 四角 */
+
+/* 尊重系统「减少动态效果」偏好 — 放慢而非冻结（冻结会显得卡死） */
+@media (prefers-reduced-motion: reduce) {
+  .spinner-cube {
+    animation-duration: 2.6s;
+  }
+}
 
 /* ===== 深色主题：迷你导航当前可见范围指示器 — 加亮 ===== */
 .theme-ocean-dark .minimap-visible-indicator {
