@@ -51,6 +51,8 @@ const PER_SPEC_CONCURRENCY: usize = 2;
 
 // ─── HumaneToolSchema ─────────────────────────────────────────────────────────
 
+// TODO(2b): relocate HumaneToolSchema to automation/tools/ — it landed here
+// only because D4's commit scope was service.rs + cost.rs.
 /// Schema-only `Tool` wrapper for the four Humane tools (report_to_user,
 /// notify_user, request_escalation, memory).
 ///
@@ -486,6 +488,7 @@ impl AppRuntimeService {
         // ── 6. per-day cost cap check ────────────────────────────────────────
         // TODO(2b): read caps from MemubotConfig.automation once threaded into
         // AppRuntimeService — for now use the AutomationConfig defaults.
+        // Hoisted here so step 12 (retention_runs_per_spec) can reuse the same binding.
         let auto_cfg = AutomationConfig::default();
         let cost_cap = CostCapConfig {
             per_run_usd: auto_cfg.per_run_cost_cap_usd,
@@ -495,6 +498,7 @@ impl AppRuntimeService {
             let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
             let day_total = cost::day_total_usd(&conn);
             if cost::check_per_day(day_total, cost_cap) == CostCapDecision::DenyPerDay {
+                // drop before update_activity_status — StdMutex is not reentrant.
                 drop(conn);
                 tracing::warn!(
                     "[AppRuntimeService] per-day cost cap reached (${:.4} >= ${:.2}) — skipping run for spec {}",
@@ -678,6 +682,10 @@ impl AppRuntimeService {
                         LoopOutcome::MaxIterations => {
                             "loop reached max iterations without report_to_user".to_string()
                         }
+                        LoopOutcome::Stopped
+                        | LoopOutcome::Cancelled => {
+                            "run stopped before completion".to_string()
+                        }
                         _ => "loop ended without report".to_string(),
                     };
                     conn.execute(
@@ -691,7 +699,7 @@ impl AppRuntimeService {
             }
 
             // ── 12. retention prune (best-effort) ────────────────────────────
-            let keep = AutomationConfig::default().retention_runs_per_spec;
+            let keep = auto_cfg.retention_runs_per_spec;
             match run_session::prune_old_run_sessions(&conn, spec_id, keep) {
                 Ok(n) if n > 0 => tracing::info!(
                     "[AppRuntimeService] pruned {} old run-session(s) for spec {}",
@@ -1465,6 +1473,7 @@ mod tests {
         // provider resolution, but the ledger row is always inserted.
         assert!(!row.0.is_empty(), "activity row id must be set");
         assert_ne!(row.1, "deferred_phase_2", "stub status must be gone");
+        assert_eq!(row.1, "failed", "no-API-key run must land failed");
     }
 
     // ── Test 2b: execute_run creates a run-session and links the activity ────
@@ -1487,6 +1496,7 @@ mod tests {
             ).unwrap()
         };
         assert_ne!(status, "deferred_phase_2", "execute_run must invoke the loop");
+        assert_eq!(status, "failed", "no-API-key run must land failed");
         assert!(session_id.is_some(), "run-session must be created and linked");
     }
 
