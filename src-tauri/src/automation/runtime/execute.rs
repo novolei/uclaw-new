@@ -60,18 +60,76 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
         _reason_ctx: &mut ReasoningContext,
         _iteration: usize,
     ) -> Option<LoopOutcome> {
+        // Per-run cost cap: if the accumulated cost already crossed the cap
+        // (from a prior iteration's on_usage), abort before spending more.
+        if self.cost.per_run_exceeded() {
+            let msg = format!(
+                "per-run cost cap exceeded (${:.4})",
+                self.cost.total_usd()
+            );
+            tracing::warn!(spec_id = %self.spec_id, activity_id = %self.activity_id, "{}", msg);
+            *self.gate.lock().await = Some(CompletionGate::ErrorTerminal(msg.clone()));
+            return Some(LoopOutcome::Failure { error: msg });
+        }
         None
     }
 
     async fn call_llm(
         &self,
-        _reason_ctx: &mut ReasoningContext,
+        reason_ctx: &mut ReasoningContext,
         _iteration: usize,
     ) -> Result<RespondOutput, Error> {
-        // TODO(humane-phase-1-task-18): AppRuntimeService injects the real provider
-        // call here. Until then this method is unreachable in production —
-        // execute_tool_calls is exercised in unit tests by calling it directly.
-        Err(Error::Internal("call_llm is wired by AppRuntimeService (Task 18)".into()))
+        let mut messages = vec![ChatMessage::system(&reason_ctx.system_prompt)];
+        messages.extend(reason_ctx.messages.clone());
+
+        let tools = if reason_ctx.force_text {
+            Vec::new()
+        } else {
+            self.tools.list_definitions()
+        };
+        let config = crate::llm::CompletionConfig {
+            model: self.model.clone(),
+            max_tokens: 8192,
+            temperature: 0.7,
+            system_prompt: Some(reason_ctx.system_prompt.clone()),
+            thinking_enabled: false,
+        };
+
+        tracing::info!(
+            spec_id = %self.spec_id,
+            model = %self.model,
+            message_count = messages.len(),
+            tool_count = tools.len(),
+            "automation run: calling LLM"
+        );
+
+        crate::agent::llm_stream::stream_completion(
+            self.llm.as_ref(),
+            messages,
+            tools,
+            &config,
+            &crate::agent::llm_stream::NoopSink,
+        )
+        .await
+    }
+
+    async fn on_usage(
+        &self,
+        usage: &crate::agent::types::TokenUsage,
+        _reason_ctx: &ReasoningContext,
+    ) {
+        let cost = crate::agent::types::calculate_cost(
+            &self.model,
+            usage.input_tokens,
+            usage.output_tokens,
+        );
+        let total = self.cost.add(cost);
+        tracing::debug!(
+            spec_id = %self.spec_id,
+            turn_cost_usd = cost,
+            total_cost_usd = total,
+            "automation run: cost accumulated"
+        );
     }
 
     async fn handle_text_response(
@@ -500,6 +558,48 @@ mod tests {
             )
             .unwrap();
         assert_eq!(q, "Which branch?");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test C4a: before_llm_call aborts when per-run cost cap is exceeded
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn before_llm_call_aborts_when_cost_cap_exceeded() {
+        use crate::automation::runtime::cost::{CostCapConfig, CostCapState};
+        let tmp = TempDir::new().unwrap();
+        let conn = setup_db("spec-cc", "act-cc");
+        let mut delegate = make_delegate("spec-cc", "act-cc", &tmp, conn, PermissionSet::default());
+        // Replace cost state with a tiny cap and push it over.
+        delegate.cost = Arc::new(CostCapState::new(CostCapConfig {
+            per_run_usd: 0.10,
+            per_day_usd: 10.0,
+        }));
+        delegate.cost.add(0.50); // 0.50 >= 0.10 → exceeded
+
+        let mut ctx = ReasoningContext::new("sys".into());
+        let outcome = delegate.before_llm_call(&mut ctx, 1).await;
+        assert!(matches!(outcome, Some(LoopOutcome::Failure { .. })));
+
+        // Gate should be ErrorTerminal.
+        let gate = delegate.gate.lock().await;
+        assert!(matches!(*gate, Some(CompletionGate::ErrorTerminal(_))));
+    }
+
+    // -----------------------------------------------------------------------
+    // Test C4b: on_usage accumulates cost correctly
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn on_usage_accumulates_cost() {
+        let tmp = TempDir::new().unwrap();
+        let conn = setup_db("spec-ou", "act-ou");
+        let delegate = make_delegate("spec-ou", "act-ou", &tmp, conn, PermissionSet::default());
+        let ctx = ReasoningContext::new("sys".into());
+        let usage = crate::agent::types::TokenUsage {
+            input_tokens: 1_000_000, output_tokens: 0, ..Default::default()
+        };
+        delegate.on_usage(&usage, &ctx).await;
+        // claude-sonnet pricing: $3 / 1M input → total ~= 3.0
+        assert!(delegate.cost.total_usd() > 2.9);
     }
 
     // -----------------------------------------------------------------------
