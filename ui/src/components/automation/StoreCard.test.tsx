@@ -8,7 +8,7 @@ const makeItem = (overrides: Partial<MarketplaceItem> = {}): MarketplaceItem => 
   slug: 'ai-news', name: 'AI News', version: '1.0.0', author: 'a',
   description: 'desc', appType: 'automation', category: 'news',
   icon: null, tags: ['ai', 'news'], sizeBytes: null, minAppVersion: null,
-  locale: null, i18nName: null, i18nDescription: null,
+  locale: null, i18n: {},
   ...overrides,
 })
 

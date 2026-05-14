@@ -120,15 +120,13 @@ pub struct MarketplaceItem {
     pub size_bytes: Option<u64>,
     pub min_app_version: Option<String>,
     pub locale: Option<String>,
-    /// Resolved en-US name when present (UI does final locale fallback).
-    pub i18n_name: Option<String>,
-    /// Resolved en-US description when present.
-    pub i18n_description: Option<String>,
+    /// Full per-locale overlay map carried from the registry index entry.
+    /// Keys are locale codes (e.g. "zh-CN", "en-US"); values carry name + description.
+    pub i18n: std::collections::HashMap<String, EntryI18n>,
 }
 
 impl From<&RegistryEntry> for MarketplaceItem {
     fn from(e: &RegistryEntry) -> Self {
-        let i18n_en = e.i18n.get("en-US");
         Self {
             slug: e.slug.clone(),
             name: e.name.clone(),
@@ -142,8 +140,7 @@ impl From<&RegistryEntry> for MarketplaceItem {
             size_bytes: e.size_bytes,
             min_app_version: e.min_app_version.clone(),
             locale: e.locale.clone(),
-            i18n_name: i18n_en.and_then(|x| x.name.clone()),
-            i18n_description: i18n_en.and_then(|x| x.description.clone()),
+            i18n: e.i18n.clone(),
         }
     }
 }

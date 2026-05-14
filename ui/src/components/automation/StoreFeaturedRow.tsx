@@ -72,7 +72,8 @@ export function StoreFeaturedRow(): React.ReactElement | null {
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="text-[14px] font-semibold truncate flex-1 min-w-0">{item.i18nName ?? item.name}</span>
+                  {/* TODO Task 5: localize via locale + item.i18n */}
+                  <span className="text-[14px] font-semibold truncate flex-1 min-w-0">{item.name}</span>
                   <span className="shrink-0">
                     <AppTypeBadge type={item.appType} />
                   </span>
@@ -92,8 +93,9 @@ export function StoreFeaturedRow(): React.ReactElement | null {
                 </div>
               </div>
             </div>
+            {/* TODO Task 5: localize via locale + item.i18n */}
             <p className="text-[12px] text-muted-foreground line-clamp-2">
-              {item.i18nDescription ?? item.description}
+              {item.description}
             </p>
           </button>
         ))}

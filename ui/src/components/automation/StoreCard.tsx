@@ -14,8 +14,9 @@ interface Props {
 }
 
 export function StoreCard({ item, hasUpdate, isInstalled, onClick }: Props): React.ReactElement {
-  const displayName = item.i18nName ?? item.name
-  const displayDesc = item.i18nDescription ?? item.description
+  // TODO Task 5: localize via locale + item.i18n
+  const displayName = item.name
+  const displayDesc = item.description
   const visibleTags = item.tags.slice(0, MAX_VISIBLE_TAGS)
   const hiddenTagCount = item.tags.length - visibleTags.length
 

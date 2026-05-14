@@ -314,7 +314,6 @@ pub fn query_items(
             let tags: Vec<String> = serde_json::from_str(&r.8).unwrap_or_default();
             let i18n_map: std::collections::HashMap<String, EntryI18n> =
                 serde_json::from_str(&r.12).unwrap_or_default();
-            let i18n_en = i18n_map.get("en-US");
             MarketplaceItem {
                 slug: r.0,
                 name: r.1,
@@ -328,8 +327,7 @@ pub fn query_items(
                 size_bytes: r.9.map(|n| n as u64),
                 min_app_version: r.10,
                 locale: r.11,
-                i18n_name: i18n_en.and_then(|x| x.name.clone()),
-                i18n_description: i18n_en.and_then(|x| x.description.clone()),
+                i18n: i18n_map,
             }
         })
         .collect();
@@ -433,7 +431,6 @@ pub fn get_item_with_spec(
     let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
     let i18n_map: std::collections::HashMap<String, EntryI18n> =
         serde_json::from_str(&i18n_json).unwrap_or_default();
-    let i18n_en = i18n_map.get("en-US");
 
     let item = MarketplaceItem {
         slug,
@@ -448,8 +445,7 @@ pub fn get_item_with_spec(
         size_bytes: size_bytes.map(|n| n as u64),
         min_app_version,
         locale,
-        i18n_name: i18n_en.and_then(|x| x.name.clone()),
-        i18n_description: i18n_en.and_then(|x| x.description.clone()),
+        i18n: i18n_map,
     };
 
     Ok(Some((item, spec_yaml, requires_json, i18n_json)))

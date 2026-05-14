@@ -98,7 +98,8 @@ export function StoreDetail(): React.ReactElement {
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <span className="text-[15px] font-semibold truncate">{item.i18nName ?? item.name}</span>
+              {/* TODO Task 5: localize via locale + item.i18n */}
+              <span className="text-[15px] font-semibold truncate">{item.name}</span>
               <AppTypeBadge type={item.appType} />
               <span className="text-[11px] text-muted-foreground tabular-nums">v{item.version}</span>
               {hasUpdate && (
@@ -166,7 +167,8 @@ export function StoreDetail(): React.ReactElement {
               <div className="space-y-4">
                 <section>
                   <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2">描述</h3>
-                  <p className="text-[13px] text-foreground/90 leading-relaxed">{item.i18nDescription ?? item.description}</p>
+                  {/* TODO Task 5: localize via locale + item.i18n */}
+                  <p className="text-[13px] text-foreground/90 leading-relaxed">{item.description}</p>
                 </section>
                 {item.tags.length > 0 && (
                   <section>
