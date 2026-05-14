@@ -8,12 +8,16 @@ import {
   listInstalledMarketplaceAutomations,
   uninstallMarketplaceHuman,
   checkMarketplaceUpdates,
+  listStandaloneInstalls,
   type InstalledAutomation,
+  type StandaloneInstall,
 } from '@/lib/tauri-bridge'
+import { AppTypeBadge } from './AppTypeBadge'
 import { UpgradeModal } from './UpgradeModal'
 
 export function AppsTab(): React.ReactElement {
   const [items, setItems] = React.useState<InstalledAutomation[] | null>(null)
+  const [standaloneItems, setStandaloneItems] = React.useState<StandaloneInstall[]>([])
   const [expanded, setExpanded] = React.useState<string | null>(null)
   const [loading, setLoading] = React.useState(false)
   const [updateSlugs, setUpdateSlugs] = React.useState<Set<string>>(new Set())
@@ -22,8 +26,12 @@ export function AppsTab(): React.ReactElement {
   const reload = React.useCallback(async () => {
     setLoading(true)
     try {
-      const data = await listInstalledMarketplaceAutomations()
+      const [data, standalone] = await Promise.all([
+        listInstalledMarketplaceAutomations(),
+        listStandaloneInstalls(),
+      ])
       setItems(data)
+      setStandaloneItems(standalone)
     } catch (err) {
       toast.error(`加载失败：${String(err)}`)
       setItems([])
@@ -60,7 +68,7 @@ export function AppsTab(): React.ReactElement {
     return <div className="px-6 py-8 text-[12px] text-muted-foreground">加载中…</div>
   }
 
-  if (!items || items.length === 0) {
+  if (!items || (items.length === 0 && standaloneItems.length === 0)) {
     return (
       <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
         <div className="text-[14px] text-foreground mb-2">暂无已安装的数字人</div>
@@ -74,7 +82,7 @@ export function AppsTab(): React.ReactElement {
   return (
     <div className="flex flex-col h-full overflow-y-auto px-6 py-4">
       <div className="text-[11px] text-muted-foreground mb-3 leading-relaxed">
-        以下是已安装数字人随附的 skill / 能力依赖。独立 skill / MCP 商店在 Phase 3b 后续切片开放。
+        以下是已安装数字人随附的 skill / 能力依赖，以及从商店单独安装的技能和 MCP。
       </div>
       <div className="flex flex-col gap-2">
         {items.map((item) => {
@@ -194,6 +202,47 @@ export function AppsTab(): React.ReactElement {
           )
         })}
       </div>
+
+      {standaloneItems.length > 0 && (
+        <div className="mt-4">
+          <div className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2">
+            独立技能 / MCP
+          </div>
+          <div className="flex flex-col gap-2">
+            {standaloneItems.map((item) => (
+              <div
+                key={item.slug}
+                className="rounded-xl border border-border/50 bg-card flex items-center gap-3 px-4 py-3"
+              >
+                <AppTypeBadge type={item.itemType} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-[14px] font-medium truncate">{item.slug}</div>
+                  <div className="text-[11px] text-muted-foreground tabular-nums">v{item.version}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        await uninstallMarketplaceHuman(item.slug)
+                        toast.success(`已卸载 ${item.slug}`)
+                        await reload()
+                      } catch (err) {
+                        toast.error(`卸载失败：${String(err)}`)
+                      }
+                    })()
+                  }}
+                  className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-muted-foreground hover:text-danger hover:bg-danger-bg transition-colors"
+                >
+                  <Trash2 size={12} />
+                  卸载
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {upgradeTarget && (
         <UpgradeModal
           slug={upgradeTarget.slug}

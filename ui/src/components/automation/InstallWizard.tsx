@@ -11,7 +11,13 @@ import { installMarketplaceHuman } from '@/lib/tauri-bridge'
 import type { MarketplaceInstallProgress } from '@/lib/tauri-bridge'
 import { workspacesAtom, activeWorkspaceIdAtom } from '@/atoms/workspace'
 
-const STEPS = ['scope', 'config', 'confirm', 'progress'] as const
+// skill/mcp aren't workspace-scoped — they skip the 'scope' step
+function getStepSequence(appType: string | null): readonly string[] {
+  if (appType === 'skill' || appType === 'mcp') {
+    return ['config', 'confirm', 'progress'] as const
+  }
+  return ['scope', 'config', 'confirm', 'progress'] as const
+}
 
 export function InstallWizard(): React.ReactElement | null {
   const [state, setState] = useAtom(installWizardAtom)
@@ -19,6 +25,10 @@ export function InstallWizard(): React.ReactElement | null {
   const [, setSpecs] = useAtom(humaneSpecsAtom)
   const workspaces = useAtomValue(workspacesAtom)
   const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
+
+  const steps = getStepSequence(state.appType)
+  // Visible steps in stepper header (exclude 'progress')
+  const visibleSteps = steps.filter((s) => s !== 'progress')
 
   // Default selected space to current active workspace
   React.useEffect(() => {
@@ -41,20 +51,27 @@ export function InstallWizard(): React.ReactElement | null {
 
   if (state.step === null) return null
 
-  const close = () => setState({ step: null, slug: null, spaceId: null, userConfig: {}, progress: null, error: null })
+  const close = () => setState({ step: null, slug: null, appType: null, spaceId: null, userConfig: {}, progress: null, error: null })
 
   const submit = async () => {
-    if (!state.slug || !state.spaceId) return
+    // spaceId is only required for automation; skill/mcp don't need a workspace
+    if (!state.slug || (state.appType === 'automation' && !state.spaceId)) return
     setState((s) => ({ ...s, step: 'progress', progress: { phase: 'fetching_spec', percent: 5 } }))
     try {
-      const row = await installMarketplaceHuman(
+      const outcome = await installMarketplaceHuman(
         state.slug,
-        state.spaceId,
+        state.spaceId ?? undefined,
         state.userConfig,
         `install_progress_${state.slug}`,
       )
-      setSpecs((prev) => [row, ...prev.filter((s) => s.id !== row.id)])
-      toast.success(`已安装 ${row.name}`)
+      // Only the automation path returns a spec row to merge into the list.
+      if (outcome.kind === 'automation') {
+        const row = outcome.spec
+        setSpecs((prev) => [row, ...prev.filter((s) => s.id !== row.id)])
+        toast.success(`已安装 ${row.name}`)
+      } else {
+        toast.success(`已安装 ${state.slug}`)
+      }
       setTimeout(close, 800)
     } catch (err) {
       setState((s) => ({ ...s, error: String(err) }))
@@ -73,8 +90,8 @@ export function InstallWizard(): React.ReactElement | null {
         {/* Header with progress dots + close */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-border/50">
           <div className="flex items-center gap-2">
-            {(['scope', 'config', 'confirm'] as const).map((step, i) => {
-              const stepIdx = STEPS.indexOf(state.step ?? 'scope')
+            {visibleSteps.map((step, i) => {
+              const stepIdx = steps.indexOf(state.step ?? visibleSteps[0])
               const completed = i < stepIdx
               const current = i === stepIdx
               return (
@@ -83,14 +100,14 @@ export function InstallWizard(): React.ReactElement | null {
                     'w-2 h-2 rounded-full transition-colors',
                     current ? 'bg-primary' : completed ? 'bg-primary/40' : 'bg-muted',
                   )} />
-                  {i < 2 && <div className={cn('w-4 h-px', i < stepIdx ? 'bg-primary/40' : 'bg-muted')} />}
+                  {i < visibleSteps.length - 1 && <div className={cn('w-4 h-px', i < stepIdx ? 'bg-primary/40' : 'bg-muted')} />}
                 </div>
               )
             })}
             <span className="ml-2 text-[12px] text-muted-foreground">
-              {state.step === 'scope' && '选择空间 (1/3)'}
-              {state.step === 'config' && '填写配置 (2/3)'}
-              {state.step === 'confirm' && '确认安装 (3/3)'}
+              {state.step === 'scope' && `选择空间 (1/${visibleSteps.length})`}
+              {state.step === 'config' && `填写配置 (${visibleSteps.indexOf('config') + 1}/${visibleSteps.length})`}
+              {state.step === 'confirm' && `确认安装 (${visibleSteps.indexOf('confirm') + 1}/${visibleSteps.length})`}
               {state.step === 'progress' && '安装中...'}
             </span>
           </div>
@@ -197,20 +214,27 @@ export function InstallWizard(): React.ReactElement | null {
             <button
               type="button"
               onClick={() => {
-                if (state.step === 'scope') close()
-                else if (state.step === 'config') setState((s) => ({ ...s, step: 'scope' }))
-                else if (state.step === 'confirm') setState((s) => ({ ...s, step: 'config' }))
+                const idx = steps.indexOf(state.step ?? steps[0])
+                if (idx <= 0) {
+                  close()
+                } else {
+                  setState((s) => ({ ...s, step: steps[idx - 1] as typeof s.step }))
+                }
               }}
               className="text-[12px] text-muted-foreground hover:text-foreground transition-colors"
             >
-              {state.step === 'scope' ? '取消' : '← 返回'}
+              {steps.indexOf(state.step ?? steps[0]) === 0 ? '取消' : '← 返回'}
             </button>
             <button
               type="button"
               onClick={() => {
-                if (state.step === 'scope') setState((s) => ({ ...s, step: 'config' }))
-                else if (state.step === 'config') setState((s) => ({ ...s, step: 'confirm' }))
-                else if (state.step === 'confirm') void submit()
+                const idx = steps.indexOf(state.step ?? steps[0])
+                const next = steps[idx + 1]
+                if (next === 'progress') {
+                  void submit()
+                } else if (next) {
+                  setState((s) => ({ ...s, step: next as typeof s.step }))
+                }
               }}
               disabled={state.step === 'scope' && !state.spaceId}
               className={cn(

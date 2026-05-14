@@ -1397,15 +1397,33 @@ export const checkMarketplaceUpdates = (): Promise<MarketplaceUpdate[]> =>
 export const refreshMarketplace = (): Promise<number> =>
   invoke<number>('refresh_marketplace')
 
+// Discriminated union matching the Rust InstallOutcome enum
+// (serde tag = "kind", rename_all = "camelCase").
+export type InstallOutcome =
+  | { kind: 'automation'; spec: HumaneSpecRow }
+  | { kind: 'skill'; slug: string; installPath: string }
+  | { kind: 'mcp'; slug: string; mcpServerId: string }
+
 export const installMarketplaceHuman = (
   slug: string,
   spaceId?: string,
   userConfig?: Record<string, unknown>,
   progressChannel?: string,
-): Promise<HumaneSpecRow> =>
-  invoke<HumaneSpecRow>('install_marketplace_human', {
+): Promise<InstallOutcome> =>
+  invoke<InstallOutcome>('install_marketplace_human', {
     slug, spaceId, userConfig, progressChannel,
   })
+
+export interface StandaloneInstall {
+  slug: string
+  itemType: string // 'skill' | 'mcp'
+  version: string
+  installedAt: number
+  mcpServerId: string | null
+}
+
+export const listStandaloneInstalls = (): Promise<StandaloneInstall[]> =>
+  invoke<StandaloneInstall[]>('list_standalone_installs')
 
 export const uninstallMarketplaceHuman = (slug: string): Promise<void> =>
   invoke<void>('uninstall_marketplace_human', { slug })

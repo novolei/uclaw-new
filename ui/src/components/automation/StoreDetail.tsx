@@ -38,7 +38,8 @@ interface ConfigSchemaEntry {
   default?: unknown
 }
 
-const TABS: { id: DetailSubTab; label: string }[] = [
+// All tabs across all types; filtered per appType below
+const ALL_TABS: { id: DetailSubTab; label: string }[] = [
   { id: 'overview', label: '概览' },
   { id: 'config', label: '配置' },
   { id: 'requires', label: '依赖' },
@@ -93,8 +94,33 @@ export function StoreDetail(): React.ReactElement {
   const hasUpdate = isInstalled && installedVersion !== item.version
 
   // Narrow parsedSpecJson cautiously — only access what's needed.
-  const spec = (parsedSpecJson ?? null) as { i18n?: SpecI18n; config_schema?: ConfigSchemaEntry[] } | null
+  const spec = (parsedSpecJson ?? null) as {
+    i18n?: SpecI18n
+    config_schema?: ConfigSchemaEntry[]
+    system_prompt?: string
+    mcp_server?: { command: string; args?: string[]; env?: Record<string, string> }
+  } | null
   const specI18n = spec?.i18n
+  const hasConfigSchema = Array.isArray(spec?.config_schema) && (spec?.config_schema?.length ?? 0) > 0
+
+  // Build type-aware tab list; fall back activeTab to 'overview' if it's no longer valid.
+  const tabs = ALL_TABS.filter((tab) => {
+    if (item.appType === 'automation') return true
+    if (item.appType === 'skill') {
+      if (tab.id === 'requires') return false
+      if (tab.id === 'config') return hasConfigSchema
+      return true
+    }
+    if (item.appType === 'mcp') {
+      if (tab.id === 'requires' || tab.id === 'prompt') return false
+      if (tab.id === 'config') return hasConfigSchema
+      return true
+    }
+    return true
+  })
+  const validTabIds = tabs.map((t) => t.id)
+  // If activeTab was left over from a different type, snap to overview.
+  const effectiveTab = validTabIds.includes(activeTab) ? activeTab : 'overview'
 
   // Spec-level overlay wins; entry-level is the fallback.
   const displayName =
@@ -105,9 +131,12 @@ export function StoreDetail(): React.ReactElement {
     localizeEntry('description', item.description, item.i18n, locale)
 
   const openInstallWizard = () => {
+    // skill/mcp aren't workspace-scoped — start at 'config' to skip the scope step
+    const initialStep = item.appType === 'skill' || item.appType === 'mcp' ? 'config' : 'scope'
     setWizard({
-      step: 'scope',
+      step: initialStep,
       slug: item.slug,
+      appType: item.appType,
       spaceId: null,
       userConfig: {},
       progress: null,
@@ -171,16 +200,64 @@ export function StoreDetail(): React.ReactElement {
                 {isInstalled ? '重新安装' : '安装'}
               </button>
             )
-          ) : (
-            <span className="text-[11px] text-muted-foreground italic">
-              {item.appType.toUpperCase()} 安装在 Phase 3b 开放
-            </span>
-          )}
+          ) : item.appType === 'skill' ? (
+            hasUpdate ? (
+              <button
+                type="button"
+                onClick={() => setShowUpgrade(true)}
+                className={cn(
+                  'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium',
+                  'bg-primary text-primary-foreground hover:bg-primary/90 transition-colors',
+                )}
+              >
+                <Download size={12} />
+                升级到 v{item.version}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={openInstallWizard}
+                className={cn(
+                  'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium',
+                  'bg-primary text-primary-foreground hover:bg-primary/90 transition-colors',
+                )}
+              >
+                <Download size={12} />
+                安装技能
+              </button>
+            )
+          ) : item.appType === 'mcp' ? (
+            hasUpdate ? (
+              <button
+                type="button"
+                onClick={() => setShowUpgrade(true)}
+                className={cn(
+                  'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium',
+                  'bg-primary text-primary-foreground hover:bg-primary/90 transition-colors',
+                )}
+              >
+                <Download size={12} />
+                升级到 v{item.version}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={openInstallWizard}
+                className={cn(
+                  'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium',
+                  'bg-primary text-primary-foreground hover:bg-primary/90 transition-colors',
+                )}
+              >
+                <Download size={12} />
+                安装 MCP
+              </button>
+            )
+          ) : null}
         </div>
-        {/* Sub-tab strip */}
+        {/* Sub-tab strip — filtered per appType */}
         <div className="flex items-center gap-1 px-6 pb-2">
-          {TABS.map((tab) => {
-            const active = activeTab === tab.id
+          {tabs.map((tab) => {
+            const active = effectiveTab === tab.id
             return (
               <button
                 key={tab.id}
@@ -205,14 +282,14 @@ export function StoreDetail(): React.ReactElement {
       <div className="flex-1 overflow-y-auto px-6 py-5">
         <AnimatePresence mode="wait">
           <motion.div
-            key={activeTab}
+            key={effectiveTab}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
             className="max-w-3xl"
           >
-            {activeTab === 'overview' && (
+            {effectiveTab === 'overview' && (
               <div className="space-y-4">
                 <section>
                   <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2">描述</h3>
@@ -237,17 +314,45 @@ export function StoreDetail(): React.ReactElement {
                   <Row label="语言" value={item.locale ?? '未指定'} />
                   {item.minAppVersion && <Row label="最低 uClaw 版本" value={item.minAppVersion} />}
                 </section>
+                {/* MCP server details panel — only for mcp appType */}
+                {item.appType === 'mcp' && spec?.mcp_server && (
+                  <section>
+                    <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2">MCP 服务器</h3>
+                    <div className="px-3 py-3 rounded-xl border border-border/50 bg-card space-y-2 text-[12px]">
+                      <div className="flex items-start gap-3">
+                        <span className="text-muted-foreground shrink-0 w-14">命令</span>
+                        <span className="font-mono text-foreground/90">{spec.mcp_server.command}</span>
+                      </div>
+                      {spec.mcp_server.args && spec.mcp_server.args.length > 0 && (
+                        <div className="flex items-start gap-3">
+                          <span className="text-muted-foreground shrink-0 w-14">参数</span>
+                          <span className="font-mono text-foreground/90">{spec.mcp_server.args.join(' ')}</span>
+                        </div>
+                      )}
+                      {spec.mcp_server.env && Object.keys(spec.mcp_server.env).length > 0 && (
+                        <div className="flex items-start gap-3">
+                          <span className="text-muted-foreground shrink-0 w-14">环境变量</span>
+                          <div className="flex flex-col gap-0.5">
+                            {Object.keys(spec.mcp_server.env).map((k) => (
+                              <span key={k} className="font-mono text-foreground/80">{k}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                )}
               </div>
             )}
 
-            {activeTab === 'config' && (
+            {effectiveTab === 'config' && (
               <div>
                 <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2">配置项预览</h3>
                 <ConfigSchemaPreview parsedSpecJson={parsedSpecJson} specI18n={specI18n} locale={locale} />
               </div>
             )}
 
-            {activeTab === 'requires' && (
+            {effectiveTab === 'requires' && (
               <div className="space-y-4">
                 <section>
                   <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2">
@@ -284,7 +389,7 @@ export function StoreDetail(): React.ReactElement {
               </div>
             )}
 
-            {activeTab === 'prompt' && (
+            {effectiveTab === 'prompt' && (
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">系统提示词</h3>

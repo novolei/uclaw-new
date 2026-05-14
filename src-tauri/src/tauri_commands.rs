@@ -5682,14 +5682,15 @@ pub async fn install_marketplace_human(
     space_id: Option<String>,
     user_config: Option<serde_json::Value>,
     progress_channel: Option<String>,
-) -> Result<crate::automation::manager::HumaneSpecRow, Error> {
-    crate::automation::marketplace::install_human(
+) -> Result<crate::automation::marketplace::InstallOutcome, Error> {
+    crate::automation::marketplace::install_marketplace_item(
         &state.runtime_service,
         app_handle,
         &slug,
         space_id,
         user_config,
         state.skills_registry.clone(),
+        state.mcp_manager.clone(),
         progress_channel,
     )
     .await
@@ -5700,13 +5701,23 @@ pub async fn install_marketplace_human(
 }
 
 #[tauri::command]
+pub async fn list_standalone_installs(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::automation::marketplace::types::StandaloneInstall>, Error> {
+    let conn = state.runtime_service.db.lock().unwrap();
+    crate::automation::marketplace::list_standalone_inner(&conn)
+        .map_err(|e| Error::Internal(format!("{:#}", e)))
+}
+
+#[tauri::command]
 pub async fn uninstall_marketplace_human(
     state: tauri::State<'_, AppState>,
     slug: String,
 ) -> Result<(), Error> {
-    crate::automation::marketplace::uninstall_human(
+    crate::automation::marketplace::uninstall_marketplace_item(
         &state.runtime_service,
         state.skills_registry.clone(),
+        state.mcp_manager.clone(),
         &slug,
     )
     .await
