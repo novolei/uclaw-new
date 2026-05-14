@@ -8,6 +8,7 @@ pub use cache::category_counts_cached;
 pub use types::{
     EntryI18n, InstallOutcome, MarketplaceDetail, MarketplaceInstallProgress, MarketplaceItem,
     MarketplaceQueryResult, MarketplaceUpdate, RegistryEntry, RegistryIndex, RegistrySource,
+    StandaloneInstall,
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -17,9 +18,7 @@ use tokio::sync::RwLock;
 use crate::automation::runtime::AppRuntimeService;
 use crate::skills::SkillsRegistry;
 
-/// List all automation-type entries from a registry. Defaults to the DHP registry.
-/// Non-automation entries (skill / mcp / extension) are filtered out — Phase 1 only
-/// installs full automations.
+/// List all entries from a registry. Defaults to the DHP registry.
 pub async fn list_humans(registry_url: Option<String>) -> Result<Vec<MarketplaceItem>> {
     let source = match registry_url {
         Some(url) => RegistrySource {
@@ -32,7 +31,6 @@ pub async fn list_humans(registry_url: Option<String>) -> Result<Vec<Marketplace
     };
     let index = halo_adapter::fetch_index(&source).await?;
     Ok(index.apps.iter()
-        .filter(|e| e.app_type == "automation")
         .map(MarketplaceItem::from)
         .collect())
 }
@@ -868,6 +866,90 @@ pub async fn install_automation(
     Ok(InstallOutcome::Automation { spec: row })
 }
 
+/// Query all rows from `marketplace_standalone_installs`, newest first.
+pub fn list_standalone_inner(conn: &rusqlite::Connection) -> Result<Vec<types::StandaloneInstall>> {
+    let mut stmt = conn.prepare(
+        "SELECT slug, item_type, version, installed_at, mcp_server_id \
+            FROM marketplace_standalone_installs ORDER BY installed_at DESC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(types::StandaloneInstall {
+            slug: r.get(0)?,
+            item_type: r.get(1)?,
+            version: r.get(2)?,
+            installed_at: r.get(3)?,
+            mcp_server_id: r.get(4)?,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Sync core of standalone-skill uninstall — testable without runtime handles.
+pub fn uninstall_standalone_skill_inner(
+    conn: &rusqlite::Connection,
+    skills_root: &std::path::Path,
+    slug: &str,
+) -> Result<()> {
+    let dir = skills_root.join("_marketplace").join("_standalone").join(slug);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).with_context(|| format!("remove {}", dir.display()))?;
+    }
+    conn.execute(
+        "DELETE FROM marketplace_standalone_installs WHERE slug = ?1",
+        rusqlite::params![slug],
+    )?;
+    Ok(())
+}
+
+/// Uninstall dispatcher — routes by standalone type, falls through to automation uninstall.
+pub async fn uninstall_marketplace_item(
+    runtime: &AppRuntimeService,
+    skills_registry: Arc<RwLock<SkillsRegistry>>,
+    mcp_manager: crate::mcp::SharedMcpManager,
+    slug: &str,
+) -> Result<()> {
+    use rusqlite::OptionalExtension;
+    // Look up the slug in marketplace_standalone_installs.
+    let standalone: Option<(String, Option<String>)> = {
+        let conn = runtime.db.lock().unwrap();
+        conn.query_row(
+            "SELECT item_type, mcp_server_id FROM marketplace_standalone_installs WHERE slug = ?1",
+            rusqlite::params![slug],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+        ).optional()?
+    };
+    match standalone {
+        Some((ref item_type, _)) if item_type == "skill" => {
+            let skills_root = dirs::home_dir().ok_or_else(|| anyhow!("no home dir"))?
+                .join(".uclaw").join("skills");
+            {
+                let conn = runtime.db.lock().unwrap();
+                uninstall_standalone_skill_inner(&conn, &skills_root, slug)?;
+            }
+            let mut reg = skills_registry.write().await;
+            let _ = reg.discover();
+            Ok(())
+        }
+        Some((ref item_type, ref mcp_server_id)) if item_type == "mcp" => {
+            if let Some(id) = mcp_server_id {
+                let mut mgr = mcp_manager.write().await;
+                let _ = mgr.remove_server(id); // best-effort: server may already be gone
+            }
+            let conn = runtime.db.lock().unwrap();
+            conn.execute(
+                "DELETE FROM marketplace_standalone_installs WHERE slug = ?1",
+                rusqlite::params![slug],
+            )?;
+            Ok(())
+        }
+        Some((item_type, _)) => Err(anyhow!("unknown standalone item_type '{}'", item_type)),
+        None => {
+            // Not a standalone install — fall through to the automation uninstall path.
+            uninstall_human(runtime, skills_registry, slug).await
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::types::*;
@@ -1116,6 +1198,47 @@ mod tests {
             &["ai-browser".to_string(), "postgres-mcp".to_string(), "unknown-mcp".to_string()],
         );
         assert_eq!(missing, vec!["unknown-mcp".to_string()]);
+    }
+
+    #[test]
+    fn list_standalone_inner_returns_rows() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO marketplace_standalone_installs VALUES ('s1','skill','1.0.0',100,NULL)", [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO marketplace_standalone_installs VALUES ('m1','mcp','2.0.0',200,'srv-9')", [],
+        ).unwrap();
+        let list = super::list_standalone_inner(&conn).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].slug, "m1"); // ordered by installed_at DESC
+        assert_eq!(list[0].mcp_server_id.as_deref(), Some("srv-9"));
+        assert_eq!(list[1].slug, "s1");
+        assert_eq!(list[1].mcp_server_id, None);
+    }
+
+    #[test]
+    fn uninstall_standalone_skill_removes_files_and_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills_root = tmp.path().join("skills");
+        let dir = skills_root.join("_marketplace").join("_standalone").join("s1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), b"---\nname: s1\n---\n").unwrap();
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO marketplace_standalone_installs VALUES ('s1','skill','1.0.0',0,NULL)", [],
+        ).unwrap();
+
+        super::uninstall_standalone_skill_inner(&conn, &skills_root, "s1").unwrap();
+
+        assert!(!dir.exists(), "skill dir removed");
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM marketplace_standalone_installs WHERE slug='s1'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(n, 0, "V25 row removed");
     }
 
     #[test]

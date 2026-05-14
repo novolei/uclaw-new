@@ -5705,9 +5705,10 @@ pub async fn uninstall_marketplace_human(
     state: tauri::State<'_, AppState>,
     slug: String,
 ) -> Result<(), Error> {
-    crate::automation::marketplace::uninstall_human(
+    crate::automation::marketplace::uninstall_marketplace_item(
         &state.runtime_service,
         state.skills_registry.clone(),
+        state.mcp_manager.clone(),
         &slug,
     )
     .await

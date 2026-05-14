@@ -199,6 +199,17 @@ pub enum InstallOutcome {
     Mcp { slug: String, mcp_server_id: String },
 }
 
+/// One row from `marketplace_standalone_installs` — returned by `list_standalone_inner`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandaloneInstall {
+    pub slug: String,
+    pub item_type: String,   // "skill" | "mcp"
+    pub version: String,
+    pub installed_at: i64,
+    pub mcp_server_id: Option<String>,
+}
+
 // ─── Installed Automations (for AppsView card list) ───────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
