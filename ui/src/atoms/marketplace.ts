@@ -70,6 +70,8 @@ export type InstallWizardStep = 'scope' | 'config' | 'confirm' | 'progress' | nu
 export interface InstallWizardState {
   step: InstallWizardStep
   slug: string | null
+  /** appType drives the step sequence: skill/mcp skip the 'scope' step */
+  appType: string | null
   spaceId: string | null
   userConfig: Record<string, unknown>
   progress: { phase: string; percent: number; message?: string } | null
@@ -79,6 +81,7 @@ export interface InstallWizardState {
 export const installWizardAtom = atom<InstallWizardState>({
   step: null,
   slug: null,
+  appType: null,
   spaceId: null,
   userConfig: {},
   progress: null,

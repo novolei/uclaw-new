@@ -191,10 +191,20 @@ function AutomationCard({
 
   return (
     <div className="border border-border/50 rounded-lg overflow-hidden">
-      {/* Card header */}
-      <button
+      {/* Card header — a div (not <button>) because it nests action <button>s;
+          button-in-button is invalid DOM. role/tabIndex/onKeyDown keep it
+          keyboard-accessible. */}
+      <div
+        role="button"
+        tabIndex={0}
         onClick={toggle}
-        className="w-full flex items-start gap-2 px-3 py-2 hover:bg-accent/30 transition-colors text-left"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            toggle()
+          }
+        }}
+        className="w-full flex items-start gap-2 px-3 py-2 hover:bg-accent/30 transition-colors text-left cursor-pointer"
       >
         <div className="mt-0.5 flex-shrink-0">
           {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -260,7 +270,7 @@ function AutomationCard({
             {deleting ? <Loader size={10} className="animate-spin" /> : <Trash2 size={10} />}
           </button>
         </div>
-      </button>
+      </div>
 
       {/* Activity list */}
       {isExpanded && (

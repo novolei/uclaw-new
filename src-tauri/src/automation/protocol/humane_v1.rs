@@ -77,7 +77,12 @@ pub struct HumaneAutomationSpec {
     pub author: String,
     #[garde(length(min = 1, max = 500))]
     pub description: String,
+    // serde(default) allows type:mcp specs (which have no system_prompt) to
+    // deserialise without error. The garde length(min=1) rule still rejects
+    // empty values when .validate() is called on automation specs, and
+    // validate_common checks it explicitly for type:skill.
     #[garde(length(min = 1))]
+    #[serde(default)]
     pub system_prompt: String,
 
     // DHP marketplace specs use a *newer* subscription shape than uClaw Phase 1
@@ -148,6 +153,12 @@ pub struct HumaneAutomationSpec {
     #[garde(skip)]
     #[serde(default)]
     pub i18n: HashMap<String, I18nLocaleBlock>,
+    // type:mcp specs carry an mcp_server block describing how to start the server
+    // process. Absent for automation/skill specs; optional here so existing specs
+    // deserialise without error.
+    #[garde(skip)]
+    #[serde(default)]
+    pub mcp_server: Option<McpServerBlock>,
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +409,28 @@ pub struct BrowserLoginEntry {
 }
 
 // ---------------------------------------------------------------------------
+// McpServerBlock — how to start the MCP server process (type:mcp specs)
+// ---------------------------------------------------------------------------
+
+/// `mcp_server` block from a `type: mcp` spec — how to start the MCP server
+/// process. Shape fixed by DHP spec/app-spec.md §10. `garde(skip)` because
+/// these are runtime-substituted values, not parse-time-validatable.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Validate)]
+pub struct McpServerBlock {
+    #[garde(skip)]
+    pub command: String,
+    #[garde(skip)]
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // I18nLocaleBlock — spec § 4.4
 // ---------------------------------------------------------------------------
 
@@ -419,6 +452,43 @@ pub struct I18nLocaleBlock {
     #[garde(skip)]
     #[serde(default)]
     pub config_schema: Option<serde_json::Value>,
+}
+
+// ---------------------------------------------------------------------------
+// Cross-type validation
+// ---------------------------------------------------------------------------
+
+/// Lightweight validation shared by all package types. Unlike
+/// `HumaneAutomationSpec::validate()` (which hard-requires `kind == "automation"`
+/// via the `must_be_automation` garde validator), this checks only the fields
+/// every type needs, plus the per-type minimum:
+///   - all types: name / version / description non-empty
+///   - `skill`: system_prompt non-empty
+///   - `mcp`: an `mcp_server` block with a non-empty command
+pub fn validate_common(spec: &HumaneAutomationSpec) -> Result<(), String> {
+    if spec.name.trim().is_empty() {
+        return Err("name is empty".into());
+    }
+    if spec.version.trim().is_empty() {
+        return Err("version is empty".into());
+    }
+    if spec.description.trim().is_empty() {
+        return Err("description is empty".into());
+    }
+    match spec.kind.as_str() {
+        "skill" => {
+            if spec.system_prompt.trim().is_empty() {
+                return Err("type:skill requires a non-empty system_prompt".into());
+            }
+        }
+        "mcp" => match &spec.mcp_server {
+            Some(block) if !block.command.trim().is_empty() => {}
+            Some(_) => return Err("type:mcp mcp_server.command is empty".into()),
+            None => return Err("type:mcp requires an mcp_server block".into()),
+        },
+        _ => {}
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -528,6 +598,70 @@ memory_schema:
         let spec: HumaneAutomationSpec = serde_yml::from_str(dhp_style).expect("parses");
         spec.validate().expect("validates");
         assert!(spec.memory_schema.is_some());
+    }
+
+    #[test]
+    fn validate_common_accepts_skill_and_mcp() {
+        // A type:skill spec — rejected by the automation .validate() (kind check),
+        // but validate_common accepts it.
+        let skill_yaml = r#"
+spec_version: "1"
+name: My Skill
+version: 1.0.0
+author: t
+description: A handy skill
+type: skill
+system_prompt: You are a helpful skill.
+"#;
+        let skill: HumaneAutomationSpec = serde_yml::from_str(skill_yaml).expect("parses");
+        assert!(skill.validate().is_err(), "automation validate() rejects type:skill");
+        assert!(super::validate_common(&skill).is_ok(), "validate_common accepts type:skill");
+
+        // A skill with an empty system_prompt fails validate_common.
+        let bad_skill_yaml = r#"
+spec_version: "1"
+name: Bad Skill
+version: 1.0.0
+author: t
+description: missing prompt
+type: skill
+system_prompt: ""
+"#;
+        let bad: HumaneAutomationSpec = serde_yml::from_str(bad_skill_yaml).expect("parses");
+        assert!(super::validate_common(&bad).is_err(), "empty system_prompt rejected for skill");
+
+        // A type:mcp spec with an mcp_server block.
+        let mcp_yaml = r#"
+spec_version: "1"
+name: My MCP
+version: 1.0.0
+author: t
+description: wraps a server
+type: mcp
+mcp_server:
+  command: npx
+  args: ["-y", "@modelcontextprotocol/server-postgres"]
+  env:
+    DATABASE_URL: "{{config.db_url}}"
+"#;
+        let mcp: HumaneAutomationSpec = serde_yml::from_str(mcp_yaml).expect("parses");
+        assert!(super::validate_common(&mcp).is_ok(), "validate_common accepts type:mcp with mcp_server");
+        let block = mcp.mcp_server.as_ref().expect("mcp_server parsed");
+        assert_eq!(block.command, "npx");
+        assert_eq!(block.args, vec!["-y", "@modelcontextprotocol/server-postgres"]);
+        assert_eq!(block.env.get("DATABASE_URL").map(String::as_str), Some("{{config.db_url}}"));
+
+        // A type:mcp spec WITHOUT an mcp_server block fails validate_common.
+        let bad_mcp_yaml = r#"
+spec_version: "1"
+name: Bad MCP
+version: 1.0.0
+author: t
+description: no server block
+type: mcp
+"#;
+        let bad_mcp: HumaneAutomationSpec = serde_yml::from_str(bad_mcp_yaml).expect("parses");
+        assert!(super::validate_common(&bad_mcp).is_err(), "type:mcp without mcp_server rejected");
     }
 
     #[test]

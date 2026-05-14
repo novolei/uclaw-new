@@ -893,7 +893,7 @@ export interface SkillInfo {
    *  The Fork button is only offered for "bundled" skills — User
    *  and Project are already directly editable.
    */
-  provenance?: 'bundled' | 'user' | 'project';
+  provenance?: 'bundled' | 'user' | 'project' | 'marketplace';
 }
 
 /** A row in the active-manifest debug panel — surfaces exactly what
