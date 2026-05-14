@@ -44,4 +44,18 @@ describe('createStreamingCapture', () => {
     expect(v).toBeLessThanOrEqual(1)
     cap.stop()
   })
+
+  it('getFrequencyBands returns the requested number of 0..1 values', async () => {
+    stubs = installAudioStubs()
+    const cap = await createStreamingCapture()
+    await cap.start(null)
+    stubs.setVolume(160)
+    const bands = cap.getFrequencyBands(7)
+    expect(bands).toHaveLength(7)
+    for (const b of bands) {
+      expect(b).toBeGreaterThanOrEqual(0)
+      expect(b).toBeLessThanOrEqual(1)
+    }
+    cap.stop()
+  })
 })

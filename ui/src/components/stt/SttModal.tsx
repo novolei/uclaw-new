@@ -21,7 +21,9 @@ interface SttModalProps {
   onSegmentFinalized: (text: string) => void
 }
 
-const BAR_HEIGHT_SCALES = [0.6, 1.0, 0.75, 0.9, 0.5]
+// EQ 音量条段数；与 useSttStreamingSession 的 BAR_COUNT 对应。
+const BAR_COUNT = 7
+const EMPTY_BANDS: number[] = new Array(BAR_COUNT).fill(0)
 
 export function SttModal({ composer, onSegmentFinalized }: SttModalProps): React.ReactElement | null {
   const state = useAtomValue(sttModalStateAtom)
@@ -57,8 +59,9 @@ export function SttModal({ composer, onSegmentFinalized }: SttModalProps): React
 
   if (state.kind === 'idle') return null
 
-  const volume =
-    state.kind === 'listening' || state.kind === 'finalizing' ? state.volume : 0
+  // EQ 音量条的逐段能量：listening 时用真实频段值，其它态（含 finalizing）静止。
+  const bands =
+    state.kind === 'listening' && state.bands.length > 0 ? state.bands : EMPTY_BANDS
   const interimText = state.kind === 'listening' ? state.interimText : ''
 
   let statusText = ''
@@ -109,11 +112,10 @@ export function SttModal({ composer, onSegmentFinalized }: SttModalProps): React
           {(state.kind === 'listening' || state.kind === 'finalizing') && (
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-[3px] h-6" aria-label="音量">
-                {BAR_HEIGHT_SCALES.map((scale, i) => {
-                  // 感知曲线：RMS 集中在低值区，开平方把它拉开，说话时条更跳。
-                  // 高度区间 3–22px：静音时是一条静止的细线，说话时明显起伏。
-                  const shaped = Math.sqrt(Math.max(0, Math.min(1, volume)))
-                  const h = Math.max(3, Math.round(shaped * scale * 22))
+                {bands.map((band, i) => {
+                  // 每条 = 一个独立频段的能量（capture 已做 sqrt 感知曲线 + 增益）。
+                  // 高度区间 3–22px：静音时是一条静止的细线，说话时各段独立起伏。
+                  const h = Math.max(3, Math.round(Math.max(0, Math.min(1, band)) * 22))
                   return (
                     <span
                       key={i}

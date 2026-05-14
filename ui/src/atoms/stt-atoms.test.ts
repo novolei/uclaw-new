@@ -51,6 +51,7 @@ describe('sttModalStateAtom', () => {
       kind: 'listening',
       segmentStartedMs: 1000,
       volume: 0,
+      bands: [],
       interimText: '',
     })
     const s = store.get(sttModalStateAtom)
