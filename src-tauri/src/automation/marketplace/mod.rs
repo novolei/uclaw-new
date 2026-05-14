@@ -2,7 +2,10 @@ pub mod cache;
 pub mod halo_adapter;
 pub mod types;
 
-pub use types::{MarketplaceItem, RegistryEntry, RegistryIndex, RegistrySource};
+pub use types::{
+    EntryI18n, MarketplaceDetail, MarketplaceInstallProgress, MarketplaceItem,
+    MarketplaceQueryResult, MarketplaceUpdate, RegistryEntry, RegistryIndex, RegistrySource,
+};
 
 use anyhow::{anyhow, Context, Result};
 

@@ -9,7 +9,7 @@ use rusqlite::{params, Connection};
 use std::collections::HashSet;
 
 use super::halo_adapter;
-use super::types::{EntryI18n, MarketplaceItem, RegistryEntry, RegistrySource};
+use super::types::{EntryI18n, MarketplaceItem, MarketplaceQueryResult, RegistryEntry, RegistrySource};
 
 /// Cache TTL — 1 hour. Within TTL, queries hit SQLite only; past it,
 /// queries trigger a sync first (if force=false the sync is best-effort
@@ -21,17 +21,6 @@ pub const DEFAULT_PAGE_SIZE: u32 = 20;
 
 /// Maximum page size to prevent memory blow-up on pathological queries.
 pub const MAX_PAGE_SIZE: u32 = 200;
-
-/// Local-to-cache type since types.rs hasn't been updated yet (Task 3 moves
-/// this to the canonical types module). Has the same fields/shape as the
-/// future canonical `MarketplaceQueryResult`.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MarketplaceQueryResult {
-    pub items: Vec<MarketplaceItem>,
-    pub total: u32,
-    pub has_more: bool,
-}
 
 /// Sync a single registry into the local cache. Idempotent.
 ///
