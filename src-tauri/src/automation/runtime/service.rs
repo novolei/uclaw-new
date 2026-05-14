@@ -377,7 +377,8 @@ impl AppRuntimeService {
             llm_iterations:              0,
             llm_tokens_in:               0,
             llm_tokens_out:              0,
-            tool_calls_json:             "[]".into(),
+            session_id:                  None,
+            report_artifacts_json:       "[]".into(),
             report_text:                 None,
             report_outcome:              None,
             escalation_id:               None,
@@ -998,12 +999,10 @@ mod tests {
 
     fn open_test_db() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(crate::db::migrations::V1_INITIAL).unwrap();
-        conn.execute_batch(crate::db::migrations::V7_AUTOMATIONS).unwrap();
-        // V14 required for permission_audit_log used by set_permission
-        conn.execute_batch(crate::db::migrations::V14_PERMISSION_TABLES).unwrap();
-        crate::db::migrations::run_v20(&conn).unwrap();
-        crate::db::migrations::run_v21(&conn).unwrap();
+        // Run the full migration stack so the schema is always up to date,
+        // including V24 which adds session_id / report_artifacts_json and
+        // drops tool_calls_json from automation_activities.
+        crate::db::migrations::run(&conn).unwrap();
         conn
     }
 
@@ -1298,8 +1297,8 @@ mod tests {
                 "INSERT INTO automation_activities
                  (id, spec_id, trigger_source_type, trigger_payload_json,
                   status, queued_at, duration_ms, llm_iterations,
-                  llm_tokens_in, llm_tokens_out, tool_calls_json)
-                 VALUES ('act-del','del-spec','manual','{}','queued',1,0,0,0,0,'[]')",
+                  llm_tokens_in, llm_tokens_out)
+                 VALUES ('act-del','del-spec','manual','{}','queued',1,0,0,0,0)",
                 [],
             ).unwrap();
         }
@@ -1333,8 +1332,8 @@ mod tests {
                 "INSERT INTO automation_activities
                  (id, spec_id, trigger_source_type, trigger_payload_json,
                   status, queued_at, duration_ms, llm_iterations,
-                  llm_tokens_in, llm_tokens_out, tool_calls_json)
-                 VALUES (?1,'esc-spec','manual','{}','running',1,0,0,0,0,'[]')",
+                  llm_tokens_in, llm_tokens_out)
+                 VALUES (?1,'esc-spec','manual','{}','running',1,0,0,0,0)",
                 rusqlite::params![act_id],
             ).unwrap();
 
@@ -1401,8 +1400,8 @@ mod tests {
                 "INSERT INTO automation_activities
                  (id, spec_id, trigger_source_type, trigger_payload_json,
                   status, queued_at, duration_ms, llm_iterations,
-                  llm_tokens_in, llm_tokens_out, tool_calls_json)
-                 VALUES (?1,'s4','manual','{}','running',1,0,0,0,0,'[]')",
+                  llm_tokens_in, llm_tokens_out)
+                 VALUES (?1,'s4','manual','{}','running',1,0,0,0,0)",
                 rusqlite::params![activity_id],
             )
             .unwrap();

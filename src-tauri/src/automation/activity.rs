@@ -104,7 +104,11 @@ pub struct AutomationActivity {
     pub llm_iterations: i64,
     pub llm_tokens_in: i64,
     pub llm_tokens_out: i64,
-    pub tool_calls_json: String,
+    /// Nullable link to the run's agent_session (V24). None for runs that
+    /// never reached the loop (filtered out, deduped, rejected).
+    pub session_id: Option<String>,
+    /// JSON array of declared products from report_to_user.artifacts (V24).
+    pub report_artifacts_json: String,
     pub report_text: Option<String>,
     pub report_outcome: Option<String>,
     pub escalation_id: Option<String>,
@@ -143,19 +147,20 @@ fn row_to_activity(r: &rusqlite::Row<'_>) -> rusqlite::Result<AutomationActivity
         llm_iterations:              r.get(11)?,
         llm_tokens_in:               r.get(12)?,
         llm_tokens_out:              r.get(13)?,
-        tool_calls_json:             r.get(14)?,
-        report_text:                 r.get(15)?,
-        report_outcome:              r.get(16)?,
-        escalation_id:               r.get(17)?,
-        resumed_from_activity_id:    r.get(18)?,
-        resumed_from_escalation_id:  r.get(19)?,
+        session_id:                  r.get(14)?,
+        report_artifacts_json:       r.get(15)?,
+        report_text:                 r.get(16)?,
+        report_outcome:              r.get(17)?,
+        escalation_id:               r.get(18)?,
+        resumed_from_activity_id:    r.get(19)?,
+        resumed_from_escalation_id:  r.get(20)?,
     })
 }
 
 const SELECT_COLS: &str =
     "id, spec_id, subscription_id, trigger_source_type, trigger_payload_json,
      status, error_text, queued_at, started_at, completed_at, duration_ms,
-     llm_iterations, llm_tokens_in, llm_tokens_out, tool_calls_json,
+     llm_iterations, llm_tokens_in, llm_tokens_out, session_id, report_artifacts_json,
      report_text, report_outcome, escalation_id,
      resumed_from_activity_id, resumed_from_escalation_id";
 
@@ -166,18 +171,18 @@ pub fn insert_activity(conn: &rusqlite::Connection, a: &AutomationActivity) -> r
         "INSERT INTO automation_activities (
             id, spec_id, subscription_id, trigger_source_type, trigger_payload_json,
             status, error_text, queued_at, started_at, completed_at, duration_ms,
-            llm_iterations, llm_tokens_in, llm_tokens_out, tool_calls_json,
+            llm_iterations, llm_tokens_in, llm_tokens_out, session_id, report_artifacts_json,
             report_text, report_outcome, escalation_id,
             resumed_from_activity_id, resumed_from_escalation_id
         ) VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
         )",
         rusqlite::params![
             a.id, a.spec_id, a.subscription_id,
             a.trigger_source_type.as_db_str(), a.trigger_payload_json,
             a.status.as_db_str(), a.error_text,
             a.queued_at, a.started_at, a.completed_at, a.duration_ms,
-            a.llm_iterations, a.llm_tokens_in, a.llm_tokens_out, a.tool_calls_json,
+            a.llm_iterations, a.llm_tokens_in, a.llm_tokens_out, a.session_id, a.report_artifacts_json,
             a.report_text, a.report_outcome, a.escalation_id,
             a.resumed_from_activity_id, a.resumed_from_escalation_id,
         ],
@@ -276,10 +281,9 @@ mod tests {
 
     fn setup_db_with_v21() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(crate::db::migrations::V1_INITIAL).unwrap();
-        conn.execute_batch(crate::db::migrations::V7_AUTOMATIONS).unwrap();
-        crate::db::migrations::run_v20(&conn).unwrap();
-        crate::db::migrations::run_v21(&conn).unwrap();
+        // Run the full migration stack (including V24 which adds session_id /
+        // report_artifacts_json and drops tool_calls_json).
+        crate::db::migrations::run(&conn).unwrap();
         // Insert a parent spec so the FK passes.
         conn.execute(
             "INSERT INTO automation_specs
@@ -307,7 +311,8 @@ mod tests {
             llm_iterations:              0,
             llm_tokens_in:               0,
             llm_tokens_out:              0,
-            tool_calls_json:             "[]".into(),
+            session_id:                  None,
+            report_artifacts_json:       "[]".into(),
             report_text:                 None,
             report_outcome:              None,
             escalation_id:               None,
@@ -326,7 +331,7 @@ mod tests {
         assert_eq!(loaded.status, ActivityStatus::Queued);
         assert!(matches!(loaded.trigger_source_type, TriggerSource::Manual));
         assert_eq!(loaded.trigger_payload_json, "{}");
-        assert_eq!(loaded.tool_calls_json, "[]");
+        assert_eq!(loaded.report_artifacts_json, "[]");
         assert_eq!(loaded.duration_ms, 0);
     }
 
