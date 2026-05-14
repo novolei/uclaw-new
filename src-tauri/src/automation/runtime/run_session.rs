@@ -239,6 +239,7 @@ mod tests {
                 rusqlite::params![sid, act]).unwrap();
             persist_transcript(&conn, &sid, &[ChatMessage::user("x")]).unwrap();
             sessions.push(sid);
+            std::thread::sleep(std::time::Duration::from_millis(2));
         }
         let pruned = prune_old_run_sessions(&conn, "s", 2).unwrap();
         assert_eq!(pruned, 1);
