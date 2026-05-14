@@ -2,19 +2,24 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `type: skill` and `type: mcp` marketplace packages installable — restructure the install path into a dispatcher + three flat per-type functions, translate skill specs into uClaw `SKILL.md` files and MCP specs into registered MCP servers, track standalone installs in a new V24 table, and make the store UI type-aware.
+**Goal:** Make `type: skill` and `type: mcp` marketplace packages installable — restructure the install path into a dispatcher + three flat per-type functions, translate skill specs into uClaw `SKILL.md` files and MCP specs into registered MCP servers, track standalone installs in a new V25 table, and make the store UI type-aware.
 
-**Architecture:** `install_human` becomes `install_automation` (body lifted verbatim). A new `install_marketplace_item` dispatcher matches `item.app_type` → `install_automation` / `install_standalone_skill` / `install_standalone_mcp`. Skill installs translate `spec.yaml` → `SKILL.md` under `~/.uclaw/skills/_marketplace/_standalone/<slug>/` (a managed namespace the 3b-α boot scan already walks). MCP installs translate the `mcp_server` block → `McpServerConfig` and register it with the MCP manager. A V24 `marketplace_standalone_installs` table tracks both. The store query stops filtering non-automation; `StoreDetail` / `InstallWizard` / `AppsTab` become type-aware.
+**Architecture:** `install_human` becomes `install_automation` (body lifted verbatim). A new `install_marketplace_item` dispatcher matches `item.app_type` → `install_automation` / `install_standalone_skill` / `install_standalone_mcp`. Skill installs translate `spec.yaml` → `SKILL.md` under `~/.uclaw/skills/_marketplace/_standalone/<slug>/` (a managed namespace the 3b-α boot scan already walks). MCP installs translate the `mcp_server` block → `McpServerConfig` and register it with the MCP manager. A V25 `marketplace_standalone_installs` table tracks both. The store query stops filtering non-automation; `StoreDetail` / `InstallWizard` / `AppsTab` become type-aware.
 
 **Tech Stack:** Rust (rusqlite, serde, serde_yml, garde, reqwest, tokio), React 18 + TypeScript + Jotai, Vitest.
 
 **Spec:** `docs/superpowers/specs/2026-05-14-phase3b-gamma-standalone-items-design.md`
 
-**Pre-flight state confirmed against the live tree (2026-05-14, worktree `worktree-phase3b-gamma-standalone-items`):**
-- `install_human` at `src-tauri/src/automation/marketplace/mod.rs:455`, signature `(runtime, app_handle, slug, space_id, user_config, skills_registry, progress_channel) -> Result<HumaneSpecRow>`. The `app_type != "automation"` reject is at ~line 488.
+**Parallel work — reconciled 2026-05-14 (see spec § 11):**
+- **Rebased onto `origin/main` `89dcfd9`** (was based on stale `032a368`). All line numbers below re-verified post-rebase.
+- **Automation Phase 2a** (`worktree-automation-phase2a`, spec approved, not merged) **claims migration V24** — γ takes **V25** (Task 1). Phase 2a touches `automation/runtime/*` + `agent/*` + `channels.rs`; the only files it shares with γ are `tauri_commands.rs` + `main.rs` (both additive). No design conflict.
+- **Kaleidoscope PR #169 — merged** (it's in the rebase). Added the Skills / Integrations / Memory Kaleidoscope modules + `update_mcp_server` + `mcp.rs` tests. It did **not** touch `StoreDetail.tsx` / `InstallWizard.tsx` / `AppsTab.tsx` / `automation/marketplace/*` / `db/migrations.rs` / `humane_v1.rs` — γ's core files are conflict-free. γ's standalone installs surface in the new Skills / Integrations modules automatically (operational view); AppsTab stays the marketplace-lifecycle view (Task 10). γ does not modify the #169 modules — the only related change is syncing the stale `SkillInfo.provenance` TS union (Task 7).
+
+**Pre-flight state confirmed against the live tree (2026-05-14, post-rebase onto `89dcfd9`, worktree `worktree-phase3b-gamma-standalone-items`):**
+- `install_human` at `src-tauri/src/automation/marketplace/mod.rs:455`, signature `(runtime, app_handle, slug, space_id, user_config, skills_registry, progress_channel) -> Result<HumaneSpecRow>`. The `app_type != "automation"` reject is at ~line 488. (`marketplace/mod.rs` untouched by PR #169.)
 - `list_humans` filters `app_type == "automation"` at mod.rs:35; `query_marketplace_cached` is the paged cache query right after.
-- Tauri commands: `install_marketplace_human` (tauri_commands.rs:5612), `uninstall_marketplace_human` (tauri_commands.rs:5637). Both registered in `main.rs:450-451`. Frontend bridge: `installMarketplaceHuman` / `uninstallMarketplaceHuman` (tauri-bridge.ts:1397-1408). **Keep the Tauri command names + bridge names unchanged** — only their bodies change to call the renamed internal dispatcher. Smaller diff, no `main.rs` invoke_handler churn for the rename.
-- Last migration is V23a (`migrations.rs:1318`). V22 = `automation_installed_skills`. Next free integer: **V24**.
+- Tauri commands: `install_marketplace_human` (tauri_commands.rs:5678), `uninstall_marketplace_human` (tauri_commands.rs:5703). Both registered in `main.rs:451-452`. Frontend bridge: `installMarketplaceHuman` (tauri-bridge.ts:1400) / `uninstallMarketplaceHuman` (tauri-bridge.ts:1410). **Keep the Tauri command names + bridge names unchanged** — only their bodies change to call the renamed internal dispatcher. Smaller diff, no `main.rs` invoke_handler churn for the rename.
+- Last migration is V23a (`migrations.rs:1318`). V22 = `automation_installed_skills`. **V24 is claimed by the in-flight Automation Phase 2a branch** (not yet merged) — γ takes **V25**. The `run()` block target is "after the V23a block" (resilient to Phase 2a later inserting V24).
 - `HumaneAutomationSpec` (humane_v1.rs:8): has `system_prompt: String`, `requires: Option<serde_json::Value>`, `config_schema: Vec<InputDef>`. **No `mcp_server` field** — Task 2 adds one. `kind` is validated by the `must_be_automation` garde custom validator (humane_v1.rs:12) — calling `.validate()` on a skill/mcp spec fails.
 - `mcp_manager: SharedMcpManager` = `Arc<RwLock<McpManager>>` in `AppState` (app.rs:165). `add_mcp_server` (tauri_commands.rs:2079) shows the registration path: build `crate::mcp::McpServerConfig`, then `state.mcp_manager.write().await.add_server(config)`.
 - `McpServerConfig` (mcp.rs:227): `{ id, name, description, transport_type, command, args, env, url, enabled, auto_approve }`.
@@ -23,10 +28,10 @@
 
 ---
 
-### Task 1: V24 migration — `marketplace_standalone_installs`
+### Task 1: V25 migration — `marketplace_standalone_installs`
 
 **Files:**
-- Modify: `src-tauri/src/db/migrations.rs` (add `SQL_V24` constant + a block in `run()`)
+- Modify: `src-tauri/src/db/migrations.rs` (add `SQL_V25` constant + a block in `run()`)
 - Test: `src-tauri/src/db/migrations.rs` inline `#[cfg(test)]`
 
 - [ ] **Step 1: Write the failing test**
@@ -81,12 +86,12 @@ Expected: FAIL — `no such table: marketplace_standalone_installs`.
 Insert near `SQL_V22` (after the `V23A_MARKETPLACE_CACHE` constant) in `migrations.rs`:
 
 ```rust
-/// V24 — marketplace_standalone_installs.
+/// V25 — marketplace_standalone_installs.
 ///
 /// Tracks standalone (non-bundled) skill and MCP marketplace installs so the
 /// AppsTab can list them and uninstall can find what to remove. `mcp_server_id`
 /// links a `type: mcp` install to its mcp_servers.json entry; NULL for skills.
-const SQL_V24: &str = "
+const SQL_V25: &str = "
 CREATE TABLE IF NOT EXISTS marketplace_standalone_installs (
     slug          TEXT PRIMARY KEY,
     item_type     TEXT NOT NULL,
@@ -99,14 +104,14 @@ CREATE TABLE IF NOT EXISTS marketplace_standalone_installs (
 
 - [ ] **Step 4: Wire into `run()`**
 
-In `migrations.rs::run()`, add a V24 block **after the V23a block** (~line 1324):
+In `migrations.rs::run()`, add a V25 block **after the V23a block** (~line 1324):
 
 ```rust
-    // V24: marketplace_standalone_installs — tracks standalone skill/MCP installs.
-    tracing::debug!("Running migration V24: marketplace_standalone_installs");
-    for stmt in SQL_V24.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    // V25: marketplace_standalone_installs — tracks standalone skill/MCP installs.
+    tracing::debug!("Running migration V25: marketplace_standalone_installs");
+    for stmt in SQL_V25.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
-            tracing::warn!("V24 stmt skipped: {} :: {}", e, stmt);
+            tracing::warn!("V25 stmt skipped: {} :: {}", e, stmt);
         }
     }
 ```
@@ -123,7 +128,7 @@ Expected: all migration tests green.
 
 ```bash
 git add src-tauri/src/db/migrations.rs
-git commit -m "feat(db): V24 — marketplace_standalone_installs
+git commit -m "feat(db): V25 — marketplace_standalone_installs
 
 Tracks standalone skill/MCP marketplace installs. slug PK (installed at
 most once); mcp_server_id links a type:mcp install to its
@@ -795,9 +800,9 @@ git commit -m "feat(marketplace): install dispatcher + standalone skill/mcp path
 install_human → install_automation (body verbatim). New
 install_marketplace_item dispatches by item type:
 - skill → fetch spec, validate_common, render SKILL.md, stage into
-  _marketplace/_standalone/<slug>/, register scan dir, write V24 row.
+  _marketplace/_standalone/<slug>/, register scan dir, write V25 row.
 - mcp → fetch spec, read mcp_server block, build McpServerConfig,
-  register with the MCP manager, write V24 row linking mcp_server_id.
+  register with the MCP manager, write V25 row linking mcp_server_id.
 - extension/unknown → Err. InstallOutcome enum carries the per-type
   result. registry_entry_for dedups the RegistryEntry builder."
 ```
@@ -961,7 +966,7 @@ fn uninstall_standalone_skill_removes_files_and_row() {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM marketplace_standalone_installs WHERE slug='s1'", [], |r| r.get(0),
     ).unwrap();
-    assert_eq!(n, 0, "V24 row removed");
+    assert_eq!(n, 0, "V25 row removed");
 }
 ```
 
@@ -1047,6 +1052,7 @@ uninstall. list_standalone_inner backs the AppsTab standalone section."
 - Modify: `src-tauri/src/tauri_commands.rs` (add `list_standalone_installs` command; confirm install/uninstall command bodies from Tasks 4 & 6 are correct)
 - Modify: `src-tauri/src/main.rs` (register `list_standalone_installs`)
 - Modify: `ui/src/lib/tauri-bridge.ts` (add `StandaloneInstall` type + `listStandaloneInstalls`; update `installMarketplaceHuman` return type to `InstallOutcome`)
+- Modify: `ui/src/lib/types.ts` (sync stale `SkillInfo.provenance` union — Step 3b)
 
 - [ ] **Step 1: Add the Tauri command**
 
@@ -1067,7 +1073,7 @@ pub async fn list_standalone_installs(
 
 - [ ] **Step 2: Register in `main.rs`**
 
-Add `uclaw_core::tauri_commands::list_standalone_installs,` to the `invoke_handler!` macro next to `install_marketplace_human` / `uninstall_marketplace_human` (~main.rs:451).
+Add `uclaw_core::tauri_commands::list_standalone_installs,` to the `invoke_handler!` macro next to `install_marketplace_human` / `uninstall_marketplace_human` (~main.rs:452).
 
 - [ ] **Step 3: TS bridge**
 
@@ -1088,6 +1094,16 @@ export const listStandaloneInstalls = (): Promise<StandaloneInstall[]> =>
 
 Also: `installMarketplaceHuman` now returns `InstallOutcome` (the Rust dispatcher's return type), not `HumaneSpecRow`. Add an `InstallOutcome` TS type mirroring the serde enum (`{ kind: 'automation', spec: HumaneSpecRow } | { kind: 'skill', slug, installPath } | { kind: 'mcp', slug, mcpServerId }`) and update `installMarketplaceHuman`'s `invoke<...>` generic. Grep for callers of `installMarketplaceHuman` — `InstallWizard` and `UpgradeModal`. `UpgradeModal` ignores the return (Task 4 of 3b-β: `await installMarketplaceHuman(slug)`). `InstallWizard` — check whether it reads the returned `HumaneSpecRow`; if it does, adapt it to handle `InstallOutcome` (the automation case still carries `.spec`). Keep the change minimal.
 
+- [ ] **Step 3b: Sync the stale `SkillInfo.provenance` TS union**
+
+In `ui/src/lib/types.ts`, `SkillInfo.provenance` is typed `'bundled' | 'user' | 'project'` — but the Rust `SkillProvenance` enum gained a `Marketplace` variant in 3b-α (serde-serialised as `"marketplace"`), and γ produces more marketplace-provenance skills (the standalone `_marketplace/_standalone/<slug>/` ones). Add `'marketplace'` to the union:
+
+```ts
+  provenance?: 'bundled' | 'user' | 'project' | 'marketplace';
+```
+
+This is a one-line type-correctness fix — the runtime value already flows through `list_skills`; the type was just left stale. Do **not** modify the PR #169 Skills / Integrations modules — γ's standalone items already surface there via `SkillsRegistry` / `mcp_manager` discovery (spec § 4.9); their marketplace lifecycle is owned by AppsTab (Task 10).
+
 - [ ] **Step 4: Verify**
 
 ```bash
@@ -1100,13 +1116,14 @@ Expected: zero errors both sides.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src-tauri/src/tauri_commands.rs src-tauri/src/main.rs ui/src/lib/tauri-bridge.ts
+git add src-tauri/src/tauri_commands.rs src-tauri/src/main.rs ui/src/lib/tauri-bridge.ts ui/src/lib/types.ts
 git commit -m "feat(marketplace): list_standalone_installs command + bridge
 
 list_standalone_installs Tauri command reads marketplace_standalone_installs
 for the AppsTab standalone section. Bridge gains StandaloneInstall +
 listStandaloneInstalls; installMarketplaceHuman's return type widens to
-the InstallOutcome enum."
+the InstallOutcome enum. Also syncs the stale SkillInfo.provenance TS
+union to include 'marketplace' (the Rust variant shipped in 3b-α)."
 ```
 
 ---
@@ -1232,6 +1249,8 @@ step for them. The step sequence is computed from the item's appType
 
 ### Task 10: `AppsTab` standalone-install section
 
+> **Why AppsTab and not the new Skills/Integrations modules** (PR #169, now merged): standalone skills/MCPs *already* surface in those Kaleidoscope modules automatically — a `_marketplace/_standalone/` skill is discovered by `SkillsRegistry` → `list_skills`, a registered MCP shows in `listMcpServers`. Those are the **operational** views ("all my skills / MCPs"). AppsTab is the **marketplace-lifecycle** view (version, slug-keyed uninstall via `uninstall_marketplace_item`) — exactly parallel to how an installed automation lives in AppsTab while its bundled skills also show in the Skills module. This task does **not** modify the #169 modules; do not duplicate uninstall affordances into them.
+
 **Files:**
 - Modify: `ui/src/components/automation/AppsTab.tsx`
 - Test: `ui/src/components/automation/AppsTab.test.tsx` (extend)
@@ -1296,14 +1315,14 @@ AppTypeBadge + 卸载. Hidden entirely when there are none."
 ### Task 11: CLAUDE.md migration registry + PR
 
 **Files:**
-- Modify: `CLAUDE.md` (*Active migration registry* table — add V24 row)
+- Modify: `CLAUDE.md` (*Active migration registry* table — add V25 row)
 
-- [ ] **Step 1: Add the V24 row**
+- [ ] **Step 1: Add the V25 row**
 
 In `CLAUDE.md`'s *Active migration registry* table, after the V23a row:
 
 ```markdown
-| V24 | marketplace_standalone_installs (standalone skill/MCP install tracking) | **this PR** (Phase 3b-γ) |
+| V25 | marketplace_standalone_installs (standalone skill/MCP install tracking) | **this PR** (Phase 3b-γ) |
 ```
 
 - [ ] **Step 2: Full verification**
@@ -1320,7 +1339,7 @@ Expected: Rust all green, zero TS errors, Vitest all green.
 
 ```bash
 git add CLAUDE.md
-git commit -m "docs(claude): register V24 marketplace_standalone_installs migration"
+git commit -m "docs(claude): register V25 marketplace_standalone_installs migration"
 ```
 
 - [ ] **Step 4: Push + open PR**
@@ -1336,7 +1355,7 @@ Makes `type: skill` and `type: mcp` marketplace packages installable. The DHP pr
 - **Install dispatcher.** `install_human` → `install_automation` (body verbatim). New `install_marketplace_item` matches `item.app_type` → `install_automation` / `install_standalone_skill` / `install_standalone_mcp` / Err(extension|unknown).
 - **Standalone skill** → translate `spec.yaml` to a `SKILL.md`, stage + atomic-rename into `~/.uclaw/skills/_marketplace/_standalone/<slug>/`, register the scan dir.
 - **Standalone MCP** → translate the `mcp_server` block to an `McpServerConfig` (with `{{config.key}}` env substitution), register with the MCP manager.
-- **V24 `marketplace_standalone_installs`** tracks both; `mcp_server_id` links an MCP install to its server entry.
+- **V25 `marketplace_standalone_installs`** tracks both; `mcp_server_id` links an MCP install to its server entry.
 - **`validating_caps`** now recognises installed standalone MCPs — an automation depending on one stops warning (`capability_map` itself untouched — that rewrite is 3b-δ).
 - **Store query un-filtered** — the 技能/MCP tabs show real cards. `StoreDetail` / `InstallWizard` / `AppsTab` are now type-aware.
 
@@ -1346,7 +1365,7 @@ DHP `index.json` has no skill/mcp entries yet — tested against synthetic fixtu
 
 | # | Commit | Scope |
 |---|--------|-------|
-| 1 | feat(db): V24 — marketplace_standalone_installs | DB |
+| 1 | feat(db): V25 — marketplace_standalone_installs | DB |
 | 2 | feat(protocol): McpServerBlock field + validate_common | protocol |
 | 3 | feat(marketplace): standalone_install module — skill/mcp translation | backend |
 | 4 | feat(marketplace): install dispatcher + standalone skill/mcp paths | backend |
@@ -1356,18 +1375,18 @@ DHP `index.json` has no skill/mcp entries yet — tested against synthetic fixtu
 | 8 | feat(marketplace): StoreDetail type-aware layout for skill/mcp | UI |
 | 9 | feat(marketplace): InstallWizard type-aware step sequence | UI |
 | 10 | feat(marketplace): AppsTab standalone skill/MCP section | UI |
-| 11 | docs(claude): register V24 migration | docs |
+| 11 | docs(claude): register V25 migration | docs |
 
 Spec: docs/superpowers/specs/2026-05-14-phase3b-gamma-standalone-items-design.md
 Plan: docs/superpowers/plans/2026-05-14-phase3b-gamma-standalone-items.md
 
 ## Test plan
 
-- [ ] `cargo test --lib` — all green (new: V24 migration, validate_common, standalone_install module, dispatcher routing, validating_caps installed-MCP, list/uninstall standalone)
+- [ ] `cargo test --lib` — all green (new: V25 migration, validate_common, standalone_install module, dispatcher routing, validating_caps installed-MCP, list/uninstall standalone)
 - [ ] `npm test -- --run` — all green (new: StoreDetail skill/mcp layouts, InstallWizard scope-skip, AppsTab standalone section)
 - [ ] `npx tsc --noEmit` — zero errors
 - [ ] Manual (fixture): a synthetic `type: skill` package installs → `SKILL.md` under `_marketplace/_standalone/`, SkillsRegistry discovers it
-- [ ] Manual (fixture): a synthetic `type: mcp` package installs → MCP server registered, V24 row links it
+- [ ] Manual (fixture): a synthetic `type: mcp` package installs → MCP server registered, V25 row links it
 - [ ] Manual: `type: extension` install fails with a clear error
 
 ## Follow-ups (Phase 3b-δ / ε / ζ)
@@ -1390,7 +1409,7 @@ EOF
 | § 4.1 install dispatcher | Task 4 |
 | § 4.2 `install_standalone_skill` (translation + staging + scan dir) | Task 3 (translation/staging) + Task 4 (orchestration) |
 | § 4.3 `install_standalone_mcp` (`mcp_server` → `McpServerConfig`, `{{config.key}}`) | Task 2 (`McpServerBlock`) + Task 3 (`build_mcp_config`, `substitute_env`) + Task 4 (orchestration) |
-| § 4.4 V24 `marketplace_standalone_installs` | Task 1 |
+| § 4.4 V25 `marketplace_standalone_installs` | Task 1 |
 | § 4.5 `validating_caps` recognises installed MCPs | Task 5 |
 | § 4.6 un-filter query + uninstall dispatcher | Task 6 |
 | § 4.7 `StoreDetail` type-aware layout | Task 8 |
@@ -1399,7 +1418,7 @@ EOF
 | § 5 error handling | Distributed: Task 2 (`validate_common` rejects), Task 3 (staging rollback, literal-on-miss substitution), Task 4 (dispatcher Err for extension), Task 6 (best-effort uninstall) |
 | § 6.1 Rust tests | Tasks 1, 2, 3, 4, 5, 6 each ship their listed tests |
 | § 6.2 Vitest tests | Tasks 8, 9, 10 |
-| § 7 V24 migration | Task 1 + Task 11 (registry doc) |
+| § 7 V25 migration | Task 1 + Task 11 (registry doc) |
 | § 10 done criteria | Task 11 PR test plan mirrors each item |
 
 No gaps.
