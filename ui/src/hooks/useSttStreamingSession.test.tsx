@@ -135,3 +135,59 @@ describe('useSttStreamingSession — skeleton', () => {
     expect(mockCapture.stop).toHaveBeenCalled()
   })
 })
+
+describe('useSttStreamingSession — retranscribe loop', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockCapture.getSegmentPcmBase64.mockReturnValue('AAAA')
+    mockCapture.getVolume.mockReturnValue(0)
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('updates interimText from periodic stt_transcribe calls', async () => {
+    vi.useFakeTimers()
+    const store = readyStore()
+    invokeMock.mockResolvedValue({ text: '实时预览文本' })
+    const { result } = renderHook(() => useSttStreamingSession('chat'), {
+      wrapper: wrapper(store),
+    })
+    await act(async () => {
+      await result.current.start()
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1500)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const s = store.get(sttModalStateAtom)
+    expect(s.kind).toBe('listening')
+    if (s.kind === 'listening') {
+      expect(s.interimText).toBe('实时预览文本')
+    }
+  })
+
+  it('in-flight guard: skips a tick if the previous transcribe has not resolved', async () => {
+    vi.useFakeTimers()
+    const store = readyStore()
+    let resolveInvoke: ((v: { text: string }) => void) | undefined
+    invokeMock.mockImplementation(
+      () => new Promise((res) => { resolveInvoke = res }),
+    )
+    const { result } = renderHook(() => useSttStreamingSession('chat'), {
+      wrapper: wrapper(store),
+    })
+    await act(async () => {
+      await result.current.start()
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1500) // tick 1 → invoke called, hangs
+      vi.advanceTimersByTime(1500) // tick 2 → guard should skip
+      await Promise.resolve()
+    })
+    expect(invokeMock).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      resolveInvoke?.({ text: 'ok' })
+      await Promise.resolve()
+    })
+  })
+})

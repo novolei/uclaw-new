@@ -102,8 +102,27 @@ export function useSttStreamingSession(
 
   // ── Task 5 会填充：startRetranscribeLoop ─────────────────────────
   const startRetranscribeLoop = useCallback(() => {
-    // placeholder — Task 5 实现
-  }, [])
+    retranscribeTimerRef.current = setInterval(() => {
+      // in-flight 守卫：上一次转写没返回就跳过这一拍，避免请求堆积。
+      if (transcribeInFlightRef.current) return
+      const cap = captureRef.current
+      if (!cap) return
+      transcribeInFlightRef.current = true
+      void transcribeSegment()
+        .then((raw) => {
+          interimTextRef.current = raw
+          setState((prev) =>
+            prev.kind === 'listening' ? { ...prev, interimText: raw } : prev,
+          )
+        })
+        .catch(() => {
+          // 段内 tick 失败：跳过这拍，不打断会话。
+        })
+        .finally(() => {
+          transcribeInFlightRef.current = false
+        })
+    }, RETRANSCRIBE_INTERVAL_MS)
+  }, [setState, transcribeSegment])
 
   // ── Task 6 会填充：finalizeSegment + 静音检测 ────────────────────
   const finalizeSegment = useCallback(async (): Promise<void> => {
