@@ -21,6 +21,10 @@ export interface WorkspaceSession {
   updatedAt: string
   /** ms timestamp; null means unpinned. */
   pinnedAt: number | null
+  /** Raw metadata JSON blob from agent_sessions.metadata_json.
+   *  Present for automation run-sessions (origin starts with "automation:").
+   *  Used by WorkspaceRail to filter out automation sessions from the rail. */
+  metadataJson?: string
 }
 
 // All workspaces from backend
@@ -233,6 +237,7 @@ export const syncWorkspaceSessionsAtom = atom(
         spaceId,
         updatedAt: s.updatedAt ?? '',
         pinnedAt: typeof s.pinnedAt === 'number' ? s.pinnedAt : null,
+        metadataJson: typeof s.metadataJson === 'string' ? s.metadataJson : undefined,
       })
     }
     set(workspaceSessionsAtom, grouped)

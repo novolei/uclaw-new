@@ -29,6 +29,21 @@ import { tabsAtom } from '@/atoms/tab-atoms'
 import type { AgentWorkspace } from '@/lib/agent-types'
 import { toast } from 'sonner'
 
+/**
+ * True when a session was produced by an automation run (origin metadata
+ * starts with "automation:"). Such run-sessions are reached through the
+ * AutomationHub activity list, not the workspace session rail (design §0.4).
+ */
+export function isAutomationSession(s: { metadataJson?: string | null }): boolean {
+  if (!s.metadataJson) return false
+  try {
+    const meta = JSON.parse(s.metadataJson) as { origin?: string }
+    return typeof meta.origin === 'string' && meta.origin.startsWith('automation:')
+  } catch {
+    return false
+  }
+}
+
 interface WorkspaceRailProps {
   activeSessionId: string | null
   onSelectSession: (sessionId: string) => void
@@ -90,9 +105,9 @@ export function WorkspaceRail({
     [tabs],
   )
 
-  const sessions = activeWorkspaceId
-    ? (workspaceSessions[activeWorkspaceId] ?? [])
-    : []
+  const sessions = (
+    activeWorkspaceId ? (workspaceSessions[activeWorkspaceId] ?? []) : []
+  ).filter((s) => !isAutomationSession(s))
 
   // Two-segment split: pinned (sorted by pinnedAt DESC — most recently
   // pinned at the top) and unpinned (preserves the source atom's
