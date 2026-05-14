@@ -1404,6 +1404,9 @@ export const installMarketplaceHuman = (
     slug, spaceId, userConfig, progressChannel,
   })
 
+export const uninstallMarketplaceHuman = (slug: string): Promise<void> =>
+  invoke<void>('uninstall_marketplace_human', { slug })
+
 export const marketplaceCategoryCounts = (
   itemType?: string,
   search?: string,

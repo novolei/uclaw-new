@@ -5634,6 +5634,23 @@ pub async fn install_marketplace_human(
 }
 
 #[tauri::command]
+pub async fn uninstall_marketplace_human(
+    state: tauri::State<'_, AppState>,
+    slug: String,
+) -> Result<(), Error> {
+    crate::automation::marketplace::uninstall_human(
+        &state.runtime_service,
+        state.skills_registry.clone(),
+        &slug,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(slug = %slug, error = format!("{:#}", e), "uninstall_marketplace_human failed");
+        Error::Internal(format!("{:#}", e))
+    })
+}
+
+#[tauri::command]
 pub async fn refresh_marketplace(
     state: State<'_, AppState>,
 ) -> Result<u32, Error> {

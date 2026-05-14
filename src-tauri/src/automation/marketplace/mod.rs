@@ -197,6 +197,55 @@ pub async fn check_updates_cached(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// Synchronous core of uninstall — separated so unit tests can drive it
+/// without an AppRuntimeService.
+pub fn uninstall_human_inner(
+    conn: &rusqlite::Connection,
+    skills_root: &std::path::Path,
+    slug: &str,
+) -> Result<()> {
+    let source_ref = format!("marketplace://halo/{}", slug);
+    // Delete spec first — a subsequent FS error leaves no ghost "installed" spec row.
+    conn.execute(
+        "DELETE FROM automation_specs WHERE source = 'marketplace' AND source_ref = ?1",
+        rusqlite::params![source_ref],
+    )?;
+    conn.execute(
+        "DELETE FROM automation_installed_skills WHERE automation_slug = ?1",
+        rusqlite::params![slug],
+    )?;
+    let dir = skills_root.join("_marketplace").join(slug);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)
+            .with_context(|| format!("remove {}", dir.display()))?;
+    }
+    Ok(())
+}
+
+/// Public async entry point used by the Tauri command. Resolves runtime
+/// resources, calls the inner sync core, then drops the SkillsRegistry
+/// scan dir and triggers rediscovery.
+pub async fn uninstall_human(
+    runtime: &crate::automation::runtime::AppRuntimeService,
+    skills_registry: Arc<RwLock<SkillsRegistry>>,
+    slug: &str,
+) -> Result<()> {
+    let skills_root = dirs::home_dir()
+        .ok_or_else(|| anyhow!("no home dir"))?
+        .join(".uclaw")
+        .join("skills");
+    {
+        let conn = runtime.db.lock().unwrap();
+        uninstall_human_inner(&conn, &skills_root, slug)?;
+    }
+    {
+        let mut reg = skills_registry.write().await;
+        reg.remove_scan_dir(&skills_root.join("_marketplace").join(slug));
+        let _ = reg.discover();
+    }
+    Ok(())
+}
+
 /// Install a single registry entry. Returns the installed HumaneSpecRow.
 /// source_ref takes the form `marketplace://halo/{slug}` per spec § 5 URI convention.
 pub async fn install_human(
@@ -428,6 +477,52 @@ pub async fn install_human(
 #[cfg(test)]
 mod tests {
     use super::types::*;
+
+    #[test]
+    fn uninstall_removes_rows_and_files() {
+        // Set up: temp skills root + in-memory DB with V22 + a fake _marketplace/<slug>/ tree.
+        let tmp = tempfile::tempdir().unwrap();
+        let skills_root = tmp.path().join("skills");
+        let target = skills_root.join("_marketplace").join("auto-x").join("skill-a");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("SKILL.md"), b"# A").unwrap();
+        // Untouched user-written skill — must survive uninstall.
+        let user_skill = skills_root.join("hand-written").join("SKILL.md");
+        std::fs::create_dir_all(user_skill.parent().unwrap()).unwrap();
+        std::fs::write(&user_skill, b"# H").unwrap();
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO automation_installed_skills VALUES (?, ?, ?, ?)",
+            rusqlite::params!["auto-x", "skill-a", 0_i64, 1_i64],
+        ).unwrap();
+        // V20 schema requires: id, name, version, author, description, system_prompt,
+        // spec_yaml, spec_json, created_at, updated_at (all NOT NULL); others have defaults.
+        conn.execute(
+            "INSERT INTO automation_specs \
+                (id, name, version, author, description, system_prompt, spec_yaml, spec_json, \
+                 source, source_ref, created_at, updated_at) \
+             VALUES ('auto-x-id', 'X', '1.0.0', 'test', 'desc', '', '', '{}', \
+                     'marketplace', 'marketplace://halo/auto-x', 0, 0)",
+            [],
+        ).expect("insert spec — V20 schema columns");
+
+        // Drive the uninstall — pass in the connection + skills_root directly.
+        super::uninstall_human_inner(&conn, &skills_root, "auto-x").unwrap();
+
+        // Assert: rows gone, marketplace dir gone, user skill untouched.
+        let spec_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM automation_specs WHERE source_ref = 'marketplace://halo/auto-x'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(spec_count, 0);
+        let inst_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM automation_installed_skills WHERE automation_slug = 'auto-x'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(inst_count, 0);
+        assert!(!skills_root.join("_marketplace").join("auto-x").exists());
+        assert!(user_skill.exists(), "user-written skill must survive");
+    }
 
     // Fixture mirrors the real index.json shape from
     // https://raw.githubusercontent.com/novolei/digital-human-protocol/main/index.json
