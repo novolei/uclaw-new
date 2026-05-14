@@ -300,9 +300,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
             workspace 恢复标准三栏布局。always-mounted 的全局组件（SearchPalette、
             ApprovalModal 等）留在 switch 外，两个 surface 下均可用。 */}
         {topLevelView === 'kaleidoscope' ? (
-          <div className="flex-1 min-w-0 flex">
-            <KaleidoscopeShell />
-          </div>
+          <KaleidoscopeShell />
         ) : (
           <>
             {/* 左侧边栏：focus mode 下隐藏，由 FocusModeOverlay 接管 */}

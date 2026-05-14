@@ -84,7 +84,7 @@ export function KaleidoscopeRail(): React.ReactElement {
   const userProfile = useAtomValue(userProfileAtom)
 
   return (
-    <div className="w-[120px] shrink-0 flex flex-col bg-background border-r border-border">
+    <div className="w-[120px] shrink-0 flex flex-col bg-background rounded-2xl shadow-xl overflow-hidden">
       {/* 红绿灯让位 */}
       <div className="h-9 shrink-0" />
 
