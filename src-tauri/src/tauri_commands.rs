@@ -5565,36 +5565,103 @@ pub async fn compact_automation_memory(
         .map_err(|e| Error::Internal(e.to_string()))
 }
 
-// ─── Marketplace (commit 2 of humane-marketplace-mini) ─────────────────────
+// ─── Marketplace (Phase 3a — § 13) ────────────────────────────────────
 
 #[tauri::command]
-pub async fn list_marketplace_humans(
-    _state: State<'_, AppState>,
-    registry_url: Option<String>,
-) -> Result<Vec<crate::automation::marketplace::MarketplaceItem>, Error> {
-    crate::automation::marketplace::list_humans(registry_url)
+pub async fn query_marketplace(
+    state: State<'_, AppState>,
+    search: Option<String>,
+    item_type: Option<String>,
+    category: Option<String>,
+    page: Option<u32>,
+    page_size: Option<u32>,
+) -> Result<crate::automation::marketplace::MarketplaceQueryResult, Error> {
+    crate::automation::marketplace::query_marketplace_cached(
+        &state.runtime_service,
+        search,
+        item_type,
+        category,
+        page.unwrap_or(0),
+        page_size.unwrap_or(20),
+    )
+    .await
+    .map_err(|e| Error::Internal(format!("{:#}", e)))
+}
+
+#[tauri::command]
+pub async fn get_marketplace_detail(
+    state: State<'_, AppState>,
+    slug: String,
+) -> Result<crate::automation::marketplace::MarketplaceDetail, Error> {
+    crate::automation::marketplace::get_marketplace_detail_cached(&state.runtime_service, &slug)
         .await
-        // {:#} formats the full anyhow error chain (root cause + context),
-        // not just the top context line. Without this, errors like
-        // "install_humane_spec failed for 'X'" hid the actual reason
-        // (garde validation, DB constraint, parse failure, etc).
+        .map_err(|e| Error::Internal(format!("{:#}", e)))
+}
+
+#[tauri::command]
+pub async fn check_marketplace_updates(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::automation::marketplace::MarketplaceUpdate>, Error> {
+    crate::automation::marketplace::check_updates_cached(&state.runtime_service)
+        .await
         .map_err(|e| Error::Internal(format!("{:#}", e)))
 }
 
 #[tauri::command]
 pub async fn install_marketplace_human(
     state: State<'_, AppState>,
-    registry_url: Option<String>,
+    app_handle: tauri::AppHandle,
     slug: String,
+    space_id: Option<String>,
+    user_config: Option<serde_json::Value>,
+    progress_channel: Option<String>,
 ) -> Result<crate::automation::manager::HumaneSpecRow, Error> {
-    crate::automation::marketplace::install_human(&state.runtime_service, registry_url, &slug)
-        .await
-        .map_err(|e| {
-            // Log the FULL chain to the app log so we can grep later even
-            // if the toast truncates.
-            tracing::error!(slug = %slug, error = format!("{:#}", e), "install_marketplace_human failed");
-            Error::Internal(format!("{:#}", e))
-        })
+    crate::automation::marketplace::install_human(
+        &state.runtime_service,
+        app_handle,
+        &slug,
+        space_id,
+        user_config,
+        progress_channel,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(slug = %slug, error = format!("{:#}", e), "install_marketplace_human failed");
+        Error::Internal(format!("{:#}", e))
+    })
+}
+
+#[tauri::command]
+pub async fn refresh_marketplace(
+    state: State<'_, AppState>,
+) -> Result<u32, Error> {
+    let source = crate::automation::marketplace::RegistrySource::default();
+    crate::automation::marketplace::cache::sync_registry(
+        &state.runtime_service.db,
+        &source,
+        true,
+    )
+    .await
+    .map_err(|e| Error::Internal(format!("{:#}", e)))
+}
+
+// list_marketplace_humans kept as deprecated wrapper for backward compat — Phase 3b removes
+#[tauri::command]
+pub async fn list_marketplace_humans(
+    state: State<'_, AppState>,
+    _registry_url: Option<String>,
+) -> Result<Vec<crate::automation::marketplace::MarketplaceItem>, Error> {
+    let result = crate::automation::marketplace::query_marketplace_cached(
+        &state.runtime_service,
+        None,
+        Some("automation".into()),
+        None,
+        0,
+        200,
+    )
+    .await
+    .map_err(|e| Error::Internal(format!("{:#}", e)))?;
+    Ok(result.items)
 }
 
 // ─── Workspace Commands ─────────────────────────────────────────────────────
