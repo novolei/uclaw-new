@@ -2433,6 +2433,7 @@ pub async fn list_active_manifest_skills(
                         crate::skills::SkillProvenance::Bundled => "bundled",
                         crate::skills::SkillProvenance::User => "user",
                         crate::skills::SkillProvenance::Project => "project",
+                        crate::skills::SkillProvenance::Marketplace => "marketplace",
                     })
                     .unwrap_or("project")
                     .to_string()
