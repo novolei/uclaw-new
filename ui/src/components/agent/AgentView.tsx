@@ -28,6 +28,7 @@ import { PermissionModeSelector } from './PermissionModeSelector'
 import { AgentStatusBar } from './AgentStatusBar'
 import { AskUserBanner } from './AskUserBanner'
 import { ExitPlanModeBanner } from './ExitPlanModeBanner'
+import { AutomationRunBanner } from './AutomationRunBanner'
 import { PlanModeDashedBorder } from './PlanModeDashedBorder'
 import { PetWidget } from './PetWidget'
 import { ProviderModelSelector } from '@/components/chat/ProviderModelSelector'
@@ -1393,6 +1394,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       <div className="flex flex-col h-full flex-1 min-w-0 relative">
         {/* Agent Header */}
         <AgentHeader sessionId={sessionId} />
+
+        {/* Automation run banner — shows when the session was started by an
+            automation trigger (origin starts with "automation:"). */}
+        <AutomationRunBanner
+          metadataJson={sessions.find((s) => s.id === sessionId)?.metadataJson}
+        />
 
         {/* 消息区域 */}
         <AgentMessages

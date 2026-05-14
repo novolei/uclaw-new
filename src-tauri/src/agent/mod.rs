@@ -2,6 +2,7 @@ pub mod agentic_loop;
 pub mod code_rescue;
 pub mod context;
 pub mod dispatcher;
+pub mod llm_stream;
 pub mod mode_prompts;
 pub mod plan_state;
 pub mod retry;

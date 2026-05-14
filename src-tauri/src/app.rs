@@ -435,6 +435,7 @@ impl AppState {
                 Arc::new(CustomSource::new()),
                 infra_service.clone(),
                 Arc::new(AutomationMemoryStore::new(automation_memory_root)),
+                provider_service.clone(),
             )
         };
 

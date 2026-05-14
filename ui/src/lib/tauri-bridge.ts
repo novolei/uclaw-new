@@ -1230,7 +1230,8 @@ export interface AutomationActivity {
   llmIterations: number
   llmTokensIn: number
   llmTokensOut: number
-  toolCallsJson: string
+  sessionId: string | null
+  reportArtifactsJson: string
   reportText: string | null
   reportOutcome: string | null
   escalationId: string | null

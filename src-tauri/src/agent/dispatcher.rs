@@ -7,11 +7,11 @@ use crate::agent::tools::tool::{ToolRegistry, ToolOutput};
 use crate::app::PendingApprovals;
 use crate::infra::InfraService;
 use crate::llm::LlmProvider;
-use crate::llm::stream_error::{classify_stream_error, StreamErrorKind};
 use crate::error::Error;
 use crate::safety::{SafetyManager, SafetyMode, ApprovalDecision};
 
-use crate::agent::retry::{AgentRetryEvent, BudgetDecision, RetryBudget};
+use crate::agent::retry::AgentRetryEvent;
+use crate::agent::llm_stream::StreamSink;
 
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
 /// It assembles the conversation context, delegates LLM calls, and executes tools.
@@ -504,6 +504,28 @@ impl ChatDelegate {
 }
 
 #[async_trait]
+impl StreamSink for ChatDelegate {
+    fn on_text_delta(&self, text: &str) {
+        self.emit_text_delta(text);
+    }
+    fn on_thinking(&self, thinking: &str) {
+        self.emit_thinking(thinking);
+    }
+    fn on_thinking_done(&self, duration_ms: u64) {
+        self.emit_thinking_done(duration_ms);
+    }
+    fn on_stream_reset(&self) {
+        self.emit_stream_reset();
+    }
+    fn on_retry_event(&self, event: AgentRetryEvent) {
+        self.emit_retry_event(event);
+    }
+    async fn sleep_or_abort(&self, delay: std::time::Duration) -> bool {
+        ChatDelegate::sleep_or_abort(self, delay).await
+    }
+}
+
+#[async_trait]
 impl LoopDelegate for ChatDelegate {
     async fn check_signals(&self) -> LoopSignal {
         if self.stop_flag.load(Ordering::Relaxed) {
@@ -578,260 +600,14 @@ impl LoopDelegate for ChatDelegate {
             "Calling LLM"
         );
 
-        use futures::StreamExt;
-
-        let mut retry_budget = RetryBudget::for_agent_loop();
-        'stream_attempt: loop {
-            match self.llm.stream(messages.clone(), tools.clone(), &config).await {
-                Ok(mut stream) => {
-                    // Per-attempt accumulators — reset on each retry so we don't
-                    // mix partial output from a failed attempt into the next.
-                    let mut full_text = String::new();
-                    let mut full_thinking = String::new();
-                    let mut full_thinking_signature: Option<String> = None;
-                    let mut tool_calls: Vec<ToolCall> = Vec::new();
-                    let mut current_tool: Option<(String, String, String)> = None;
-                    let mut thinking_started = false;
-                    let mut thinking_start_time: Option<std::time::Instant> = None;
-                    let mut metadata: Option<ResponseMetadata> = None;
-
-                    while let Some(item) = stream.next().await {
-                        match item {
-                            Ok(StreamDelta::TextDelta { text }) => {
-                                // If thinking just finished, emit thinking-done
-                                if thinking_started {
-                                    thinking_started = false;
-                                    let duration = thinking_start_time
-                                        .map(|t| t.elapsed().as_millis() as u64)
-                                        .unwrap_or(0);
-                                    self.emit_thinking_done(duration);
-                                }
-                                self.emit_text_delta(&text);
-                                full_text.push_str(&text);
-                            }
-                            Ok(StreamDelta::ThinkingDelta { thinking }) => {
-                                if !thinking_started {
-                                    thinking_started = true;
-                                    thinking_start_time = Some(std::time::Instant::now());
-                                }
-                                self.emit_thinking(&thinking);
-                                full_thinking.push_str(&thinking);
-                            }
-                            Ok(StreamDelta::SignatureDelta { signature }) => {
-                                full_thinking_signature = Some(signature);
-                            }
-                            Ok(StreamDelta::ToolCallDelta { id, name, input_json }) => {
-                                // If thinking just finished, emit thinking-done
-                                if thinking_started {
-                                    thinking_started = false;
-                                    let duration = thinking_start_time
-                                        .map(|t| t.elapsed().as_millis() as u64)
-                                        .unwrap_or(0);
-                                    self.emit_thinking_done(duration);
-                                }
-                                if let Some(n) = name {
-                                    // Start a new tool call
-                                    if let Some((tc_id, tc_name, tc_args)) = current_tool.take() {
-                                        if let Ok(args) = serde_json::from_str(&tc_args) {
-                                            tool_calls.push(ToolCall {
-                                                id: tc_id,
-                                                name: tc_name,
-                                                arguments: args,
-                                            });
-                                        }
-                                    }
-                                    current_tool = Some((id, n, String::new()));
-                                }
-                                if let Some(args) = input_json {
-                                    if let Some((_, _, ref mut tc_args)) = current_tool {
-                                        tc_args.push_str(&args);
-                                    }
-                                }
-                            }
-                            Ok(StreamDelta::Done { finish_reason, usage }) => {
-                                // If thinking was still active, emit thinking-done.
-                                // No need to reset thinking_started — loop exits after Done.
-                                if thinking_started {
-                                    let duration = thinking_start_time
-                                        .map(|t| t.elapsed().as_millis() as u64)
-                                        .unwrap_or(0);
-                                    self.emit_thinking_done(duration);
-                                }
-                                // Flush any remaining tool call
-                                if let Some((tc_id, tc_name, tc_args)) = current_tool.take() {
-                                    if let Ok(args) = serde_json::from_str(&tc_args) {
-                                        tool_calls.push(ToolCall {
-                                            id: tc_id,
-                                            name: tc_name,
-                                            arguments: args,
-                                        });
-                                    }
-                                }
-
-                                metadata = Some(ResponseMetadata {
-                                    model: self.model.clone(),
-                                    finish_reason,
-                                    usage,
-                                });
-
-                                let thinking = if full_thinking.is_empty() { None } else { Some(full_thinking) };
-                                let meta = metadata.unwrap();
-
-                                if !tool_calls.is_empty() {
-                                    return Ok(RespondOutput::ToolCalls {
-                                        tool_calls,
-                                        text: if full_text.is_empty() { None } else { Some(full_text) },
-                                        thinking,
-                                        thinking_signature: full_thinking_signature,
-                                        metadata: meta,
-                                    });
-                                } else {
-                                    return Ok(RespondOutput::Text { text: full_text, thinking, thinking_signature: full_thinking_signature, metadata: meta });
-                                }
-                            }
-                            Err(e) => {
-                                // Decide how to recover.
-                                let kind = classify_stream_error(&e);
-                                match kind {
-                                    StreamErrorKind::Stalled | StreamErrorKind::TransientNetwork => {
-                                        let decision = retry_budget.next_delay();
-                                        match decision {
-                                            BudgetDecision::Sleep(delay) => {
-                                                let reason = format!("{:?}: {}", kind, e);
-                                                tracing::warn!(
-                                                    error = %e,
-                                                    kind = ?kind,
-                                                    attempt = retry_budget.attempts(),
-                                                    max = retry_budget.max_attempts(),
-                                                    delay_ms = delay.as_millis() as u64,
-                                                    "Stream interrupted, retrying with a fresh stream"
-                                                );
-                                                self.emit_stream_reset();
-                                                self.emit_retry_event(AgentRetryEvent::Starting {
-                                                    attempt: retry_budget.attempts(),
-                                                    max_attempts: retry_budget.max_attempts(),
-                                                    delay_seconds: delay.as_secs_f64(),
-                                                    reason: reason.clone(),
-                                                });
-
-                                                if self.sleep_or_abort(delay).await {
-                                                    // Frontend already saw Starting; signal the cancel via stream-reset
-                                                    // so any in-flight UI state can unwind.
-                                                    self.emit_stream_reset();
-                                                    return Err(e);
-                                                }
-
-                                                self.emit_retry_event(AgentRetryEvent::Attempt {
-                                                    attempt: retry_budget.attempts(),
-                                                    timestamp_ms: chrono::Utc::now().timestamp_millis(),
-                                                    reason,
-                                                });
-                                                continue 'stream_attempt;
-                                            }
-                                            BudgetDecision::Exhausted => {
-                                                tracing::error!(
-                                                    error = %e,
-                                                    attempts = retry_budget.attempts(),
-                                                    elapsed_wait_ms = retry_budget.elapsed_wait().as_millis() as u64,
-                                                    "Stream failed after exhausting retry budget"
-                                                );
-                                                self.emit_stream_reset();
-                                                self.emit_retry_event(AgentRetryEvent::Exhausted {
-                                                    total_attempts: retry_budget.attempts(),
-                                                    total_wait_ms: retry_budget.elapsed_wait().as_millis() as u64,
-                                                });
-                                                return Err(e);
-                                            }
-                                        }
-                                    }
-                                    StreamErrorKind::Fatal => {
-                                        tracing::error!(error = %e, "Stream failed with fatal error");
-                                        self.emit_stream_reset();
-                                        return Err(e);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Stream ended without a Done delta — build response from accumulated state.
-                    let meta = metadata.unwrap_or_else(|| ResponseMetadata {
-                        model: self.model.clone(),
-                        finish_reason: Some("stream_ended".into()),
-                        usage: None,
-                    });
-                    let thinking = if full_thinking.is_empty() { None } else { Some(full_thinking) };
-
-                    if !tool_calls.is_empty() {
-                        return Ok(RespondOutput::ToolCalls {
-                            tool_calls,
-                            text: if full_text.is_empty() { None } else { Some(full_text) },
-                            thinking,
-                            thinking_signature: full_thinking_signature,
-                            metadata: meta,
-                        });
-                    } else {
-                        return Ok(RespondOutput::Text { text: full_text, thinking, thinking_signature: full_thinking_signature, metadata: meta });
-                    }
-                }
-                Err(e) => {
-                    // stream() failed before producing any deltas. This is a setup
-                    // problem (auth, model-not-found, etc.) — classify and either
-                    // retry or fail. Do NOT auto-fallback to complete() — we want
-                    // the user to see the real error, not a workaround.
-                    let kind = classify_stream_error(&e);
-                    match kind {
-                        StreamErrorKind::Stalled | StreamErrorKind::TransientNetwork => {
-                            let decision = retry_budget.next_delay();
-                            match decision {
-                                BudgetDecision::Sleep(delay) => {
-                                    let reason = format!("setup {:?}: {}", kind, e);
-                                    tracing::warn!(
-                                        error = %e,
-                                        kind = ?kind,
-                                        attempt = retry_budget.attempts(),
-                                        max = retry_budget.max_attempts(),
-                                        delay_ms = delay.as_millis() as u64,
-                                        "Stream setup failed transiently, retrying"
-                                    );
-                                    self.emit_retry_event(AgentRetryEvent::Starting {
-                                        attempt: retry_budget.attempts(),
-                                        max_attempts: retry_budget.max_attempts(),
-                                        delay_seconds: delay.as_secs_f64(),
-                                        reason: reason.clone(),
-                                    });
-                                    if self.sleep_or_abort(delay).await {
-                                        return Err(e);
-                                    }
-                                    self.emit_retry_event(AgentRetryEvent::Attempt {
-                                        attempt: retry_budget.attempts(),
-                                        timestamp_ms: chrono::Utc::now().timestamp_millis(),
-                                        reason,
-                                    });
-                                    continue 'stream_attempt;
-                                }
-                                BudgetDecision::Exhausted => {
-                                    tracing::error!(
-                                        error = %e,
-                                        attempts = retry_budget.attempts(),
-                                        "Stream setup failed after exhausting retry budget"
-                                    );
-                                    self.emit_retry_event(AgentRetryEvent::Exhausted {
-                                        total_attempts: retry_budget.attempts(),
-                                        total_wait_ms: retry_budget.elapsed_wait().as_millis() as u64,
-                                    });
-                                    return Err(e);
-                                }
-                            }
-                        }
-                        StreamErrorKind::Fatal => {
-                            tracing::error!(error = %e, "Stream setup failed, surfacing error");
-                            return Err(e);
-                        }
-                    }
-                }
-            }
-        }
+        crate::agent::llm_stream::stream_completion(
+            self.llm.as_ref(),
+            messages,
+            tools,
+            &config,
+            self,
+        )
+        .await
     }
 
     async fn handle_text_response(

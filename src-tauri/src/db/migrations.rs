@@ -767,7 +767,7 @@ CREATE TABLE IF NOT EXISTS automation_activities_new (
     llm_tokens_in               INTEGER NOT NULL DEFAULT 0,
     llm_tokens_out              INTEGER NOT NULL DEFAULT 0,
 
-    tool_calls_json             TEXT NOT NULL DEFAULT '[]',
+    tool_calls_json             TEXT NOT NULL DEFAULT '[]',  -- dropped by V24
 
     report_text                 TEXT,
     report_outcome              TEXT,
@@ -1169,6 +1169,22 @@ pub fn run_v23a(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.execute_batch(V23A_MARKETPLACE_CACHE)
 }
 
+/// V24 — automation run = agent_session ownership model.
+/// `automation_activities` gains `session_id` (nullable link to the run's
+/// agent_session) + `report_artifacts_json` (declared products), and drops
+/// `tool_calls_json` (per-tool breakdown now lives in agent_messages).
+/// `agent_sessions` gains `archived_at` for retention ordering.
+/// All statements are individually error-tolerant: a re-run hits
+/// "duplicate column" / "no such column" and is skipped (same pattern as
+/// V9–V19). DROP COLUMN requires SQLite >= 3.35 (rusqlite bundles a newer one).
+const V24_AUTOMATION_RUN_SESSIONS: &str = "
+ALTER TABLE automation_activities ADD COLUMN session_id TEXT;
+ALTER TABLE automation_activities ADD COLUMN report_artifacts_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE automation_activities DROP COLUMN tool_calls_json;
+ALTER TABLE agent_sessions ADD COLUMN archived_at INTEGER;
+CREATE INDEX IF NOT EXISTS idx_act_session ON automation_activities(session_id);
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -1338,8 +1354,16 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
         tracing::error!(error = %e, "V23a FAILED — marketplace cache unavailable");
         return Err(e);
     }
+    // V24: automation run = agent_session. Statement-split tolerant style —
+    // ADD/DROP COLUMN are not transactional-schema-replacing, so partial
+    // application is fine and a re-run's "duplicate/no such column" is benign.
+    tracing::debug!("Running migration V24: automation run-session columns");
+    for stmt in V24_AUTOMATION_RUN_SESSIONS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V24 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
     // V25: marketplace_standalone_installs — tracks standalone skill/MCP installs.
-    // (V24 is reserved by the parallel Automation Phase 2a branch.)
     tracing::debug!("Running migration V25: marketplace_standalone_installs");
     for stmt in SQL_V25.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
@@ -1962,6 +1986,44 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         super::run(&conn).expect("first run");
         super::run(&conn).expect("second run must not error (CREATE IF NOT EXISTS)");
+    }
+
+    #[test]
+    fn v24_adds_session_columns_and_drops_tool_calls_json() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+
+        let has_session_id: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('automation_activities') WHERE name = 'session_id'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(has_session_id, 1, "session_id column missing");
+
+        let has_artifacts: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('automation_activities') WHERE name = 'report_artifacts_json'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(has_artifacts, 1, "report_artifacts_json column missing");
+
+        let has_tool_calls: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('automation_activities') WHERE name = 'tool_calls_json'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(has_tool_calls, 0, "tool_calls_json should have been dropped");
+
+        let has_archived_at: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('agent_sessions') WHERE name = 'archived_at'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(has_archived_at, 1, "agent_sessions.archived_at column missing");
+
+        let has_idx: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_act_session'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(has_idx, 1, "idx_act_session missing");
+    }
+
+    #[test]
+    fn v24_is_idempotent() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        super::run(&conn).unwrap();
     }
 
     #[test]

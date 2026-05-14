@@ -41,6 +41,25 @@ pub fn build_initial_message(
     out
 }
 
+/// Like `build_initial_message`, but prepends a `## Memory` block with the
+/// spec's Tier-1 persistent memory so the agent starts the run already
+/// knowing its accumulated context (design §0.8). An empty `memory` string
+/// produces no block.
+pub fn build_initial_message_with_memory(
+    subscription: Option<&Subscription>,
+    trigger_payload: &serde_json::Value,
+    user_config: &serde_json::Value,
+    resumption: Option<&EscalationResolution>,
+    memory: &str,
+) -> String {
+    let base = build_initial_message(subscription, trigger_payload, user_config, resumption);
+    if memory.trim().is_empty() {
+        base
+    } else {
+        format!("## Memory\n{}\n\n{}", memory.trim(), base)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,5 +109,22 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(build_system_prompt(&spec), "You are a test agent.");
+    }
+
+    #[test]
+    fn initial_message_includes_memory_block_when_present() {
+        let m = build_initial_message_with_memory(
+            None, &json!({}), &json!({}), None, "remembered: the API key rotates monthly",
+        );
+        assert!(m.contains("## Memory"));
+        assert!(m.contains("API key rotates monthly"));
+        assert!(m.contains("## Trigger"));
+    }
+
+    #[test]
+    fn initial_message_omits_memory_block_when_empty() {
+        let m = build_initial_message_with_memory(None, &json!({}), &json!({}), None, "");
+        assert!(!m.contains("## Memory"));
+        assert!(m.contains("## Trigger"));
     }
 }

@@ -34,6 +34,11 @@ export interface AgentSessionMeta {
   manualWorking?: boolean
   /** 附加的额外目录 */
   attachedDirectories?: string[]
+  /** Raw metadata JSON blob from agent_sessions.metadata_json. Contains
+   *  `origin`, `spec_id`, `prev_run_session_id` for automation-run sessions
+   *  (origin starts with "automation:"). Present whenever sessions are loaded
+   *  from list_agent_sessions; may be absent on optimistically-created sessions. */
+  metadataJson?: string
   messageCount: number
   createdAt: number
   updatedAt: number

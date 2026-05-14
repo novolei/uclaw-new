@@ -11,26 +11,42 @@ use crate::automation::tools::{
     report_to_user::ReportInput,
     request_escalation::RequestEscalationInput,
 };
+use crate::agent::tools::tool::ToolRegistry;
+use crate::automation::runtime::cost::CostCapState;
 use crate::error::Error;
+use crate::llm::LlmProvider;
 use async_trait::async_trait;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// LoopDelegate for automation runs.
+/// LoopDelegate for automation runs — the first headless LoopDelegate.
 ///
-/// Handles the four Humane-specific tools (report_to_user, notify_user,
-/// request_escalation, memory) and stubs out fall-through for everything
-/// else. call_llm is not implemented here — AppRuntimeService (Task 18)
-/// injects the provider call.
+/// Drives run_agentic_loop with no Tauri AppHandle: streaming uses a
+/// NoopSink, the four Humane tools + the full base tool set are dispatched
+/// here, and cost is bounded by a per-run cap. Terminal state lands in
+/// `gate`; the transcript is persisted to agent_messages under `session_id`.
 pub struct AutomationDelegate {
     pub spec_id: String,
     pub activity_id: String,
+    /// The run's agent_session id — transcript rows are persisted under this.
+    pub session_id: String,
     pub permissions: PermissionSet,
     pub memory: Arc<MemoryStore>,
     pub db: Arc<std::sync::Mutex<rusqlite::Connection>>,
     /// Holds the terminal state once the run completes (report or escalation).
     pub gate: Arc<Mutex<Option<CompletionGate>>>,
     pub auto_continue: AutoContinueConfig,
+    /// LLM provider resolved from the app's ProviderService.
+    pub llm: Arc<dyn LlmProvider>,
+    /// Model id for this run.
+    pub model: String,
+    /// Full base tool set + the four Humane tool schemas.
+    pub tools: Arc<ToolRegistry>,
+    /// Per-run cost accumulator + cap.
+    pub cost: Arc<CostCapState>,
+    /// Working directory the run operates in (file/edit/search base + shell cwd).
+    pub workspace_root: PathBuf,
 }
 
 #[async_trait]
@@ -44,18 +60,79 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
         _reason_ctx: &mut ReasoningContext,
         _iteration: usize,
     ) -> Option<LoopOutcome> {
+        // Per-run cost cap: if the accumulated cost already crossed the cap
+        // (from a prior iteration's on_usage), abort before spending more.
+        if self.cost.per_run_exceeded() {
+            let msg = format!(
+                "per-run cost cap exceeded (${:.4})",
+                self.cost.total_usd()
+            );
+            tracing::warn!(spec_id = %self.spec_id, activity_id = %self.activity_id, "{}", msg);
+            *self.gate.lock().await = Some(CompletionGate::ErrorTerminal(msg.clone()));
+            return Some(LoopOutcome::Failure { error: msg });
+        }
         None
     }
 
     async fn call_llm(
         &self,
-        _reason_ctx: &mut ReasoningContext,
+        reason_ctx: &mut ReasoningContext,
         _iteration: usize,
     ) -> Result<RespondOutput, Error> {
-        // TODO(humane-phase-1-task-18): AppRuntimeService injects the real provider
-        // call here. Until then this method is unreachable in production —
-        // execute_tool_calls is exercised in unit tests by calling it directly.
-        Err(Error::Internal("call_llm is wired by AppRuntimeService (Task 18)".into()))
+        let mut messages = vec![ChatMessage::system(&reason_ctx.system_prompt)];
+        messages.extend(reason_ctx.messages.clone());
+
+        let tools = if reason_ctx.force_text {
+            Vec::new()
+        } else {
+            self.tools.list_definitions()
+        };
+        let config = crate::llm::CompletionConfig {
+            model: self.model.clone(),
+            max_tokens: 8192,
+            temperature: 0.7,
+            // Mirrors the system-role message above; the Anthropic provider reads
+            // the message, not this field. Kept for OpenAI-provider parity.
+            system_prompt: Some(reason_ctx.system_prompt.clone()),
+            thinking_enabled: false,
+        };
+
+        tracing::info!(
+            spec_id = %self.spec_id,
+            model = %self.model,
+            message_count = messages.len(),
+            tool_count = tools.len(),
+            force_text = reason_ctx.force_text,
+            "automation run: calling LLM"
+        );
+
+        crate::agent::llm_stream::stream_completion(
+            self.llm.as_ref(),
+            messages,
+            tools,
+            &config,
+            &crate::agent::llm_stream::NoopSink,
+        )
+        .await
+    }
+
+    async fn on_usage(
+        &self,
+        usage: &crate::agent::types::TokenUsage,
+        _reason_ctx: &ReasoningContext,
+    ) {
+        let cost = crate::agent::types::calculate_cost(
+            &self.model,
+            usage.input_tokens,
+            usage.output_tokens,
+        );
+        let total = self.cost.add(cost);
+        tracing::debug!(
+            spec_id = %self.spec_id,
+            turn_cost_usd = cost,
+            total_cost_usd = total,
+            "automation run: cost accumulated"
+        );
     }
 
     async fn handle_text_response(
@@ -91,17 +168,19 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
             match call.name.as_str() {
                 "report_to_user" => {
                     let input: ReportInput = serde_json::from_value(call.arguments.clone())?;
-                    // Persist completion to the activity row.
+                    let artifacts_json = serde_json::to_string(&input.artifacts)
+                        .unwrap_or_else(|_| "[]".into());
                     {
                         let conn = self.db.lock().unwrap();
                         conn.execute(
                             "UPDATE automation_activities \
                              SET status='completed', report_text=?1, report_outcome=?2, \
-                                 completed_at=?3 \
-                             WHERE id=?4",
+                                 report_artifacts_json=?3, completed_at=?4 \
+                             WHERE id=?5",
                             rusqlite::params![
                                 input.text,
                                 input.outcome,
+                                artifacts_json,
                                 chrono::Utc::now().timestamp_millis(),
                                 self.activity_id,
                             ],
@@ -111,12 +190,11 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
                         text: input.text.clone(),
                         outcome: input.outcome.clone(),
                     });
-                    // TODO(humane-phase-2): emit InfraEvent::AutomationRunReported once
-                    // the InfraEventType enum is extended and bus subscribers designed.
                     tracing::info!(
                         spec_id = %self.spec_id,
                         activity_id = %self.activity_id,
                         outcome = %input.outcome,
+                        artifact_count = input.artifacts.len(),
                         "automation run reported"
                     );
                     return Ok(Some(LoopOutcome::Response {
@@ -184,7 +262,14 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
                         }
                         "compact" => {
                             let p = self.memory.compact(&self.spec_id).await?;
-                            p.to_string_lossy().into_owned()
+                            let path_str = p.to_string_lossy().into_owned();
+                            {
+                                let conn = self.db.lock().unwrap();
+                                let _ = crate::automation::memory::record_compaction(
+                                    &conn, &self.spec_id, &path_str,
+                                );
+                            }
+                            path_str
                         }
                         _ => "unknown memory op".into(),
                     };
@@ -195,32 +280,55 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
 
                 "notify_user" => {
                     let input: NotifyInput = serde_json::from_value(call.arguments.clone())?;
-                    // Phase 1: log only.
-                    // TODO(humane-phase-2): wire Tauri notification + WeCom channel dispatch.
+                    // Phase 2a: structured log of the notification intent.
+                    // Real channel dispatch (channels.rs broadcast) is wired
+                    // in Phase 2b when the delegate gains a ChannelManager handle.
                     tracing::info!(
+                        spec_id = %self.spec_id,
+                        channels = ?input.channels,
                         title = %input.title,
-                        body  = %input.body,
+                        body = %input.body,
                         level = %input.level,
-                        "automation notify_user (channels not wired in Phase 1)"
+                        "automation notify_user"
                     );
                     reason_ctx.messages.push(ChatMessage::user_tool_result(
                         &call.id,
-                        "notified (phase 1: log only)",
+                        "notification logged (channel dispatch lands in Phase 2b)",
                         false,
                     ));
                 }
 
                 other => {
-                    // Phase 1 fall-through stub.
-                    // TODO(humane-phase-2): dispatch to base built-in tools via dispatcher.
-                    reason_ctx.messages.push(ChatMessage::user_tool_result(
-                        &call.id,
-                        &format!(
-                            "tool '{}' fall-through not implemented in Phase 1",
-                            other
-                        ),
-                        true,
-                    ));
+                    // Dispatch to the base built-in tool set via ToolRegistry.
+                    // Permission was already checked at the top of the loop.
+                    match self.tools.get(other) {
+                        Some(tool) => {
+                            match tool.execute(call.arguments.clone()).await {
+                                Ok(output) => {
+                                    let result = serde_json::to_string(&output.result)
+                                        .unwrap_or_else(|_| "{}".into());
+                                    let is_err = crate::agent::dispatcher::detect_soft_tool_error(&output.result);
+                                    reason_ctx.messages.push(ChatMessage::user_tool_result(
+                                        &call.id, &result, is_err,
+                                    ));
+                                }
+                                Err(e) => {
+                                    reason_ctx.messages.push(ChatMessage::user_tool_result(
+                                        &call.id,
+                                        &format!("tool '{}' error: {}", other, e),
+                                        true,
+                                    ));
+                                }
+                            }
+                        }
+                        None => {
+                            reason_ctx.messages.push(ChatMessage::user_tool_result(
+                                &call.id,
+                                &format!("tool '{}' not found in registry", other),
+                                true,
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -268,14 +376,68 @@ mod tests {
         conn: rusqlite::Connection,
         perms: PermissionSet,
     ) -> AutomationDelegate {
+        use crate::automation::runtime::cost::{CostCapConfig, CostCapState};
         AutomationDelegate {
             spec_id: spec_id.to_string(),
             activity_id: activity_id.to_string(),
+            session_id: format!("sess-{}", activity_id),
             permissions: perms,
             memory: Arc::new(MemoryStore::new(tmp.path().to_path_buf())),
             db: Arc::new(std::sync::Mutex::new(conn)),
             gate: Arc::new(Mutex::new(None)),
             auto_continue: AutoContinueConfig::default(),
+            llm: test_support::fake_llm(),
+            model: "claude-sonnet-4-6".to_string(),
+            tools: test_support::empty_tool_registry(),
+            cost: Arc::new(CostCapState::new(CostCapConfig {
+                per_run_usd: 1.00,
+                per_day_usd: 10.00,
+            })),
+            workspace_root: tmp.path().to_path_buf(),
+        }
+    }
+
+    mod test_support {
+        use std::sync::Arc;
+        use async_trait::async_trait;
+        use crate::agent::tools::tool::ToolRegistry;
+        use crate::agent::types::{ChatMessage, RespondOutput, StreamDelta, ToolDefinition};
+        use crate::llm::{CompletionConfig, LlmProvider};
+        use crate::error::Error;
+
+        /// Minimal LlmProvider stub for tests that exercise execute_tool_calls
+        /// (which never calls call_llm). Only `stream` needs a real body;
+        /// `complete` is stubbed with unimplemented!() because none of the 4
+        /// existing execute.rs tests ever reach call_llm.
+        struct NoopLlm;
+
+        #[async_trait]
+        impl LlmProvider for NoopLlm {
+            async fn complete(
+                &self,
+                _messages: Vec<ChatMessage>,
+                _tools: Vec<ToolDefinition>,
+                _config: &CompletionConfig,
+            ) -> Result<RespondOutput, Error> {
+                unimplemented!("NoopLlm::complete not called by execute.rs tests")
+            }
+
+            async fn stream(
+                &self,
+                _messages: Vec<ChatMessage>,
+                _tools: Vec<ToolDefinition>,
+                _config: &CompletionConfig,
+            ) -> Result<Box<dyn futures::Stream<Item = Result<StreamDelta, Error>> + Send + Unpin>, Error> {
+                Ok(Box::new(futures::stream::iter(Vec::<Result<StreamDelta, Error>>::new())))
+            }
+        }
+
+        pub fn fake_llm() -> Arc<dyn LlmProvider> {
+            Arc::new(NoopLlm)
+        }
+
+        pub fn empty_tool_registry() -> Arc<ToolRegistry> {
+            Arc::new(ToolRegistry::new())
         }
     }
 
@@ -430,6 +592,80 @@ mod tests {
             )
             .unwrap();
         assert_eq!(q, "Which branch?");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test C4a: before_llm_call aborts when per-run cost cap is exceeded
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn before_llm_call_aborts_when_cost_cap_exceeded() {
+        use crate::automation::runtime::cost::{CostCapConfig, CostCapState};
+        let tmp = TempDir::new().unwrap();
+        let conn = setup_db("spec-cc", "act-cc");
+        let mut delegate = make_delegate("spec-cc", "act-cc", &tmp, conn, PermissionSet::default());
+        // Replace cost state with a tiny cap and push it over.
+        delegate.cost = Arc::new(CostCapState::new(CostCapConfig {
+            per_run_usd: 0.10,
+            per_day_usd: 10.0,
+        }));
+        delegate.cost.add(0.50); // 0.50 >= 0.10 → exceeded
+
+        let mut ctx = ReasoningContext::new("sys".into());
+        let outcome = delegate.before_llm_call(&mut ctx, 1).await;
+        assert!(matches!(outcome, Some(LoopOutcome::Failure { .. })));
+
+        // Gate should be ErrorTerminal.
+        let gate = delegate.gate.lock().await;
+        assert!(matches!(*gate, Some(CompletionGate::ErrorTerminal(_))));
+    }
+
+    // -----------------------------------------------------------------------
+    // Test C4b: on_usage accumulates cost correctly
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn on_usage_accumulates_cost() {
+        let tmp = TempDir::new().unwrap();
+        let conn = setup_db("spec-ou", "act-ou");
+        let delegate = make_delegate("spec-ou", "act-ou", &tmp, conn, PermissionSet::default());
+        let ctx = ReasoningContext::new("sys".into());
+        let usage = crate::agent::types::TokenUsage {
+            input_tokens: 1_000_000, output_tokens: 0, ..Default::default()
+        };
+        delegate.on_usage(&usage, &ctx).await;
+        // claude-sonnet pricing: $3 / 1M input → total ~= 3.0
+        assert!(delegate.cost.total_usd() > 2.9);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test C5: report_to_user persists artifacts into report_artifacts_json
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn report_to_user_persists_artifacts_json() {
+        let tmp = TempDir::new().unwrap();
+        let conn = setup_db("spec-art", "act-art");
+        let delegate = make_delegate("spec-art", "act-art", &tmp, conn, PermissionSet::default());
+        let mut ctx = ReasoningContext::new("sys".into());
+
+        let calls = vec![make_tool_call(
+            "report_to_user",
+            json!({
+                "text": "done",
+                "outcome": "useful",
+                "artifacts": [
+                    { "kind": "file", "path": "out/report.md", "title": "Report" }
+                ]
+            }),
+        )];
+        delegate.execute_tool_calls(calls, &mut ctx).await.unwrap();
+
+        let conn2 = delegate.db.lock().unwrap();
+        let artifacts_json: String = conn2
+            .query_row(
+                "SELECT report_artifacts_json FROM automation_activities WHERE id='act-art'",
+                [], |r| r.get(0))
+            .unwrap();
+        assert!(artifacts_json.contains("report.md"));
+        assert!(artifacts_json.contains("\"kind\":\"file\""));
     }
 
     // -----------------------------------------------------------------------
