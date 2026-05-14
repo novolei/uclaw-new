@@ -3,6 +3,7 @@ import { renderWithProviders, screen } from '@/test-utils/render'
 import { createStore } from 'jotai'
 import { KaleidoscopeShell } from './KaleidoscopeShell'
 import { kaleidoscopeModuleAtom } from '@/atoms/kaleidoscope'
+import { automationsSubviewAtom } from '@/atoms/marketplace'
 
 vi.mock('@/lib/tauri-bridge', () => ({
   getUserProfile: vi.fn().mockResolvedValue({ userName: 'User', avatar: null }),
@@ -36,6 +37,15 @@ describe('KaleidoscopeShell', () => {
     renderWithProviders(<KaleidoscopeShell />, { store })
     expect(screen.getByTestId('store-view')).toBeInTheDocument()
     expect(screen.queryByTestId('automation-hub')).not.toBeInTheDocument()
+  })
+
+  it('renders StoreDetail when the store subview is store-detail', () => {
+    const store = createStore()
+    store.set(kaleidoscopeModuleAtom, 'store')
+    store.set(automationsSubviewAtom, 'store-detail')
+    renderWithProviders(<KaleidoscopeShell />, { store })
+    expect(screen.getByTestId('store-detail')).toBeInTheDocument()
+    expect(screen.queryByTestId('store-view')).not.toBeInTheDocument()
   })
 
   it('renders AppsTab for the apps module', () => {

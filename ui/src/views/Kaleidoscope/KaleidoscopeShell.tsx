@@ -26,7 +26,9 @@ export function KaleidoscopeShell(): React.ReactElement {
   const moduleId = useAtomValue(kaleidoscopeModuleAtom)
   const setHumaneSpecs = useSetAtom(humaneSpecsAtom)
 
-  // 加载已安装 specs 一次（替代 AutomationsView 退役后丢失的同名 effect）。
+  // 加载已安装 specs 一次。StoreView/StoreGrid 读 humaneSpecsAtom 算"已安装"
+  // 徽章但自己不 fetch（AutomationHub 有自己的 fetch，StoreView 没有）——
+  // 用户可能直接进应用商店模块，所以在 Shell 层兜底加载一次。
   React.useEffect(() => {
     listAutomationsHumane()
       .then(setHumaneSpecs)
