@@ -1,7 +1,7 @@
 /**
  * stt-atoms — Jotai state for the STT feature.
  *
- * - `recordingStateAtom`: the finite-state machine the inline recorder reads.
+ * - `sttModalStateAtom`: the finite-state machine the streaming modal reads.
  * - `activeComposerAtom`: cross-composer lock — only one composer can record at a time.
  * - `sttSettingsAtom`: user-tunable settings; persisted to localStorage now,
  *    will round-trip to backend stt_save_settings in Task 15.
@@ -11,15 +11,6 @@ import { atom } from 'jotai'
 import { atomWithStorage } from 'jotai/utils'
 
 export type ComposerKind = 'chat' | 'agent'
-
-export type RecordingState =
-  | { kind: 'idle' }
-  | { kind: 'requesting-permission' }
-  | { kind: 'recording'; startedAtMs: number; volume: number }
-  | { kind: 'transcribing' }
-  | { kind: 'done'; text: string }
-  | { kind: 'error'; message: string }
-  | { kind: 'permission-denied' }
 
 /**
  * 流式语音 modal 的状态机。替代 RecordingState（Task 12 删除旧的）。
@@ -57,7 +48,6 @@ export type ModelStatus =
   | { kind: 'ready'; modelDir: string }
   | { kind: 'error'; message: string }
 
-export const recordingStateAtom = atom<RecordingState>({ kind: 'idle' })
 export const activeComposerAtom = atom<ComposerKind | null>(null)
 export const sttSettingsAtom = atomWithStorage<SttSettings>('uclaw.stt.settings', DEFAULT_SETTINGS)
 export const modelStatusAtom = atom<ModelStatus>({ kind: 'unknown' })

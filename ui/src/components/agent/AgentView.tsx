@@ -730,9 +730,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     }
   }, [composerEditorRef, inputContent, setInputContent])
 
-  // handleSend is defined below; use a ref to avoid use-before-declaration.
-  const handleSendRef = React.useRef<(() => Promise<void>) | null>(null)
-
   /** 粘贴超长文本 → 转为附件 */
   const handlePasteLongText = React.useCallback((text: string): void => {
     const file = createClipboardTextFile(text)
@@ -1074,11 +1071,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         })
       })
   }, [inputContent, pendingFiles, sessionId, activeProviderModel, agentChannelId, agentModelId, currentWorkspaceId, workspaces, streaming, suggestion, currentStrategy, store, setStreamingStates, setPendingFiles, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, setMessages])
-
-  // Wire handleSendRef — kept for Task 12 cleanup.
-  React.useEffect(() => {
-    handleSendRef.current = handleSend
-  }, [handleSend])
 
   /** 停止生成 */
   const handleStop = React.useCallback((): void => {
