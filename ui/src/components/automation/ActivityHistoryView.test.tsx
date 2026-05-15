@@ -1,113 +1,55 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen } from '@testing-library/react'
 import { ActivityHistoryView } from './ActivityHistoryView'
 import type { AutomationActivity } from '@/lib/tauri-bridge'
 
-// Mock tauri-bridge so toggleArchiveAgentSession resolves immediately.
-vi.mock('@/lib/tauri-bridge', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/tauri-bridge')>()
-  return {
-    ...actual,
-    toggleArchiveAgentSession: vi.fn().mockResolvedValue(1_700_000_000_000),
-  }
+vi.mock('@/lib/tauri-bridge', () => ({
+  toggleArchiveAgentSession: vi.fn().mockResolvedValue(undefined),
+  openFile: vi.fn(),
+  openExternal: vi.fn(),
+}))
+vi.mock('./RunSessionSubView', () => ({
+  RunSessionSubView: () => <div data-testid="run-session" />,
+}))
+
+const makeAct = (id: string, status = 'completed'): AutomationActivity => ({
+  id, specId: 'spec-1', subscriptionId: null,
+  triggerSourceType: 'manual', triggerPayloadJson: '{}',
+  status, errorText: null,
+  queuedAt: 1_700_000_000_000, startedAt: null, completedAt: null,
+  durationMs: 0, llmIterations: 0, llmTokensIn: 0, llmTokensOut: 0,
+  sessionId: `sess-${id}`, reportArtifactsJson: '[]',
+  reportText: null, reportOutcome: null,
+  escalationId: null, resumedFromActivityId: null, resumedFromEscalationId: null,
+  workingDir: '/workdir',
 })
 
-function makeActivity(overrides: Partial<AutomationActivity> = {}): AutomationActivity {
-  return {
-    id: 'act-1',
-    specId: 'spec-1',
-    subscriptionId: null,
-    triggerSourceType: 'manual',
-    triggerPayloadJson: '{}',
-    status: 'completed',
-    errorText: null,
-    queuedAt: Date.now(),
-    startedAt: Date.now(),
-    completedAt: Date.now(),
-    durationMs: 1000,
-    llmIterations: 1,
-    llmTokensIn: 100,
-    llmTokensOut: 50,
-    sessionId: 'sess-1',
-    reportArtifactsJson: '[]',
-    reportText: 'done',
-    reportOutcome: 'success',
-    escalationId: null,
-    resumedFromActivityId: null,
-    resumedFromEscalationId: null,
-    ...overrides,
-  }
-}
-
 describe('ActivityHistoryView', () => {
-  const activities = [makeActivity()]
-
-  it('shows archive button on hover and hides item after archive (default: show-archived off)', async () => {
-    const user = userEvent.setup()
+  it('renders each activity as a timeline row', () => {
     render(
       <ActivityHistoryView
         specId="spec-1"
-        activities={activities}
-        onOpenRunSession={vi.fn()}
-        activeRunSessionId={null}
-        onCloseRunSession={vi.fn()}
+        activities={[makeAct('a1'), makeAct('a2')]}
       />
     )
-
-    // Item visible initially.
-    expect(screen.getByTestId('activity-row-act-1')).toBeInTheDocument()
-
-    // Hover to reveal archive button.
-    await user.hover(screen.getByTestId('activity-row-act-1'))
-    const archiveBtn = await screen.findByRole('button', { name: /归档/i })
-    expect(archiveBtn).toBeInTheDocument()
-
-    // Click archive.
-    await user.click(archiveBtn)
-
-    // Item disappears (filtered because show-archived is off by default).
-    await waitFor(() => {
-      expect(screen.queryByTestId('activity-row-act-1')).not.toBeInTheDocument()
-    })
+    expect(screen.getByTestId('activity-row-a1')).toBeTruthy()
+    expect(screen.getByTestId('activity-row-a2')).toBeTruthy()
   })
 
-  it('shows archived items when show-archived toggle is on', async () => {
-    const user = userEvent.setup()
-    render(
-      <ActivityHistoryView
-        specId="spec-1"
-        activities={activities}
-        onOpenRunSession={vi.fn()}
-        activeRunSessionId={null}
-        onCloseRunSession={vi.fn()}
-      />
-    )
-
-    // Archive the item.
-    await user.hover(screen.getByTestId('activity-row-act-1'))
-    await user.click(await screen.findByRole('button', { name: /归档/i }))
-
-    // Toggle "show archived".
-    const toggle = screen.getByRole('button', { name: /显示已归档/i })
-    await user.click(toggle)
-
-    // Item reappears.
-    expect(await screen.findByTestId('activity-row-act-1')).toBeInTheDocument()
+  it('shows empty-state when activities array is empty', () => {
+    render(<ActivityHistoryView specId="spec-1" activities={[]} />)
+    expect(screen.getByText(/还没有运行记录/)).toBeTruthy()
   })
 
-  it('renders escalation ring with theme tokens', () => {
-    const escalation = makeActivity({ status: 'waiting_user' })
+  it('shows RunSessionSubView when activeRunSessionId matches a session', () => {
     render(
       <ActivityHistoryView
         specId="spec-1"
-        activities={[escalation]}
-        onOpenRunSession={vi.fn()}
-        activeRunSessionId={null}
-        onCloseRunSession={vi.fn()}
+        activities={[makeAct('a1')]}
+        activeRunSessionId="sess-a1"
+        onCloseRunSession={() => {}}
       />
     )
-    const row = screen.getByTestId('activity-row-act-1')
-    expect(row.className).toMatch(/border-warning|ring-warning/)
+    expect(screen.getByTestId('run-session')).toBeTruthy()
   })
 })

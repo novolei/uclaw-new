@@ -11,6 +11,23 @@ interface Props {
   onCloseRunSession?: () => void
 }
 
+function dotColorClass(activity: AutomationActivity): string {
+  const { status, reportOutcome } = activity
+  if (status === 'running' || status === 'queued')
+    return 'bg-primary animate-pulse'
+  if (status === 'failed' || reportOutcome === 'error')
+    return 'bg-red-500'
+  if (status === 'waiting_user')
+    return 'bg-yellow-500'
+  if (status === 'cancelled')
+    return 'bg-gray-400'
+  if (status === 'completed') {
+    if (reportOutcome === 'useful') return 'bg-green-500'
+    return 'bg-gray-500'
+  }
+  return 'bg-gray-500'
+}
+
 export function ActivityHistoryView({
   specId: _specId,
   activities,
@@ -18,8 +35,6 @@ export function ActivityHistoryView({
   activeRunSessionId,
   onCloseRunSession,
 }: Props) {
-  // Local tracking: session IDs archived in this session. Avoids a backend
-  // query change — items filtered here reappear in the next full reload.
   const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set())
   const [showArchived, setShowArchived] = useState(false)
 
@@ -31,6 +46,7 @@ export function ActivityHistoryView({
       <RunSessionSubView
         sessionId={activeRunSessionId}
         isRunning={isRunning}
+        activity={activeActivity ?? null}
         onBack={() => onCloseRunSession?.()}
       />
     )
@@ -65,14 +81,30 @@ export function ActivityHistoryView({
           </button>
         </div>
       )}
-      <div className="flex-1 flex flex-col gap-2 p-3 overflow-y-auto">
-        {visible.map((act) => (
-          <ActivityListItem
-            key={act.id}
-            activity={act}
-            onOpenRunSession={onOpenRunSession}
-            onArchived={handleArchived}
-          />
+
+      {/* Timeline list */}
+      <div className="flex-1 flex flex-col overflow-y-auto px-3 pt-3 pb-1">
+        {visible.map((act, idx) => (
+          <div key={act.id} className="flex gap-3">
+            {/* Dot + connector */}
+            <div className="flex flex-col items-center w-3 shrink-0 pt-1.5">
+              <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${dotColorClass(act)}`} />
+              {idx < visible.length - 1 && (
+                <div
+                  className="w-px flex-1 bg-border/30 mt-1"
+                  style={{ minHeight: '1.5rem' }}
+                />
+              )}
+            </div>
+            {/* Card */}
+            <div className="flex-1 pb-3 group min-w-0">
+              <ActivityListItem
+                activity={act}
+                onOpenRunSession={onOpenRunSession}
+                onArchived={handleArchived}
+              />
+            </div>
+          </div>
         ))}
         {visible.length === 0 && (
           <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
