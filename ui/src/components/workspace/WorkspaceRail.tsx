@@ -29,6 +29,7 @@ import { tabsAtom } from '@/atoms/tab-atoms'
 import type { AgentWorkspace, AgentSessionMeta } from '@/lib/agent-types'
 import { toggleArchiveAgentSession, deleteAgentSession } from '@/lib/tauri-bridge'
 import type { WorkspaceSession } from '@/atoms/workspace'
+import { Archive, ArrowLeft } from 'lucide-react'
 import { toast } from 'sonner'
 
 /**
@@ -274,12 +275,23 @@ export function WorkspaceRail({
       {/* Archived sessions toggle — only visible when ≥1 session has been archived. */}
       {(archivedCount > 0 || showArchived) && (
         <div className="px-3 pb-2 shrink-0">
-          <button
-            onClick={() => setShowArchived((v) => !v)}
-            className="w-full text-left text-[11px] text-muted-foreground hover:text-foreground px-2 py-1 rounded transition-colors"
-          >
-            {showArchived ? '← 返回会话' : `已归档 (${archivedCount})`}
-          </button>
+          {showArchived ? (
+            <button
+              onClick={() => setShowArchived(false)}
+              className="titlebar-no-drag w-full flex items-center gap-2 px-3 py-2 rounded-[10px] text-[12px] text-foreground/60 bg-foreground/[0.04] hover:bg-foreground/[0.07] hover:text-foreground/80 transition-colors"
+            >
+              <ArrowLeft size={13} className="text-foreground/50" />
+              <span>返回活跃会话</span>
+            </button>
+          ) : (
+            <button
+              onClick={() => setShowArchived(true)}
+              className="titlebar-no-drag w-full flex items-center gap-2 px-3 py-2 rounded-[10px] text-[12px] text-foreground/40 hover:bg-foreground/[0.04] hover:text-foreground/60 transition-colors"
+            >
+              <Archive size={13} className="text-foreground/30" />
+              <span>已归档 ({archivedCount})</span>
+            </button>
+          )}
         </div>
       )}
       {moveTargetSession && (
