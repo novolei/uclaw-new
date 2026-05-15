@@ -67,6 +67,6 @@ describe('ActivityHistoryView', () => {
     const act = makeActivity({ status: 'waiting_user', escalationId: 'esc-1' })
     renderWithProviders(<ActivityHistoryView specId="spec-1" activities={[act]} />)
     const row = screen.getByTestId('activity-row-act-1')
-    expect(row.className).toMatch(/border-orange|border-amber|ring-orange/)
+    expect(row.className).toMatch(/border-warning|ring-warning/)
   })
 })

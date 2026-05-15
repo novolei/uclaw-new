@@ -37,7 +37,7 @@ export function ActivityListItem({ activity, onOpenRunSession }: Props) {
       data-testid={`activity-row-${activity.id}`}
       className={[
         'rounded-lg border p-3 bg-background',
-        isEscalation ? 'border-orange-400 ring-1 ring-orange-200' : 'border-border/50',
+        isEscalation ? 'border-warning ring-1 ring-warning/20' : 'border-border/50',
       ].join(' ')}
     >
       <div className="flex items-center justify-between gap-2">
