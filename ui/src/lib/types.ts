@@ -1090,6 +1090,16 @@ export interface LearnedSkill {
   createdAt: string;
 }
 
+// ─── Create Skill ────────────────────────────────────────────────────
+
+export interface CreateSkillInput {
+  name: string;
+  description: string;
+  category?: string;
+  keywords?: string[];
+  enabled?: boolean;
+}
+
 // ===== Cost dashboard =====
 
 export interface DailyCostRollup {

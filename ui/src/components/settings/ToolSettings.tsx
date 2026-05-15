@@ -77,7 +77,7 @@ export function ToolSettings() {
           {activeManifest && activeManifest.length > 0 && (
             <div className="space-y-1">
               {activeManifest.map((row) => {
-                const badge = PROVENANCE_BADGE[row.provenance]
+                const badge = PROVENANCE_BADGE[row.provenance] ?? { label: row.provenance, className: 'bg-muted text-muted-foreground border-border' }
                 return (
                   <div
                     key={`${row.rank}-${row.name}`}

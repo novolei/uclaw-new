@@ -158,10 +158,12 @@ export function SttSettings(): React.ReactElement {
               }
               options={[
                 { value: '__default__', label: '系统默认' },
-                ...devices.map((d) => ({
-                  value: d.deviceId,
-                  label: d.label || `Mic ${d.deviceId.slice(0, 8)}`,
-                })),
+                ...devices
+                  .filter((d) => d.deviceId !== '')
+                  .map((d) => ({
+                    value: d.deviceId,
+                    label: d.label || `Mic ${d.deviceId.slice(0, 8)}`,
+                  })),
               ]}
             />
           </SettingsRow>

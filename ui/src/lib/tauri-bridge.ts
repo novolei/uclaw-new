@@ -553,7 +553,7 @@ export const applySkillConsolidation = (
 ): Promise<SkillConsolidationResult> =>
   invoke('apply_skill_consolidation', { plan });
 
-// — Skill version history —
+// ─ Skill version history ─
 
 export interface SkillVersionInfo {
   id: string;
@@ -567,6 +567,21 @@ export const getSkillVersions = (nodeId: string): Promise<SkillVersionInfo[]> =>
     console.error('[getSkillVersions]', e);
     return [];
   });
+
+// ─ User skill creation / deletion ─
+
+export interface CreateUserSkillInput {
+  name: string;
+  description: string;
+  category?: string;
+  keywords?: string[];
+}
+
+export const createUserSkill = async (input: CreateUserSkillInput): Promise<string> =>
+  invoke('create_user_skill', { input });
+
+export const deleteUserSkill = async (name: string): Promise<void> =>
+  invoke('delete_user_skill', { name });
 
 // ─────────────────────────────────────────────────────────
 // Memory Graph
