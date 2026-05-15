@@ -5,32 +5,41 @@ import type { AgentMessage } from '@/lib/agent-types'
 
 interface Props {
   specId: string
-  showRightPanel: boolean
-  onToggleRightPanel: () => void
 }
 
 export function HomeThreadView({ specId }: Props) {
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [loaded, setLoaded] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [retryKey, setRetryKey] = useState(0)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
+    let cancelled = false
     setLoaded(false)
     setMessages([])
     setSessionId(null)
+    setError(null)
     getOrCreateSpecHomeThread(specId)
       .then((session) => {
+        if (cancelled) return null
         setSessionId(session.id)
         return getAgentSessionMessages(session.id)
       })
       .then((msgs) => {
-        setMessages(msgs as AgentMessage[])
-        setLoaded(true)
+        if (!cancelled && msgs) {
+          setMessages(msgs as AgentMessage[])
+          setLoaded(true)
+        }
       })
-  }, [specId])
+      .catch((err) => {
+        if (!cancelled) setError(err?.message ?? '加载失败')
+      })
+    return () => { cancelled = true }
+  }, [specId, retryKey])
 
   async function handleSend() {
     if (!sessionId || !input.trim() || sending) return
@@ -52,6 +61,20 @@ export function HomeThreadView({ specId }: Props) {
       e.preventDefault()
       handleSend()
     }
+  }
+
+  if (error) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+        <span>加载失败：{error}</span>
+        <button
+          onClick={() => { setError(null); setRetryKey(k => k + 1) }}
+          className="titlebar-no-drag text-primary underline"
+        >
+          重试
+        </button>
+      </div>
+    )
   }
 
   if (!sessionId) {
