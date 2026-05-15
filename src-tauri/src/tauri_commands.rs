@@ -3686,6 +3686,7 @@ pub async fn list_learned_skills(
                     "usageCount": meta.get("usage_count").and_then(|v| v.as_u64()).unwrap_or(0),
                     "citedCount": meta.get("cited_count").and_then(|v| v.as_u64()).unwrap_or(0),
                     "lastCitedAt": meta.get("last_cited_at").cloned().unwrap_or(serde_json::Value::Null),
+                    "lifecycle": meta.get("lifecycle").and_then(|v| v.as_str()).unwrap_or("promoted"),
                     "createdAt": node.created_at,
                 }));
             }
@@ -3721,6 +3722,8 @@ pub async fn get_learned_skill(
         "pitfalls": meta.get("pitfalls").cloned().unwrap_or(serde_json::Value::Null),
         "enabled": meta.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
         "usageCount": meta.get("usage_count").and_then(|v| v.as_u64()).unwrap_or(0),
+        "citedCount": meta.get("cited_count").and_then(|v| v.as_u64()).unwrap_or(0),
+        "lifecycle": meta.get("lifecycle").and_then(|v| v.as_str()).unwrap_or("promoted"),
         "createdAt": node.created_at,
         "content": content,
     }))
@@ -3773,6 +3776,7 @@ pub async fn delete_learned_skill(
 #[tauri::command]
 pub async fn record_skill_cited(
     state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
     space_id: Option<String>,
     title: String,
 ) -> Result<Option<String>, String> {
@@ -3801,19 +3805,40 @@ pub async fn record_skill_cited(
 
     // Bump cited_count via json_set (mirrors bump_skill_usage shape).
     let mut meta = node.metadata.clone().unwrap_or(serde_json::json!({}));
+    let new_cited_count: u64;
     if let Some(obj) = meta.as_object_mut() {
         let prev = obj
             .get("cited_count")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+        new_cited_count = prev + 1;
         obj.insert(
             "cited_count".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(prev + 1)),
+            serde_json::Value::Number(serde_json::Number::from(new_cited_count)),
         );
         obj.insert(
             "last_cited_at".to_string(),
             serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
         );
+    } else {
+        new_cited_count = 1;
+    }
+
+    // Check for auto-promotion: draft skills with cited_count >= 3 get promoted.
+    let lifecycle = meta
+        .as_object()
+        .and_then(|obj| obj.get("lifecycle"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("promoted");
+
+    let should_promote = lifecycle == "draft" && new_cited_count >= 3;
+    if should_promote {
+        if let Some(obj) = meta.as_object_mut() {
+            obj.insert(
+                "lifecycle".to_string(),
+                serde_json::Value::String("promoted".to_string()),
+            );
+        }
     }
 
     if let Err(e) = store.update_node(&node.id, None, None, Some(&meta)) {
@@ -3826,8 +3851,24 @@ pub async fn record_skill_cited(
         tracing::info!(
             node_id = %node.id,
             title = %node.title,
+            cited_count = new_cited_count,
             "record_skill_cited: bumped cited_count"
         );
+
+        // Emit lifecycle-changed event if auto-promoted
+        if should_promote {
+            tracing::info!(
+                node_id = %node.id,
+                title = %node.title,
+                "record_skill_cited: auto-promoted draft skill (cited_count >= 3)"
+            );
+            let _ = app_handle.emit("skill:lifecycle-changed", serde_json::json!({
+                "nodeId": node.id,
+                "oldLifecycle": "draft",
+                "newLifecycle": "promoted",
+                "reason": "auto_promotion_3_citations"
+            }));
+        }
     }
 
     Ok(Some(node.id))

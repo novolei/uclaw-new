@@ -459,6 +459,16 @@ export const deleteLearnedSkill = (skillId: string): Promise<void> =>
   invoke('delete_learned_skill', { skillId });
 
 /**
+ * Set the lifecycle stage of a learned skill.
+ * Stages: 'draft' | 'promoted' | 'deprecated'
+ */
+export const setSkillLifecycle = (
+  nodeId: string,
+  lifecycle: 'draft' | 'promoted' | 'deprecated',
+): Promise<void> =>
+  invoke('set_skill_lifecycle', { nodeId, lifecycle });
+
+/**
  * Record that the LLM cited a learned skill in its response.
  * Bumps `cited_count` in metadata (separate from `usage_count` /
  * `recalled_count`). Returns the matched skill_id, or null if the

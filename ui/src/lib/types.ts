@@ -1082,6 +1082,8 @@ export interface LearnedSkill {
   pitfalls: string;
   enabled: boolean;
   usageCount: number;
+  citedCount?: number;
+  lifecycle?: 'draft' | 'promoted' | 'deprecated';
   createdAt: string;
 }
 

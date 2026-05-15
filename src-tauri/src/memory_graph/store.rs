@@ -252,10 +252,16 @@ impl MemoryGraphStore {
                AND COALESCE(json_extract(metadata_json, '$.lifecycle'), 'promoted') = 'promoted'
              ORDER BY (
                CAST(COALESCE(json_extract(metadata_json, '$.cited_count'), 0) AS REAL) *
-                 MAX(0.5,
-                     1.0 - (julianday('now') - julianday(COALESCE(json_extract(metadata_json, '$.last_cited_at'),
-                                                                  '1970-01-01T00:00:00Z'))) / 30.0
-                 ) * 10.0
+                 CASE
+                   WHEN json_extract(metadata_json, '$.last_cited_at') IS NULL THEN 0.5
+                   WHEN (julianday('now') - julianday(json_extract(metadata_json, '$.last_cited_at'))) <= 7.0 THEN 1.0
+                   WHEN (julianday('now') - julianday(json_extract(metadata_json, '$.last_cited_at'))) <= 30.0 THEN
+                     1.0 - ((julianday('now') - julianday(json_extract(metadata_json, '$.last_cited_at'))) - 7.0) / 46.0
+                   WHEN (julianday('now') - julianday(json_extract(metadata_json, '$.last_cited_at'))) <= 90.0 THEN
+                     0.5 - ((julianday('now') - julianday(json_extract(metadata_json, '$.last_cited_at'))) - 30.0) / 150.0
+                   ELSE 0.1
+                 END
+               * 10.0
                + CAST(COALESCE(json_extract(metadata_json, '$.usage_count'), 0) AS REAL) * 3.0
              ) DESC,
              updated_at DESC

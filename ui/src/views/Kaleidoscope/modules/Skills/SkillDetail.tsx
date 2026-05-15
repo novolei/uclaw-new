@@ -7,12 +7,20 @@
  */
 import * as React from 'react'
 import Markdown from 'react-markdown'
-import { History } from 'lucide-react'
+import { History, ArrowUp, Archive, RotateCcw } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
 import { SkillEvolutionTab } from '@/components/settings/SkillEvolutionTab'
 import { cn } from '@/lib/utils'
+import { setSkillLifecycle } from '@/lib/tauri-bridge'
+import { toast } from 'sonner'
 import type { UnifiedSkill } from './SkillsModule'
+
+const LIFECYCLE_BADGE: Record<string, { label: string; className: string }> = {
+  draft:      { label: '草稿', className: 'bg-yellow-500/15 text-yellow-700 border-yellow-500/30 dark:text-yellow-400' },
+  promoted:   { label: '已晋升', className: 'bg-emerald-500/15 text-emerald-700 border-emerald-500/30 dark:text-emerald-400' },
+  deprecated: { label: '已弃用', className: 'bg-muted text-muted-foreground border-border' },
+}
 
 const PROVENANCE_BADGE: Record<'bundled' | 'user' | 'project' | 'marketplace', { label: string; className: string }> = {
   bundled:     { label: 'Bundled',     className: 'bg-primary/10 text-primary border-primary/20' },
@@ -56,6 +64,7 @@ export interface SkillDetailProps {
   onToggleEnabled: (skill: UnifiedSkill, next: boolean) => void
   onRequestDelete: (skill: UnifiedSkill) => void
   onFork: (name: string) => void
+  onLifecycleChanged?: () => void
 }
 
 export function SkillDetail({
@@ -64,13 +73,28 @@ export function SkillDetail({
   onToggleEnabled,
   onRequestDelete,
   onFork,
+  onLifecycleChanged,
 }: SkillDetailProps): React.ReactElement {
   const [showTimeline, setShowTimeline] = React.useState(false)
+  const [lifecycleUpdating, setLifecycleUpdating] = React.useState(false)
 
   // 切换选中技能时收起演化历史。
   React.useEffect(() => {
     setShowTimeline(false)
   }, [skill?.id])
+
+  const handleLifecycleChange = async (nodeId: string, newLifecycle: 'draft' | 'promoted' | 'deprecated') => {
+    setLifecycleUpdating(true)
+    try {
+      await setSkillLifecycle(nodeId, newLifecycle)
+      toast.success(`技能状态已更新为 "${LIFECYCLE_BADGE[newLifecycle]?.label}"`)
+      onLifecycleChanged?.()
+    } catch (err) {
+      toast.error(`更新失败: ${err}`)
+    } finally {
+      setLifecycleUpdating(false)
+    }
+  }
 
   if (!skill) {
     return (
@@ -90,6 +114,15 @@ export function SkillDetail({
             <span className="rounded-full bg-accent/15 border border-accent/35 px-2 py-0.5 text-[10px] text-accent-foreground">
               {skill.kind === 'learned' ? '学得' : '内置'}
             </span>
+            {skill.kind === 'learned' && (() => {
+              const lc = skill.raw.lifecycle || 'promoted'
+              const badge = LIFECYCLE_BADGE[lc]
+              return badge ? (
+                <span className={`rounded-full border px-2 py-0.5 text-[10px] ${badge.className}`}>
+                  {badge.label}
+                </span>
+              ) : null
+            })()}
             {skill.kind === 'builtin' && skill.raw.provenance && (
               <span
                 className={`rounded-full border px-2 py-0.5 text-[10px] ${PROVENANCE_BADGE[skill.raw.provenance].className}`}
@@ -100,7 +133,7 @@ export function SkillDetail({
           </div>
           {skill.kind === 'learned' ? (
             <div className="mt-1 text-[11px] text-muted-foreground tabular-nums">
-              使用 {skill.raw.usageCount} 次 · 创建于 {formatDate(skill.raw.createdAt)}
+              使用 {skill.raw.usageCount} 次{skill.raw.citedCount ? ` · 引用 ${skill.raw.citedCount} 次` : ''} · 创建于 {formatDate(skill.raw.createdAt)}
             </div>
           ) : (
             <div className="mt-1 text-[11px] text-muted-foreground">
@@ -140,6 +173,51 @@ export function SkillDetail({
         </div>
       ) : (
         <div className="mt-5 space-y-3 text-[12.5px] text-foreground/90">
+          {/* Lifecycle 操作栏 */}
+          <div className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2">
+            <span className="text-[11px] text-muted-foreground mr-auto">生命周期</span>
+            {(() => {
+              const lc = skill.raw.lifecycle || 'promoted'
+              if (lc === 'draft') return (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={lifecycleUpdating}
+                  onClick={() => handleLifecycleChange(skill.raw.id, 'promoted')}
+                  className="h-6 px-2 text-[10.5px] gap-1"
+                >
+                  <ArrowUp className="size-3" />
+                  晋升
+                </Button>
+              )
+              if (lc === 'promoted') return (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={lifecycleUpdating}
+                  onClick={() => handleLifecycleChange(skill.raw.id, 'deprecated')}
+                  className="h-6 px-2 text-[10.5px] gap-1"
+                >
+                  <Archive className="size-3" />
+                  弃用
+                </Button>
+              )
+              if (lc === 'deprecated') return (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={lifecycleUpdating}
+                  onClick={() => handleLifecycleChange(skill.raw.id, 'promoted')}
+                  className="h-6 px-2 text-[10.5px] gap-1"
+                >
+                  <RotateCcw className="size-3" />
+                  恢复
+                </Button>
+              )
+              return null
+            })()}
+          </div>
+
           <div className="flex items-center justify-between">
             <button
               type="button"

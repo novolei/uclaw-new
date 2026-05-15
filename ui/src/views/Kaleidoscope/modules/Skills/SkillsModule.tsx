@@ -50,6 +50,7 @@ export function SkillsModule(): React.ReactElement {
   const [forkingName, setForkingName] = React.useState<string | null>(null)
   const [proposing, setProposing] = React.useState(false)
   const [backfilling, setBackfilling] = React.useState(false)
+  const [lifecycleFilter, setLifecycleFilter] = React.useState<'all' | 'promoted' | 'draft' | 'deprecated'>('all')
   const [proposal, setProposal] = React.useState<SkillConsolidationProposal | null>(null)
   const [consolidationOpen, setConsolidationOpen] = React.useState(false)
 
@@ -225,11 +226,13 @@ export function SkillsModule(): React.ReactElement {
             canPropose={enabledLearnedCount >= 2}
             proposing={proposing}
             backfilling={backfilling}
+            lifecycleFilter={lifecycleFilter}
             onSelect={setSelectedId}
             onQueryChange={setQuery}
             onReload={() => void onReload()}
             onPropose={() => void onPropose()}
             onBackfill={() => void onBackfill()}
+            onLifecycleFilterChange={setLifecycleFilter}
           />
           <SkillDetail
             skill={selected}
@@ -237,6 +240,7 @@ export function SkillsModule(): React.ReactElement {
             onToggleEnabled={(s, next) => void onToggleEnabled(s, next)}
             onRequestDelete={(s) => setPendingDelete(s)}
             onFork={(name) => void onFork(name)}
+            onLifecycleChanged={() => void refetch()}
           />
         </div>
       )}
