@@ -1165,6 +1165,12 @@ CREATE TABLE IF NOT EXISTS marketplace_standalone_installs (
 );
 ";
 
+/// V26 — conversations gains `archived` + `archived_at` for general session archiving.
+const SQL_V26: &str = "
+ALTER TABLE conversations ADD COLUMN archived  INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE conversations ADD COLUMN archived_at INTEGER;
+";
+
 pub fn run_v23a(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.execute_batch(V23A_MARKETPLACE_CACHE)
 }
@@ -1368,6 +1374,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in SQL_V25.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V25 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V26: conversations.archived + archived_at
+    tracing::debug!("Running migration V26: conversations archived columns");
+    for stmt in SQL_V26.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V26 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -2060,5 +2073,24 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         super::run(&conn).expect("first run");
         super::run(&conn).expect("second run must not error");
+    }
+
+    #[test]
+    fn v26_conversations_archived_columns_exist() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        let archived: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'archived'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(archived, 1, "conversations.archived column missing");
+
+        let archived_at: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'archived_at'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(archived_at, 1, "conversations.archived_at column missing");
     }
 }
