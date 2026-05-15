@@ -146,8 +146,111 @@ impl ChannelManager {
         results
     }
 
+    /// Send notification to all enabled channels of the given type.
+    /// Channels whose sender is not registered are silently skipped.
+    pub async fn send_to_type(
+        &self,
+        target_type: &ChannelType,
+        notification: &ChannelNotification,
+    ) -> Vec<(String, Result<(), String>)> {
+        let mut results = Vec::new();
+        for (id, (config, _)) in &self.channels {
+            if !config.enabled || &config.channel_type != target_type {
+                continue;
+            }
+            let sender_key = match config.channel_type {
+                ChannelType::Webhook  => "webhook",
+                ChannelType::Email    => "email",
+                ChannelType::WeChat   => "wechat",
+                ChannelType::DingTalk => "dingtalk",
+                ChannelType::Feishu   => "feishu",
+                ChannelType::Custom   => "custom",
+            };
+            if let Some(sender) = self.senders.get(sender_key) {
+                let result = sender.send(notification, config).await;
+                results.push((id.clone(), result));
+            }
+        }
+        results
+    }
+
     /// List all channels
     pub fn list(&self) -> Vec<&ChannelConfig> {
         self.channels.values().map(|(c, _)| c).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct AlwaysOkSender;
+
+    #[async_trait::async_trait]
+    impl ChannelSender for AlwaysOkSender {
+        async fn send(
+            &self,
+            _n: &ChannelNotification,
+            _c: &ChannelConfig,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn name(&self) -> &str { "email" }
+    }
+
+    fn test_mgr() -> ChannelManager {
+        let mut mgr = ChannelManager::new();
+        mgr.register_sender("email", Box::new(AlwaysOkSender));
+        mgr.add_channel(ChannelConfig {
+            id: "e1".into(),
+            name: "Email 1".into(),
+            channel_type: ChannelType::Email,
+            enabled: true,
+            webhook_url: None,
+            config: None,
+        });
+        mgr.add_channel(ChannelConfig {
+            id: "w1".into(),
+            name: "WeChat 1".into(),
+            channel_type: ChannelType::WeChat,
+            enabled: true,
+            webhook_url: None,
+            config: None,
+        });
+        mgr
+    }
+
+    #[tokio::test]
+    async fn send_to_type_filters_by_channel_type() {
+        let mgr = test_mgr();
+        let notif = ChannelNotification {
+            title: "T".into(),
+            body: "B".into(),
+            level: "info".into(),
+            metadata: None,
+        };
+
+        // Email sender is registered — should match e1 only.
+        let results = mgr.send_to_type(&ChannelType::Email, &notif).await;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "e1");
+        assert!(results[0].1.is_ok());
+
+        // WeChat sender is NOT registered — config matches w1 but no sender,
+        // so results are empty (the outer `if let Some(sender)` guard).
+        let results = mgr.send_to_type(&ChannelType::WeChat, &notif).await;
+        assert_eq!(results.len(), 0, "wechat sender not registered → 0 results");
+    }
+
+    #[tokio::test]
+    async fn send_to_type_skips_disabled_channels() {
+        let mut mgr = test_mgr();
+        // Disable e1
+        mgr.set_enabled("e1", false);
+        let notif = ChannelNotification {
+            title: "T".into(), body: "B".into(), level: "info".into(), metadata: None,
+        };
+        let results = mgr.send_to_type(&ChannelType::Email, &notif).await;
+        assert_eq!(results.len(), 0, "disabled channel should be skipped");
     }
 }
