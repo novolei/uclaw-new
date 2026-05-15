@@ -25,6 +25,8 @@ export interface WorkspaceSession {
    *  Present for automation run-sessions (origin starts with "automation:").
    *  Used by WorkspaceRail to filter out automation sessions from the rail. */
   metadataJson?: string
+  /** True when the session has been archived by the user. */
+  archived?: boolean
 }
 
 // All workspaces from backend
@@ -238,6 +240,7 @@ export const syncWorkspaceSessionsAtom = atom(
         updatedAt: s.updatedAt ?? '',
         pinnedAt: typeof s.pinnedAt === 'number' ? s.pinnedAt : null,
         metadataJson: typeof s.metadataJson === 'string' ? s.metadataJson : undefined,
+        archived: !!s.archived,
       })
     }
     set(workspaceSessionsAtom, grouped)

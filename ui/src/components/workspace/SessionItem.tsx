@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { LoaderCircle, MoreHorizontal, FolderInput, Trash2, Pin, PinOff } from 'lucide-react'
+import { LoaderCircle, MoreHorizontal, FolderInput, Trash2, Pin, PinOff, Archive, ArchiveRestore } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   DropdownMenu,
@@ -28,6 +28,10 @@ interface SessionItemProps {
   onMove?: () => void
   /** Toggle the session's pin state. Omitted = menu item hidden. */
   onTogglePin?: () => void
+  /** Toggle the session's archive state. Omitted = menu item hidden. */
+  onToggleArchive?: () => void
+  /** True when session is currently archived. */
+  isArchived?: boolean
 }
 
 function SessionItemImpl({
@@ -42,8 +46,10 @@ function SessionItemImpl({
   onDelete,
   onMove,
   onTogglePin,
+  onToggleArchive,
+  isArchived,
 }: SessionItemProps): React.ReactElement {
-  const hasMenu = Boolean(onDelete || onMove || onTogglePin)
+  const hasMenu = Boolean(onDelete || onMove || onTogglePin || onToggleArchive)
   return (
     <div
       onClick={onClick}
@@ -133,6 +139,15 @@ function SessionItemImpl({
                 >
                   {isPinned ? <PinOff /> : <Pin />}
                   {isPinned ? '取消固定' : '固定'}
+                </DropdownMenuItem>
+              )}
+              {onToggleArchive && (
+                <DropdownMenuItem
+                  className="text-xs py-1 [&>svg]:size-3.5"
+                  onSelect={() => { onToggleArchive() }}
+                >
+                  {isArchived ? <ArchiveRestore /> : <Archive />}
+                  {isArchived ? '取消归档' : '归档'}
                 </DropdownMenuItem>
               )}
               {onMove && (

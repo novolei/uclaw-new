@@ -27,6 +27,7 @@ import {
 } from '@/atoms/agent-atoms'
 import { tabsAtom } from '@/atoms/tab-atoms'
 import type { AgentWorkspace } from '@/lib/agent-types'
+import { toggleArchiveAgentSession } from '@/lib/tauri-bridge'
 import { toast } from 'sonner'
 
 /**
@@ -73,6 +74,7 @@ export function WorkspaceRail({
   const refreshWorkspaces = useSetAtom(refreshWorkspacesAtom)
 
   const [moveTargetSessionId, setMoveTargetSessionId] = React.useState<string | null>(null)
+  const [showArchived, setShowArchived] = React.useState(false)
   const agentSessions = useAtomValue(agentSessionsAtom)
   const moveTargetSession = moveTargetSessionId
     ? agentSessions.find((s) => s.id === moveTargetSessionId)
@@ -105,9 +107,12 @@ export function WorkspaceRail({
     [tabs],
   )
 
-  const sessions = (
+  const allSessions = (
     activeWorkspaceId ? (workspaceSessions[activeWorkspaceId] ?? []) : []
   ).filter((s) => !isAutomationSession(s))
+
+  const archivedCount = allSessions.filter((s) => !!s.archived).length
+  const sessions = allSessions.filter((s) => showArchived ? !!s.archived : !s.archived)
 
   // Two-segment split: pinned (sorted by pinnedAt DESC — most recently
   // pinned at the top) and unpinned (preserves the source atom's
@@ -123,6 +128,17 @@ export function WorkspaceRail({
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       toast.error(`固定失败：${msg}`)
+    }
+  }
+
+  const handleToggleArchive = async (id: string): Promise<void> => {
+    try {
+      await toggleArchiveAgentSession(id)
+      // After archiving/restoring, if not in archived view switch to normal; let
+      // the next syncWorkspaceSessionsAtom refresh move the session out of view.
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(`归档操作失败：${msg}`)
     }
   }
 
@@ -151,11 +167,13 @@ export function WorkspaceRail({
                 isActive={activeSessionId === s.id}
                 running={indicatorMap.get(s.id) === 'running'}
                 isPinned
+                isArchived={!!s.archived}
                 isOpen={openSessionIds.has(s.id)}
                 onClick={() => onSelectSession(s.id)}
                 onDelete={onDeleteSession ? () => onDeleteSession(s.id) : undefined}
                 onMove={() => setMoveTargetSessionId(s.id)}
                 onTogglePin={() => void handleTogglePin(s.id)}
+                onToggleArchive={() => void handleToggleArchive(s.id)}
               />
             ))}
           </>
@@ -175,14 +193,28 @@ export function WorkspaceRail({
             isActive={activeSessionId === s.id}
             running={indicatorMap.get(s.id) === 'running'}
             isPinned={false}
+            isArchived={!!s.archived}
             isOpen={openSessionIds.has(s.id)}
             onClick={() => onSelectSession(s.id)}
             onDelete={onDeleteSession ? () => onDeleteSession(s.id) : undefined}
             onMove={() => setMoveTargetSessionId(s.id)}
             onTogglePin={() => void handleTogglePin(s.id)}
+            onToggleArchive={() => void handleToggleArchive(s.id)}
           />
         ))}
       </div>
+
+      {/* Archived sessions toggle — only visible when ≥1 session has been archived. */}
+      {(archivedCount > 0 || showArchived) && (
+        <div className="px-3 pb-2 shrink-0">
+          <button
+            onClick={() => setShowArchived((v) => !v)}
+            className="w-full text-left text-[11px] text-muted-foreground hover:text-foreground px-2 py-1 rounded transition-colors"
+          >
+            {showArchived ? '← 返回会话' : `已归档 (${archivedCount})`}
+          </button>
+        </div>
+      )}
       {moveTargetSession && (
         <MoveSessionDialog
           open={moveTargetSessionId !== null}
