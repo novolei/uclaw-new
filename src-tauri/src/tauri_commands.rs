@@ -365,6 +365,45 @@ pub async fn send_message(
     // Wire thinking_enabled from the request
     delegate.set_thinking_enabled(input.thinking_enabled.unwrap_or(false));
 
+    // Resolve space_id once — reused by both skills manifest and memory recall.
+    let space_id: String = {
+        let session_mgr = state.session_manager.read().await;
+        session_mgr.get_space_id(&input.conversation_id).unwrap_or_else(|| "default".to_string())
+    };
+
+    // ── Skills Manifest Injection ────────────────────────────────────
+    // Build and inject the skills manifest so the LLM sees available
+    // skills and can use skill_search / load_skill tools.
+    {
+        use crate::skills_manifest::StrategyBias;
+
+        // Cold-start guard: if no skills have been discovered yet, trigger
+        // discovery once. Double-check after acquiring write lock to avoid
+        // redundant scans under contention.
+        {
+            let registry = state.skills_registry.read().await;
+            if registry.list().is_empty() {
+                drop(registry);
+                let mut registry_w = state.skills_registry.write().await;
+                if registry_w.list().is_empty() {
+                    registry_w.discover();
+                }
+            }
+        }
+
+        let registry = state.skills_registry.read().await;
+        let manifest = crate::skills_manifest::build_skills_manifest(
+            &registry,
+            &state.memory_graph_store,
+            &space_id,
+            30,
+            800,
+            StrategyBias::Balanced,
+            None,
+        );
+        delegate.set_skills_manifest_block(manifest);
+    }
+
     // ── Memory Recall Integration ────────────────────────────────────
     // Build a recall plan and inject memory context into the system prompt.
     {
@@ -375,10 +414,6 @@ pub async fn send_message(
             recall_memu,
             crate::memory_graph::recall::MemoryRecallConfig::default(),
         );
-        let space_id: String = {
-            let session_mgr = state.session_manager.read().await;
-            session_mgr.get_space_id(&input.conversation_id).unwrap_or_else(|| "default".to_string())
-        };
         match recall_engine.build_recall_plan(&space_id, &input.content, false).await {
             Ok(plan) => {
                 let total = plan.boot.len() + plan.triggered.len() + plan.relevant.len()
