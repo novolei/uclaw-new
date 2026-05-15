@@ -8,9 +8,9 @@ interface Props {
 }
 
 const STATUS_DOT: Record<string, string> = {
-  active: 'bg-green-500',
-  paused: 'bg-yellow-500',
-  error: 'bg-red-500',
+  active: 'bg-success',
+  paused: 'bg-warning',
+  error: 'bg-danger',
 }
 
 export function SpecListItem({ spec, isSelected, onSelect, onRun }: Props) {
@@ -29,7 +29,7 @@ export function SpecListItem({ spec, isSelected, onSelect, onRun }: Props) {
         <span
           className={[
             'h-2 w-2 rounded-full shrink-0',
-            STATUS_DOT[spec.status] ?? 'bg-muted-foreground',
+            STATUS_DOT[spec.status] ?? 'bg-muted',
           ].join(' ')}
         />
         <span className="flex-1 truncate text-sm font-medium">{spec.name}</span>
