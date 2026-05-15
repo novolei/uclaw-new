@@ -450,6 +450,7 @@ impl AppRuntimeService {
             escalation_id:               None,
             resumed_from_activity_id:    None,
             resumed_from_escalation_id:  None,
+            working_dir:                 String::new(),
         };
 
         {

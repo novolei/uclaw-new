@@ -114,6 +114,11 @@ pub struct AutomationActivity {
     pub escalation_id: Option<String>,
     pub resumed_from_activity_id: Option<String>,
     pub resumed_from_escalation_id: Option<String>,
+    /// Absolute path of the spec's run working directory. Derived via JOIN on
+    /// spaces; falls back to ~/Documents/workground/automations/<spec_id>.
+    /// Not stored in the DB — computed at query time only.
+    #[serde(default)]
+    pub working_dir: String,
 }
 
 // ─── Row mapper (DRY helper) ──────────────────────────────────────────────────
@@ -121,10 +126,25 @@ pub struct AutomationActivity {
 fn row_to_activity(r: &rusqlite::Row<'_>) -> rusqlite::Result<AutomationActivity> {
     let trigger_str: String = r.get(3)?;
     let status_str: String  = r.get(5)?;
+    let spec_id: String     = r.get(1)?;
+
+    // working_dir: col 21 = spaces.path from the JOIN; empty means no space
+    // linked → fall back to ~/Documents/workground/automations/<spec_id>.
+    let raw_wd: String = r.get(21).unwrap_or_default();
+    let working_dir = if raw_wd.is_empty() {
+        dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("Documents/workground/automations")
+            .join(&spec_id)
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        raw_wd
+    };
 
     Ok(AutomationActivity {
         id:                          r.get(0)?,
-        spec_id:                     r.get(1)?,
+        spec_id,
         subscription_id:             r.get(2)?,
         trigger_source_type: TriggerSource::from_db_str(&trigger_str)
             .ok_or_else(|| rusqlite::Error::FromSqlConversionFailure(
@@ -154,15 +174,24 @@ fn row_to_activity(r: &rusqlite::Row<'_>) -> rusqlite::Result<AutomationActivity
         escalation_id:               r.get(18)?,
         resumed_from_activity_id:    r.get(19)?,
         resumed_from_escalation_id:  r.get(20)?,
+        working_dir,
     })
 }
 
-const SELECT_COLS: &str =
-    "id, spec_id, subscription_id, trigger_source_type, trigger_payload_json,
-     status, error_text, queued_at, started_at, completed_at, duration_ms,
-     llm_iterations, llm_tokens_in, llm_tokens_out, session_id, report_artifacts_json,
-     report_text, report_outcome, escalation_id,
-     resumed_from_activity_id, resumed_from_escalation_id";
+/// Full SELECT with LEFT JOIN to resolve working_dir from the spec's space.
+/// Column index 21 = working_dir (COALESCE of spaces.path, '').
+const SELECT_WITH_WD: &str =
+    "SELECT a.id, a.spec_id, a.subscription_id, a.trigger_source_type,
+            a.trigger_payload_json, a.status, a.error_text, a.queued_at,
+            a.started_at, a.completed_at, a.duration_ms, a.llm_iterations,
+            a.llm_tokens_in, a.llm_tokens_out, a.session_id,
+            a.report_artifacts_json, a.report_text, a.report_outcome,
+            a.escalation_id, a.resumed_from_activity_id,
+            a.resumed_from_escalation_id,
+            COALESCE(s.path, '') AS working_dir
+     FROM automation_activities a
+     LEFT JOIN automation_specs sp ON sp.id = a.spec_id
+     LEFT JOIN spaces s ON s.id = sp.space_id";
 
 // ─── Public CRUD ──────────────────────────────────────────────────────────────
 
@@ -192,12 +221,12 @@ pub fn insert_activity(conn: &rusqlite::Connection, a: &AutomationActivity) -> r
 
 pub fn get_activity(conn: &rusqlite::Connection, id: &str) -> rusqlite::Result<Option<AutomationActivity>> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {SELECT_COLS} FROM automation_activities WHERE id = ?1"
+        "{SELECT_WITH_WD} WHERE a.id = ?1"
     ))?;
     match stmt.query_row([id], row_to_activity) {
-        Ok(a)                                        => Ok(Some(a)),
-        Err(rusqlite::Error::QueryReturnedNoRows)    => Ok(None),
-        Err(e)                                       => Err(e),
+        Ok(a)                                     => Ok(Some(a)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e)                                    => Err(e),
     }
 }
 
@@ -207,10 +236,9 @@ pub fn list_activities_for_spec(
     limit: u32,
 ) -> rusqlite::Result<Vec<AutomationActivity>> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {SELECT_COLS}
-         FROM automation_activities
-         WHERE spec_id = ?1
-         ORDER BY queued_at DESC
+        "{SELECT_WITH_WD}
+         WHERE a.spec_id = ?1
+         ORDER BY a.queued_at DESC
          LIMIT ?2"
     ))?;
     let rows = stmt.query_map(rusqlite::params![spec_id, limit], row_to_activity)?;
@@ -318,6 +346,7 @@ mod tests {
             escalation_id:               None,
             resumed_from_activity_id:    None,
             resumed_from_escalation_id:  None,
+            working_dir:                 String::new(),
         }
     }
 
@@ -396,5 +425,20 @@ mod tests {
         assert_eq!(loaded.status, ActivityStatus::Completed);
         assert_eq!(loaded.duration_ms, 1234);
         assert_eq!(loaded.report_text.as_deref(), Some("ok result"));
+    }
+
+    #[test]
+    fn list_activities_working_dir_fallback() {
+        let conn = setup_test_db();
+        let activity = make_activity("a1");
+        insert_activity(&conn, &activity).unwrap();
+        let rows = list_activities_for_spec(&conn, "s1", 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        // No space attached to spec → fallback path must contain the spec_id
+        assert!(
+            rows[0].working_dir.contains("s1"),
+            "expected working_dir to contain spec_id 's1', got: {}",
+            rows[0].working_dir
+        );
     }
 }
