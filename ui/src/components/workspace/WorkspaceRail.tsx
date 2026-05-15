@@ -202,22 +202,42 @@ export function WorkspaceRail({
           this rail + WorkspaceHeader in a single ARC-style horizontal
           slide so they move as one piece. Keep this container plain. */}
       <div className="flex-1 overflow-y-auto px-3 pt-1 pb-1 scrollbar-none">
-        {sessions.length === 0 && (
+        {!showArchived && sessions.length === 0 && (
           <p className="text-[11px] text-muted-foreground px-2 py-3 italic">
-            {showArchived ? '暂无已归档会话。' : '尚无会话。点击上方"新会话"开始。'}
+            尚无会话。点击上方"新会话"开始。
           </p>
         )}
 
         {showArchived ? (
-          /* Archived view — inline restore / permanent-delete buttons, no dropdown. */
-          sessions.map((s) => (
-            <ArchivedSessionRow
-              key={s.id}
-              s={s}
-              onRestore={() => void handleToggleArchive(s.id)}
-              onDelete={() => void handlePermanentDelete(s.id)}
-            />
-          ))
+          /* Archived view — context banner + inline restore/delete rows. */
+          <div className="rounded-xl border border-border/50 bg-muted/30 overflow-hidden mt-1">
+            {/* Context header */}
+            <div className="flex items-center gap-2 px-3 py-2 border-b border-border/40 bg-muted/40">
+              <Archive size={12} className="text-muted-foreground/70 shrink-0" />
+              <span className="text-[11px] font-semibold tracking-wide text-muted-foreground/70 uppercase">
+                已归档
+              </span>
+              <span className="ml-auto text-[10px] text-muted-foreground/50">
+                {sessions.length} 个会话
+              </span>
+            </div>
+            {sessions.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground/60 px-3 py-3 italic">
+                暂无已归档会话。
+              </p>
+            ) : (
+              <div className="p-1">
+                {sessions.map((s) => (
+                  <ArchivedSessionRow
+                    key={s.id}
+                    s={s}
+                    onRestore={() => void handleToggleArchive(s.id)}
+                    onDelete={() => void handlePermanentDelete(s.id)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         ) : (
           <>
             {pinned.length > 0 && (
