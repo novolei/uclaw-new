@@ -1,12 +1,12 @@
-import { useState } from 'react'
-import { useAtom, useAtomValue } from 'jotai'
+import { useState, useEffect, useCallback } from 'react'
+import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import {
   automationActiveTabAtom,
   automationActivityRunSessionIdAtom,
   type AutomationTab,
 } from '@/atoms/automation-ui'
 import { automationActivitiesAtom, humaneSpecsAtom } from '@/atoms/automation'
-import { triggerAutomationManualHumane } from '@/lib/tauri-bridge'
+import { triggerAutomationManualHumane, getAutomationActivity } from '@/lib/tauri-bridge'
 import type { HumaneSpecRow } from '@/lib/tauri-bridge'
 import { SpecRunHeader } from './SpecRunHeader'
 import { HomeThreadView } from './HomeThreadView'
@@ -29,11 +29,29 @@ export function SpecRunSurface({ specId }: Props) {
   const [runSessionId, setRunSessionId] = useAtom(automationActivityRunSessionIdAtom)
   const [specs, setSpecs] = useAtom(humaneSpecsAtom)
   const activitiesMap = useAtomValue(automationActivitiesAtom)
+  const setActivitiesMap = useSetAtom(automationActivitiesAtom)
   const [showRightPanel, setShowRightPanel] = useState(false)
   const [isRunning, setIsRunning] = useState(false)
 
   const spec = specs.find((s) => s.id === specId)
   const activities = activitiesMap[specId] ?? []
+
+  const refreshActivities = useCallback(async () => {
+    try {
+      const acts = await getAutomationActivity(specId, 50)
+      setActivitiesMap((prev) => ({ ...prev, [specId]: acts }))
+    } catch { /* ignore */ }
+  }, [specId, setActivitiesMap])
+
+  // Poll every 3 s while any activity is running or queued.
+  const hasActiveRun = activities.some(
+    (a) => a.status === 'running' || a.status === 'queued'
+  )
+  useEffect(() => {
+    if (!hasActiveRun) return
+    const id = setInterval(() => { void refreshActivities() }, 3000)
+    return () => clearInterval(id)
+  }, [hasActiveRun, refreshActivities])
 
   if (!spec) return null
 
@@ -42,6 +60,9 @@ export function SpecRunSurface({ specId }: Props) {
     try {
       await triggerAutomationManualHumane(specId)
       setActiveTab('activity')
+      // The queued activity row is already in the DB when the command returns —
+      // fetch immediately so the new row appears without waiting for the poller.
+      await refreshActivities()
     } finally {
       setIsRunning(false)
     }
