@@ -5521,6 +5521,74 @@ pub async fn get_automation_activity(
         .map_err(|e| Error::Internal(e.to_string()))
 }
 
+#[tauri::command]
+pub async fn get_or_create_spec_home_thread(
+    state: State<'_, AppState>,
+    spec_id: String,
+) -> Result<serde_json::Value, Error> {
+    use crate::automation::runtime::run_session::{ensure_automations_space, resolve_home_space};
+    use rusqlite::OptionalExtension;
+
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+
+    ensure_automations_space(&conn)
+        .map_err(|e| Error::Internal(format!("ensure automations space: {e}")))?;
+
+    let space_id = resolve_home_space(&conn, &spec_id)
+        .map_err(|e| Error::Internal(format!("resolve home space: {e}")))?;
+
+    // Try to find existing home-thread session
+    let existing: Option<(String, String, i64, i64, i64)> = conn.query_row(
+        "SELECT id, title, message_count, created_at, updated_at
+         FROM agent_sessions
+         WHERE json_extract(metadata_json, '$.spec_id') = ?1
+           AND json_extract(metadata_json, '$.origin') = 'automation:home_thread'
+         LIMIT 1",
+        rusqlite::params![&spec_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    ).optional()
+        .map_err(|e| Error::Database(e))?;
+
+    if let Some((id, title, msg_count, created_at, updated_at)) = existing {
+        return Ok(serde_json::json!({
+            "id": id,
+            "workspaceId": space_id,
+            "title": title,
+            "messageCount": msg_count,
+            "pinned": false,
+            "archived": false,
+            "createdAt": created_at,
+            "updatedAt": updated_at,
+        }));
+    }
+
+    // Create new home-thread session
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp_millis();
+    let meta = serde_json::json!({
+        "spec_id": &spec_id,
+        "origin": "automation:home_thread"
+    });
+
+    conn.execute(
+        "INSERT INTO agent_sessions
+         (id, space_id, title, metadata_json, message_count, pinned, archived, created_at, updated_at)
+         VALUES (?1,?2,'Home thread',?3,0,0,0,?4,?4)",
+        rusqlite::params![&id, &space_id, meta.to_string(), now],
+    ).map_err(|e| Error::Database(e))?;
+
+    Ok(serde_json::json!({
+        "id": id,
+        "workspaceId": space_id,
+        "title": "Home thread",
+        "messageCount": 0,
+        "pinned": false,
+        "archived": false,
+        "createdAt": now,
+        "updatedAt": now,
+    }))
+}
+
 // ─── Humane Automation Commands (Phase 1 spec § 7.3) ─────────────────────────
 
 #[tauri::command]
@@ -9024,5 +9092,70 @@ mod mention_file_search_tests {
                 legit,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod home_thread_tests {
+    use rusqlite::{Connection, OptionalExtension};
+    use crate::db::migrations::run;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        run(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn home_thread_creates_session_and_is_idempotent() {
+        use crate::automation::runtime::run_session::ensure_automations_space;
+        let conn = test_conn();
+        ensure_automations_space(&conn).unwrap();
+
+        // Insert a minimal spec row so FK works
+        conn.execute(
+            "INSERT INTO automation_specs (id, name, version, author, description,
+             system_prompt, spec_format, spec_yaml, spec_json, created_at, updated_at)
+             VALUES ('spec1','Test','1.0','a','d','s','humane-yaml-v1','y','{}',0,0)",
+            [],
+        ).unwrap();
+
+        // First call: creates session
+        let id1 = create_home_thread_session(&conn, "spec1").unwrap();
+        assert!(!id1.is_empty());
+
+        // Second call: returns same session
+        let id2 = create_home_thread_session(&conn, "spec1").unwrap();
+        assert_eq!(id1, id2);
+    }
+
+    fn create_home_thread_session(conn: &Connection, spec_id: &str) -> rusqlite::Result<String> {
+        use crate::automation::runtime::run_session::resolve_home_space;
+
+        let space_id = resolve_home_space(conn, spec_id)?;
+
+        let existing: Option<String> = conn.query_row(
+            "SELECT id FROM agent_sessions
+             WHERE json_extract(metadata_json, '$.spec_id') = ?1
+               AND json_extract(metadata_json, '$.origin') = 'automation:home_thread'
+             LIMIT 1",
+            rusqlite::params![spec_id],
+            |r| r.get(0),
+        ).optional()?;
+
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp_millis();
+        let meta = serde_json::json!({ "spec_id": spec_id, "origin": "automation:home_thread" });
+        conn.execute(
+            "INSERT INTO agent_sessions
+             (id, space_id, title, metadata_json, message_count, pinned, archived, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,0,0,0,?5,?5)",
+            rusqlite::params![&id, &space_id, "Home thread", meta.to_string(), now],
+        )?;
+        Ok(id)
     }
 }
