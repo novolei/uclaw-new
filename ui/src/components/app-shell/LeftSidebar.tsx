@@ -602,9 +602,10 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
 
   const handleToggleArchive = async (id: string): Promise<void> => {
     try {
-      const updated = await toggleArchiveConversation(id)
-      setConversations((prev: any) => prev.map((c: any) => (c.id === updated.id ? updated : c)))
-      if (updated.archived) {
+      const archivedAt = await toggleArchiveConversation(id)
+      const isNowArchived = archivedAt !== null
+      setConversations((prev: any) => prev.map((c: any) => (c.id === id ? { ...c, archived: isNowArchived, archivedAt } : c)))
+      if (isNowArchived) {
         const wasActive = activeTabId === id
         const tabResult = closeTab(tabs, activeTabId, id)
         setTabs(tabResult.tabs)
@@ -615,7 +616,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
           syncActiveTabSideEffects(newActiveTab)
         }
       }
-      toast.success(updated.archived ? '已归档' : '已取消归档')
+      toast.success(isNowArchived ? '已归档' : '已取消归档')
     } catch (error) { console.error('[侧边栏] 切换归档失败:', error) }
   }
 
@@ -720,9 +721,10 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
 
   const handleToggleArchiveAgent = async (id: string): Promise<void> => {
     try {
-      const updated = await toggleArchiveAgentSession(id)
-      setAgentSessions((prev: any) => prev.map((s: any) => (s.id === updated.id ? updated : s)))
-      if (updated.archived) {
+      const archivedAt = await toggleArchiveAgentSession(id)
+      const isNowArchived = archivedAt !== null
+      setAgentSessions((prev: any) => prev.map((s: any) => (s.id === id ? { ...s, archived: isNowArchived, archivedAt } : s)))
+      if (isNowArchived) {
         const wasActive = activeTabId === id
         const tabResult = closeTab(tabs, activeTabId, id)
         setTabs(tabResult.tabs)
@@ -734,7 +736,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
           syncActiveTabSideEffects(newActiveTab)
         }
       }
-      toast.success(updated.archived ? '已归档' : '已取消归档')
+      toast.success(isNowArchived ? '已归档' : '已取消归档')
     } catch (error) { console.error('[侧边栏] 切换 Agent 会话归档失败:', error) }
   }
 

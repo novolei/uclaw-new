@@ -1133,11 +1133,11 @@ export const togglePinAgentSession = (id: string): Promise<number | null> =>
 export const toggleManualWorkingAgentSession = (id: string): Promise<any> =>
   invoke('toggle_manual_working_agent_session', { id }).catch(() => ({ id, manualWorking: true, updatedAt: Date.now() }))
 
-export const toggleArchiveAgentSession = (id: string): Promise<any> =>
-  invoke('toggle_archive_agent_session', { id }).catch(() => ({ id, archived: true, updatedAt: Date.now() }))
+export const toggleArchiveAgentSession = (id: string): Promise<number | null> =>
+  invoke<number | null>('toggle_archive_agent_session', { id })
 
-export const toggleArchiveConversation = (id: string): Promise<any> =>
-  invoke('toggle_archive_conversation', { id }).catch(() => ({ id, archived: true, updatedAt: Date.now() }))
+export const toggleArchiveConversation = (id: string): Promise<number | null> =>
+  invoke<number | null>('toggle_archive_conversation', { id })
 
 // --- User profile compat ---
 export const getUserProfile = (): Promise<any> =>
