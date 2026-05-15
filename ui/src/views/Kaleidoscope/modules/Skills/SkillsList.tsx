@@ -5,11 +5,19 @@
  * 分组折叠状态是本地 useState,不持久化。
  */
 import * as React from 'react'
-import { Search, RefreshCw, Combine, KeyRound, ChevronDown, ChevronRight } from 'lucide-react'
+import { Search, RefreshCw, Combine, KeyRound, ChevronDown, ChevronRight, Clock } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type { UnifiedSkill } from './SkillsModule'
+
+type LifecycleFilter = 'all' | 'promoted' | 'draft' | 'deprecated'
+
+const LIFECYCLE_DOT: Record<string, string> = {
+  draft:      'bg-yellow-500',
+  promoted:   'bg-emerald-500',
+  deprecated: 'bg-muted-foreground/50',
+}
 
 interface GroupProps {
   label: string
@@ -48,6 +56,7 @@ function Row({
     skill.kind === 'learned'
       ? skill.raw.context.split('\n')[0].slice(0, 120)
       : skill.raw.category || skill.raw.description
+  const lifecycle = skill.kind === 'learned' ? (skill.raw.lifecycle || 'promoted') : null
   return (
     <button
       type="button"
@@ -60,7 +69,10 @@ function Row({
         !skill.enabled && 'opacity-60',
       )}
     >
-      <div className="text-[12px] font-medium text-foreground truncate">{skill.name}</div>
+      <div className="flex items-center gap-1.5">
+        {lifecycle && <span className={cn('size-1.5 shrink-0 rounded-full', LIFECYCLE_DOT[lifecycle] || 'bg-muted-foreground/50')} />}
+        <span className="text-[12px] font-medium text-foreground truncate">{skill.name}</span>
+      </div>
       {secondary && (
         <div className="mt-0.5 text-[10px] text-muted-foreground truncate">{secondary}</div>
       )}
@@ -77,11 +89,13 @@ export interface SkillsListProps {
   canPropose: boolean
   proposing: boolean
   backfilling: boolean
+  lifecycleFilter?: LifecycleFilter
   onSelect: (id: string) => void
   onQueryChange: (q: string) => void
   onReload: () => void
   onPropose: () => void
   onBackfill: () => void
+  onLifecycleFilterChange?: (f: LifecycleFilter) => void
 }
 
 export function SkillsList({
@@ -93,14 +107,38 @@ export function SkillsList({
   canPropose,
   proposing,
   backfilling,
+  lifecycleFilter = 'all',
   onSelect,
   onQueryChange,
   onReload,
   onPropose,
   onBackfill,
+  onLifecycleFilterChange,
 }: SkillsListProps): React.ReactElement {
   const [learnedOpen, setLearnedOpen] = React.useState(true)
   const [builtinOpen, setBuiltinOpen] = React.useState(true)
+  const [recentOpen, setRecentOpen] = React.useState(true)
+
+  const filteredLearned = React.useMemo(() => {
+    if (lifecycleFilter === 'all') return learned
+    return learned.filter((s) => {
+      if (s.kind !== 'learned') return false
+      const lc = s.raw.lifecycle || 'promoted'
+      return lc === lifecycleFilter
+    })
+  }, [learned, lifecycleFilter])
+
+  // Top-5 most-used learned skills
+  const recentlyUsed = React.useMemo(() => {
+    return [...learned]
+      .filter((s) => s.kind === 'learned' && s.raw.usageCount > 0)
+      .sort((a, b) => {
+        const aCount = a.kind === 'learned' ? a.raw.usageCount : 0
+        const bCount = b.kind === 'learned' ? b.raw.usageCount : 0
+        return bCount - aCount
+      })
+      .slice(0, 5)
+  }, [learned])
 
   return (
     <div className="flex w-64 shrink-0 flex-col border-r border-border bg-background">
@@ -126,9 +164,66 @@ export function SkillsList({
         </Button>
       </div>
 
+      {/* Lifecycle 过滤器 */}
+      <div className="flex items-center gap-1 px-3 pb-2">
+        {(['all', 'promoted', 'draft', 'deprecated'] as LifecycleFilter[]).map((f) => (
+          <button
+            key={f}
+            type="button"
+            onClick={() => onLifecycleFilterChange?.(f)}
+            className={cn(
+              'rounded-full px-2 py-0.5 text-[10px] border transition-colors',
+              lifecycleFilter === f
+                ? 'border-accent/50 bg-accent/15 text-foreground'
+                : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/40',
+            )}
+          >
+            {f === 'all' ? '全部' : f === 'promoted' ? '已晋升' : f === 'draft' ? '草稿' : '已弃用'}
+          </button>
+        ))}
+      </div>
+
       {/* 列表 */}
       <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2">
-        <Group label="学得" count={learned.length} open={learnedOpen} onToggle={() => setLearnedOpen((v) => !v)}>
+        {/* 最近使用 */}
+        {recentlyUsed.length > 0 && (
+          <div>
+            <button
+              type="button"
+              onClick={() => setRecentOpen((v) => !v)}
+              className="flex w-full items-center gap-1 px-1.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground"
+            >
+              {recentOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+              <Clock className="size-3" />
+              最近使用 · {recentlyUsed.length}
+            </button>
+            {recentOpen && (
+              <div className="flex flex-wrap gap-1 px-1.5 pb-1.5">
+                {recentlyUsed.map((s) => (
+                  <button
+                    key={`recent-${s.id}`}
+                    type="button"
+                    onClick={() => onSelect(s.id)}
+                    className={cn(
+                      'inline-flex items-center gap-1 rounded-full border px-2 py-0.5',
+                      'text-[10px] transition-colors',
+                      selectedId === s.id
+                        ? 'border-accent/50 bg-accent/15 text-foreground'
+                        : 'border-border/40 text-muted-foreground hover:border-border hover:text-foreground hover:bg-muted/30',
+                    )}
+                  >
+                    <span className="truncate max-w-[120px]">{s.name}</span>
+                    <span className="text-[9px] tabular-nums opacity-60">
+                      {s.kind === 'learned' ? s.raw.usageCount : 0}×
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <Group label="学得" count={filteredLearned.length} open={learnedOpen} onToggle={() => setLearnedOpen((v) => !v)}>
           <div className="flex gap-1 px-1 pb-1">
             <Button
               size="sm"
@@ -153,7 +248,7 @@ export function SkillsList({
               整合技能
             </Button>
           </div>
-          {learned.map((s) => (
+          {filteredLearned.map((s) => (
             <Row key={s.id} skill={s} selected={s.id === selectedId} onSelect={() => onSelect(s.id)} />
           ))}
         </Group>

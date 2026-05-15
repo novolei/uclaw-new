@@ -459,6 +459,37 @@ export const deleteLearnedSkill = (skillId: string): Promise<void> =>
   invoke('delete_learned_skill', { skillId });
 
 /**
+ * Set the lifecycle stage of a learned skill.
+ * Stages: 'draft' | 'promoted' | 'deprecated'
+ */
+export const setSkillLifecycle = (
+  nodeId: string,
+  lifecycle: 'draft' | 'promoted' | 'deprecated',
+): Promise<void> =>
+  invoke('set_skill_lifecycle', { nodeId, lifecycle });
+
+/**
+ * Update editable fields of a learned skill.
+ * Non-undefined fields are patched into the node's metadata.
+ * A new active version is created with regenerated content.
+ */
+export interface UpdateLearnedSkillInput {
+  nodeId: string;
+  context?: string;
+  principles?: string;
+  steps?: string;
+  pitfalls?: string;
+  category?: string;
+  tags?: string[];
+  validationHint?: string;
+}
+
+export const updateLearnedSkill = (
+  input: UpdateLearnedSkillInput,
+): Promise<void> =>
+  invoke('update_learned_skill', { input });
+
+/**
  * Record that the LLM cited a learned skill in its response.
  * Bumps `cited_count` in metadata (separate from `usage_count` /
  * `recalled_count`). Returns the matched skill_id, or null if the

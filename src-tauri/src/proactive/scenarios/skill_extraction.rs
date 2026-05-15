@@ -205,6 +205,7 @@ impl ProactiveScenario for SkillExtractionScenario {
 
     async fn should_trigger(&self, ctx: &ScenarioContext) -> bool {
         if !self.config.enabled {
+            tracing::debug!("[skill_extraction] scenario disabled, skip trigger");
             return false;
         }
 
@@ -213,25 +214,46 @@ impl ProactiveScenario for SkillExtractionScenario {
             // 仍需检查最小间隔（失败触发间隔减半但仍需间隔）
             if let Some(last) = ctx.last_trigger_at.get(self.name()) {
                 if last.elapsed().as_millis() < (self.config.min_interval_ms / 2) as u128 {
+                    tracing::debug!("[skill_extraction] failure-trigger cooldown not elapsed, skip");
                     return false;
                 }
             }
-            return !ctx.execution_logs.is_empty();
+            let has_logs = !ctx.execution_logs.is_empty();
+            tracing::info!(
+                has_failures = true,
+                execution_logs = ctx.execution_logs.len(),
+                "[skill_extraction] failure-triggered, will_fire={}",
+                has_logs
+            );
+            return has_logs;
         }
 
         // 条件 2: 执行次数达到阈值
         if ctx.new_execution_count < self.config.trigger_execution_count {
+            tracing::debug!(
+                new_execution_count = ctx.new_execution_count,
+                threshold = self.config.trigger_execution_count,
+                "[skill_extraction] execution count below threshold, skip"
+            );
             return false;
         }
 
         // 条件 3: 最小触发间隔
         if let Some(last) = ctx.last_trigger_at.get(self.name()) {
             if last.elapsed().as_millis() < self.config.min_interval_ms as u128 {
+                tracing::debug!("[skill_extraction] min_interval cooldown not elapsed, skip");
                 return false;
             }
         }
 
-        !ctx.execution_logs.is_empty()
+        let has_logs = !ctx.execution_logs.is_empty();
+        tracing::info!(
+            new_execution_count = ctx.new_execution_count,
+            execution_logs = ctx.execution_logs.len(),
+            "[skill_extraction] threshold-triggered, will_fire={}",
+            has_logs
+        );
+        has_logs
     }
 
     async fn build_context(&self, ctx: &ScenarioContext) -> anyhow::Result<ScenarioOutput> {

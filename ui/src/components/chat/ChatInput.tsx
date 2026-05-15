@@ -54,6 +54,7 @@ import { openFileDialog } from '@/lib/tauri-bridge'
 import { toast } from 'sonner'
 import { createClipboardTextFile } from '@/lib/clipboard-attachment'
 import { GitChipsRow } from './git/GitChipsRow'
+import { SkillSuggestionBar } from '@/components/agent/SkillSuggestionBar'
 
 interface ChatInputProps {
   /** 当前对话 ID */
@@ -341,6 +342,14 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
               sessionId={conversationId}
             />
           </div>
+
+          {/* Skill 建议条 — 输入文本 >= 5 字符时匹配可用技能 */}
+          <SkillSuggestionBar
+            inputText={content}
+            onSkillSelect={(skillName) => {
+              setContent(content + ' ' + skillName + ' ')
+            }}
+          />
 
           {/* Footer 工具栏 — Cherry Studio: padding 5px 8px, height 40px, gap 16px */}
           <div className="flex items-center justify-between px-2 py-1 h-[48px] gap-4">

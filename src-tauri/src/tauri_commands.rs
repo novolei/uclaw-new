@@ -365,6 +365,45 @@ pub async fn send_message(
     // Wire thinking_enabled from the request
     delegate.set_thinking_enabled(input.thinking_enabled.unwrap_or(false));
 
+    // Resolve space_id once — reused by both skills manifest and memory recall.
+    let space_id: String = {
+        let session_mgr = state.session_manager.read().await;
+        session_mgr.get_space_id(&input.conversation_id).unwrap_or_else(|| "default".to_string())
+    };
+
+    // ── Skills Manifest Injection ────────────────────────────────────
+    // Build and inject the skills manifest so the LLM sees available
+    // skills and can use skill_search / load_skill tools.
+    {
+        use crate::skills_manifest::StrategyBias;
+
+        // Cold-start guard: if no skills have been discovered yet, trigger
+        // discovery once. Double-check after acquiring write lock to avoid
+        // redundant scans under contention.
+        {
+            let registry = state.skills_registry.read().await;
+            if registry.list().is_empty() {
+                drop(registry);
+                let mut registry_w = state.skills_registry.write().await;
+                if registry_w.list().is_empty() {
+                    registry_w.discover();
+                }
+            }
+        }
+
+        let registry = state.skills_registry.read().await;
+        let manifest = crate::skills_manifest::build_skills_manifest(
+            &registry,
+            &state.memory_graph_store,
+            &space_id,
+            30,
+            800,
+            StrategyBias::Balanced,
+            None,
+        );
+        delegate.set_skills_manifest_block(manifest);
+    }
+
     // ── Memory Recall Integration ────────────────────────────────────
     // Build a recall plan and inject memory context into the system prompt.
     {
@@ -375,10 +414,6 @@ pub async fn send_message(
             recall_memu,
             crate::memory_graph::recall::MemoryRecallConfig::default(),
         );
-        let space_id: String = {
-            let session_mgr = state.session_manager.read().await;
-            session_mgr.get_space_id(&input.conversation_id).unwrap_or_else(|| "default".to_string())
-        };
         match recall_engine.build_recall_plan(&space_id, &input.content, false).await {
             Ok(plan) => {
                 let total = plan.boot.len() + plan.triggered.len() + plan.relevant.len()
@@ -3651,6 +3686,10 @@ pub async fn list_learned_skills(
                     "usageCount": meta.get("usage_count").and_then(|v| v.as_u64()).unwrap_or(0),
                     "citedCount": meta.get("cited_count").and_then(|v| v.as_u64()).unwrap_or(0),
                     "lastCitedAt": meta.get("last_cited_at").cloned().unwrap_or(serde_json::Value::Null),
+                    "lifecycle": meta.get("lifecycle").and_then(|v| v.as_str()).unwrap_or("promoted"),
+                    "category": meta.get("category").cloned().unwrap_or(serde_json::Value::Null),
+                    "tags": meta.get("tags").cloned().unwrap_or(serde_json::Value::Null),
+                    "validationHint": meta.get("validation_hint").cloned().unwrap_or(serde_json::Value::Null),
                     "createdAt": node.created_at,
                 }));
             }
@@ -3686,6 +3725,8 @@ pub async fn get_learned_skill(
         "pitfalls": meta.get("pitfalls").cloned().unwrap_or(serde_json::Value::Null),
         "enabled": meta.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
         "usageCount": meta.get("usage_count").and_then(|v| v.as_u64()).unwrap_or(0),
+        "citedCount": meta.get("cited_count").and_then(|v| v.as_u64()).unwrap_or(0),
+        "lifecycle": meta.get("lifecycle").and_then(|v| v.as_str()).unwrap_or("promoted"),
         "createdAt": node.created_at,
         "content": content,
     }))
@@ -3738,6 +3779,7 @@ pub async fn delete_learned_skill(
 #[tauri::command]
 pub async fn record_skill_cited(
     state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
     space_id: Option<String>,
     title: String,
 ) -> Result<Option<String>, String> {
@@ -3766,19 +3808,40 @@ pub async fn record_skill_cited(
 
     // Bump cited_count via json_set (mirrors bump_skill_usage shape).
     let mut meta = node.metadata.clone().unwrap_or(serde_json::json!({}));
+    let new_cited_count: u64;
     if let Some(obj) = meta.as_object_mut() {
         let prev = obj
             .get("cited_count")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+        new_cited_count = prev + 1;
         obj.insert(
             "cited_count".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(prev + 1)),
+            serde_json::Value::Number(serde_json::Number::from(new_cited_count)),
         );
         obj.insert(
             "last_cited_at".to_string(),
             serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
         );
+    } else {
+        new_cited_count = 1;
+    }
+
+    // Check for auto-promotion: draft skills with cited_count >= 3 get promoted.
+    let lifecycle = meta
+        .as_object()
+        .and_then(|obj| obj.get("lifecycle"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("promoted");
+
+    let should_promote = lifecycle == "draft" && new_cited_count >= 3;
+    if should_promote {
+        if let Some(obj) = meta.as_object_mut() {
+            obj.insert(
+                "lifecycle".to_string(),
+                serde_json::Value::String("promoted".to_string()),
+            );
+        }
     }
 
     if let Err(e) = store.update_node(&node.id, None, None, Some(&meta)) {
@@ -3791,8 +3854,24 @@ pub async fn record_skill_cited(
         tracing::info!(
             node_id = %node.id,
             title = %node.title,
+            cited_count = new_cited_count,
             "record_skill_cited: bumped cited_count"
         );
+
+        // Emit lifecycle-changed event if auto-promoted
+        if should_promote {
+            tracing::info!(
+                node_id = %node.id,
+                title = %node.title,
+                "record_skill_cited: auto-promoted draft skill (cited_count >= 3)"
+            );
+            let _ = app_handle.emit("skill:lifecycle-changed", serde_json::json!({
+                "nodeId": node.id,
+                "oldLifecycle": "draft",
+                "newLifecycle": "promoted",
+                "reason": "auto_promotion_3_citations"
+            }));
+        }
     }
 
     Ok(Some(node.id))
@@ -3841,6 +3920,121 @@ pub async fn set_skill_lifecycle(
         title = %node.title,
         new_lifecycle = %lifecycle,
         "set_skill_lifecycle: changed"
+    );
+    Ok(())
+}
+
+/// Update editable fields of a learned skill.
+///
+/// Accepts a `node_id` and optional fields. Non-None fields are written
+/// into the node's metadata JSON. After metadata is updated, a new active
+/// version is created (deprecating the old one) with regenerated content
+/// so that future skill_search embeddings stay in sync.
+///
+/// Used by the SkillDetail edit mode (Phase 4 G8).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateLearnedSkillInput {
+    pub node_id: String,
+    pub context: Option<String>,
+    pub principles: Option<String>,
+    pub steps: Option<String>,
+    pub pitfalls: Option<String>,
+    pub category: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub validation_hint: Option<String>,
+}
+
+#[tauri::command]
+pub async fn update_learned_skill(
+    state: State<'_, AppState>,
+    input: UpdateLearnedSkillInput,
+) -> Result<(), String> {
+    let store = &state.memory_graph_store;
+    let node = store
+        .get_node(&input.node_id)
+        .map_err(|e| format!("lookup failed: {}", e))?
+        .ok_or_else(|| format!("skill node '{}' not found", input.node_id))?;
+
+    let mut meta = node.metadata.clone().unwrap_or(serde_json::json!({}));
+    {
+        let obj = meta.as_object_mut().ok_or("metadata is not an object")?;
+
+        // Patch each field if provided
+        if let Some(v) = &input.context {
+            obj.insert("context".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = &input.principles {
+            obj.insert("principles".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = &input.steps {
+            obj.insert("steps".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = &input.pitfalls {
+            obj.insert("pitfalls".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = &input.category {
+            obj.insert("category".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = &input.tags {
+            obj.insert(
+                "tags".into(),
+                serde_json::Value::Array(v.iter().map(|t| serde_json::Value::String(t.clone())).collect()),
+            );
+        }
+        if let Some(v) = &input.validation_hint {
+            obj.insert("validation_hint".into(), serde_json::Value::String(v.clone()));
+        }
+    } // drop obj
+
+    // Persist metadata
+    store
+        .update_node(&input.node_id, None, None, Some(&meta))
+        .map_err(|e| format!("metadata update failed: {}", e))?;
+
+    // Rebuild active version content from the (now-updated) metadata
+    let name = node.title.clone();
+    let context = meta.get("context").and_then(|v| v.as_str()).unwrap_or("");
+    let principles = meta.get("principles").and_then(|v| v.as_str()).unwrap_or("");
+    let steps = meta.get("steps").and_then(|v| v.as_str()).unwrap_or("");
+    let pitfalls = meta.get("pitfalls").and_then(|v| v.as_str()).unwrap_or("");
+    let anti_patterns = meta.get("anti_patterns").and_then(|v| v.as_str());
+
+    let mut new_content = format!(
+        "# {}\n\n## 适用场景\n{}\n\n## 核心原则\n{}\n\n## 实现步骤\n{}",
+        name, context, principles, steps
+    );
+    if let Some(ap) = anti_patterns {
+        new_content.push_str("\n\n## 反模式\n");
+        new_content.push_str(ap);
+    }
+    if !pitfalls.is_empty() {
+        new_content.push_str("\n\n## 常见陷阱\n");
+        new_content.push_str(pitfalls);
+    }
+
+    // Deprecate old active version & create new one
+    if let Ok(Some(old_ver)) = store.get_active_version(&input.node_id) {
+        let _ = store.deprecate_version(&old_ver.id);
+        let new_ver = crate::memory_graph::models::MemoryVersion {
+            id: uuid::Uuid::new_v4().to_string(),
+            node_id: input.node_id.clone(),
+            supersedes_version_id: Some(old_ver.id),
+            status: crate::memory_graph::models::MemoryVersionStatus::Active,
+            content: new_content,
+            metadata: None,
+            embedding_json: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        store
+            .create_version(&new_ver)
+            .map_err(|e| format!("version creation failed: {}", e))?;
+    }
+
+    tracing::info!(
+        node_id = %input.node_id,
+        title = %node.title,
+        "update_learned_skill: fields updated, new version created"
     );
     Ok(())
 }

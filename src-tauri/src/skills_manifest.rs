@@ -48,6 +48,17 @@ pub fn build_skills_manifest(
     if entries.is_empty() {
         return String::new();
     }
+
+    // Best-effort: bump manifest_appearance_count for learned skills that
+    // survived ranking + budget and will appear in the system prompt.
+    let learned_ids: Vec<&str> = entries
+        .iter()
+        .filter_map(|e| e.node_id.as_deref())
+        .collect();
+    if !learned_ids.is_empty() {
+        store.bump_manifest_appearance(&learned_ids);
+    }
+
     format_manifest(&entries, max_tokens, &bias)
 }
 
@@ -102,6 +113,9 @@ pub struct ManifestEntry {
     pub summary: String,
     pub provenance: &'static str,
     pub cited_count: u64,
+    /// Node ID for learned skills (None for builtins). Used by
+    /// `bump_manifest_appearance` to record the inclusion signal.
+    pub node_id: Option<String>,
 }
 
 fn collect_entries(
@@ -128,6 +142,7 @@ fn collect_entries(
             summary: truncate_summary(&info.description, 100),
             provenance: "builtin",
             cited_count: 0,
+            node_id: None,
         });
         if entries.len() >= max_entries {
             return entries;
@@ -225,6 +240,7 @@ fn collect_entries(
                 summary: truncate_summary(&summary, 100),
                 provenance: "learned",
                 cited_count,
+                node_id: Some(detail.node.id.clone()),
             },
             bonus,
         })

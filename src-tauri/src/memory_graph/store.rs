@@ -252,10 +252,16 @@ impl MemoryGraphStore {
                AND COALESCE(json_extract(metadata_json, '$.lifecycle'), 'promoted') = 'promoted'
              ORDER BY (
                CAST(COALESCE(json_extract(metadata_json, '$.cited_count'), 0) AS REAL) *
-                 MAX(0.5,
-                     1.0 - (julianday('now') - julianday(COALESCE(json_extract(metadata_json, '$.last_cited_at'),
-                                                                  '1970-01-01T00:00:00Z'))) / 30.0
-                 ) * 10.0
+                 CASE
+                   WHEN json_extract(metadata_json, '$.last_cited_at') IS NULL THEN 0.5
+                   WHEN (julianday('now') - julianday(json_extract(metadata_json, '$.last_cited_at'))) <= 7.0 THEN 1.0
+                   WHEN (julianday('now') - julianday(json_extract(metadata_json, '$.last_cited_at'))) <= 30.0 THEN
+                     1.0 - ((julianday('now') - julianday(json_extract(metadata_json, '$.last_cited_at'))) - 7.0) / 46.0
+                   WHEN (julianday('now') - julianday(json_extract(metadata_json, '$.last_cited_at'))) <= 90.0 THEN
+                     0.5 - ((julianday('now') - julianday(json_extract(metadata_json, '$.last_cited_at'))) - 30.0) / 150.0
+                   ELSE 0.1
+                 END
+               * 10.0
                + CAST(COALESCE(json_extract(metadata_json, '$.usage_count'), 0) AS REAL) * 3.0
              ) DESC,
              updated_at DESC
@@ -309,6 +315,47 @@ impl MemoryGraphStore {
             stmt.execute(params![now, id]).map_err(crate::error::Error::Database)?;
         }
         Ok(())
+    }
+
+    /// Lightweight signal: increment `manifest_appearance_count` on given
+    /// skill nodes. Called once per `build_skills_manifest` invocation for
+    /// learned skills that made it into the final prompt. This counter is
+    /// a pure observability metric — it measures "how often does this skill
+    /// survive the ranking/budget cut and appear in the system prompt".
+    ///
+    /// Best-effort: failures are logged but never propagated.
+    pub fn bump_manifest_appearance(&self, node_ids: &[&str]) {
+        if node_ids.is_empty() {
+            return;
+        }
+        let Ok(conn) = self.conn.lock().map_err(|e| {
+            tracing::warn!("bump_manifest_appearance: DB lock failed: {}", e);
+            e
+        }) else {
+            return;
+        };
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut stmt = match conn.prepare(
+            "UPDATE memory_nodes
+             SET metadata_json = json_set(
+                     COALESCE(metadata_json, '{}'),
+                     '$.manifest_appearance_count',
+                     COALESCE(json_extract(metadata_json, '$.manifest_appearance_count'), 0) + 1
+                 ),
+                 updated_at = ?1
+             WHERE id = ?2"
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("bump_manifest_appearance: prepare failed: {}", e);
+                return;
+            }
+        };
+        for id in node_ids {
+            if let Err(e) = stmt.execute(rusqlite::params![now, id]) {
+                tracing::warn!(node_id = %id, error = %e, "bump_manifest_appearance: execute failed");
+            }
+        }
     }
 
     /// Find an existing learned-skill node whose title matches the

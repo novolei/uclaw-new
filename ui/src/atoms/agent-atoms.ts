@@ -266,6 +266,7 @@ export interface SkillRecall {
     score: number
     provenance: 'learned' | 'builtin'
     cited_count?: number
+    category?: string
   }>
   name?: string
   reason?: string

@@ -50,6 +50,7 @@ export function SkillsModule(): React.ReactElement {
   const [forkingName, setForkingName] = React.useState<string | null>(null)
   const [proposing, setProposing] = React.useState(false)
   const [backfilling, setBackfilling] = React.useState(false)
+  const [lifecycleFilter, setLifecycleFilter] = React.useState<'all' | 'promoted' | 'draft' | 'deprecated'>('all')
   const [proposal, setProposal] = React.useState<SkillConsolidationProposal | null>(null)
   const [consolidationOpen, setConsolidationOpen] = React.useState(false)
 
@@ -76,12 +77,28 @@ export function SkillsModule(): React.ReactElement {
     [builtinRaw],
   )
 
+  // Debounced search query for filtering (300ms)
+  const [debouncedQuery, setDebouncedQuery] = React.useState('')
+  React.useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query), 300)
+    return () => clearTimeout(timer)
+  }, [query])
+
   const filterFn = React.useCallback(
     (s: UnifiedSkill) => {
-      const q = query.trim().toLowerCase()
-      return !q || s.name.toLowerCase().includes(q)
+      const q = debouncedQuery.trim().toLowerCase()
+      if (!q) return true
+      if (s.name.toLowerCase().includes(q)) return true
+      if (s.kind === 'learned') {
+        if (s.raw.context?.toLowerCase().includes(q)) return true
+        if (s.raw.category?.toLowerCase().includes(q)) return true
+      } else {
+        if (s.raw.category?.toLowerCase().includes(q)) return true
+        if (s.raw.description?.toLowerCase().includes(q)) return true
+      }
+      return false
     },
-    [query],
+    [debouncedQuery],
   )
   const learnedFiltered = learned.filter(filterFn)
   const builtinFiltered = builtin.filter(filterFn)
@@ -225,11 +242,13 @@ export function SkillsModule(): React.ReactElement {
             canPropose={enabledLearnedCount >= 2}
             proposing={proposing}
             backfilling={backfilling}
+            lifecycleFilter={lifecycleFilter}
             onSelect={setSelectedId}
             onQueryChange={setQuery}
             onReload={() => void onReload()}
             onPropose={() => void onPropose()}
             onBackfill={() => void onBackfill()}
+            onLifecycleFilterChange={setLifecycleFilter}
           />
           <SkillDetail
             skill={selected}
@@ -237,6 +256,7 @@ export function SkillsModule(): React.ReactElement {
             onToggleEnabled={(s, next) => void onToggleEnabled(s, next)}
             onRequestDelete={(s) => setPendingDelete(s)}
             onFork={(name) => void onFork(name)}
+            onLifecycleChanged={() => void refetch()}
           />
         </div>
       )}
