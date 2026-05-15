@@ -393,6 +393,7 @@ fn main() {
             uclaw_core::tauri_commands::get_learned_skill,
             uclaw_core::tauri_commands::toggle_learned_skill,
             uclaw_core::tauri_commands::delete_learned_skill,
+            uclaw_core::tauri_commands::update_learned_skill,
             uclaw_core::tauri_commands::record_skill_cited,
             uclaw_core::tauri_commands::set_skill_lifecycle,
             uclaw_core::tauri_commands::list_invocable_skills,

@@ -3,11 +3,15 @@
  * invocation in the current session. Distinct from SkillCitationChips
  * (which renders post-application "applied skill X" pills).
  *
+ * Phase 4 (G13): When multiple skills from the same category appear in
+ * search results, a ⚠️ conflict indicator is shown with a tooltip
+ * listing the conflicting skill pairs.
+ *
  * See docs/superpowers/specs/2026-05-12-skill-recall-design.md §6.
  */
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { Search, BookOpen } from 'lucide-react'
+import { Search, BookOpen, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   Tooltip,
@@ -23,6 +27,39 @@ interface SkillRecallChipsProps {
   className?: string
 }
 
+interface ConflictGroup {
+  category: string
+  skills: string[]
+}
+
+/**
+ * Detect category conflicts: when a single search result set contains
+ * multiple skills with the same category, they may give contradictory
+ * advice.
+ */
+function detectConflicts(recalls: SkillRecall[]): ConflictGroup[] {
+  const byCategory = new Map<string, Set<string>>()
+
+  for (const r of recalls) {
+    if (r.kind === 'search' && r.results) {
+      for (const result of r.results) {
+        if (result.category) {
+          const existing = byCategory.get(result.category)
+          if (existing) {
+            existing.add(result.name)
+          } else {
+            byCategory.set(result.category, new Set([result.name]))
+          }
+        }
+      }
+    }
+  }
+
+  return [...byCategory.entries()]
+    .filter(([, names]) => names.size > 1)
+    .map(([cat, names]) => ({ category: cat, skills: [...names] }))
+}
+
 export function SkillRecallChips({ sessionId, className }: SkillRecallChipsProps): React.ReactElement | null {
   const recallsMap = useAtomValue(skillRecallsMapAtom)
   const setSettingsOpen = useSetAtom(settingsOpenAtom)
@@ -30,6 +67,8 @@ export function SkillRecallChips({ sessionId, className }: SkillRecallChipsProps
 
   const recalls = recallsMap.get(sessionId) ?? []
   if (recalls.length === 0) return null
+
+  const conflicts = detectConflicts(recalls)
 
   const handleClick = (): void => {
     setSettingsTab('tools')
@@ -42,6 +81,9 @@ export function SkillRecallChips({ sessionId, className }: SkillRecallChipsProps
         {recalls.map((r) => (
           <ChipFor key={r.toolCallId} recall={r} onClick={handleClick} />
         ))}
+        {conflicts.length > 0 && (
+          <ConflictIndicator conflicts={conflicts} />
+        )}
       </TooltipProvider>
     </div>
   )
@@ -79,6 +121,29 @@ function ChipFor({ recall, onClick }: { recall: SkillRecall; onClick: () => void
       </TooltipTrigger>
       <TooltipContent side="bottom" className="max-w-xs whitespace-pre-line text-[11px]">
         {tooltipText || '—'}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function ConflictIndicator({ conflicts }: { conflicts: ConflictGroup[] }): React.ReactElement {
+  const tooltipText = [
+    '检测到同类技能可能存在建议冲突：',
+    ...conflicts.map(
+      (c) => `• [${c.category}] ${c.skills.join(' vs ')}`
+    ),
+  ].join('\n')
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] text-amber-600 dark:text-amber-400 bg-amber-500/10 border border-amber-500/25 cursor-help">
+          <AlertTriangle className="size-3" />
+          冲突
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-xs whitespace-pre-line text-[11px]">
+        {tooltipText}
       </TooltipContent>
     </Tooltip>
   )

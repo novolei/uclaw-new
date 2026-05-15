@@ -3687,6 +3687,9 @@ pub async fn list_learned_skills(
                     "citedCount": meta.get("cited_count").and_then(|v| v.as_u64()).unwrap_or(0),
                     "lastCitedAt": meta.get("last_cited_at").cloned().unwrap_or(serde_json::Value::Null),
                     "lifecycle": meta.get("lifecycle").and_then(|v| v.as_str()).unwrap_or("promoted"),
+                    "category": meta.get("category").cloned().unwrap_or(serde_json::Value::Null),
+                    "tags": meta.get("tags").cloned().unwrap_or(serde_json::Value::Null),
+                    "validationHint": meta.get("validation_hint").cloned().unwrap_or(serde_json::Value::Null),
                     "createdAt": node.created_at,
                 }));
             }
@@ -3917,6 +3920,121 @@ pub async fn set_skill_lifecycle(
         title = %node.title,
         new_lifecycle = %lifecycle,
         "set_skill_lifecycle: changed"
+    );
+    Ok(())
+}
+
+/// Update editable fields of a learned skill.
+///
+/// Accepts a `node_id` and optional fields. Non-None fields are written
+/// into the node's metadata JSON. After metadata is updated, a new active
+/// version is created (deprecating the old one) with regenerated content
+/// so that future skill_search embeddings stay in sync.
+///
+/// Used by the SkillDetail edit mode (Phase 4 G8).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateLearnedSkillInput {
+    pub node_id: String,
+    pub context: Option<String>,
+    pub principles: Option<String>,
+    pub steps: Option<String>,
+    pub pitfalls: Option<String>,
+    pub category: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub validation_hint: Option<String>,
+}
+
+#[tauri::command]
+pub async fn update_learned_skill(
+    state: State<'_, AppState>,
+    input: UpdateLearnedSkillInput,
+) -> Result<(), String> {
+    let store = &state.memory_graph_store;
+    let node = store
+        .get_node(&input.node_id)
+        .map_err(|e| format!("lookup failed: {}", e))?
+        .ok_or_else(|| format!("skill node '{}' not found", input.node_id))?;
+
+    let mut meta = node.metadata.clone().unwrap_or(serde_json::json!({}));
+    {
+        let obj = meta.as_object_mut().ok_or("metadata is not an object")?;
+
+        // Patch each field if provided
+        if let Some(v) = &input.context {
+            obj.insert("context".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = &input.principles {
+            obj.insert("principles".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = &input.steps {
+            obj.insert("steps".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = &input.pitfalls {
+            obj.insert("pitfalls".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = &input.category {
+            obj.insert("category".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = &input.tags {
+            obj.insert(
+                "tags".into(),
+                serde_json::Value::Array(v.iter().map(|t| serde_json::Value::String(t.clone())).collect()),
+            );
+        }
+        if let Some(v) = &input.validation_hint {
+            obj.insert("validation_hint".into(), serde_json::Value::String(v.clone()));
+        }
+    } // drop obj
+
+    // Persist metadata
+    store
+        .update_node(&input.node_id, None, None, Some(&meta))
+        .map_err(|e| format!("metadata update failed: {}", e))?;
+
+    // Rebuild active version content from the (now-updated) metadata
+    let name = node.title.clone();
+    let context = meta.get("context").and_then(|v| v.as_str()).unwrap_or("");
+    let principles = meta.get("principles").and_then(|v| v.as_str()).unwrap_or("");
+    let steps = meta.get("steps").and_then(|v| v.as_str()).unwrap_or("");
+    let pitfalls = meta.get("pitfalls").and_then(|v| v.as_str()).unwrap_or("");
+    let anti_patterns = meta.get("anti_patterns").and_then(|v| v.as_str());
+
+    let mut new_content = format!(
+        "# {}\n\n## 适用场景\n{}\n\n## 核心原则\n{}\n\n## 实现步骤\n{}",
+        name, context, principles, steps
+    );
+    if let Some(ap) = anti_patterns {
+        new_content.push_str("\n\n## 反模式\n");
+        new_content.push_str(ap);
+    }
+    if !pitfalls.is_empty() {
+        new_content.push_str("\n\n## 常见陷阱\n");
+        new_content.push_str(pitfalls);
+    }
+
+    // Deprecate old active version & create new one
+    if let Ok(Some(old_ver)) = store.get_active_version(&input.node_id) {
+        let _ = store.deprecate_version(&old_ver.id);
+        let new_ver = crate::memory_graph::models::MemoryVersion {
+            id: uuid::Uuid::new_v4().to_string(),
+            node_id: input.node_id.clone(),
+            supersedes_version_id: Some(old_ver.id),
+            status: crate::memory_graph::models::MemoryVersionStatus::Active,
+            content: new_content,
+            metadata: None,
+            embedding_json: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        store
+            .create_version(&new_ver)
+            .map_err(|e| format!("version creation failed: {}", e))?;
+    }
+
+    tracing::info!(
+        node_id = %input.node_id,
+        title = %node.title,
+        "update_learned_skill: fields updated, new version created"
     );
     Ok(())
 }

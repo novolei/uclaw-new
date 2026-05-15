@@ -77,12 +77,28 @@ export function SkillsModule(): React.ReactElement {
     [builtinRaw],
   )
 
+  // Debounced search query for filtering (300ms)
+  const [debouncedQuery, setDebouncedQuery] = React.useState('')
+  React.useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query), 300)
+    return () => clearTimeout(timer)
+  }, [query])
+
   const filterFn = React.useCallback(
     (s: UnifiedSkill) => {
-      const q = query.trim().toLowerCase()
-      return !q || s.name.toLowerCase().includes(q)
+      const q = debouncedQuery.trim().toLowerCase()
+      if (!q) return true
+      if (s.name.toLowerCase().includes(q)) return true
+      if (s.kind === 'learned') {
+        if (s.raw.context?.toLowerCase().includes(q)) return true
+        if (s.raw.category?.toLowerCase().includes(q)) return true
+      } else {
+        if (s.raw.category?.toLowerCase().includes(q)) return true
+        if (s.raw.description?.toLowerCase().includes(q)) return true
+      }
+      return false
     },
-    [query],
+    [debouncedQuery],
   )
   const learnedFiltered = learned.filter(filterFn)
   const builtinFiltered = builtin.filter(filterFn)

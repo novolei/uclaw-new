@@ -4,15 +4,19 @@
  * 学得技能:场景 / 原则 / 步骤 / 陷阱 + 可展开的演化历史(SkillEvolutionTab)。
  * 内置技能:描述 / 版本 / 作者 / 分类 / provenance 徽章 + Fork(仅 bundled)。
  * 顶部右侧「Agent 可调用」开关。渲染逻辑迁自原 SkillsSettings 的 SkillCard 展开体。
+ *
+ * Phase 4 (G8): Edit mode for learned skills — context/principles/steps/
+ * pitfalls/category/tags/validationHint become editable when the pencil
+ * button is toggled.
  */
 import * as React from 'react'
 import Markdown from 'react-markdown'
-import { History, ArrowUp, Archive, RotateCcw } from 'lucide-react'
+import { History, ArrowUp, Archive, RotateCcw, Pencil, Save, X } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
 import { SkillEvolutionTab } from '@/components/settings/SkillEvolutionTab'
 import { cn } from '@/lib/utils'
-import { setSkillLifecycle } from '@/lib/tauri-bridge'
+import { setSkillLifecycle, updateLearnedSkill } from '@/lib/tauri-bridge'
 import { toast } from 'sonner'
 import type { UnifiedSkill } from './SkillsModule'
 
@@ -28,6 +32,12 @@ const PROVENANCE_BADGE: Record<'bundled' | 'user' | 'project' | 'marketplace', {
   project:     { label: 'Project',     className: 'bg-muted text-muted-foreground border-border' },
   marketplace: { label: 'Marketplace', className: 'bg-accent/10 text-accent-foreground border-accent/20' },
 }
+
+const CATEGORY_OPTIONS = [
+  { value: 'repair', label: 'Repair' },
+  { value: 'optimize', label: 'Optimize' },
+  { value: 'innovate', label: 'Innovate' },
+]
 
 function formatDate(s: string): string {
   if (!s) return ''
@@ -58,6 +68,38 @@ function MarkdownBlock({ text }: { text: string }): React.ReactElement {
   )
 }
 
+interface EditableFieldProps {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  multiline?: boolean
+}
+
+function EditableField({ label, value, onChange, multiline }: EditableFieldProps): React.ReactElement {
+  return (
+    <div>
+      <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+        {label}
+      </div>
+      {multiline ? (
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          rows={4}
+          className="w-full rounded-md border border-border bg-background px-3 py-2 text-[12.5px] text-foreground/90 resize-y focus:outline-none focus:ring-1 focus:ring-ring"
+        />
+      ) : (
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-[12.5px] text-foreground/90 focus:outline-none focus:ring-1 focus:ring-ring"
+        />
+      )}
+    </div>
+  )
+}
+
 export interface SkillDetailProps {
   skill: UnifiedSkill | null
   forking: boolean
@@ -77,11 +119,67 @@ export function SkillDetail({
 }: SkillDetailProps): React.ReactElement {
   const [showTimeline, setShowTimeline] = React.useState(false)
   const [lifecycleUpdating, setLifecycleUpdating] = React.useState(false)
+  const [editing, setEditing] = React.useState(false)
+  const [saving, setSaving] = React.useState(false)
 
-  // 切换选中技能时收起演化历史。
+  // Edit form state
+  const [editContext, setEditContext] = React.useState('')
+  const [editPrinciples, setEditPrinciples] = React.useState('')
+  const [editSteps, setEditSteps] = React.useState('')
+  const [editPitfalls, setEditPitfalls] = React.useState('')
+  const [editCategory, setEditCategory] = React.useState('')
+  const [editTags, setEditTags] = React.useState('')
+  const [editValidationHint, setEditValidationHint] = React.useState('')
+
+  // 切换选中技能时收起演化历史 + 退出编辑模式
   React.useEffect(() => {
     setShowTimeline(false)
+    setEditing(false)
   }, [skill?.id])
+
+  const enterEditMode = (): void => {
+    if (!skill || skill.kind !== 'learned') return
+    setEditContext(skill.raw.context || '')
+    setEditPrinciples(skill.raw.principles || '')
+    setEditSteps(skill.raw.steps || '')
+    setEditPitfalls(skill.raw.pitfalls || '')
+    setEditCategory(skill.raw.category || '')
+    setEditTags((skill.raw.tags ?? []).join(', '))
+    setEditValidationHint(skill.raw.validationHint || '')
+    setEditing(true)
+  }
+
+  const cancelEdit = (): void => {
+    setEditing(false)
+  }
+
+  const handleSave = async (): Promise<void> => {
+    if (!skill || skill.kind !== 'learned') return
+    setSaving(true)
+    try {
+      const tagsArray = editTags
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean)
+      await updateLearnedSkill({
+        nodeId: skill.raw.id,
+        context: editContext,
+        principles: editPrinciples,
+        steps: editSteps,
+        pitfalls: editPitfalls,
+        category: editCategory || undefined,
+        tags: tagsArray.length > 0 ? tagsArray : undefined,
+        validationHint: editValidationHint || undefined,
+      })
+      toast.success('技能已更新')
+      setEditing(false)
+      onLifecycleChanged?.() // trigger refetch
+    } catch (err) {
+      toast.error(`更新失败: ${err}`)
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const handleLifecycleChange = async (nodeId: string, newLifecycle: 'draft' | 'promoted' | 'deprecated') => {
     setLifecycleUpdating(true)
@@ -142,6 +240,17 @@ export function SkillDetail({
           )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {skill.kind === 'learned' && !editing && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={enterEditMode}
+              className="h-7 px-2 text-[11.5px] gap-1"
+            >
+              <Pencil className="size-3" />
+              编辑
+            </Button>
+          )}
           {skill.kind === 'builtin' && skill.raw.provenance === 'bundled' && (
             <Button
               size="sm"
@@ -243,7 +352,57 @@ export function SkillDetail({
           </div>
           {showTimeline ? (
             <SkillEvolutionTab skillId={skill.raw.id} />
+          ) : editing ? (
+            /* ── Edit mode ─────────────────────────────── */
+            <div className="space-y-3">
+              <EditableField label="场景" value={editContext} onChange={setEditContext} multiline />
+              <EditableField label="原则" value={editPrinciples} onChange={setEditPrinciples} multiline />
+              <EditableField label="步骤" value={editSteps} onChange={setEditSteps} multiline />
+              <EditableField label="陷阱" value={editPitfalls} onChange={setEditPitfalls} multiline />
+
+              <div>
+                <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                  类别
+                </div>
+                <select
+                  value={editCategory}
+                  onChange={(e) => setEditCategory(e.target.value)}
+                  className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-[12.5px] text-foreground/90 focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  <option value="">未分类</option>
+                  {CATEGORY_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <EditableField label="标签 (逗号分隔)" value={editTags} onChange={setEditTags} />
+              <EditableField label="验证方法" value={editValidationHint} onChange={setEditValidationHint} />
+
+              <div className="flex items-center gap-2 pt-1">
+                <Button
+                  size="sm"
+                  onClick={() => void handleSave()}
+                  disabled={saving}
+                  className="h-7 px-3 text-[11.5px] gap-1"
+                >
+                  <Save className="size-3" />
+                  {saving ? '保存中…' : '保存'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={cancelEdit}
+                  disabled={saving}
+                  className="h-7 px-3 text-[11.5px] gap-1"
+                >
+                  <X className="size-3" />
+                  取消
+                </Button>
+              </div>
+            </div>
           ) : (
+            /* ── View mode ─────────────────────────────── */
             <>
               {skill.raw.context && (
                 <Section label="场景">
@@ -263,6 +422,27 @@ export function SkillDetail({
               {skill.raw.pitfalls && (
                 <Section label="陷阱">
                   <MarkdownBlock text={skill.raw.pitfalls} />
+                </Section>
+              )}
+              {skill.raw.category && (
+                <Section label="类别">
+                  <p className="leading-relaxed text-muted-foreground">{skill.raw.category}</p>
+                </Section>
+              )}
+              {skill.raw.tags && skill.raw.tags.length > 0 && (
+                <Section label="标签">
+                  <div className="flex flex-wrap gap-1">
+                    {skill.raw.tags.map((t) => (
+                      <span key={t} className="rounded-full bg-muted px-2 py-0.5 text-[10.5px] text-muted-foreground">
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                </Section>
+              )}
+              {skill.raw.validationHint && (
+                <Section label="验证方法">
+                  <p className="leading-relaxed text-muted-foreground">{skill.raw.validationHint}</p>
                 </Section>
               )}
             </>
