@@ -602,6 +602,11 @@ impl ProactiveService {
                                 // skill_extraction 场景：解析 XML 并存储为 Procedure 节点
                                 if scenario.name() == "skill_extraction" {
                                     let mut parsed_skills = crate::proactive::skill_parser::parse_skill_report(&llm_response);
+                                    tracing::info!(
+                                        parsed_count = parsed_skills.len(),
+                                        skill_names = ?parsed_skills.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+                                        "[skill_extraction] parse_skill_report completed"
+                                    );
                                     // Classify failure types from execution logs and stamp
                                     // each new skill with signals_seen (empirical counterpart
                                     // to the LLM-prescribed signals[]).

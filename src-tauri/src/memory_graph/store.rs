@@ -311,6 +311,47 @@ impl MemoryGraphStore {
         Ok(())
     }
 
+    /// Lightweight signal: increment `manifest_appearance_count` on given
+    /// skill nodes. Called once per `build_skills_manifest` invocation for
+    /// learned skills that made it into the final prompt. This counter is
+    /// a pure observability metric — it measures "how often does this skill
+    /// survive the ranking/budget cut and appear in the system prompt".
+    ///
+    /// Best-effort: failures are logged but never propagated.
+    pub fn bump_manifest_appearance(&self, node_ids: &[&str]) {
+        if node_ids.is_empty() {
+            return;
+        }
+        let Ok(conn) = self.conn.lock().map_err(|e| {
+            tracing::warn!("bump_manifest_appearance: DB lock failed: {}", e);
+            e
+        }) else {
+            return;
+        };
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut stmt = match conn.prepare(
+            "UPDATE memory_nodes
+             SET metadata_json = json_set(
+                     COALESCE(metadata_json, '{}'),
+                     '$.manifest_appearance_count',
+                     COALESCE(json_extract(metadata_json, '$.manifest_appearance_count'), 0) + 1
+                 ),
+                 updated_at = ?1
+             WHERE id = ?2"
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("bump_manifest_appearance: prepare failed: {}", e);
+                return;
+            }
+        };
+        for id in node_ids {
+            if let Err(e) = stmt.execute(rusqlite::params![now, id]) {
+                tracing::warn!(node_id = %id, error = %e, "bump_manifest_appearance: execute failed");
+            }
+        }
+    }
+
     /// Find an existing learned-skill node whose title matches the
     /// provided normalized form. Used by `store_skill_as_procedure` to
     /// avoid creating duplicates on every proactive extraction.
