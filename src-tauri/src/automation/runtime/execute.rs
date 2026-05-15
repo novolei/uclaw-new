@@ -13,12 +13,14 @@ use crate::automation::tools::{
 };
 use crate::agent::tools::tool::ToolRegistry;
 use crate::automation::runtime::cost::CostCapState;
+use crate::channels::{ChannelManager, ChannelNotification};
 use crate::error::Error;
 use crate::llm::LlmProvider;
 use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tauri::Emitter;
+use tokio::sync::{Mutex, RwLock};
 
 /// LoopDelegate for automation runs — the first headless LoopDelegate.
 ///
@@ -47,6 +49,22 @@ pub struct AutomationDelegate {
     pub cost: Arc<CostCapState>,
     /// Working directory the run operates in (file/edit/search base + shell cwd).
     pub workspace_root: PathBuf,
+    /// IPC handle for `"system"` channel notifications. None in unit tests.
+    pub app_handle: Option<tauri::AppHandle>,
+    /// External channel manager for `"wecom"`, `"email"`, etc. None in unit tests.
+    pub channel_manager: Option<Arc<RwLock<ChannelManager>>>,
+}
+
+/// Maps a `notify_user` channel name to the corresponding `ChannelType`.
+/// Unknown names return `None` and are silently skipped.
+fn channel_type_for_name(name: &str) -> Option<crate::channels::ChannelType> {
+    use crate::channels::ChannelType;
+    match name {
+        "wecom"   => Some(ChannelType::WeChat),
+        "email"   => Some(ChannelType::Email),
+        "webhook" => Some(ChannelType::Webhook),
+        _         => None,
+    }
 }
 
 #[async_trait]
@@ -291,20 +309,43 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
 
                 "notify_user" => {
                     let input: NotifyInput = serde_json::from_value(call.arguments.clone())?;
-                    // Phase 2a: structured log of the notification intent.
-                    // Real channel dispatch (channels.rs broadcast) is wired
-                    // in Phase 2b when the delegate gains a ChannelManager handle.
-                    tracing::info!(
-                        spec_id = %self.spec_id,
-                        channels = ?input.channels,
-                        title = %input.title,
-                        body = %input.body,
-                        level = %input.level,
-                        "automation notify_user"
-                    );
+                    let notification = ChannelNotification {
+                        title: input.title.clone(),
+                        body:  input.body.clone(),
+                        level: input.level.clone(),
+                        metadata: None,
+                    };
+
+                    for ch in &input.channels {
+                        match ch.as_str() {
+                            "system" => {
+                                if let Some(handle) = &self.app_handle {
+                                    let _ = handle.emit("automation_notify", &notification);
+                                }
+                            }
+                            other => {
+                                if let (Some(ct), Some(cm_lock)) =
+                                    (channel_type_for_name(other), &self.channel_manager)
+                                {
+                                    let cm = cm_lock.read().await;
+                                    let results = cm.send_to_type(&ct, &notification).await;
+                                    for (ch_id, res) in results {
+                                        if let Err(e) = res {
+                                            tracing::warn!(
+                                                spec_id = %self.spec_id,
+                                                ch_id = %ch_id,
+                                                "notify_user channel error: {}", e
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     reason_ctx.messages.push(ChatMessage::user_tool_result(
                         &call.id,
-                        "notification logged (channel dispatch lands in Phase 2b)",
+                        "notification dispatched",
                         false,
                     ));
                 }
@@ -350,7 +391,7 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::types::LoopDelegate;
+    use crate::agent::types::{LoopDelegate, ContentBlock};
     use crate::automation::protocol::humane_v1::Permission;
     use serde_json::json;
     use std::sync::Arc;
@@ -405,6 +446,8 @@ mod tests {
                 per_day_usd: 10.00,
             })),
             workspace_root: tmp.path().to_path_buf(),
+            app_handle: None,
+            channel_manager: None,
         }
     }
 
@@ -720,5 +763,48 @@ mod tests {
         let last = ctx.messages.last().unwrap();
         let content_str = format!("{:?}", last);
         assert!(content_str.contains("permission error"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5: notify_user dispatches without panic when handles are None
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn notify_user_dispatches_without_panic() {
+        let spec_id = "spec-notify";
+        let act_id  = "act-notify";
+        let tmp  = TempDir::new().unwrap();
+        let conn = setup_db(spec_id, act_id);
+        // Both optional handles are None in unit tests — system emit is skipped,
+        // channel dispatch is skipped. The tool result must say "dispatched".
+        // Grant Notification permission so notify_user passes the permission gate.
+        let perms = PermissionSet {
+            spec: vec![],
+            granted: vec![Permission::Notification],
+            denied: vec![],
+        };
+        let delegate = make_delegate(spec_id, act_id, &tmp, conn, perms);
+        let call = ToolCall {
+            id: "c1".into(),
+            name: "notify_user".into(),
+            arguments: serde_json::json!({
+                "channels": ["system", "wecom"],
+                "title": "test alert",
+                "body":  "hello world",
+                "level": "info"
+            }),
+        };
+        let mut ctx = ReasoningContext::new(String::new());
+        let result = delegate.execute_tool_calls(vec![call], &mut ctx).await;
+        assert!(result.is_ok(), "execute_tool_calls should not error: {:?}", result);
+        let last = ctx.messages.last().expect("tool result pushed");
+        // Check that the content contains a ToolResult with "dispatched" text.
+        let found_dispatched = last.content.iter().any(|block| {
+            matches!(block, ContentBlock::ToolResult { content, .. } if content.contains("dispatched"))
+        });
+        assert!(
+            found_dispatched,
+            "expected 'dispatched' in tool result, got: {:?}",
+            last.content
+        );
     }
 }

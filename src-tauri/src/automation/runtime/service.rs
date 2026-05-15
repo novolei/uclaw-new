@@ -157,6 +157,11 @@ pub struct AppRuntimeService {
     /// Weak self-reference, set once during `new()` so `weak_ref()` never
     /// needs to touch `Arc` internals via raw pointers.
     self_weak: OnceLock<Weak<AppRuntimeService>>,
+
+    /// IPC handle for automation notifications. Passed to AutomationDelegate.
+    pub app_handle: Option<tauri::AppHandle>,
+    /// Channel manager for extended notification types. Passed to AutomationDelegate.
+    pub channel_manager: Option<Arc<tokio::sync::RwLock<crate::channels::ChannelManager>>>,
 }
 
 impl AppRuntimeService {
@@ -172,6 +177,8 @@ impl AppRuntimeService {
         infra: Arc<InfraService>,
         memory: Arc<AutomationMemoryStore>,
         provider_service: Arc<ProviderService>,
+        app_handle: Option<tauri::AppHandle>,
+        channel_manager: Option<Arc<tokio::sync::RwLock<crate::channels::ChannelManager>>>,
     ) -> Arc<Self> {
         let svc = Arc::new(Self {
             db,
@@ -190,6 +197,8 @@ impl AppRuntimeService {
             status: Arc::new(StdMutex::new(ServiceStatus::Stopped)),
             started_at: Arc::new(StdMutex::new(None)),
             self_weak: OnceLock::new(),
+            app_handle,
+            channel_manager,
         });
         let _ = svc.self_weak.set(Arc::downgrade(&svc));
         svc
@@ -632,6 +641,8 @@ impl AppRuntimeService {
             tools,
             cost: Arc::new(CostCapState::new(cost_cap)),
             workspace_root,
+            app_handle: self.app_handle.clone(),
+            channel_manager: self.channel_manager.clone(),
         };
 
         // ── 10. run the agentic loop ─────────────────────────────────────────
@@ -1451,6 +1462,8 @@ mod tests {
             Arc::new(InfraService::new()),
             Arc::new(crate::automation::memory::MemoryStore::new(memory_root)),
             Arc::new(ProviderService::new(&tmp).expect("test provider service")),
+            None, // app_handle not available in tests
+            None, // channel_manager not available in tests
         )
     }
 

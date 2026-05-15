@@ -436,6 +436,8 @@ impl AppState {
                 infra_service.clone(),
                 Arc::new(AutomationMemoryStore::new(automation_memory_root)),
                 provider_service.clone(),
+                None, // app_handle will be set later during runtime
+                None, // channel_manager will be set later during runtime
             )
         };
 
