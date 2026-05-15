@@ -1009,11 +1009,6 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
                 <Archive size={13} className="text-foreground/30" /><span>已归档 ({archivedConversationCount})</span>
               </button>
             )}
-            {mode === 'agent' && archivedAgentSessionCount > 0 && (
-              <button onClick={() => setViewMode('archived')} className="w-full flex items-center gap-2 px-3 py-2 rounded-[10px] text-[12px] text-foreground/40 hover:bg-foreground/[0.04] hover:text-foreground/60 transition-colors titlebar-no-drag">
-                <Archive size={13} className="text-foreground/30" /><span>已归档 ({archivedAgentSessionCount})</span>
-              </button>
-            )}
           </>
         ) : (
           <button onClick={() => setViewMode('active')} className="w-full flex items-center gap-2 px-3 py-2 rounded-[10px] text-[12px] text-foreground/60 bg-foreground/[0.04] hover:bg-foreground/[0.07] hover:text-foreground/80 transition-colors titlebar-no-drag">

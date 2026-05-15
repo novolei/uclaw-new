@@ -26,8 +26,9 @@ import {
   togglePinAgentSessionAtom,
 } from '@/atoms/agent-atoms'
 import { tabsAtom } from '@/atoms/tab-atoms'
-import type { AgentWorkspace } from '@/lib/agent-types'
-import { toggleArchiveAgentSession } from '@/lib/tauri-bridge'
+import type { AgentWorkspace, AgentSessionMeta } from '@/lib/agent-types'
+import { toggleArchiveAgentSession, deleteAgentSession } from '@/lib/tauri-bridge'
+import type { WorkspaceSession } from '@/atoms/workspace'
 import { toast } from 'sonner'
 
 /**
@@ -62,6 +63,43 @@ function SegmentHeader({ children }: { children: React.ReactNode }): React.React
   )
 }
 
+/** Row shown in the archived view — inline restore + permanent-delete buttons. */
+function ArchivedSessionRow({
+  s,
+  onRestore,
+  onDelete,
+}: {
+  s: WorkspaceSession
+  onRestore: () => void
+  onDelete: () => void
+}): React.ReactElement {
+  return (
+    <div className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] text-muted-foreground hover:bg-muted/50 transition-colors">
+      <span
+        className="shrink-0 text-[14px] leading-none"
+        style={{ fontFamily: "'Noto Emoji', sans-serif", width: '18px' }}
+      >
+        {s.titleEmoji || '💬'}
+      </span>
+      <span className="flex-1 truncate">{s.title || 'New session'}</span>
+      <div className="shrink-0 flex items-center gap-1">
+        <button
+          onClick={(e) => { e.stopPropagation(); onRestore() }}
+          className="titlebar-no-drag text-[11px] px-2 py-0.5 rounded border border-border/60 text-foreground/60 hover:text-foreground hover:bg-muted transition-colors"
+        >
+          恢复
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); onDelete() }}
+          className="titlebar-no-drag text-[11px] px-2 py-0.5 rounded border border-danger/30 text-danger/60 hover:text-danger hover:bg-danger/5 transition-colors"
+        >
+          永久删除
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function WorkspaceRail({
   activeSessionId,
   onSelectSession,
@@ -72,6 +110,7 @@ export function WorkspaceRail({
   const workspaceSessions = useAtomValue(workspaceSessionsAtom)
   const indicatorMap = useAtomValue(agentSessionIndicatorMapAtom)
   const refreshWorkspaces = useSetAtom(refreshWorkspacesAtom)
+  const setAgentSessions = useSetAtom(agentSessionsAtom)
 
   const [moveTargetSessionId, setMoveTargetSessionId] = React.useState<string | null>(null)
   const [showArchived, setShowArchived] = React.useState(false)
@@ -134,11 +173,25 @@ export function WorkspaceRail({
   const handleToggleArchive = async (id: string): Promise<void> => {
     try {
       await toggleArchiveAgentSession(id)
-      // After archiving/restoring, if not in archived view switch to normal; let
-      // the next syncWorkspaceSessionsAtom refresh move the session out of view.
+      // Optimistically flip the archived flag so the rail updates immediately
+      // without waiting for the next window-focus refetch.
+      setAgentSessions((prev: AgentSessionMeta[]) =>
+        prev.map((s) => s.id === id ? { ...s, archived: !s.archived } : s)
+      )
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       toast.error(`归档操作失败：${msg}`)
+    }
+  }
+
+  const handlePermanentDelete = async (id: string): Promise<void> => {
+    try {
+      await deleteAgentSession(id)
+      setAgentSessions((prev: AgentSessionMeta[]) => prev.filter((s) => s.id !== id))
+      onDeleteSession?.(id)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(`删除失败：${msg}`)
     }
   }
 
@@ -150,14 +203,52 @@ export function WorkspaceRail({
       <div className="flex-1 overflow-y-auto px-3 pt-1 pb-1 scrollbar-none">
         {sessions.length === 0 && (
           <p className="text-[11px] text-muted-foreground px-2 py-3 italic">
-            尚无会话。点击上方"新会话"开始。
+            {showArchived ? '暂无已归档会话。' : '尚无会话。点击上方"新会话"开始。'}
           </p>
         )}
 
-        {pinned.length > 0 && (
+        {showArchived ? (
+          /* Archived view — inline restore / permanent-delete buttons, no dropdown. */
+          sessions.map((s) => (
+            <ArchivedSessionRow
+              key={s.id}
+              s={s}
+              onRestore={() => void handleToggleArchive(s.id)}
+              onDelete={() => void handlePermanentDelete(s.id)}
+            />
+          ))
+        ) : (
           <>
-            <SegmentHeader>📌 固定</SegmentHeader>
-            {pinned.map((s) => (
+            {pinned.length > 0 && (
+              <>
+                <SegmentHeader>📌 固定</SegmentHeader>
+                {pinned.map((s) => (
+                  <SessionItem
+                    key={s.id}
+                    id={s.id}
+                    title={s.title}
+                    titleEmoji={s.titleEmoji}
+                    titlePending={s.titlePending}
+                    isActive={activeSessionId === s.id}
+                    running={indicatorMap.get(s.id) === 'running'}
+                    isPinned
+                    isArchived={!!s.archived}
+                    isOpen={openSessionIds.has(s.id)}
+                    onClick={() => onSelectSession(s.id)}
+                    onDelete={onDeleteSession ? () => onDeleteSession(s.id) : undefined}
+                    onMove={() => setMoveTargetSessionId(s.id)}
+                    onTogglePin={() => void handleTogglePin(s.id)}
+                    onToggleArchive={() => void handleToggleArchive(s.id)}
+                  />
+                ))}
+              </>
+            )}
+
+            {pinned.length > 0 && unpinned.length > 0 && (
+              <SegmentHeader>会话</SegmentHeader>
+            )}
+
+            {unpinned.map((s) => (
               <SessionItem
                 key={s.id}
                 id={s.id}
@@ -166,7 +257,7 @@ export function WorkspaceRail({
                 titlePending={s.titlePending}
                 isActive={activeSessionId === s.id}
                 running={indicatorMap.get(s.id) === 'running'}
-                isPinned
+                isPinned={false}
                 isArchived={!!s.archived}
                 isOpen={openSessionIds.has(s.id)}
                 onClick={() => onSelectSession(s.id)}
@@ -178,30 +269,6 @@ export function WorkspaceRail({
             ))}
           </>
         )}
-
-        {pinned.length > 0 && unpinned.length > 0 && (
-          <SegmentHeader>会话</SegmentHeader>
-        )}
-
-        {unpinned.map((s) => (
-          <SessionItem
-            key={s.id}
-            id={s.id}
-            title={s.title}
-            titleEmoji={s.titleEmoji}
-            titlePending={s.titlePending}
-            isActive={activeSessionId === s.id}
-            running={indicatorMap.get(s.id) === 'running'}
-            isPinned={false}
-            isArchived={!!s.archived}
-            isOpen={openSessionIds.has(s.id)}
-            onClick={() => onSelectSession(s.id)}
-            onDelete={onDeleteSession ? () => onDeleteSession(s.id) : undefined}
-            onMove={() => setMoveTargetSessionId(s.id)}
-            onTogglePin={() => void handleTogglePin(s.id)}
-            onToggleArchive={() => void handleToggleArchive(s.id)}
-          />
-        ))}
       </div>
 
       {/* Archived sessions toggle — only visible when ≥1 session has been archived. */}
