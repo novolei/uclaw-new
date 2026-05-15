@@ -5538,25 +5538,25 @@ pub async fn get_or_create_spec_home_thread(
         .map_err(|e| Error::Internal(format!("resolve home space: {e}")))?;
 
     // Try to find existing home-thread session
-    let existing: Option<(String, String, i64, i64, i64)> = conn.query_row(
-        "SELECT id, title, message_count, created_at, updated_at
+    let existing: Option<(String, String, i64, i64, i64, i64, i64)> = conn.query_row(
+        "SELECT id, title, message_count, pinned, archived, created_at, updated_at
          FROM agent_sessions
          WHERE json_extract(metadata_json, '$.spec_id') = ?1
            AND json_extract(metadata_json, '$.origin') = 'automation:home_thread'
          LIMIT 1",
         rusqlite::params![&spec_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
     ).optional()
         .map_err(|e| Error::Database(e))?;
 
-    if let Some((id, title, msg_count, created_at, updated_at)) = existing {
+    if let Some((id, title, msg_count, pinned, archived, created_at, updated_at)) = existing {
         return Ok(serde_json::json!({
             "id": id,
             "workspaceId": space_id,
             "title": title,
             "messageCount": msg_count,
-            "pinned": false,
-            "archived": false,
+            "pinned": pinned != 0,
+            "archived": archived != 0,
             "createdAt": created_at,
             "updatedAt": updated_at,
         }));
