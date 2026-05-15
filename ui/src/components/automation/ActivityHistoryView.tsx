@@ -24,9 +24,13 @@ export function ActivityHistoryView({
   const [showArchived, setShowArchived] = useState(false)
 
   if (activeRunSessionId) {
+    const activeActivity = activities.find((a) => a.sessionId === activeRunSessionId)
+    const isRunning =
+      activeActivity?.status === 'running' || activeActivity?.status === 'queued'
     return (
       <RunSessionSubView
         sessionId={activeRunSessionId}
+        isRunning={isRunning}
         onBack={() => onCloseRunSession?.()}
       />
     )
