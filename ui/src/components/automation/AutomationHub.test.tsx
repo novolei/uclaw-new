@@ -12,6 +12,7 @@ const baseActivity: AutomationActivity = {
   sessionId: 'sess-1', reportArtifactsJson: '[]',
   reportText: 'done', reportOutcome: 'useful',
   escalationId: null, resumedFromActivityId: null, resumedFromEscalationId: null,
+  workingDir: '',
 }
 
 describe('ActivityRow', () => {

@@ -1,17 +1,73 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { getAgentSessionMessages } from '@/lib/tauri-bridge'
+import type { AutomationActivity } from '@/lib/tauri-bridge'
 import { AgentMessages } from '@/components/agent/AgentMessages'
 import type { AgentMessage } from '@/lib/agent-types'
+import { ActivityMarkdown } from './ActivityMarkdown'
+import { ArtifactChip, OUTCOME_CONFIG } from './ActivityListItem'
+import type { ReportArtifact } from './ActivityListItem'
 
 interface Props {
   sessionId: string
-  /** True while the activity record is still running or queued. Enables
-   *  message polling so the transcript stays live during execution. */
   isRunning?: boolean
+  activity?: AutomationActivity | null
   onBack: () => void
 }
 
-export function RunSessionSubView({ sessionId, isRunning, onBack }: Props) {
+function ReportCard({ activity }: { activity: AutomationActivity }) {
+  const [collapsed, setCollapsed] = useState(false)
+  const isActive = activity.status === 'running' || activity.status === 'queued'
+
+  const artifacts = useMemo<ReportArtifact[]>(() => {
+    try { return JSON.parse(activity.reportArtifactsJson) as ReportArtifact[] }
+    catch { return [] }
+  }, [activity.reportArtifactsJson])
+
+  if (!isActive && !activity.reportText) return null
+
+  const outcomeCfg = activity.reportOutcome
+    ? (OUTCOME_CONFIG[activity.reportOutcome] ?? null)
+    : null
+
+  return (
+    <div className="mx-3 mt-3 mb-1 border border-border/50 rounded-lg overflow-hidden shrink-0">
+      <button
+        onClick={() => setCollapsed((v) => !v)}
+        className="titlebar-no-drag w-full flex items-center gap-2 px-3 py-2 text-xs border-b border-border/40 bg-muted/30 hover:bg-muted/50 transition-colors"
+      >
+        <span className="font-medium text-foreground/80">运行报告</span>
+        {outcomeCfg && (
+          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${outcomeCfg.className}`}>
+            {outcomeCfg.label}
+          </span>
+        )}
+        <span className="ml-auto text-muted-foreground">{collapsed ? '▸' : '▾'}</span>
+      </button>
+      {!collapsed && (
+        <div className="px-3 py-2">
+          {isActive && !activity.reportText ? (
+            <p className="text-xs text-muted-foreground italic">运行中，暂无报告…</p>
+          ) : (
+            <>
+              {activity.reportText && (
+                <ActivityMarkdown content={activity.reportText} />
+              )}
+              {artifacts.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {artifacts.map((a, i) => (
+                    <ArtifactChip key={i} artifact={a} workingDir={activity.workingDir} />
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function RunSessionSubView({ sessionId, isRunning, activity, onBack }: Props) {
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [loaded, setLoaded] = useState(false)
 
@@ -24,7 +80,7 @@ export function RunSessionSubView({ sessionId, isRunning, onBack }: Props) {
     })
   }, [sessionId])
 
-  // Poll while the run is still active so the transcript stays live.
+  // Poll while run is active so the transcript stays live.
   useEffect(() => {
     if (!isRunning) return
     const id = setInterval(() => {
@@ -36,8 +92,8 @@ export function RunSessionSubView({ sessionId, isRunning, onBack }: Props) {
   }, [isRunning, sessionId])
 
   return (
-    <div className="flex flex-col h-full">
-      {/* breadcrumb */}
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* Breadcrumb */}
       <div className="flex items-center gap-1 px-3 py-2 border-b border-border/50 text-xs text-muted-foreground shrink-0">
         <button
           onClick={onBack}
@@ -55,7 +111,19 @@ export function RunSessionSubView({ sessionId, isRunning, onBack }: Props) {
         )}
       </div>
 
-      {/* transcript */}
+      {/* Report card (pinned above transcript) */}
+      {activity && <ReportCard activity={activity} />}
+
+      {/* Divider */}
+      {activity && (activity.reportText || activity.status === 'running' || activity.status === 'queued') && (
+        <div className="px-3 pt-2 pb-1 shrink-0">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground/50 font-semibold">
+            对话过程
+          </p>
+        </div>
+      )}
+
+      {/* Transcript */}
       <div className="flex-1 overflow-hidden">
         <AgentMessages
           sessionId={sessionId}
