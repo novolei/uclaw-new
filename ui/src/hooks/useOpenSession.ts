@@ -17,6 +17,13 @@ import {
   currentAgentWorkspaceIdAtom,
   unviewedCompletedSessionIdsAtom,
 } from '@/atoms/agent-atoms'
+import { topLevelViewAtom } from '@/atoms/top-level-view'
+import { kaleidoscopeModuleAtom } from '@/atoms/kaleidoscope'
+import {
+  automationSelectedSpecIdAtom,
+  automationActiveTabAtom,
+  automationActivityRunSessionIdAtom,
+} from '@/atoms/automation-ui'
 type OpenSessionFn = (type: TabType, sessionId: string, title: string) => void
 
 export function useOpenSession(): OpenSessionFn {
@@ -29,9 +36,35 @@ export function useOpenSession(): OpenSessionFn {
   const setCurrentAgentWorkspaceId = useSetAtom(currentAgentWorkspaceIdAtom)
   const setUnviewedCompleted = useSetAtom(unviewedCompletedSessionIdsAtom)
   const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
+  const setTopLevelView = useSetAtom(topLevelViewAtom)
+  const setKaleidoscopeModule = useSetAtom(kaleidoscopeModuleAtom)
+  const setAutomationSelectedSpecId = useSetAtom(automationSelectedSpecIdAtom)
+  const setAutomationActiveTab = useSetAtom(automationActiveTabAtom)
+  const setAutomationActivityRunSessionId = useSetAtom(automationActivityRunSessionIdAtom)
 
   return React.useCallback(
     (type: TabType, sessionId: string, title: string): void => {
+      // W2: automation sessions route to Kaleidoscope, not workspace.
+      // Check any session (type doesn't matter) for automation origin metadata.
+      const anySession = agentSessions.find((s) => s.id === sessionId)
+      const meta = (() => {
+        try { return JSON.parse(anySession?.metadataJson ?? '{}') } catch { return {} }
+      })()
+      const origin: string = meta.origin ?? ''
+      if (origin.startsWith('automation:')) {
+        setTopLevelView('kaleidoscope')
+        setKaleidoscopeModule('humans')
+        setAutomationSelectedSpecId(meta.spec_id ?? null)
+        if (origin === 'automation:home_thread') {
+          setAutomationActiveTab('chat')
+          setAutomationActivityRunSessionId(null)
+        } else {
+          setAutomationActiveTab('activity')
+          setAutomationActivityRunSessionId(sessionId)
+        }
+        return
+      }
+
       // For agent tabs, prepend the session emoji (if any) to the tab title
       let displayTitle = title
       const session = type === 'agent'
@@ -79,6 +112,9 @@ export function useOpenSession(): OpenSessionFn {
         }
       }
     },
-    [tabs, setTabs, setActiveTabId, setAppMode, setCurrentConversationId, setCurrentAgentSessionId, agentSessions, setCurrentAgentWorkspaceId, setUnviewedCompleted, activeWorkspaceId],
+    [tabs, setTabs, setActiveTabId, setAppMode, setCurrentConversationId, setCurrentAgentSessionId,
+     agentSessions, setCurrentAgentWorkspaceId, setUnviewedCompleted, activeWorkspaceId,
+     setTopLevelView, setKaleidoscopeModule, setAutomationSelectedSpecId,
+     setAutomationActiveTab, setAutomationActivityRunSessionId],
   )
 }
