@@ -1251,6 +1251,7 @@ export interface AutomationActivity {
   escalationId: string | null
   resumedFromActivityId: string | null
   resumedFromEscalationId: string | null
+  workingDir: string
 }
 
 export const getAutomationActivity = (specId: string, limit?: number): Promise<AutomationActivity[]> =>
