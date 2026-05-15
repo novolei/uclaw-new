@@ -4679,6 +4679,63 @@ pub async fn toggle_pin_agent_session(
     Ok(next)
 }
 
+/// Toggle archive state on an agent_session. Returns the new `archived_at`
+/// timestamp (ms) when archiving, `None` when restoring. If the id does not
+/// exist, the UPDATE affects 0 rows and we return `Ok(None)`.
+#[tauri::command]
+pub async fn toggle_archive_agent_session(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<i64>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    let tx = conn.unchecked_transaction().map_err(|e| Error::Database(e))?;
+    let current: Option<i64> = tx.query_row(
+        "SELECT archived_at FROM agent_sessions WHERE id = ?1",
+        rusqlite::params![&id],
+        |row| row.get::<_, Option<i64>>(0),
+    ).ok().flatten();
+    let next: Option<i64> = if current.is_some() {
+        None
+    } else {
+        Some(chrono::Utc::now().timestamp_millis())
+    };
+    let archived_flag = if next.is_some() { 1i64 } else { 0i64 };
+    tx.execute(
+        "UPDATE agent_sessions SET archived = ?1, archived_at = ?2 WHERE id = ?3",
+        rusqlite::params![archived_flag, next, &id],
+    ).map_err(|e| Error::Database(e))?;
+    tx.commit().map_err(|e| Error::Database(e))?;
+    Ok(next)
+}
+
+/// Toggle archive state on a conversation. Returns the new `archived_at`
+/// timestamp (ms) when archiving, `None` when restoring.
+#[tauri::command]
+pub async fn toggle_archive_conversation(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<i64>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    let tx = conn.unchecked_transaction().map_err(|e| Error::Database(e))?;
+    let current: Option<i64> = tx.query_row(
+        "SELECT archived_at FROM conversations WHERE id = ?1",
+        rusqlite::params![&id],
+        |row| row.get::<_, Option<i64>>(0),
+    ).ok().flatten();
+    let next: Option<i64> = if current.is_some() {
+        None
+    } else {
+        Some(chrono::Utc::now().timestamp_millis())
+    };
+    let archived_flag = if next.is_some() { 1i64 } else { 0i64 };
+    tx.execute(
+        "UPDATE conversations SET archived = ?1, archived_at = ?2 WHERE id = ?3",
+        rusqlite::params![archived_flag, next, &id],
+    ).map_err(|e| Error::Database(e))?;
+    tx.commit().map_err(|e| Error::Database(e))?;
+    Ok(next)
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendAgentMessageInput {
@@ -8544,6 +8601,129 @@ mod pin_tests {
             [], |r| r.get(0),
         ).unwrap();
         assert_eq!(count, 1);
+    }
+}
+
+#[cfg(test)]
+mod toggle_archive_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn db_with_session_and_conversation() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        // Run ALL migrations so V26 (conversations.archived + archived_at) exists.
+        crate::db::migrations::run(&conn).unwrap();
+        // Insert one agent_session.
+        conn.execute(
+            "INSERT INTO agent_sessions (id, space_id, title, metadata_json,
+                                          message_count, pinned, archived,
+                                          created_at, updated_at)
+             VALUES ('s1', 'default', 't', '{}', 0, 0, 0, 0, 0)",
+            [],
+        ).unwrap();
+        // Insert one conversation (space FK not enforced without PRAGMA).
+        conn.execute(
+            "INSERT INTO conversations (id, space_id, title, created_at, updated_at)
+             VALUES ('cv1', 'default', 'Chat 1', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        conn
+    }
+
+    fn toggle_archive_session_sql(conn: &Connection, id: &str) -> rusqlite::Result<Option<i64>> {
+        let tx = conn.unchecked_transaction()?;
+        let current: Option<i64> = tx.query_row(
+            "SELECT archived_at FROM agent_sessions WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get::<_, Option<i64>>(0),
+        ).ok().flatten();
+        let next: Option<i64> = if current.is_some() {
+            None
+        } else {
+            Some(1_700_000_000_000_i64)
+        };
+        let archived_flag = if next.is_some() { 1i64 } else { 0i64 };
+        tx.execute(
+            "UPDATE agent_sessions SET archived = ?1, archived_at = ?2 WHERE id = ?3",
+            rusqlite::params![archived_flag, next, id],
+        )?;
+        tx.commit()?;
+        Ok(next)
+    }
+
+    fn toggle_archive_conversation_sql(conn: &Connection, id: &str) -> rusqlite::Result<Option<i64>> {
+        let tx = conn.unchecked_transaction()?;
+        let current: Option<i64> = tx.query_row(
+            "SELECT archived_at FROM conversations WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get::<_, Option<i64>>(0),
+        ).ok().flatten();
+        let next: Option<i64> = if current.is_some() {
+            None
+        } else {
+            Some(1_700_000_000_000_i64)
+        };
+        let archived_flag = if next.is_some() { 1i64 } else { 0i64 };
+        tx.execute(
+            "UPDATE conversations SET archived = ?1, archived_at = ?2 WHERE id = ?3",
+            rusqlite::params![archived_flag, next, id],
+        )?;
+        tx.commit()?;
+        Ok(next)
+    }
+
+    #[test]
+    fn toggle_archive_session_flips_null_to_ms_and_back() {
+        let conn = db_with_session_and_conversation();
+        // Archive: archived_at becomes Some.
+        let ts = toggle_archive_session_sql(&conn, "s1").unwrap();
+        assert!(ts.is_some(), "first toggle should set archived_at");
+        let row: (i64, Option<i64>) = conn.query_row(
+            "SELECT archived, archived_at FROM agent_sessions WHERE id = 's1'",
+            [], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(row.0, 1, "archived flag should be 1");
+        assert!(row.1.is_some(), "archived_at should be set");
+
+        // Unarchive: archived_at becomes None.
+        let ts2 = toggle_archive_session_sql(&conn, "s1").unwrap();
+        assert!(ts2.is_none(), "second toggle should clear archived_at");
+        let row2: (i64, Option<i64>) = conn.query_row(
+            "SELECT archived, archived_at FROM agent_sessions WHERE id = 's1'",
+            [], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(row2.0, 0, "archived flag should be 0");
+        assert!(row2.1.is_none(), "archived_at should be NULL");
+    }
+
+    #[test]
+    fn toggle_archive_conversation_flips_null_to_ms_and_back() {
+        let conn = db_with_session_and_conversation();
+        let ts = toggle_archive_conversation_sql(&conn, "cv1").unwrap();
+        assert!(ts.is_some());
+        let row: (i64, Option<i64>) = conn.query_row(
+            "SELECT archived, archived_at FROM conversations WHERE id = 'cv1'",
+            [], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(row.0, 1);
+        assert!(row.1.is_some());
+
+        let ts2 = toggle_archive_conversation_sql(&conn, "cv1").unwrap();
+        assert!(ts2.is_none());
+        let row2: (i64, Option<i64>) = conn.query_row(
+            "SELECT archived, archived_at FROM conversations WHERE id = 'cv1'",
+            [], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(row2.0, 0);
+        assert!(row2.1.is_none());
+    }
+
+    #[test]
+    fn toggle_archive_is_idempotent_for_nonexistent_row() {
+        let conn = db_with_session_and_conversation();
+        // UPDATE with 0 matching rows should not error.
+        assert!(toggle_archive_session_sql(&conn, "nope").is_ok());
+        assert!(toggle_archive_conversation_sql(&conn, "nope").is_ok());
     }
 }
 
