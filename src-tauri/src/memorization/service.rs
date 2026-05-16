@@ -15,7 +15,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use tokio::sync::RwLock;
@@ -23,6 +23,10 @@ use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 use crate::infra::{InfraEventType, InfraService};
+use crate::memory_graph::models::{
+    MemoryKeyword, MemoryNode, MemoryNodeKind, MemoryVersion, MemoryVersionStatus,
+};
+use crate::memory_graph::store::MemoryGraphStore;
 use crate::memubot_config::MemorizationConfig;
 use crate::memu::client::MemUClient;
 use crate::services::{ManagedService, ServiceHealth, ServiceStatus};
@@ -32,6 +36,9 @@ use super::types::*;
 
 /// 待处理任务超时时间（毫秒）— 超过此时间的任务视为过期
 const PENDING_TASK_TIMEOUT_MS: i64 = 30 * 60 * 1000; // 30 分钟
+
+/// 防抖绝对超时时间（毫秒）— 自首条消息入队起，超过此时间强制触发记忆提取
+const MAX_DEBOUNCE_WAIT_MS: u64 = 7_200_000; // 2 小时
 
 /// 后台记忆提取服务
 ///
@@ -48,6 +55,8 @@ pub struct MemorizationService {
     infra: Arc<InfraService>,
     /// memU 客户端（可选，不可用时降级）
     memu_client: Arc<RwLock<Option<Arc<MemUClient>>>>,
+    /// MemoryGraphStore 引用（延迟注入，用于持久化 memU 提取结果）
+    graph_store: Arc<RwLock<Option<Arc<MemoryGraphStore>>>>,
     /// 是否正在运行
     is_running: Arc<AtomicBool>,
     /// 历史总记忆提取次数
@@ -82,6 +91,7 @@ impl MemorizationService {
             storage,
             infra,
             memu_client: Arc::new(RwLock::new(None)),
+            graph_store: Arc::new(RwLock::new(None)),
             is_running: Arc::new(AtomicBool::new(false)),
             total_memorized: Arc::new(AtomicU64::new(0)),
             last_memorization_at: Arc::new(RwLock::new(None)),
@@ -101,12 +111,22 @@ impl MemorizationService {
         *guard = client;
     }
 
+    /// 设置 MemoryGraphStore 引用
+    ///
+    /// 用于将 memU 提取的记忆持久化到图存储。
+    /// 可在服务启动后动态注入，支持延迟初始化。
+    pub async fn set_graph_store(&self, store: Arc<MemoryGraphStore>) {
+        let mut guard = self.graph_store.write().await;
+        *guard = Some(store);
+    }
+
     /// 触发记忆提取（从实例方法调用）
     async fn trigger_memorization(&self) {
         Self::do_memorization(
             self.state.clone(),
             self.storage.clone(),
             self.memu_client.clone(),
+            self.graph_store.clone(),
             self.total_memorized.clone(),
             self.last_memorization_at.clone(),
             self.last_error.clone(),
@@ -128,6 +148,7 @@ impl MemorizationService {
         state: Arc<RwLock<MemorizationState>>,
         storage: Arc<MemorizationStorage>,
         memu_client: Arc<RwLock<Option<Arc<MemUClient>>>>,
+        graph_store: Arc<RwLock<Option<Arc<MemoryGraphStore>>>>,
         total_memorized: Arc<AtomicU64>,
         last_memorization_at: Arc<RwLock<Option<String>>>,
         last_error: Arc<RwLock<Option<String>>>,
@@ -196,6 +217,50 @@ impl MemorizationService {
                             "[MemorizationService] memU 提取完成: {} 个记忆项",
                             result.items.len()
                         );
+
+                        // 持久化 memU 提取的记忆到 MemoryGraphStore
+                        let space_id = messages
+                            .iter()
+                            .find_map(|m| m.space_id.as_deref())
+                            .unwrap_or("default")
+                            .to_string();
+
+                        // 等待 graph_store 可用（最多 10 秒），超时则记录警告
+                        let persist_result = tokio::time::timeout(Duration::from_secs(10), async {
+                            loop {
+                                let guard = graph_store.read().await;
+                                if guard.is_some() {
+                                    return guard;
+                                }
+                                drop(guard);
+                                tokio::time::sleep(Duration::from_millis(500)).await;
+                            }
+                        }).await;
+
+                        match persist_result {
+                            Ok(guard) => {
+                                if let Some(ref store) = *guard {
+                                    match persist_memorize_results(store, &space_id, &result.items) {
+                                        Ok(count) => info!(
+                                            "[MemorizationService] Persisted {} memory items from memU extraction",
+                                            count
+                                        ),
+                                        Err(e) => {
+                                            warn!(
+                                                "[MemorizationService] Failed to persist memU results: {}",
+                                                e
+                                            );
+                                            // TODO: enqueue_pending_results 暂未实现，持久化失败时仅记录日志
+                                        }
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                warn!("[MemorizationService] graph_store unavailable after 10s, memU results not persisted");
+                                // TODO: 暂存结果以便后续重试 — 需要 storage.enqueue_pending_results() 方法
+                            }
+                        }
+
                         // 提取成功，清除队列
                         if let Err(e) = storage.clear_queue(message_count) {
                             error!("[MemorizationService] 清除队列失败: {}", e);
@@ -355,6 +420,7 @@ impl ManagedService for MemorizationService {
         let state = self.state.clone();
         let storage = self.storage.clone();
         let memu_client = self.memu_client.clone();
+        let graph_store = self.graph_store.clone();
         let total_memorized = self.total_memorized.clone();
         let last_memorization_at = self.last_memorization_at.clone();
         let last_error = self.last_error.clone();
@@ -363,6 +429,9 @@ impl ManagedService for MemorizationService {
 
         let handle = tokio::spawn(async move {
             info!("[MemorizationService] 后台监听循环已启动");
+
+            // 防抖绝对超时追踪：记录首条消息入队时间
+            let mut first_pending_at: Option<Instant> = None;
 
             while is_running.load(Ordering::Relaxed) {
                 match rx.recv().await {
@@ -402,6 +471,11 @@ impl ManagedService for MemorizationService {
                             continue;
                         }
 
+                        // 记录首条消息入队时间（用于绝对超时检查）
+                        if first_pending_at.is_none() {
+                            first_pending_at = Some(Instant::now());
+                        }
+
                         info!(
                             "[MemorizationService] 消息入队: role={}, platform={}, len={}",
                             msg.role,
@@ -412,16 +486,40 @@ impl ManagedService for MemorizationService {
                         // 检查触发条件
                         let count = storage.get_count().unwrap_or(0);
 
+                        // 条件 0: 绝对超时检查 — 防止低频消息永不触发
+                        if let Some(first) = first_pending_at {
+                            if first.elapsed() > Duration::from_millis(MAX_DEBOUNCE_WAIT_MS) {
+                                info!(
+                                    "[MemorizationService] 防抖绝对超时（已等待 {:?}），强制触发提取",
+                                    first.elapsed()
+                                );
+                                first_pending_at = None;
+                                Self::do_memorization(
+                                    state.clone(),
+                                    storage.clone(),
+                                    memu_client.clone(),
+                                    graph_store.clone(),
+                                    total_memorized.clone(),
+                                    last_memorization_at.clone(),
+                                    last_error.clone(),
+                                )
+                                .await;
+                                continue;
+                            }
+                        }
+
                         // 条件 1: 立即触发
                         if count >= config.message_threshold {
                             info!(
                                 "[MemorizationService] 消息数 {} >= 阈值 {}，立即触发",
                                 count, config.message_threshold
                             );
+                            first_pending_at = None; // 触发后重置首条消息时间
                             Self::do_memorization(
                                 state.clone(),
                                 storage.clone(),
                                 memu_client.clone(),
+                                graph_store.clone(),
                                 total_memorized.clone(),
                                 last_memorization_at.clone(),
                                 last_error.clone(),
@@ -452,6 +550,7 @@ impl ManagedService for MemorizationService {
                             let state_inner = state.clone();
                             let storage_inner = storage.clone();
                             let memu_inner = memu_client.clone();
+                            let graph_store_inner = graph_store.clone();
                             let total_inner = total_memorized.clone();
                             let last_at_inner = last_memorization_at.clone();
                             let last_err_inner = last_error.clone();
@@ -473,6 +572,7 @@ impl ManagedService for MemorizationService {
                                                 state_inner,
                                                 storage_inner,
                                                 memu_inner,
+                                                graph_store_inner,
                                                 total_inner,
                                                 last_at_inner,
                                                 last_err_inner,
@@ -597,4 +697,122 @@ impl ManagedService for MemorizationService {
             }),
         }
     }
+}
+
+// ─── Helper Functions ─────────────────────────────────────────────────────
+
+/// 将 memU 提取的记忆项持久化到 MemoryGraphStore
+///
+/// TODO: 待 MemoryGraphStore::with_transaction() 实现后，将整个 for 循环包装在事务中，
+/// 确保所有节点、版本、关键词的创建操作原子性提交或回滚。
+fn persist_memorize_results(
+    store: &MemoryGraphStore,
+    space_id: &str,
+    items: &[serde_json::Value],
+) -> anyhow::Result<usize> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut count = 0;
+
+    for item in items {
+        let title = item
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Untitled Memory");
+        let content = item
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if content.is_empty() {
+            continue;
+        }
+
+        // 确定 kind: 从 item metadata 推断，默认 Curated
+        let kind_str = item
+            .get("kind")
+            .or_else(|| item.get("category"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("curated");
+        let kind = match kind_str.to_lowercase().as_str() {
+            "boot" => MemoryNodeKind::Boot,
+            "identity" => MemoryNodeKind::Identity,
+            "value" => MemoryNodeKind::Value,
+            "user_profile" | "userprofile" => MemoryNodeKind::UserProfile,
+            "directive" => MemoryNodeKind::Directive,
+            "episode" => MemoryNodeKind::Episode,
+            "procedure" => MemoryNodeKind::Procedure,
+            "reference" => MemoryNodeKind::Reference,
+            _ => MemoryNodeKind::Curated,
+        };
+
+        let node_id = uuid::Uuid::new_v4().to_string();
+        let node = MemoryNode {
+            id: node_id.clone(),
+            space_id: space_id.to_string(),
+            kind,
+            title: title.to_string(),
+            metadata: item.get("metadata").cloned(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+
+        if let Err(e) = store.create_node(&node) {
+            warn!("Failed to create memory node '{}': {}", title, e);
+            continue;
+        }
+
+        let version_id = uuid::Uuid::new_v4().to_string();
+        let version = MemoryVersion {
+            id: version_id,
+            node_id: node_id.clone(),
+            supersedes_version_id: None,
+            status: MemoryVersionStatus::Active,
+            content: content.to_string(),
+            metadata: item.get("metadata").cloned(),
+            embedding_json: None,
+            created_at: now.clone(),
+        };
+
+        if let Err(e) = store.create_version(&version) {
+            warn!("Failed to create memory version for '{}': {}", title, e);
+            continue;
+        }
+
+        // 关键词提取: 简单启发式 — 从 title 提取词语
+        let keywords = extract_keywords_from_title(title);
+        for kw in &keywords {
+            let keyword = MemoryKeyword {
+                id: uuid::Uuid::new_v4().to_string(),
+                space_id: space_id.to_string(),
+                node_id: node_id.clone(),
+                keyword: kw.clone(),
+                created_at: now.clone(),
+            };
+            let _ = store.create_keyword(&keyword);
+        }
+
+        count += 1;
+    }
+
+    Ok(count)
+}
+
+/// 从标题中提取关键词（简单启发式）
+fn extract_keywords_from_title(title: &str) -> Vec<String> {
+    title
+        .split(|c: char| {
+            c.is_whitespace()
+                || c == ','
+                || c == '.'
+                || c == ':'
+                || c == ';'
+                || c == '/'
+                || c == '-'
+        })
+        .filter(|w| w.len() >= 2) // 至少 2 字节（中文单字 3 bytes 也会通过）
+        .map(|w| w.to_lowercase())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .take(10) // 最多 10 个关键词
+        .collect()
 }

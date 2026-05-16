@@ -19,7 +19,8 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use chrono::{Datelike, Timelike};
 use rusqlite::params;
@@ -148,16 +149,30 @@ pub struct ConsistencyWarning {
     pub severity: String, // "info" | "warning" | "critical"
 }
 
+// ─── 缓存结构 ─────────────────────────────────────────────────────────
+
+struct CachedProfile {
+    profile: PersonalityProfile,
+    computed_at: Instant,
+}
+
 // ─── 人格行为模式管理器 ───────────────────────────────────────────────
+
+/// 5 分钟缓存 TTL
+const CACHE_TTL_SECS: u64 = 300;
 
 /// 人格行为模式管理器
 pub struct PersonalityModel {
     store: Arc<MemoryGraphStore>,
+    cache: RwLock<Option<CachedProfile>>,
 }
 
 impl PersonalityModel {
     pub fn new(store: Arc<MemoryGraphStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            cache: RwLock::new(None),
+        }
     }
 
     // ─── 人格画像更新 ────────────────────────────────────────────
@@ -199,12 +214,29 @@ impl PersonalityModel {
         Ok(profile)
     }
 
-    /// 获取当前人格画像
+    /// 获取当前人格画像（带 TTL 缓存）
     pub fn get_profile(
         &self,
         space_id: &str,
     ) -> Result<Option<PersonalityProfile>, Error> {
-        self.update_personality_profile(space_id).map(Some)
+        // 检查缓存
+        if let Ok(guard) = self.cache.read() {
+            if let Some(ref cached) = *guard {
+                if cached.computed_at.elapsed() < Duration::from_secs(CACHE_TTL_SECS) {
+                    return Ok(Some(cached.profile.clone()));
+                }
+            }
+        }
+        // 缓存过期或不存在，执行更新
+        let profile = self.update_personality_profile(space_id)?;
+        // 写入缓存
+        if let Ok(mut guard) = self.cache.write() {
+            *guard = Some(CachedProfile {
+                profile: profile.clone(),
+                computed_at: Instant::now(),
+            });
+        }
+        Ok(Some(profile))
     }
 
     // ─── 行为一致性检查 ──────────────────────────────────────────

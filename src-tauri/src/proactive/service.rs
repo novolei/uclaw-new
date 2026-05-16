@@ -26,6 +26,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 
@@ -73,8 +74,42 @@ use super::conversation_bridge::ConversationBridge;
 use super::execution_log::ExecutionLogCollector;
 use super::hybrid_search::{HybridSearchEngine, HybridSearchRequest};
 use super::multimodal::MultimodalQueue;
+
+/// Build a <system_info> block with current date/time for authoritative time context
+/// in proactive scenario LLM calls. Mirrors `ChatDelegate::build_system_time_block()`.
+fn build_proactive_time_block() -> String {
+    use chrono::{Datelike, Local, Timelike};
+    let now = Local::now();
+    let weekday = match now.weekday() {
+        chrono::Weekday::Mon => "周一",
+        chrono::Weekday::Tue => "周二",
+        chrono::Weekday::Wed => "周三",
+        chrono::Weekday::Thu => "周四",
+        chrono::Weekday::Fri => "周五",
+        chrono::Weekday::Sat => "周六",
+        chrono::Weekday::Sun => "周日",
+    };
+    let time = format!(
+        "{}年{}月{}日 {} {:02}:{:02}",
+        now.year(),
+        now.month(),
+        now.day(),
+        weekday,
+        now.hour(),
+        now.minute(),
+    );
+    format!(
+        "<system_info>\n当前时间: {}\n注意: 以上时间由系统提供，你不需要使用工具（如 bash date）获取时间，直接使用此信息回答即可。\n</system_info>",
+        time
+    )
+}
+
 use super::scenarios::{ScenarioContext, ScenarioManager, SessionContextWindow};
 use super::storage::ProactiveStorage;
+use super::failure_memory::FailureMemoryManager;
+use super::personality_model::PersonalityModel;
+use super::preference_extractor::PreferenceExtractor;
+use super::proactive_recall::ProactiveRecallService;
 use super::task_memory::{TaskMemoryManager, TaskRecord, TaskStatus, TaskType};
 use super::tool_memory::{ToolUsageMemoryManager, ToolUsageRecord};
 use super::types::*;
@@ -146,8 +181,18 @@ struct ProactiveStateRefs {
     hybrid_search_engine: Arc<HybridSearchEngine>,
     /// 双轨会话桥接器（将传统 conversations 统一桥接到记忆系统）
     conversation_bridge: Arc<ConversationBridge>,
+    /// 失败记忆管理器
+    failure_memory_manager: Arc<FailureMemoryManager>,
+    /// 偏好提取器
+    preference_extractor: Arc<PreferenceExtractor>,
+    /// 人格模型
+    personality_model: Arc<PersonalityModel>,
+    /// 主动召回服务
+    proactive_recall_service: Arc<ProactiveRecallService>,
     /// 主数据库连接（用于查询 agent_messages/agent_turns/agent_sessions）
     db: Arc<Mutex<Connection>>,
+    /// 上次人格画像更新时间
+    last_personality_update: Arc<Mutex<Instant>>,
 }
 
 // ─── ProactiveService ─────────────────────────────────────────────────
@@ -222,9 +267,20 @@ pub struct ProactiveService {
     hybrid_search_engine: Arc<HybridSearchEngine>,
     /// 双轨会话桥接器
     conversation_bridge: Arc<ConversationBridge>,
+    /// 失败记忆管理器
+    failure_memory_manager: Arc<FailureMemoryManager>,
+    /// 偏好提取器
+    preference_extractor: Arc<PreferenceExtractor>,
+    /// 人格模型
+    personality_model: Arc<PersonalityModel>,
+    /// 主动召回服务
+    proactive_recall_service: Arc<ProactiveRecallService>,
 
     /// 主数据库连接
     db: Arc<Mutex<Connection>>,
+
+    /// 上次人格画像更新时间
+    last_personality_update: Arc<Mutex<Instant>>,
 
     /// 轮询循环任务句柄
     tick_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
@@ -258,6 +314,16 @@ impl ProactiveService {
             memu_client.clone(),
         ));
         let conversation_bridge = Arc::new(ConversationBridge::new(memory_graph_store.clone()));
+        let failure_memory_manager = Arc::new(FailureMemoryManager::new(memory_graph_store.clone()));
+        let preference_extractor = Arc::new(PreferenceExtractor::new(memory_graph_store.clone()));
+        let personality_model = Arc::new(PersonalityModel::new(memory_graph_store.clone()));
+        let proactive_recall_service = Arc::new(ProactiveRecallService::new(
+            memory_graph_store.clone(),
+            memu_client.clone(),
+            task_memory_manager.clone(),
+            tool_memory_manager.clone(),
+            failure_memory_manager.clone(),
+        ));
         Self {
             config,
             state: Arc::new(RwLock::new(ProactiveState::Stopped)),
@@ -288,7 +354,12 @@ impl ProactiveService {
             tool_memory_manager,
             hybrid_search_engine,
             conversation_bridge,
+            failure_memory_manager,
+            preference_extractor,
+            personality_model,
+            proactive_recall_service,
             db,
+            last_personality_update: Arc::new(Mutex::new(Instant::now())),
             tick_handle: Arc::new(RwLock::new(None)),
             listener_handle: Arc::new(RwLock::new(None)),
         }
@@ -324,7 +395,12 @@ impl ProactiveService {
             tool_memory_manager: self.tool_memory_manager.clone(),
             hybrid_search_engine: self.hybrid_search_engine.clone(),
             conversation_bridge: self.conversation_bridge.clone(),
+            failure_memory_manager: self.failure_memory_manager.clone(),
+            preference_extractor: self.preference_extractor.clone(),
+            personality_model: self.personality_model.clone(),
+            proactive_recall_service: self.proactive_recall_service.clone(),
             db: self.db.clone(),
+            last_personality_update: self.last_personality_update.clone(),
         }
     }
 
@@ -548,6 +624,29 @@ impl ProactiveService {
             }
         }
 
+        // 每 100 次 tick 更新人格画像（并带最小时间间隔 5 分钟）
+        if refs.tick_count.load(Ordering::SeqCst) % 100 == 0 {
+            let space = refs.active_space_id.read().await.clone();
+            if !space.is_empty() {
+                let should_update = refs
+                    .last_personality_update
+                    .lock()
+                    .map(|guard| guard.elapsed() > Duration::from_secs(300))
+                    .unwrap_or(false);
+                if should_update {
+                    if let Ok(mut guard) = refs.last_personality_update.lock() {
+                        *guard = Instant::now();
+                    }
+                    let personality = refs.personality_model.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = personality.update_personality_profile(&space) {
+                            tracing::warn!("personality update failed: {}", e);
+                        }
+                    });
+                }
+            }
+        }
+
         // 检查是否有新上下文消息
         if !refs.has_new_context.load(Ordering::SeqCst) {
             return Ok(()); // 无新上下文，跳过本次 tick
@@ -753,7 +852,7 @@ impl ProactiveService {
                             max_results,
                         };
 
-                        match refs.hybrid_search_engine.search(&hybrid_request, None).await {
+                        let base_prompt = match refs.hybrid_search_engine.search(&hybrid_request, None).await {
                             Ok(result) => {
                                 let memory_ctx = HybridSearchEngine::format_for_prompt(&result);
                                 if memory_ctx.trim().is_empty() {
@@ -770,7 +869,11 @@ impl ProactiveService {
                                 tracing::debug!(scenario = %scenario.name(), error = %e, "Hybrid recall for scenario failed, using base prompt");
                                 output.system_prompt.clone()
                             }
-                        }
+                        };
+
+                        // 注入当前时间作为权威时间上下文
+                        let time_block = build_proactive_time_block();
+                        format!("{}\n{}", base_prompt, time_block)
                     };
 
                     // 构建 LLM 消息
@@ -1212,7 +1315,6 @@ impl ProactiveService {
             model: model.clone(),
             max_tokens: 4096,
             temperature: 0.7,
-            system_prompt: None, // system prompt 已包含在 messages 中
             thinking_enabled: false,
         };
 
@@ -1241,6 +1343,13 @@ impl ProactiveService {
         self.is_waiting_user_input.store(false, Ordering::SeqCst);
         tracing::info!("[ProactiveService] 收到用户确认响应");
     }
+
+    // ─── Accessor Methods ────────────────────────────────────────────────
+
+    pub fn failure_memory(&self) -> &Arc<FailureMemoryManager> { &self.failure_memory_manager }
+    pub fn preference_extractor(&self) -> &Arc<PreferenceExtractor> { &self.preference_extractor }
+    pub fn personality_model(&self) -> &Arc<PersonalityModel> { &self.personality_model }
+    pub fn proactive_recall(&self) -> &Arc<ProactiveRecallService> { &self.proactive_recall_service }
 
     /// 获取当前主动服务状态报告
     pub async fn get_proactive_status(&self) -> ProactiveStatus {

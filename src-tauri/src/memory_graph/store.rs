@@ -5,6 +5,9 @@ use tracing::{debug, info};
 
 use super::models::*;
 
+/// Half-life (days) for Gaussian time-decay in skill ranking.
+const SKILL_DECAY_HALF_LIFE_DAYS: f64 = 30.0;
+
 // ─── Store ──────────────────────────────────────────────────────────────
 
 /// Graph-based memory store backed by SQLite.
@@ -14,6 +17,10 @@ pub struct MemoryGraphStore {
 
 impl MemoryGraphStore {
     pub fn new(conn: Arc<std::sync::Mutex<rusqlite::Connection>>) -> Self {
+        // Enable SQLite foreign key enforcement (required for ON DELETE CASCADE)
+        if let Ok(c) = conn.lock() {
+            let _ = c.execute_batch("PRAGMA foreign_keys = ON;");
+        }
         Self { conn }
     }
 
@@ -154,15 +161,21 @@ impl MemoryGraphStore {
         space_id: &str,
         limit: usize,
     ) -> Result<Vec<MemoryNodeDetail>, crate::error::Error> {
-        let nodes = self.list_nodes_by_kind(space_id, MemoryNodeKind::Boot, limit)?;
-        let mut details = Vec::with_capacity(nodes.len());
-        for node in nodes {
-            let active_version = self.get_active_version(&node.id)?;
-            let routes = self.get_routes_for_node(&node.id)?;
-            let keywords = self.get_keywords_for_node(&node.id)?;
-            details.push(MemoryNodeDetail { node, active_version, routes, keywords });
-        }
-        Ok(details)
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, space_id, kind, title, metadata_json, created_at, updated_at
+             FROM memory_nodes WHERE space_id = ?1 AND kind = ?2
+             ORDER BY updated_at DESC LIMIT ?3"
+        ).map_err(crate::error::Error::Database)?;
+        let nodes: Vec<MemoryNode> = stmt
+            .query_map(params![space_id, MemoryNodeKind::Boot.as_str(), limit as i64], |row| {
+                Self::row_to_node(row)
+            })
+            .map_err(crate::error::Error::Database)?
+            .flatten()
+            .collect();
+        drop(stmt);
+        Self::batch_hydrate_details(&conn, nodes)
     }
 
     /// List the top-N enabled `learned` skills for boot-layer auto-mount.
@@ -170,74 +183,51 @@ impl MemoryGraphStore {
     /// Filter: kind=Procedure, metadata.skill_type='learned',
     /// metadata.enabled (default true).
     ///
-    /// Order (E3 ranking):
-    ///   1. cited_count DESC — actually-cited beats merely-recalled. A skill
-    ///      the LLM applied is real evidence; one that just sat in context
-    ///      is not.
-    ///   2. usage_count DESC — recall frequency as tiebreaker.
-    ///   3. updated_at DESC — fresh edits win when both counts are zero
-    ///      (e.g. a skill just extracted but not yet used).
+    /// Order: composite score using Gaussian time-decay (consistent with
+    /// recall.rs) on last_cited_at, weighted by cited_count and usage_count.
     pub fn list_top_learned_skills(
         &self,
         space_id: &str,
         limit: usize,
     ) -> Result<Vec<MemoryNodeDetail>, crate::error::Error> {
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
-        // SQLite has limited JSON support — order by raw json_extract(...) so
-        // we don't need to deserialize/sort in Rust. NULL coerces low.
         let mut stmt = conn.prepare(
             "SELECT id, space_id, kind, title, metadata_json, created_at, updated_at
              FROM memory_nodes
              WHERE space_id = ?1 AND kind = ?2
                AND COALESCE(json_extract(metadata_json, '$.skill_type'), '') = 'learned'
                AND COALESCE(json_extract(metadata_json, '$.enabled'), 1) <> 0
-             ORDER BY (
-               CAST(COALESCE(json_extract(metadata_json, '$.cited_count'), 0) AS REAL) *
-                 MAX(0.5,
-                     1.0 - (julianday('now') - julianday(COALESCE(json_extract(metadata_json, '$.last_cited_at'),
-                                                                  '1970-01-01T00:00:00Z'))) / 30.0
-                 ) * 10.0
-               + CAST(COALESCE(json_extract(metadata_json, '$.usage_count'), 0) AS REAL) * 3.0
-             ) DESC,
-             updated_at DESC
-             LIMIT ?3"
+             ORDER BY updated_at DESC
+             LIMIT 500"
         ).map_err(crate::error::Error::Database)?;
 
-        let nodes: Vec<MemoryNode> = stmt
+        let mut nodes: Vec<MemoryNode> = stmt
             .query_map(
-                params![space_id, MemoryNodeKind::Procedure.as_str(), limit as i64],
+                params![space_id, MemoryNodeKind::Procedure.as_str()],
                 |row| Self::row_to_node(row),
             )
             .map_err(crate::error::Error::Database)?
             .flatten()
             .collect();
-        // Drop the lock before fetching versions/routes/keywords (which
-        // re-lock per call). Avoids self-deadlock.
         drop(stmt);
-        drop(conn);
 
-        let mut details = Vec::with_capacity(nodes.len());
-        for node in nodes {
-            let active_version = self.get_active_version(&node.id)?;
-            let routes = self.get_routes_for_node(&node.id)?;
-            let keywords = self.get_keywords_for_node(&node.id)?;
-            details.push(MemoryNodeDetail { node, active_version, routes, keywords });
-        }
-        Ok(details)
+        // Rank in Rust using Gaussian time-decay (consistent with recall.rs)
+        nodes.sort_by(|a, b| {
+            let sa = Self::compute_skill_score(a);
+            let sb = Self::compute_skill_score(b);
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+        });
+        nodes.truncate(limit);
+
+        Self::batch_hydrate_details(&conn, nodes)
     }
 
     /// Manifest-only variant of [`list_top_learned_skills`] that excludes
     /// `draft` and `deprecated` lifecycle stages.
     ///
-    /// PR-mattpocock-3 lifecycle gate: only `promoted` skills enter the
-    /// manifest top-30. Drafts are still searchable via `skill_search` and
-    /// still considered for dedup, but they are never auto-injected into the
-    /// system prompt until usage proves them out. Pre-PR rows missing the
+    /// Only `promoted` skills enter the manifest. Pre-PR rows missing the
     /// `lifecycle` field are treated as `'promoted'` (grandfathered).
-    ///
-    /// Use this method from `skills_manifest`. Other callers (skill_search,
-    /// fuzzy dedup, backfill) should keep using `list_top_learned_skills`
-    /// so they continue to see drafts.
     pub fn list_promoted_learned_skills(
         &self,
         space_id: &str,
@@ -251,43 +241,30 @@ impl MemoryGraphStore {
                AND COALESCE(json_extract(metadata_json, '$.skill_type'), '') = 'learned'
                AND COALESCE(json_extract(metadata_json, '$.enabled'), 1) <> 0
                AND COALESCE(json_extract(metadata_json, '$.lifecycle'), 'promoted') = 'promoted'
-             ORDER BY (
-               CAST(COALESCE(json_extract(metadata_json, '$.cited_count'), 0) AS REAL) *
-                 CASE
-                   WHEN json_extract(metadata_json, '$.last_cited_at') IS NULL THEN 0.5
-                   WHEN (julianday('now') - julianday(json_extract(metadata_json, '$.last_cited_at'))) <= 7.0 THEN 1.0
-                   WHEN (julianday('now') - julianday(json_extract(metadata_json, '$.last_cited_at'))) <= 30.0 THEN
-                     1.0 - ((julianday('now') - julianday(json_extract(metadata_json, '$.last_cited_at'))) - 7.0) / 46.0
-                   WHEN (julianday('now') - julianday(json_extract(metadata_json, '$.last_cited_at'))) <= 90.0 THEN
-                     0.5 - ((julianday('now') - julianday(json_extract(metadata_json, '$.last_cited_at'))) - 30.0) / 150.0
-                   ELSE 0.1
-                 END
-               * 10.0
-               + CAST(COALESCE(json_extract(metadata_json, '$.usage_count'), 0) AS REAL) * 3.0
-             ) DESC,
-             updated_at DESC
-             LIMIT ?3"
+             ORDER BY updated_at DESC
+             LIMIT 500"
         ).map_err(crate::error::Error::Database)?;
 
-        let nodes: Vec<MemoryNode> = stmt
+        let mut nodes: Vec<MemoryNode> = stmt
             .query_map(
-                params![space_id, MemoryNodeKind::Procedure.as_str(), limit as i64],
+                params![space_id, MemoryNodeKind::Procedure.as_str()],
                 |row| Self::row_to_node(row),
             )
             .map_err(crate::error::Error::Database)?
             .flatten()
             .collect();
         drop(stmt);
-        drop(conn);
 
-        let mut details = Vec::with_capacity(nodes.len());
-        for node in nodes {
-            let active_version = self.get_active_version(&node.id)?;
-            let routes = self.get_routes_for_node(&node.id)?;
-            let keywords = self.get_keywords_for_node(&node.id)?;
-            details.push(MemoryNodeDetail { node, active_version, routes, keywords });
-        }
-        Ok(details)
+        // Rank in Rust using Gaussian time-decay (consistent with recall.rs)
+        nodes.sort_by(|a, b| {
+            let sa = Self::compute_skill_score(a);
+            let sb = Self::compute_skill_score(b);
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+        });
+        nodes.truncate(limit);
+
+        Self::batch_hydrate_details(&conn, nodes)
     }
 
     /// Increment usage_count on the given skill nodes by 1 each.
@@ -705,42 +682,45 @@ impl MemoryGraphStore {
 
             let rows = stmt.query_map(params![node_id], |row| {
                 Ok((
-                    row.get::<_, Option<String>>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, String>(0)?,         // child_node_id (NOT NULL)
+                    row.get::<_, Option<String>>(1)?,  // parent_node_id (nullable)
+                    row.get::<_, String>(2)?,          // relation_kind
+                    row.get::<_, Option<i64>>(3)?,     // priority
                 ))
             }).map_err(crate::error::Error::Database)?;
 
             for row in rows.flatten() {
-                let (child_id, parent_id, rel_kind, priority) = row;
-                // 确定邻居节点
-                let neighbor = if parent_id.as_deref() == Some(&node_id) {
-                    child_id
+                let (row_child_id, row_parent_id, rel_kind, priority) = row;
+                // Determine the neighbor: the other end of the edge from current node
+                let neighbor_id = if row_parent_id.as_deref() == Some(node_id.as_str()) {
+                    row_child_id
+                } else if row_child_id == node_id {
+                    match row_parent_id {
+                        Some(pid) => pid,
+                        None => continue, // NULL parent pointing to us — skip
+                    }
                 } else {
-                    parent_id
+                    continue; // shouldn't happen, but safe to skip
                 };
 
-                if let Some(neighbor_id) = neighbor {
-                    if visited.contains(&neighbor_id) {
-                        continue;
-                    }
-
-                    let rel_w = relation_weight(&rel_kind);
-                    let prio_boost = priority.unwrap_or(0) as f32 * 0.1;
-                    let score = incoming_score * decay_factor * (rel_w + prio_boost);
-                    let next_depth = depth + 1;
-
-                    visited.insert(neighbor_id.clone());
-                    queue.push_back((neighbor_id.clone(), score, next_depth));
-
-                    // 如果已存在，保留高分
-                    result.entry(neighbor_id)
-                        .and_modify(|(s, d)| {
-                            if score > *s { *s = score; *d = next_depth; }
-                        })
-                        .or_insert((score, next_depth));
+                if visited.contains(&neighbor_id) {
+                    continue;
                 }
+
+                let rel_w = relation_weight(&rel_kind);
+                let prio_boost = priority.unwrap_or(0) as f32 * 0.1;
+                let score = incoming_score * decay_factor * (rel_w + prio_boost);
+                let next_depth = depth + 1;
+
+                visited.insert(neighbor_id.clone());
+                queue.push_back((neighbor_id.clone(), score, next_depth));
+
+                // 如果已存在，保留高分
+                result.entry(neighbor_id)
+                    .and_modify(|(s, d)| {
+                        if score > *s { *s = score; *d = next_depth; }
+                    })
+                    .or_insert((score, next_depth));
             }
         }
 
@@ -993,7 +973,125 @@ impl MemoryGraphStore {
         Ok(rows.flatten().collect())
     }
 
+    // ── Transaction helper ───────────────────────────────────────────────
+
+    /// Run a closure inside a BEGIN / COMMIT transaction.
+    /// Rolls back automatically on error.
+    pub fn with_transaction<F, T>(&self, f: F) -> Result<T, crate::error::Error>
+    where
+        F: FnOnce(&rusqlite::Connection) -> Result<T, crate::error::Error>,
+    {
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        conn.execute_batch("BEGIN;").map_err(crate::error::Error::Database)?;
+        match f(&conn) {
+            Ok(val) => {
+                conn.execute_batch("COMMIT;").map_err(crate::error::Error::Database)?;
+                Ok(val)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                Err(e)
+            }
+        }
+    }
+
     // ── Private helpers ─────────────────────────────────────────────────
+
+    /// Batch-load active versions, routes, and keywords for a set of nodes.
+    /// Eliminates the N+1 query pattern by using IN-clause batch queries.
+    fn batch_hydrate_details(
+        conn: &rusqlite::Connection,
+        nodes: Vec<MemoryNode>,
+    ) -> Result<Vec<MemoryNodeDetail>, crate::error::Error> {
+        if nodes.is_empty() {
+            return Ok(vec![]);
+        }
+        let node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+        let placeholders = (1..=node_ids.len())
+            .map(|i| format!("?{}", i))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql_params: Vec<&dyn rusqlite::types::ToSql> =
+            node_ids.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+
+        // 1. Batch active versions (latest per node)
+        let ver_sql = format!(
+            "SELECT id, node_id, supersedes_version_id, status, content, metadata_json, embedding_json, created_at
+             FROM memory_versions
+             WHERE node_id IN ({placeholders}) AND status = 'active'
+             ORDER BY created_at DESC"
+        );
+        let mut ver_stmt = conn.prepare(&ver_sql).map_err(crate::error::Error::Database)?;
+        let ver_rows = ver_stmt
+            .query_map(sql_params.as_slice(), |row| Self::row_to_version(row))
+            .map_err(crate::error::Error::Database)?;
+        let mut version_map: HashMap<String, MemoryVersion> = HashMap::new();
+        for ver in ver_rows.flatten() {
+            // First inserted wins = latest due to ORDER BY created_at DESC
+            version_map.entry(ver.node_id.clone()).or_insert(ver);
+        }
+        drop(ver_stmt);
+
+        // 2. Batch routes
+        let route_sql = format!(
+            "SELECT id, space_id, edge_id, node_id, domain, path, is_primary, created_at, updated_at
+             FROM memory_routes WHERE node_id IN ({placeholders})"
+        );
+        let mut route_stmt = conn.prepare(&route_sql).map_err(crate::error::Error::Database)?;
+        let route_rows = route_stmt
+            .query_map(sql_params.as_slice(), |row| Self::row_to_route(row))
+            .map_err(crate::error::Error::Database)?;
+        let mut route_map: HashMap<String, Vec<MemoryRoute>> = HashMap::new();
+        for route in route_rows.flatten() {
+            route_map.entry(route.node_id.clone()).or_default().push(route);
+        }
+        drop(route_stmt);
+
+        // 3. Batch keywords
+        let kw_sql = format!(
+            "SELECT node_id, keyword FROM memory_keywords WHERE node_id IN ({placeholders}) ORDER BY keyword"
+        );
+        let mut kw_stmt = conn.prepare(&kw_sql).map_err(crate::error::Error::Database)?;
+        let kw_rows = kw_stmt
+            .query_map(sql_params.as_slice(), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(crate::error::Error::Database)?;
+        let mut kw_map: HashMap<String, Vec<String>> = HashMap::new();
+        for (nid, kw) in kw_rows.flatten() {
+            kw_map.entry(nid).or_default().push(kw);
+        }
+        drop(kw_stmt);
+
+        // Assemble
+        let details = nodes
+            .into_iter()
+            .map(|node| {
+                let active_version = version_map.remove(&node.id);
+                let routes = route_map.remove(&node.id).unwrap_or_default();
+                let keywords = kw_map.remove(&node.id).unwrap_or_default();
+                MemoryNodeDetail { node, active_version, routes, keywords }
+            })
+            .collect();
+        Ok(details)
+    }
+
+    /// Compute composite ranking score for a learned skill using Gaussian decay.
+    fn compute_skill_score(node: &MemoryNode) -> f64 {
+        let meta = match &node.metadata {
+            Some(m) => m,
+            None => return 0.0,
+        };
+        let cited_count = meta.get("cited_count").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let usage_count = meta.get("usage_count").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let last_cited_at = meta
+            .get("last_cited_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("1970-01-01T00:00:00Z");
+        let recency = super::recall::time_decay_score(last_cited_at, SKILL_DECAY_HALF_LIFE_DAYS) as f64;
+        // Same weight formula: cited_count * recency * 10.0 + usage_count * 3.0
+        cited_count * recency * 10.0 + usage_count * 3.0
+    }
 
     fn row_to_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryNode> {
         let kind_str: String = row.get(2)?;

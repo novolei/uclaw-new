@@ -385,6 +385,11 @@ async def handle_health(service: MemoryService, params: Any) -> dict[str, Any]:
     return {"status": "ok"}
 
 
+async def handle_ping(service: MemoryService, params: Any) -> dict[str, Any]:
+    """Ping handler for startup health check and heartbeat."""
+    return {"status": "pong"}
+
+
 async def handle_memorize(service: MemoryService, params: dict[str, Any]) -> dict[str, Any]:
     """Handle a memorize request.
 
@@ -724,6 +729,7 @@ async def handle_memorize_multimodal(service: MemoryService, params: dict[str, A
 # Method dispatch table
 HANDLERS: dict[str, Any] = {
     "health": handle_health,
+    "ping": handle_ping,
     "memorize": handle_memorize,
     "memorize_with_config": handle_memorize_with_config,
     "memorize_multimodal": handle_memorize_multimodal,
@@ -802,30 +808,26 @@ async def main() -> None:
     # easily exceed the default 64 KB limit and raise LimitOverrunError.
     _LINE_LIMIT = 32 * 1024 * 1024
 
-    try:
-        # Try the standard asyncio pipe approach first
-        reader = asyncio.StreamReader(limit=_LINE_LIMIT)
-        protocol = asyncio.StreamReaderProtocol(reader)
-        await loop.connect_read_pipe(lambda: protocol, sys.stdin)
-    except (OSError, NotImplementedError):
-        # Fallback: use thread-based stdin reading for non-pipe environments
-        sys.stderr.write("[memu_bridge] connect_read_pipe failed, using thread-based fallback\n")
-        reader = asyncio.StreamReader(limit=_LINE_LIMIT)
+    # Always use thread-based stdin reading --- more reliable than
+    # connect_read_pipe on macOS with Python 3.13, where kqueue can
+    # fail with EINVAL for certain pipe fd types.
+    reader = asyncio.StreamReader(limit=_LINE_LIMIT)
 
-        def _stdin_reader():
-            try:
-                while True:
-                    line = sys.stdin.buffer.readline()
-                    if not line:
-                        loop.call_soon_threadsafe(reader.feed_eof)
-                        break
-                    loop.call_soon_threadsafe(reader.feed_data, line)
-            except Exception:
-                loop.call_soon_threadsafe(reader.feed_eof)
+    def _stdin_reader():
+        try:
+            while True:
+                line = sys.stdin.buffer.readline()
+                if not line:
+                    loop.call_soon_threadsafe(reader.feed_eof)
+                    break
+                loop.call_soon_threadsafe(reader.feed_data, line)
+        except Exception:
+            loop.call_soon_threadsafe(reader.feed_eof)
 
-        import threading
-        t = threading.Thread(target=_stdin_reader, daemon=True)
-        t.start()
+    import threading
+    t = threading.Thread(target=_stdin_reader, daemon=True)
+    t.start()
+    sys.stderr.write("[memu_bridge] stdin reader thread started\n")
 
     while True:
         try:

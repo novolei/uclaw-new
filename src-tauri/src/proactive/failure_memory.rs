@@ -365,9 +365,9 @@ impl FailureMemoryManager {
                          WHERE n.space_id = ?1
                            AND n.kind = 'episode'
                            AND v.content LIKE ?2
-                           AND n.id NOT IN rtree((
+                           AND n.id NOT IN (
                                SELECT id FROM memory_nodes WHERE normalized_pattern = ?3
-                           ))
+                           )
                          ORDER BY n.updated_at DESC
                          LIMIT 5",
                     )
@@ -498,16 +498,30 @@ impl FailureMemoryManager {
 
     /// 标准化错误模式：提取关键特征，忽略变量名、行号等。
     fn normalize_error_pattern(error: &str) -> String {
-        let normalized = error
-            .replace(|c: char| c.is_ascii_digit(), "")
-            .replace('\'', "'")
-            .replace('"', "'")
-            .replace("`", "'")
-            .split_whitespace()
-            .filter(|w| w.len() > 1)
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_lowercase();
+        use once_cell::sync::Lazy;
+
+        static RE_NUMBERS: Lazy<regex::Regex> =
+            Lazy::new(|| regex::Regex::new(r"\d+").unwrap());
+        static RE_PATH: Lazy<regex::Regex> =
+            Lazy::new(|| regex::Regex::new(r"[/\\][\w/.\\-]+").unwrap());
+        static RE_SPACES: Lazy<regex::Regex> =
+            Lazy::new(|| regex::Regex::new(r"\s+").unwrap());
+
+        let mut pattern = error.to_string();
+
+        // 1. 将连续数字序列替换为 # 占位符（保留数字存在的位置信息）
+        pattern = RE_NUMBERS.replace_all(&pattern, "#").to_string();
+
+        // 2. 规范化文件路径为 <path> 占位符
+        pattern = RE_PATH.replace_all(&pattern, "<path>").to_string();
+
+        // 3. 规范化引号
+        pattern = pattern.replace('"', "'");
+
+        // 4. 压缩连续空白
+        pattern = RE_SPACES.replace_all(&pattern, " ").to_string();
+
+        let normalized = pattern.trim().to_lowercase();
 
         // 截断到合理的长度
         if normalized.len() > 200 {

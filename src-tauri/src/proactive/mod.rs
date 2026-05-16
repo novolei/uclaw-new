@@ -17,6 +17,8 @@ pub mod scenarios;
 pub mod skill_parser;
 pub mod task_memory;
 pub mod tool_memory;
+pub mod review_scheduler;
+pub mod daily_summary;
 mod service;
 mod storage;
 mod types;

@@ -216,12 +216,20 @@ impl PreferenceExtractor {
             }
         }
 
-        // 3. 去重：同一类别只保留置信度最高的
+        // 3. 去重：每个 category 保留置信度最高的 MAX_PER_CATEGORY 个
         preferences.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
-        let mut seen_categories = HashMap::new();
+
+        const MAX_PER_CATEGORY: usize = 3;
+        let mut category_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         preferences.retain(|p| {
-            let key = p.category.as_str().to_string();
-            seen_categories.insert(key, true).is_none()
+            let key = format!("{:?}", p.category);
+            let count = category_counts.entry(key).or_insert(0);
+            if *count < MAX_PER_CATEGORY {
+                *count += 1;
+                true
+            } else {
+                false
+            }
         });
 
         preferences
@@ -464,8 +472,29 @@ impl PreferenceExtractor {
         &self,
         space_id: &str,
     ) -> Result<Vec<PreferenceItem>, Error> {
-        let conn = self
-            .store
+        Self::list_preferences_inner(&self.store, space_id)
+    }
+
+    /// 异步版本：获取用户所有偏好
+    pub async fn list_preferences_async(
+        &self,
+        space_id: &str,
+    ) -> Result<Vec<PreferenceItem>, Error> {
+        let store = self.store.clone();
+        let space = space_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            Self::list_preferences_inner(&store, &space)
+        })
+        .await
+        .map_err(|e| Error::Internal(format!("spawn_blocking join error: {}", e)))?
+    }
+
+    /// 内部实现：复用的 list_preferences 逻辑
+    fn list_preferences_inner(
+        store: &Arc<MemoryGraphStore>,
+        space_id: &str,
+    ) -> Result<Vec<PreferenceItem>, Error> {
+        let conn = store
             .conn
             .lock()
             .map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
