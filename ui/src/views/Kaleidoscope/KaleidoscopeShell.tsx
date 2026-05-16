@@ -16,6 +16,7 @@ import { motion, AnimatePresence } from 'motion/react'
 import { kaleidoscopeModuleAtom } from '@/atoms/kaleidoscope'
 import { humaneSpecsAtom } from '@/atoms/automation'
 import { listAutomationsHumane } from '@/lib/tauri-bridge'
+import { PreviewPanel } from '@/components/preview/PreviewPanel'
 import { KaleidoscopeRail } from './KaleidoscopeRail'
 import { HumansModule } from './modules/Humans/HumansModule'
 import { StoreModule } from './modules/Store/StoreModule'
@@ -85,6 +86,9 @@ export function KaleidoscopeShell(): React.ReactElement {
           </AnimatePresence>
         </div>
       </div>
+      {/* PreviewPanel — responds to openPreviewAction fired by FilePathChip
+          in AgentMessages. Returns null when closed. */}
+      <PreviewPanel />
     </div>
   )
 }
