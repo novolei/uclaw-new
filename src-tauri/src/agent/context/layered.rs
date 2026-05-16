@@ -70,19 +70,49 @@ pub struct LayeredContextConfig {
     pub max_prompt_tokens: usize,
 }
 
-impl Default for LayeredContextConfig {
-    fn default() -> Self {
-        let max_context_tokens = 6000;
-        let l0 = 2000;
-        let l1 = 2000;
+impl LayeredContextConfig {
+    /// 基于模型上下文窗口大小自动规划分层预算。
+    pub fn from_model_window(window: u32) -> Self {
+        let budget_factor = if window >= 1_000_000 {
+            0.75
+        } else if window >= 200_000 {
+            0.75
+        } else if window >= 128_000 {
+            0.80
+        } else {
+            0.65
+        };
+
+        let max_context_tokens = (window as f64 * budget_factor) as usize;
+        let l0 = (max_context_tokens as f64 * 0.50) as usize;
+        let l1 = (max_context_tokens as f64 * 0.25) as usize;
+        let l2 = (max_context_tokens as f64 * 0.15) as usize;
+        let max_context_messages = (window as usize / 4_000).max(10);
+        let max_prompt_tokens = ((l2 as f64 * 0.6) as usize).max(1000);
+
         Self {
-            max_context_messages: 20,
+            max_context_messages,
             max_context_tokens,
             l0_target_tokens: l0,
             l1_target_tokens: l1,
-            // L2 获得总预算中 L0+L1 之外的剩余空间
+            l2_target_tokens: l2,
+            max_prompt_tokens,
+        }
+    }
+}
+
+impl Default for LayeredContextConfig {
+    fn default() -> Self {
+        let max_context_tokens = 12000;
+        let l0 = 4000;
+        let l1 = 4000;
+        Self {
+            max_context_messages: 40,
+            max_context_tokens,
+            l0_target_tokens: l0,
+            l1_target_tokens: l1,
             l2_target_tokens: max_context_tokens.saturating_sub(l0 + l1),
-            max_prompt_tokens: 1500,
+            max_prompt_tokens: 2000,
         }
     }
 }

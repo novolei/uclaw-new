@@ -340,7 +340,6 @@ mod tests {
             model: "claude-sonnet-4-6".into(),
             max_tokens: 8192,
             temperature: 0.7,
-            system_prompt: Some("sys".into()),
             thinking_enabled: false,
         }
     }

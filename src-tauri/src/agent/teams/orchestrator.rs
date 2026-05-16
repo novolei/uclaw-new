@@ -63,7 +63,6 @@ impl AgentTeamOrchestrator {
             model: self.model.clone(),
             max_tokens: 1024,
             temperature: 0.0,
-            system_prompt: Some(system_prompt),
             thinking_enabled: false,
         };
 
@@ -113,7 +112,7 @@ impl AgentTeamOrchestrator {
                             input: tc.arguments.clone(),
                         });
                     }
-                    messages.push(ChatMessage { role: MessageRole::Assistant, content: assistant_blocks });
+                    messages.push(ChatMessage { role: MessageRole::Assistant, content: assistant_blocks, compacted: false });
 
                     // Execute tools and collect results in a single user message
                     let mut tool_result_blocks: Vec<ContentBlock> = Vec::new();
@@ -134,7 +133,7 @@ impl AgentTeamOrchestrator {
                             is_error: Some(is_error),
                         });
                     }
-                    messages.push(ChatMessage { role: MessageRole::User, content: tool_result_blocks });
+                    messages.push(ChatMessage { role: MessageRole::User, content: tool_result_blocks, compacted: false });
 
                     // Check if complete_task was called
                     if final_result.is_some() {
@@ -207,10 +206,8 @@ impl AgentTeamOrchestrator {
 
                 let ch = Arc::clone(channel);
                 let df = Arc::clone(&self.delegate_factory);
-                let loop_config = AgenticLoopConfig {
-                    max_iterations: 8,
-                    ..AgenticLoopConfig::default()
-                };
+                let mut loop_config = AgenticLoopConfig::from_model(&self.model);
+                loop_config.max_iterations = 8;
                 // Create the delegate before spawning (the factory captures what it needs)
                 let delegate = (df)(format!("Worker role: {}", role));
 

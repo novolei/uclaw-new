@@ -53,7 +53,8 @@ pub async fn run_worker(
 
     let (success, result) = match outcome {
         LoopOutcome::Response { text, .. } => (true, text),
-        LoopOutcome::Stopped | LoopOutcome::Cancelled => (false, "Worker stopped".to_string()),
+        LoopOutcome::Stopped => (false, "Worker stopped".to_string()),
+        LoopOutcome::Cancelled { .. } => (false, "Worker stopped".to_string()),
         LoopOutcome::MaxIterations => (false, "Worker reached max iterations".to_string()),
         LoopOutcome::NeedApproval { tool_name, .. } => (false, format!("Worker needs approval for tool: {}", tool_name)),
         LoopOutcome::Failure { error } => (false, error),

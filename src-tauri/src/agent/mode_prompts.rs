@@ -10,7 +10,8 @@
 //! Empty layers are skipped; remaining layers joined with "\n\n---\n\n".
 
 use crate::safety::SafetyMode;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use tauri::Emitter;
 
 pub const KARPATHY_BASELINE: &str = include_str!("prompts/baseline.md");
 
@@ -39,6 +40,77 @@ fn read_uclaw_md(workspace_root: Option<&Path>) -> String {
         .and_then(|p| std::fs::read_to_string(&p).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
+}
+
+/// Start watching `<workspace_root>/uclaw.md` for changes.
+/// When the file is modified, emits a `uclaw-md:changed` event via the Tauri app handle.
+/// Returns a `JoinHandle` for the watcher task — drop it to stop watching.
+pub fn watch_uclaw_md(
+    workspace_root: PathBuf,
+    app_handle: tauri::AppHandle,
+) -> tokio::task::JoinHandle<()> {
+    use notify::{EventKind, RecursiveMode, Watcher};
+    tokio::task::spawn_blocking(move || {
+        let uclaw_md_path = workspace_root.join("uclaw.md");
+
+        // Only watch if the file already exists; if it's created later,
+        // the next compose_system_prompt call will pick it up.
+        if !uclaw_md_path.exists() {
+            tracing::debug!(
+                path = %uclaw_md_path.display(),
+                "uclaw.md does not exist, skipping file watch"
+            );
+            return;
+        }
+
+        let watch_dir = uclaw_md_path.parent().unwrap_or(&workspace_root).to_path_buf();
+        let watch_path = uclaw_md_path.clone();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = match notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                let _ = tx.send(event);
+            }
+        }) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to create uclaw.md file watcher");
+                return;
+            }
+        };
+
+        if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::NonRecursive) {
+            tracing::warn!(error = %e, path = %watch_dir.display(), "Failed to watch directory for uclaw.md");
+            return;
+        }
+
+        tracing::debug!(path = %watch_path.display(), "Watching uclaw.md for changes");
+
+        for event in rx {
+            let is_uclaw_md = event.paths.iter().any(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n == "uclaw.md")
+                    .unwrap_or(false)
+            });
+
+            if !is_uclaw_md {
+                continue;
+            }
+
+            let is_modify = matches!(
+                event.kind,
+                EventKind::Modify(_) | EventKind::Create(_)
+            );
+
+            if is_modify {
+                tracing::info!(path = %watch_path.display(), "uclaw.md changed, emitting event");
+                let _ = app_handle.emit("uclaw-md:changed", serde_json::json!({
+                    "path": watch_path.display().to_string(),
+                }));
+            }
+        }
+    })
 }
 
 pub fn compose_system_prompt(

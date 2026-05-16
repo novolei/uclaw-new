@@ -136,6 +136,19 @@ impl ChatDelegate {
         self.memory_context = Some(context);
     }
 
+    /// Append additional context to the existing memory context.
+    /// If no memory context has been set yet, this creates one.
+    pub fn append_memory_context(&mut self, extra: &str) {
+        match self.memory_context.as_mut() {
+            Some(ctx) => {
+                ctx.push_str(extra);
+            }
+            None => {
+                self.memory_context = Some(extra.to_string());
+            }
+        }
+    }
+
     /// Set the skill manifest block to append to the system prompt.
     /// Caller is responsible for building this via skills_manifest::build_skills_manifest.
     pub fn set_skills_manifest_block(&mut self, block: String) {
@@ -180,25 +193,61 @@ impl ChatDelegate {
     /// Prepended to the LAST user message in each LLM call payload — NOT
     /// persisted to the session. Each new call gets a fresh timestamp.
     ///
-    /// Rationale: time is metadata the agent can't physically probe with a
-    /// tool the way it can probe filesystem state — pre-injecting it saves
-    /// a `date` tool roundtrip on every "what time is it" question while
-    /// honoring the probe-first philosophy for everything else (cwd, files,
-    /// etc. stay agent-driven).
+    /// Now focuses on workspace root only; time is injected into the
+    /// system prompt via `build_system_time_block()` for authority.
+    ///
+    /// Rationale: workspace path is metadata the agent can't infer where
+    /// it's "installed" via tool use. Time moved to system prompt because
+    /// user-message metadata is not treated as authoritative by LLMs.
     fn build_dynamic_context(&self) -> String {
-        use chrono::Local;
-        let now = Local::now();
-        // Example: "Monday, May 12, 2026 at 11:30 AM PST"
-        let time = now.format("%A, %B %-d, %Y at %-I:%M %p %Z").to_string();
-        let mut lines = vec![format!("**Current time:** {}", time)];
+        let mut lines = Vec::new();
 
         if let Some(root) = &self.workspace_root {
-            // Workspace path is also metadata: agent can't infer where it's
-            // "installed" via tool use, only the cwd it's run from.
             lines.push(format!("**Workspace root:** {}", root.display()));
         }
 
+        if lines.is_empty() {
+            return String::new();
+        }
         lines.join("\n")
+    }
+
+    /// Build the system-level time metadata block.
+    ///
+    /// Injected into the system prompt ONCE per LLM call so the model
+    /// treats the time as authoritative context — no `bash date` roundtrip
+    /// needed. Uses Chinese weekdays for better UX with Chinese-speaking
+    /// users. Each call gets a fresh timestamp.
+    fn build_system_time_block(&self) -> String {
+        use chrono::{Datelike, Local, Timelike};
+        let now = Local::now();
+        let weekday = match now.weekday() {
+            chrono::Weekday::Mon => "周一",
+            chrono::Weekday::Tue => "周二",
+            chrono::Weekday::Wed => "周三",
+            chrono::Weekday::Thu => "周四",
+            chrono::Weekday::Fri => "周五",
+            chrono::Weekday::Sat => "周六",
+            chrono::Weekday::Sun => "周日",
+        };
+        let time = format!(
+            "{}年{}月{}日 {} {:02}:{:02}",
+            now.year(),
+            now.month(),
+            now.day(),
+            weekday,
+            now.hour(),
+            now.minute(),
+        );
+        let mut block = format!(
+            "<system_info>\n当前时间: {}\n注意: 以上时间由系统提供，你不需要使用工具（如 bash date）获取时间，直接使用此信息回答即可。",
+            time
+        );
+        if let Some(root) = &self.workspace_root {
+            block.push_str(&format!("\n工作区路径: {}", root.display()));
+        }
+        block.push_str("\n</system_info>");
+        block
     }
 
     /// Resolve the effective SafetyMode for this call: per-session override
@@ -292,10 +341,11 @@ impl ChatDelegate {
     }
 
     /// Emit a completion event to the frontend
-    fn emit_done(&self, text: &str) {
+    fn emit_done(&self, text: &str, truncated: bool) {
         let _ = self.app_handle.emit("chat:stream-complete", serde_json::json!({
             "conversationId": self.conversation_id,
             "text": text,
+            "truncated": truncated,
         }));
     }
 
@@ -388,6 +438,11 @@ impl ChatDelegate {
         let mut tool_use_tokens: u32 = 0;
 
         for msg in messages {
+            // Skip compacted messages — they stay in memory for UI replay
+            // but must not inflate the context usage estimate. (P1 logical-marking)
+            if msg.compacted {
+                continue;
+            }
             for block in &msg.content {
                 match block {
                     ContentBlock::ToolUse { name, input, .. } => {
@@ -525,6 +580,79 @@ impl StreamSink for ChatDelegate {
     }
 }
 
+/// Compute per-model `max_tokens` for a single LLM call.
+///
+/// - 1M-context models (Sonnet 4+, Opus 4.6+) get 32768 — room for large file output.
+/// - Reasoning models (DeepSeek R1) get 24576 — thinking tokens eat visible output budget.
+/// - Default: 16384.
+fn compute_max_tokens(model: &str, thinking_enabled: bool) -> u32 {
+    let m = model.to_lowercase();
+    let base = if m.contains("sonnet-4") || m.contains("sonnet4")
+        || m.contains("opus-4-6") || m.contains("opus-4-7")
+        || m.contains("opus-4-8") || m.contains("opus-4-9")
+        || m.contains("opus-5")
+    {
+        32768
+    } else {
+        16384
+    };
+    // Reasoning models: thinking tokens consume output budget — give extra headroom
+    if thinking_enabled && m.contains("deepseek") && m.contains("r1") {
+        (base as f32 * 1.5) as u32
+    } else {
+        base
+    }
+}
+
+/// Check whether the agent's text response signals it was engaged in
+/// plan-related work (as opposed to giving a complete answer to an
+/// unrelated user question).
+///
+/// Used as a relevance gate before the plan-aware termination guard
+/// fires. Without this check, a pending plan from a prior task would
+/// hijack every user message — even "头好疼" — and force the agent to
+/// abandon its answer and start executing old plan steps.
+///
+/// Returns true when:
+/// - The text contains tool-intent signals ("let me write", "我来编辑", etc.)
+/// - The text explicitly mentions plan / step / task concepts
+/// - The text is short and contains continuation markers
+fn text_signals_plan_work(text: &str) -> bool {
+    // Tool intent: the agent was trying to work but didn't call tools.
+    // This is the strongest signal — the agent announced intent to act.
+    if crate::agent::types::llm_signals_tool_intent(text) {
+        return true;
+    }
+
+    let lower = text.to_lowercase();
+
+    // Explicit plan references: the agent is aware it's working through a plan.
+    // Check both English and Chinese keywords.
+    let plan_keywords = [
+        "plan", "step", "task", "todo",
+        "计划", "步骤", "任务", "待办",
+    ];
+    if plan_keywords.iter().any(|kw| lower.contains(kw) || text.contains(kw)) {
+        return true;
+    }
+
+    // Short responses that mention continuing work are likely incomplete.
+    // A complete answer to an unrelated question is typically longer and
+    // self-contained. Short plan-related snippets like "Working on it..."
+    // or "Let me check the next step" should still trigger the guard.
+    if text.len() < 200 {
+        let continuation_markers = [
+            "continue", "continuing", "next", "working on",
+            "继续", "接下来", "下一步", "正在",
+        ];
+        if continuation_markers.iter().any(|m| lower.contains(m) || text.contains(m)) {
+            return true;
+        }
+    }
+
+    false
+}
+
 #[async_trait]
 impl LoopDelegate for ChatDelegate {
     async fn check_signals(&self) -> LoopSignal {
@@ -553,10 +681,18 @@ impl LoopDelegate for ChatDelegate {
         let effective_mode = self.resolve_effective_mode().await;
         let effective_prompt = self.effective_system_prompt(&effective_mode);
 
-        let mut messages = vec![ChatMessage::system(&effective_prompt)];
-        messages.extend(reason_ctx.messages.clone());
+        // Inject current time into the system prompt so the model treats it
+        // as authoritative context. This prevents unnecessary `bash date`
+        // roundtrips when the user asks time-related questions.
+        let time_block = self.build_system_time_block();
+        let full_system_prompt = format!("{}\n\n{}", effective_prompt, time_block);
 
-        // Prepend dynamic context (time + workspace root) to the LAST user
+        let mut messages = vec![ChatMessage::system(&full_system_prompt)];
+        // Skip compacted messages — they stay in memory for UI replay
+        // but must not consume LLM context budget. (P1 logical-marking)
+        messages.extend(reason_ctx.messages.iter().filter(|m| !m.compacted).cloned());
+
+        // Prepend dynamic context (workspace root) to the LAST user
         // message in this call. Mutates the clone only — the persisted
         // session messages stay clean so context isn't duplicated when the
         // session resumes or replays.
@@ -565,17 +701,22 @@ impl LoopDelegate for ChatDelegate {
         // because a fresh "user" message after assistant tool calls would
         // confuse the back-and-forth structure. Anthropic / OpenAI both
         // require alternating user/assistant turns.
+        //
+        // Note: time is now injected into the system prompt (above) for
+        // authority; only workspace root remains in user-message context.
         if let Some(last_user_idx) = messages.iter().rposition(|m| {
             matches!(m.role, crate::agent::types::MessageRole::User)
                 && m.content.iter().any(|b| matches!(b, crate::agent::types::ContentBlock::Text { .. }))
         }) {
             let dyn_ctx = self.build_dynamic_context();
-            if let Some(crate::agent::types::ContentBlock::Text { text }) =
-                messages[last_user_idx].content.iter_mut().find(|b| {
-                    matches!(b, crate::agent::types::ContentBlock::Text { .. })
-                })
-            {
-                *text = format!("{}\n\n{}", dyn_ctx, text);
+            if !dyn_ctx.is_empty() {
+                if let Some(crate::agent::types::ContentBlock::Text { text }) =
+                    messages[last_user_idx].content.iter_mut().find(|b| {
+                        matches!(b, crate::agent::types::ContentBlock::Text { .. })
+                    })
+                {
+                    *text = format!("{}\n\n{}", dyn_ctx, text);
+                }
             }
         }
 
@@ -584,11 +725,11 @@ impl LoopDelegate for ChatDelegate {
         } else {
             self.tools.list_definitions()
         };
+        let max_tokens = compute_max_tokens(&self.model, self.thinking_enabled);
         let config = crate::llm::CompletionConfig {
             model: self.model.clone(),
-            max_tokens: 8192,
+            max_tokens,
             temperature: 0.7,
-            system_prompt: Some(effective_prompt),
             thinking_enabled: self.thinking_enabled,
         };
 
@@ -597,6 +738,7 @@ impl LoopDelegate for ChatDelegate {
             message_count = messages.len(),
             tool_count = tools.len(),
             force_text = reason_ctx.force_text,
+            max_tokens,
             "Calling LLM"
         );
 
@@ -693,7 +835,9 @@ impl LoopDelegate for ChatDelegate {
         }
 
         // ── Complete response path ────────────────────────────────────────
-        // Reset truncation state (model sent a full response this time).
+        // Save truncation state before resetting (any LLM call in this turn
+        // was truncated → inform frontend via stream-complete and LoopOutcome).
+        let was_truncated = reason_ctx.consecutive_length_truncations > 0;
         reason_ctx.consecutive_length_truncations = 0;
 
         // Code-block rescue: try with accumulated+current text (clears buffer
@@ -714,6 +858,14 @@ impl LoopDelegate for ChatDelegate {
         // Plan-aware termination guard: if a plan file still has undone steps
         // modified in the last 5 minutes, the model hasn't actually finished —
         // nudge it to continue rather than terminating.
+        //
+        // Safety gate: only fire when the agent's response indicates it was
+        // engaged in plan-related work. If the user asked an unrelated question
+        // (e.g. "头好疼") and the agent gave a complete answer, the plan guard
+        // must NOT hijack the conversation. Without this gate, pending plan
+        // steps from a prior task would cause the agent to abandon its answer
+        // and start executing old plan steps — a severe UX regression.
+        //
         // Cap: after MAX_PLAN_GUARD_NUDGES consecutive nudges without any tool
         // call response, give up and let the response through to avoid infinite
         // text-only loops (e.g. model did edits but forgot plan_update calls).
@@ -721,7 +873,21 @@ impl LoopDelegate for ChatDelegate {
             self.workspace_root.as_deref(),
             300,
         ) {
-            if reason_ctx.consecutive_plan_guard_nudges >= crate::agent::types::MAX_PLAN_GUARD_NUDGES {
+            // ── Relevance gate: only nudge if the response signals plan work ──
+            // We check whether the agent's own text indicates it was in the
+            // middle of plan execution, rather than giving a complete answer to
+            // an unrelated user question. This prevents the guard from hijacking
+            // conversations where the user asked about something completely
+            // different (health, weather, general knowledge, etc.).
+            if !text_signals_plan_work(text) {
+                tracing::debug!(
+                    undone_steps = undone,
+                    text_preview = %&text[..text.len().min(120)],
+                    "Plan guard skipped: response does not signal plan-related work"
+                );
+                // Fall through to emit_done / Return below — let the complete
+                // answer reach the user without hijacking the conversation.
+            } else if reason_ctx.consecutive_plan_guard_nudges >= crate::agent::types::MAX_PLAN_GUARD_NUDGES {
                 tracing::warn!(
                     undone_steps = undone,
                     nudges = reason_ctx.consecutive_plan_guard_nudges,
@@ -746,8 +912,8 @@ impl LoopDelegate for ChatDelegate {
             }
         }
 
-        self.emit_done(text);
-        TextAction::Return(LoopOutcome::Response { text: text.to_string(), usage: metadata.usage })
+        self.emit_done(text, was_truncated);
+        TextAction::Return(LoopOutcome::Response { text: text.to_string(), usage: metadata.usage, truncated: was_truncated })
     }
 
     async fn execute_tool_calls(
@@ -1285,6 +1451,106 @@ impl LoopDelegate for ChatDelegate {
     async fn on_tool_intent_nudge(&self, text: &str, _ctx: &mut ReasoningContext) {
         self.emit_thinking(&format!("Detected tool intent in: {}", truncate_utf8(text, 100)));
     }
+
+    /// Generate a semantic summary of compacted messages for context compression.
+    /// Uses the same LLM provider as the main conversation to produce a concise
+    /// summary of key decisions, file changes, tools used, and task progress.
+    /// Falls back to `None` on any error, which triggers the template-based
+    /// placeholder in `build_compression_summary_refs`.
+    async fn summarize_for_compression(&self, messages: &[ChatMessage]) -> Option<String> {
+        if messages.is_empty() {
+            return None;
+        }
+
+        // Build a conversation transcript from the compacted messages.
+        let mut transcript = String::new();
+        for msg in messages {
+            let role_label = match msg.role {
+                MessageRole::User => "User",
+                MessageRole::Assistant => "Assistant",
+                MessageRole::System => "System",
+            };
+            for block in &msg.content {
+                match block {
+                    ContentBlock::Text { text } => {
+                        transcript.push_str(&format!("[{}]: {}\n", role_label, text));
+                    }
+                    ContentBlock::ToolUse { name, input, .. } => {
+                        let input_preview = truncate_utf8(&input.to_string(), 200);
+                        transcript.push_str(&format!(
+                            "[{} called tool '{}' with: {}]\n",
+                            role_label, name, input_preview
+                        ));
+                    }
+                    ContentBlock::ToolResult { content, .. } => {
+                        let result_preview = truncate_utf8(content, 300);
+                        transcript.push_str(&format!("[Tool result]: {}\n", result_preview));
+                    }
+                    ContentBlock::Thinking { .. } => {
+                        // Skip thinking blocks — they add noise without signal for summarization.
+                    }
+                }
+            }
+        }
+
+        if transcript.trim().is_empty() {
+            return None;
+        }
+
+        // Summarization prompt: ask the LLM to produce a concise summary.
+        let summary_prompt = format!(
+            "You are a conversation summarizer. Below is a transcript of earlier conversation \
+             turns that have been compacted from the active context window.\n\n\
+             Produce a concise summary (3-8 sentences) covering:\n\
+             - Key decisions made and their rationale\n\
+             - Files that were read, modified, or created (with paths)\n\
+             - Tools that were used and their outcomes\n\
+             - The current task state and what remains to be done\n\
+             - Any important constraints, preferences, or edge cases discovered\n\n\
+             Write the summary in the same language as the conversation.\n\
+             Be specific — include file paths, tool names, and concrete details.\n\n\
+             Conversation transcript:\n{}",
+            transcript
+        );
+
+        let config = crate::llm::CompletionConfig {
+            model: self.model.clone(),
+            max_tokens: 1024,
+            temperature: 0.3,
+            thinking_enabled: false,
+        };
+
+        let messages = vec![ChatMessage::user(&summary_prompt)];
+
+        match self.llm.complete(messages, vec![], &config).await {
+            Ok(RespondOutput::Text { text, .. }) => {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    tracing::info!(
+                        summary_len = trimmed.len(),
+                        "LLM compression summary generated"
+                    );
+                    Some(trimmed.to_string())
+                }
+            }
+            Ok(other) => {
+                tracing::warn!(
+                    ?other,
+                    "LLM summarization returned unexpected output, falling back to placeholder"
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "LLM summarization failed, falling back to placeholder"
+                );
+                None
+            }
+        }
+    }
 }
 
 /// Tools whose Rust impl returned `Ok(...)` but where the underlying operation
@@ -1534,5 +1800,139 @@ mod manifest_cap_tests {
         );
         // Empty registry + empty store → empty manifest, no panic.
         let _ = manifest;
+    }
+}
+
+#[cfg(test)]
+mod plan_guard_relevance_tests {
+    /// Verify that the plan guard relevance gate (`text_signals_plan_work`)
+    /// correctly identifies when an agent response is about plan-related work
+    /// vs. a complete answer to an unrelated question.
+    use super::text_signals_plan_work;
+
+    // ── Should return TRUE (plan work detected) ──────────────────────
+
+    #[test]
+    fn tool_intent_english() {
+        // Agent said "let me write" — clearly trying to work but stopped.
+        assert!(text_signals_plan_work("Let me write the config file now."));
+    }
+
+    #[test]
+    fn tool_intent_chinese() {
+        // Agent signals intent in Chinese.
+        assert!(text_signals_plan_work("接下来我来编辑配置文件"));
+    }
+
+    #[test]
+    fn mentions_plan_steps() {
+        // Agent references plan/task concepts.
+        assert!(text_signals_plan_work("I'll start on step 3 now."));
+        assert!(text_signals_plan_work("Moving to the next task in the plan"));
+        assert!(text_signals_plan_work("步骤 2 已完成，现在开始步骤 3"));
+        assert!(text_signals_plan_work("计划还剩两个待办项"));
+    }
+
+    #[test]
+    fn short_continuation_response() {
+        // Short response with continuation markers — the agent was
+        // working but gave a terse reply instead of calling tools.
+        assert!(text_signals_plan_work("Continuing with the next step."));
+        assert!(text_signals_plan_work("Working on it..."));
+        assert!(text_signals_plan_work("接下来继续写代码"));
+    }
+
+    // ── Should return FALSE (unrelated answer) ────────────────────────
+
+    #[test]
+    fn health_question_answer() {
+        // User asked "头好疼啊" — agent gave a complete health answer.
+        // This is THE regression test for the bug described in the PR.
+        assert!(!text_signals_plan_work(
+            "头痛是很常见的症状，可能由多种原因引起。建议你休息一下，\
+             多喝水，如果持续疼痛可以服用适量止痛药。如果症状严重或反复发作，\
+             建议及时就医检查。"
+        ));
+    }
+
+    #[test]
+    fn general_knowledge_answer() {
+        // Answer to an unrelated question — no plan keywords, no tool intent.
+        assert!(!text_signals_plan_work(
+            "Rust is a systems programming language focused on safety, \
+             speed, and concurrency. It achieves memory safety without \
+             garbage collection through its ownership system."
+        ));
+    }
+
+    #[test]
+    fn weather_question_answer() {
+        assert!(!text_signals_plan_work(
+            "今天北京的天气晴朗，气温在 15-25°C 之间，适合户外活动。"
+        ));
+    }
+
+    #[test]
+    fn code_explanation_answer() {
+        // Agent explaining code that happens to contain "plan" in a
+        // variable name — should NOT trigger because the response is a
+        // self-contained explanation, not a work-in-progress update.
+        // However, "plan" IS in the plan_keywords list, so this WILL
+        // match. This is an acceptable false-positive: if the agent
+        // mentions "plan" in any context, nudging it to continue is
+        // harmless — it'll just say "I'm done" and the loop exits.
+        //
+        // We document this trade-off rather than trying to parse
+        // whether "plan" refers to the agent's plan vs. a variable
+        // name, which would be fragile.
+        assert!(text_signals_plan_work(
+            "The deployment plan involves three stages: build, test, deploy."
+        ));
+    }
+
+    #[test]
+    fn empty_response() {
+        assert!(!text_signals_plan_work(""));
+    }
+
+    #[test]
+    fn short_unrelated() {
+        // Short reply to an unrelated question — no continuation markers.
+        assert!(!text_signals_plan_work("Got it!"));
+        assert!(!text_signals_plan_work("Sure."));
+        assert!(!text_signals_plan_work("好的。"));
+    }
+
+    // ── Edge cases ───────────────────────────────────────────────────
+
+    #[test]
+    fn plan_keyword_in_unrelated_context() {
+        // "plan" used as a verb in an unrelated answer. Acceptable
+        // false-positive — see code_explanation_answer test comment.
+        assert!(text_signals_plan_work(
+            "I plan to visit the museum tomorrow."
+        ));
+    }
+
+    #[test]
+    fn task_keyword_in_unrelated_context() {
+        // "task" used generically — false-positive but harmless.
+        assert!(text_signals_plan_work(
+            "My daily task list includes exercise and reading."
+        ));
+    }
+
+    #[test]
+    fn long_answer_without_plan_signals() {
+        // Long, complete answer to user question — should NOT trigger.
+        let long_answer = "Rust's type system is one of its most powerful features. \
+            It uses affine types and ownership to ensure memory safety at compile time. \
+            The borrow checker enforces rules about references, preventing data races \
+            and use-after-free bugs. This system eliminates entire classes of bugs \
+            that plague C and C++ programs without needing a garbage collector. \
+            The trade-off is a steeper learning curve, but the compiler provides \
+            excellent error messages to guide developers.";
+        assert!(long_answer.len() >= 200, "sanity: test answer should be >= 200 chars");
+        assert!(!text_signals_plan_work(long_answer));
     }
 }

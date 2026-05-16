@@ -40,12 +40,11 @@ pub async fn run_reviewer(
 
     let system = "You are a strict quality reviewer. Be concise. Return only valid JSON.";
 
-    let messages = vec![ChatMessage::user(&user_prompt)];
+    let messages = vec![ChatMessage::system(system), ChatMessage::user(&user_prompt)];
     let config = CompletionConfig {
         model: model.to_string(),
         max_tokens: 300,
         temperature: 0.0,
-        system_prompt: Some(system.to_string()),
         thinking_enabled: false,
     };
 

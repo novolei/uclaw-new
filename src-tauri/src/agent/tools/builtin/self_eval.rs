@@ -2,8 +2,87 @@ use std::sync::Arc;
 use std::time::Instant;
 use async_trait::async_trait;
 use tauri::Emitter;
+use crate::agent::gep::types::{LearningCard, LearningCardType, StrategyHint};
 use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
 use crate::infra::InfraService;
+
+/// Classify a raw learning string into a LearningCard.
+/// Uses lightweight rule-based classification (P0 — Phase 0 of LearningCard).
+fn classify_learning(raw: &str, score: f32, session_id: &str, tool_name: Option<&str>) -> LearningCard {
+    let card_type = if is_generic_advice(raw) {
+        LearningCardType::Noise
+    } else if score < 0.5 {
+        LearningCardType::FailureLesson
+    } else if raw.contains('快') || raw.contains('省') || raw.contains('少') || raw.contains('多') {
+        LearningCardType::OptimizationTip
+    } else {
+        LearningCardType::SuccessPattern
+    };
+
+    // Extract a failure signal from the raw text
+    let failure_signal = if card_type == LearningCardType::FailureLesson {
+        extract_failure_signal(raw)
+    } else {
+        None
+    };
+
+    LearningCard {
+        raw: raw.to_string(),
+        card_type,
+        failure_signal,
+        tool_name: tool_name.map(|s| s.to_string()),
+        strategy_hint: StrategyHint::default(),
+        files_touched: vec![],
+        session_id: session_id.to_string(),
+        score,
+        timestamp: chrono::Utc::now().timestamp_millis(),
+    }
+}
+
+/// Check if a learning is generic advice (noise to be filtered).
+fn is_generic_advice(raw: &str) -> bool {
+    let generic_patterns = [
+        "应该多", "注意", "仔细", "认真", "保持", "尽量",
+        "记得", "别忘了", "好好", "多多", "谨慎",
+        "多检查", "小心", "别大意", "要仔细",
+    ];
+    // Short learnings that are also generic → noise
+    if raw.len() < 10 {
+        return true;
+    }
+    generic_patterns.iter().any(|p| raw.contains(p))
+}
+
+/// Extract a failure signal from the raw learning text.
+fn extract_failure_signal(raw: &str) -> Option<String> {
+    let lower = raw.to_lowercase();
+    // Common error patterns
+    let signals = [
+        ("403", "403"),
+        ("401", "401"),
+        ("404", "404"),
+        ("429", "429"),
+        ("500", "500"),
+        ("timeout", "timeout"),
+        ("超时", "timeout"),
+        ("parse error", "parse_error"),
+        ("解析错误", "parse_error"),
+        ("panic", "panic"),
+        ("unwrap", "unwrap"),
+        ("permission denied", "permission_denied"),
+        ("权限", "permission_denied"),
+        ("not found", "not_found"),
+        ("rate limit", "rate_limit"),
+        ("key error", "key_error"),
+        ("type error", "type_error"),
+    ];
+    for (pattern, signal) in &signals {
+        if lower.contains(pattern) {
+            return Some(signal.to_string());
+        }
+    }
+    None
+}
 
 pub struct SelfEvalTool {
     session_id: String,
@@ -99,9 +178,14 @@ impl Tool for SelfEvalTool {
             }));
         }
 
-        // Publish each learning as a SkillLearned infra event so SkillExtraction can pick it up
+        // Publish each learning as a SkillLearned infra event with LearningCard metadata
         if let Some(infra) = &self.infra_service {
             for learning in &learnings {
+                let card = classify_learning(learning, score, &self.session_id, None);
+                // Skip noise learnings (P0 filter)
+                if card.card_type == LearningCardType::Noise {
+                    continue;
+                }
                 infra.publish_skill_learned(
                     "self_eval",
                     learning,
@@ -109,6 +193,16 @@ impl Tool for SelfEvalTool {
                         "session_id": self.session_id,
                         "score": score,
                         "source": "self_eval",
+                        "learning_card": {
+                            "card_type": card.card_type,
+                            "failure_signal": card.failure_signal,
+                            "tool_name": card.tool_name,
+                            "strategy_hint": {
+                                "condition": card.strategy_hint.condition,
+                                "action": card.strategy_hint.action,
+                                "reason": card.strategy_hint.reason,
+                            },
+                        },
                     }),
                 ).await;
             }

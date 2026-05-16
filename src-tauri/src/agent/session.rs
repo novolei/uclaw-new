@@ -234,7 +234,7 @@ impl SessionManager {
                 .flatten()
                 .or_else(|| serde_json::from_str::<Vec<ContentBlock>>(&content_str).ok())
                 .unwrap_or_else(|| vec![ContentBlock::Text { text: content_str.clone() }]);
-            session.messages.push(ChatMessage { role, content });
+            session.messages.push(ChatMessage { role, content, compacted: false });
         }
 
         drop(conn);

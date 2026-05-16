@@ -63,23 +63,27 @@ pub enum ContentBlock {
 pub struct ChatMessage {
     pub role: MessageRole,
     pub content: Vec<ContentBlock>,
+    /// Whether this message has been logically compacted (marked for removal
+    /// from LLM context but kept in DB for UI replay). Default: false.
+    #[serde(default)]
+    pub compacted: bool,
 }
 
 impl ChatMessage {
     pub fn system(text: &str) -> Self {
-        Self { role: MessageRole::System, content: vec![ContentBlock::Text { text: text.to_string() }] }
+        Self { role: MessageRole::System, content: vec![ContentBlock::Text { text: text.to_string() }], compacted: false }
     }
     pub fn user(text: &str) -> Self {
-        Self { role: MessageRole::User, content: vec![ContentBlock::Text { text: text.to_string() }] }
+        Self { role: MessageRole::User, content: vec![ContentBlock::Text { text: text.to_string() }], compacted: false }
     }
     pub fn assistant(text: &str) -> Self {
-        Self { role: MessageRole::Assistant, content: vec![ContentBlock::Text { text: text.to_string() }] }
+        Self { role: MessageRole::Assistant, content: vec![ContentBlock::Text { text: text.to_string() }], compacted: false }
     }
     pub fn assistant_with_tool_use(id: &str, name: &str, input: serde_json::Value) -> Self {
-        Self { role: MessageRole::Assistant, content: vec![ContentBlock::ToolUse { id: id.to_string(), name: name.to_string(), input }] }
+        Self { role: MessageRole::Assistant, content: vec![ContentBlock::ToolUse { id: id.to_string(), name: name.to_string(), input }], compacted: false }
     }
     pub fn user_tool_result(tool_use_id: &str, content: &str, is_error: bool) -> Self {
-        Self { role: MessageRole::User, content: vec![ContentBlock::ToolResult { tool_use_id: tool_use_id.to_string(), content: content.to_string(), is_error: Some(is_error) }] }
+        Self { role: MessageRole::User, content: vec![ContentBlock::ToolResult { tool_use_id: tool_use_id.to_string(), content: content.to_string(), is_error: Some(is_error) }], compacted: false }
     }
 }
 
@@ -143,16 +147,30 @@ impl ReasoningContext {
         }
     }
 
-    /// Rough estimate of token count based on message content length.
-    /// Uses ~4 chars per token heuristic.
+    /// Token count estimate using CJK-aware per-character weighting.
+    /// Uses the same `estimate_tokens()` function that the dispatcher's
+    /// `emit_context_stats` uses, replacing the previous `len()/4` heuristic
+    /// which severely underestimated CJK text (4-5x undercount).
+    /// (P1 fix: 2026-05-16)
+    ///
+    /// Skips messages marked as `compacted` so logically removed messages
+    /// don't inflate the budget calculation. (P1 logical-marking: 2026-05-16)
     pub fn estimate_token_count(&self) -> usize {
-        let system_tokens = self.system_prompt.len() / 4;
-        let msg_tokens: usize = self.messages.iter().map(|m| {
+        let system_tokens = estimate_tokens(&self.system_prompt) as usize;
+        let msg_tokens: usize = self.messages.iter()
+            .filter(|m| !m.compacted)
+            .map(|m| {
             m.content.iter().map(|b| match b {
-                ContentBlock::Text { text } => text.len() / 4,
-                ContentBlock::Thinking { thinking, .. } => thinking.len() / 4,
-                ContentBlock::ToolUse { input, .. } => input.to_string().len() / 4 + 20,
-                ContentBlock::ToolResult { content, .. } => content.len() / 4 + 10,
+                ContentBlock::Text { text } => estimate_tokens(text) as usize,
+                ContentBlock::Thinking { thinking, .. } => estimate_tokens(thinking) as usize,
+                ContentBlock::ToolUse { name, input, .. } => {
+                    estimate_tokens(name) as usize
+                        + estimate_tokens(&input.to_string()) as usize
+                        + 20
+                }
+                ContentBlock::ToolResult { content, .. } => {
+                    estimate_tokens(content) as usize + 10
+                }
             }).sum::<usize>()
         }).sum();
         system_tokens + msg_tokens
@@ -349,10 +367,10 @@ pub enum LoopSignal {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LoopOutcome {
-    Response { text: String, usage: Option<TokenUsage> },
+    Response { text: String, usage: Option<TokenUsage>, truncated: bool },
     ToolResult { results: Vec<String> },
     Stopped,
-    Cancelled,
+    Cancelled { partial_code: Option<String> },
     MaxIterations,
     Failure { error: String },
     NeedApproval { tool_name: String, tool_call_id: String, parameters: serde_json::Value },
@@ -385,6 +403,12 @@ pub trait LoopDelegate: Send + Sync {
     async fn on_tool_intent_nudge(&self, _text: &str, _ctx: &mut ReasoningContext) {}
     async fn on_usage(&self, _usage: &TokenUsage, _reason_ctx: &ReasoningContext) {}
     async fn after_iteration(&self, _iteration: usize) {}
+    /// Generate a semantic summary of the given messages for context compression.
+    /// Called during soft_compress_context to produce an L1 archive summary.
+    /// Returns `None` to fall back to the template-based placeholder summary.
+    async fn summarize_for_compression(&self, _messages: &[ChatMessage]) -> Option<String> {
+        None
+    }
 }
 
 // ─── Agentic Loop Config ───────────────────────────────────────────────
@@ -407,6 +431,9 @@ pub struct AgenticLoopConfig {
     pub hard_truncation_threshold: f32,
     /// Number of recent turns to keep during compression.
     pub compression_keep_turns: usize,
+    /// Model context window length (0 = no cap, use raw budget).
+    /// Set by dispatcher from get_model_context_length().
+    pub model_context_length: u32,
 }
 
 impl Default for AgenticLoopConfig {
@@ -416,10 +443,47 @@ impl Default for AgenticLoopConfig {
             enable_tool_intent_nudge: true,
             max_tool_intent_nudges: 4,
             max_truncations: 3,
-            token_budget: 128_000,
-            compression_threshold: 0.80,
-            hard_truncation_threshold: 0.95,
-            compression_keep_turns: 10,
+            // 提升上下文预算：200K tokens 覆盖更长的对话历史
+            token_budget: 200_000,
+            // 仅当达到 90% 时才触发压缩（原 85%），给 agent 更多上下文空间
+            compression_threshold: 0.90,
+            // 仅当达到 98% 时才硬截断
+            hard_truncation_threshold: 0.98,
+            // 保留最近 20 轮而非 10 轮，压缩后仍保留足够上下文
+            compression_keep_turns: 20,
+            // 0 = no cap, will be set to actual model context window by dispatcher
+            model_context_length: 0,
+        }
+    }
+}
+
+impl AgenticLoopConfig {
+    /// 基于模型名称自动规划上下文预算。
+    ///
+    /// 使用 [`crate::agent::context::plan_context_for_model`] 计算
+    /// 模型感知的 token 预算、压缩阈值和保留轮次数。
+    ///
+    /// 此方法替代了手动设置 `model_context_length` 的模式：
+    /// ```ignore
+    /// // 旧方式（静态默认值 + 手动设置窗口大小）
+    /// let mut config = AgenticLoopConfig::default();
+    /// config.model_context_length = get_model_context_length(&model);
+    ///
+    /// // 新方式（模型感知自动规划）
+    /// let config = AgenticLoopConfig::from_model(&model);
+    /// ```
+    pub fn from_model(model: &str) -> Self {
+        let plan = crate::agent::context::plan_context_for_model(model);
+        Self {
+            max_iterations: 50,
+            enable_tool_intent_nudge: true,
+            max_tool_intent_nudges: 4,
+            max_truncations: 3,
+            token_budget: plan.token_budget,
+            compression_threshold: plan.compression_threshold,
+            hard_truncation_threshold: plan.hard_truncation_threshold,
+            compression_keep_turns: plan.compression_keep_turns,
+            model_context_length: plan.model_context_length,
         }
     }
 }
