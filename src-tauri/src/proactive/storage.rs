@@ -27,6 +27,11 @@ impl ProactiveStorage {
     /// - 自动创建表结构（如不存在）
     pub fn new(db_path: &std::path::Path) -> anyhow::Result<Self> {
         let conn = Connection::open(db_path)?;
+
+        // Enable WAL mode for better concurrent access (matches main DB)
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "busy_timeout", "5000")?;
+
         Self::ensure_tables(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
