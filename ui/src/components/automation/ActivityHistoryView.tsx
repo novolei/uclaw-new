@@ -16,16 +16,16 @@ function dotColorClass(activity: AutomationActivity): string {
   if (status === 'running' || status === 'queued')
     return 'bg-primary animate-pulse'
   if (status === 'failed' || reportOutcome === 'error')
-    return 'bg-red-500'
+    return 'bg-danger'
   if (status === 'waiting_user')
-    return 'bg-yellow-500'
+    return 'bg-warning'
   if (status === 'cancelled')
-    return 'bg-gray-400'
+    return 'bg-muted-foreground'
   if (status === 'completed') {
-    if (reportOutcome === 'useful') return 'bg-green-500'
-    return 'bg-gray-500'
+    if (reportOutcome === 'useful') return 'bg-success'
+    return 'bg-muted-foreground'
   }
-  return 'bg-gray-500'
+  return 'bg-muted-foreground'
 }
 
 export function ActivityHistoryView({
