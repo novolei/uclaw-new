@@ -44,6 +44,120 @@ interface SimEdge {
   target: string
 }
 
+// ─── Barnes-Hut QuadTree ──────────────────────────────────────────────
+
+interface QTRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+interface QTPoint {
+  x: number
+  y: number
+  mass: number
+  id: string
+}
+
+class QuadTree {
+  bounds: QTRect
+  points: QTPoint[] = []
+  divided = false
+  nw: QuadTree | null = null
+  ne: QuadTree | null = null
+  sw: QuadTree | null = null
+  se: QuadTree | null = null
+  totalMass = 0
+  comX = 0
+  comY = 0
+
+  constructor(bounds: QTRect) {
+    this.bounds = bounds
+  }
+
+  private contains(p: QTPoint): boolean {
+    const b = this.bounds
+    return p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height
+  }
+
+  private subdivide(): void {
+    const { x, y, width, height } = this.bounds
+    const hw = width / 2
+    const hh = height / 2
+    this.nw = new QuadTree({ x, y, width: hw, height: hh })
+    this.ne = new QuadTree({ x: x + hw, y, width: hw, height: hh })
+    this.sw = new QuadTree({ x, y: y + hh, width: hw, height: hh })
+    this.se = new QuadTree({ x: x + hw, y: y + hh, width: hw, height: hh })
+    this.divided = true
+
+    for (const pt of this.points) {
+      this.nw.insert(pt) || this.ne.insert(pt) || this.sw.insert(pt) || this.se.insert(pt)
+    }
+    this.points = []
+  }
+
+  insert(point: QTPoint): boolean {
+    if (!this.contains(point)) return false
+
+    const newTotal = this.totalMass + point.mass
+    this.comX = (this.comX * this.totalMass + point.x * point.mass) / newTotal
+    this.comY = (this.comY * this.totalMass + point.y * point.mass) / newTotal
+    this.totalMass = newTotal
+
+    if (!this.divided && this.points.length < 1) {
+      this.points.push(point)
+      return true
+    }
+
+    if (!this.divided) this.subdivide()
+    return this.nw!.insert(point) || this.ne!.insert(point) || this.sw!.insert(point) || this.se!.insert(point)
+  }
+
+  calculateForce(node: { x: number; y: number; id: string }, repulsion: number, theta = 0.7): { fx: number; fy: number } {
+    if (this.totalMass === 0) return { fx: 0, fy: 0 }
+
+    const dx = this.comX - node.x
+    const dy = this.comY - node.y
+    const distSq = dx * dx + dy * dy + 1
+    const dist = Math.sqrt(distSq)
+    const size = this.bounds.width
+
+    if (!this.divided || size / dist < theta) {
+      if (this.totalMass === 1 && this.points.length === 1 && this.points[0].id === node.id) {
+        return { fx: 0, fy: 0 }
+      }
+      const force = this.totalMass * repulsion / distSq
+      return { fx: -(dx / dist) * force, fy: -(dy / dist) * force }
+    }
+
+    let fx = 0
+    let fy = 0
+    for (const child of [this.nw, this.ne, this.sw, this.se]) {
+      if (child && child.totalMass > 0) {
+        const f = child.calculateForce(node, repulsion, theta)
+        fx += f.fx
+        fy += f.fy
+      }
+    }
+    return { fx, fy }
+  }
+}
+
+function computeQuadTreeBounds(nodes: SimNode[]): QTRect {
+  if (nodes.length === 0) return { x: -500, y: -500, width: 1000, height: 1000 }
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const n of nodes) {
+    if (n.x < minX) minX = n.x
+    if (n.y < minY) minY = n.y
+    if (n.x > maxX) maxX = n.x
+    if (n.y > maxY) maxY = n.y
+  }
+  const padding = 50
+  const size = Math.max(maxX - minX, maxY - minY) + padding * 2
+  return { x: minX - padding, y: minY - padding, width: size, height: size }
+}
+
 // ─── Props ──────────────────────────────────────────────────────────────
 
 interface MemoryGraphViewProps {
@@ -159,20 +273,15 @@ export function MemoryGraphView({
         n.vy -= n.y * centerStrength
       }
 
-      // Repulsion (Barnes-Hut simplification: just pairwise for small graphs)
-      for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) {
-          const dx = nodes[j].x - nodes[i].x
-          const dy = nodes[j].y - nodes[i].y
-          const dist = Math.sqrt(dx * dx + dy * dy) || 1
-          const force = repulsion / (dist * dist)
-          const fx = (dx / dist) * force
-          const fy = (dy / dist) * force
-          nodes[i].vx -= fx
-          nodes[i].vy -= fy
-          nodes[j].vx += fx
-          nodes[j].vy += fy
-        }
+      // Repulsion (Barnes-Hut O(N log N))
+      const tree = new QuadTree(computeQuadTreeBounds(nodes))
+      for (const n of nodes) {
+        tree.insert({ x: n.x, y: n.y, mass: 1, id: n.id })
+      }
+      for (const n of nodes) {
+        const { fx, fy } = tree.calculateForce(n, repulsion)
+        n.vx += fx
+        n.vy += fy
       }
 
       // Link forces

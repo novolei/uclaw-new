@@ -19,6 +19,17 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
+import {
   Pencil,
   Trash2,
   Save,
@@ -31,7 +42,7 @@ import {
   ChevronDown,
   ChevronUp,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, formatDate } from '@/lib/utils'
 import {
   memoryGraphGetNode,
   memoryGraphUpdateNode,
@@ -193,7 +204,10 @@ export function MemoryNodeCard({
   const kindLabel = KIND_LABELS[node.kind] ?? node.kind
 
   return (
-    <Card className={cn('overflow-hidden', className)}>
+    <Card
+      className={cn('overflow-hidden', className)}
+      style={{ borderLeftWidth: '4px', borderLeftColor: kindColor }}
+    >
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between gap-2">
           {editing ? (
@@ -234,24 +248,45 @@ export function MemoryNodeCard({
               <Button size="icon" variant="ghost" className="h-6 w-6" onClick={startEdit}>
                 <Pencil className="size-3.5" />
               </Button>
-              <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive" onClick={handleDelete}>
-                <Trash2 className="size-3.5" />
-              </Button>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive cursor-pointer">
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>确认删除</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      确认删除此记忆节点？此操作不可撤销。
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>取消</AlertDialogCancel>
+                    <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                      删除
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
           )}
         </div>
 
         <CardDescription className="flex items-center gap-2 mt-1">
           <Badge
-            variant="outline"
-            className="text-[10px] px-1.5 py-0"
-            style={{ borderColor: kindColor, color: kindColor }}
+            className="text-[10px] px-1.5 py-0 border"
+            style={{
+              backgroundColor: `${kindColor}15`,
+              color: kindColor,
+              borderColor: `${kindColor}33`,
+            }}
           >
             {kindLabel}
           </Badge>
           <span className="text-[10px] text-muted-foreground flex items-center gap-1">
             <Clock className="size-3" />
-            {new Date(node.updatedAt).toLocaleDateString()}
+            {formatDate(node.updatedAt)}
           </span>
         </CardDescription>
       </CardHeader>
@@ -281,9 +316,12 @@ export function MemoryNodeCard({
           <div className="flex items-start gap-1.5 flex-wrap">
             <MapPin className="size-3 text-muted-foreground mt-0.5 shrink-0" />
             {routes.map((r) => (
-              <span key={r.id} className="text-[10px] text-muted-foreground font-mono">
+              <span
+                key={r.id}
+                className="inline-flex items-center gap-1 bg-muted rounded-md px-2 py-0.5 text-[10px] text-muted-foreground font-mono"
+              >
                 {r.domain}/{r.path}
-                {r.isPrimary && <span className="text-primary ml-0.5">★</span>}
+                {r.isPrimary && <span className="text-primary">★</span>}
               </span>
             ))}
           </div>
@@ -295,39 +333,52 @@ export function MemoryNodeCard({
             <button
               type="button"
               onClick={() => setShowVersions(!showVersions)}
-              className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+              className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground cursor-pointer transition-colors duration-150"
             >
               <GitBranch className="size-3" />
               {allVersions.length} 个版本
               {showVersions ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
             </button>
             {showVersions && (
-              <ScrollArea className="max-h-32 mt-2">
-                <div className="space-y-1.5">
-                  {allVersions.map((v) => (
-                    <div
-                      key={v.id}
-                      className={cn(
-                        'text-[10px] rounded px-2 py-1 border',
-                        v.status === 'active'
-                          ? 'border-primary/30 bg-primary/5'
-                          : 'border-border/50 bg-muted/30',
-                      )}
-                    >
-                      <div className="flex items-center justify-between">
-                        <Badge
-                          variant="outline"
-                          className="text-[9px] px-1 py-0"
-                        >
-                          {v.status}
-                        </Badge>
-                        <span className="text-muted-foreground">
-                          {new Date(v.createdAt).toLocaleDateString()}
-                        </span>
-                      </div>
-                      <p className="mt-1 line-clamp-2 text-muted-foreground">{v.content}</p>
-                    </div>
-                  ))}
+              <ScrollArea className="max-h-40 mt-2">
+                <div className="relative pl-4">
+                  {/* 竖线 */}
+                  <div className="absolute left-[5px] top-1 bottom-1 w-px bg-border" />
+                  <div className="space-y-3">
+                    {allVersions.map((v) => {
+                      const isActive = v.status === 'active'
+                      return (
+                        <div key={v.id} className="relative">
+                          {/* 圆点 */}
+                          <div
+                            className={cn(
+                              'absolute -left-4 top-1 size-2.5 rounded-full border-2',
+                              isActive
+                                ? 'bg-primary border-primary'
+                                : 'bg-muted border-muted-foreground/30',
+                            )}
+                          />
+                          <div className="text-[10px]">
+                            <div className="flex items-center gap-2">
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  'text-[9px] px-1 py-0',
+                                  isActive && 'border-primary/40 text-primary',
+                                )}
+                              >
+                                {v.status}
+                              </Badge>
+                              <span className="text-muted-foreground">
+                                {formatDate(v.createdAt)}
+                              </span>
+                            </div>
+                            <p className="mt-1 line-clamp-2 text-muted-foreground">{v.content}</p>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
               </ScrollArea>
             )}

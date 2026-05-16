@@ -23,14 +23,18 @@ import {
   Search,
   Loader2,
   RefreshCw,
+  Sparkles,
+  BookOpen,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, formatDateTime } from '@/lib/utils'
 import { memoryGraphListTimeline } from '@/lib/tauri-bridge'
 import type { MemoryTimelineEntry, MemoryNodeKind } from '@/lib/types'
 import { MemoryBootList } from './MemoryBootList'
 import { MemorySearchPanel } from './MemorySearchPanel'
 import { MemoryGraphView } from './MemoryGraphView'
 import { MemoryNodeCard } from './MemoryNodeCard'
+import { FragmentCardView } from './FragmentCardView'
+import { DailySummaryView } from './DailySummaryView'
 
 // ─── Kind 配色 ──────────────────────────────────────────────────────────
 
@@ -87,6 +91,14 @@ export function MemoryPanel({ spaceId, className }: MemoryPanelProps): React.Rea
               <Search className="size-3" />
               搜索
             </TabsTrigger>
+            <TabsTrigger value="fragments" className="text-xs gap-1 h-6 px-2.5">
+              <Sparkles className="size-3" />
+              碎片
+            </TabsTrigger>
+            <TabsTrigger value="daily" className="text-xs gap-1 h-6 px-2.5">
+              <BookOpen className="size-3" />
+              日记
+            </TabsTrigger>
           </TabsList>
         </div>
 
@@ -116,6 +128,19 @@ export function MemoryPanel({ spaceId, className }: MemoryPanelProps): React.Rea
             onSelectNode={handleSelectNode}
             className="h-full"
           />
+        </TabsContent>
+
+        {/* 碎片 */}
+        <TabsContent value="fragments" className="flex-1 m-0">
+          <FragmentCardView
+            spaceId={spaceId}
+            onSelectNode={handleSelectNode}
+          />
+        </TabsContent>
+
+        {/* 日记摘要 */}
+        <TabsContent value="daily" className="flex-1 m-0">
+          <DailySummaryView />
         </TabsContent>
       </Tabs>
 
@@ -238,7 +263,7 @@ function TimelineView({
                     {entry.contentSnippet}
                   </p>
                   <span className="text-[10px] text-muted-foreground/60">
-                    {new Date(entry.updatedAt).toLocaleString()}
+                    {formatDateTime(entry.updatedAt)}
                   </span>
                 </div>
               </div>

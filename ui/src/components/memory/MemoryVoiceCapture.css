@@ -1,0 +1,146 @@
+/* ===== MemoryVoiceCapture — 粉色温暖脉冲浮层 ===== */
+
+/* ─── 容器 ─────────────────────────────────────────── */
+.memory-voice-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 24px;
+  background: hsl(0 0% 0% / 0.2);
+  backdrop-filter: blur(2px);
+  animation: memory-voice-fade-in 0.2s ease-out;
+}
+
+.memory-voice-panel {
+  width: 100%;
+  max-width: 380px;
+  padding: 28px 24px;
+  border-radius: 20px;
+  background: hsl(var(--background) / 0.95);
+  backdrop-filter: blur(12px);
+  border: 1px solid hsl(var(--border) / 0.5);
+  box-shadow: 0 20px 60px hsl(0 0% 0% / 0.15),
+              0 0 40px hsl(330 80% 60% / 0.08);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  animation: memory-voice-slide-up 0.25s ease-out;
+}
+
+/* ─── 图标区 ───────────────────────────────────────── */
+.memory-voice-icon-area {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.memory-voice-icon {
+  width: 28px;
+  height: 28px;
+  color: #ec4899;
+  z-index: 1;
+}
+
+.memory-voice-icon--success {
+  color: #22c55e;
+}
+
+.memory-voice-icon--error {
+  color: #ef4444;
+}
+
+/* ─── 脉冲环（音量可视化） ──────────────────────────── */
+.memory-voice-pulse-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid #ec4899;
+  opacity: 0.6;
+  transition: transform 0.1s ease-out, opacity 0.1s ease-out;
+}
+
+.memory-voice-pulse-ring--active {
+  animation: memory-voice-breathe 2s ease-in-out infinite;
+}
+
+/* ─── 文案 ─────────────────────────────────────────── */
+.memory-voice-main-text {
+  font-size: 16px;
+  font-weight: 500;
+  color: hsl(var(--foreground));
+  text-align: center;
+  margin: 0;
+}
+
+.memory-voice-sub-text {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  text-align: center;
+  margin: 0;
+}
+
+.memory-voice-transcript {
+  font-size: 14px;
+  color: hsl(var(--foreground) / 0.8);
+  text-align: center;
+  padding: 8px 16px;
+  min-height: 40px;
+  max-width: 100%;
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.memory-voice-hint {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground) / 0.6);
+  text-align: center;
+  margin: 4px 0 0;
+}
+
+/* ─── 大字体模式 ───────────────────────────────────── */
+.memory-voice-panel--large .memory-voice-main-text {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.memory-voice-panel--large .memory-voice-sub-text {
+  font-size: 16px;
+}
+
+.memory-voice-panel--large .memory-voice-transcript {
+  font-size: 18px;
+}
+
+/* ─── 动画 ─────────────────────────────────────────── */
+@keyframes memory-voice-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes memory-voice-slide-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes memory-voice-breathe {
+  0%, 100% { transform: scale(1); opacity: 0.4; }
+  50% { transform: scale(1.15); opacity: 0.7; }
+}
+
+/* 保存成功时的勾号弹入动画 */
+@keyframes memory-voice-check-pop {
+  0% { transform: scale(0); opacity: 0; }
+  50% { transform: scale(1.2); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.memory-voice-icon--check-anim {
+  animation: memory-voice-check-pop 0.3s ease-out forwards;
+}
