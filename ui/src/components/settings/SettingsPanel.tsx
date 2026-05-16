@@ -14,6 +14,7 @@ import { AboutSettings } from './AboutSettings'
 import { PetSettings } from './PetSettings'
 import { SettingsNav } from './SettingsNav'
 import { SttSettings } from './SttSettings'
+import { MemoryRecallTab } from './MemoryRecallTab'
 import { SettingsBreadcrumb } from './SettingsBreadcrumb'
 
 
@@ -25,6 +26,8 @@ function SettingsContent({ tab }: { tab: SettingsTab }) {
       return <IntelligenceTab />
     case 'tools':
       return <ToolsTab />
+    case 'memoryRecall':
+      return <MemoryRecallTab />
     case 'general':
       return <GeneralTab />
     case 'stt':
@@ -53,6 +56,7 @@ export default function SettingsPanel() {
     connectivity: '服务商与用量',
     intelligence: '智能',
     tools: '工具与能力',
+    memoryRecall: '记忆召回',
     general: '通用与外观',
     stt: '输入（语音）',
     shortcuts: '快捷键',

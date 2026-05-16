@@ -8,7 +8,7 @@
  */
 import * as React from 'react'
 import {
-  Radio, Cpu, Wrench, Settings, Mic, Keyboard, Smile, Globe, Info,
+  Radio, Cpu, Wrench, Settings, Mic, Keyboard, Smile, Globe, Info, Brain,
   Search,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -32,6 +32,7 @@ const GROUPS: NavGroup[] = [
       { id: 'connectivity', label: '服务商与用量', icon: <Radio size={16} /> },
       { id: 'intelligence', label: '智能', icon: <Cpu size={16} /> },
       { id: 'tools', label: '工具与能力', icon: <Wrench size={16} /> },
+      { id: 'memoryRecall', label: '记忆召回', icon: <Brain size={16} /> },
     ],
   },
   {

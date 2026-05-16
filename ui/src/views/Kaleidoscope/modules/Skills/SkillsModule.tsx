@@ -8,13 +8,15 @@
  */
 import * as React from 'react'
 import { toast } from 'sonner'
-import { Search, Plus, List, Columns, ArrowLeft } from 'lucide-react'
+import { Search, Plus, List, Columns, ArrowLeft, X, Loader2 } from 'lucide-react'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 import {
   listLearnedSkills,
   toggleLearnedSkill,
   deleteLearnedSkill,
   proposeSkillConsolidation,
+  cancelSkillConsolidation,
   backfillSkillKeywords,
   listSkills,
   toggleSkill,
@@ -48,6 +50,14 @@ export type UnifiedSkill =
   | { kind: 'learned'; id: string; name: string; enabled: boolean; raw: LearnedSkill }
   | { kind: 'builtin'; id: string; name: string; enabled: boolean; raw: SkillInfo }
 
+// P2: Consolidation progress from backend events
+export interface ConsolidationProgress {
+  stage: 'loading' | 'preclustering' | 'analyzing' | 'retrying' | 'validating' | 'done' | 'cancelled'
+  current: number
+  total: number
+  detail: string
+}
+
 export function SkillsModule(): React.ReactElement {
   const [learnedRaw, setLearnedRaw] = React.useState<LearnedSkill[]>([])
   const [builtinRaw, setBuiltinRaw] = React.useState<SkillInfo[]>([])
@@ -62,6 +72,9 @@ export function SkillsModule(): React.ReactElement {
   const [proposal, setProposal] = React.useState<SkillConsolidationProposal | null>(null)
   const [consolidationOpen, setConsolidationOpen] = React.useState(false)
   const [createDialogOpen, setCreateDialogOpen] = React.useState(false)
+
+  // P2-1: Consolidation progress state
+  const [consolidationProgress, setConsolidationProgress] = React.useState<ConsolidationProgress | null>(null)
 
   // ── 布局状态 ──
   const [isMobile, setIsMobile] = React.useState(false)
@@ -83,6 +96,20 @@ export function SkillsModule(): React.ReactElement {
   React.useEffect(() => {
     void refetch()
   }, [refetch])
+
+  // P2-1: Listen for consolidation progress events from backend
+  React.useEffect(() => {
+    let unlisten: UnlistenFn | undefined
+    const setup = async () => {
+      unlisten = await listen<ConsolidationProgress>('skill-consolidation:progress', (event) => {
+        setConsolidationProgress(event.payload)
+      })
+    }
+    void setup()
+    return () => {
+      if (unlisten) unlisten()
+    }
+  }, [])
 
   // ── 响应式断点检测 ──
   React.useEffect(() => {
@@ -274,8 +301,10 @@ export function SkillsModule(): React.ReactElement {
 
   const onPropose = async () => {
     setProposing(true)
+    setConsolidationProgress(null)
     try {
       const result = await proposeSkillConsolidation()
+      setConsolidationProgress(null)
       if (!result.clusters || result.clusters.length === 0) {
         toast.info('暂无可合并的重复技能')
         return
@@ -283,9 +312,24 @@ export function SkillsModule(): React.ReactElement {
       setProposal(result)
       setConsolidationOpen(true)
     } catch (err) {
-      toast.error('无法分析技能整合方案', { description: String(err) })
+      // Don't show toast for user-initiated cancellation
+      if (String(err).includes('取消')) {
+        toast.info('已取消整合')
+      } else {
+        toast.error('无法分析技能整合方案', { description: String(err) })
+      }
     } finally {
       setProposing(false)
+      setConsolidationProgress(null)
+    }
+  }
+
+  // P2-2: Cancel in-flight consolidation
+  const onCancelConsolidation = async () => {
+    try {
+      await cancelSkillConsolidation()
+    } catch {
+      // Best-effort cancel
     }
   }
 
@@ -411,6 +455,49 @@ export function SkillsModule(): React.ReactElement {
         )}
       </div>
 
+      {/* P2: Consolidation progress bar */}
+      {proposing && consolidationProgress && (
+        <div className="shrink-0 border-b border-border/40 bg-muted/20 px-5 md:px-8 py-2.5">
+          <div className="flex items-center gap-3">
+            <Loader2 className="size-3.5 text-primary animate-spin shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <span className="text-[11px] text-muted-foreground truncate">
+                  {consolidationProgress.detail}
+                </span>
+                {consolidationProgress.total > 1 && (
+                  <span className="text-[10px] text-muted-foreground/60 tabular-nums shrink-0">
+                    {consolidationProgress.current}/{consolidationProgress.total}
+                  </span>
+                )}
+              </div>
+              <div className="h-1 bg-muted rounded-full overflow-hidden">
+                <div
+                  className={cn(
+                    'h-full rounded-full transition-all duration-500 ease-out',
+                    consolidationProgress.stage === 'retrying' ? 'bg-amber-500' : 'bg-primary',
+                  )}
+                  style={{
+                    width: `${consolidationProgress.total > 0
+                      ? Math.round((consolidationProgress.current / consolidationProgress.total) * 100)
+                      : 0}%`,
+                  }}
+                />
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => void onCancelConsolidation()}
+              className="h-7 px-2 text-[11px] gap-1 text-muted-foreground hover:text-destructive rounded-md shrink-0"
+            >
+              <X className="size-3" />
+              <span className="hidden sm:inline">取消</span>
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* ─── 主体区域 ─── */}
       {isEmpty ? (
         <div className="titlebar-no-drag flex-1 min-h-0 flex items-center justify-center">
@@ -443,7 +530,7 @@ export function SkillsModule(): React.ReactElement {
               bundledSkills={displayBundledSkills}
               selectedId={selectedId}
               loading={loading}
-              canPropose={enabledLearnedCount >= 2}
+              canPropose={enabledLearnedCount >= 2 && !proposing}
               proposing={proposing}
               backfilling={backfilling}
               onSelect={handleMobileSelect}
@@ -491,7 +578,7 @@ export function SkillsModule(): React.ReactElement {
               bundledSkills={displayBundledSkills}
               selectedId={selectedId}
               loading={loading}
-              canPropose={enabledLearnedCount >= 2}
+              canPropose={enabledLearnedCount >= 2 && !proposing}
               proposing={proposing}
               backfilling={backfilling}
               onSelect={setSelectedId}

@@ -41,7 +41,7 @@ interface SkillCitationChipsProps {
 // citation per page lifetime.
 const recordedKeys = new Set<string>()
 
-export function SkillCitationChips({
+export const SkillCitationChips = React.memo(function SkillCitationChips({
   citations,
   messageKey,
   className,
@@ -78,12 +78,15 @@ export function SkillCitationChips({
                   setSettingsTab('tools')
                   setSettingsOpen(true)
                 }}
+                aria-label={`应用了技能：${c.title}`}
                 className={cn(
                   'inline-flex items-center gap-1 px-2 py-0.5 rounded-full',
                   'text-[11px] leading-tight',
                   'bg-primary/10 text-primary border border-primary/20',
                   'hover:bg-primary/15 hover:border-primary/30',
-                  'transition-colors',
+                  'active:scale-95 transition-all duration-150',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+                  'animate-in fade-in duration-200',
                 )}
               >
                 <Sparkles size={10} className="shrink-0" />
@@ -106,4 +109,4 @@ export function SkillCitationChips({
       </TooltipProvider>
     </div>
   )
-}
+})

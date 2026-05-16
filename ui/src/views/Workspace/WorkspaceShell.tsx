@@ -26,6 +26,7 @@ import { TabBar } from '@/components/tabs/TabBar'
 import { TabContent } from '@/components/tabs/TabContent'
 import { homeOfficePanelOpenAtom } from '@/atoms/home-office-atoms'
 import { HomeOfficeView } from '@/components/home-office/HomeOfficeView'
+import { MemoryRecallPanel } from '@/components/workspace/MemoryRecallPanel'
 
 const MIN_CHAT_RATIO = 0.30
 const MAX_CHAT_RATIO = 0.80
@@ -137,6 +138,7 @@ export function WorkspaceShell(): React.ReactElement {
           <TabContent tabId={activeTabId} />
         </div>
       ) : null}
+      <MemoryRecallPanel />
     </>
   )
 

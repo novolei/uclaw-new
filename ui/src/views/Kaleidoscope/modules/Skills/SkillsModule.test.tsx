@@ -42,6 +42,11 @@ vi.mock('@/components/settings/SkillConsolidationDialog', () => ({
 }))
 vi.mock('react-markdown', () => ({ default: ({ children }: { children: string }) => <span>{children}</span> }))
 
+// Mock Tauri event listener to avoid jsdom unhandled rejections
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: () => Promise.resolve(() => {}),
+}))
+
 describe('SkillsModule', () => {
   beforeEach(() => {
     listLearnedSkills.mockReset().mockResolvedValue(learnedFixture)

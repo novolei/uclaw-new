@@ -140,6 +140,30 @@ export const getBootstrapStatus = (): Promise<BootstrapStatus> =>
   invoke('get_bootstrap_status');
 
 // ─────────────────────────────────────────────────────────
+// Memory Recall Config
+// ─────────────────────────────────────────────────────────
+
+export interface MemoryRecallConfigDto {
+  bootLimit?: number;
+  triggerLimit?: number;
+  seedLimit?: number;
+  expansionLimit?: number;
+  recentLimit?: number;
+  fusionStrategy?: 'rrf' | 'weighted';
+  rrfK?: number;
+  ftsWeight?: number;
+  vectorWeight?: number;
+  bootLearnedSkillsLimit?: number;
+  tokenBudget?: number;
+}
+
+export const getMemoryRecallConfig = (): Promise<MemoryRecallConfigDto> =>
+  invoke('get_memory_recall_config');
+
+export const patchMemoryRecallConfig = (input: MemoryRecallConfigDto): Promise<MemoryRecallConfigDto> =>
+  invoke('patch_memory_recall_config', { input });
+
+// ─────────────────────────────────────────────────────────
 // Conversations
 // ─────────────────────────────────────────────────────────
 
@@ -547,6 +571,9 @@ export const proposeSkillConsolidation = (
   spaceId: string = 'default',
 ): Promise<SkillConsolidationProposal> =>
   invoke('propose_skill_consolidation', { spaceId });
+
+export const cancelSkillConsolidation = (): Promise<void> =>
+  invoke('cancel_skill_consolidation');
 
 export const applySkillConsolidation = (
   plan: SkillConsolidationProposal,

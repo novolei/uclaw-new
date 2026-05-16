@@ -15,11 +15,13 @@ import {
   currentAgentSessionIdAtom,
   agentSessionsAtom,
   proactiveLearningEventsAtom,
+  memoryRecallEventAtom,
   sessionBrowserPreviewMapAtom,
   liveMessagesMapAtom,
   skillRecallsMapAtom,
   type AgentStreamState,
   type ProactiveLearningEvent,
+  type MemoryRecallEvent,
   type AgentStreamErrorPayload,
   type BrowserPreviewState,
 } from '@/atoms/agent-atoms'
@@ -703,6 +705,18 @@ function startAgentListeners(store: Store): void {
       store.set(proactiveLearningEventsAtom, (prev) =>
         [payload, ...prev].slice(0, 10)
       )
+    })
+  )
+
+  // agent:memory-recall → update latest recall event
+  reg(
+    listen<MemoryRecallEvent>('agent:memory-recall', ({ payload }) => {
+      console.info('[memory-recall] received', {
+        total: payload.totalCandidates,
+        skills: payload.skillsCount,
+        conversationId: payload.conversationId,
+      })
+      store.set(memoryRecallEventAtom, payload)
     })
   )
 

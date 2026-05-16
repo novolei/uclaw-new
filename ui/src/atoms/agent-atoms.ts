@@ -931,6 +931,31 @@ export interface ProactiveLearningEvent {
 /** 最近的记忆捕捉事件（最多保留 10 条，新的在前） */
 export const proactiveLearningEventsAtom = atom<ProactiveLearningEvent[]>([])
 
+// ===== 记忆召回事件 =====
+
+export interface MemoryRecallItem {
+  nodeId: string
+  title: string
+  kind: string
+  source: string
+}
+
+export interface MemoryRecallEvent {
+  totalCandidates: number
+  skillsCount: number
+  bootCount: number
+  triggeredCount: number
+  relevantCount: number
+  expandedCount: number
+  recentCount: number
+  items: MemoryRecallItem[]
+  conversationId: string
+  timestamp: string
+}
+
+/** 最近一次记忆召回事件（每次 Agent turn 覆盖） */
+export const memoryRecallEventAtom = atom<MemoryRecallEvent | null>(null)
+
 // ===== 初始化就绪状态 =====
 
 export const agentSettingsReadyAtom = atom(false)
