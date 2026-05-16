@@ -274,21 +274,24 @@ pub fn store_skill_as_procedure(
     }
 
     // ── D2: fuzzy (bigram-Jaccard) dedup ──────────────────────────
-    // Catches near-duplicates like "处理 edit 工具..." vs "edit 工具..."
-    // (one extra prefix word) or "基于计划的增量式X工作流" vs the same
-    // string with a single word inserted. Pure character bigrams on
-    // normalized title — language-agnostic, no tokenizer dependency.
+    // 双层检测：
+    //   层 A — 标题字符 bigram Jaccard（语言无关，无需分词器）。
+    //   层 B — description 语义相似度（标题接近但未达阈值时的兜底）。
     //
-    // Threshold 0.75 is conservative: high enough to reject "前端游戏
-    // 开发" vs "基于计划的增量式游戏开发" (Jaccard ~0.24 — not the same
-    // concept by string overlap), low enough to catch the genuine
-    // "+1 word" near-dups the user keeps accumulating.
+    // CJK 自适应阈值：
+    //   - CJK 占比 ≥50% → threshold=0.65（字符 bigram 对单字插入敏感，需放宽）
+    //   - 否则 → threshold=0.75（原保守值，ASCII 语言 bigram 更精准）
     //
-    // Skip very short titles (< 4 chars) — bigram counts are too small
-    // for the metric to mean anything.
+    // 层 B 触发条件：标题 similarity ∈ [0.50, threshold)，且双方均有 description。
+    //   使用 word-bigram Jaccard（≥0.70 视为重复），弥补字符 bigram 对
+    //   单词语义不敏感的问题（如 "游戏开发工作流" vs "开发工作流"）。
     if normalized.chars().count() >= 4 {
         if let Ok(candidates) = store.list_top_learned_skills(space_id, 500) {
             let new_grams = title_bigrams(&normalized);
+            let cjk_ratio = cjk_char_ratio(&normalized);
+            let threshold: f32 = if cjk_ratio >= 0.5 { 0.65 } else { FUZZY_DEDUP_THRESHOLD };
+            let desc_threshold: f32 = 0.70; // description word-bigram Jaccard
+
             let mut best: Option<(f32, crate::memory_graph::models::MemoryNode)> = None;
             for cand in candidates {
                 let cand_norm = normalize_title_for_dedup(&cand.node.title);
@@ -297,10 +300,35 @@ pub fn store_skill_as_procedure(
                 }
                 let cand_grams = title_bigrams(&cand_norm);
                 let sim = jaccard_similarity(&new_grams, &cand_grams);
-                if sim >= FUZZY_DEDUP_THRESHOLD {
+                if sim >= threshold {
                     match &best {
                         Some((b, _)) if *b >= sim => {}
                         _ => best = Some((sim, cand.node)),
+                    }
+                } else if sim >= 0.50 && sim < threshold {
+                    // 层 B：标题接近但未达阈值 → 检查 description 语义相似度
+                    if let (Some(ref new_desc), Some(ref cand_desc)) = (
+                        skill.description.as_deref(),
+                        cand.node.metadata.as_ref()
+                            .and_then(|m| m.get("description"))
+                            .and_then(|v| v.as_str()),
+                    ) {
+                        let new_desc_grams = word_bigrams(new_desc);
+                        let cand_desc_grams = word_bigrams(cand_desc);
+                        let desc_sim = jaccard_similarity(&new_desc_grams, &cand_desc_grams);
+                        if desc_sim >= desc_threshold {
+                            tracing::info!(
+                                node_id = %cand.node.id,
+                                title = %cand.node.title,
+                                new_title = %skill.name,
+                                title_sim = sim,
+                                desc_sim = desc_sim,
+                                cjk_ratio = cjk_ratio,
+                                "skill_parser: description dedup hit (title marginal) — folding"
+                            );
+                            best = Some((sim, cand.node));
+                            break; // description hit is definitive
+                        }
                     }
                 }
             }
@@ -486,6 +514,96 @@ pub fn jaccard_similarity(
         return 0.0;
     }
     inter as f32 / union as f32
+}
+
+/// Estimate the proportion of CJK characters in a string.
+///
+/// Counts characters in the Unicode ranges:
+///   - CJK Unified Ideographs (U+4E00–U+9FFF)
+///   - CJK Extension A (U+3400–U+4DBF)
+///   - CJK Compatibility Ideographs (U+F900–U+FAFF)
+///   - Hiragana (U+3040–U+309F), Katakana (U+30A0–U+30FF)
+///   - Hangul (U+AC00–U+D7AF)
+///
+/// Returns 0.0 for empty strings and strings without CJK characters.
+pub fn cjk_char_ratio(s: &str) -> f32 {
+    let total = s.chars().count();
+    if total == 0 {
+        return 0.0;
+    }
+    let cjk_count = s.chars().filter(|c| is_cjk_char(*c)).count();
+    cjk_count as f32 / total as f32
+}
+
+/// Check if a single character falls within CJK Unicode ranges.
+fn is_cjk_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{4E00}'..='\u{9FFF}'   // CJK Unified Ideographs
+        | '\u{3400}'..='\u{4DBF}'  // CJK Extension A
+        | '\u{F900}'..='\u{FAFF}'  // CJK Compatibility Ideographs
+        | '\u{3040}'..='\u{309F}'  // Hiragana
+        | '\u{30A0}'..='\u{30FF}'  // Katakana
+        | '\u{AC00}'..='\u{D7AF}'  // Hangul Syllables
+    )
+}
+
+/// Word-level bigrams for mixed CJK/ASCII text.
+///
+/// Splitting strategy:
+///   - ASCII text: split on whitespace/punctuation, each word becomes a token
+///   - CJK text (Han/Kana/Hangul): each CJK character is its own token
+///     (no dictionary needed; CJK characters carry meaning individually)
+///   - Punctuation and whitespace are discarded as tokens, but act as boundary
+///     markers between ASCII words.
+///
+/// This produces better semantic bigrams than pure character bigrams because
+/// "游戏开发" tokenizes to ["游","戏","开","发"] → bigrams ["游戏","戏开","开发"]
+/// while "开发游戏" tokenizes to ["开","发","游","戏"] → ["开发","发游","游戏"] —
+/// both share "开发" and "游戏" bigrams.
+pub fn word_bigrams(s: &str) -> std::collections::HashSet<String> {
+    let tokens = tokenize_mixed(s);
+    if tokens.len() < 2 {
+        return std::collections::HashSet::new();
+    }
+    let mut set = std::collections::HashSet::new();
+    for w in tokens.windows(2) {
+        set.insert(format!("{}{}", w[0], w[1]));
+    }
+    set
+}
+
+/// Split mixed CJK/ASCII text into word-like tokens.
+///
+/// Heuristic:
+///   - Run of CJK characters: each char is a separate token
+///   - Run of ASCII alphanumeric: accumulated then emitted as one token
+///   - Whitespace and punctuation: discarded (act as token boundaries)
+fn tokenize_mixed(s: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut ascii_buf = String::new();
+
+    let flush_ascii = |buf: &mut String, out: &mut Vec<String>| {
+        if !buf.is_empty() {
+            out.push(buf.clone());
+            buf.clear();
+        }
+    };
+
+    for c in s.chars() {
+        if c.is_whitespace() || c.is_ascii_punctuation() {
+            flush_ascii(&mut ascii_buf, &mut tokens);
+            // whitespace/punctuation discarded
+        } else if is_cjk_char(c) {
+            flush_ascii(&mut ascii_buf, &mut tokens);
+            tokens.push(c.to_string());
+        } else if c.is_alphanumeric() {
+            ascii_buf.push(c);
+        }
+        // Other Unicode (emoji, symbols, etc.) — discard
+    }
+    flush_ascii(&mut ascii_buf, &mut tokens);
+    tokens
 }
 
 /// Normalize a skill title for dedup comparison.

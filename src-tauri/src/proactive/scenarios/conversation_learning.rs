@@ -152,6 +152,9 @@ mod tests {
             new_execution_count: 0,
             has_failures: false,
             active_space_id: "default".to_string(),
+            active_session_id: None,
+            session_context: None,
+            existing_skill_fingerprints: vec![],
         }
     }
 

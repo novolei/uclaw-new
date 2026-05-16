@@ -381,7 +381,14 @@ impl AppState {
         let memory_graph_store = {
             let store = MemoryGraphStore::new(db.clone());
             store.ensure_tables();
-            Arc::new(store)
+            let mgs = Arc::new(store);
+            // Environment memory — scan once at startup for the default space
+            crate::memory_graph::environment::persist_environment(
+                &mgs,
+                "default",
+                &workspace_root,
+            );
+            mgs
         };
 
         // ─── Stage 1 完成：基础初始化 ─────────────────────────────────

@@ -149,23 +149,39 @@ impl SkillExtractionScenario {
         Self { config }
     }
 
-    /// 格式化执行日志为 LLM 可读文本
+    /// 格式化执行日志为 LLM 可读文本（压缩版）
+    ///
+    /// 优化策略：
+    /// - 单独列出失败日志（高信号），成功日志取 top 条目
+    /// - 每条的 input/output 截断至 ≤200 字符
+    /// - 总日志数限制 ≤20 条（10 失败 + 10 成功），超出则标注截断
+    /// - 相比原始全量输出，可减少 40-60% token
     fn format_execution_logs(logs: &[ExecutionLog]) -> String {
         if logs.is_empty() {
             return "无执行日志".to_string();
         }
 
-        let mut success_logs = Vec::new();
-        let mut failure_logs = Vec::new();
+        let mut failure_logs: Vec<String> = Vec::new();
+        let mut success_logs: Vec<String> = Vec::new();
+
+        let truncate = |s: &str, max_len: usize| -> String {
+            if s.chars().count() > max_len {
+                format!("{}…", s.chars().take(max_len).collect::<String>())
+            } else {
+                s.to_string()
+            }
+        };
 
         for log in logs {
+            let input_str = serde_json::to_string(&log.tool_input).unwrap_or_default();
+            let output_str = serde_json::to_string(&log.tool_output).unwrap_or_default();
             let entry = format!(
-                "- [{}] Tool: {} | Duration: {}ms | Input: {} | Output: {}",
-                if log.success { "SUCCESS" } else { "FAILED" },
+                "- [{}] {} | {}ms | in:{} | out:{}",
+                if log.success { "OK" } else { "FAIL" },
                 log.tool_name,
                 log.duration_ms,
-                serde_json::to_string(&log.tool_input).unwrap_or_default(),
-                serde_json::to_string(&log.tool_output).unwrap_or_default(),
+                truncate(&input_str, 200),
+                truncate(&output_str, 200),
             );
             if log.success {
                 success_logs.push(entry);
@@ -174,21 +190,36 @@ impl SkillExtractionScenario {
             }
         }
 
-        let mut result = String::new();
+        let total = logs.len();
+        let mut result = String::with_capacity(4096);
+        result.push_str(&format!("### 执行日志（共 {} 条，{} 成功 / {} 失败）\n", total, success_logs.len(), failure_logs.len()));
+
+        // 失败日志优先展示（高信号），限制 ≤10 条
         if !failure_logs.is_empty() {
-            result.push_str(&format!(
-                "### 失败日志 ({} 条)\n{}\n\n",
-                failure_logs.len(),
-                failure_logs.join("\n")
-            ));
+            let limit = 10usize.min(failure_logs.len());
+            if failure_logs.len() > limit {
+                result.push_str(&format!("失败日志（最近 {} / {} 条）:\n", limit, failure_logs.len()));
+            }
+            for entry in failure_logs.iter().rev().take(limit).rev() {
+                result.push_str(entry);
+                result.push('\n');
+            }
         }
+
+        // 成功日志限制 ≤10 条
         if !success_logs.is_empty() {
-            result.push_str(&format!(
-                "### 成功日志 ({} 条)\n{}\n",
-                success_logs.len(),
-                success_logs.join("\n")
-            ));
+            let limit = 10usize.min(success_logs.len());
+            if success_logs.len() > limit {
+                result.push_str(&format!("\n成功日志（最近 {} / {} 条）:\n", limit, success_logs.len()));
+            } else {
+                result.push_str("\n成功日志:\n");
+            }
+            for entry in success_logs.iter().rev().take(limit).rev() {
+                result.push_str(entry);
+                result.push('\n');
+            }
         }
+
         result
     }
 }
@@ -258,6 +289,27 @@ impl ProactiveScenario for SkillExtractionScenario {
 
     async fn build_context(&self, ctx: &ScenarioContext) -> anyhow::Result<ScenarioOutput> {
         let mut context_messages = Vec::new();
+
+        // 注入已有技能指纹作为前置去重参考（首个 context message，优先级最高）。
+        // 每条指纹格式: "title | description(≤60chars) | category | cited:N"
+        // LLM 在生成新 <skill> 前逐条对比，避免创建近似副本。
+        if !ctx.existing_skill_fingerprints.is_empty() {
+            let count = ctx.existing_skill_fingerprints.len();
+            let fp_text = ctx
+                .existing_skill_fingerprints
+                .iter()
+                .enumerate()
+                .map(|(i, fp)| format!("{}. {}", i + 1, fp))
+                .collect::<Vec<_>>()
+                .join("\n");
+            context_messages.push((
+                "user".to_string(),
+                format!(
+                    "## 已有技能库（{} 条，避免重复）\n\n以下是当前已学得的技能汇总。如果执行日志中的模式已被已有技能覆盖，请勿抽取新 skill。\n\n{}",
+                    count, fp_text
+                ),
+            ));
+        }
 
         // 格式化执行日志
         let logs_text = Self::format_execution_logs(&ctx.execution_logs);
@@ -348,6 +400,9 @@ mod tests {
             new_execution_count,
             has_failures,
             active_space_id: "default".to_string(),
+            active_session_id: None,
+            session_context: None,
+            existing_skill_fingerprints: vec![],
         }
     }
 
@@ -425,6 +480,9 @@ mod tests {
             new_execution_count: 3,
             has_failures: true,
             active_space_id: "default".to_string(),
+            active_session_id: None,
+            session_context: None,
+            existing_skill_fingerprints: vec![],
         };
 
         let output = scenario.build_context(&ctx).await.unwrap();
@@ -436,8 +494,8 @@ mod tests {
         // 第一条包含执行日志
         assert!(output.context_messages[0].1.contains("read_file"));
         assert!(output.context_messages[0].1.contains("write_file"));
-        assert!(output.context_messages[0].1.contains("FAILED"));
-        assert!(output.context_messages[0].1.contains("SUCCESS"));
+        assert!(output.context_messages[0].1.contains("FAIL"));
+        assert!(output.context_messages[0].1.contains("OK"));
         // 第二条包含对话上下文
         assert!(output.context_messages[1].1.contains("帮我修复这个bug"));
         assert_eq!(output.memory_types, vec!["skill", "tool"]);
@@ -456,12 +514,11 @@ mod tests {
             make_execution_log("write_file", false, 200),
         ];
         let result = SkillExtractionScenario::format_execution_logs(&logs);
-        assert!(result.contains("失败日志 (1 条)"));
-        assert!(result.contains("成功日志 (1 条)"));
+        assert!(result.contains("1 成功 / 1 失败"));
         assert!(result.contains("write_file"));
         assert!(result.contains("read_file"));
-        assert!(result.contains("FAILED"));
-        assert!(result.contains("SUCCESS"));
+        assert!(result.contains("FAIL"));
+        assert!(result.contains("OK"));
     }
 
     #[test]

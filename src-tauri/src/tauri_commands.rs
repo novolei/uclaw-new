@@ -8,6 +8,7 @@ use crate::agent::tools::tool::ToolRegistry;
 use crate::agent::tools::builtin;
 use crate::llm;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 // ─── Files Rail Commands (re-exported from files_rail::commands) ──────────────
@@ -84,6 +85,82 @@ pub async fn patch_settings(state: State<'_, AppState>, input: PatchSettingsInpu
     settings.save(&state.config_path)?;
     drop(settings);
     get_settings(state).await
+}
+
+// ─── Memory Recall Config Commands ──────────────────────────────────────
+
+#[tauri::command]
+pub async fn get_memory_recall_config(
+    state: State<'_, AppState>,
+) -> Result<crate::memory_graph::recall::MemoryRecallConfigDto, Error> {
+    let settings = state.settings.read().await;
+    let dto = settings
+        .memory_recall_config
+        .clone()
+        .unwrap_or_else(|| {
+            crate::memory_graph::recall::MemoryRecallConfigDto::from(
+                crate::memory_graph::recall::MemoryRecallConfig::default(),
+            )
+        });
+    Ok(dto)
+}
+
+/// Clamp an optional usize field to the given [min, max] range.
+fn clamp_opt_usize(v: Option<usize>, min: usize, max: usize) -> Option<usize> {
+    v.map(|x| x.clamp(min, max))
+}
+
+/// Clamp an optional u32 field to the given [min, max] range.
+fn clamp_opt_u32(v: Option<u32>, min: u32, max: u32) -> Option<u32> {
+    v.map(|x| x.clamp(min, max))
+}
+
+/// Clamp an optional f32 field to the given [min, max] range.
+fn clamp_opt_f32(v: Option<f32>, min: f32, max: f32) -> Option<f32> {
+    v.map(|x| x.clamp(min, max))
+}
+
+#[tauri::command]
+pub async fn patch_memory_recall_config(
+    state: State<'_, AppState>,
+    input: crate::memory_graph::recall::MemoryRecallConfigDto,
+) -> Result<crate::memory_graph::recall::MemoryRecallConfigDto, Error> {
+    let mut settings = state.settings.write().await;
+
+    // Start from existing config or default
+    let existing = settings
+        .memory_recall_config
+        .clone()
+        .unwrap_or_else(|| {
+            crate::memory_graph::recall::MemoryRecallConfigDto::from(
+                crate::memory_graph::recall::MemoryRecallConfig::default(),
+            )
+        });
+
+    // Merge: partial update — only overwrite fields that were provided (Some)
+    let merged = crate::memory_graph::recall::MemoryRecallConfigDto {
+        boot_limit: clamp_opt_usize(input.boot_limit.or(existing.boot_limit), 0, 50),
+        trigger_limit: clamp_opt_usize(input.trigger_limit.or(existing.trigger_limit), 0, 50),
+        seed_limit: clamp_opt_usize(input.seed_limit.or(existing.seed_limit), 0, 50),
+        expansion_limit: clamp_opt_usize(input.expansion_limit.or(existing.expansion_limit), 0, 50),
+        recent_limit: clamp_opt_usize(input.recent_limit.or(existing.recent_limit), 0, 30),
+        fusion_strategy: input.fusion_strategy.or(existing.fusion_strategy),
+        rrf_k: clamp_opt_u32(input.rrf_k.or(existing.rrf_k), 1, 200),
+        fts_weight: clamp_opt_f32(input.fts_weight.or(existing.fts_weight), 0.0, 1.0),
+        vector_weight: clamp_opt_f32(input.vector_weight.or(existing.vector_weight), 0.0, 1.0),
+        boot_learned_skills_limit: clamp_opt_usize(
+            input.boot_learned_skills_limit.or(existing.boot_learned_skills_limit),
+            0,
+            20,
+        ),
+        token_budget: clamp_opt_usize(input.token_budget.or(existing.token_budget), 100, 20000),
+    };
+
+    settings.memory_recall_config = Some(merged.clone());
+    settings.save(&state.config_path)?;
+    drop(settings);
+    tracing::info!("Memory recall config updated");
+    Ok(merged)
 }
 
 #[tauri::command]
@@ -409,23 +486,99 @@ pub async fn send_message(
     {
         let recall_store = state.memory_graph_store.clone();
         let recall_memu = state.memu_client.clone();
+        // Hot-reload: read the latest config from persisted settings so
+        // users can tune recall behaviour without restarting the app.
+        let recall_config = {
+            let s = state.settings.read().await;
+            s.memory_recall_config
+                .clone()
+                .map(crate::memory_graph::recall::MemoryRecallConfig::from)
+                .unwrap_or_default()
+        };
         let recall_engine = crate::memory_graph::recall::MemoryRecallEngine::new(
             recall_store,
             recall_memu,
-            crate::memory_graph::recall::MemoryRecallConfig::default(),
+            recall_config,
         );
         match recall_engine.build_recall_plan(&space_id, &input.content, false).await {
             Ok(plan) => {
                 let total = plan.boot.len() + plan.triggered.len() + plan.relevant.len()
                     + plan.expanded.len() + plan.recent.len();
+
+                // ── Session-scoped memory recall ──────────────────
+                let session_memory_ctx = if total > 0 {
+                    let session_ns = format!("session:{}", input.conversation_id);
+                    let session_memories = state.memory_store.search(
+                        &input.content,
+                        Some(&session_ns),
+                        5,
+                    );
+                    if !session_memories.is_empty() {
+                        let mut ctx = String::from("<session_memories>\n");
+                        for m in &session_memories {
+                            ctx.push_str(&format!("- [{}] {}\n", m.kind, m.value));
+                        }
+                        ctx.push_str("</session_memories>\n");
+                        tracing::info!(
+                            session_memories = session_memories.len(),
+                            "Session-scoped memories injected"
+                        );
+                        Some(ctx)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
                 if total > 0 {
-                    let memory_ctx = crate::memory_graph::recall::MemoryRecallEngine::format_recall_for_prompt(&plan);
+                    let budget = recall_engine.config().token_budget;
+                    let mut memory_ctx = crate::memory_graph::recall::MemoryRecallEngine::format_recall_for_prompt(&plan, budget);
+                    // 将会话级记忆追加到 memory context
+                    if let Some(ref sess_ctx) = session_memory_ctx {
+                        memory_ctx.push_str(sess_ctx);
+                    }
                     tracing::info!(total_candidates = total, "Memory recall injected into system prompt");
                     delegate.set_memory_context(memory_ctx);
+                    // Emit recall summary to frontend for observability panel
+                    let skills_count = plan.boot.iter()
+                        .chain(plan.triggered.iter())
+                        .chain(plan.relevant.iter())
+                        .chain(plan.expanded.iter())
+                        .filter(|c| c.kind == crate::memory_graph::models::MemoryNodeKind::Procedure)
+                        .count();
+                    let items: Vec<serde_json::Value> = plan.boot.iter()
+                        .chain(plan.triggered.iter())
+                        .chain(plan.relevant.iter())
+                        .chain(plan.expanded.iter())
+                        .take(20)
+                        .map(|c| serde_json::json!({
+                            "nodeId": c.node_id,
+                            "title": c.title,
+                            "kind": c.kind,
+                            "source": c.source,
+                        }))
+                        .collect();
+                    let _ = app_handle.emit("agent:memory-recall", serde_json::json!({
+                        "totalCandidates": total,
+                        "skillsCount": skills_count,
+                        "bootCount": plan.boot.len(),
+                        "triggeredCount": plan.triggered.len(),
+                        "relevantCount": plan.relevant.len(),
+                        "expandedCount": plan.expanded.len(),
+                        "recentCount": plan.recent.len(),
+                        "items": items,
+                        "conversationId": input.conversation_id,
+                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                    }));
                     // Bump usage_count on every learned skill we emitted.
                     // Best-effort, fire-and-forget — usage_count is a soft
                     // ranking signal, never a correctness requirement.
                     recall_engine.record_used_skills(&plan);
+                } else if session_memory_ctx.is_some() {
+                    // 即使图回忆无结果，仍注入会话级记忆
+                    delegate.set_memory_context(session_memory_ctx.unwrap());
+                    tracing::info!("Session-scoped memories injected (no graph recall)");
                 } else {
                     tracing::info!("Memory recall returned no candidates");
                 }
@@ -4198,6 +4351,23 @@ pub async fn backfill_skill_keywords(
 //     can be done deterministically (or punted to manual edit)
 //   - Reliable failure mode: if LLM emits empty / garbage, just show
 //     "no clusters found" instead of crashing the dialog
+//
+// Robustness improvements (P0+P1+P2):
+//   P0-1: Dynamic max_tokens = max(2048, skill_count * 200).min(8192)
+//         Prevents token starvation with DeepSeek models that count
+//         reasoning_content against the output budget.
+//   P0-2: Truncation salvage — when finish_reason == "length", attempt
+//         parse_json_array_tolerant before giving up (partial clusters may
+//         be complete).
+//   P1-1: Pre-clustering — when >30 skills, group by title word overlap
+//         (Jaccard > 0.4) into independent batches to keep per-call token
+//         budget bounded.
+//   P1-2: Auto-retry — on length failure, retry once with 2× max_tokens.
+//   P2-1: Progress events — emit "skill-consolidation:progress" to the
+//         frontend for real-time stage/percentage feedback.
+//   P2-2: Cancellation — cancel_skill_consolidation Tauri command + atomic
+//         flag checked between batches.
+
 const CONSOLIDATION_SYSTEM_PROMPT: &str = "你是技能去重助手。\
 用户给你一个 JSON 数组，每条是已学技能：{id, title, context}。\
 你的唯一任务：把**概念上重复**的技能聚合成 cluster。\n\n\
@@ -4214,12 +4384,225 @@ const CONSOLIDATION_SYSTEM_PROMPT: &str = "你是技能去重助手。\
 \n4. 输出必须以 [ 开头，以 ] 结尾。不要任何前缀 / 后缀文字。\
 \n5. canonical_id 必须是 cluster 里的某一个 id。";
 
+// ─── P2-2: Cancel flag for in-flight consolidation ────────────────────
+
+static CONSOLIDATION_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+pub fn cancel_skill_consolidation() {
+    CONSOLIDATION_CANCELLED.store(true, Ordering::SeqCst);
+    tracing::info!("cancel_skill_consolidation: cancellation requested");
+}
+
+// ─── P2-1: Progress event helper ──────────────────────────────────────
+
+fn emit_consolidation_progress(
+    app_handle: &tauri::AppHandle,
+    stage: &str,
+    current: usize,
+    total: usize,
+    detail: &str,
+) {
+    let _ = app_handle.emit(
+        "skill-consolidation:progress",
+        serde_json::json!({
+            "stage": stage,
+            "current": current,
+            "total": total,
+            "detail": detail,
+        }),
+    );
+}
+
+// ─── P0-1: Dynamic max_tokens ─────────────────────────────────────────
+
+fn consolidation_max_tokens(skill_count: usize) -> u32 {
+    (skill_count as u32 * 200).max(2048).min(8192)
+}
+
+// ─── P1-1: Lightweight title-based pre-clustering ─────────────────────
+
+/// Groups skills by title word overlap (Jaccard similarity > 0.4).
+/// Returns batches of up to ~20 skills each. Used when total > 30.
+fn precluster_by_title(skills: &[serde_json::Value]) -> Vec<Vec<serde_json::Value>> {
+    let n = skills.len();
+    if n <= 30 {
+        return vec![skills.to_vec()];
+    }
+
+    let titles: Vec<&str> = skills
+        .iter()
+        .filter_map(|s| s.get("title").and_then(|v| v.as_str()))
+        .collect();
+
+    // Union-Find
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(parent: &mut [usize], x: usize) -> usize {
+        if parent[x] != x {
+            parent[x] = find(parent, parent[x]);
+        }
+        parent[x]
+    }
+    fn union(parent: &mut [usize], x: usize, y: usize) {
+        let rx = find(parent, x);
+        let ry = find(parent, y);
+        if rx != ry {
+            parent[rx] = ry;
+        }
+    }
+
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let words_i: std::collections::HashSet<&str> = titles[i]
+                .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+                .filter(|w| w.len() >= 2)
+                .collect();
+            let words_j: std::collections::HashSet<&str> = titles[j]
+                .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+                .filter(|w| w.len() >= 2)
+                .collect();
+            if words_i.is_empty() || words_j.is_empty() {
+                continue;
+            }
+            let intersection = words_i.intersection(&words_j).count();
+            let union_size = words_i.union(&words_j).count();
+            if union_size > 0 {
+                let similarity = intersection as f64 / union_size as f64;
+                if similarity > 0.4 {
+                    union(&mut parent, i, j);
+                }
+            }
+        }
+    }
+
+    // Group by root
+    let mut groups: std::collections::HashMap<usize, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
+    for (i, skill) in skills.iter().enumerate() {
+        let root = find(&mut parent, i);
+        groups.entry(root).or_default().push(skill.clone());
+    }
+
+    let mut batches: Vec<Vec<serde_json::Value>> = groups.into_values().collect();
+    // Split large batches (> 25) further
+    let mut result: Vec<Vec<serde_json::Value>> = Vec::new();
+    for batch in batches {
+        if batch.len() > 25 {
+            for chunk in batch.chunks(25) {
+                result.push(chunk.to_vec());
+            }
+        } else {
+            result.push(batch);
+        }
+    }
+    result
+}
+
+// ─── Core LLM call (extracted for retry — P1-2) ───────────────────────
+
+struct ConsolidationLlmOutput {
+    text: String,
+    finish_reason: Option<String>,
+}
+
+async fn call_consolidation_llm(
+    state: &AppState,
+    skills_input: &[serde_json::Value],
+    max_tokens: u32,
+    model_override: Option<String>,
+) -> Result<ConsolidationLlmOutput, String> {
+    let user_content =
+        serde_json::to_string_pretty(skills_input)
+            .map_err(|e| format!("Failed to serialize skills: {}", e))?;
+
+    let llm_cfg = if let Some((provider_id, model, api_key, base_url)) =
+        state.provider_service.get_chat_llm_config().await
+    {
+        crate::llm::llm_config_from_provider(
+            &provider_id,
+            model_override.as_deref().unwrap_or(&model),
+            &api_key,
+            &base_url,
+            max_tokens,
+            0.1,
+        )
+    } else if let Some((provider_id, model, api_key, base_url)) =
+        state.provider_service.get_active_llm_config().await
+    {
+        crate::llm::llm_config_from_provider(
+            &provider_id,
+            model_override.as_deref().unwrap_or(&model),
+            &api_key,
+            &base_url,
+            max_tokens,
+            0.1,
+        )
+    } else {
+        return Err("未配置可用的 LLM provider".into());
+    };
+
+    tracing::info!(
+        model = %llm_cfg.model,
+        skill_count = skills_input.len(),
+        max_tokens,
+        "propose_skill_consolidation: calling LLM"
+    );
+
+    let provider = crate::llm::create_provider(&llm_cfg)
+        .map_err(|e| format!("Failed to create LLM provider: {}", e))?;
+    let messages = vec![
+        ChatMessage::system(CONSOLIDATION_SYSTEM_PROMPT),
+        ChatMessage::user(&user_content),
+    ];
+    let cfg = crate::llm::CompletionConfig {
+        model: llm_cfg.model.clone(),
+        max_tokens,
+        temperature: 0.1,
+        system_prompt: None,
+        thinking_enabled: false,
+    };
+    let output = provider
+        .complete(messages, vec![], &cfg)
+        .await
+        .map_err(|e| format!("LLM call failed: {}", e))?;
+
+    let (text, finish_reason) = match output {
+        crate::agent::types::RespondOutput::Text {
+            text, metadata, ..
+        } => (text, metadata.finish_reason),
+        crate::agent::types::RespondOutput::ToolCalls {
+            text, metadata, ..
+        } => (text.unwrap_or_default(), metadata.finish_reason),
+    };
+
+    let preview: String = text.chars().take(500).collect();
+    tracing::info!(
+        finish_reason = ?finish_reason,
+        text_len = text.len(),
+        preview = %preview,
+        "propose_skill_consolidation: LLM response received"
+    );
+
+    Ok(ConsolidationLlmOutput {
+        text,
+        finish_reason,
+    })
+}
+
+// ─── Main command ──────────────────────────────────────────────────────
+
 #[tauri::command]
 pub async fn propose_skill_consolidation(
     state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
     space_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     use crate::memory_graph::models::MemoryNodeKind;
+
+    // Reset cancel flag at start of new consolidation
+    CONSOLIDATION_CANCELLED.store(false, Ordering::SeqCst);
+
+    emit_consolidation_progress(&app_handle, "loading", 0, 0, "正在加载学得技能…");
 
     let store = &state.memory_graph_store;
     let sid = space_id.unwrap_or_else(|| "default".into());
@@ -4240,6 +4623,7 @@ pub async fn propose_skill_consolidation(
         .collect();
 
     if learned.len() < 2 {
+        emit_consolidation_progress(&app_handle, "done", learned.len(), learned.len(), "技能不足");
         return Ok(serde_json::json!({
             "clusters": [],
             "total_skills": learned.len(),
@@ -4247,8 +4631,7 @@ pub async fn propose_skill_consolidation(
         }));
     }
 
-    // Build LLM input — id + title + truncated context (keeps token cost
-    // bounded; LLM doesn't need full SOPs to identify concept overlap).
+    // Build LLM input — id + title + truncated context
     let skills_input: Vec<serde_json::Value> = learned
         .iter()
         .map(|n| {
@@ -4271,95 +4654,149 @@ pub async fn propose_skill_consolidation(
         })
         .collect();
 
-    let user_content = serde_json::to_string_pretty(&skills_input)
-        .map_err(|e| format!("Failed to serialize skills: {}", e))?;
+    let total_skills = learned.len();
 
-    // Build LLM config — prefer chat-role model (which falls back through
-    // the role_models chain), then active model. Larger token budget so
-    // the response isn't silently truncated to empty.
-    let llm_cfg = if let Some((provider_id, model, api_key, base_url)) =
-        state.provider_service.get_chat_llm_config().await
-    {
-        crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 2048, 0.1)
-    } else if let Some((provider_id, model, api_key, base_url)) =
-        state.provider_service.get_active_llm_config().await
-    {
-        crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 2048, 0.1)
-    } else {
-        return Err("未配置可用的 LLM provider".into());
-    };
-    tracing::info!(
-        model = %llm_cfg.model,
-        skill_count = learned.len(),
-        "propose_skill_consolidation: calling LLM"
-    );
-    let provider = crate::llm::create_provider(&llm_cfg)
-        .map_err(|e| format!("Failed to create LLM provider: {}", e))?;
-    let messages = vec![
-        ChatMessage::system(CONSOLIDATION_SYSTEM_PROMPT),
-        ChatMessage::user(&user_content),
-    ];
-    let cfg = crate::llm::CompletionConfig {
-        model: llm_cfg.model.clone(),
-        max_tokens: 2048,
-        temperature: 0.1,
-        system_prompt: None,
-        thinking_enabled: false,
-    };
-    let output = provider
-        .complete(messages, vec![], &cfg)
-        .await
-        .map_err(|e| format!("LLM call failed: {}", e))?;
-    let (llm_text, finish_reason) = match output {
-        crate::agent::types::RespondOutput::Text { text, metadata, .. } => {
-            (text, metadata.finish_reason)
-        }
-        crate::agent::types::RespondOutput::ToolCalls { text, metadata, .. } => {
-            (text.unwrap_or_default(), metadata.finish_reason)
-        }
-    };
-
-    // Diagnostic log — let the user inspect via uclaw stderr if anything
-    // about the response is fishy. Truncate at 500 chars to keep logs sane.
-    let preview: String = llm_text.chars().take(500).collect();
-    tracing::info!(
-        finish_reason = ?finish_reason,
-        text_len = llm_text.len(),
-        preview = %preview,
-        "propose_skill_consolidation: LLM response received"
-    );
-
-    // Empty response is its own failure mode (≠ "non-JSON"). Common with
-    // models that have aggressive thinking-mode separation or strict
-    // safety filters; surface that distinction so the user knows what to
-    // try (different model, longer max_tokens, etc.).
-    if llm_text.trim().is_empty() {
-        return Err(format!(
-            "LLM 返回了空响应（model: {}, finish_reason: {:?}）。\
-             试试切换到其他模型，或检查模型是否支持 system prompt。",
-            llm_cfg.model, finish_reason
-        ));
+    // P1-1: Pre-cluster into batches when > 30 skills
+    let batches = precluster_by_title(&skills_input);
+    let batch_count = batches.len();
+    if batch_count > 1 {
+        emit_consolidation_progress(
+            &app_handle,
+            "preclustering",
+            0,
+            batch_count,
+            &format!(
+                "技能数 {} 超过阈值，已按标题相似度预分为 {} 组",
+                total_skills, batch_count
+            ),
+        );
     }
 
-    // Parse JSON — tolerate ```json fences and other LLM cruft.
-    let clusters_raw: Vec<serde_json::Value> =
-        parse_json_array_tolerant(&llm_text).ok_or_else(|| {
-            format!(
-                "LLM 输出无法解析为 JSON 数组。原始响应（截断）：\n{}",
-                preview
-            )
-        })?;
+    let mut all_clusters_raw: Vec<serde_json::Value> = Vec::new();
 
-    // Validate clusters against the actual id set + look up content from
-    // the canonical's existing metadata. We DON'T ask the LLM to generate
-    // merged content — too lossy / token-hungry. The user keeps the
-    // canonical's content as-is and can edit later via the manual edit
-    // feature (when it exists).
-    let id_to_node: std::collections::HashMap<String, &crate::memory_graph::models::MemoryNode> =
-        learned.iter().map(|n| (n.id.clone(), n)).collect();
+    // Process each batch
+    for (batch_idx, batch) in batches.iter().enumerate() {
+        // P2-2: Check cancellation between batches
+        if CONSOLIDATION_CANCELLED.load(Ordering::SeqCst) {
+            emit_consolidation_progress(&app_handle, "cancelled", batch_idx, batch_count, "操作已取消");
+            return Err("操作已取消".into());
+        }
+
+        let batch_size = batch.len();
+        let batch_label = if batch_count > 1 {
+            format!("第 {}/{} 组 ({} 条技能)", batch_idx + 1, batch_count, batch_size)
+        } else {
+            format!("共 {} 条技能", batch_size)
+        };
+        emit_consolidation_progress(&app_handle, "analyzing", batch_idx + 1, batch_count, &batch_label);
+
+        // P0-1: Dynamic max_tokens
+        let base_max_tokens = consolidation_max_tokens(batch_size);
+
+        // First attempt
+        let llm_output = call_consolidation_llm(&state, batch, base_max_tokens, None).await?;
+
+        // P0-2 + P1-2: Handle truncation — try salvage, then retry with 2x tokens
+        let (text_to_parse, was_retried) =
+            if llm_output.finish_reason.as_deref() == Some("length") {
+                // Try to salvage partial JSON first
+                if !llm_output.text.trim().is_empty() {
+                    if let Some(partial) = parse_json_array_tolerant(&llm_output.text) {
+                        tracing::warn!(
+                            batch = batch_idx,
+                            salvaged = partial.len(),
+                            "propose_skill_consolidation: truncated response, salvaged partial clusters"
+                        );
+                        // Use salvaged clusters — don't retry
+                        all_clusters_raw.extend(partial);
+                        continue;
+                    }
+                }
+
+                // P1-2: Retry with 2× max_tokens
+                let retry_tokens = (base_max_tokens * 2).min(8192);
+                if retry_tokens > base_max_tokens {
+                    emit_consolidation_progress(
+                        &app_handle,
+                        "retrying",
+                        batch_idx + 1,
+                        batch_count,
+                        &format!("响应被截断，以 {} tokens 重试…", retry_tokens),
+                    );
+                    tracing::warn!(
+                        batch = batch_idx,
+                        base_max_tokens,
+                        retry_tokens,
+                        "propose_skill_consolidation: retrying with increased max_tokens"
+                    );
+                    let retry_output =
+                        call_consolidation_llm(&state, batch, retry_tokens, None).await?;
+                    (retry_output.text, true)
+                } else {
+                    return Err(format!(
+                        "LLM 响应被截断且已达最大 token 预算（{}）。\
+                         当前批次 {} 条技能，建议减少技能数或切换模型。",
+                        base_max_tokens, batch_size
+                    ));
+                }
+            } else {
+                (llm_output.text, false)
+            };
+
+        // Handle empty response
+        if text_to_parse.trim().is_empty() {
+            let msg = if was_retried {
+                format!(
+                    "LLM 重试后仍返回空响应（model: 当前模型, batch: {} 条技能, max_tokens: {}）。\
+                     试试切换到其他模型，或检查模型是否支持 system prompt。",
+                    batch_size, base_max_tokens
+                )
+            } else {
+                format!(
+                    "LLM 返回了空响应。试试切换到其他模型，\
+                     或检查模型是否支持 system prompt。"
+                )
+            };
+            return Err(msg);
+        }
+
+        // Parse JSON
+        let clusters_raw: Vec<serde_json::Value> =
+            parse_json_array_tolerant(&text_to_parse).ok_or_else(|| {
+                let preview: String = text_to_parse.chars().take(500).collect();
+                format!(
+                    "LLM 输出无法解析为 JSON 数组。原始响应（截断）：\n{}",
+                    preview
+                )
+            })?;
+
+        tracing::info!(
+            batch = batch_idx,
+            clusters = clusters_raw.len(),
+            was_retried,
+            "propose_skill_consolidation: batch parsed"
+        );
+
+        all_clusters_raw.extend(clusters_raw);
+    }
+
+    // P2-1: Validation phase
+    emit_consolidation_progress(
+        &app_handle,
+        "validating",
+        all_clusters_raw.len(),
+        all_clusters_raw.len(),
+        "正在验证整合方案…",
+    );
+
+    // Validate clusters against the actual id set
+    let id_to_node: std::collections::HashMap<
+        String,
+        &crate::memory_graph::models::MemoryNode,
+    > = learned.iter().map(|n| (n.id.clone(), n)).collect();
 
     let mut clusters_out: Vec<serde_json::Value> = Vec::new();
-    for c in clusters_raw {
+    for c in all_clusters_raw {
         let cluster_ids: Vec<String> = c
             .get("cluster")
             .and_then(|v| v.as_array())
@@ -4381,7 +4818,10 @@ pub async fn propose_skill_consolidation(
             .unwrap_or_else(|| cluster_ids[0].clone());
 
         let canonical = id_to_node.get(&canonical_id).cloned();
-        let canonical_title = canonical.map(|n| n.title.clone()).unwrap_or_default();
+        let canonical_title = canonical
+            .as_ref()
+            .map(|n| n.title.clone())
+            .unwrap_or_default();
         let canonical_meta = canonical.and_then(|n| n.metadata.as_ref());
         let pull = |key: &str| -> String {
             canonical_meta
@@ -4426,6 +4866,14 @@ pub async fn propose_skill_consolidation(
         .sum();
     let total = learned.len();
     let proposed = total.saturating_sub(consolidated);
+
+    emit_consolidation_progress(
+        &app_handle,
+        "done",
+        total,
+        total,
+        &format!("分析完成：{} 条技能 → {} 组可合并", total, clusters_out.len()),
+    );
 
     Ok(serde_json::json!({
         "clusters": clusters_out,
@@ -6124,19 +6572,52 @@ pub async fn set_active_workspace_id(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), Error> {
-    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
-    let exists: bool = conn.query_row(
-        "SELECT COUNT(*) FROM spaces WHERE id = ?1",
-        rusqlite::params![id],
-        |row| row.get::<_, i64>(0),
-    ).unwrap_or(0) > 0;
-    if !exists {
-        return Err(Error::Internal(format!("Workspace '{}' not found", id)));
-    }
-    conn.execute(
-        "INSERT OR REPLACE INTO settings (key, value) VALUES ('active_workspace_id', ?1)",
-        rusqlite::params![id],
-    ).map_err(Error::Database)?;
+    // 在块作用域内完成所有 DB 操作，确保 MutexGuard 在 .await 前释放
+    let old_id = {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM spaces WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get::<_, i64>(0),
+        ).unwrap_or(0) > 0;
+        if !exists {
+            return Err(Error::Internal(format!("Workspace '{}' not found", id)));
+        }
+
+        // 读取旧的活跃工作区 ID，用于发布切换事件
+        let old_id: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'active_workspace_id'",
+                rusqlite::params![],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or_else(|_| "default".to_string());
+
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('active_workspace_id', ?1)",
+            rusqlite::params![id],
+        ).map_err(Error::Database)?;
+
+        old_id
+    }; // conn 在此处 drop，MutexGuard 释放
+
+    // 发布工作区切换事件，通知 ProactiveService 等订阅者
+    state.infra_service.publish(crate::infra::InfraEvent {
+        id: 0, // 由 InfraService 自动分配
+        event_type: crate::infra::InfraEventType::WorkspaceSwitched,
+        platform: "local".to_string(),
+        timestamp: chrono::Utc::now().timestamp_millis(),
+        message: crate::infra::ConversationMessage {
+            role: "system".to_string(),
+            content: String::new(),
+        },
+        metadata: serde_json::json!({
+            "previous_workspace_id": old_id,
+            "new_workspace_id": id,
+        }),
+        trace_id: None,
+    }).await;
+
     Ok(())
 }
 
@@ -6699,6 +7180,24 @@ pub async fn delete_workspace(
     // without this, sessions would be silently orphaned. (Conversations
     // already cascade via FK ON DELETE CASCADE — see V1_INITIAL.)
     rehome_agent_sessions_to_default(&conn, &id)?;
+
+    // ── 级联清理记忆图数据 ──
+    // FK CASCADE 只在部分表生效，这里显式清理 memory_graph 相关表
+    // 以及 KV memories 表，避免删除工作区后残留孤立数据。
+    let _ = conn.execute("DELETE FROM memory_keywords WHERE space_id = ?1", rusqlite::params![id]);
+    let _ = conn.execute("DELETE FROM memory_routes WHERE space_id = ?1", rusqlite::params![id]);
+    let _ = conn.execute("DELETE FROM memory_edges WHERE space_id = ?1", rusqlite::params![id]);
+    let _ = conn.execute(
+        "DELETE FROM memory_versions WHERE node_id IN (SELECT id FROM memory_nodes WHERE space_id = ?1)",
+        rusqlite::params![id],
+    );
+    let _ = conn.execute(
+        "DELETE FROM memory_fts WHERE node_id IN (SELECT id FROM memory_nodes WHERE space_id = ?1)",
+        rusqlite::params![id],
+    );
+    let _ = conn.execute("DELETE FROM memory_nodes WHERE space_id = ?1", rusqlite::params![id]);
+    let _ = conn.execute("DELETE FROM memories WHERE space_id = ?1", rusqlite::params![id]);
+    tracing::info!(workspace_id = %id, "Cleaned up memory graph data for deleted workspace");
 
     conn.execute("DELETE FROM spaces WHERE id = ?1", rusqlite::params![id])
         .map_err(Error::Database)?;
@@ -9017,6 +9516,7 @@ mod settings_budget_tests {
             language: "en".into(),
             theme: "light".into(),
             monthly_budget_usd: Some(50.0),
+            memory_recall_config: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         let s2: UserSettings = serde_json::from_str(&json).unwrap();

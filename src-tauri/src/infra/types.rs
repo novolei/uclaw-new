@@ -30,6 +30,9 @@ pub enum InfraEventType {
     MemoryExtracted,
     /// 新技能被学习到
     SkillLearned,
+    // ─── 工作区相关 ───
+    /// 活跃工作区切换事件
+    WorkspaceSwitched,
 }
 
 // ─── 对话消息 ─────────────────────────────────────────────────────────

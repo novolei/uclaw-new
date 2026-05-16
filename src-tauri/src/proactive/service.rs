@@ -23,9 +23,11 @@
 //!                                           ProactiveStorage (持久化)
 //! ```
 
-use std::collections::VecDeque;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use rusqlite::Connection;
 
 use async_trait::async_trait;
 
@@ -58,7 +60,7 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
 use crate::agent::types::ChatMessage;
-use crate::infra::{ConversationMessage, InfraEventType, InfraService};
+use crate::infra::{InfraEventType, InfraService};
 use crate::llm::provider::CompletionConfig;
 use tauri::Emitter;
 use crate::memu::client::MemUClient;
@@ -67,14 +69,21 @@ use crate::memory_graph::store::MemoryGraphStore;
 use crate::providers::service::ProviderService;
 use crate::services::{ManagedService, ServiceHealth, ServiceStatus};
 
+use super::conversation_bridge::ConversationBridge;
 use super::execution_log::ExecutionLogCollector;
+use super::hybrid_search::{HybridSearchEngine, HybridSearchRequest};
 use super::multimodal::MultimodalQueue;
-use super::scenarios::{ScenarioContext, ScenarioManager};
+use super::scenarios::{ScenarioContext, ScenarioManager, SessionContextWindow};
 use super::storage::ProactiveStorage;
+use super::task_memory::{TaskMemoryManager, TaskRecord, TaskStatus, TaskType};
+use super::tool_memory::{ToolUsageMemoryManager, ToolUsageRecord};
 use super::types::*;
 
-/// 上下文滑动窗口最大容量（保留最近 N 条消息）
+/// 上下文滑动窗口最大容量（每个 session 保留最近 N 条消息）
 const CONTEXT_WINDOW_SIZE: usize = 20;
+
+/// 最多保留的 session 窗口数（超出时淘汰最久未活跃的）
+const MAX_SESSION_WINDOWS: usize = 10;
 
 // ─── 状态引用结构体 ───────────────────────────────────────────────────
 
@@ -97,8 +106,8 @@ struct ProactiveStateRefs {
     last_tick_at: Arc<RwLock<Option<String>>>,
     /// 上次行动时间
     last_action_at: Arc<RwLock<Option<String>>>,
-    /// 上下文消息滑动窗口
-    context_messages: Arc<RwLock<VecDeque<ConversationMessage>>>,
+    /// Per-session 上下文消息滑动窗口
+    context_messages: Arc<RwLock<HashMap<String, SessionContextWindow>>>,
     /// 当前状态
     state: Arc<RwLock<ProactiveState>>,
     /// 消息持久化存储
@@ -129,6 +138,16 @@ struct ProactiveStateRefs {
     /// 的 conversation_id 字段）。用于把 proactive-learning IPC 事件
     /// 标记到具体 session — 否则前端就只能在每个 session 都展示，造成噪声。
     last_active_session_id: Arc<RwLock<Option<String>>>,
+    /// 任务记忆管理器（记录历史任务执行结果）
+    task_memory_manager: Arc<TaskMemoryManager>,
+    /// 工具使用记忆管理器（追踪工具调用模式和统计）
+    tool_memory_manager: Arc<ToolUsageMemoryManager>,
+    /// 五路混合检索引擎（向量+关键词+时间+图关系+文件）
+    hybrid_search_engine: Arc<HybridSearchEngine>,
+    /// 双轨会话桥接器（将传统 conversations 统一桥接到记忆系统）
+    conversation_bridge: Arc<ConversationBridge>,
+    /// 主数据库连接（用于查询 agent_messages/agent_turns/agent_sessions）
+    db: Arc<Mutex<Connection>>,
 }
 
 // ─── ProactiveService ─────────────────────────────────────────────────
@@ -147,8 +166,8 @@ pub struct ProactiveService {
     /// 是否正在运行（控制后台任务生命周期）
     is_running: Arc<AtomicBool>,
 
-    /// 上下文消息滑动窗口（最近 CONTEXT_WINDOW_SIZE 条）
-    context_messages: Arc<RwLock<VecDeque<ConversationMessage>>>,
+    /// Per-session 上下文消息滑动窗口
+    context_messages: Arc<RwLock<HashMap<String, SessionContextWindow>>>,
     /// 是否有新的上下文消息（自上次 tick 以来）
     has_new_context: Arc<AtomicBool>,
 
@@ -195,6 +214,17 @@ pub struct ProactiveService {
     active_space_id: Arc<RwLock<String>>,
     /// 最近一次有消息流过来的 session_id（见 ProactiveStateRefs 同名字段）
     last_active_session_id: Arc<RwLock<Option<String>>>,
+    /// 任务记忆管理器
+    task_memory_manager: Arc<TaskMemoryManager>,
+    /// 工具使用记忆管理器
+    tool_memory_manager: Arc<ToolUsageMemoryManager>,
+    /// 五路混合检索引擎
+    hybrid_search_engine: Arc<HybridSearchEngine>,
+    /// 双轨会话桥接器
+    conversation_bridge: Arc<ConversationBridge>,
+
+    /// 主数据库连接
+    db: Arc<Mutex<Connection>>,
 
     /// 轮询循环任务句柄
     tick_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
@@ -219,14 +249,20 @@ impl ProactiveService {
         memu_client: Option<Arc<MemUClient>>,
         memory_graph_store: Arc<MemoryGraphStore>,
         app_handle: Option<tauri::AppHandle>,
+        db: Arc<Mutex<Connection>>,
     ) -> Self {
+        let task_memory_manager = Arc::new(TaskMemoryManager::new(memory_graph_store.clone()));
+        let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(memory_graph_store.clone()));
+        let hybrid_search_engine = Arc::new(HybridSearchEngine::new(
+            memory_graph_store.clone(),
+            memu_client.clone(),
+        ));
+        let conversation_bridge = Arc::new(ConversationBridge::new(memory_graph_store.clone()));
         Self {
             config,
             state: Arc::new(RwLock::new(ProactiveState::Stopped)),
             is_running: Arc::new(AtomicBool::new(false)),
-            context_messages: Arc::new(RwLock::new(VecDeque::with_capacity(
-                CONTEXT_WINDOW_SIZE,
-            ))),
+            context_messages: Arc::new(RwLock::new(HashMap::new())),
             has_new_context: Arc::new(AtomicBool::new(false)),
             is_waiting_user_input: Arc::new(AtomicBool::new(false)),
             user_input_response: Arc::new(RwLock::new(None)),
@@ -248,6 +284,11 @@ impl ProactiveService {
             new_execution_count: Arc::new(AtomicUsize::new(0)),
             active_space_id: Arc::new(RwLock::new("default".to_string())),
             last_active_session_id: Arc::new(RwLock::new(None)),
+            task_memory_manager,
+            tool_memory_manager,
+            hybrid_search_engine,
+            conversation_bridge,
+            db,
             tick_handle: Arc::new(RwLock::new(None)),
             listener_handle: Arc::new(RwLock::new(None)),
         }
@@ -279,6 +320,11 @@ impl ProactiveService {
             new_execution_count: self.new_execution_count.clone(),
             active_space_id: self.active_space_id.clone(),
             last_active_session_id: self.last_active_session_id.clone(),
+            task_memory_manager: self.task_memory_manager.clone(),
+            tool_memory_manager: self.tool_memory_manager.clone(),
+            hybrid_search_engine: self.hybrid_search_engine.clone(),
+            conversation_bridge: self.conversation_bridge.clone(),
+            db: self.db.clone(),
         }
     }
 
@@ -295,6 +341,8 @@ impl ProactiveService {
         let new_exec_count = self.new_execution_count.clone();
         let exec_log_collector = self.execution_log_collector.clone();
         let last_session = self.last_active_session_id.clone();
+        let active_space_id = self.active_space_id.clone();
+        let tool_memory = self.tool_memory_manager.clone();
 
         let handle = tokio::spawn(async move {
             while is_running.load(Ordering::SeqCst) {
@@ -303,23 +351,47 @@ impl ProactiveService {
                         match event.event_type {
                             // 用户消息和 Bot 回复 → 维护上下文滑动窗口
                             InfraEventType::MessageIncoming | InfraEventType::MessageOutgoing => {
-                                let mut ctx = context.write().await;
-                                ctx.push_back(event.message);
-                                // 超出窗口大小时，淘汰最旧消息
-                                if ctx.len() > CONTEXT_WINDOW_SIZE {
-                                    ctx.pop_front();
+                                // Determine session key from metadata
+                                let session_key = event.metadata
+                                    .get("conversation_id")
+                                    .or_else(|| event.metadata.get("session_id"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("default")
+                                    .to_string();
+
+                                let mut windows = context.write().await;
+                                let window = windows
+                                    .entry(session_key.clone())
+                                    .or_insert_with(|| SessionContextWindow::new(
+                                        session_key.clone(),
+                                        CONTEXT_WINDOW_SIZE,
+                                    ));
+                                window.messages.push_back(event.message);
+                                if window.messages.len() > CONTEXT_WINDOW_SIZE {
+                                    window.messages.pop_front();
                                 }
+                                window.touch();
+
+                                // Enforce max session windows (LRU eviction)
+                                if windows.len() > MAX_SESSION_WINDOWS {
+                                    let mut entries: Vec<_> = windows.iter().collect();
+                                    entries.sort_by_key(|(_, w)| w.last_active_at);
+                                    if let Some((oldest_key, _)) = entries.first() {
+                                        let key = (*oldest_key).to_string();
+                                        windows.remove(&key);
+                                        tracing::debug!(
+                                            "[ProactiveService] LRU evicted session window: {}",
+                                            key
+                                        );
+                                    }
+                                }
+
                                 has_new.store(true, Ordering::SeqCst);
                                 new_msg_count.fetch_add(1, Ordering::SeqCst);
                                 // Track last-active session so the next proactive
                                 // extraction tick can tag its IPC payload with
                                 // the session that most likely sourced it.
-                                if let Some(cid) = event.metadata
-                                    .get("conversation_id")
-                                    .and_then(|v| v.as_str())
-                                {
-                                    *last_session.write().await = Some(cid.to_string());
-                                }
+                                *last_session.write().await = Some(session_key);
                             }
                             // 工具执行事件 → 记录到 ExecutionLogCollector
                             InfraEventType::ToolExecuted => {
@@ -342,7 +414,7 @@ impl ProactiveService {
                                 let log = crate::proactive::scenarios::types::ExecutionLog {
                                     session_id: String::new(),
                                     iteration: 0,
-                                    tool_name,
+                                    tool_name: tool_name.clone(),
                                     tool_input: serde_json::json!({ "summary": tool_input_str }),
                                     tool_output: serde_json::json!({ "summary": tool_output_str }),
                                     success,
@@ -353,6 +425,33 @@ impl ProactiveService {
                                 exec_log_collector.push(log).await;
                                 new_exec_count.fetch_add(1, Ordering::SeqCst);
                                 has_new.store(true, Ordering::SeqCst);
+
+                                // 记录工具使用到 ToolUsageMemoryManager
+                                let space_id = active_space_id.read().await.clone();
+                                let tool_usage = ToolUsageRecord {
+                                    tool_name: tool_name.clone(),
+                                    success,
+                                    duration_ms,
+                                    output_size_bytes: Some(tool_output_str.len() as u64),
+                                    parameters_fingerprint: Some(tool_input_str.to_string()),
+                                    session_id: last_session.read().await.clone(),
+                                    task_description: None,
+                                };
+                                let _ = tool_memory.record_tool_usage(&space_id, &tool_usage);
+                            }
+                            // 工作区切换事件 → 更新 active_space_id
+                            InfraEventType::WorkspaceSwitched => {
+                                if let Some(new_id) = event.metadata
+                                    .get("new_workspace_id")
+                                    .and_then(|v| v.as_str())
+                                {
+                                    let old = active_space_id.read().await.clone();
+                                    *active_space_id.write().await = new_id.to_string();
+                                    tracing::info!(
+                                        "[ProactiveService] 工作区切换: {} -> {}",
+                                        old, new_id
+                                    );
+                                }
                             }
                             _ => {} // 忽略其他事件类型
                         }
@@ -424,6 +523,31 @@ impl ProactiveService {
         refs.tick_count.fetch_add(1, Ordering::SeqCst);
         *refs.last_tick_at.write().await = Some(chrono::Utc::now().to_rfc3339());
 
+        // 每 20 个 tick（约 10 分钟，按默认 30s 间隔）将传统会话桥接到记忆系统
+        // 解决 conversations 与 agent_sessions 双轨割裂导致的记忆流失问题
+        if refs.tick_count.load(Ordering::SeqCst) % 20 == 0 {
+            let space_id = refs.active_space_id.read().await.clone();
+            match refs.conversation_bridge.bridge_incremental(&space_id, 50) {
+                Ok(stats) => {
+                    if stats.messages_enqueued > 0 {
+                        tracing::info!(
+                            enqueued = stats.messages_enqueued,
+                            conversations = stats.conversations_with_new,
+                            scanned = stats.conversations_scanned,
+                            duration_ms = stats.duration_ms,
+                            "[ProactiveService] ConversationBridge 增量同步完成"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "[ProactiveService] ConversationBridge 增量同步失败"
+                    );
+                }
+            }
+        }
+
         // 检查是否有新上下文消息
         if !refs.has_new_context.load(Ordering::SeqCst) {
             return Ok(()); // 无新上下文，跳过本次 tick
@@ -481,6 +605,24 @@ impl ProactiveService {
                     }),
                 )
                 .await;
+
+            // 记录任务到 TaskMemoryManager
+            let space_id = refs.active_space_id.read().await.clone();
+            let task_record = TaskRecord {
+                task_type: TaskType::Planning,
+                description: format!(
+                    "Proactive scenario evaluation: {}",
+                    extract_summary_text(&response)
+                ),
+                status: TaskStatus::Success,
+                files_changed: Vec::new(),
+                tools_used: Vec::new(),
+                duration_ms: 0,
+                error_messages: Vec::new(),
+                solution_summary: Some(response.chars().take(200).collect()),
+                session_id: refs.last_active_session_id.read().await.clone(),
+            };
+            let _ = refs.task_memory_manager.record_task(&space_id, &task_record);
         }
 
         // 切换状态回 Idle
@@ -496,10 +638,17 @@ impl ProactiveService {
     /// 3. 对触发的场景构建上下文并调用 LLM
     /// 4. 合并响应
     async fn run_scenario_loop(refs: &ProactiveStateRefs) -> anyhow::Result<String> {
-        // 1. 构建 ScenarioContext
-        let context_messages = refs.context_messages.read().await;
-        let recent_messages: Vec<_> = context_messages.iter().cloned().collect();
-        drop(context_messages);
+        // 1. 构建 ScenarioContext — 先从 active session 窗口收集消息
+        let active_space_id = refs.active_space_id.read().await.clone();
+        let active_session_id = refs.last_active_session_id.read().await.clone();
+
+        let ctx_windows = refs.context_messages.read().await;
+        let recent_messages: Vec<_> = active_session_id
+            .as_ref()
+            .and_then(|sid| ctx_windows.get(sid))
+            .map(|w| w.messages.iter().cloned().collect())
+            .unwrap_or_default();
+        drop(ctx_windows);
 
         let execution_logs = refs.execution_log_collector.recent(50).await;
         let pending_multimodal = refs.multimodal_queue.peek_all().await;
@@ -512,7 +661,41 @@ impl ProactiveService {
         let recent_failures = refs.execution_log_collector.failures(1).await;
         let has_failures = !recent_failures.is_empty();
 
-        let active_space_id = refs.active_space_id.read().await.clone();
+        // 构建会话上下文摘要 — 从 agent_messages/agent_turns/agent_sessions 提取
+        let session_context = if let Some(ref session_id) = active_session_id {
+            let tool_calls: Vec<_> = execution_logs.iter()
+                .take(10)
+                .map(|log| crate::proactive::scenarios::types::ToolCallSummary {
+                    tool_name: log.tool_name.clone(),
+                    success: log.success,
+                    duration_ms: log.duration_ms,
+                    summary: log.tool_output.get("summary")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                })
+                .collect();
+
+            // 尝试从主 DB 提取会话元数据（失败不影响主流程）
+            let (reasoning_steps, cumulative_tokens, turn_count, workspace_files) =
+                Self::extract_session_metadata(&refs.db, session_id);
+
+            Some(crate::proactive::scenarios::types::SessionContext {
+                tool_calls,
+                reasoning_steps,
+                cumulative_tokens,
+                turn_count,
+                workspace_files,
+            })
+        } else {
+            None
+        };
+
+        // 预计算已有技能指纹（用于 skill_extraction 场景的前置去重）。
+        // 查询成本低（≤50 行），且可避免不必要的大量重复技能生成，
+        // ROI 远高于 token 增量（50条×100字符≈1,250 tokens）。
+        let skill_fingerprints =
+            Self::compute_skill_fingerprints_for_extraction(refs.memory_graph_store.as_ref(), &active_space_id, 50);
 
         let scenario_ctx = ScenarioContext {
             recent_messages,
@@ -524,6 +707,9 @@ impl ProactiveService {
             new_execution_count,
             has_failures,
             active_space_id,
+            active_session_id,
+            session_context,
+            existing_skill_fingerprints: skill_fingerprints,
         };
 
         // 2. 评估场景触发
@@ -546,19 +732,30 @@ impl ProactiveService {
         for scenario in &triggered_scenarios {
             match scenario.build_context(&scenario_ctx).await {
                 Ok(output) => {
-                    // 增强 system prompt：注入召回的记忆
+                    // 增强 system prompt：通过五路混合检索引擎注入召回的记忆
                     let enhanced_system_prompt = {
-                        let recall_engine = crate::memory_graph::recall::MemoryRecallEngine::new(
-                            refs.memory_graph_store.clone(),
-                            refs.memu_client.clone(),
-                            crate::memory_graph::recall::MemoryRecallConfig::default(),
-                        );
+                        // skill_extraction 场景使用更轻量的召回：
+                        // 指纹已在 context_messages 中作为去重参考，
+                        // 此处仅保留少量混合检索结果作为补充上下文。
+                        let max_results = if scenario.name() == "skill_extraction" {
+                            6  // 轻量：指纹已替代大部分召回
+                        } else {
+                            15  // 默认：五路融合结果
+                        };
 
-                        // 用场景描述构建召回查询
                         let recall_query = format!("{} {}", scenario.name(), scenario.description());
-                        match recall_engine.build_recall_plan(&scenario_ctx.active_space_id, &recall_query, false).await {
-                            Ok(plan) => {
-                                let memory_ctx = crate::memory_graph::recall::MemoryRecallEngine::format_recall_for_prompt(&plan);
+                        let hybrid_request = HybridSearchRequest {
+                            query: recall_query,
+                            space_id: scenario_ctx.active_space_id.clone(),
+                            session_id: scenario_ctx.active_session_id.clone(),
+                            time_range: None,
+                            file_paths: None,
+                            max_results,
+                        };
+
+                        match refs.hybrid_search_engine.search(&hybrid_request, None).await {
+                            Ok(result) => {
+                                let memory_ctx = HybridSearchEngine::format_for_prompt(&result);
                                 if memory_ctx.trim().is_empty() {
                                     output.system_prompt.clone()
                                 } else {
@@ -570,7 +767,7 @@ impl ProactiveService {
                                 }
                             }
                             Err(e) => {
-                                tracing::debug!(scenario = %scenario.name(), error = %e, "Recall for scenario failed, using base prompt");
+                                tracing::debug!(scenario = %scenario.name(), error = %e, "Hybrid recall for scenario failed, using base prompt");
                                 output.system_prompt.clone()
                             }
                         }
@@ -846,6 +1043,141 @@ impl ProactiveService {
         }
     }
 
+    /// 从主 DB（agent_messages / agent_turns / agent_sessions）提取会话元数据。
+    ///
+    /// 填充 SessionContext 中此前为空的字段：
+    /// - reasoning_steps: 最近 5 条 agent_messages 中的 reasoning 文本
+    /// - cumulative_tokens: agent_messages 表中 input/output tokens 累计
+    /// - turn_count: agent_turns 表中该 session 的轮次总数
+    /// - workspace_files: agent_sessions.attached_dirs 中的目录列表
+    ///
+    /// 所有 DB 错误均被吞没（返回默认空值），不影响主 tick 流程。
+    fn extract_session_metadata(
+        db: &Arc<Mutex<Connection>>,
+        session_id: &str,
+    ) -> (
+        Vec<String>,
+        Option<crate::proactive::scenarios::types::TokenUsage>,
+        Option<usize>,
+        Vec<String>,
+    ) {
+        let conn = match db.lock() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("[ProactiveService] 获取 DB 锁失败: {}", e);
+                return (vec![], None, None, vec![]);
+            }
+        };
+
+        // 1. reasoning_steps: 最近 5 条有 reasoning 的 agent_messages
+        let reasoning_steps: Vec<String> = {
+            let mut stmt = match conn.prepare(
+                "SELECT reasoning FROM agent_messages \
+                 WHERE session_id = ?1 AND reasoning IS NOT NULL AND reasoning != '' \
+                 ORDER BY created_at DESC LIMIT 5"
+            ) {
+                Ok(s) => s,
+                Err(_) => return (vec![], None, None, vec![]),
+            };
+            let rows: Vec<String> = stmt
+                .query_map(rusqlite::params![session_id], |row| row.get(0))
+                .into_iter()
+                .flat_map(|r| r.filter_map(|v| v.ok()))
+                .collect();
+            rows
+        };
+
+        // 2. cumulative_tokens: SUM input/output tokens from agent_messages
+        let cumulative_tokens: Option<crate::proactive::scenarios::types::TokenUsage> = {
+            conn.query_row(
+                "SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0) \
+                 FROM agent_messages WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| {
+                    Ok(crate::proactive::scenarios::types::TokenUsage {
+                        input_tokens: row.get::<_, i64>(0)? as u64,
+                        output_tokens: row.get::<_, i64>(1)? as u64,
+                    })
+                },
+            ).ok()
+        };
+
+        // 3. turn_count: COUNT from agent_turns
+        let turn_count: Option<usize> = {
+            conn.query_row(
+                "SELECT COUNT(*) FROM agent_turns WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get::<_, i64>(0).map(|v| v as usize),
+            ).ok()
+        };
+
+        // 4. workspace_files: attached_dirs JSON array from agent_sessions
+        let workspace_files: Vec<String> = {
+            let dirs_json: Option<String> = conn.query_row(
+                "SELECT attached_dirs FROM agent_sessions WHERE id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            ).ok().flatten();
+
+            dirs_json
+                .and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
+                .unwrap_or_default()
+        };
+
+        (reasoning_steps, cumulative_tokens, turn_count, workspace_files)
+    }
+
+    /// 为 skill_extraction 场景计算已有技能的紧凑指纹列表。
+    ///
+    /// 每条指纹格式: "title | description(≤60chars) | category | cited:N"
+    /// 按 cited_count DESC 排序，取 top-N。用于注入到 LLM 上下文
+    /// 供提取阶段前置去重——LLM 在生成新 `<skill>` 前可逐条对比。
+    ///
+    /// Token 预算：50 条 × ~100 字符 ≈ 1,250 tokens（含格式开销）。
+    /// 与完整 SOP 注入（每条 300-800 字符）相比节省 60-80%。
+    fn compute_skill_fingerprints_for_extraction(
+        store: &MemoryGraphStore,
+        space_id: &str,
+        limit: usize,
+    ) -> Vec<String> {
+        let nodes = match store.list_top_learned_skills(space_id, limit) {
+            Ok(nodes) => nodes,
+            Err(e) => {
+                tracing::warn!("Failed to list skills for fingerprints: {}", e);
+                return vec![];
+            }
+        };
+
+        nodes
+            .into_iter()
+            .map(|detail| {
+                let node = &detail.node;
+                let meta = node.metadata.as_ref();
+                let desc = meta
+                    .and_then(|m| m.get("description"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let desc_short: String = if desc.chars().count() > 60 {
+                    format!("{}…", desc.chars().take(60).collect::<String>())
+                } else {
+                    desc.to_string()
+                };
+                let category = meta
+                    .and_then(|m| m.get("category"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-");
+                let cited = meta
+                    .and_then(|m| m.get("cited_count"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                format!(
+                    "{} | {} | {} | cited:{}",
+                    node.title, desc_short, category, cited
+                )
+            })
+            .collect()
+    }
+
     /// 调用 LLM 处理场景
     ///
     /// 从 ProviderService 动态获取当前活动的 LLM 配置，
@@ -913,7 +1245,9 @@ impl ProactiveService {
     /// 获取当前主动服务状态报告
     pub async fn get_proactive_status(&self) -> ProactiveStatus {
         let state = *self.state.read().await;
-        let context_count = self.context_messages.read().await.len();
+        let windows = self.context_messages.read().await;
+        let context_count: usize = windows.values().map(|w| w.messages.len()).sum();
+        drop(windows);
 
         ProactiveStatus {
             state,
@@ -1179,6 +1513,7 @@ mod tests {
             None, // memu_client
             memory_graph_store,
             None, // app_handle — 测试环境不需要 Tauri IPC
+            Arc::new(std::sync::Mutex::new(Connection::open_in_memory().unwrap())),
         )
     }
 
@@ -1275,10 +1610,11 @@ mod tests {
         // 等待消息被处理
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        // 验证上下文窗口
+        // 验证上下文窗口（测试用 metadata 不含 conversation_id，消息进入 "default" session）
         let ctx = service.context_messages.read().await;
-        assert_eq!(ctx.len(), 1);
-        assert_eq!(ctx[0].content, "你好");
+        let default_window = ctx.get("default").expect("default session window should exist");
+        assert_eq!(default_window.messages.len(), 1);
+        assert_eq!(default_window.messages[0].content, "你好");
 
         // has_new_context 应该为 true
         assert!(service.has_new_context.load(Ordering::SeqCst));

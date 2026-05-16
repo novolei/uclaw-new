@@ -79,6 +79,7 @@ fn main() {
                 let memu_client = state.memu_client.clone();
                 let provider_service = state.provider_service.clone();
                 let memory_graph_store = state.memory_graph_store.clone();
+                let db = state.db.clone();
                 let app_handle = app.handle().clone();
                 let files_rail_service = state.files_rail_service.clone();
 
@@ -176,6 +177,7 @@ fn main() {
                                         memu_client.clone(),
                                         memory_graph_store.clone(),
                                         Some(app_handle.clone()),
+                                        db.clone(),
                                     )
                                 );
                                 service_manager.register(pro_svc).await;
@@ -400,6 +402,7 @@ fn main() {
             uclaw_core::tauri_commands::get_skill_versions,
             uclaw_core::tauri_commands::backfill_skill_keywords,
             uclaw_core::tauri_commands::propose_skill_consolidation,
+            uclaw_core::tauri_commands::cancel_skill_consolidation,
             uclaw_core::tauri_commands::apply_skill_consolidation,
             // MEMUBOT Services
             uclaw_core::tauri_commands::services_health,
