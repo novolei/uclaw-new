@@ -25,6 +25,7 @@ export interface NativeBlockRendererProps {
 export function NativeBlockRenderer({
   blocks,
   className,
+  conversationId,
 }: NativeBlockRendererProps): React.ReactElement {
   // Pre-compute a tool_use_id → tool_result lookup so each tool_use can
   // grab its result in O(1). Walk the array in order so we can also build
@@ -54,6 +55,7 @@ export function NativeBlockRenderer({
             <ThinkingBlock
               key={`b-${idx}-thinking`}
               block={{ type: 'thinking', thinking: b.thinking }}
+              sessionId={conversationId ?? null}
             />
           )
         }

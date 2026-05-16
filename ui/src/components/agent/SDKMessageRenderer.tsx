@@ -67,12 +67,18 @@ export interface SDKMessageRendererProps {
 
 // ===== system 消息：上下文压缩分割线 =====
 
-export function CompactBoundaryDivider(): React.ReactElement {
+export function CompactBoundaryDivider({ removed, remaining }: { removed?: number; remaining?: number }): React.ReactElement {
+  const hasInfo = removed != null && remaining != null
   return (
     <div className="flex items-center gap-3 my-4 px-1">
       <div className="flex-1 h-px bg-border/40" />
-      <span className="shrink-0 text-[11px] text-muted-foreground/60 px-2 py-0.5 rounded-full border border-border/30 bg-muted/20">
+      <span className="shrink-0 inline-flex items-center gap-1.5 text-[11px] text-muted-foreground/60 px-2 py-0.5 rounded-full border border-border/30 bg-muted/20">
         上下文已压缩
+        {hasInfo && removed > 0 && (
+          <span className="text-[10px] text-muted-foreground/40">
+            · {removed} 条已压缩 · 保留 {remaining} 条
+          </span>
+        )}
       </span>
       <div className="flex-1 h-px bg-border/40" />
     </div>

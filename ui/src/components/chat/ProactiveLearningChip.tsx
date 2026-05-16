@@ -50,14 +50,15 @@ export function ProactiveLearningChip({
       <TooltipTrigger asChild>
         <div
           className={cn(
-            'inline-flex items-center gap-1.5 rounded-full',
-            'border border-border/50 bg-muted/40 px-2.5 py-1',
-            'text-xs text-muted-foreground cursor-default select-none',
+            'inline-flex items-center gap-1 px-2 py-0.5 rounded-full',
+            'text-[11px] leading-tight',
+            'border border-border/50 bg-muted/40',
+            'text-muted-foreground cursor-default select-none',
             'transition-colors hover:bg-muted/70',
             className,
           )}
         >
-          <Icon className={cn('size-3.5 shrink-0', meta.color)} />
+          <Icon className={cn('size-3 shrink-0', meta.color)} />
           <span className="font-medium">{meta.label}</span>
           <span className="opacity-60">·</span>
           <span>{event.items_extracted} 条</span>

@@ -9,10 +9,12 @@
 import { useAtomValue, useSetAtom } from 'jotai'
 import { useShortcuts } from '@/hooks/useShortcut'
 import { workspacesAtom, selectWorkspaceAtom } from '@/atoms/workspace'
+import { quickCaptureOpenAtom } from '@/atoms/quick-capture-atoms'
 
 export function GlobalShortcuts(): null {
   const workspaces = useAtomValue(workspacesAtom)
   const selectWorkspace = useSetAtom(selectWorkspaceAtom)
+  const setQuickCaptureOpen = useSetAtom(quickCaptureOpenAtom)
 
   const workspaceShortcuts = Array.from({ length: 9 }, (_, i) => ({
     id: `switch-workspace-${i + 1}`,
@@ -61,6 +63,19 @@ export function GlobalShortcuts(): null {
       },
     },
     ...workspaceShortcuts,
+    {
+      id: 'quick-memory-voice',
+      handler: () => {
+        // 触发语音记忆启动事件
+        window.dispatchEvent(new CustomEvent('uclaw:memory-voice-start'))
+      },
+    },
+    {
+      id: 'quick-capture',
+      handler: () => {
+        setQuickCaptureOpen(true)
+      },
+    },
   ])
 
   return null

@@ -38,9 +38,11 @@ import { ChatToolActivityIndicator } from '@/components/chat/ChatToolActivityInd
 import { userProfileAtom } from '@/atoms/user-profile'
 import { tabMinimapCacheAtom } from '@/atoms/tab-atoms'
 import { channelsAtom } from '@/atoms/chat-atoms'
-import { proactiveLearningEventsAtom } from '@/atoms/agent-atoms'
+import { proactiveLearningEventsAtom, memoryRecallEventAtom, skillRecallsMapAtom } from '@/atoms/agent-atoms'
+import type { MemoryRecallEvent } from '@/atoms/agent-atoms'
 import { stickyUserMessageEnabledAtom } from '@/atoms/ui-preferences'
 import { ProactiveLearningChip } from '@/components/chat/ProactiveLearningChip'
+import { MemoryRecallChip } from '@/components/chat/MemoryRecallChip'
 import { parseSkillCitations } from '@/lib/skill-citation'
 import { normalizeAgentMarkdown } from '@/lib/normalize-agent-markdown'
 import { SkillCitationChips } from './SkillCitationChips'
@@ -581,16 +583,20 @@ interface AgentMessageItemProps {
   message: AgentMessage
   sessionPath?: string | null
   attachedDirs?: string[]
+  /** 外层会话 ID — message.sessionId 可能未设置（DB 未填充），作为回退 */
+  sessionId: string
 }
 
-function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageItemProps): React.ReactElement | null {
+function AgentMessageItem({ message, sessionPath, attachedDirs, sessionId }: AgentMessageItemProps): React.ReactElement | null {
   const userProfile = useAtomValue(userProfileAtom)
   const channels = useAtomValue(channelsAtom)
+  const isCompacted = message.compacted === true
 
   if (message.role === 'user') {
     const { files: attachedFiles, text: messageText } = parseAttachedFiles(message.content)
 
     return (
+      <div className={isCompacted ? 'opacity-40 grayscale-[0.3]' : undefined}>
       <Message from="user">
         <div className="flex items-start gap-2.5 mb-2.5">
           <UserAvatar avatar={userProfile.avatar} size={35} />
@@ -618,6 +624,7 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
           </MessageActions>
         )}
       </Message>
+      </div>
     )
   }
 
@@ -630,6 +637,7 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
       : { cleanedContent: '', citations: [] }
 
     return (
+      <div className={isCompacted ? 'opacity-40 grayscale-[0.3]' : undefined}>
       <Message from="assistant">
         <MessageHeader
           model={message.model ? resolveModelDisplayName(message.model, channels) : undefined}
@@ -640,7 +648,7 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
           {message.contentBlocks && message.contentBlocks.length > 0 ? (
             <NativeBlockRenderer
               blocks={message.contentBlocks}
-              conversationId={message.sessionId}
+              conversationId={message.sessionId ?? sessionId}
             />
           ) : (
             <>
@@ -650,6 +658,7 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
                   <ThinkingBlock
                     block={{ type: 'thinking', thinking: message.reasoning } as any}
                     dimmed={false}
+                    sessionId={message.sessionId ?? sessionId ?? null}
                   />
                 </div>
               )}
@@ -667,7 +676,7 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
               ) : null}
               <ToolResultInlineImages activities={toolActivities} />
               {message.content && (
-                <MessageResponse sessionId={message.sessionId ?? null}>{parsed.cleanedContent}</MessageResponse>
+                <MessageResponse sessionId={message.sessionId ?? sessionId ?? null}>{parsed.cleanedContent}</MessageResponse>
               )}
             </>
           )}
@@ -686,6 +695,7 @@ function AgentMessageItem({ message, sessionPath, attachedDirs }: AgentMessageIt
           </MessageActions>
         )}
       </Message>
+      </div>
     )
   }
 
@@ -762,6 +772,8 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
   const setMinimapCache = useSetAtom(tabMinimapCacheAtom)
   const channels = useAtomValue(channelsAtom)
   const proactiveLearningEvents = useAtomValue(proactiveLearningEventsAtom)
+  const memoryRecallMap = useAtomValue(memoryRecallEventAtom)
+  const skillRecallsMap = useAtomValue(skillRecallsMapAtom)
   const stickyUserMessageEnabled = useAtomValue(stickyUserMessageEnabledAtom)
   /** 淡入控制：切换会话时先隐藏，等布局完成后再显示。 */
   const [ready, setReady] = React.useState(false)
@@ -854,10 +866,12 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
   // 直到整个 stream 结束（stream state 被删除）才消失。
   const suppressAgentRunning = streamState?.isCompacting || streamState?.compactInFlight
 
-  // 迷你地图数据
+  // 迷你地图数据 — 跳过 compacted 消息以减少噪音
   const minimapItems: MinimapItem[] = React.useMemo(
     () => {
-      return messages.map((m, i) => ({
+      return messages
+        .filter((m) => !m.compacted)
+        .map((m, i) => ({
         id: m.id || `msg-${i}`,
         role: m.role === 'status' ? 'status' as const : m.role as MinimapItem['role'],
         preview: (m.content ?? '').replace(/<attached_files>[\s\S]*?<\/attached_files>\n*/, '').slice(0, 200),
@@ -867,6 +881,33 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
     },
     [messages, userProfile.avatar]
   )
+
+  // 将 liveMessages 中的 compact_boundary 按时间戳插入到消息列表的正确位置，
+  // 使其随旧消息自然向上滚动，而不是永远粘在底部。
+  const displayItems = React.useMemo(() => {
+    const boundaries = (liveMessages ?? []).filter(
+      (item: any) => item.type === 'system' && item.subtype === 'compact_boundary'
+    )
+    if (boundaries.length === 0) {
+      return messages.map(m => ({ kind: 'message' as const, message: m }))
+    }
+
+    const items: Array<
+      | { kind: 'message'; message: AgentMessage }
+      | { kind: 'boundary'; boundary: any }
+    > = [
+      ...messages.map(m => ({ kind: 'message' as const, message: m })),
+      ...boundaries.map(b => ({ kind: 'boundary' as const, boundary: b })),
+    ]
+
+    items.sort((a, b) => {
+      const aTime = a.kind === 'message' ? a.message.createdAt : a.boundary._createdAt
+      const bTime = b.kind === 'message' ? b.message.createdAt : b.boundary._createdAt
+      return aTime - bTime
+    })
+
+    return items
+  }, [messages, liveMessages])
 
   // 同步 minimap 缓存到 Tab 级别（供 Tab hover 预览使用）
   React.useEffect(() => {
@@ -901,16 +942,27 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
           <EmptyState />
         ) : (
           <>
-            {/* 消息渲染 — AgentMessageItem */}
-            {messages.map((msg: AgentMessage) => (
-              <div key={msg.id} data-message-id={msg.id} data-message-role={msg.role === 'user' ? 'user' : undefined}>
-                <AgentMessageItem
-                  message={msg}
-                  sessionPath={sessionPath}
-                  attachedDirs={attachedDirs}
-                />
-              </div>
-            ))}
+            {/* 消息渲染 — AgentMessageItem + compact_boundary 分隔线 */}
+            {displayItems.map((item) => {
+              if (item.kind === 'boundary') {
+                return (
+                  <div key={item.boundary.uuid} data-live-marker="compact-boundary">
+                    <CompactBoundaryDivider removed={item.boundary.removed} remaining={item.boundary.remaining} />
+                  </div>
+                )
+              }
+              const msg = item.message
+              return (
+                <div key={msg.id} data-message-id={msg.id} data-message-role={msg.role === 'user' ? 'user' : undefined}>
+                  <AgentMessageItem
+                    message={msg}
+                    sessionPath={sessionPath}
+                    attachedDirs={attachedDirs}
+                    sessionId={sessionId}
+                  />
+                </div>
+              )
+            })}
 
             {/* 流式气泡（含头像/名称/时间） */}
             {!suppressAgentRunning && (streaming || smoothContent || retrying || (streamState?.toolActivities?.length ?? 0) > 0 || streamState?.reasoning) && (
@@ -924,7 +976,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
                   {retrying && <RetryingNotice retrying={retrying} />}
                   {(streamState?.reasoning) && (
                     <div className="mb-3">
-                      <ThinkingBlock block={{ type: 'thinking', thinking: streamState.reasoning } as any} dimmed={!!smoothContent} />
+                      <ThinkingBlock block={{ type: 'thinking', thinking: streamState.reasoning } as any} dimmed={!!smoothContent} sessionId={sessionId ?? null} />
                     </div>
                   )}
                   {(streamState?.toolActivities?.length ?? 0) > 0 && (
@@ -981,6 +1033,13 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
                     }} />
                   </MessageActions>
                 )}
+                {/* 截断提示：任一 LLM 调用被 token 限制截断 */}
+                {!streaming && streamState?.truncated && (
+                  <div className="pl-[46px] mt-1 flex items-center gap-1.5 text-[12px] text-amber-500/80">
+                    <AlertTriangle className="size-3 shrink-0" />
+                    <span>部分内容因 token 限制被截断，Agent 已自动继续输出</span>
+                  </div>
+                )}
               </Message>
             )}
 
@@ -988,13 +1047,16 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
             {streamState?.isCompacting && <CompactingIndicator />}
 
             {/* liveMessages 尾部渲染：handleCompact 注入的 /compact 用户气泡 +
-                useGlobalAgentListeners 在 stream-complete 时注入的 compact_boundary
-                分隔符。两者都不在 DB messages 数组里，是会话内的瞬时合成项。
-                Session 切换或刷新会清空（这是预期行为）。 */}
+                compacting 压缩中指示器（compact_boundary 已提升到 displayItems
+                按时间戳插入消息列表正确位置，不在此处渲染）。 */}
             {liveMessages?.map((item: any) => {
               const key = item.uuid ?? `live-${item._createdAt}`
+              // compact_boundary is now interleaved into displayItems above — skip here
               if (item.type === 'system' && item.subtype === 'compact_boundary') {
-                return <div key={key} data-live-marker="compact-boundary"><CompactBoundaryDivider /></div>
+                return null
+              }
+              if (item.type === 'system' && item.subtype === 'compacting') {
+                return <div key={key} data-live-marker="compacting"><CompactingIndicator /></div>
               }
               if (item.type === 'user') {
                 const text = item.message?.content?.[0]?.text ?? ''
@@ -1012,25 +1074,32 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
 
           </>
         )}
-        {/* Skill recall chips — separate visual lane from citation chips */}
-        <SkillRecallChips sessionId={sessionId} />
       </ConversationContent>
-      {/* 记忆捕捉 chip 列表 — 只显示来自当前 session 的提取事件。
-          PR #61 加了 sessionId 字段做 filter，避免切 session 时看到
-          无关事件。但当后端 last_active_session_id 还没填（app 启动
-          后第一次 user message 之前）时 sessionId 可能是 null —
-          这种事件按"无 session 归属"处理，**fallback 显示在当前
-          active session 里**，给用户看见而不是默默吞掉。 */}
+      {/* 统一徽章行：技能召回 + 主动学习 + 记忆召回
+          — 按 sessionId 隔离；null sessionId/conversationId 事件 fallback 到当前 session（启动边缘情况 / Debug 测试用） */}
       {(() => {
-        const sessionEvents = proactiveLearningEvents.filter(
+        const skillRecalls = skillRecallsMap.get(sessionId) ?? []
+        const sessionProactiveEvents = proactiveLearningEvents.filter(
           (ev) => ev.sessionId === sessionId || ev.sessionId == null
         )
-        if (sessionEvents.length === 0) return null
+        const memoryRecallEvent = memoryRecallMap.get(sessionId) ?? memoryRecallMap.get('__global__') ?? null
+
+        const hasAny =
+          skillRecalls.length > 0 ||
+          sessionProactiveEvents.length > 0 ||
+          (memoryRecallEvent != null && memoryRecallEvent.totalCandidates > 0)
+
+        if (!hasAny) return null
+
         return (
-          <div className="flex flex-wrap gap-2 px-4 pb-2">
-            {sessionEvents.slice(0, 3).map((ev) => (
+          <div className="flex flex-wrap items-center gap-1.5 pl-[46px] pr-4 pb-2 mt-2">
+            <SkillRecallChips sessionId={sessionId} className="mt-0 pl-0" />
+            {sessionProactiveEvents.slice(0, 3).map((ev) => (
               <ProactiveLearningChip key={ev.timestamp} event={ev} />
             ))}
+            {memoryRecallEvent != null && memoryRecallEvent.totalCandidates > 0 && (
+              <MemoryRecallChip event={memoryRecallEvent} inline />
+            )}
           </div>
         )
       })()}

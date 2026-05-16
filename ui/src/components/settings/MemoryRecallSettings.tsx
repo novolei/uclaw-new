@@ -5,12 +5,17 @@
  * 支持输入验证、范围限制、一键恢复默认值和批量保存。
  */
 import { useState, useEffect, useCallback } from 'react'
-import { RotateCcw, Save } from 'lucide-react'
+import { RotateCcw, Save, ChevronDown } from 'lucide-react'
 import { SettingsSection } from './primitives/SettingsSection'
 import { SettingsCard } from './primitives/SettingsCard'
 import { SettingsRow } from './primitives/SettingsRow'
 import { SettingsSelect } from './primitives/SettingsSelect'
 import { Button } from '@/components/ui/button'
+import {
+  Collapsible,
+  CollapsibleTrigger,
+  CollapsibleContent,
+} from '@/components/ui/collapsible'
 import {
   getMemoryRecallConfig,
   patchMemoryRecallConfig,
@@ -31,6 +36,11 @@ const DEFAULTS: Required<MemoryRecallConfigDto> = {
   vectorWeight: 0.5,
   bootLearnedSkillsLimit: 3,
   tokenBudget: 5000,
+  layerExpandedSeedTake: 5,
+  layerExpandedMaxDepth: 2,
+  timeDecayHalfLifeDays: 7.0,
+  ftsFallbackLimitMultiplier: 2.0,
+  bootUserProfileLimit: 5,
 }
 
 // ─── 验证范围（与 Rust patch_memory_recall_config 保持同步）────────────
@@ -46,6 +56,11 @@ const RANGES = {
   vectorWeight: { min: 0, max: 1, label: '向量搜索权重' },
   bootLearnedSkillsLimit: { min: 0, max: 20, label: '自动挂载技能数' },
   tokenBudget: { min: 100, max: 20000, label: 'Token 预算' },
+  layerExpandedSeedTake: { min: 1, max: 20, label: '图扩展种子数' },
+  layerExpandedMaxDepth: { min: 1, max: 5, label: '图扩展深度' },
+  timeDecayHalfLifeDays: { min: 0.5, max: 90, label: '时间衰减半衰期 (天)' },
+  ftsFallbackLimitMultiplier: { min: 1.0, max: 5.0, label: 'FTS 降级倍率' },
+  bootUserProfileLimit: { min: 0, max: 20, label: '用户档案挂载数' },
 } as const
 
 const FUSION_OPTIONS = [
@@ -310,6 +325,105 @@ export function MemoryRecallSettings(): React.ReactElement {
           </SettingsRow>
         </SettingsCard>
       </SettingsSection>
+
+      {/* 高级设置 */}
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground cursor-pointer transition-colors duration-150 py-1">
+          <ChevronDown className="size-3.5 transition-transform duration-200 [[data-state=open]>&]:rotate-180" />
+          高级设置
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="mt-3 space-y-6">
+            <SettingsSection
+              title="图扩展参数"
+              description="控制 L4 BFS 图扩展阶段的种子数和搜索深度。"
+            >
+              <SettingsCard>
+                <SettingsRow
+                  label="layer_expanded_seed_take"
+                  description={`图扩展种子数 · ${RANGES.layerExpandedSeedTake.min}–${RANGES.layerExpandedSeedTake.max} · 默认 ${DEFAULTS.layerExpandedSeedTake}`}
+                >
+                  <NumberInput
+                    value={config.layerExpandedSeedTake ?? DEFAULTS.layerExpandedSeedTake}
+                    min={RANGES.layerExpandedSeedTake.min}
+                    max={RANGES.layerExpandedSeedTake.max}
+                    onChange={(v) => updateField('layerExpandedSeedTake', v)}
+                  />
+                </SettingsRow>
+                <SettingsRow
+                  label="layer_expanded_max_depth"
+                  description={`BFS 最大搜索深度 · ${RANGES.layerExpandedMaxDepth.min}–${RANGES.layerExpandedMaxDepth.max} · 默认 ${DEFAULTS.layerExpandedMaxDepth}`}
+                >
+                  <SettingsSelect
+                    value={String(config.layerExpandedMaxDepth ?? DEFAULTS.layerExpandedMaxDepth)}
+                    onValueChange={(v) => updateField('layerExpandedMaxDepth', Number(v))}
+                    options={[1, 2, 3, 4, 5].map((n) => ({ value: String(n), label: String(n) }))}
+                  />
+                </SettingsRow>
+              </SettingsCard>
+            </SettingsSection>
+
+            <SettingsSection
+              title="时间衰减"
+              description="记忆相关性随时间衰减的半衰期。较短的半衰期会更偏向近期记忆。"
+            >
+              <SettingsCard>
+                <SettingsRow
+                  label="time_decay_half_life_days"
+                  description={`半衰期天数 · ${RANGES.timeDecayHalfLifeDays.min}–${RANGES.timeDecayHalfLifeDays.max} · 默认 ${DEFAULTS.timeDecayHalfLifeDays}`}
+                >
+                  <NumberInput
+                    value={config.timeDecayHalfLifeDays ?? DEFAULTS.timeDecayHalfLifeDays}
+                    min={RANGES.timeDecayHalfLifeDays.min}
+                    max={RANGES.timeDecayHalfLifeDays.max}
+                    step={0.5}
+                    onChange={(v) => updateField('timeDecayHalfLifeDays', v)}
+                  />
+                </SettingsRow>
+              </SettingsCard>
+            </SettingsSection>
+
+            <SettingsSection
+              title="FTS 降级"
+              description="当 memU 向量引擎不可用时，全文搜索候选数量的倍增系数。"
+            >
+              <SettingsCard>
+                <SettingsRow
+                  label="fts_fallback_limit_multiplier"
+                  description={`倍增系数 · ${RANGES.ftsFallbackLimitMultiplier.min}–${RANGES.ftsFallbackLimitMultiplier.max} · 默认 ${DEFAULTS.ftsFallbackLimitMultiplier}`}
+                >
+                  <NumberInput
+                    value={config.ftsFallbackLimitMultiplier ?? DEFAULTS.ftsFallbackLimitMultiplier}
+                    min={RANGES.ftsFallbackLimitMultiplier.min}
+                    max={RANGES.ftsFallbackLimitMultiplier.max}
+                    step={0.1}
+                    onChange={(v) => updateField('ftsFallbackLimitMultiplier', v)}
+                  />
+                </SettingsRow>
+              </SettingsCard>
+            </SettingsSection>
+
+            <SettingsSection
+              title="用户档案"
+              description="控制自动挂载的 UserProfile 节点数量。0 为禁用。"
+            >
+              <SettingsCard>
+                <SettingsRow
+                  label="boot_user_profile_limit"
+                  description={`挂载数 · ${RANGES.bootUserProfileLimit.min}–${RANGES.bootUserProfileLimit.max} · 默认 ${DEFAULTS.bootUserProfileLimit}`}
+                >
+                  <NumberInput
+                    value={config.bootUserProfileLimit ?? DEFAULTS.bootUserProfileLimit}
+                    min={RANGES.bootUserProfileLimit.min}
+                    max={RANGES.bootUserProfileLimit.max}
+                    onChange={(v) => updateField('bootUserProfileLimit', v)}
+                  />
+                </SettingsRow>
+              </SettingsCard>
+            </SettingsSection>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
     </div>
   )
 }

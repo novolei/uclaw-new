@@ -2,6 +2,7 @@ import * as React from 'react'
 import type { ComponentProps } from 'react'
 import Markdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+
 import { cn } from '@/lib/utils'
 import { MarkdownCodeBlock } from '@/components/shared/code-block/CodeBlock'
 import { markdownFileChipPlugin } from '@/components/preview/chips/markdownFileChipPlugin'
@@ -486,6 +487,8 @@ interface MessageResponseProps {
 /**
  * 使用 react-markdown 渲染 assistant 消息内容。
  * 支持 GFM、数学公式（KaTeX）、代码语法高亮（Shiki）。
+ *
+ * Agent 回复内容平铺完整显示（thinking block 由上层控制折叠）。
  */
 export const MessageResponse = React.memo(
   function MessageResponse({ children, className, preserveBreaks = false, sessionId = null }: MessageResponseProps): React.ReactElement {

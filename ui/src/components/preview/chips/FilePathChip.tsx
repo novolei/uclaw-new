@@ -14,12 +14,10 @@
 
 import * as React from 'react'
 import { useSetAtom } from 'jotai'
-import { File } from 'lucide-react'
+import { FileIcon } from '@react-symbols/icons/utils'
 import { cn } from '@/lib/utils'
 import { openPreviewAction } from '@/atoms/preview-panel-atoms'
 import { addPendingAttachmentAction } from '@/atoms/preview-chip-atoms'
-import { getChipColors } from './file-type-colors'
-import { getExtension } from '@/components/preview/utils/ext-classifier'
 
 export type ChipState = 'ok' | 'pending' | 'missing'
 
@@ -47,8 +45,6 @@ export function FilePathChip(props: FilePathChipProps): React.ReactElement {
   const openPreview = useSetAtom(openPreviewAction)
   const addAttachment = useSetAtom(addPendingAttachmentAction)
 
-  const ext = getExtension(props.label) || getExtension(props.rawPath)
-  const colors = getChipColors(ext)
   const isMissing = props.state === 'missing'
 
   const handleClick = React.useCallback(
@@ -116,7 +112,7 @@ export function FilePathChip(props: FilePathChipProps): React.ReactElement {
         stateOpacity,
       )}
     >
-      <File size={11} className={cn('shrink-0', colors.icon)} aria-hidden />
+      <FileIcon fileName={props.label} autoAssign width={11} height={11} className="shrink-0" aria-hidden />
       <span className={cn(isMissing && 'line-through')}>{props.label}</span>
       {props.line !== undefined && (
         <span className="text-foreground/45">

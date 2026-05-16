@@ -53,6 +53,8 @@ import { useAutomationEvents } from '@/hooks/useAutomationEvents'
 import { EscalationModal } from '@/components/automation/EscalationModal'
 import { topLevelViewAtom } from '@/atoms/top-level-view'
 import { KaleidoscopeShell } from '@/views/Kaleidoscope/KaleidoscopeShell'
+import { MemoryVoiceCapture } from '@/components/memory/MemoryVoiceCapture'
+import { QuickCaptureDialog } from '@/components/memory/QuickCaptureDialog'
 
 export interface AppShellProps {
   /** Context 值，用于传递给子组件 */
@@ -393,6 +395,15 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
 
         {/* Global exit_plan_mode banner — plan markdown + 3-decision modal */}
         {currentSessionId && <ExitPlanModeBanner sessionId={currentSessionId} />}
+
+        {/* Global voice memory capture — triggered by Cmd+Shift+M via
+            uclaw:memory-voice-start event. Renders as right-bottom floating
+            panel with pink pulse ring, independent of STT modal. */}
+        <MemoryVoiceCapture />
+
+        {/* Global text quick-capture dialog — triggered by Cmd+Shift+.
+            via quickCaptureOpenAtom. Complementary to MemoryVoiceCapture. */}
+        <QuickCaptureDialog />
       </div>
     </AppShellProvider>
   )

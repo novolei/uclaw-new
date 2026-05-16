@@ -92,6 +92,9 @@ import {
   workspaceFilesVersionAtom,
   composerFocusedAtom,
   composerHasTextAtom,
+  proactiveLearningEventsAtom,
+  memoryRecallEventAtom,
+  skillRecallsMapAtom,
 } from '@/atoms/agent-atoms'
 import type { AgentContextStatus } from '@/atoms/agent-atoms'
 import { activeProviderModelAtom } from '@/atoms/active-model'
@@ -122,6 +125,7 @@ import {
   queueAgentMessage,
   onStreamComplete,
   attachSessionDirectory,
+  estimateSessionContext,
 } from '@/lib/tauri-bridge'
 
 // ===== 思考模式 Hover Popover =====
@@ -516,6 +520,39 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         setMessages(msgs)
         setMessagesLoaded(true)
 
+        // ── Context initialization ──────────────────────────────────
+        // After app restart or session switch, inputTokens/contextWindow
+        // are undefined in the streaming state because Jotai atoms are
+        // in-memory only. Request the backend to estimate context usage
+        // from persisted messages so ContextUsageBadge renders immediately
+        // instead of waiting for the next LLM round-trip.
+        // Mirrors openhanako's context_usage WS request pattern.
+        // (P0 fix: 2026-05-16)
+        estimateSessionContext(sessionId).then((ctx) => {
+          if (!ctx) return
+          setStreamingStates((prev) => {
+            const existing = prev.get(sessionId)
+            // Only populate if not already set by a live turn_cost event.
+            // If the user sent a message while we were fetching, the
+            // turn_cost handler already set inputTokens — don't overwrite.
+            if (existing?.inputTokens != null && existing.inputTokens > 0) return prev
+            const map = new Map(prev)
+            map.set(sessionId, {
+              ...(existing ?? {
+                running: false,
+                content: '',
+                toolActivities: [],
+                teammates: [],
+              }),
+              inputTokens: ctx.inputTokens,
+              contextWindow: ctx.contextWindow,
+            })
+            return map
+          })
+        }).catch((err) => {
+          console.warn('[AgentView] estimateSessionContext failed:', err)
+        })
+
         // 消息加载完成后，同步清除流式展示状态和实时消息，
         // 确保 React 在一次渲染中同时显示持久化消息并移除流式气泡/实时消息，
         // 避免「实时消息已清 → 持久化消息未到」的空档闪烁
@@ -551,8 +588,20 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           // 仍在运行中，不清除实时消息（与 streamingStates 保护逻辑一致）
           const streamingState = store.get(agentStreamingStatesAtom).get(sessionId)
           if (streamingState?.running) return prev
+          // 保留 compact_boundary 标记（"上下文已压缩"分隔符），
+          // 其他瞬时合成消息正常清除。否则 chat:stream-complete 注入的
+          // compact_boundary 会被 getAgentSessionMessages 回调立即清掉，
+          // 用户永远看不到压缩完成的分隔线。
+          const current = prev.get(sessionId) ?? []
+          const boundaries = current.filter(
+            (item: any) => item.type === 'system' && item.subtype === 'compact_boundary'
+          )
           const map = new Map(prev)
-          map.delete(sessionId)
+          if (boundaries.length > 0) {
+            map.set(sessionId, boundaries)
+          } else {
+            map.delete(sessionId)
+          }
           return map
         })
       })
@@ -889,6 +938,22 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           return map
         })
       })
+
+      // 清除当前会话的轮次徽章（新消息 = 新一轮 turn）
+      store.set(memoryRecallEventAtom, (prev) => {
+        const next = new Map(prev)
+        next.delete(sessionId)
+        next.delete('__global__')
+        return next
+      })
+      store.set(proactiveLearningEventsAtom, (prev) =>
+        prev.filter((ev) => ev.sessionId !== sessionId)
+      )
+      store.set(skillRecallsMapAtom, (prev) => {
+        const next = new Map(prev)
+        next.delete(sessionId)
+        return next
+      })
       return
     }
 
@@ -906,6 +971,22 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       const map = new Map(prev)
       map.delete(sessionId)
       return map
+    })
+
+    // 清除当前会话的轮次徽章（记忆召回、主动学习、技能召回）
+    store.set(memoryRecallEventAtom, (prev) => {
+      const next = new Map(prev)
+      next.delete(sessionId)
+      next.delete('__global__')
+      return next
+    })
+    store.set(proactiveLearningEventsAtom, (prev) =>
+      prev.filter((ev) => ev.sessionId !== sessionId)
+    )
+    store.set(skillRecallsMapAtom, (prev) => {
+      const next = new Map(prev)
+      next.delete(sessionId)
+      return next
     })
 
     // 1. 如果有 pending 文件，先保存到 session 目录
@@ -1109,6 +1190,8 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     const localUuid = crypto.randomUUID()
 
     // 1. 立即注入合成用户消息（/compact 气泡立刻可见，与普通发送路径一致）
+    //    同时注入 compacting 系统消息 → CompactingIndicator，避免 isCompacting
+    //    flag 在 React 单批次内翻转（false→true→false）导致指示器从未渲染。
     const syntheticMsg = {
       type: 'user',
       uuid: localUuid,
@@ -1118,11 +1201,17 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       parent_tool_use_id: null,
       _createdAt: streamStartedAt,
     }
+    const compactingMsg = {
+      type: 'system',
+      subtype: 'compacting',
+      uuid: `compacting-${localUuid}`,
+      _createdAt: streamStartedAt,
+    }
 
     store.set(liveMessagesMapAtom, (prev) => {
       const map = new Map(prev)
       const current = map.get(sessionId) ?? []
-      map.set(sessionId, [...current, syntheticMsg])
+      map.set(sessionId, [...current, syntheticMsg, compactingMsg])
       return map
     })
 
@@ -1153,11 +1242,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       startedAt: streamStartedAt,
     }).catch((error: unknown) => {
       console.error('[AgentView] /compact 发送失败:', error)
-      // 回滚：移除合成用户消息 + 清除 isCompacting flag
+      // 回滚：移除合成用户消息 + compacting 消息 + 清除 isCompacting flag
       store.set(liveMessagesMapAtom, (prev) => {
         const map = new Map(prev)
         const current = (map.get(sessionId) ?? []).filter(
-          (m) => (m as unknown as { uuid?: string }).uuid !== localUuid,
+          (m) => (m as unknown as { uuid?: string }).uuid !== localUuid
+            && (m as unknown as { uuid?: string }).uuid !== `compacting-${localUuid}`,
         )
         map.set(sessionId, current)
         return map

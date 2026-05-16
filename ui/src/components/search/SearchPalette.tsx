@@ -41,9 +41,12 @@ import { currentAgentSessionIdAtom } from '@/atoms/agent-atoms'
 import { workspacesAtom, activeWorkspaceIdAtom } from '@/atoms/workspace'
 import { getWorkspaceIcon } from '@/lib/workspace-icons'
 import { groupHitsByWorkspace } from '@/lib/group-search-hits'
-import { listRecentThreads, listSpaces } from '@/lib/tauri-bridge'
+import { listRecentThreads, listSpaces, searchFragments } from '@/lib/tauri-bridge'
+import type { FragmentSearchHit, FragmentItem } from '@/lib/tauri-bridge'
 import type { RecentThread } from '@/lib/agent-types'
 import type { SpaceSummary } from '@/lib/types'
+import { FragmentDetailPopover } from '@/components/memory/FragmentDetailPopover'
+import { SUBTYPE_COLORS } from '@/components/memory/FragmentCard'
 
 // ===== Types =====
 
@@ -153,8 +156,11 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
   const [recents, setRecents] = React.useState<RecentThread[]>([])
   const [workspaces, setWorkspaces] = React.useState<WorkspaceSummary[]>([])
   const [hits, setHits] = React.useState<SearchHit[]>([])
+  const [fragmentResults, setFragmentResults] = React.useState<FragmentSearchHit[]>([])
   const [searching, setSearching] = React.useState(false)
   const debounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [selectedFragment, setSelectedFragment] = React.useState<FragmentItem | null>(null)
+  const [detailOpen, setDetailOpen] = React.useState(false)
 
   // Global ⌘K toggle + Tab scope toggle + two-step Esc
   React.useEffect(() => {
@@ -212,25 +218,45 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
     return () => { cancelled = true }
   }, [open])
 
-  // Debounced FTS search
+  // Debounced FTS search + fragment search
   React.useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current)
     if (!open || query.trim().length < 1) {
       setHits([])
+      setFragmentResults([])
       setSearching(false)
       return
     }
     setSearching(true)
+    const trimmed = query.trim()
+    const isFragmentOnly = trimmed.startsWith('@fragment ')
+    const searchQuery = isFragmentOnly ? trimmed.slice(10).trim() : trimmed
+
     debounceRef.current = setTimeout(async () => {
       try {
-        const scopeArg = scope === 'all' ? null : `session:${scope.id}`
-        const result = await invoke<SearchHit[]>('search_conversations', {
-          input: { query: query.trim(), scope: scopeArg },
-        })
-        setHits(result ?? [])
+        if (isFragmentOnly) {
+          // @fragment 前缀: 仅搜索碎片
+          const fragments = searchQuery.length > 0
+            ? await searchFragments(searchQuery).catch(() => [] as FragmentSearchHit[])
+            : []
+          setFragmentResults(fragments.slice(0, 5))
+          setHits([])
+        } else {
+          // 并行搜索: 常规 + 碎片
+          const scopeArg = scope === 'all' ? null : `session:${scope.id}`
+          const [result, fragments] = await Promise.all([
+            invoke<SearchHit[]>('search_conversations', {
+              input: { query: searchQuery, scope: scopeArg },
+            }).catch(() => [] as SearchHit[]),
+            searchFragments(searchQuery).catch(() => [] as FragmentSearchHit[]),
+          ])
+          setHits(result ?? [])
+          setFragmentResults(fragments.slice(0, 5))
+        }
       } catch (err) {
-        console.error('[SearchPalette] FTS search failed:', err)
+        console.error('[SearchPalette] search failed:', err)
         setHits([])
+        setFragmentResults([])
       } finally {
         setSearching(false)
       }
@@ -273,10 +299,24 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
 
   if (!open) return null
 
+  const handleFragmentClick = (hit: FragmentSearchHit) => {
+    const adapted: FragmentItem = {
+      id: hit.id,
+      title: hit.title,
+      content: hit.snippet,
+      source: hit.source,
+      tags: hit.tags,
+      createdAt: hit.createdAt,
+    }
+    setSelectedFragment(adapted)
+    setDetailOpen(true)
+  }
+
   const totalRendered =
     filteredRecents.length +
     filteredSettings.length +
     filteredWorkspaces.length +
+    fragmentResults.length +
     hitGroups.reduce((sum, g) => sum + g.visibleHits.length, 0)
 
   const handle = (
@@ -439,7 +479,41 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
               <div className="mx-2 my-1 h-px bg-border/40" />
             )}
 
-            {/* 4. Server-side FTS hits — grouped by workspace */}
+            {/* 4. 记忆碎片结果 */}
+            {fragmentResults.length > 0 && (
+              <>
+                {(filteredRecents.length > 0 || filteredSettings.length > 0 || filteredWorkspaces.length > 0) && (
+                  <div className="mx-2 my-1 h-px bg-border/40" />
+                )}
+                <Command.Group heading="记忆碎片">
+                  {fragmentResults.slice(0, 5).map((hit) => (
+                    <Command.Item
+                      key={`fragment:${hit.id}`}
+                      value={`fragment-${hit.id}`}
+                      onSelect={() => handleFragmentClick(hit)}
+                      className="relative flex cursor-pointer select-none items-start gap-2.5 rounded-lg px-2.5 py-2 text-[12.5px] text-foreground/80 outline-none transition-colors aria-selected:bg-accent aria-selected:text-accent-foreground aria-selected:ring-1 aria-selected:ring-border/40"
+                    >
+                      <span 
+                        className={cn(
+                          'size-2 shrink-0 mt-1.5 rounded-full',
+                          SUBTYPE_COLORS[hit.subtype || hit.tags?.[0] || 'daily']?.dot || 'bg-blue-500'
+                        )}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="truncate font-medium text-foreground/85">
+                          {hit.title || hit.snippet}
+                        </div>
+                        <div className="truncate text-[11.5px] text-muted-foreground/65">
+                          {hit.snippet}
+                        </div>
+                      </div>
+                    </Command.Item>
+                  ))}
+                </Command.Group>
+              </>
+            )}
+
+            {/* 5. Server-side FTS hits — grouped by workspace */}
             {hitGroups.map((group) => {
               const Icon = getWorkspaceIcon(group.workspaceIcon)
               return (
@@ -508,6 +582,13 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
           </div>
         </Command>
       </div>
+
+      {/* 碎片详情浮层 */}
+      <FragmentDetailPopover
+        fragment={selectedFragment}
+        open={detailOpen}
+        onClose={() => { setDetailOpen(false); setSelectedFragment(null) }}
+      />
     </div>
   )
 }

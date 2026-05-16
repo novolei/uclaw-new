@@ -40,9 +40,13 @@ import {
 } from '@/lib/shortcut-defaults'
 import { useShortcutCapture } from '@/hooks/useShortcutCapture'
 import { cn } from '@/lib/utils'
+import { updateGlobalShortcut } from '@/lib/tauri-bridge'
 import type { ShortcutOverrides } from '@/lib/chat-types'
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.userAgent)
+
+/** 全局快捷键 ID 列表：这些快捷键通过系统级全局注册，修改时需同步后端 */
+const GLOBAL_SHORTCUT_IDS = ['quick-memory-voice', 'clipboard-capture-silent']
 
 function effectiveBinding(def: ShortcutDefinition, overrides: ShortcutOverrides): string {
   const override = overrides[def.id]
@@ -175,6 +179,12 @@ function ShortcutRow({ def }: { def: ShortcutDefinition }): React.ReactElement {
           ...(isMac ? { mac: combo } : { win: combo }),
         },
       }))
+      // 同步全局快捷键到后端
+      if (GLOBAL_SHORTCUT_IDS.includes(def.id)) {
+        updateGlobalShortcut(def.id, combo).catch((e) =>
+          console.error('[ShortcutSettings] Failed to sync global shortcut:', e),
+        )
+      }
     },
     [def.id, setOverrides],
   )
@@ -186,7 +196,14 @@ function ShortcutRow({ def }: { def: ShortcutDefinition }): React.ReactElement {
       return rest
     })
     setConflictCombo(null)
-  }, [def.id, setOverrides])
+    // 重置全局快捷键为默认值
+    if (GLOBAL_SHORTCUT_IDS.includes(def.id)) {
+      const defaultCombo = (isMac ? def.mac : def.win) ?? ''
+      updateGlobalShortcut(def.id, defaultCombo).catch((e) =>
+        console.error('[ShortcutSettings] Failed to reset global shortcut:', e),
+      )
+    }
+  }, [def.id, def.mac, def.win, setOverrides])
 
   useShortcutCapture({
     active: capturing,
@@ -235,6 +252,19 @@ function ShortcutRow({ def }: { def: ShortcutDefinition }): React.ReactElement {
       }
       return next
     })
+    // 同步全局快捷键变更
+    if (GLOBAL_SHORTCUT_IDS.includes(conflictDef.id)) {
+      // 被替换方的全局快捷键需要清除
+      updateGlobalShortcut(conflictDef.id, '').catch((e) =>
+        console.error('[ShortcutSettings] Failed to clear conflicting global shortcut:', e),
+      )
+    }
+    if (GLOBAL_SHORTCUT_IDS.includes(def.id)) {
+      // 当前快捷键重新注册新组合键
+      updateGlobalShortcut(def.id, conflictCombo).catch((e) =>
+        console.error('[ShortcutSettings] Failed to sync global shortcut after replace:', e),
+      )
+    }
     setConflictCombo(null)
   }
 
@@ -324,10 +354,25 @@ function ShortcutRow({ def }: { def: ShortcutDefinition }): React.ReactElement {
 function ResetAllButton(): React.ReactElement {
   const [overrides, setOverrides] = useAtom(shortcutOverridesAtom)
   const hasAny = Object.keys(overrides).length > 0
+
+  const handleResetAll = () => {
+    setOverrides({})
+    // 将所有全局快捷键重置为默认值
+    for (const id of GLOBAL_SHORTCUT_IDS) {
+      if (overrides[id]) {
+        const def = SHORTCUT_DEFINITIONS.find((d) => d.id === id)
+        const defaultCombo = def ? (isMac ? def.mac : def.win) ?? '' : ''
+        updateGlobalShortcut(id, defaultCombo).catch((e) =>
+          console.error('[ShortcutSettings] Failed to reset global shortcut on reset-all:', e),
+        )
+      }
+    }
+  }
+
   return (
     <button
       type="button"
-      onClick={() => setOverrides({})}
+      onClick={handleResetAll}
       disabled={!hasAny}
       title={hasAny ? '清除全部自定义快捷键，恢复默认' : '没有自定义项'}
       aria-label="重置全部"

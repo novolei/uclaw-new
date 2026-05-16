@@ -508,9 +508,11 @@ function ThinkingFileChip(props: ThinkingChipProps & { sessionId: string | null 
 interface ThinkingBlockProps {
   block: SDKThinkingBlock
   dimmed?: boolean
+  /** 当前会话 ID — 用于文件 chip 路径解析 */
+  sessionId?: string | null
 }
 
-export function ThinkingBlock({ block, dimmed = false }: ThinkingBlockProps): React.ReactElement {
+export function ThinkingBlock({ block, dimmed = false, sessionId = null }: ThinkingBlockProps): React.ReactElement {
   const [isExpanded, setIsExpanded] = React.useState(false)
 
   const toggleExpand = React.useCallback(() => {
@@ -521,10 +523,10 @@ export function ThinkingBlock({ block, dimmed = false }: ThinkingBlockProps): Re
     () => ({
       ...THINKING_MD_COMPONENTS,
       'file-path-chip': (chipProps: ThinkingChipProps) => (
-        <ThinkingFileChip {...chipProps} sessionId={null} />
+        <ThinkingFileChip {...chipProps} sessionId={sessionId} />
       ),
     }),
-    [],
+    [sessionId],
   ) as ComponentProps<typeof Markdown>['components']
 
   return (
@@ -600,7 +602,7 @@ export function ContentBlock({ block, allMessages, animate = false, index = 0, d
   if (block.type === 'thinking') {
     const thinkingBlock = block as SDKThinkingBlock
     if (!thinkingBlock.thinking) return null
-    return <ThinkingBlock block={thinkingBlock} dimmed={dimmed} />
+    return <ThinkingBlock block={thinkingBlock} dimmed={dimmed} sessionId={null} />
   }
 
   return null
