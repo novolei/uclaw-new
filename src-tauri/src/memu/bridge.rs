@@ -82,6 +82,12 @@ pub struct MemUBridge {
     data_dir: PathBuf,
     llm_env: Vec<(String, String)>,
     shutdown: AtomicBool,
+    /// Prevent concurrent restart attempts.
+    /// When one caller is restarting the subprocess, other callers
+    /// must wait — otherwise the second spawn_subprocess overwrites
+    /// inner.child (which holds kill_on_drop) and kills the first
+    /// freshly-started process.
+    restart_lock: Mutex<()>,
 }
 
 impl MemUBridge {
@@ -105,6 +111,7 @@ impl MemUBridge {
             data_dir: data_dir.into(),
             llm_env,
             shutdown: AtomicBool::new(false),
+            restart_lock: Mutex::new(()),
         }
     }
 
@@ -121,6 +128,10 @@ impl MemUBridge {
     }
 
     /// Spawn (or respawn) the Python subprocess.
+    ///
+    /// IMPORTANT: Caller must hold `restart_lock` to prevent concurrent
+    /// spawns from overwriting `inner.child` and triggering kill_on_drop
+    /// on a freshly-started process.
     async fn spawn_subprocess(&self) -> Result<(), BridgeError> {
         let db_path = self.data_dir.join("memory").join("memu.db");
 
@@ -163,7 +174,15 @@ impl MemUBridge {
         let stdin = child.stdin.take()
             .ok_or_else(|| BridgeError::StartFailed("Failed to capture stdin".into()))?;
 
+        // Before storing the new child, explicitly drop any previous child
+        // to prevent accidental kill_on_drop from a race.
+        // (The restart_lock in the caller should prevent this, but this
+        // is defense-in-depth.)
         let mut inner = self.inner.lock().await;
+        if let Some(mut old_child) = inner.child.take() {
+            drop(old_child); // kill_on_drop triggers here
+            // Give the OS a moment to release resources
+        }
         inner.child = Some(child);
         inner.stdin = Some(stdin);
         drop(inner);
@@ -348,10 +367,17 @@ impl MemUBridge {
             return Err(BridgeError::ShuttingDown);
         }
 
-        // Auto-restart if not alive
+        // Auto-restart if not alive.
+        // Use a restart lock to prevent concurrent try_restart calls from
+        // overwriting inner.child (kill_on_drop → kills freshly-started process).
         if !self.alive.load(Ordering::SeqCst) {
-            tracing::info!("memU subprocess not running, attempting restart...");
-            self.try_restart().await?;
+            let _restart_guard = self.restart_lock.lock().await;
+            // Re-check: another caller may have completed a restart while
+            // we waited for the lock.
+            if !self.alive.load(Ordering::SeqCst) {
+                tracing::info!("memU subprocess not running, attempting restart...");
+                self.try_restart().await?;
+            }
         }
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
