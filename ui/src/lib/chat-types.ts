@@ -303,6 +303,15 @@ export interface SystemPromptConfig {
   appendDateTimeAndUserName: boolean
 }
 
+/** 系统提示词版本快照 */
+export interface SystemPromptVersion {
+  id: string
+  promptId: string
+  name: string
+  content: string
+  createdAt: number
+}
+
 /** 内置默认提示词 ID */
 export const BUILTIN_DEFAULT_ID = 'builtin-default'
 

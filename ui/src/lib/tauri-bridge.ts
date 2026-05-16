@@ -155,6 +155,11 @@ export interface MemoryRecallConfigDto {
   vectorWeight?: number;
   bootLearnedSkillsLimit?: number;
   tokenBudget?: number;
+  layerExpandedSeedTake?: number;
+  layerExpandedMaxDepth?: number;
+  timeDecayHalfLifeDays?: number;
+  ftsFallbackLimitMultiplier?: number;
+  bootUserProfileLimit?: number;
 }
 
 export const getMemoryRecallConfig = (): Promise<MemoryRecallConfigDto> =>
@@ -638,6 +643,17 @@ export const memoryGraphExplainRecall = (input: MemoryGraphExplainRecallInput): 
 export const memoryGraphCreateNode = (input: MemoryGraphCreateNodeInput): Promise<unknown> =>
   invoke('memory_graph_create_node', { input });
 
+export interface MemoryGraphQuickCaptureInput {
+  content: string
+  title?: string
+  spaceId?: string
+  source?: string
+  tags?: string[]
+}
+
+export const memoryGraphQuickCapture = (input: MemoryGraphQuickCaptureInput): Promise<unknown> =>
+  invoke('memory_graph_quick_capture', { input })
+
 export const memoryGraphUpdateNode = (input: MemoryGraphUpdateNodeInput): Promise<unknown> =>
   invoke('memory_graph_update_node', { input });
 
@@ -1021,6 +1037,31 @@ export const createAgentSession = (title?: string, channelId?: string, workspace
   invoke('create_agent_session', { title: title ?? null, channelId: channelId ?? null, workspaceId: workspaceId ?? null })
     .catch(() => ({ id: crypto.randomUUID(), title: title || '新会话', createdAt: Date.now(), updatedAt: Date.now() }))
 
+/** Estimate context token usage for a session from persisted messages.
+ *  Mirrors openhanako's `context_usage` WS request — lets the frontend
+ *  initialize ContextUsageBadge immediately on session load/switch without
+ *  waiting for a full LLM round-trip. (P0 fix: 2026-05-16) */
+export const estimateSessionContext = (sessionId: string): Promise<{
+  sessionId: string
+  inputTokens: number
+  contextWindow: number
+  systemPromptTokens: number
+  messagesTokens: number
+  toolUseTokens: number
+  compactBufferTokens: number
+  freeTokens: number
+} | null> =>
+  invoke<{
+    sessionId: string
+    inputTokens: number
+    contextWindow: number
+    systemPromptTokens: number
+    messagesTokens: number
+    toolUseTokens: number
+    compactBufferTokens: number
+    freeTokens: number
+  }>('estimate_session_context', { sessionId }).catch(() => null)
+
 export const getAgentSessionMessages = (sessionId: string): Promise<any[]> =>
   invoke<any[]>('get_agent_session_messages', { sessionId }).catch(() => [])
 
@@ -1046,6 +1087,7 @@ export const sendAgentMessage = (input: any): Promise<void> => {
     modelId: input.modelId ?? null,
     workspaceId: input.workspaceId ?? null,
     strategy: input.strategy ?? null,
+    promptId: input.promptId ?? null,
   }})
 }
 
@@ -1139,6 +1181,9 @@ export const updateSystemPrompt = (id: string, input: any): Promise<any> =>
 
 export const updateAppendSetting = (enabled: boolean): Promise<void> =>
   invoke<void>('update_append_setting', { enabled }).catch(() => {})
+
+export const getSystemPromptVersions = (promptId: string): Promise<any[]> =>
+  invoke<any[]>('get_system_prompt_versions', { promptId }).catch(() => [])
 
 // --- Chat tools compat ---
 export const updateChatToolState = (toolId: string, patch: any): Promise<void> =>
@@ -1695,3 +1740,68 @@ export async function previewReadBytes(
     mtimeMs: raw.mtime_ms,
   }
 }
+
+// ── Global Shortcut ─────────────────────────────────────────────────────────
+
+/**
+ * 动态更新全局快捷键绑定。解除旧绑定并注册新的系统级全局快捷键。
+ * @param shortcutId 快捷键 ID，如 "quick-memory-voice"
+ * @param newCombo 新的组合键字符串，如 "Cmd+Shift+M"。空字符串表示移除绑定。
+ */
+export async function updateGlobalShortcut(shortcutId: string, newCombo: string): Promise<void> {
+  await invoke<void>('update_global_shortcut', { shortcutId, newCombo })
+}
+
+// ============ 记忆碎片相关 ============
+
+export interface ReviewStatus {
+  reviewCount: number
+  nextReviewAt: number | null
+  completed: boolean
+}
+
+export interface FragmentItem {
+  id: string
+  title: string | null
+  content: string
+  source: string
+  tags: string[]
+  subtype?: string
+  createdAt: number
+  reviewStatus?: ReviewStatus
+}
+
+export interface FragmentSearchHit {
+  id: string
+  title: string | null
+  snippet: string
+  tags: string[]
+  subtype?: string
+  source: string
+  createdAt: number
+}
+
+export interface ListFragmentsInput {
+  spaceId?: string
+  tag?: string
+  limit?: number
+  offset?: number
+}
+
+export interface DailySummaryItem {
+  id: string
+  summaryDate: string
+  content: string
+  fragmentCount: number
+  fragmentIds: string[]
+  createdAt: number
+}
+
+export const memoryGraphListFragments = (input: ListFragmentsInput): Promise<FragmentItem[]> =>
+  invoke('memory_graph_list_fragments', { input })
+
+export const searchFragments = (query: string): Promise<FragmentSearchHit[]> =>
+  invoke('search_fragments', { query })
+
+export const listDailySummaries = (limit?: number): Promise<DailySummaryItem[]> =>
+  invoke('list_daily_summaries', { limit })

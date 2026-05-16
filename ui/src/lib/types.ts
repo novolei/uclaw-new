@@ -713,6 +713,7 @@ export interface MemoryTimelineEntry {
   contentSnippet: string;
   kind: MemoryNodeKind;
   updatedAt: string;
+  metadata?: Record<string, any>;
 }
 
 export interface MemoryEdge {

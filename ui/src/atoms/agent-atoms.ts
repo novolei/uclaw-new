@@ -115,6 +115,8 @@ export interface AgentStreamState {
   }
   teammates: TeammateState[]
   waitingResume?: boolean
+  /** Whether any LLM call in this turn was truncated (finish_reason=length). */
+  truncated?: boolean
 }
 
 /** 从 ToolActivity 派生状态 */
@@ -949,12 +951,12 @@ export interface MemoryRecallEvent {
   expandedCount: number
   recentCount: number
   items: MemoryRecallItem[]
-  conversationId: string
+  conversationId: string | null
   timestamp: string
 }
 
-/** 最近一次记忆召回事件（每次 Agent turn 覆盖） */
-export const memoryRecallEventAtom = atom<MemoryRecallEvent | null>(null)
+/** 记忆召回事件 Map，按 conversationId 索引，支持多 session 隔离 */
+export const memoryRecallEventAtom = atom<Map<string, MemoryRecallEvent>>(new Map())
 
 // ===== 初始化就绪状态 =====
 

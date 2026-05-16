@@ -63,6 +63,10 @@ export interface AgentMessage {
   toolActivities?: ChatToolActivity[]
   /** Same as ChatMessage.contentBlocks — see chat-types.ts. */
   contentBlocks?: ContentBlock[]
+  /** Whether this message has been logically compacted (P1 logical-marking).
+   *  Compacted messages stay in the DB but are marked for visual distinction
+   *  and exclusion from LLM context. Default: false. */
+  compacted?: boolean
 }
 
 

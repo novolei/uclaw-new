@@ -164,6 +164,7 @@ function startAgentListeners(store: Store): void {
       conversationId: string
       text: string
       compact?: { removed: number; remaining: number; before: number }
+      truncated?: boolean
     }>('chat:stream-complete', ({ payload }) => {
       const sid = payload.conversationId
       const wasCompacting = store.get(agentStreamingStatesAtom).get(sid)?.isCompacting === true
@@ -190,6 +191,7 @@ function startAgentListeners(store: Store): void {
           content: payload.text || existing.content,
           reasoning: undefined,
           toolActivities: finalActivities,
+          truncated: payload.truncated === true,
         })
         return next
       })
@@ -210,7 +212,11 @@ function startAgentListeners(store: Store): void {
 
         store.set(liveMessagesMapAtom, (prev) => {
           const map = new Map(prev)
-          const current = map.get(sid) ?? []
+          // Filter out any compacting indicators — they are replaced by the
+          // compact_boundary below (clean transition from "正在压缩..." → "上下文已压缩").
+          const current = (map.get(sid) ?? []).filter(
+            (item: any) => !(item.type === 'system' && item.subtype === 'compacting')
+          )
           const marker = {
             type: 'system',
             subtype: 'compact_boundary',
@@ -668,22 +674,41 @@ function startAgentListeners(store: Store): void {
     )
   )
 
-  // agent:context_stats → capture skill manifest token cost into stream state
-  // so the ContextUsageBadge popover can display a "技能" row. Other fields
-  // (model_context_length, system_prompt_tokens, etc.) are intentionally
-  // ignored here — they're available via the onContextStats bridge for
-  // consumers that want the full breakdown (e.g. ContextStatsModal).
+  // agent:context_stats → capture skill manifest token cost AND context window
+  // bounds into streaming state. Previously only skillsTokens was captured;
+  // modelContextLength + freeTokens were ignored, so ContextUsageBadge never
+  // received contextWindow → ratio ring never rendered. (P0 fix: 2026-05-16)
   reg(
-    listen<{ conversationId: string; skillsTokens: number }>(
+    listen<{
+      conversationId: string
+      skillsTokens: number
+      modelContextLength: number
+      freeTokens: number
+    }>(
       'agent:context_stats',
       ({ payload }) => {
         const sid = payload.conversationId
         store.set(agentStreamingStatesAtom, (prev) => {
           const existing = prev.get(sid)
           if (!existing) return prev
-          if (existing.skillsTokens === payload.skillsTokens) return prev
           const next = new Map(prev)
-          next.set(sid, { ...existing, skillsTokens: payload.skillsTokens })
+          // contextWindow: model's actual max context window (e.g. 200K for Claude).
+          // Persisted once per session — doesn't change between turns.
+          const contextWindow: number = payload.modelContextLength || existing.contextWindow || 0
+          // inputTokens: estimated total context usage computed by backend.
+          // Only set when the per-turn agent:turn_cost hasn't already populated it
+          // (turn_cost fires first in on_usage, so this acts as fallback).
+          const estimatedInput = contextWindow > 0
+            ? Math.max(0, contextWindow - payload.freeTokens)
+            : 0
+          next.set(sid, {
+            ...existing,
+            skillsTokens: payload.skillsTokens,
+            contextWindow,
+            ...(existing.inputTokens != null && existing.inputTokens > 0
+              ? {} // turn_cost already provided the API-counted value — keep it
+              : { inputTokens: estimatedInput }),
+          })
           return next
         })
       }
@@ -716,7 +741,11 @@ function startAgentListeners(store: Store): void {
         skills: payload.skillsCount,
         conversationId: payload.conversationId,
       })
-      store.set(memoryRecallEventAtom, payload)
+      store.set(memoryRecallEventAtom, (prev) => {
+        const next = new Map(prev)
+        next.set(payload.conversationId || '__global__', payload)
+        return next
+      })
     })
   )
 

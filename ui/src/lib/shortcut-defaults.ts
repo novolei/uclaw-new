@@ -100,6 +100,29 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     mac: 'Alt+S',
     win: 'Alt+S',
   },
+
+  // ─── 记忆 ───
+  {
+    id: 'quick-memory-voice',
+    label: '语音记忆',
+    group: '记忆',
+    mac: 'Cmd+Shift+M',
+    win: 'Ctrl+Shift+M',
+  },
+  {
+    id: 'quick-capture',
+    label: '快速记忆',
+    group: '记忆',
+    mac: 'Cmd+Shift+.',
+    win: 'Ctrl+Shift+.',
+  },
+  {
+    id: 'clipboard-capture-silent',
+    label: '剪贴板直接存入记忆',
+    group: '记忆',
+    mac: 'Cmd+Shift+C',
+    win: 'Ctrl+Shift+C',
+  },
 ]
 
 /** 快速查找表 */
