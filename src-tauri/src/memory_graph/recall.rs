@@ -89,6 +89,23 @@ pub struct MemoryRecallConfig {
     /// enough room for the conversation itself (typical agent-loop
     /// context windows are 128k–200k; 5k memory is ~2.5–4%).
     pub token_budget: usize,
+    /// How many top seeds to feed into L4 graph BFS propagation.
+    /// Default: 5
+    pub layer_expanded_seed_take: usize,
+    /// Maximum BFS hop depth for L4 graph propagation.
+    /// Default: 2
+    pub layer_expanded_max_depth: usize,
+    /// Half-life (in days) for the Gaussian time-decay function.
+    /// Default: 7.0
+    pub time_decay_half_life_days: f64,
+    /// When memU vector search is unavailable, multiply seed_limit by
+    /// this factor for the FTS fallback search to compensate.
+    /// Default: 2.0
+    pub fts_fallback_limit_multiplier: f32,
+    /// How many UserProfile nodes to auto-inject in a dedicated recall
+    /// channel (independent of boot_limit quota). Set to 0 to disable.
+    /// Default: 5
+    pub boot_user_profile_limit: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,8 +127,13 @@ impl Default for MemoryRecallConfig {
             rrf_k: 60,
             fts_weight: 0.5,
             vector_weight: 0.5,
-            boot_learned_skills_limit: 3,
+            boot_learned_skills_limit: 5,
             token_budget: 5000,
+            layer_expanded_seed_take: 5,
+            layer_expanded_max_depth: 2,
+            time_decay_half_life_days: 7.0,
+            fts_fallback_limit_multiplier: 2.0,
+            boot_user_profile_limit: 5,
         }
     }
 }
@@ -145,6 +167,16 @@ pub struct MemoryRecallConfigDto {
     pub boot_learned_skills_limit: Option<usize>,
     #[serde(default)]
     pub token_budget: Option<usize>,
+    #[serde(default)]
+    pub layer_expanded_seed_take: Option<usize>,
+    #[serde(default)]
+    pub layer_expanded_max_depth: Option<usize>,
+    #[serde(default)]
+    pub time_decay_half_life_days: Option<f64>,
+    #[serde(default)]
+    pub fts_fallback_limit_multiplier: Option<f32>,
+    #[serde(default)]
+    pub boot_user_profile_limit: Option<usize>,
 }
 
 impl From<MemoryRecallConfigDto> for MemoryRecallConfig {
@@ -162,6 +194,11 @@ impl From<MemoryRecallConfigDto> for MemoryRecallConfig {
             vector_weight: dto.vector_weight.unwrap_or(default.vector_weight),
             boot_learned_skills_limit: dto.boot_learned_skills_limit.unwrap_or(default.boot_learned_skills_limit),
             token_budget: dto.token_budget.unwrap_or(default.token_budget),
+            layer_expanded_seed_take: dto.layer_expanded_seed_take.unwrap_or(default.layer_expanded_seed_take),
+            layer_expanded_max_depth: dto.layer_expanded_max_depth.unwrap_or(default.layer_expanded_max_depth),
+            time_decay_half_life_days: dto.time_decay_half_life_days.unwrap_or(default.time_decay_half_life_days),
+            fts_fallback_limit_multiplier: dto.fts_fallback_limit_multiplier.unwrap_or(default.fts_fallback_limit_multiplier),
+            boot_user_profile_limit: dto.boot_user_profile_limit.unwrap_or(default.boot_user_profile_limit),
         }
     }
 }
@@ -180,6 +217,11 @@ impl From<MemoryRecallConfig> for MemoryRecallConfigDto {
             vector_weight: Some(cfg.vector_weight),
             boot_learned_skills_limit: Some(cfg.boot_learned_skills_limit),
             token_budget: Some(cfg.token_budget),
+            layer_expanded_seed_take: Some(cfg.layer_expanded_seed_take),
+            layer_expanded_max_depth: Some(cfg.layer_expanded_max_depth),
+            time_decay_half_life_days: Some(cfg.time_decay_half_life_days),
+            fts_fallback_limit_multiplier: Some(cfg.fts_fallback_limit_multiplier),
+            boot_user_profile_limit: Some(cfg.boot_user_profile_limit),
         }
     }
 }
@@ -320,17 +362,17 @@ impl MemoryRecallEngine {
         info!(count = boot.len(), "recall: L1 boot candidates");
 
         // L2 — Triggered
-        let mut triggered = self.layer_triggered(space_id, user_input, &mut seen)?;
+        let triggered = self.layer_triggered(space_id, user_input, &mut seen)?;
         info!(count = triggered.len(), "recall: L2 triggered candidates (pre-filter)");
         let triggered = self.filter_by_time_range(triggered, time_range)?;
 
         // L3 — Relevant (seed)
-        let mut relevant = self.layer_relevant(space_id, user_input, &mut seen).await?;
+        let relevant = self.layer_relevant(space_id, user_input, &mut seen).await?;
         info!(count = relevant.len(), "recall: L3 relevant candidates (pre-filter)");
         let relevant = self.filter_by_time_range(relevant, time_range)?;
 
         // L4 — Expanded (graph walk)
-        let mut expanded = self.layer_expanded(&relevant, &mut seen)?;
+        let expanded = self.layer_expanded(&relevant, &mut seen)?;
         info!(count = expanded.len(), "recall: L4 expanded candidates (pre-filter)");
         let expanded = self.filter_by_time_range(expanded, time_range)?;
 
@@ -439,11 +481,38 @@ impl MemoryRecallEngine {
 
         // ── Helper: estimate approximate token count ──
         fn estimate_tokens(s: &str) -> usize {
-            let chars = s.chars().count();
-            let cjk_count = s.chars().filter(|&c| is_cjk(c)).count();
-            let ascii_chars = chars - cjk_count;
-            // CJK: ~1 token/char; ASCII: ~0.25 tokens/char (≈1.3 tokens/word)
-            cjk_count + (ascii_chars / 4).max(1)
+            fn estimate_ascii_tokens(char_count: usize) -> usize {
+                ((char_count as f32 / 4.0) * 1.3).ceil() as usize
+            }
+
+            let mut tokens: usize = 0;
+            let mut ascii_word_len: usize = 0;
+
+            for c in s.chars() {
+                if c >= '\u{4e00}' && c <= '\u{9fff}' || c >= '\u{3400}' && c <= '\u{4dbf}' {
+                    // CJK 字符：平均 ~1.5 tokens/char，保守估计为 1
+                    if ascii_word_len > 0 {
+                        tokens += estimate_ascii_tokens(ascii_word_len);
+                        ascii_word_len = 0;
+                    }
+                    tokens += 1;
+                } else if c.is_alphanumeric() || c == '_' {
+                    ascii_word_len += 1;
+                } else {
+                    // 分隔符/标点
+                    if ascii_word_len > 0 {
+                        tokens += estimate_ascii_tokens(ascii_word_len);
+                        ascii_word_len = 0;
+                    }
+                    if !c.is_whitespace() {
+                        tokens += 1; // 标点通常是独立 token
+                    }
+                }
+            }
+            if ascii_word_len > 0 {
+                tokens += estimate_ascii_tokens(ascii_word_len);
+            }
+            tokens.max(1)
         }
 
         // ── Helper: render a snippet respecting a max char budget ──
@@ -454,25 +523,6 @@ impl MemoryRecallEngine {
         // ── Helper: format a section header ──
         let format_section_header = |header: &str| -> String { header.to_string() };
 
-        // ── Helper: check if a section fits within remaining token budget ──
-        let section_fits = |_section_name: &str,
-                             num_items: usize,
-                             _item_cost: usize,
-                             budget: usize,
-                             used: usize,
-                             budget_enabled: bool|
-         -> bool {
-            if !budget_enabled {
-                return true;
-            }
-            if used >= budget {
-                return false;
-            }
-            let header_cost = 10;
-            let per_item_cost = 50;
-            let min_needed = header_cost + num_items.min(2).saturating_mul(per_item_cost) + 10;
-            budget.saturating_sub(used) >= min_needed
-        };
 
         // ── Learned Skills section (top priority) ──
         if !learned_skills.is_empty() {
@@ -556,8 +606,8 @@ impl MemoryRecallEngine {
 
         // ── Normal sections (filtering out learned/disabled skills) ──
         // Section priority: Boot > Triggered > Relevant > Expanded > Recent.
-        // As budget tightens, we progressively shorten snippet chars then
-        // drop lower-priority sections entirely.
+        // Use TokenBudgetAllocation for per-section budget management and
+        // CrossLayerDedup for cross-layer deduplication with score merging.
 
         let boot_normal: Vec<&MemoryRecallCandidate> =
             plan.boot.iter().filter(|c| should_render_normal(*c)).collect();
@@ -568,18 +618,40 @@ impl MemoryRecallEngine {
         let expanded_normal: Vec<&MemoryRecallCandidate> =
             plan.expanded.iter().filter(|c| should_render_normal(*c)).collect();
 
-        // Determine snippet max-chars based on remaining budget.
-        let snippet_max = if !budget_enabled {
-            200
-        } else {
-            let rem = budget.saturating_sub(used);
-            if rem > 2000 { 200 } else if rem > 1000 { 120 } else { 60 }
+        // Initialize per-section budget allocation from remaining tokens
+        let remaining_budget = if budget_enabled { budget.saturating_sub(used) } else { 0 };
+        let mut allocation = TokenBudgetAllocation::from_total(remaining_budget);
+
+        // CrossLayerDedup: register all candidates for multi-source bonus tracking
+        let mut dedup = CrossLayerDedup::new();
+        for c in &boot_normal {
+            dedup.should_include(&c.node_id, c.score.unwrap_or(1.0), "boot");
+        }
+        for c in &triggered_normal {
+            dedup.should_include(&c.node_id, c.score.unwrap_or(0.8), "triggered");
+        }
+        for c in &relevant_normal {
+            dedup.should_include(&c.node_id, c.score.unwrap_or(0.5), "relevant");
+        }
+        for c in &expanded_normal {
+            dedup.should_include(&c.node_id, c.score.unwrap_or(0.3), "expanded");
+        }
+
+        // Helper: determine snippet max-chars from a given section budget
+        let snippet_max_for_budget = |section_budget: usize| -> usize {
+            if !budget_enabled { return 200; }
+            if section_budget > 800 { 200 } else if section_budget > 400 { 120 } else { 60 }
         };
 
         // ── Boot ──
-        if !boot_normal.is_empty() && section_fits("Boot Memories", boot_normal.len(), 200, budget, used, budget_enabled) {
+        if !boot_normal.is_empty() {
+            let section_budget = allocation.budget_for("boot");
+            let snippet_max = snippet_max_for_budget(section_budget);
             let mut section_out = format_section_header("## Boot Memories (启动记忆)\n");
             for c in &boot_normal {
+                if budget_enabled && estimate_tokens(&section_out) >= section_budget {
+                    break;
+                }
                 section_out.push_str(&format!(
                     "- [{}] {}: {}\n",
                     capitalize_kind(&c.kind),
@@ -588,16 +660,24 @@ impl MemoryRecallEngine {
                 ));
             }
             section_out.push('\n');
+            let section_tokens = estimate_tokens(&section_out);
             if budget_enabled {
-                used += estimate_tokens(&section_out);
+                allocation.cascade_unused("boot", section_tokens);
             }
             out.push_str(&section_out);
+        } else if budget_enabled {
+            allocation.cascade_unused("boot", 0);
         }
 
         // ── Triggered ──
-        if !triggered_normal.is_empty() && section_fits("Triggered Memories", triggered_normal.len(), 200, budget, used, budget_enabled) {
+        if !triggered_normal.is_empty() {
+            let section_budget = allocation.budget_for("triggered");
+            let snippet_max = snippet_max_for_budget(section_budget);
             let mut section_out = format_section_header("## Triggered Memories (触发记忆)\n");
             for c in &triggered_normal {
+                if budget_enabled && estimate_tokens(&section_out) >= section_budget {
+                    break;
+                }
                 let kw_display = if c.matched_keywords.is_empty() {
                     String::new()
                 } else {
@@ -612,20 +692,27 @@ impl MemoryRecallEngine {
                 ));
             }
             section_out.push('\n');
+            let section_tokens = estimate_tokens(&section_out);
             if budget_enabled {
-                used += estimate_tokens(&section_out);
+                allocation.cascade_unused("triggered", section_tokens);
             }
             out.push_str(&section_out);
+        } else if budget_enabled {
+            allocation.cascade_unused("triggered", 0);
         }
 
         // ── Relevant ──
-        if !relevant_normal.is_empty() && section_fits("Relevant Memories", relevant_normal.len(), 200, budget, used, budget_enabled) {
+        if !relevant_normal.is_empty() {
+            let section_budget = allocation.budget_for("relevant");
+            let snippet_max = snippet_max_for_budget(section_budget);
             let mut section_out = format_section_header("## Relevant Memories (相关记忆)\n");
             for c in &relevant_normal {
-                let score_display = c
-                    .score
-                    .map(|s| format!("（相关度：{:.2}）", s))
-                    .unwrap_or_default();
+                if budget_enabled && estimate_tokens(&section_out) >= section_budget {
+                    break;
+                }
+                let bonus = dedup.multi_source_bonus(&c.node_id);
+                let effective_score = c.score.unwrap_or(0.0) + bonus;
+                let score_display = format!("（相关度：{:.2}）", effective_score);
                 section_out.push_str(&format!(
                     "- [{}] {}: {}{}\n",
                     capitalize_kind(&c.kind),
@@ -635,49 +722,62 @@ impl MemoryRecallEngine {
                 ));
             }
             section_out.push('\n');
+            let section_tokens = estimate_tokens(&section_out);
             if budget_enabled {
-                used += estimate_tokens(&section_out);
+                allocation.cascade_unused("relevant", section_tokens);
             }
             out.push_str(&section_out);
+        } else if budget_enabled {
+            allocation.cascade_unused("relevant", 0);
         }
 
         // ── Expanded ──
-        let exp_snip_max = snippet_max.min(if budget_enabled && budget.saturating_sub(used) < 600 { 60 } else { snippet_max });
-        if !expanded_normal.is_empty() && section_fits("Expanded Context", expanded_normal.len(), 200, budget, used, budget_enabled) {
+        if !expanded_normal.is_empty() {
+            let section_budget = allocation.budget_for("expanded");
+            let snippet_max = snippet_max_for_budget(section_budget).min(120);
             let mut section_out = format_section_header("## Expanded Context (扩展上下文)\n");
             for c in &expanded_normal {
+                if budget_enabled && estimate_tokens(&section_out) >= section_budget {
+                    break;
+                }
                 section_out.push_str(&format!(
                     "- [{}] {}: {}（via {}）\n",
                     capitalize_kind(&c.kind),
                     c.title,
-                    budgeted_snippet(&c.content, exp_snip_max),
+                    budgeted_snippet(&c.content, snippet_max),
                     c.reason,
                 ));
             }
             section_out.push('\n');
+            let section_tokens = estimate_tokens(&section_out);
             if budget_enabled {
-                used += estimate_tokens(&section_out);
+                allocation.cascade_unused("expanded", section_tokens);
             }
             out.push_str(&section_out);
+        } else if budget_enabled {
+            allocation.cascade_unused("expanded", 0);
         }
 
-        // ── Recent ── (lowest priority, easiest to drop)
-        if !plan.recent.is_empty() && section_fits("Recent Activity", plan.recent.len().min(3), 80, budget, used, budget_enabled) {
-            let mut section_out = format_section_header("## Recent Activity (近期活动)\n");
-            for e in &plan.recent {
-                let date = e.updated_at.get(..10).unwrap_or(&e.updated_at);
-                section_out.push_str(&format!(
-                    "- [{}] {}: {}\n",
-                    capitalize_kind(&e.kind),
-                    date,
-                    e.title,
-                ));
+        // ── Recent ── (lowest priority, receives cascaded surplus)
+        if !plan.recent.is_empty() {
+            let section_budget = allocation.budget_for("recent");
+            if !budget_enabled || section_budget > 30 {
+                let mut section_out = format_section_header("## Recent Activity (近期活动)\n");
+                for e in &plan.recent {
+                    if budget_enabled && estimate_tokens(&section_out) >= section_budget {
+                        break;
+                    }
+                    let date = e.updated_at.get(..10).unwrap_or(&e.updated_at);
+                    section_out.push_str(&format!(
+                        "- [{}] {}: {}\n",
+                        capitalize_kind(&e.kind),
+                        date,
+                        e.title,
+                    ));
+                }
+                section_out.push('\n');
+                out.push_str(&section_out);
             }
-            section_out.push('\n');
-            if budget_enabled {
-                used += estimate_tokens(&section_out);
-            }
-            out.push_str(&section_out);
         }
 
         out.push_str("</memory_context>");
@@ -727,6 +827,39 @@ impl MemoryRecallEngine {
                 matched_keywords: detail.keywords.clone(),
                 metadata: node.metadata.clone(),
             });
+        }
+
+        // ── Auto-mount UserProfile nodes (dedicated channel) ─────
+        // UserProfile nodes get their own quota so they never compete
+        // with boot nodes for slots.
+        if !is_group_chat && self.config.boot_user_profile_limit > 0 {
+            let profiles = self
+                .store
+                .list_nodes_by_kind(space_id, MemoryNodeKind::UserProfile, self.config.boot_user_profile_limit)
+                .unwrap_or_default();
+            for node in profiles {
+                if seen.contains(&node.id) {
+                    continue;
+                }
+                let content = match self.store.get_active_version(&node.id) {
+                    Ok(Some(v)) => v.content,
+                    _ => continue,
+                };
+                seen.insert(node.id.clone());
+                candidates.push(MemoryRecallCandidate {
+                    node_id: node.id.clone(),
+                    title: node.title.clone(),
+                    content,
+                    kind: node.kind,
+                    source: "boot".to_string(),
+                    reason: "UserProfile (dedicated channel)".to_string(),
+                    score: None,
+                    fts_rank: None,
+                    vector_rank: None,
+                    matched_keywords: Vec::new(),
+                    metadata: node.metadata.clone(),
+                });
+            }
         }
 
         // ── Auto-mount top-N learned skills regardless of query ─────
@@ -872,10 +1005,20 @@ impl MemoryRecallEngine {
         user_input: &str,
         seen: &mut HashSet<String>,
     ) -> anyhow::Result<Vec<MemoryRecallCandidate>> {
-        // FTS5 search
+        // 根据 memU 可用性调整 FTS 搜索范围
+        let fts_limit = if self.memu_client.is_some() {
+            self.config.seed_limit * 2
+        } else {
+            // memU 不可用时，扩大 FTS 搜索范围以补偿
+            (self.config.seed_limit as f32 * self.config.fts_fallback_limit_multiplier) as usize
+        };
+
+        // FTS5 search — trigram tokenizer handles CJK natively (since V31 migration).
+        // No need for enhanced n-gram query workaround; raw user input works well
+        // for both CJK and Latin text with trigram tokenization.
         let fts_results = self
             .store
-            .fts_search(space_id, user_input, self.config.seed_limit * 2)
+            .fts_search(space_id, user_input, fts_limit)
             .unwrap_or_default();
 
         // Vector search via memU (if available)
@@ -1029,20 +1172,21 @@ impl MemoryRecallEngine {
             return Ok(Vec::new());
         }
 
-        // Collect top-5 seed node IDs for BFS propagation
+        // Collect top-N seed node IDs for BFS propagation (P1: configurable)
         let seed_ids: Vec<String> = seeds
             .iter()
-            .take(5)
+            .take(self.config.layer_expanded_seed_take)
             .map(|s| s.node_id.clone())
             .collect();
 
-        // BFS graph propagation (max 2 hops, fetch extra for filtering)
+        // BFS graph propagation (P1: configurable max_depth)
         let propagation_results = self.store.graph_propagation_search(
             &seed_ids,
-            2,  // max_depth = 2 hops
+            self.config.layer_expanded_max_depth,
             self.config.expansion_limit * 3,
         )?;
 
+        // P3: 用目标节点新近度重新评分
         let mut candidates = Vec::new();
         for gr in &propagation_results {
             if seen.contains(&gr.node_id) {
@@ -1053,14 +1197,30 @@ impl MemoryRecallEngine {
                 "graph_propagation",
                 &format!("graph bfs depth={} score={:.3}", gr.depth, gr.score),
             )? {
-                // Include graph propagation score in candidate
                 let mut candidate = c;
-                candidate.score = Some(gr.score);
+
+                // 用 time_decay_score 对传播得分做新近度加权
+                let recency = if let Ok(Some(node)) = self.store.get_node(&gr.node_id) {
+                    time_decay_score(&node.updated_at, self.config.time_decay_half_life_days)
+                } else {
+                    0.5 // 默认中间值
+                };
+                // 综合得分 = 传播得分 * (0.5 + 0.5 * recency)
+                let weighted_score = gr.score * (0.5 + 0.5 * recency);
+                candidate.score = Some(weighted_score);
+
                 seen.insert(candidate.node_id.clone());
                 candidates.push(candidate);
             }
         }
 
+        // 按加权得分重新排序
+        candidates.sort_by(|a, b| {
+            b.score
+                .unwrap_or(0.0)
+                .partial_cmp(&a.score.unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         candidates.truncate(self.config.expansion_limit);
         Ok(candidates)
     }
@@ -1195,7 +1355,7 @@ impl MemoryRecallEngine {
                 .unwrap_or_default();
 
             let time_score = if apply_decay {
-                Some(time_decay_score(&node.created_at, 7.0))
+                Some(time_decay_score(&node.created_at, self.config.time_decay_half_life_days))
             } else {
                 None
             };
@@ -1215,6 +1375,189 @@ impl MemoryRecallEngine {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
+
+/// 构建增强的 FTS5 查询字符串：3-gram + 停用词过滤
+///
+/// 历史遗留函数 — 在 memory_fts 使用 unicode61 tokenizer 时作为 CJK 搜索的
+/// 变通方案。自 V31 迁移将 tokenizer 切换为 trigram 后不再需要，保留作为参考。
+#[allow(dead_code)]
+fn build_enhanced_fts_query(input: &str) -> String {
+    // 中文停用词
+    const CJK_STOP_WORDS: &[char] = &[
+        '的', '了', '是', '在', '我', '有', '和', '就', '不', '人', '都', '一', '个', '上',
+        '也', '很', '到', '说', '要', '去', '你', '会', '着', '没', '那', '这', '他', '她',
+    ];
+
+    let mut english_words = Vec::new();
+    let mut cjk_chars = Vec::new();
+    let mut current_ascii = String::new();
+
+    for c in input.chars() {
+        if c >= '\u{4e00}' && c <= '\u{9fff}' || c >= '\u{3400}' && c <= '\u{4dbf}' {
+            // CJK 字符
+            if !current_ascii.is_empty() {
+                english_words.push(std::mem::take(&mut current_ascii));
+            }
+            if !CJK_STOP_WORDS.contains(&c) {
+                cjk_chars.push(c);
+            }
+        } else if c.is_alphanumeric() {
+            current_ascii.push(c);
+        } else {
+            if !current_ascii.is_empty() {
+                english_words.push(std::mem::take(&mut current_ascii));
+            }
+        }
+    }
+    if !current_ascii.is_empty() {
+        english_words.push(current_ascii);
+    }
+
+    // CJK: 3-gram 滑动窗口
+    let cjk_tokens: Vec<String> = if cjk_chars.len() >= 3 {
+        cjk_chars
+            .windows(3)
+            .map(|w| w.iter().collect::<String>())
+            .collect()
+    } else if cjk_chars.len() >= 2 {
+        cjk_chars
+            .windows(2)
+            .map(|w| w.iter().collect::<String>())
+            .collect()
+    } else {
+        cjk_chars.iter().map(|c| c.to_string()).collect()
+    };
+
+    // 组合英文词 + CJK n-grams
+    let mut parts = Vec::new();
+    if !english_words.is_empty() {
+        parts.push(english_words.join(" "));
+    }
+    for token in &cjk_tokens {
+        parts.push(format!("\"{}\"", token));
+    }
+
+    if parts.is_empty() {
+        input.to_string()
+    } else {
+        parts.join(" OR ")
+    }
+}
+
+/// 跨层记忆去重与分数合并
+struct CrossLayerDedup {
+    seen: HashMap<String, (f32, Vec<&'static str>)>, // node_id -> (best_score, source_layers)
+}
+
+impl CrossLayerDedup {
+    fn new() -> Self {
+        Self {
+            seen: HashMap::new(),
+        }
+    }
+
+    /// 返回 true 如果该节点应该被包含（首次出现或分数更高）
+    fn should_include(&mut self, node_id: &str, score: f32, layer: &'static str) -> bool {
+        match self.seen.entry(node_id.to_string()) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert((score, vec![layer]));
+                true
+            }
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                let (best, layers) = e.get_mut();
+                layers.push(layer);
+                if score > *best {
+                    *best = score;
+                    true // 更高分数，允许替换
+                } else {
+                    false // 已有更好的版本
+                }
+            }
+        }
+    }
+
+    /// 获取多源加成分数
+    fn multi_source_bonus(&self, node_id: &str) -> f32 {
+        self.seen
+            .get(node_id)
+            .map(|(_, layers)| {
+                if layers.len() > 1 {
+                    0.1 * (layers.len() - 1) as f32
+                } else {
+                    0.0
+                }
+            })
+            .unwrap_or(0.0)
+    }
+}
+
+/// 令牌预算智能分配
+struct TokenBudgetAllocation {
+    boot: usize,
+    triggered: usize,
+    relevant: usize,
+    expanded: usize,
+    recent: usize,
+}
+
+impl TokenBudgetAllocation {
+    fn from_total(total: usize) -> Self {
+        Self {
+            boot: (total as f32 * 0.30) as usize,
+            triggered: (total as f32 * 0.20) as usize,
+            relevant: (total as f32 * 0.25) as usize,
+            expanded: (total as f32 * 0.15) as usize,
+            recent: (total as f32 * 0.10) as usize,
+        }
+    }
+
+    /// 流转未用配额到下一层
+    fn cascade_unused(&mut self, layer: &str, used: usize) {
+        let surplus = match layer {
+            "boot" => self.boot.saturating_sub(used),
+            "triggered" => self.triggered.saturating_sub(used),
+            "relevant" => self.relevant.saturating_sub(used),
+            "expanded" => self.expanded.saturating_sub(used),
+            _ => return,
+        };
+        if surplus == 0 {
+            return;
+        }
+        match layer {
+            "boot" => {
+                let per = surplus / 2;
+                self.triggered += per;
+                self.relevant += surplus - per;
+            }
+            "triggered" => {
+                let per = surplus / 2;
+                self.relevant += per;
+                self.expanded += surplus - per;
+            }
+            "relevant" => {
+                let per = surplus / 2;
+                self.expanded += per;
+                self.recent += surplus - per;
+            }
+            "expanded" => {
+                self.recent += surplus;
+            }
+            _ => {}
+        }
+    }
+
+    /// 获取指定层的当前预算
+    fn budget_for(&self, layer: &str) -> usize {
+        match layer {
+            "boot" => self.boot,
+            "triggered" => self.triggered,
+            "relevant" => self.relevant,
+            "expanded" => self.expanded,
+            "recent" => self.recent,
+            _ => 0,
+        }
+    }
+}
 
 /// Simple tokenizer that handles both CJK and ASCII text.
 /// - CJK characters are emitted individually.
