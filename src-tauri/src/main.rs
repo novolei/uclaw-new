@@ -2,8 +2,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::collections::HashMap;
 use tauri::Manager;
+use tauri::Emitter;
 use uclaw_core::app::AppState;
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_notification::NotificationExt;
+
+/// 全局快捷键当前绑定注册表。
+/// 存储 shortcut_id -> 当前绑定的 Tauri 格式组合键字符串（如 "Super+Shift+C"）。
+pub struct GlobalShortcutRegistry {
+    pub bindings: Mutex<HashMap<String, String>>,
+}
 
 fn main() {
     // _guard flushes the non-blocking file writer on Drop. Must outlive
@@ -11,10 +22,12 @@ fn main() {
     let _guard = uclaw_core::observability::init();
     uclaw_core::observability::install_panic_hook();
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let app_state = AppState::new(app.handle())?;
 
@@ -69,6 +82,23 @@ fn main() {
 
             app.manage(app_state);
 
+            // ─── Debug 菜单（仅 debug 模式可见） ────────────────────
+            #[cfg(debug_assertions)]
+            {
+                use tauri::menu::SubmenuBuilder;
+
+                let debug_submenu = SubmenuBuilder::new(app, "Debug")
+                    .text("emit-memory-recall", "发射 Memory Recall 测试事件")
+                    .text("emit-proactive-learning", "发射 Proactive Learning 测试事件")
+                    .separator()
+                    .text("generate-default-config", "生成默认配置文件 (memubot_config.json)")
+                    .build()?;
+
+                let menu = app.menu().expect("menu must exist");
+                menu.append(&debug_submenu)?;
+                tracing::info!("[Debug] Debug menu registered (debug mode only)");
+            }
+
             // ─── Stage 3 & 4：注册后台服务并启动 ──────────────────────
             {
                 let state: tauri::State<'_, AppState> = app.state();
@@ -113,6 +143,8 @@ fn main() {
                                 if let Some(ref client) = memu_client {
                                     mem_svc.set_memu_client(Some(client.clone())).await;
                                 }
+                                // 注入 MemoryGraphStore
+                                mem_svc.set_graph_store(memory_graph_store.clone()).await;
                                 service_manager.register(mem_svc).await;
                                 tracing::info!("[Stage 3] MemorizationService registered");
                             }
@@ -180,6 +212,11 @@ fn main() {
                                         db.clone(),
                                     )
                                 );
+                                // Inject into AppState for tauri_commands access
+                                {
+                                    let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                                    *state_ref.proactive_service.write().await = Some(pro_svc.clone());
+                                }
                                 service_manager.register(pro_svc).await;
                                 tracing::info!("[Stage 3] ProactiveService registered");
                             }
@@ -223,7 +260,73 @@ fn main() {
                         }
                     }
                     tracing::info!("[Stage 4] All services started ({} total)", results.len());
+
+                    // Stage 5: 启动间隔复习调度器 & 每日摘要服务
+                    tracing::info!("[Stage 5] Starting review scheduler & daily summary...");
+
+                    let review_scheduler = uclaw_core::proactive::review_scheduler::ReviewScheduler::new(
+                        app_handle.clone(),
+                        db.clone(),
+                    );
+                    review_scheduler.start();
+                    tracing::info!("[Stage 5] ReviewScheduler started");
+
+                    let daily_summary = uclaw_core::proactive::daily_summary::DailySummaryService::new(
+                        app_handle.clone(),
+                        db.clone(),
+                        9, // 默认每天 9 点生成昨日摘要
+                    );
+                    daily_summary.start();
+                    tracing::info!("[Stage 5] DailySummaryService started");
                 });
+            }
+
+            // ─── 全局快捷键注册 ──────────────────────────────────────────
+            {
+                let voice_combo = if cfg!(target_os = "macos") {
+                    "Super+Shift+M"
+                } else {
+                    "Control+Shift+M"
+                };
+                let clip_combo = if cfg!(target_os = "macos") {
+                    "Super+Shift+C"
+                } else {
+                    "Control+Shift+C"
+                };
+
+                // Register voice memory shortcut
+                let voice_shortcut = Shortcut::new(
+                    Some(if cfg!(target_os = "macos") { Modifiers::SUPER | Modifiers::SHIFT } else { Modifiers::CONTROL | Modifiers::SHIFT }),
+                    Code::KeyM,
+                );
+                let voice_handle = app.handle().clone();
+                app.global_shortcut().on_shortcut(voice_shortcut, move |_app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        dispatch_global_shortcut_action(&voice_handle, "quick-memory-voice");
+                    }
+                })?;
+                tracing::info!("[GlobalShortcut] {} registered for voice memory", voice_combo);
+
+                // Register clipboard capture shortcut
+                let clip_shortcut = Shortcut::new(
+                    Some(if cfg!(target_os = "macos") { Modifiers::SUPER | Modifiers::SHIFT } else { Modifiers::CONTROL | Modifiers::SHIFT }),
+                    Code::KeyC,
+                );
+                let clip_handle = app.handle().clone();
+                app.global_shortcut().on_shortcut(clip_shortcut, move |_app, _shortcut, event| {
+                    if event.state != ShortcutState::Pressed { return; }
+                    dispatch_global_shortcut_action(&clip_handle, "clipboard-capture-silent");
+                })?;
+                tracing::info!("[GlobalShortcut] {} registered for clipboard capture", clip_combo);
+
+                // 将初始绑定存入 GlobalShortcutRegistry State
+                let mut initial_bindings = HashMap::new();
+                initial_bindings.insert("quick-memory-voice".to_string(), voice_combo.to_string());
+                initial_bindings.insert("clipboard-capture-silent".to_string(), clip_combo.to_string());
+                app.manage(GlobalShortcutRegistry {
+                    bindings: Mutex::new(initial_bindings),
+                });
+                tracing::info!("[GlobalShortcut] Registry state initialized");
             }
 
             tracing::info!("uClaw started successfully");
@@ -371,6 +474,14 @@ fn main() {
             uclaw_core::tauri_commands::block_tool,
             uclaw_core::tauri_commands::unblock_tool,
             uclaw_core::tauri_commands::assess_command_risk,
+            // System Prompts
+            uclaw_core::tauri_commands::get_system_prompt_config,
+            uclaw_core::tauri_commands::create_system_prompt,
+            uclaw_core::tauri_commands::delete_system_prompt,
+            uclaw_core::tauri_commands::update_system_prompt,
+            uclaw_core::tauri_commands::set_default_prompt,
+            uclaw_core::tauri_commands::get_system_prompt_versions,
+            uclaw_core::tauri_commands::update_append_setting,
             // Tool Approval
             uclaw_core::tauri_commands::approve_tool_call,
             uclaw_core::tauri_commands::respond_ask_user,
@@ -386,10 +497,17 @@ fn main() {
             uclaw_core::tauri_commands::memory_graph_manage_boot,
             uclaw_core::tauri_commands::memory_graph_list_timeline,
             uclaw_core::tauri_commands::memory_graph_explain_recall,
+            uclaw_core::tauri_commands::get_memory_recall_config,
+            uclaw_core::tauri_commands::patch_memory_recall_config,
             uclaw_core::tauri_commands::memory_graph_get_full_graph,
             uclaw_core::tauri_commands::memory_graph_create_node,
+            uclaw_core::tauri_commands::memory_graph_quick_capture,
             uclaw_core::tauri_commands::memory_graph_update_node,
             uclaw_core::tauri_commands::memory_graph_delete_node,
+            // Fragment / Daily Summary
+            uclaw_core::tauri_commands::memory_graph_list_fragments,
+            uclaw_core::tauri_commands::search_fragments,
+            uclaw_core::tauri_commands::list_daily_summaries,
             // Learned Skills
             uclaw_core::tauri_commands::list_learned_skills,
             uclaw_core::tauri_commands::get_learned_skill,
@@ -422,6 +540,7 @@ fn main() {
             uclaw_core::tauri_commands::toggle_archive_agent_session,
             uclaw_core::tauri_commands::toggle_archive_conversation,
             uclaw_core::tauri_commands::list_agent_sessions,
+            uclaw_core::tauri_commands::estimate_session_context,
             uclaw_core::tauri_commands::get_agent_session_messages,
             uclaw_core::tauri_commands::send_agent_message,
             uclaw_core::tauri_commands::move_agent_session_to_workspace,
@@ -538,7 +657,226 @@ fn main() {
             uclaw_core::stt::commands::stt_get_settings,
             uclaw_core::stt::commands::stt_save_settings,
             uclaw_core::stt::commands::stt_list_microphones,
-        ])
+            // Global Shortcut
+            update_global_shortcut,
+        ]);
+
+    // ─── Debug 菜单事件处理器（仅 debug 模式） ──────────────────────
+    #[cfg(debug_assertions)]
+    {
+        builder = builder.on_menu_event(|app_handle, event| {
+            use tauri::Emitter;
+            tracing::info!("[Debug] Menu event received, id={}", event.id().as_ref());
+            let state = app_handle.state::<AppState>();
+            let data_dir = state.data_dir.clone();
+            match event.id().as_ref() {
+                "emit-memory-recall" => {
+                    let _ = app_handle.emit("agent:memory-recall", serde_json::json!({
+                        "totalCandidates": 8,
+                        "skillsCount": 2,
+                        "bootCount": 3,
+                        "triggeredCount": 2,
+                        "relevantCount": 2,
+                        "expandedCount": 1,
+                        "recentCount": 2,
+                        "items": [
+                            {"nodeId": "debug-1", "title": "Git 提交规范 (示例)", "kind": "procedure", "source": "boot"},
+                            {"nodeId": "debug-2", "title": "React 组件拆分最佳实践 (示例)", "kind": "procedure", "source": "boot"},
+                            {"nodeId": "debug-3", "title": "用户偏好：浅色主题 (示例)", "kind": "userProfile", "source": "trigger"},
+                        ],
+                        "conversationId": null,
+                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                    }));
+                    tracing::info!("[Debug] Emitted test memory-recall event");
+                }
+                "emit-proactive-learning" => {
+                    let _ = app_handle.emit("agent:proactive-learning", serde_json::json!({
+                        "scenario": "skill_extraction",
+                        "items_extracted": 2,
+                        "categories": ["procedure"],
+                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                        "summary": "[Debug] 测试技能提取 — 从最近对话中识别到 2 个可复用操作模式",
+                        "sessionId": null,
+                    }));
+                    tracing::info!("[Debug] Emitted test proactive-learning event");
+                }
+                "generate-default-config" => {
+                    let config_path = data_dir.join("memubot_config.json");
+                    if config_path.exists() {
+                        tracing::info!("[Debug] Config already exists at {:?}, skipping", config_path);
+                    } else {
+                        let config = uclaw_core::memubot_config::MemubotConfig::default();
+                        match config.save(&data_dir) {
+                            Ok(()) => tracing::info!("[Debug] Default config saved to {:?}", config_path),
+                            Err(e) => tracing::error!("[Debug] Failed to save config: {:?}", e),
+                        }
+                    }
+                }
+                other => {
+                    tracing::info!("[Debug] Unhandled menu event: {}", other);
+                }
+            }
+        });
+    }
+
+    builder
         .run(tauri::generate_context!())
         .expect("error while running uClaw");
+}
+
+/// 根据 shortcut_id 分派全局快捷键操作
+pub fn dispatch_global_shortcut_action(handle: &tauri::AppHandle, shortcut_id: &str) {
+    match shortcut_id {
+        "quick-memory-voice" => {
+            // 显示主窗口 + 触发前端语音记忆录制
+            if let Some(window) = handle.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            let _ = handle.emit("memory-voice-global-trigger", ());
+            tracing::info!("[GlobalShortcut] memory-voice-global-trigger emitted");
+        }
+        "clipboard-capture-silent" => {
+            let h = handle.clone();
+            std::thread::spawn(move || {
+                clipboard_capture_action(&h);
+            });
+        }
+        _ => {
+            tracing::warn!("[GlobalShortcut] Unknown shortcut_id: {}", shortcut_id);
+        }
+    }
+}
+
+/// 将前端快捷键格式转换为 Tauri 全局快捷键格式
+/// 前端: "Cmd+Shift+C" -> Tauri: "Super+Shift+C" (macOS)
+/// 前端: "Ctrl+Shift+C" -> Tauri: "Control+Shift+C" (Windows/Linux)
+fn convert_frontend_to_tauri_shortcut(combo: &str) -> String {
+    combo
+        .replace("Cmd", "Super")
+        .replace("Ctrl", "Control")
+}
+
+/// IPC 命令：动态更新全局快捷键绑定
+#[tauri::command]
+fn update_global_shortcut(
+    app: tauri::AppHandle,
+    registry: tauri::State<'_, GlobalShortcutRegistry>,
+    shortcut_id: String,
+    new_combo: String,
+) -> Result<(), String> {
+    let mut bindings = registry.bindings.lock().map_err(|e| e.to_string())?;
+
+    // 1. 获取旧绑定并解除
+    if let Some(old_combo) = bindings.get(&shortcut_id).cloned() {
+        if let Err(e) = app.global_shortcut().unregister(old_combo.as_str()) {
+            tracing::warn!("[GlobalShortcut] Failed to unregister '{}': {}", old_combo, e);
+            // 继续执行，不要因为旧快捷键解除失败而中断
+        }
+    }
+
+    // 2. 如果 new_combo 为空，只移除不重新注册
+    if new_combo.is_empty() {
+        bindings.remove(&shortcut_id);
+        tracing::info!("[GlobalShortcut] Removed binding for '{}'", shortcut_id);
+        return Ok(());
+    }
+
+    // 3. 转换前端格式到 Tauri 格式
+    let tauri_combo = convert_frontend_to_tauri_shortcut(&new_combo);
+
+    // 4. 注册新的全局快捷键
+    let shortcut_id_clone = shortcut_id.clone();
+    let handle = app.clone();
+    app.global_shortcut()
+        .on_shortcut(tauri_combo.as_str(), move |_app, _shortcut, event| {
+            if event.state != ShortcutState::Pressed {
+                return;
+            }
+            dispatch_global_shortcut_action(&handle, &shortcut_id_clone);
+        })
+        .map_err(|e| format!("Failed to register shortcut '{}': {}", tauri_combo, e))?;
+
+    // 5. 更新 State
+    tracing::info!(
+        "[GlobalShortcut] Updated '{}': -> '{}'",
+        shortcut_id,
+        tauri_combo
+    );
+    bindings.insert(shortcut_id, tauri_combo);
+
+    Ok(())
+}
+
+/// 执行剪贴板捕获动作：读取剪贴板 -> 保存到记忆 -> 音效 + 通知
+fn clipboard_capture_action(handle: &tauri::AppHandle) {
+    // 1. 读取剪贴板
+    let text = match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
+        Ok(t) if !t.trim().is_empty() => t.trim().to_string(),
+        _ => {
+            play_system_sound(false);
+            let _ = handle.notification()
+                .builder()
+                .title("记忆拾取")
+                .body("剪贴板为空，无内容可保存")
+                .show();
+            return;
+        }
+    };
+
+    // 2. 保存到记忆图谱
+    let save_result = save_clipboard_to_memory(handle, &text);
+
+    // 3. 音效 + OS 通知
+    match save_result {
+        Ok(_) => {
+            play_system_sound(true);
+            let preview: String = text.chars().take(30).collect();
+            let body = if text.chars().count() > 30 {
+                format!("{}...", preview)
+            } else {
+                preview
+            };
+            let _ = handle.notification()
+                .builder()
+                .title("记忆已保存")
+                .body(&body)
+                .show();
+        }
+        Err(e) => {
+            play_system_sound(false);
+            let _ = handle.notification()
+                .builder()
+                .title("记忆保存失败")
+                .body(&e)
+                .show();
+        }
+    }
+}
+
+/// 从 app state 获取 MemoryGraphStore 并调用 quick_capture_core
+fn save_clipboard_to_memory(handle: &tauri::AppHandle, text: &str) -> Result<(), String> {
+    let state = handle.state::<AppState>();
+    let store = &state.memory_graph_store;
+    uclaw_core::tauri_commands::quick_capture_core(store, text, "clipboard", None, None)?;
+    Ok(())
+}
+
+fn play_system_sound(success: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        let sound = if success {
+            "/System/Library/Sounds/Glass.aiff"
+        } else {
+            "/System/Library/Sounds/Basso.aiff"
+        };
+        let _ = std::process::Command::new("afplay").arg(sound).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let sound = if success { "Asterisk" } else { "Hand" };
+        let _ = std::process::Command::new("powershell")
+            .args(["-c", &format!("[System.Media.SystemSounds]::{}::Play()", sound)])
+            .spawn();
+    }
 }

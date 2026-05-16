@@ -120,6 +120,10 @@ fn clamp_opt_f32(v: Option<f32>, min: f32, max: f32) -> Option<f32> {
     v.map(|x| x.clamp(min, max))
 }
 
+fn clamp_opt_f64(v: Option<f64>, min: f64, max: f64) -> Option<f64> {
+    v.map(|x| x.clamp(min, max))
+}
+
 #[tauri::command]
 pub async fn patch_memory_recall_config(
     state: State<'_, AppState>,
@@ -154,6 +158,31 @@ pub async fn patch_memory_recall_config(
             20,
         ),
         token_budget: clamp_opt_usize(input.token_budget.or(existing.token_budget), 100, 20000),
+        layer_expanded_seed_take: clamp_opt_usize(
+            input.layer_expanded_seed_take.or(existing.layer_expanded_seed_take),
+            1,
+            20,
+        ),
+        layer_expanded_max_depth: clamp_opt_usize(
+            input.layer_expanded_max_depth.or(existing.layer_expanded_max_depth),
+            1,
+            5,
+        ),
+        time_decay_half_life_days: clamp_opt_f64(
+            input.time_decay_half_life_days.or(existing.time_decay_half_life_days),
+            0.5,
+            90.0,
+        ),
+        fts_fallback_limit_multiplier: clamp_opt_f32(
+            input.fts_fallback_limit_multiplier.or(existing.fts_fallback_limit_multiplier),
+            1.0,
+            10.0,
+        ),
+        boot_user_profile_limit: clamp_opt_usize(
+            input.boot_user_profile_limit.or(existing.boot_user_profile_limit),
+            0,
+            20,
+        ),
     };
 
     settings.memory_recall_config = Some(merged.clone());
@@ -253,7 +282,7 @@ pub async fn send_message(
     // Fall back to the legacy LlmConfig if no active model is set.
     // Always read legacy config for max_tokens / temperature overrides.
     let legacy_config = state.llm_config.read().await;
-    let max_tokens = legacy_config.max_tokens.unwrap_or(8192);
+    let max_tokens = legacy_config.max_tokens.unwrap_or(16384);
     let temperature = legacy_config.temperature.unwrap_or(0.7);
 
     // Model resolution priority:
@@ -396,7 +425,8 @@ pub async fn send_message(
     })).await;
 
     // Build reasoning context
-    let mut reason_ctx = ReasoningContext::new(get_system_prompt());
+    let workspace_root = active_workspace_root(&state);
+    let mut reason_ctx = ReasoningContext::new(resolve_user_system_prompt(&state.db, input.prompt_id.as_deref(), workspace_root.as_deref()));
     {
         let session_mgr = state.session_manager.read().await;
         if let Some(session) = session_mgr.get(&input.conversation_id) {
@@ -418,13 +448,12 @@ pub async fn send_message(
         .map(|s| parse_safety_mode(s))
         .transpose()?;
 
-    let workspace_root = active_workspace_root(&state);
     let mut delegate = crate::agent::dispatcher::ChatDelegate::new(
         llm,
         tools,
         app_handle.clone(),
         llm_config.model.clone(),
-        get_system_prompt(),
+        resolve_user_system_prompt(&state.db, input.prompt_id.as_deref(), workspace_root.as_deref()),
         state.safety_manager.clone(),
         safety_mode,
         state.pending_approvals.clone(),
@@ -506,7 +535,10 @@ pub async fn send_message(
                     + plan.expanded.len() + plan.recent.len();
 
                 // ── Session-scoped memory recall ──────────────────
-                let session_memory_ctx = if total > 0 {
+                // 独立于图召回结果：即使图召回为空，session 记忆（LIKE 匹配）
+                // 仍应被注入。之前 session_memory_ctx 被 total > 0 条件包裹，
+                // 导致 total=0 时永远跳过 session 记忆。
+                let session_memory_ctx = {
                     let session_ns = format!("session:{}", input.conversation_id);
                     let session_memories = state.memory_store.search(
                         &input.content,
@@ -527,8 +559,6 @@ pub async fn send_message(
                     } else {
                         None
                     }
-                } else {
-                    None
                 };
 
                 if total > 0 {
@@ -575,9 +605,9 @@ pub async fn send_message(
                     // Best-effort, fire-and-forget — usage_count is a soft
                     // ranking signal, never a correctness requirement.
                     recall_engine.record_used_skills(&plan);
-                } else if session_memory_ctx.is_some() {
-                    // 即使图回忆无结果，仍注入会话级记忆
-                    delegate.set_memory_context(session_memory_ctx.unwrap());
+                } else if let Some(sess_ctx) = session_memory_ctx {
+                    // 图召回为空但 session 记忆存在：注入 session 记忆
+                    delegate.set_memory_context(sess_ctx);
                     tracing::info!("Session-scoped memories injected (no graph recall)");
                 } else {
                     tracing::info!("Memory recall returned no candidates");
@@ -589,7 +619,59 @@ pub async fn send_message(
         }
     }
 
-    let config = AgenticLoopConfig::default();
+    // ── Proactive Recall Integration ───────────────────────────────
+    // Prepare background context from ProactiveRecallService and append
+    // failure warnings / recent tasks / tool suggestions to the prompt.
+    {
+        let proactive_guard = state.proactive_service.read().await;
+        if let Some(ref proactive_svc) = *proactive_guard {
+            let proactive_recall = proactive_svc.proactive_recall().clone();
+            let pr_space = space_id.clone();
+            let pr_query = input.content.clone();
+            match proactive_recall.prepare_background_context(&pr_query, None, &pr_space).await {
+                Ok(bg_ctx) => {
+                    let formatted = crate::proactive::proactive_recall::ProactiveRecallService::format_background_for_prompt(&bg_ctx);
+                    if !formatted.is_empty() {
+                        delegate.append_memory_context(&formatted);
+                        tracing::info!(
+                            len = formatted.len(),
+                            "Proactive recall background context injected"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Proactive recall failed, proceeding without");
+                }
+            }
+        }
+    }
+
+    // ── UserProfile dedicated formatting ───────────────────────────
+    // Load user profile preferences from MemoryGraph and inject as a
+    // dedicated <user_preferences> section for the LLM.
+    {
+        let proactive_guard = state.proactive_service.read().await;
+        if let Some(ref proactive_svc) = *proactive_guard {
+            let pref_ext = proactive_svc.preference_extractor().clone();
+            let profile_space = space_id.clone();
+            if let Ok(prefs) = pref_ext.list_preferences(&profile_space) {
+                if !prefs.is_empty() {
+                    let mut user_pref_text = String::from("\n<user_preferences>\n");
+                    for pref in &prefs {
+                        user_pref_text.push_str(&format!("- {}\n", pref.content));
+                    }
+                    user_pref_text.push_str("</user_preferences>\n");
+                    delegate.append_memory_context(&user_pref_text);
+                    tracing::info!(
+                        count = prefs.len(),
+                        "UserProfile preferences injected into system prompt"
+                    );
+                }
+            }
+        }
+    }
+
+    let config = AgenticLoopConfig::from_model(&llm_config.model);
 
     // Run the agent loop
     let outcome = crate::agent::agentic_loop::run_agentic_loop(&delegate, &mut reason_ctx, &config).await;
@@ -598,7 +680,7 @@ pub async fn send_message(
         LoopOutcome::Response { text, .. } => text.clone(),
         LoopOutcome::ToolResult { results } => results.join("\n"),
         LoopOutcome::Stopped => "Conversation stopped.".into(),
-        LoopOutcome::Cancelled => "Conversation cancelled.".into(),
+        LoopOutcome::Cancelled { .. } => "Conversation cancelled.".into(),
         LoopOutcome::MaxIterations => "I've reached the maximum number of steps. Let me summarize what I've done so far.".into(),
         LoopOutcome::Failure { error } => format!("An error occurred: {}", error),
         LoopOutcome::NeedApproval { tool_name, tool_call_id, .. } => {
@@ -625,6 +707,32 @@ pub async fn send_message(
                 state.infra_service.publish_loop_completed("local", &response_text, loop_meta).await;
             }
             _ => {} // Stopped / Cancelled / NeedApproval — no loop event
+        }
+    }
+
+    // ── FailureMemory: record failures for proactive avoidance ────────
+    if let LoopOutcome::Failure { error } = &outcome {
+        let proactive_guard = state.proactive_service.read().await;
+        if let Some(ref proactive_svc) = *proactive_guard {
+            let failure_mem = proactive_svc.failure_memory().clone();
+            let space = space_id.clone();
+            let err_msg = error.clone();
+            tokio::spawn(async move {
+                use crate::proactive::failure_memory::{FailureRecord, FailureType, Severity};
+                let failure = FailureRecord {
+                    failure_type: FailureType::infer("", &err_msg),
+                    error_pattern: err_msg.clone(),
+                    context: err_msg.clone(),
+                    resolution: None,
+                    severity: Severity::Moderate,
+                    occurred_at: chrono::Utc::now().to_rfc3339(),
+                    resolved_at: None,
+                    tool_name: None,
+                    file_paths: vec![],
+                    node_id: None,
+                };
+                let _ = failure_mem.record_failure(&space, &failure);
+            });
         }
     }
 
@@ -679,6 +787,23 @@ pub async fn send_message(
     state.infra_service.publish_processed("local", serde_json::json!({
         "conversation_id": input.conversation_id,
     })).await;
+
+    // ── PreferenceExtractor: async preference extraction ─────────────
+    if !response_text.is_empty() {
+        let proactive_guard = state.proactive_service.read().await;
+        if let Some(ref proactive_svc) = *proactive_guard {
+            let pref_extractor = proactive_svc.preference_extractor().clone();
+            let pref_space = space_id.clone();
+            let pref_user_msg = input.content.clone();
+            let pref_assistant_resp = response_text.clone();
+            tokio::spawn(async move {
+                let prefs = pref_extractor.extract_preferences(&pref_user_msg, Some(&pref_assistant_resp));
+                if !prefs.is_empty() {
+                    let _ = pref_extractor.store_preferences(&pref_space, &prefs);
+                }
+            });
+        }
+    }
 
     // ── Memory Reflection ─────────────────────────────────────────────
     // Spawn async reflection in background — non-blocking.
@@ -2004,6 +2129,8 @@ async fn search_files(root: &std::path::Path, base: &std::path::Path, query: &st
 fn get_system_prompt() -> String {
     r#"You are uClaw, a helpful AI assistant powered by Claude. You have access to tools that let you interact with the user's computer.
 
+当前时间和工作区路径已在系统提示词末尾的 <system_info> 中预注入，无需使用工具获取。
+
 ## Available Tools
 You can:
 - **read_file**: Read any file on the user's system
@@ -2023,6 +2150,120 @@ You can:
 - Use Markdown for formatting
 - Show code snippets with language hints
 - Be friendly and professional"#.to_string()
+}
+
+/// Simple in-memory cache for resolved system prompts.
+/// Key: effective prompt_id (or "__default__" for default resolution).
+/// Value: (expiration_timestamp_ms, content).
+static SYSTEM_PROMPT_CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (i64, String)>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Cache TTL: 5 seconds — balances responsiveness (prompt edits take effect quickly)
+/// with avoiding repeated DB queries in rapid-fire message sends.
+const PROMPT_CACHE_TTL_MS: i64 = 5_000;
+
+/// Invalidate the system prompt cache (called after CRUD operations).
+pub fn invalidate_prompt_cache() {
+    if let Ok(mut cache) = SYSTEM_PROMPT_CACHE.lock() {
+        cache.clear();
+        tracing::debug!("System prompt cache invalidated");
+    }
+}
+
+/// Resolve the user-selected system prompt from the database.
+///
+/// Priority:
+/// 1. explicit `prompt_id` passed from the frontend
+/// 2. global `default_prompt_id` setting in the `settings` table
+/// 3. built-in default "builtin-default"
+///
+/// When no custom prompt is selected (or the selected prompt can't be found),
+/// returns the hardcoded default to maintain backward compatibility.
+///
+/// After resolution, template variables `{{date}}`, `{{time}}`, `{{datetime}}`,
+/// `{{username}}`, and `{{workspace}}` are substituted with live values.
+fn resolve_user_system_prompt(
+    db: &std::sync::Mutex<rusqlite::Connection>,
+    prompt_id: Option<&str>,
+    workspace_root: Option<&std::path::Path>,
+) -> String {
+    let cache_key = prompt_id.map(|s| s.to_string()).unwrap_or_else(|| "__default__".to_string());
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    // Check cache first — cache stores the raw template, substitution happens after.
+    if let Ok(cache) = SYSTEM_PROMPT_CACHE.lock() {
+        if let Some((expires, content)) = cache.get(&cache_key) {
+            if *expires > now_ms {
+                return substitute_template_vars(content, workspace_root);
+            }
+        }
+    }
+
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(_) => return substitute_template_vars(&get_system_prompt(), workspace_root),
+    };
+
+    let effective_id = prompt_id
+        .map(|s| s.to_string())
+        .or_else(|| {
+            conn.query_row(
+                "SELECT value FROM settings WHERE key = 'default_prompt_id'",
+                [],
+                |r| r.get::<_, String>(0),
+            ).ok()
+        })
+        .unwrap_or_else(|| "builtin-default".to_string());
+
+    // If the user selected (or defaulted to) the built-in default, use the
+    // hardcoded prompt — it includes tool descriptions and guidelines that a
+    // bare "You are a helpful assistant." would lack.
+    let content = if effective_id == "builtin-default" {
+        get_system_prompt()
+    } else {
+        // Look up the custom prompt
+        conn
+            .query_row(
+                "SELECT content FROM system_prompts WHERE id = ?1",
+                rusqlite::params![effective_id],
+                |r| r.get(0),
+            )
+            .ok()
+            .unwrap_or_else(get_system_prompt)
+    };
+
+    // Store raw template in cache
+    if let Ok(mut cache) = SYSTEM_PROMPT_CACHE.lock() {
+        cache.insert(cache_key, (now_ms + PROMPT_CACHE_TTL_MS, content.clone()));
+    }
+
+    substitute_template_vars(&content, workspace_root)
+}
+
+/// Substitute template variables in a system prompt string.
+///
+/// Supported variables:
+/// - `{{date}}`     — current date in YYYY-MM-DD format
+/// - `{{time}}`     — current time in HH:MM format
+/// - `{{datetime}}` — current date and time in YYYY-MM-DD HH:MM format
+/// - `{{username}}` — current OS user name (from $USER env var)
+/// - `{{workspace}}` — absolute path to the active workspace root
+fn substitute_template_vars(content: &str, workspace_root: Option<&std::path::Path>) -> String {
+    let now = chrono::Local::now();
+    let date_str = now.format("%Y-%m-%d").to_string();
+    let time_str = now.format("%H:%M").to_string();
+    let datetime_str = now.format("%Y-%m-%d %H:%M").to_string();
+    let username = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+    let workspace = workspace_root
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    content
+        .replace("{{datetime}}", &datetime_str)
+        .replace("{{date}}", &date_str)
+        .replace("{{time}}", &time_str)
+        .replace("{{username}}", &username)
+        .replace("{{workspace}}", &workspace)
 }
 
 async fn build_artifact_tree(root: &std::path::PathBuf, base: &std::path::PathBuf) -> Result<Vec<ArtifactNode>, Error> {
@@ -3215,6 +3456,281 @@ pub async fn assess_command_risk(state: State<'_, AppState>, input: AssessComman
     })
 }
 
+// ─── System Prompt Commands ─────────────────────────────────────────────
+
+/// Load all system prompts and the global default prompt ID.
+#[tauri::command]
+pub async fn get_system_prompt_config(
+    state: State<'_, AppState>,
+) -> Result<crate::ipc::SystemPromptConfigDto, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    let mut stmt = conn
+        .prepare("SELECT id, name, content, is_builtin, sort_order, created_at, updated_at FROM system_prompts ORDER BY sort_order ASC, created_at ASC")
+        .map_err(|e| Error::Database(e))?;
+    let prompts: Vec<crate::ipc::SystemPromptDto> = stmt
+        .query_map([], |row| {
+            Ok(crate::ipc::SystemPromptDto {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                content: row.get(2)?,
+                is_builtin: Some(row.get::<_, i64>(3)? != 0),
+                sort_order: Some(row.get(4)?),
+                created_at: Some(row.get(5)?),
+                updated_at: Some(row.get(6)?),
+            })
+        })
+        .map_err(|e| Error::Database(e))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let default_prompt_id: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'default_prompt_id'",
+            [],
+            |r| r.get(0),
+        )
+        .ok();
+
+    let append_setting: Option<bool> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'append_datetime_username'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|v| v.parse::<bool>().ok());
+
+    Ok(crate::ipc::SystemPromptConfigDto {
+        prompts,
+        default_prompt_id: default_prompt_id.or(Some("builtin-default".to_string())),
+        append_date_time_and_user_name: append_setting,
+    })
+}
+
+/// Create a new user-defined system prompt.
+#[tauri::command]
+pub async fn create_system_prompt(
+    state: State<'_, AppState>,
+    input: crate::ipc::SystemPromptCreateInput,
+) -> Result<crate::ipc::SystemPromptDto, Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp_millis();
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+
+    // Find next sort_order
+    let max_order: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) FROM system_prompts",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(-1);
+
+    conn.execute(
+        "INSERT INTO system_prompts (id, name, content, is_builtin, sort_order, created_at, updated_at) VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)",
+        rusqlite::params![id, input.name, input.content, max_order + 1, now, now],
+    ).map_err(|e| Error::Database(e))?;
+
+    // Record initial version snapshot
+    let version_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO system_prompt_versions (id, prompt_id, name, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![version_id, id, input.name, input.content, now],
+    ).map_err(|e| Error::Database(e))?;
+
+    tracing::info!(prompt_id = %id, name = %input.name, "System prompt created");
+    invalidate_prompt_cache();
+    Ok(crate::ipc::SystemPromptDto {
+        id,
+        name: input.name,
+        content: input.content,
+        is_builtin: Some(false),
+        sort_order: Some(max_order + 1),
+        created_at: Some(now),
+        updated_at: Some(now),
+    })
+}
+
+/// Delete a user-defined system prompt (built-in prompts are protected).
+#[tauri::command]
+pub async fn delete_system_prompt(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+
+    // Block deletion of built-in prompts
+    let is_builtin: bool = conn
+        .query_row(
+            "SELECT is_builtin != 0 FROM system_prompts WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+
+    if is_builtin {
+        return Err(Error::InvalidInput("Cannot delete built-in prompts".into()));
+    }
+
+    conn.execute(
+        "DELETE FROM system_prompts WHERE id = ?1",
+        rusqlite::params![id],
+    ).map_err(|e| Error::Database(e))?;
+
+    // If the deleted prompt was the default, fall back to builtin-default
+    let default_id: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'default_prompt_id'",
+            [],
+            |r| r.get(0),
+        )
+        .ok();
+    if default_id.as_deref() == Some(&id) {
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('default_prompt_id', 'builtin-default')",
+            [],
+        ).map_err(|e| Error::Database(e))?;
+    }
+
+    tracing::info!(prompt_id = %id, "System prompt deleted");
+    invalidate_prompt_cache();
+    Ok(())
+}
+
+/// Update a system prompt's name and/or content. Built-in prompts are read-only.
+#[tauri::command]
+pub async fn update_system_prompt(
+    state: State<'_, AppState>,
+    id: String,
+    input: crate::ipc::SystemPromptUpdateInput,
+) -> Result<crate::ipc::SystemPromptDto, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+
+    // Block updates of built-in prompts
+    let is_builtin: bool = conn
+        .query_row(
+            "SELECT is_builtin != 0 FROM system_prompts WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+
+    if is_builtin {
+        return Err(Error::InvalidInput("Cannot modify built-in prompts".into()));
+    }
+
+    let now = chrono::Utc::now().timestamp_millis();
+
+    // Snapshot current state before updating (version history)
+    {
+        let current: Option<(String, String)> = conn
+            .query_row(
+                "SELECT name, content FROM system_prompts WHERE id = ?1",
+                rusqlite::params![id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .ok();
+        if let Some((cur_name, cur_content)) = current {
+            let version_id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO system_prompt_versions (id, prompt_id, name, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![version_id, id, cur_name, cur_content, now],
+            ).map_err(|e| Error::Database(e))?;
+        }
+    }
+
+    if let Some(ref name) = input.name {
+        conn.execute(
+            "UPDATE system_prompts SET name = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![name, now, id],
+        ).map_err(|e| Error::Database(e))?;
+    }
+    if let Some(ref content) = input.content {
+        conn.execute(
+            "UPDATE system_prompts SET content = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![content, now, id],
+        ).map_err(|e| Error::Database(e))?;
+    }
+
+    // Re-read the updated row
+    let updated = conn.query_row(
+        "SELECT id, name, content, is_builtin, sort_order, created_at, updated_at FROM system_prompts WHERE id = ?1",
+        rusqlite::params![id],
+        |row| {
+            Ok(crate::ipc::SystemPromptDto {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                content: row.get(2)?,
+                is_builtin: Some(row.get::<_, i64>(3)? != 0),
+                sort_order: Some(row.get(4)?),
+                created_at: Some(row.get(5)?),
+                updated_at: Some(row.get(6)?),
+            })
+        },
+    ).map_err(|e| Error::Database(e))?;
+
+    tracing::info!(prompt_id = %id, "System prompt updated");
+    invalidate_prompt_cache();
+    Ok(updated)
+}
+
+/// Set the global default system prompt ID.
+#[tauri::command]
+pub async fn set_default_prompt(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('default_prompt_id', ?1)",
+        rusqlite::params![id],
+    ).map_err(|e| Error::Database(e))?;
+    tracing::info!(prompt_id = %id, "Default system prompt set");
+    invalidate_prompt_cache();
+    Ok(())
+}
+
+/// Retrieve version history for a system prompt (newest first).
+#[tauri::command]
+pub async fn get_system_prompt_versions(
+    state: State<'_, AppState>,
+    prompt_id: String,
+) -> Result<Vec<crate::ipc::SystemPromptVersionDto>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    let mut stmt = conn
+        .prepare("SELECT id, prompt_id, name, content, created_at FROM system_prompt_versions WHERE prompt_id = ?1 ORDER BY created_at DESC")
+        .map_err(|e| Error::Database(e))?;
+    let versions: Vec<crate::ipc::SystemPromptVersionDto> = stmt
+        .query_map(rusqlite::params![prompt_id], |row| {
+            Ok(crate::ipc::SystemPromptVersionDto {
+                id: row.get(0)?,
+                prompt_id: row.get(1)?,
+                name: row.get(2)?,
+                content: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })
+        .map_err(|e| Error::Database(e))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(versions)
+}
+
+/// Update the "append date/time and username" preference.
+#[tauri::command]
+pub async fn update_append_setting(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('append_datetime_username', ?1)",
+        rusqlite::params![if enabled { "true" } else { "false" }],
+    ).map_err(|e| Error::Database(e))?;
+    tracing::info!(enabled, "Append date/time setting updated");
+    Ok(())
+}
+
 // ─── Tool Approval Commands ─────────────────────────────────────────────────
 
 #[tauri::command]
@@ -3306,7 +3822,7 @@ pub async fn memory_graph_search(
 ) -> Result<serde_json::Value, String> {
     let store = &state.memory_graph_store;
     let memu_client = state.memu_client.clone();
-    let space_id = input.space_id.unwrap_or_else(|| "global".into());
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
 
     let engine = crate::memory_graph::recall::MemoryRecallEngine::new(
         store.clone(),
@@ -3352,7 +3868,7 @@ pub async fn memory_graph_list_boot(
     input: MemoryGraphListBootInput,
 ) -> Result<serde_json::Value, String> {
     let store = &state.memory_graph_store;
-    let space_id = input.space_id.unwrap_or_else(|| "global".into());
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
     let limit = input.limit.unwrap_or(8);
 
     let boot_nodes = store.list_boot_nodes(&space_id, limit)
@@ -3368,7 +3884,7 @@ pub async fn memory_graph_manage_boot(
     input: MemoryGraphManageBootInput,
 ) -> Result<serde_json::Value, String> {
     let store = &state.memory_graph_store;
-    let space_id = input.space_id.unwrap_or_else(|| "global".into());
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
 
     match input.action.as_str() {
         "add" => {
@@ -3393,7 +3909,7 @@ pub async fn memory_graph_list_timeline(
     input: MemoryGraphTimelineInput,
 ) -> Result<serde_json::Value, String> {
     let store = &state.memory_graph_store;
-    let space_id = input.space_id.unwrap_or_else(|| "global".into());
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
     let limit = input.limit.unwrap_or(20);
 
     let nodes = store.list_recent_nodes(&space_id, limit)
@@ -3433,7 +3949,7 @@ pub async fn memory_graph_explain_recall(
 ) -> Result<serde_json::Value, String> {
     let store = &state.memory_graph_store;
     let memu_client = state.memu_client.clone();
-    let space_id = input.space_id.unwrap_or_else(|| "global".into());
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
 
     let engine = crate::memory_graph::recall::MemoryRecallEngine::new(
         store.clone(),
@@ -3487,6 +4003,130 @@ pub async fn memory_graph_create_node(
     store.create_node(&node).map_err(|e| format!("Failed to create node: {}", e))?;
 
     serde_json::to_value(&node).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+/// 核心存储逻辑 - 可被 IPC command 和全局快捷键回调共同调用
+pub fn quick_capture_core(
+    store: &crate::memory_graph::store::MemoryGraphStore,
+    content: &str,
+    source: &str,
+    title: Option<&str>,
+    tags: Option<&[String]>,
+) -> Result<String, String> {
+    use crate::memory_graph::models::{MemoryNode, MemoryNodeKind, MemoryVersion, MemoryVersionStatus, MemoryKeyword};
+
+    let node_id = uuid::Uuid::new_v4().to_string();
+    let version_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let space_id = "default".to_string();
+    let title = title.map(|t| t.to_string()).unwrap_or_else(|| {
+        content.chars().take(20).collect::<String>()
+    });
+
+    let metadata = serde_json::json!({
+        "source": source,
+        "tags": tags.unwrap_or(&[]),
+        "subtype": "daily",
+    });
+
+    // 1. 创建 MemoryNode
+    let node = MemoryNode {
+        id: node_id.clone(),
+        space_id: space_id.clone(),
+        kind: MemoryNodeKind::Episode,
+        title: title.clone(),
+        metadata: Some(metadata),
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    };
+
+    store.create_node(&node).map_err(|e| format!("Failed to create node: {}", e))?;
+
+    // 2. 创建 MemoryVersion（写入 FTS）
+    let version = MemoryVersion {
+        id: version_id,
+        node_id: node_id.clone(),
+        supersedes_version_id: None,
+        status: MemoryVersionStatus::Active,
+        content: content.to_string(),
+        metadata: None,
+        embedding_json: None,
+        created_at: now,
+    };
+    store.create_version(&version).map_err(|e| format!("Failed to create version: {}", e))?;
+
+    // 3. 提取关键词并存储
+    let keywords = extract_quick_capture_keywords(content);
+    for kw in &keywords {
+        let keyword = MemoryKeyword {
+            id: uuid::Uuid::new_v4().to_string(),
+            space_id: space_id.clone(),
+            node_id: node_id.clone(),
+            keyword: kw.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let _ = store.create_keyword(&keyword);
+    }
+
+    Ok(node_id)
+}
+
+/// 语音记忆快速捕获：一次性创建 节点 + 版本 + 关键词
+#[tauri::command]
+pub async fn memory_graph_quick_capture(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    input: MemoryGraphQuickCaptureInput,
+) -> Result<serde_json::Value, String> {
+    let source = input.source.unwrap_or_else(|| "manual".to_string());
+    let title = input.title.clone();
+    let tags = input.tags.clone();
+    let space_id = input.space_id.clone().unwrap_or_else(|| "default".to_string());
+
+    let store = &state.memory_graph_store;
+    let node_id = quick_capture_core(
+        store,
+        &input.content,
+        &source,
+        title.as_deref(),
+        tags.as_deref(),
+    )?;
+
+    // 异步触发 LLM 自动分类（不阻塞主流程）
+    let node_id_clone = node_id.clone();
+    let content_clone = input.content.clone();
+    let handle_clone = app.clone();
+    tokio::spawn(async move {
+        crate::memory_graph::auto_classify::auto_classify_fragment(
+            handle_clone,
+            node_id_clone,
+            content_clone,
+        ).await;
+    });
+
+    // 返回与之前一致的 JSON 格式
+    let display_title = title.unwrap_or_else(|| {
+        input.content.chars().take(20).collect::<String>()
+    });
+
+    Ok(serde_json::json!({
+        "nodeId": node_id,
+        "title": display_title,
+        "kind": "episode",
+    }))
+}
+
+/// 简单关键词提取：按标点/空格分词，过滤短词和停用词，取前 5 个
+fn extract_quick_capture_keywords(content: &str) -> Vec<String> {
+    let stop_words = ["的", "了", "是", "在", "我", "有", "和", "就", "不", "人", "都", "一", "这", "上", "也", "到", "说", "要", "会", "对", "把", "好", "能"];
+
+    content
+        .split(|c: char| c.is_whitespace() || "，。！？、；：\"\"''（）《》【】".contains(c) || c.is_ascii_punctuation())
+        .filter(|w| w.chars().count() >= 2)
+        .filter(|w| !stop_words.contains(w))
+        .take(5)
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// 更新记忆节点
@@ -3590,6 +4230,214 @@ pub async fn memory_graph_delete_node(
     store.delete_node(&input.node_id).map_err(|e| format!("Failed to delete node: {}", e))?;
 
     Ok(serde_json::json!({ "success": true, "nodeId": input.node_id }))
+}
+
+// ─── Fragment / Daily Summary Commands ─────────────────────────────────────
+
+/// Parse an RFC-3339 / ISO-8601 timestamp string into epoch millis.
+/// Falls back to 0 on parse failure.
+fn parse_ts_to_epoch_ms(ts: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S")
+            .map(|ndt| ndt.and_utc().fixed_offset()))
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+pub async fn memory_graph_list_fragments(
+    state: State<'_, AppState>,
+    input: ListFragmentsInput,
+) -> Result<Vec<FragmentItem>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    let limit = input.limit.unwrap_or(50);
+    let offset = input.offset.unwrap_or(0);
+
+    let mut sql = String::from(
+        "SELECT n.id, n.title, n.metadata_json, n.created_at,
+                COALESCE(v.content, '') AS content,
+                fr.review_count, fr.next_review_at, fr.completed
+         FROM memory_nodes n
+         LEFT JOIN memory_versions v ON v.node_id = n.id AND v.status = 'active'
+         LEFT JOIN fragment_reviews fr ON fr.node_id = n.id
+         WHERE n.kind = 'episode'
+           AND json_extract(n.metadata_json, '$.subtype') IS NOT NULL"
+    );
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut idx = 1;
+
+    if let Some(ref tag) = input.tag {
+        sql.push_str(&format!(" AND json_extract(n.metadata_json, '$.subtype') = ?{idx}"));
+        params.push(Box::new(tag.clone()));
+        idx += 1;
+    }
+
+    sql.push_str(&format!(" ORDER BY n.created_at DESC LIMIT ?{idx} OFFSET ?{}", idx + 1));
+    params.push(Box::new(limit));
+    params.push(Box::new(offset));
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql).map_err(Error::Database)?;
+    let rows = stmt.query_map(param_refs.as_slice(), |row| {
+        let id: String = row.get(0)?;
+        let title: Option<String> = row.get(1)?;
+        let metadata_str: Option<String> = row.get(2)?;
+        let created_at_str: String = row.get(3)?;
+        let content: String = row.get(4)?;
+        let review_count: Option<i32> = row.get(5)?;
+        let next_review_at: Option<i64> = row.get(6)?;
+        let completed: Option<i32> = row.get(7)?;
+
+        let metadata: serde_json::Value = metadata_str
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(serde_json::json!({}));
+
+        let source = metadata.get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let tags: Vec<String> = metadata.get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        let review_status = review_count.map(|rc| ReviewStatus {
+            review_count: rc,
+            next_review_at,
+            completed: completed.unwrap_or(0) != 0,
+        });
+
+        Ok(FragmentItem {
+            id,
+            title,
+            content,
+            source,
+            tags,
+            subtype: metadata.get("subtype").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            created_at: parse_ts_to_epoch_ms(&created_at_str),
+            review_status,
+        })
+    }).map_err(Error::Database)?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row.map_err(Error::Database)?);
+    }
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn search_fragments(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<Vec<FragmentSearchHit>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    let like_pattern = format!("%{query}%");
+
+    let sql = "SELECT n.id, n.title, n.metadata_json, n.created_at, COALESCE(v.content, '') AS content
+               FROM memory_nodes n
+               LEFT JOIN memory_versions v ON v.node_id = n.id AND v.status = 'active'
+               WHERE n.kind = 'episode'
+                 AND json_extract(n.metadata_json, '$.subtype') IS NOT NULL
+                 AND (v.content LIKE ?1 OR n.title LIKE ?1)
+               ORDER BY n.created_at DESC
+               LIMIT 10";
+
+    let mut stmt = conn.prepare(sql).map_err(Error::Database)?;
+    let rows = stmt.query_map(rusqlite::params![like_pattern], |row| {
+        let id: String = row.get(0)?;
+        let title: Option<String> = row.get(1)?;
+        let metadata_str: Option<String> = row.get(2)?;
+        let created_at_str: String = row.get(3)?;
+        let content: String = row.get(4)?;
+
+        let metadata: serde_json::Value = metadata_str
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(serde_json::json!({}));
+
+        let source = metadata.get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let tags: Vec<String> = metadata.get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        // Build snippet: find match position and take surrounding chars
+        let snippet = if let Some(pos) = content.to_lowercase().find(&query.to_lowercase()) {
+            let chars: Vec<char> = content.chars().collect();
+            let char_pos = content[..pos].chars().count();
+            let start = char_pos.saturating_sub(30);
+            let end = (char_pos + query.chars().count() + 30).min(chars.len());
+            chars[start..end].iter().collect::<String>()
+        } else if let Some(ref t) = title {
+            t.chars().take(60).collect()
+        } else {
+            content.chars().take(60).collect()
+        };
+
+        Ok(FragmentSearchHit {
+            id,
+            title,
+            snippet,
+            tags,
+            subtype: metadata.get("subtype").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            source,
+            created_at: parse_ts_to_epoch_ms(&created_at_str),
+        })
+    }).map_err(Error::Database)?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row.map_err(Error::Database)?);
+    }
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn list_daily_summaries(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<DailySummaryItem>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    let limit = limit.unwrap_or(30);
+
+    let sql = "SELECT id, summary_date, content, fragment_count, fragment_ids_json, created_at
+               FROM daily_summaries
+               ORDER BY summary_date DESC
+               LIMIT ?1";
+
+    let mut stmt = conn.prepare(sql).map_err(Error::Database)?;
+    let rows = stmt.query_map(rusqlite::params![limit], |row| {
+        let id: String = row.get(0)?;
+        let summary_date: String = row.get(1)?;
+        let content: String = row.get(2)?;
+        let fragment_count: i32 = row.get(3)?;
+        let ids_json: Option<String> = row.get(4)?;
+        let created_at: i64 = row.get(5)?;
+
+        let fragment_ids: Vec<String> = ids_json
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
+        Ok(DailySummaryItem {
+            id,
+            summary_date,
+            content,
+            fragment_count,
+            fragment_ids,
+            created_at,
+        })
+    }).map_err(Error::Database)?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row.map_err(Error::Database)?);
+    }
+    Ok(results)
 }
 
 // ─── Slash Command Helpers (PR-mattpocock-4a) ────────────────────────────────
@@ -3819,7 +4667,7 @@ pub async fn list_learned_skills(
     use crate::memory_graph::models::MemoryNodeKind;
 
     let store = &state.memory_graph_store;
-    let sid = space_id.unwrap_or_else(|| "global".into());
+    let sid = space_id.unwrap_or_else(|| "default".into());
 
     let nodes = store.list_nodes_by_kind(&sid, MemoryNodeKind::Procedure, 500)
         .map_err(|e| format!("Failed to list procedure nodes: {}", e))?;
@@ -4558,7 +5406,6 @@ async fn call_consolidation_llm(
         model: llm_cfg.model.clone(),
         max_tokens,
         temperature: 0.1,
-        system_prompt: None,
         thinking_enabled: false,
     };
     let output = provider
@@ -5257,6 +6104,126 @@ pub async fn create_agent_session(
     }))
 }
 
+/// Estimate the current context token usage for a session.
+///
+/// Loads all non-compacted messages from the DB and calculates the estimated
+/// token count using the CJK-aware `estimate_tokens()` function. Returns
+/// the estimated input tokens and the model's context window so the frontend
+/// can initialise ContextUsageBadge immediately on session load/switch
+/// without waiting for a full LLM round-trip.
+///
+/// Mirrors openhanako's `getSessionContextUsage()` pattern: backend is the
+/// authoritative source; frontend requests it explicitly.
+///
+/// ⚠️  Deadlock safety: `resolve_user_system_prompt` internally locks
+/// `state.db`, so it MUST be called outside any scope that already holds
+/// that lock. The function is split into two lock scopes: first reads
+/// workspace metadata, then (after releasing the lock) resolves the system
+/// prompt, then optionally re-locks to read messages.
+#[tauri::command]
+pub async fn estimate_session_context(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<serde_json::Value, Error> {
+    use crate::agent::types::estimate_tokens;
+
+    // ── Scope 1: read model + workspace_root ──────────────────────
+    // Release the lock before calling resolve_user_system_prompt below
+    // to avoid a Same-Thread Mutex deadlock.
+    let (model_context_length, workspace_root) = {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+
+        let meta_str: Option<String> = conn.query_row(
+            "SELECT metadata_json FROM agent_sessions WHERE id = ?1",
+            rusqlite::params![&session_id],
+            |r| r.get(0),
+        ).ok();
+
+        let meta: serde_json::Value = meta_str
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+
+        let model = meta.get("model").and_then(|v| v.as_str()).unwrap_or("claude-sonnet-4-20250514");
+        let model_context_length = crate::agent::types::get_model_context_length(model);
+
+        let workspace_root = {
+            let space_id: Option<String> = conn.query_row(
+                "SELECT space_id FROM agent_sessions WHERE id = ?1",
+                rusqlite::params![&session_id],
+                |r| r.get(0),
+            ).ok();
+            space_id.and_then(|sid| {
+                conn.query_row(
+                    "SELECT path FROM spaces WHERE id = ?1",
+                    rusqlite::params![sid],
+                    |r| r.get::<_, Option<String>>(0),
+                ).ok().flatten()
+            }).filter(|s| !s.trim().is_empty()).map(std::path::PathBuf::from)
+        };
+
+        (model_context_length, workspace_root)
+    }; // ← DB lock released here
+
+    // ── Resolve system prompt OUTSIDE the DB lock ─────────────────
+    // resolve_user_system_prompt internally calls db.lock(), so it must
+    // not be nested inside another lock scope on the same Mutex.
+    let system_prompt = resolve_user_system_prompt(
+        &state.db,
+        None, // use default prompt
+        workspace_root.as_deref(),
+    );
+    let system_prompt_tokens = estimate_tokens(&system_prompt);
+
+    // ── Scope 2: load messages and estimate tokens ────────────────
+    let (messages_tokens, tool_use_tokens) = {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT role, content FROM agent_messages WHERE session_id = ?1 AND compacted = 0 ORDER BY created_at ASC"
+        ).map_err(|e| Error::Database(e))?;
+
+        let rows = stmt.query_map(rusqlite::params![&session_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }).map_err(|e| Error::Database(e))?;
+
+        let mut messages_tokens: u32 = 0;
+        let mut tool_use_tokens: u32 = 0;
+
+        for row in rows {
+            if let Ok((_role, content)) = row {
+                let tokens = estimate_tokens(&content);
+                messages_tokens += tokens;
+                if content.contains("\"ToolUse\"") || content.contains("\"ToolResult\"") {
+                    tool_use_tokens += (tokens as f32 * 0.15) as u32;
+                }
+            }
+        }
+
+        (messages_tokens, tool_use_tokens)
+    };
+
+    let compact_buffer = (model_context_length as f32 * 0.033) as u32;
+    let used = system_prompt_tokens + messages_tokens + tool_use_tokens + compact_buffer;
+    let free = model_context_length as i32 - used as i32;
+    let estimated_input = if model_context_length > 0 {
+        (model_context_length as i32 - free).max(0) as u32
+    } else {
+        0
+    };
+
+    Ok(serde_json::json!({
+        "sessionId": session_id,
+        "inputTokens": estimated_input,
+        "contextWindow": model_context_length,
+        "systemPromptTokens": system_prompt_tokens,
+        "messagesTokens": messages_tokens,
+        "toolUseTokens": tool_use_tokens,
+        "compactBufferTokens": compact_buffer,
+        "freeTokens": free,
+    }))
+}
+
 /// Delete an agent session and all of its derived rows. Returns true when
 /// the row was removed, false when no such session existed.
 ///
@@ -5389,6 +6356,9 @@ pub struct SendAgentMessageInput {
     /// Strategy preset from the frontend dropdown: "balanced" | "repair" | "optimize" | "innovate".
     /// None or unrecognized values fall back to Balanced.
     pub strategy: Option<String>,
+    /// User-selected system prompt ID to use for this message.
+    /// Falls back to the global default prompt when None.
+    pub prompt_id: Option<String>,
 }
 
 #[tauri::command]
@@ -5413,12 +6383,15 @@ pub async fn send_agent_message(
     // Same handling as the chat path: user typed `/compact` either via
     // the input box or the ContextUsageBadge button. Compact the agent
     // session in-place and emit a result, no LLM call needed.
+    //
+    // P1 logical-marking: uses UPDATE SET compacted=1 instead of DELETE.
+    // Compacted messages stay in DB for frontend replay with visual distinction.
     if input.user_message.trim() == "/compact" {
         const COMPACT_KEEP_TURNS: usize = 10;
         let now_ms = chrono::Utc::now().timestamp_millis();
 
-        // Read current message count + delete all but the most recent N.
-        let (before_count, after_count) = {
+        // Read current message count + mark older messages as compacted.
+        let (before_count, removed, after_count) = {
             let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
             let before: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1",
@@ -5427,12 +6400,11 @@ pub async fn send_agent_message(
             ).map_err(|e| Error::Database(e))?;
 
             // Find the created_at threshold: keep messages newer than the
-            // (before - keep)-th oldest. Easier to express: ORDER BY DESC
-            // LIMIT keep, then take MIN(created_at) of that set.
+            // (before - keep)-th oldest.
             let keep_threshold: Option<i64> = conn.query_row(
                 "SELECT MIN(created_at) FROM (
                      SELECT created_at FROM agent_messages
-                     WHERE session_id = ?1
+                     WHERE session_id = ?1 AND compacted = 0
                      ORDER BY created_at DESC
                      LIMIT ?2
                  )",
@@ -5441,27 +6413,43 @@ pub async fn send_agent_message(
             ).ok();
 
             if let Some(threshold) = keep_threshold {
-                let deleted = conn.execute(
-                    "DELETE FROM agent_messages
-                     WHERE session_id = ?1 AND created_at < ?2",
+                // Logical marking: UPDATE compacted = 1 instead of DELETE
+                let compacted_count = conn.execute(
+                    "UPDATE agent_messages
+                     SET compacted = 1
+                     WHERE session_id = ?1 AND created_at < ?2 AND compacted = 0",
                     rusqlite::params![input.session_id, threshold],
                 ).map_err(|e| Error::Database(e))? as i64;
 
-                if deleted > 0 {
+                if compacted_count > 0 {
+                    // Insert a compaction_markers record for audit trail
+                    let marker_id = uuid::Uuid::new_v4().to_string();
+                    let _ = conn.execute(
+                        "INSERT INTO compaction_markers (id, session_id, summary, removed_count, created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![
+                            marker_id,
+                            input.session_id,
+                            format!("Context compacted by /compact: {} earlier messages marked", compacted_count),
+                            compacted_count,
+                            now_ms,
+                        ],
+                    );
+
                     // Insert a summary placeholder so the LLM sees an explanation
-                    // for the missing history on the next turn.
+                    // for the missing context. Mark as NOT compacted (compacted = 0).
                     let summary_id = uuid::Uuid::new_v4().to_string();
                     let summary = format!(
-                        "[Context compressed by /compact: {} earlier messages removed]",
-                        deleted,
+                        "[Context compressed by /compact: {} earlier messages compacted]",
+                        compacted_count,
                     );
                     let _ = conn.execute(
-                        "INSERT INTO agent_messages (id, session_id, role, content, created_at)
-                         VALUES (?1, ?2, 'user', ?3, ?4)",
+                        "INSERT INTO agent_messages (id, session_id, role, content, created_at, compacted)
+                         VALUES (?1, ?2, 'user', ?3, ?4, 0)",
                         rusqlite::params![summary_id, input.session_id, summary, threshold - 1],
                     );
 
-                    // Update count: removed N - 1 net (we deleted N and inserted 1 summary).
+                    // Update message count: all messages (including compacted) count.
                     let _ = conn.execute(
                         "UPDATE agent_sessions
                          SET message_count = (SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1),
@@ -5472,13 +6460,13 @@ pub async fn send_agent_message(
                 }
 
                 let after: i64 = conn.query_row(
-                    "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1",
+                    "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1 AND compacted = 0",
                     rusqlite::params![input.session_id],
                     |r| r.get(0),
                 ).map_err(|e| Error::Database(e))?;
-                (before as usize, after as usize)
+                (before as usize, compacted_count as usize, after as usize)
             } else {
-                (before as usize, before as usize)
+                (before as usize, 0, before as usize)
             }
         };
 
@@ -5492,9 +6480,10 @@ pub async fn send_agent_message(
         // We previously emitted `agent:turn_done` here — that name is not
         // wired on the frontend, so the streaming state got stuck at
         // running:true / isCompacting:true.
-        let removed = before_count.saturating_sub(after_count);
         let text = format!(
-            "Compacted: removed {removed} earlier messages, {after_count} remain.",
+            "Compacted: marked {removed} earlier messages, {after_count} remain.",
+            removed = removed,
+            after_count = after_count,
         );
         let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
             "conversationId": input.session_id,
@@ -5510,7 +6499,7 @@ pub async fn send_agent_message(
             session_id = %input.session_id,
             removed,
             remaining = after_count,
-            "/compact: agent session compacted",
+            "/compact: agent session compacted (logical marking)",
         );
         return Ok(());
     }
@@ -5539,7 +6528,7 @@ pub async fn send_agent_message(
 
     // Resolve LLM config
     let legacy_config = state.llm_config.read().await;
-    let max_tokens = legacy_config.max_tokens.unwrap_or(8192);
+    let max_tokens = legacy_config.max_tokens.unwrap_or(16384);
     let temperature = legacy_config.temperature.unwrap_or(0.7);
     let llm_config = if let Some((provider_id, model, api_key, base_url)) =
         state.provider_service.get_active_llm_config().await
@@ -5608,7 +6597,7 @@ pub async fn send_agent_message(
     let history: Vec<(String, String)> = {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
         let mut stmt = conn.prepare(
-            "SELECT role, content FROM agent_messages WHERE session_id = ?1 ORDER BY created_at ASC"
+            "SELECT role, content FROM agent_messages WHERE session_id = ?1 AND compacted = 0 ORDER BY created_at ASC"
         ).map_err(|e| Error::Database(e))?;
         let rows = stmt.query_map(rusqlite::params![input.session_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -5692,6 +6681,7 @@ pub async fn send_agent_message(
 
     // Clone for spawn
     let session_id = input.session_id.clone();
+    let user_message_for_pref = input.user_message.clone();
     let db = Arc::clone(&state.db);
     let safety_manager = Arc::clone(&state.safety_manager);
     let pending_approvals = Arc::clone(&state.pending_approvals);
@@ -5701,13 +6691,15 @@ pub async fn send_agent_message(
     let running_sessions = Arc::clone(&state.running_sessions);
     let skills_registry_for_manifest = Arc::clone(&state.skills_registry);
     let memory_graph_store_for_manifest = Arc::clone(&state.memory_graph_store);
+    let proactive_service_for_spawn = Arc::clone(&state.proactive_service);
     // Same rule as tool registration above: prefer the session's actual
     // workspace, fall back to the globally-active workspace only if the
     // session has no space binding.
     let workspace_root_for_delegate = session_workspace_root(&state, &input.session_id)
         .or_else(|| active_workspace_root(&state));
 
-    const AGENT_SYSTEM_PROMPT: &str = "You are uClaw, a helpful AI desktop coworker. You help users with tasks using the available tools.";
+    // Resolve the user-selected system prompt (respects prompt_id > default > builtin-default)
+    let resolved_system_prompt = resolve_user_system_prompt(&state.db, input.prompt_id.as_deref(), workspace_root_for_delegate.as_deref());
 
     // V19+: resolve the session's workspace skill_tags before the
     // spawn, because state.db.lock() borrows from `state: State<'_>` and
@@ -5736,7 +6728,7 @@ pub async fn send_agent_message(
 
     tokio::spawn(async move {
         // Build reasoning context from history
-        let mut ctx = ReasoningContext::new(AGENT_SYSTEM_PROMPT.to_string());
+        let mut ctx = ReasoningContext::new(resolved_system_prompt.clone());
         for (role, content) in &history {
             match role.as_str() {
                 "user" => ctx.messages.push(ChatMessage::user(content)),
@@ -5751,7 +6743,7 @@ pub async fn send_agent_message(
             Arc::clone(&tools),
             app_handle.clone(),
             model.clone(),
-            AGENT_SYSTEM_PROMPT.to_string(),
+            resolved_system_prompt.clone(),
             Arc::clone(&safety_manager),
             None,
             Arc::clone(&pending_approvals),
@@ -5793,7 +6785,8 @@ pub async fn send_agent_message(
             delegate.set_skills_manifest_block(manifest);
         }
 
-        let config = AgenticLoopConfig::default();
+        let mut config = AgenticLoopConfig::default();
+        config.model_context_length = crate::agent::types::get_model_context_length(&model);
 
         let loop_start = std::time::Instant::now();
         let outcome = tokio::select! {
@@ -5906,6 +6899,48 @@ pub async fn send_agent_message(
             "sessionId": session_id,
         }));
 
+        // ── FailureMemory: record failures for proactive avoidance ────────
+        if let LoopOutcome::Failure { error } = &outcome {
+            let proactive_guard = proactive_service_for_spawn.read().await;
+            if let Some(ref proactive_svc) = *proactive_guard {
+                let failure_mem = proactive_svc.failure_memory().clone();
+                let space = "default".to_string();
+                let err_msg = error.clone();
+                tokio::spawn(async move {
+                    use crate::proactive::failure_memory::{FailureRecord, FailureType, Severity};
+                    let failure = FailureRecord {
+                        failure_type: FailureType::infer("", &err_msg),
+                        error_pattern: err_msg.clone(),
+                        context: err_msg.clone(),
+                        resolution: None,
+                        severity: Severity::Moderate,
+                        occurred_at: chrono::Utc::now().to_rfc3339(),
+                        resolved_at: None,
+                        tool_name: None,
+                        file_paths: vec![],
+                        node_id: None,
+                    };
+                    let _ = failure_mem.record_failure(&space, &failure);
+                });
+            }
+        }
+
+        // ── PreferenceExtractor: async preference extraction ─────────────
+        if !response_text.is_empty() {
+            let proactive_guard = proactive_service_for_spawn.read().await;
+            if let Some(ref proactive_svc) = *proactive_guard {
+                let pref_extractor = proactive_svc.preference_extractor().clone();
+                let user_msg = user_message_for_pref.clone();
+                let assistant_resp = response_text.clone();
+                tokio::spawn(async move {
+                    let prefs = pref_extractor.extract_preferences(&user_msg, Some(&assistant_resp));
+                    if !prefs.is_empty() {
+                        let _ = pref_extractor.store_preferences("default", &prefs);
+                    }
+                });
+            }
+        }
+
         // Remove from running sessions
         running_sessions.lock().await.remove(&session_id);
     });
@@ -5934,11 +6969,12 @@ pub async fn get_agent_session_messages(
         input_tokens: Option<i64>,
         output_tokens: Option<i64>,
         cost_usd: Option<f64>,
+        compacted: bool,
     }
     let messages: Vec<MsgRow> = {
         let mut stmt = conn.prepare(
             "SELECT id, role, content, created_at, reasoning, tool_activities_json, model, \
-                    duration_ms, input_tokens, output_tokens, cost_usd \
+                    duration_ms, input_tokens, output_tokens, cost_usd, compacted \
              FROM agent_messages WHERE session_id = ?1 ORDER BY created_at ASC"
         ).map_err(Error::Database)?;
         let rows = stmt.query_map(rusqlite::params![session_id], |row| {
@@ -5954,6 +6990,7 @@ pub async fn get_agent_session_messages(
                 input_tokens: row.get(8)?,
                 output_tokens: row.get(9)?,
                 cost_usd: row.get(10)?,
+                compacted: row.get(11)?,
             })
         }).map_err(Error::Database)?;
         rows.filter_map(|r| r.ok()).collect()
@@ -6062,6 +7099,8 @@ pub async fn get_agent_session_messages(
             "model": msg.model,
             "durationMs": msg.duration_ms,
             "usage": usage,
+            "sessionId": session_id,
+            "compacted": msg.compacted,
         });
         if let Some(blocks) = parsed_blocks.as_ref() {
             if let Some(map) = obj.as_object_mut() {
@@ -7945,7 +8984,6 @@ async fn try_generate_title(
         model: llm_cfg.model.clone(),
         max_tokens: 256,
         temperature: 0.3,
-        system_prompt: None,
         thinking_enabled: false,
     };
 
@@ -8101,7 +9139,6 @@ fn spawn_agent_session_title_summary(
             model: llm_cfg.model.clone(),
             max_tokens: 512,
             temperature: 0.1,
-            system_prompt: None, // will be set per-attempt
             thinking_enabled: false,
         };
 
@@ -8336,7 +9373,7 @@ pub async fn start_agent_teams(
         let legacy = state.llm_config.read().await;
         llm::llm_config_from_provider(
             &provider_id, &model, &api_key, &base_url,
-            legacy.max_tokens.unwrap_or(8192),
+            legacy.max_tokens.unwrap_or(16384),
             legacy.temperature.unwrap_or(0.7),
         )
     };
@@ -9866,6 +10903,7 @@ mod process_meta_tests {
                         text: "AAPL is at $292.76 today.".into(),
                     },
                 ],
+                compacted: false,
             },
         ];
 
@@ -9893,6 +10931,7 @@ mod process_meta_tests {
                     },
                     ContentBlock::Text { text: "looking up...".into() },
                 ],
+                compacted: false,
             },
             // Final turn — must also be pushed (this is the fix)
             ChatMessage {
@@ -9904,6 +10943,7 @@ mod process_meta_tests {
                     },
                     ContentBlock::Text { text: "AAPL: $292.76".into() },
                 ],
+                compacted: false,
             },
         ];
 
@@ -9923,6 +10963,7 @@ mod process_meta_tests {
         let messages = vec![ChatMessage {
             role: MessageRole::Assistant,
             content: vec![ContentBlock::Text { text: "plain reply".into() }],
+            compacted: false,
         }];
         let meta = extract_process_meta_from_messages(&messages, String::new());
         assert!(meta.reasoning.is_none(),

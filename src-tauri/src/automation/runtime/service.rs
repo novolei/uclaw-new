@@ -638,7 +638,7 @@ impl AppRuntimeService {
             gate: Arc::new(TokioMutex::new(None)),
             auto_continue: AutoContinueConfig::default(),
             llm,
-            model,
+            model: model.clone(),
             tools,
             cost: Arc::new(CostCapState::new(cost_cap)),
             workspace_root,
@@ -647,10 +647,8 @@ impl AppRuntimeService {
         };
 
         // ── 10. run the agentic loop ─────────────────────────────────────────
-        let loop_config = AgenticLoopConfig {
-            max_iterations: auto_cfg.max_iterations,
-            ..AgenticLoopConfig::default()
-        };
+        let mut loop_config = AgenticLoopConfig::from_model(&model);
+        loop_config.max_iterations = auto_cfg.max_iterations;
         let outcome = crate::agent::agentic_loop::run_agentic_loop(
             &delegate,
             &mut reason_ctx,
@@ -676,7 +674,10 @@ impl AppRuntimeService {
                 LoopOutcome::MaxIterations => {
                     "loop reached max iterations without report_to_user".to_string()
                 }
-                LoopOutcome::Stopped | LoopOutcome::Cancelled => {
+                LoopOutcome::Stopped => {
+                    "run stopped before completion".to_string()
+                }
+                LoopOutcome::Cancelled { .. } => {
                     "run stopped before completion".to_string()
                 }
                 _ => "loop ended without report".to_string(),

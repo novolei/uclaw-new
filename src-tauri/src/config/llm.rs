@@ -19,7 +19,7 @@ impl Default for LlmConfig {
             model: "claude-sonnet-4-20250514".into(),
             api_key: String::new(),
             base_url: None,
-            max_tokens: Some(8192),
+            max_tokens: Some(16384),
             temperature: Some(0.7),
         }
     }

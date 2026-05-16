@@ -85,6 +85,11 @@ rig-core = { version = "0.30", default-features = false, features = ["reqwest-ru
 tauri = { version = "2.11", features = ["macos-private-api", "tray-icon", "protocol-asset"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-notification = "2"
+
+# Clipboard access (system-level, no window needed)
+arboard = "3"
 
 # Cryptography for secrets
 aes-gcm = "0.10"

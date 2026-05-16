@@ -109,9 +109,6 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
             model: self.model.clone(),
             max_tokens: 8192,
             temperature: 0.7,
-            // Mirrors the system-role message above; the Anthropic provider reads
-            // the message, not this field. Kept for OpenAI-provider parity.
-            system_prompt: Some(reason_ctx.system_prompt.clone()),
             thinking_enabled: false,
         };
 
@@ -224,6 +221,7 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
                     return Ok(Some(LoopOutcome::Response {
                         text: input.text,
                         usage: None,
+                        truncated: false,
                     }));
                 }
 
@@ -272,6 +270,7 @@ impl crate::agent::types::LoopDelegate for AutomationDelegate {
                     return Ok(Some(LoopOutcome::Response {
                         text: "escalated".into(),
                         usage: None,
+                        truncated: false,
                     }));
                 }
 

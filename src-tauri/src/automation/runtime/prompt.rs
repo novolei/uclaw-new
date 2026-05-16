@@ -1,8 +1,41 @@
 use crate::automation::protocol::humane_v1::{HumaneAutomationSpec, Subscription};
 
 /// Build the system prompt for an automation run from the spec's `system_prompt` field.
+/// Appends a <system_info> block with current time so the agent treats it as authoritative.
 pub fn build_system_prompt(spec: &HumaneAutomationSpec) -> String {
-    spec.system_prompt.clone()
+    let mut prompt = spec.system_prompt.clone();
+    prompt.push('\n');
+    prompt.push_str(&build_system_time_block());
+    prompt
+}
+
+/// Build the <system_info> block with current date/time for authoritative time context.
+/// Mirrors `ChatDelegate::build_system_time_block()` for consistency.
+pub fn build_system_time_block() -> String {
+    use chrono::{Datelike, Local, Timelike};
+    let now = Local::now();
+    let weekday = match now.weekday() {
+        chrono::Weekday::Mon => "周一",
+        chrono::Weekday::Tue => "周二",
+        chrono::Weekday::Wed => "周三",
+        chrono::Weekday::Thu => "周四",
+        chrono::Weekday::Fri => "周五",
+        chrono::Weekday::Sat => "周六",
+        chrono::Weekday::Sun => "周日",
+    };
+    let time = format!(
+        "{}年{}月{}日 {} {:02}:{:02}",
+        now.year(),
+        now.month(),
+        now.day(),
+        weekday,
+        now.hour(),
+        now.minute(),
+    );
+    format!(
+        "<system_info>\n当前时间: {}\n注意: 以上时间由系统提供，你不需要使用工具（如 bash date）获取时间，直接使用此信息回答即可。\n</system_info>",
+        time
+    )
 }
 
 /// Context needed when resuming a run after a user resolved an escalation.

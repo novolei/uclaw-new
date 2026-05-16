@@ -75,6 +75,9 @@ pub struct SendMessageInput {
     pub model_id: Option<String>,
     /// Enable extended thinking/reasoning for this message.
     pub thinking_enabled: Option<bool>,
+    /// User-selected system prompt ID to use for this message.
+    /// Falls back to the global default prompt when None.
+    pub prompt_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +163,61 @@ pub struct MessageResponse {
     /// `reasoning` + `tool_activities`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_blocks: Option<Vec<crate::agent::types::ContentBlock>>,
+}
+
+// ─── System Prompts ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemPromptDto {
+    pub id: String,
+    pub name: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_builtin: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_order: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemPromptConfigDto {
+    pub prompts: Vec<SystemPromptDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_prompt_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub append_date_time_and_user_name: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemPromptCreateInput {
+    pub name: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemPromptUpdateInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+/// A single version snapshot of a system prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemPromptVersionDto {
+    pub id: String,
+    pub prompt_id: String,
+    pub name: String,
+    pub content: String,
+    pub created_at: i64,
 }
 
 // ─── Spaces ────────────────────────────────────────────────────────────
@@ -805,7 +863,7 @@ pub struct ApproveToolCallResponse {
     pub success: bool,
 }
 
-// --- Memory Graph IPC Types ---
+// ─── Memory Graph IPC Types ---
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -857,6 +915,16 @@ pub struct MemoryGraphCreateNodeInput {
     pub kind: String,
     pub title: String,
     pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryGraphQuickCaptureInput {
+    pub content: String,
+    pub title: Option<String>,
+    pub space_id: Option<String>,
+    pub source: Option<String>,
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1055,6 +1123,61 @@ pub struct RespondExitPlanInput {
     /// Echo of session_id (frontend already knows it, simpler than backend
     /// stashing it).
     pub session_id: String,
+}
+
+// ─── Fragment / Daily Summary IPC Types ────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListFragmentsInput {
+    pub space_id: Option<String>,
+    pub tag: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FragmentItem {
+    pub id: String,
+    pub title: Option<String>,
+    pub content: String,
+    pub source: String,
+    pub tags: Vec<String>,
+    pub subtype: Option<String>,
+    pub created_at: i64,
+    pub review_status: Option<ReviewStatus>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewStatus {
+    pub review_count: i32,
+    pub next_review_at: Option<i64>,
+    pub completed: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FragmentSearchHit {
+    pub id: String,
+    pub title: Option<String>,
+    pub snippet: String,
+    pub tags: Vec<String>,
+    pub subtype: Option<String>,
+    pub source: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailySummaryItem {
+    pub id: String,
+    pub summary_date: String,
+    pub content: String,
+    pub fragment_count: i32,
+    pub fragment_ids: Vec<String>,
+    pub created_at: i64,
 }
 
 #[cfg(test)]

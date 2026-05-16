@@ -25,6 +25,9 @@ pub struct MemubotConfig {
     /// Automation runtime configuration (cost caps + retention).
     #[serde(default)]
     pub automation: AutomationConfig,
+    /// Gene evolution configuration (GEP protocol).
+    #[serde(default)]
+    pub gene_evolution: GeneEvolutionConfig,
     /// Maximum wall-clock seconds the agent loop may run for a single
     /// user message before forcibly terminating. Default 600s (10 min).
     /// Override via settings → Advanced (or edit ~/.uclaw/memubot_config.json).
@@ -192,6 +195,50 @@ pub struct MultimodalContextConfig {
     pub system_prompt: Option<String>,
 }
 
+/// Gene 进化配置（GEP Protocol）
+/// 控制 Agent 自进化引擎的 Gene 蒸馏、检索、生命周期行为
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GeneEvolutionConfig {
+    /// 是否启用 Gene 进化引擎
+    pub enabled: bool,
+    /// Gene 蒸馏触发阈值（candidates 池达到多少条时触发蒸馏）
+    pub gene_distillation_threshold: usize,
+    /// Gene 蒸馏最小冷却时间（秒）
+    pub gene_distillation_cooldown_secs: u64,
+    /// 最大保留 Gene candidates 数
+    pub max_gene_candidates: usize,
+    /// 触发退役的连续失败 Capsule 数
+    pub gene_retire_consecutive_failures: u32,
+    /// 退役检查：无活动天数
+    pub gene_retire_inactive_days: u32,
+    /// AVOID cues 最大条数（含 Stage 1 变异增补）
+    pub gene_max_avoid_cues: usize,
+    /// Stage 1 变异冷却时间（秒）
+    pub gene_mutation_cooldown_secs: u64,
+    /// 触发 AVOID 增补的最小失败 Capsule 数
+    pub gene_avoid_augment_min_failures: u32,
+    /// 最大注入 Gene 数
+    pub max_active_genes: usize,
+}
+
+impl Default for GeneEvolutionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            gene_distillation_threshold: 5,
+            gene_distillation_cooldown_secs: 600,
+            max_gene_candidates: 20,
+            gene_retire_consecutive_failures: 3,
+            gene_retire_inactive_days: 180,
+            gene_max_avoid_cues: 5,
+            gene_mutation_cooldown_secs: 259_200, // 3 天
+            gene_avoid_augment_min_failures: 2,
+            max_active_genes: 2,
+        }
+    }
+}
+
 fn default_agent_loop_timeout_secs() -> u64 { 600 }
 
 // ─── Default 实现 ────────────────────────────────────────────────────────
@@ -207,6 +254,7 @@ impl Default for MemubotConfig {
             observability: ObservabilityConfig::default(),
             scenarios: ScenariosConfig::default(),
             automation: AutomationConfig::default(),
+            gene_evolution: GeneEvolutionConfig::default(),
             agent_loop_timeout_secs: 600,
         }
     }

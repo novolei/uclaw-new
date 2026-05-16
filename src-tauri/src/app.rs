@@ -20,6 +20,7 @@ use crate::memu::client::MemUClient;
 use crate::memu::bridge::MemUBridge;
 use crate::memory_graph::store::MemoryGraphStore;
 use crate::infra::InfraService;
+use crate::proactive::ProactiveService;
 use crate::services::ServiceManager;
 use crate::observability::MetricsService;
 use crate::memubot_config::MemubotConfig;
@@ -214,6 +215,10 @@ pub struct AppState {
     /// the § 7.3 command surface.  Registered into ServiceManager in main.rs
     /// Stage 3; constructed here so Tauri commands can borrow it via AppState.
     pub runtime_service: Arc<crate::automation::runtime::AppRuntimeService>,
+
+    /// ProactiveService (None if proactive is disabled or init failed;
+    /// populated asynchronously in main.rs Stage 3 via interior RwLock).
+    pub proactive_service: Arc<tokio::sync::RwLock<Option<Arc<ProactiveService>>>>,
 }
 
 impl AppState {
@@ -488,6 +493,7 @@ impl AppState {
             tool_budget,
             files_rail_service,
             runtime_service,
+            proactive_service: Arc::new(tokio::sync::RwLock::new(None)),
         })
     }
 
