@@ -2,15 +2,20 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::memory_graph::recall::MemoryRecallConfigDto;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserSettings {
     pub language: String,
     pub theme: String,
     /// Optional monthly budget in USD. None disables budget alerts.
-    /// Persisted in `config.json`. Default: None.
     #[serde(default)]
     pub monthly_budget_usd: Option<f64>,
+    /// Memory recall configuration. When None, MemoryRecallConfig::default() is used.
+    /// Persisted in config.json; hot-reloaded every agent turn.
+    #[serde(default)]
+    pub memory_recall_config: Option<MemoryRecallConfigDto>,
 }
 
 impl Default for UserSettings {
@@ -19,6 +24,7 @@ impl Default for UserSettings {
             language: "en".to_string(),
             theme: "light".to_string(),
             monthly_budget_usd: None,
+            memory_recall_config: None,
         }
     }
 }

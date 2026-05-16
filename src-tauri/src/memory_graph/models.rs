@@ -211,6 +211,18 @@ pub struct MemoryKeyword {
     pub created_at: String,
 }
 
+// ─── Graph Propagation Result ───────────────────────────────────────
+
+/// 图传播搜索结果节点
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphPropagationNode {
+    pub node_id: String,
+    /// 传播得分（0.0 - 1.0），基于关系权重和衰减
+    pub score: f32,
+    /// 距离种子节点的跳数
+    pub depth: usize,
+}
+
 // ─── NodeDetail (聚合查询结果) ───────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

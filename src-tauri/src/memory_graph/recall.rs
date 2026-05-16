@@ -9,6 +9,60 @@ use super::search::MemorySearchResult;
 use super::store::MemoryGraphStore;
 use crate::memu::client::MemUClient;
 
+// ─── Time Range ───────────────────────────────────────────────────────────
+
+/// 时间范围筛选参数，用于时间基础搜索
+#[derive(Debug, Clone)]
+pub struct TimeRange {
+    /// 起始时间（ISO 8601 字符串），None 表示无下限
+    pub start: Option<String>,
+    /// 结束时间（ISO 8601 字符串），None 表示无上限
+    pub end: Option<String>,
+    /// 是否偏好近期记忆（启用时间衰减分）
+    pub prefer_recent: bool,
+}
+
+impl TimeRange {
+    /// 最近 N 天
+    pub fn last_n_days(days: u32) -> Self {
+        let end = chrono::Utc::now();
+        let start = end - chrono::Duration::days(days as i64);
+        Self {
+            start: Some(start.to_rfc3339()),
+            end: Some(end.to_rfc3339()),
+            prefer_recent: true,
+        }
+    }
+
+    /// 无时间限制（全量）
+    pub fn all() -> Self {
+        Self {
+            start: None,
+            end: None,
+            prefer_recent: false,
+        }
+    }
+}
+
+/// 计算时间衰减分数：基于高斯衰减函数
+/// `exp(-(age_days / half_life_days)²)`
+/// 其中 age_days 是记忆创建至今的天数，half_life_days 是半衰期（默认 7 天）
+pub fn time_decay_score(created_at: &str, half_life_days: f64) -> f32 {
+    let created = match chrono::DateTime::parse_from_rfc3339(created_at)
+        .or_else(|_| chrono::DateTime::parse_from_rfc3339(&format!("{}Z", created_at)))
+    {
+        Ok(dt) => dt.with_timezone(&chrono::Utc),
+        Err(_) => return 0.0,
+    };
+    let now = chrono::Utc::now();
+    let age_hours = (now - created).num_hours() as f64;
+    let age_days = age_hours / 24.0;
+    if age_days < 0.0 {
+        return 1.0; // 未来时间，给予满分
+    }
+    (-(age_days / half_life_days).powi(2)).exp() as f32
+}
+
 // ─── Recall Configuration ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -26,9 +80,19 @@ pub struct MemoryRecallConfig {
     /// regardless of query relevance. Set to 0 to disable.
     /// Skills are ranked by usage_count DESC then updated_at DESC.
     pub boot_learned_skills_limit: usize,
+    /// Maximum total tokens the memory context block may occupy.
+    /// format_recall_for_prompt will progressively truncate content
+    /// (shorten snippets, then drop lower-priority sections) to stay
+    /// under this budget.  Set to 0 to disable the limit entirely.
+    ///
+    /// Default: 5000 — balances informativeness against leaving
+    /// enough room for the conversation itself (typical agent-loop
+    /// context windows are 128k–200k; 5k memory is ~2.5–4%).
+    pub token_budget: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum FusionStrategy {
     Rrf,
     Weighted,
@@ -47,6 +111,75 @@ impl Default for MemoryRecallConfig {
             fts_weight: 0.5,
             vector_weight: 0.5,
             boot_learned_skills_limit: 3,
+            token_budget: 5000,
+        }
+    }
+}
+
+// ─── Recall Config DTO (for IPC/settings serialization) ──────────────────
+
+/// Serializable mirror of MemoryRecallConfig for frontend settings.
+/// All fields are Optional so partial updates work naturally.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryRecallConfigDto {
+    #[serde(default)]
+    pub boot_limit: Option<usize>,
+    #[serde(default)]
+    pub trigger_limit: Option<usize>,
+    #[serde(default)]
+    pub seed_limit: Option<usize>,
+    #[serde(default)]
+    pub expansion_limit: Option<usize>,
+    #[serde(default)]
+    pub recent_limit: Option<usize>,
+    #[serde(default)]
+    pub fusion_strategy: Option<FusionStrategy>,
+    #[serde(default)]
+    pub rrf_k: Option<u32>,
+    #[serde(default)]
+    pub fts_weight: Option<f32>,
+    #[serde(default)]
+    pub vector_weight: Option<f32>,
+    #[serde(default)]
+    pub boot_learned_skills_limit: Option<usize>,
+    #[serde(default)]
+    pub token_budget: Option<usize>,
+}
+
+impl From<MemoryRecallConfigDto> for MemoryRecallConfig {
+    fn from(dto: MemoryRecallConfigDto) -> Self {
+        let default = MemoryRecallConfig::default();
+        Self {
+            boot_limit: dto.boot_limit.unwrap_or(default.boot_limit),
+            trigger_limit: dto.trigger_limit.unwrap_or(default.trigger_limit),
+            seed_limit: dto.seed_limit.unwrap_or(default.seed_limit),
+            expansion_limit: dto.expansion_limit.unwrap_or(default.expansion_limit),
+            recent_limit: dto.recent_limit.unwrap_or(default.recent_limit),
+            fusion_strategy: dto.fusion_strategy.unwrap_or(default.fusion_strategy),
+            rrf_k: dto.rrf_k.unwrap_or(default.rrf_k),
+            fts_weight: dto.fts_weight.unwrap_or(default.fts_weight),
+            vector_weight: dto.vector_weight.unwrap_or(default.vector_weight),
+            boot_learned_skills_limit: dto.boot_learned_skills_limit.unwrap_or(default.boot_learned_skills_limit),
+            token_budget: dto.token_budget.unwrap_or(default.token_budget),
+        }
+    }
+}
+
+impl From<MemoryRecallConfig> for MemoryRecallConfigDto {
+    fn from(cfg: MemoryRecallConfig) -> Self {
+        Self {
+            boot_limit: Some(cfg.boot_limit),
+            trigger_limit: Some(cfg.trigger_limit),
+            seed_limit: Some(cfg.seed_limit),
+            expansion_limit: Some(cfg.expansion_limit),
+            recent_limit: Some(cfg.recent_limit),
+            fusion_strategy: Some(cfg.fusion_strategy),
+            rrf_k: Some(cfg.rrf_k),
+            fts_weight: Some(cfg.fts_weight),
+            vector_weight: Some(cfg.vector_weight),
+            boot_learned_skills_limit: Some(cfg.boot_learned_skills_limit),
+            token_budget: Some(cfg.token_budget),
         }
     }
 }
@@ -79,6 +212,8 @@ pub struct MemoryTimelineEntry {
     pub content_snippet: String,
     pub kind: MemoryNodeKind,
     pub updated_at: String,
+    /// 时间衰减分数（0.0-1.0），基于高斯衰减函数
+    pub time_score: Option<f32>,
 }
 
 // ─── Recall Plan ──────────────────────────────────────────────────────────
@@ -128,6 +263,11 @@ impl MemoryRecallEngine {
         }
     }
 
+    /// Return a reference to the engine's configuration.
+    pub fn config(&self) -> &MemoryRecallConfig {
+        &self.config
+    }
+
     /// Increment usage_count on every learned-skill candidate that was
     /// rendered into the prompt. Call this AFTER format_recall_for_prompt
     /// has been invoked and the system prompt has been handed to the LLM —
@@ -158,26 +298,44 @@ impl MemoryRecallEngine {
         user_input: &str,
         is_group_chat: bool,
     ) -> anyhow::Result<MemoryRecallPlan> {
+        self.build_recall_plan_with_time(space_id, user_input, is_group_chat, None).await
+    }
+
+    /// Build a complete 5-layer recall plan with optional time range filtering.
+    ///
+    /// Time range filtering is applied as a post-filter on L2 (triggered),
+    /// L3 (relevant), and L4 (expanded) layers, in addition to the native
+    /// time-based search in L5 (recent).
+    pub async fn build_recall_plan_with_time(
+        &self,
+        space_id: &str,
+        user_input: &str,
+        is_group_chat: bool,
+        time_range: Option<&TimeRange>,
+    ) -> anyhow::Result<MemoryRecallPlan> {
         let mut seen = HashSet::<String>::new();
 
-        // L1 — Boot
+        // L1 — Boot (boot nodes are always relevant, skip time filter)
         let boot = self.layer_boot(space_id, is_group_chat, &mut seen)?;
         info!(count = boot.len(), "recall: L1 boot candidates");
 
         // L2 — Triggered
-        let triggered = self.layer_triggered(space_id, user_input, &mut seen)?;
-        info!(count = triggered.len(), "recall: L2 triggered candidates");
+        let mut triggered = self.layer_triggered(space_id, user_input, &mut seen)?;
+        info!(count = triggered.len(), "recall: L2 triggered candidates (pre-filter)");
+        let triggered = self.filter_by_time_range(triggered, time_range)?;
 
         // L3 — Relevant (seed)
-        let relevant = self.layer_relevant(space_id, user_input, &mut seen).await?;
-        info!(count = relevant.len(), "recall: L3 relevant candidates");
+        let mut relevant = self.layer_relevant(space_id, user_input, &mut seen).await?;
+        info!(count = relevant.len(), "recall: L3 relevant candidates (pre-filter)");
+        let relevant = self.filter_by_time_range(relevant, time_range)?;
 
         // L4 — Expanded (graph walk)
-        let expanded = self.layer_expanded(&relevant, &mut seen)?;
-        info!(count = expanded.len(), "recall: L4 expanded candidates");
+        let mut expanded = self.layer_expanded(&relevant, &mut seen)?;
+        info!(count = expanded.len(), "recall: L4 expanded candidates (pre-filter)");
+        let expanded = self.filter_by_time_range(expanded, time_range)?;
 
-        // L5 — Recent
-        let recent = self.layer_recent(space_id)?;
+        // L5 — Recent (with native time range filtering)
+        let recent = self.layer_recent_enhanced(space_id, time_range)?;
         info!(count = recent.len(), "recall: L5 recent entries");
 
         Ok(MemoryRecallPlan {
@@ -214,7 +372,16 @@ impl MemoryRecallEngine {
     }
 
     /// Format a recall plan as injectable system-prompt text.
-    pub fn format_recall_for_prompt(plan: &MemoryRecallPlan) -> String {
+    ///
+    /// `token_budget` is the approximate maximum number of tokens the
+    /// output may occupy.  The formatter applies progressive truncation:
+    ///  1. Shorten per-item content snippets (200 → 120 → 80 chars)
+    ///  2. Drop lower-priority sections entirely (recent → expanded →
+    ///     relevant → triggered → boot)
+    ///  3. Within the Learned Skills section (highest priority), truncate
+    ///     individual SOP fields
+    /// Pass 0 to disable the limit (full output, backward-compatible).
+    pub fn format_recall_for_prompt(plan: &MemoryRecallPlan, token_budget: usize) -> String {
         // Note: the emit-detection logic below is duplicated by
         // collect_emitted_skill_ids() at the bottom of this file. Keep
         // the two in sync — both must agree on what counts as "rendered
@@ -254,7 +421,6 @@ impl MemoryRecallEngine {
             if skill_ids.contains(&c.node_id) {
                 return false; // handled in learned skills section or disabled
             }
-            // Filter out disabled Procedure nodes that weren't caught above
             if c.kind == MemoryNodeKind::Procedure {
                 if let Some(ref meta) = c.metadata {
                     let enabled = meta.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -266,140 +432,252 @@ impl MemoryRecallEngine {
             true
         };
 
+        // ── Token budget tracking ──
+        let mut used = 0usize;
+        let budget = token_budget;
+        let budget_enabled = budget > 0;
+
+        // ── Helper: estimate approximate token count ──
+        fn estimate_tokens(s: &str) -> usize {
+            let chars = s.chars().count();
+            let cjk_count = s.chars().filter(|&c| is_cjk(c)).count();
+            let ascii_chars = chars - cjk_count;
+            // CJK: ~1 token/char; ASCII: ~0.25 tokens/char (≈1.3 tokens/word)
+            cjk_count + (ascii_chars / 4).max(1)
+        }
+
+        // ── Helper: render a snippet respecting a max char budget ──
+        let budgeted_snippet = |content: &str, max_chars: usize| -> String {
+            truncate_content(content, max_chars)
+        };
+
+        // ── Helper: format a section header ──
+        let format_section_header = |header: &str| -> String { header.to_string() };
+
+        // ── Helper: check if a section fits within remaining token budget ──
+        let section_fits = |_section_name: &str,
+                             num_items: usize,
+                             _item_cost: usize,
+                             budget: usize,
+                             used: usize,
+                             budget_enabled: bool|
+         -> bool {
+            if !budget_enabled {
+                return true;
+            }
+            if used >= budget {
+                return false;
+            }
+            let header_cost = 10;
+            let per_item_cost = 50;
+            let min_needed = header_cost + num_items.min(2).saturating_mul(per_item_cost) + 10;
+            budget.saturating_sub(used) >= min_needed
+        };
+
         // ── Learned Skills section (top priority) ──
-        // E1: stronger directive — softer wording lets the LLM treat
-        // the section as background reading. Now we require an explicit
-        // citation ("> 应用技能：X — 因为 Y") at the start of any
-        // response that uses one. This makes citation observable
-        // (downstream code can detect "> 应用技能：" prefix) and makes
-        // the agent more likely to actually follow the SOP rather than
-        // just having it visible in context.
         if !learned_skills.is_empty() {
-            out.push_str("## Learned Skills (已学技能)\n");
-            out.push_str(
-                "以下是你已学会的技能 SOP。**强制规则**：\n\
-                 1. 任务开始前先判断本次请求是否匹配下列任一技能的「适用场景」。\n\
-                 2. 如匹配，**必须**在你的响应开头以引用块形式声明：\n   \
-                 `> 应用技能：<技能名> — <一句话说明为何匹配>`\n   \
-                 然后严格按该技能的「SOP 步骤」执行，不要绕过 / 简化 / 自创流程。\n\
-                 3. 如不匹配任何技能，无需声明，正常回复即可。\n\
-                 这一规则用于积累\"技能是否真正被使用\"的反馈数据，请配合执行。\n\n",
-            );
+            let header_lines = [
+                "## Learned Skills (已学技能)\n",
+                "以下是你已学会的技能 SOP。**强制规则**：\n",
+                " 1. 任务开始前先判断本次请求是否匹配下列任一技能的「适用场景」。\n",
+                " 2. 如匹配，**必须**在你的响应开头以引用块形式声明：\n",
+                "   `> 应用技能：<技能名> — <一句话说明为何匹配>`\n",
+                "   然后严格按该技能的「SOP 步骤」执行，不要绕过 / 简化 / 自创流程。\n",
+                " 3. 如不匹配任何技能，无需声明，正常回复即可。\n",
+                " 这一规则用于积累\"技能是否真正被使用\"的反馈数据，请配合执行。\n\n",
+            ];
+            let header: String = header_lines.iter().map(|s| *s).collect();
+            out.push_str(&header);
+            if budget_enabled {
+                used += estimate_tokens(&header);
+            }
+        
+            // Determine how much budget remains per skill (on average).
+            let skills_count = learned_skills.len();
+            let rem = if budget_enabled && used < budget {
+                (budget - used) / skills_count.max(1)
+            } else {
+                usize::MAX
+            };
+        
+            // Progressive truncation levels for SOP fields based on remaining
+            // budget per skill:
+            //   > 600 tokens/skill → full SOP
+            //   400-600 → truncate steps to first 3, drop pitfalls
+            //   200-400 → title + context only
+            //   < 200   → title + context truncated to 80 chars
             for c in &learned_skills {
                 let meta = c.metadata.as_ref().unwrap(); // safe: checked above
                 let context = meta.get("context").and_then(|v| v.as_str()).unwrap_or("");
                 let principles = meta.get("principles").and_then(|v| v.as_str()).unwrap_or("");
                 let steps = meta.get("steps").and_then(|v| v.as_str()).unwrap_or("");
                 let pitfalls = meta.get("pitfalls").and_then(|v| v.as_str()).unwrap_or("");
-
+        
                 out.push_str(&format!("### {}\n", c.title));
+        
+                let ctx_max = if rem >= 400 { 200 } else { 80 };
                 if !context.is_empty() {
-                    out.push_str(&format!("**适用场景**: {}\n", context));
+                    let ctx_text = budgeted_snippet(context, ctx_max);
+                    out.push_str(&format!("**适用场景**: {}\n", ctx_text));
                 }
-                if !principles.is_empty() {
-                    out.push_str(&format!("**核心原则**: {}\n", principles));
+        
+                if rem >= 200 && !principles.is_empty() {
+                    let p_text = budgeted_snippet(principles, 150);
+                    out.push_str(&format!("**核心原则**: {}\n", p_text));
                 }
-                if !steps.is_empty() {
+        
+                if rem >= 400 && !steps.is_empty() {
                     out.push_str("**SOP 步骤**:\n");
-                    for step in steps.lines() {
-                        if step.trim().is_empty() {
-                            continue;
-                        }
-                        out.push_str(&format!("{}\n", step));
+                    let step_lines: Vec<&str> = steps.lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .collect();
+                    let step_limit = if rem >= 600 { step_lines.len() } else { step_lines.len().min(3) };
+                    for line in step_lines.iter().take(step_limit) {
+                        let step_text = budgeted_snippet(line, 120);
+                        out.push_str(&format!("{}\n", step_text));
+                    }
+                    if step_limit < step_lines.len() {
+                        out.push_str(&format!("  _(... 共 {} 步，已省略)_\n", step_lines.len() - step_limit));
                     }
                 }
-                if !pitfalls.is_empty() {
-                    out.push_str(&format!("**注意事项**: {}\n", pitfalls));
+        
+                if rem >= 400 && !pitfalls.is_empty() {
+                    let pf_text = budgeted_snippet(pitfalls, 150);
+                    out.push_str(&format!("**注意事项**: {}\n", pf_text));
                 }
+        
                 out.push('\n');
+        
+                if budget_enabled {
+                    used = estimate_tokens(&out);
+                }
             }
         }
 
         // ── Normal sections (filtering out learned/disabled skills) ──
-        let boot_normal: Vec<_> = plan.boot.iter().filter(|c| should_render_normal(c)).collect();
-        if !boot_normal.is_empty() {
-            out.push_str("## Boot Memories (启动记忆)\n");
+        // Section priority: Boot > Triggered > Relevant > Expanded > Recent.
+        // As budget tightens, we progressively shorten snippet chars then
+        // drop lower-priority sections entirely.
+
+        let boot_normal: Vec<&MemoryRecallCandidate> =
+            plan.boot.iter().filter(|c| should_render_normal(*c)).collect();
+        let triggered_normal: Vec<&MemoryRecallCandidate> =
+            plan.triggered.iter().filter(|c| should_render_normal(*c)).collect();
+        let relevant_normal: Vec<&MemoryRecallCandidate> =
+            plan.relevant.iter().filter(|c| should_render_normal(*c)).collect();
+        let expanded_normal: Vec<&MemoryRecallCandidate> =
+            plan.expanded.iter().filter(|c| should_render_normal(*c)).collect();
+
+        // Determine snippet max-chars based on remaining budget.
+        let snippet_max = if !budget_enabled {
+            200
+        } else {
+            let rem = budget.saturating_sub(used);
+            if rem > 2000 { 200 } else if rem > 1000 { 120 } else { 60 }
+        };
+
+        // ── Boot ──
+        if !boot_normal.is_empty() && section_fits("Boot Memories", boot_normal.len(), 200, budget, used, budget_enabled) {
+            let mut section_out = format_section_header("## Boot Memories (启动记忆)\n");
             for c in &boot_normal {
-                let snippet = truncate_content(&c.content, 200);
-                out.push_str(&format!(
+                section_out.push_str(&format!(
                     "- [{}] {}: {}\n",
                     capitalize_kind(&c.kind),
                     c.title,
-                    snippet,
+                    budgeted_snippet(&c.content, snippet_max),
                 ));
             }
-            out.push('\n');
+            section_out.push('\n');
+            if budget_enabled {
+                used += estimate_tokens(&section_out);
+            }
+            out.push_str(&section_out);
         }
 
-        let triggered_normal: Vec<_> = plan.triggered.iter().filter(|c| should_render_normal(c)).collect();
-        if !triggered_normal.is_empty() {
-            out.push_str("## Triggered Memories (触发记忆)\n");
+        // ── Triggered ──
+        if !triggered_normal.is_empty() && section_fits("Triggered Memories", triggered_normal.len(), 200, budget, used, budget_enabled) {
+            let mut section_out = format_section_header("## Triggered Memories (触发记忆)\n");
             for c in &triggered_normal {
-                let snippet = truncate_content(&c.content, 200);
                 let kw_display = if c.matched_keywords.is_empty() {
                     String::new()
                 } else {
                     format!("（触发词：{}）", c.matched_keywords.join(", "))
                 };
-                out.push_str(&format!(
+                section_out.push_str(&format!(
                     "- [{}] {}: {}{}\n",
                     capitalize_kind(&c.kind),
                     c.title,
-                    snippet,
+                    budgeted_snippet(&c.content, snippet_max),
                     kw_display,
                 ));
             }
-            out.push('\n');
+            section_out.push('\n');
+            if budget_enabled {
+                used += estimate_tokens(&section_out);
+            }
+            out.push_str(&section_out);
         }
 
-        let relevant_normal: Vec<_> = plan.relevant.iter().filter(|c| should_render_normal(c)).collect();
-        if !relevant_normal.is_empty() {
-            out.push_str("## Relevant Memories (相关记忆)\n");
+        // ── Relevant ──
+        if !relevant_normal.is_empty() && section_fits("Relevant Memories", relevant_normal.len(), 200, budget, used, budget_enabled) {
+            let mut section_out = format_section_header("## Relevant Memories (相关记忆)\n");
             for c in &relevant_normal {
-                let snippet = truncate_content(&c.content, 200);
                 let score_display = c
                     .score
                     .map(|s| format!("（相关度：{:.2}）", s))
                     .unwrap_or_default();
-                out.push_str(&format!(
+                section_out.push_str(&format!(
                     "- [{}] {}: {}{}\n",
                     capitalize_kind(&c.kind),
                     c.title,
-                    snippet,
+                    budgeted_snippet(&c.content, snippet_max),
                     score_display,
                 ));
             }
-            out.push('\n');
+            section_out.push('\n');
+            if budget_enabled {
+                used += estimate_tokens(&section_out);
+            }
+            out.push_str(&section_out);
         }
 
-        let expanded_normal: Vec<_> = plan.expanded.iter().filter(|c| should_render_normal(c)).collect();
-        if !expanded_normal.is_empty() {
-            out.push_str("## Expanded Context (扩展上下文)\n");
+        // ── Expanded ──
+        let exp_snip_max = snippet_max.min(if budget_enabled && budget.saturating_sub(used) < 600 { 60 } else { snippet_max });
+        if !expanded_normal.is_empty() && section_fits("Expanded Context", expanded_normal.len(), 200, budget, used, budget_enabled) {
+            let mut section_out = format_section_header("## Expanded Context (扩展上下文)\n");
             for c in &expanded_normal {
-                let snippet = truncate_content(&c.content, 200);
-                out.push_str(&format!(
+                section_out.push_str(&format!(
                     "- [{}] {}: {}（via {}）\n",
                     capitalize_kind(&c.kind),
                     c.title,
-                    snippet,
+                    budgeted_snippet(&c.content, exp_snip_max),
                     c.reason,
                 ));
             }
-            out.push('\n');
+            section_out.push('\n');
+            if budget_enabled {
+                used += estimate_tokens(&section_out);
+            }
+            out.push_str(&section_out);
         }
 
-        if !plan.recent.is_empty() {
-            out.push_str("## Recent Activity (近期活动)\n");
+        // ── Recent ── (lowest priority, easiest to drop)
+        if !plan.recent.is_empty() && section_fits("Recent Activity", plan.recent.len().min(3), 80, budget, used, budget_enabled) {
+            let mut section_out = format_section_header("## Recent Activity (近期活动)\n");
             for e in &plan.recent {
                 let date = e.updated_at.get(..10).unwrap_or(&e.updated_at);
-                out.push_str(&format!(
+                section_out.push_str(&format!(
                     "- [{}] {}: {}\n",
                     capitalize_kind(&e.kind),
                     date,
                     e.title,
                 ));
             }
-            out.push('\n');
+            section_out.push('\n');
+            if budget_enabled {
+                used += estimate_tokens(&section_out);
+            }
+            out.push_str(&section_out);
         }
 
         out.push_str("</memory_context>");
@@ -733,70 +1011,56 @@ impl MemoryRecallEngine {
         Ok(candidates)
     }
 
-    // ── L4 Expanded (graph walk) ─────────────────────────────────────────
+    // ── L4 Expanded (graph walk with BFS propagation) ────────────────────
 
+    /// 图传播扩展：从 L3 相关节点出发，通过 BFS 沿 memory_edges 进行多跳传播。
+    ///
+    /// 替代原先的单层 parent/child/route 展开，使用
+    /// `MemoryGraphStore::graph_propagation_search` 的加权 BFS 算法：
+    /// - 关系类型权重：parent_of/child_of=1.0, derived_from=0.8, related_to=0.7, etc.
+    /// - 衰减因子 0.6，每跳得分递减
+    /// - priority 字段作为附加加成
     fn layer_expanded(
         &self,
         seeds: &[MemoryRecallCandidate],
         seen: &mut HashSet<String>,
     ) -> anyhow::Result<Vec<MemoryRecallCandidate>> {
+        if seeds.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Collect top-5 seed node IDs for BFS propagation
+        let seed_ids: Vec<String> = seeds
+            .iter()
+            .take(5)
+            .map(|s| s.node_id.clone())
+            .collect();
+
+        // BFS graph propagation (max 2 hops, fetch extra for filtering)
+        let propagation_results = self.store.graph_propagation_search(
+            &seed_ids,
+            2,  // max_depth = 2 hops
+            self.config.expansion_limit * 3,
+        )?;
+
         let mut candidates = Vec::new();
-        let seed_count = seeds.len().min(3);
-
-        for seed in seeds.iter().take(seed_count) {
-            // 1. Primary route node
-            if let Ok(Some(route)) = self.store.get_primary_route(&seed.node_id) {
-                if route.node_id != seed.node_id && !seen.contains(&route.node_id) {
-                    if let Some(c) =
-                        self.make_expansion_candidate(&route.node_id, "graph_primary", &format!(
-                            "primary route of '{}'",
-                            seed.title
-                        ))?
-                    {
-                        seen.insert(c.node_id.clone());
-                        candidates.push(c);
-                    }
-                }
+        for gr in &propagation_results {
+            if seen.contains(&gr.node_id) {
+                continue;
             }
-
-            // 2. Parent nodes
-            if let Ok(parents) = self.store.get_parent_nodes(&seed.node_id) {
-                for parent in parents {
-                    if seen.contains(&parent.id) {
-                        continue;
-                    }
-                    if let Some(c) =
-                        self.make_expansion_candidate(&parent.id, "graph_parent", &format!(
-                            "parent of '{}'",
-                            seed.title
-                        ))?
-                    {
-                        seen.insert(c.node_id.clone());
-                        candidates.push(c);
-                    }
-                }
-            }
-
-            // 3. High-priority child nodes (top 2)
-            if let Ok(children) = self.store.get_child_nodes(&seed.node_id, 2) {
-                for child in children {
-                    if seen.contains(&child.id) {
-                        continue;
-                    }
-                    if let Some(c) =
-                        self.make_expansion_candidate(&child.id, "graph_child", &format!(
-                            "child of '{}'",
-                            seed.title
-                        ))?
-                    {
-                        seen.insert(c.node_id.clone());
-                        candidates.push(c);
-                    }
-                }
+            if let Some(c) = self.make_expansion_candidate(
+                &gr.node_id,
+                "graph_propagation",
+                &format!("graph bfs depth={} score={:.3}", gr.depth, gr.score),
+            )? {
+                // Include graph propagation score in candidate
+                let mut candidate = c;
+                candidate.score = Some(gr.score);
+                seen.insert(candidate.node_id.clone());
+                candidates.push(candidate);
             }
         }
 
-        // Sort by priority approximation (use updated_at as proxy) and truncate
         candidates.truncate(self.config.expansion_limit);
         Ok(candidates)
     }
@@ -830,15 +1094,97 @@ impl MemoryRecallEngine {
         }))
     }
 
+    /// Post-filter candidates by time range.
+    ///
+    /// If time_range is None, returns candidates unchanged.
+    /// Otherwise, queries each candidate's node created_at and removes
+    /// those outside the specified range. Boot nodes are never filtered
+    /// (they should be handled at the caller level).
+    fn filter_by_time_range(
+        &self,
+        candidates: Vec<MemoryRecallCandidate>,
+        time_range: Option<&TimeRange>,
+    ) -> anyhow::Result<Vec<MemoryRecallCandidate>> {
+        let tr = match time_range {
+            Some(t) if t.start.is_some() || t.end.is_some() => t,
+            _ => return Ok(candidates),
+        };
+
+        let start_dt = tr.start.as_ref().and_then(|s| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .or_else(|_| chrono::DateTime::parse_from_rfc3339(&format!("{}Z", s)))
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+        });
+        let end_dt = tr.end.as_ref().and_then(|s| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .or_else(|_| chrono::DateTime::parse_from_rfc3339(&format!("{}Z", s)))
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+        });
+
+        if start_dt.is_none() && end_dt.is_none() {
+            return Ok(candidates);
+        }
+
+        let filtered: Vec<MemoryRecallCandidate> = candidates
+            .into_iter()
+            .filter(|c| {
+                // Query node creation time
+                let node = match self.store.get_node(&c.node_id) {
+                    Ok(Some(n)) => n,
+                    _ => return true, // keep if we can't determine time
+                };
+                let created = match chrono::DateTime::parse_from_rfc3339(&node.created_at)
+                    .or_else(|_| chrono::DateTime::parse_from_rfc3339(&format!("{}Z", node.created_at)))
+                {
+                    Ok(dt) => dt.with_timezone(&chrono::Utc),
+                    Err(_) => return true, // keep if unparseable
+                };
+                if let Some(start) = start_dt {
+                    if created < start {
+                        return false;
+                    }
+                }
+                if let Some(end) = end_dt {
+                    if created > end {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
+
+        Ok(filtered)
+    }
+
     // ── L5 Recent ────────────────────────────────────────────────────────
 
     fn layer_recent(
         &self,
         space_id: &str,
     ) -> anyhow::Result<Vec<MemoryTimelineEntry>> {
-        let nodes = self
-            .store
-            .list_recent_nodes(space_id, self.config.recent_limit)?;
+        self.layer_recent_enhanced(space_id, None)
+    }
+
+    /// L5 — Recent with optional time range filtering and decay scoring.
+    fn layer_recent_enhanced(
+        &self,
+        space_id: &str,
+        time_range: Option<&TimeRange>,
+    ) -> anyhow::Result<Vec<MemoryTimelineEntry>> {
+        let nodes = if let Some(tr) = time_range {
+            self.store.search_by_time_range(
+                space_id,
+                tr.start.as_deref(),
+                tr.end.as_deref(),
+                self.config.recent_limit,
+            )?
+        } else {
+            self.store.list_recent_nodes(space_id, self.config.recent_limit)?
+        };
+
+        let apply_decay = time_range.map(|tr| tr.prefer_recent).unwrap_or(false);
 
         let mut entries = Vec::new();
         for node in nodes {
@@ -848,12 +1194,19 @@ impl MemoryRecallEngine {
                 .map(|v| truncate_content(&v.content, 120))
                 .unwrap_or_default();
 
+            let time_score = if apply_decay {
+                Some(time_decay_score(&node.created_at, 7.0))
+            } else {
+                None
+            };
+
             entries.push(MemoryTimelineEntry {
                 node_id: node.id,
                 title: node.title,
                 content_snippet: snippet,
                 kind: node.kind,
                 updated_at: node.updated_at,
+                time_score,
             });
         }
 

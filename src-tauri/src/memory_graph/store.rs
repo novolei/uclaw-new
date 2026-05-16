@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use rusqlite::params;
 use tracing::{debug, info};
@@ -429,6 +430,50 @@ impl MemoryGraphStore {
         Ok(rows.flatten().collect())
     }
 
+    /// 按时间范围搜索记忆节点（支持时间筛选和衰减排序）
+    pub fn search_by_time_range(
+        &self,
+        space_id: &str,
+        time_start: Option<&str>,
+        time_end: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MemoryNode>, crate::error::Error> {
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+
+        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = {
+            let mut conditions = vec!["space_id = ?1".to_string()];
+            let mut pv: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(space_id.to_string())];
+            let mut idx = 2;
+
+            if let Some(start) = time_start {
+                conditions.push(format!("created_at >= ?{idx}"));
+                pv.push(Box::new(start.to_string()));
+                idx += 1;
+            }
+            if let Some(end) = time_end {
+                conditions.push(format!("created_at <= ?{idx}"));
+                pv.push(Box::new(end.to_string()));
+                idx += 1;
+            }
+
+            let sql = format!(
+                "SELECT id, space_id, kind, title, metadata_json, created_at, updated_at \
+                 FROM memory_nodes WHERE {} ORDER BY updated_at DESC LIMIT ?{}",
+                conditions.join(" AND "), idx
+            );
+            pv.push(Box::new(limit as i64));
+            (sql, pv)
+        };
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql).map_err(crate::error::Error::Database)?;
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            Self::row_to_node(row)
+        }).map_err(crate::error::Error::Database)?;
+
+        Ok(rows.flatten().collect())
+    }
+
     // ── Version CRUD ────────────────────────────────────────────────────
 
     pub fn create_version(&self, version: &MemoryVersion) -> Result<(), crate::error::Error> {
@@ -602,6 +647,111 @@ impl MemoryGraphStore {
         let rows = stmt.query_map([], |row| Self::row_to_edge(row))
             .map_err(crate::error::Error::Database)?;
         Ok(rows.flatten().collect())
+    }
+
+    /// 图传播搜索：从种子节点出发，沿边 BFS 传播获取关联节点。
+    ///
+    /// - `seed_node_ids`: 起始种子节点 ID 列表
+    /// - `max_depth`: 最大跳数（默认 2）
+    /// - `max_nodes`: 最大返回节点数
+    ///
+    /// 返回按传播得分降序排列的 (node_id, score, depth) 列表。
+    pub fn graph_propagation_search(
+        &self,
+        seed_node_ids: &[String],
+        max_depth: usize,
+        max_nodes: usize,
+    ) -> Result<Vec<GraphPropagationNode>, crate::error::Error> {
+        use std::collections::VecDeque;
+
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+
+        // 关系类型权重
+        let relation_weight = |rk: &str| -> f32 {
+            match rk {
+                "parent_of" | "child_of" => 1.0,
+                "derived_from" => 0.8,
+                "related_to" => 0.7,
+                "primary_route" => 0.5,
+                "contradicts" => 0.3,
+                _ => 0.5,
+            }
+        };
+
+        let mut result: HashMap<String, (f32, usize)> = HashMap::new(); // node_id -> (score, depth)
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<(String, f32, usize)> = VecDeque::new();
+
+        // 种子节点入队（初始分 1.0，深度 0）
+        for sid in seed_node_ids {
+            queue.push_back((sid.clone(), 1.0, 0));
+            visited.insert(sid.clone());
+        }
+
+        let decay_factor: f32 = 0.6;
+
+        while let Some((node_id, incoming_score, depth)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+
+            // 查询该节点的所有出边和入边
+            let mut stmt = conn.prepare(
+                "SELECT e.child_node_id, e.parent_node_id, e.relation_kind, e.priority
+                 FROM memory_edges e
+                 WHERE (e.parent_node_id = ?1 OR e.child_node_id = ?1)
+                 LIMIT 50"
+            ).map_err(crate::error::Error::Database)?;
+
+            let rows = stmt.query_map(params![node_id], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            }).map_err(crate::error::Error::Database)?;
+
+            for row in rows.flatten() {
+                let (child_id, parent_id, rel_kind, priority) = row;
+                // 确定邻居节点
+                let neighbor = if parent_id.as_deref() == Some(&node_id) {
+                    child_id
+                } else {
+                    parent_id
+                };
+
+                if let Some(neighbor_id) = neighbor {
+                    if visited.contains(&neighbor_id) {
+                        continue;
+                    }
+
+                    let rel_w = relation_weight(&rel_kind);
+                    let prio_boost = priority.unwrap_or(0) as f32 * 0.1;
+                    let score = incoming_score * decay_factor * (rel_w + prio_boost);
+                    let next_depth = depth + 1;
+
+                    visited.insert(neighbor_id.clone());
+                    queue.push_back((neighbor_id.clone(), score, next_depth));
+
+                    // 如果已存在，保留高分
+                    result.entry(neighbor_id)
+                        .and_modify(|(s, d)| {
+                            if score > *s { *s = score; *d = next_depth; }
+                        })
+                        .or_insert((score, next_depth));
+                }
+            }
+        }
+
+        // 收集并排序
+        let mut scored: Vec<GraphPropagationNode> = result.into_iter()
+            .map(|(node_id, (score, depth))| GraphPropagationNode { node_id, score, depth })
+            .collect();
+        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(max_nodes);
+
+        Ok(scored)
     }
 
     // ── Route CRUD ──────────────────────────────────────────────────────
