@@ -310,7 +310,7 @@ impl IlinkSender {
             bot_token: self.bot_token.clone(),
             base_url: self.base_url.clone(),
             client: self.client.clone(),
-            // shared will be added in Task 3
+            shared: self.shared.clone(),
         });
         let reply = Arc::new(ReplyHandle {
             sender: sender_arc,
@@ -378,6 +378,18 @@ struct IlinkReplySender {
     bot_token: String,
     base_url: String,
     client: reqwest::Client,
+    shared: Arc<IlinkSharedState>,
+}
+
+impl IlinkReplySender {
+    fn truncate_reply(text: &str) -> String {
+        if text.chars().count() > MAX_REPLY_CHARS {
+            let truncated: String = text.chars().take(MAX_REPLY_CHARS).collect();
+            format!("{truncated}\n\n…（内容已截断）")
+        } else {
+            text.to_string()
+        }
+    }
 }
 
 #[async_trait]
@@ -390,6 +402,15 @@ impl ImChannelSender for IlinkReplySender {
     ) -> Result<(), String> {
         let context_token = ctx
             .and_then(|c| c["context_token"].as_str())
+            .map(String::from)
+            .or_else(|| {
+                // Fallback: channel_ctx accidentally lost — read latest token from LRU cache.
+                self.shared
+                    .context_tokens
+                    .try_read()
+                    .ok()
+                    .and_then(|cache| cache.peek(chat_id).cloned())
+            })
             .ok_or_else(|| {
                 format!(
                     "[IlinkBot:{}] Cannot reply to {chat_id}: missing context_token",
@@ -397,9 +418,12 @@ impl ImChannelSender for IlinkReplySender {
                 )
             })?;
 
+        let text_to_send = Self::truncate_reply(text);
+
         use base64::Engine;
         let n: u32 = rand::random();
-        let uin = base64::engine::general_purpose::STANDARD.encode(n.to_string().as_bytes());
+        let uin =
+            base64::engine::general_purpose::STANDARD.encode(n.to_string().as_bytes());
 
         let url = format!("{}/ilink/bot/sendmessage", self.base_url);
         let body = json!({
@@ -412,7 +436,7 @@ impl ImChannelSender for IlinkReplySender {
                 "context_token": context_token,
                 "item_list": [{
                     "type": 1,
-                    "text_item": { "text": text }
+                    "text_item": { "text": text_to_send }
                 }]
             },
             "base_info": { "channel_version": CHANNEL_VERSION }
@@ -432,18 +456,26 @@ impl ImChannelSender for IlinkReplySender {
             .map_err(|e| e.to_string())?;
 
         let http_status = resp.status();
-        let resp_body: Value = resp
-            .json()
-            .await
-            .unwrap_or_else(|_| json!({}));
+        let resp_body: Value = resp.json().await.unwrap_or_else(|_| json!({}));
         let ret = resp_body["ret"]
             .as_i64()
             .unwrap_or(resp_body["errcode"].as_i64().unwrap_or(0));
+
         if !http_status.is_success() {
             return Err(format!("iLink sendmessage HTTP {http_status} ret={ret}"));
         }
+        if ret == SESSION_EXPIRED_CODE {
+            self.shared.invalidate().await;
+            return Err(format!(
+                "[IlinkBot:{}] sendmessage session expired (-14), poll_loop notified",
+                self.instance_id
+            ));
+        }
         if ret != 0 {
-            return Err(format!("iLink sendmessage error ret={ret}: {}", resp_body["errmsg"].as_str().unwrap_or("")));
+            return Err(format!(
+                "iLink sendmessage error ret={ret}: {}",
+                resp_body["errmsg"].as_str().unwrap_or("")
+            ));
         }
         Ok(())
     }
@@ -561,5 +593,86 @@ mod tests {
             shared.context_tokens.read().await.len(),
             CONTEXT_TOKEN_CACHE_CAP
         );
+    }
+
+    #[tokio::test]
+    async fn sendmessage_14_calls_invalidate() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/ilink/bot/sendmessage")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"ret":-14}"#)
+            .create_async()
+            .await;
+
+        let shared = Arc::new(IlinkSharedState::new());
+        shared.context_tokens.write().await.put("user1".to_string(), "ct1".to_string());
+        shared.seen_msg_ids.lock().await.push_back("id1".to_string());
+
+        let reply_sender = IlinkReplySender {
+            instance_id: "test".to_string(),
+            bot_token: "tok".to_string(),
+            base_url: server.url(),
+            client: reqwest::Client::new(),
+            shared: shared.clone(),
+        };
+
+        let ctx = serde_json::json!({ "context_token": "ct1" });
+        let result = reply_sender.send_text("user1", "hello", Some(&ctx)).await;
+
+        assert!(result.is_err(), "sendmessage -14 must return Err");
+        assert!(
+            !shared.session_active.load(Ordering::Relaxed),
+            "session_active must be false after -14"
+        );
+        assert_eq!(shared.context_tokens.read().await.len(), 0, "context_tokens cleared");
+        assert_eq!(shared.seen_msg_ids.lock().await.len(), 0, "seen_msg_ids cleared");
+    }
+
+    #[test]
+    fn truncate_reply_at_4000_chars() {
+        let input = "x".repeat(4001);
+        let result = IlinkReplySender::truncate_reply(&input);
+        let first_line: &str = result.split('\n').next().unwrap();
+        assert_eq!(first_line.chars().count(), MAX_REPLY_CHARS);
+        assert!(result.contains("内容已截断"));
+    }
+
+    #[test]
+    fn no_truncation_under_limit() {
+        let input = "x".repeat(MAX_REPLY_CHARS);
+        assert_eq!(IlinkReplySender::truncate_reply(&input), input);
+    }
+
+    #[tokio::test]
+    async fn context_token_fallback_from_lru() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/ilink/bot/sendmessage")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"ret":0}"#)
+            .create_async()
+            .await;
+
+        let shared = Arc::new(IlinkSharedState::new());
+        shared
+            .context_tokens
+            .write()
+            .await
+            .put("user1".to_string(), "cached_ct".to_string());
+
+        let reply_sender = IlinkReplySender {
+            instance_id: "test".to_string(),
+            bot_token: "tok".to_string(),
+            base_url: server.url(),
+            client: reqwest::Client::new(),
+            shared,
+        };
+
+        // ctx=None — should fall back to LRU cache, not error
+        let result = reply_sender.send_text("user1", "hi", None).await;
+        assert!(result.is_ok(), "LRU fallback should succeed: {:?}", result);
     }
 }
