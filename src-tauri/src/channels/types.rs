@@ -38,6 +38,28 @@ impl std::fmt::Display for ImChannelType {
     }
 }
 
+/// Runtime connection state for a bidirectional channel instance.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelState {
+    Online,
+    Error,
+    Offline,
+}
+
+/// Live status snapshot — emitted as `im_channel_status_changed` Tauri event
+/// and returned by `get_im_channel_statuses`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChannelRuntimeStatus {
+    pub instance_id: String,
+    pub state: ChannelState,
+    pub last_error: Option<String>,
+    /// Epoch ms when last connected (Some only when state == Online).
+    pub connected_since_ms: Option<i64>,
+    /// Messages received today (resets on restart; 0 for notify-only channels).
+    pub message_count_today: u32,
+}
+
 /// Per-user permission policy for guests (non-owner senders).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GuestPolicy {
@@ -164,5 +186,31 @@ mod tests {
     #[test]
     fn streaming_handle_is_object_safe() {
         fn _accepts(_: &dyn StreamingHandle) {}
+    }
+
+    #[test]
+    fn channel_runtime_status_serializes_correctly() {
+        let s = ChannelRuntimeStatus {
+            instance_id: "inst-1".into(),
+            state: ChannelState::Online,
+            last_error: None,
+            connected_since_ms: Some(1_700_000_000_000),
+            message_count_today: 42,
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"state\":\"online\""));
+        assert!(json.contains("\"instance_id\":\"inst-1\""));
+        assert!(json.contains("\"message_count_today\":42"));
+
+        let err_s = ChannelRuntimeStatus {
+            instance_id: "inst-2".into(),
+            state: ChannelState::Error,
+            last_error: Some("认证失败".into()),
+            connected_since_ms: None,
+            message_count_today: 0,
+        };
+        let json2 = serde_json::to_string(&err_s).unwrap();
+        assert!(json2.contains("\"state\":\"error\""));
+        assert!(json2.contains("认证失败"));
     }
 }
