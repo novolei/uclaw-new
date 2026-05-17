@@ -164,6 +164,8 @@ pub struct AppState {
     pub skills_registry: Arc<RwLock<SkillsRegistry>>,
     pub mcp_manager: SharedMcpManager,
     pub channel_manager: Arc<RwLock<ChannelManager>>,
+    pub im_channel_manager: Arc<crate::channels::manager::ImChannelManager>,
+    pub im_session_registry: Arc<crate::channels::session_registry::ImSessionRegistry>,
 
     // Providers
     pub provider_service: Arc<ProviderService>,
@@ -344,6 +346,14 @@ impl AppState {
         // B2: Channel manager
         let channel_manager = Arc::new(RwLock::new(ChannelManager::new()));
 
+        // IM channel manager and session registry
+        let im_channel_manager = Arc::new(
+            crate::channels::manager::ImChannelManager::new(db.clone())
+        );
+        let im_session_registry = Arc::new(
+            crate::channels::session_registry::ImSessionRegistry::new(db.clone())
+        );
+
         // Providers
         let provider_service = Arc::new(ProviderService::new(&data_dir)?);
 
@@ -471,6 +481,8 @@ impl AppState {
             skills_registry,
             mcp_manager,
             channel_manager,
+            im_channel_manager,
+            im_session_registry,
             provider_service,
             safety_manager,
             pending_approvals,
