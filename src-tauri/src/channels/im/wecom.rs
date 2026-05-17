@@ -8,7 +8,7 @@
 //! - Heartbeat: {cmd:"ping"} every 30s
 //! - Only one WebSocket connection per bot allowed
 
-use crate::channels::types::{ImChannelSender, InboundMessage, ReplyHandle, StreamingHandle};
+use crate::channels::types::{ChannelRuntimeStatus, ChannelState, ImChannelSender, InboundMessage, ReplyHandle, StreamingHandle};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -41,10 +41,16 @@ pub struct WecomSender {
     ws_url: String,
     req_ids: Arc<RwLock<std::collections::HashMap<String, ReqIdEntry>>>,
     tx: Arc<Mutex<Option<mpsc::UnboundedSender<Message>>>>,
+    status_tx: mpsc::UnboundedSender<ChannelRuntimeStatus>,
 }
 
 impl WecomSender {
-    pub fn new(instance_id: &str, config: &Value, credentials: &Value) -> Self {
+    pub fn new(
+        instance_id: &str,
+        config: &Value,
+        credentials: &Value,
+        status_tx: mpsc::UnboundedSender<ChannelRuntimeStatus>,
+    ) -> Self {
         let bot_id = credentials["bot_id"].as_str().unwrap_or("").to_string();
         let secret = credentials["secret"].as_str().unwrap_or("").to_string();
         let ws_url = config["ws_url"]
@@ -59,6 +65,7 @@ impl WecomSender {
             ws_url,
             req_ids: Arc::new(RwLock::new(std::collections::HashMap::new())),
             tx: Arc::new(Mutex::new(None)),
+            status_tx,
         }
     }
 
@@ -85,11 +92,25 @@ impl WecomSender {
                     "[WecomBot:{}] giving up after {MAX_RECONNECT_ATTEMPTS} reconnect attempts",
                     self.instance_id
                 );
+                let _ = self.status_tx.send(ChannelRuntimeStatus {
+                    instance_id: self.instance_id.clone(),
+                    state: ChannelState::Offline,
+                    last_error: Some(format!("已达最大重连次数 ({MAX_RECONNECT_ATTEMPTS})")),
+                    connected_since_ms: None,
+                    message_count_today: 0,
+                });
                 break;
             }
             match self.connect_and_run(inbound_tx.clone()).await {
                 Ok(()) => break,
                 Err(e) => {
+                    let _ = self.status_tx.send(ChannelRuntimeStatus {
+                        instance_id: self.instance_id.clone(),
+                        state: ChannelState::Error,
+                        last_error: Some(e.to_string()),
+                        connected_since_ms: None,
+                        message_count_today: 0,
+                    });
                     tracing::warn!(
                         "[WecomBot:{}] connection error: {e}; reconnecting (attempt {attempt}/{})",
                         self.instance_id,
@@ -121,6 +142,14 @@ impl WecomSender {
         write
             .send(Message::Text(sub_msg.to_string()))
             .await?;
+        // Emit Online status — subscribe sent; treat as connected.
+        let _ = self.status_tx.send(ChannelRuntimeStatus {
+            instance_id: self.instance_id.clone(),
+            state: ChannelState::Online,
+            last_error: None,
+            connected_since_ms: Some(chrono::Utc::now().timestamp_millis()),
+            message_count_today: 0,
+        });
 
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
         *self.tx.lock().await = Some(out_tx);
@@ -424,5 +453,17 @@ mod tests {
     fn req_id_ttl_check_recognizes_valid() {
         let expires_at = Utc::now() + chrono::Duration::seconds(60);
         assert!(!WecomSender::is_req_id_expired(expires_at));
+    }
+
+    #[test]
+    fn wecom_sender_new_accepts_status_tx() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<ChannelRuntimeStatus>();
+        let _sender = WecomSender::new(
+            "inst-test",
+            &serde_json::json!({}),
+            &serde_json::json!({"bot_id": "b1", "secret": "s1"}),
+            tx,
+        );
+        // Constructor accepted status_tx without panicking.
     }
 }

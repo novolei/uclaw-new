@@ -97,34 +97,53 @@ impl ImChannelManager {
         // explicitly. Without this, update/toggle calls would orphan old tasks while
         // inserting new ones — two WecomBot connections on a single-connection protocol.
         self.stop_instance(&config.id).await;
+
+        // WecomBot has its own early-return path with status relay.
+        if config.channel_type == ImChannelType::WecomBot {
+            let (inbound_tx, inbound_rx) =
+                tokio::sync::mpsc::unbounded_channel::<(
+                    crate::channels::types::InboundMessage,
+                    Arc<crate::channels::types::ReplyHandle>,
+                )>();
+            let (status_tx, status_rx) =
+                tokio::sync::mpsc::unbounded_channel::<crate::channels::types::ChannelRuntimeStatus>();
+            let wecom = Arc::new(crate::channels::im::WecomSender::new(
+                &config.id,
+                &config.config,
+                &config.credentials,
+                status_tx,
+            ));
+            let abort = if config.enabled {
+                Some(wecom.clone().start(inbound_tx))
+            } else {
+                None
+            };
+            let fanout_abort = if config.enabled {
+                Some(self.spawn_fanout_loop(config.id.clone(), inbound_rx))
+            } else {
+                drop(inbound_rx);
+                None
+            };
+            let relay_abort = if config.enabled {
+                Some(self.spawn_status_relay(status_rx))
+            } else {
+                None
+            };
+            let running = RunningInstance {
+                config: config.clone(),
+                sender: Arc::new(WecomNoopSender) as Arc<dyn ImChannelSender>,
+                _inbound_task: abort,
+                _fanout_task: fanout_abort,
+                _status_relay_task: relay_abort,
+            };
+            self.instances.write().await.insert(config.id.clone(), running);
+            tracing::info!("ImChannelManager: started instance {} ({})", config.id, config.channel_type);
+            return Ok(());
+        }
+
+        // All other channel types use the tuple pattern.
         let (sender, inbound_task, fanout_task): (Arc<dyn ImChannelSender>, Option<AbortHandle>, Option<AbortHandle>) =
             match config.channel_type {
-                ImChannelType::WecomBot => {
-                    let (inbound_tx, inbound_rx) =
-                        tokio::sync::mpsc::unbounded_channel::<(
-                            crate::channels::types::InboundMessage,
-                            Arc<crate::channels::types::ReplyHandle>,
-                        )>();
-                    let wecom = Arc::new(crate::channels::im::WecomSender::new(
-                        &config.id,
-                        &config.config,
-                        &config.credentials,
-                    ));
-                    let abort = if config.enabled {
-                        Some(wecom.clone().start(inbound_tx))
-                    } else {
-                        None
-                    };
-
-                    let fanout_abort = if config.enabled {
-                        Some(self.spawn_fanout_loop(config.id.clone(), inbound_rx))
-                    } else {
-                        // Drop inbound_rx so the channel is closed; no fanout needed.
-                        drop(inbound_rx);
-                        None
-                    };
-                    (Arc::new(WecomNoopSender) as Arc<dyn ImChannelSender>, abort, fanout_abort)
-                }
                 ImChannelType::WechatIlink => {
                     let (inbound_tx, inbound_rx) =
                         tokio::sync::mpsc::unbounded_channel::<(
