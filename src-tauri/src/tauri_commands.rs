@@ -3136,6 +3136,9 @@ pub async fn save_wechat_ilink_token(
     bot_token: String,
     account_id: String,
 ) -> Result<(), Error> {
+    if bot_token.trim().is_empty() || account_id.trim().is_empty() {
+        return Err(Error::Validation("bot_token and account_id cannot be empty".to_string()));
+    }
     let now = chrono::Utc::now().timestamp_millis();
     let creds_json = serde_json::json!({ "bot_token": bot_token }).to_string();
     {
@@ -3152,13 +3155,20 @@ pub async fn save_wechat_ilink_token(
             serde_json::from_str(&existing_config).unwrap_or_default();
         config["account_id"] = serde_json::Value::String(account_id);
         let config_json = config.to_string();
-        conn.execute(
+        let rows_changed = conn.execute(
             "UPDATE im_channel_instances \
              SET credentials_json = ?1, config_json = ?2, updated_at = ?3 WHERE id = ?4",
             rusqlite::params![creds_json, config_json, now, instance_id],
         )?;
+        if rows_changed == 0 {
+            return Err(Error::NotFound(format!("Channel {instance_id} not found")));
+        }
     }
-    let _ = state.im_channel_manager.restart_instance_by_id(&instance_id).await;
+    state
+        .im_channel_manager
+        .restart_instance_by_id(&instance_id)
+        .await
+        .map_err(|e| Error::Internal(e))?;
     Ok(())
 }
 
@@ -3184,13 +3194,20 @@ pub async fn disconnect_wechat_ilink(
             obj.remove("account_id");
         }
         let config_json = config.to_string();
-        conn.execute(
+        let rows_changed = conn.execute(
             "UPDATE im_channel_instances \
              SET credentials_json = '{}', config_json = ?1, updated_at = ?2 WHERE id = ?3",
             rusqlite::params![config_json, now, instance_id],
         )?;
+        if rows_changed == 0 {
+            return Err(Error::NotFound(format!("Channel {instance_id} not found")));
+        }
     }
-    let _ = state.im_channel_manager.restart_instance_by_id(&instance_id).await;
+    state
+        .im_channel_manager
+        .restart_instance_by_id(&instance_id)
+        .await
+        .map_err(|e| Error::Internal(e))?;
     Ok(())
 }
 
