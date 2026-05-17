@@ -23,4 +23,5 @@
 //! - `sources/` (Phase 2) — workflow trigger sources (manual today; Linear /
 //!   GitHub Issues / cron later).
 
+pub mod manager;
 pub mod protocol;
