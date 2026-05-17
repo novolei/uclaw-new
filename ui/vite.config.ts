@@ -46,6 +46,8 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id: string) {
+          // Symphony canvas — only loaded when the user opens a symphony tab.
+          if (id.includes('@xyflow/react') || id.includes('reactflow')) return 'xyflow'
           // PDF and office parsers — bundle separately to reduce initial bundle size
           if (id.includes('pdfjs-dist/build/pdf.worker')) return 'pdfjs-worker'
           // W4d editor stack — lazy chunk so read-only sessions pay zero
