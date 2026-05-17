@@ -28,6 +28,8 @@ const makeSpec = (overrides: Partial<HumaneSpecRow> = {}): HumaneSpecRow => ({
   updatedAt: 0,
   lastRunAt: null,
   lastRunOutcome: null,
+  triggerPhrase: '',
+  systemPromptOverride: '',
   ...overrides,
 })
 

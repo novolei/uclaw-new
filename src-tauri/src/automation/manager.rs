@@ -40,4 +40,8 @@ pub struct HumaneSpecRow {
     pub updated_at: i64,
     pub last_run_at: Option<i64>,
     pub last_run_outcome: Option<String>,
+    /// Automation trigger phrase for IM inbound routing (empty string = not set).
+    pub trigger_phrase: String,
+    /// System prompt override for IM agent-chat sessions (empty string = use default).
+    pub system_prompt_override: String,
 }

@@ -3145,6 +3145,274 @@ pub async fn toggle_channel(state: State<'_, AppState>, id: String, enabled: boo
     Ok(mgr.set_enabled(&id, enabled))
 }
 
+// ─── IM Channel Instance CRUD ────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImChannelInput {
+    pub space_id: String,
+    pub channel_type: String,
+    pub name: String,
+    pub config: serde_json::Value,
+    pub credentials: serde_json::Value,
+    pub enabled: bool,
+    pub streaming: bool,
+    pub reply_scope: String,
+    pub permission_enabled: bool,
+    pub owners: Vec<String>,
+    pub guest_policy: serde_json::Value,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImChannelRow {
+    pub id: String,
+    pub space_id: String,
+    pub channel_type: String,
+    pub name: String,
+    pub config: serde_json::Value,
+    pub enabled: bool,
+    pub streaming: bool,
+    pub reply_scope: String,
+    pub permission_enabled: bool,
+    pub owners: Vec<String>,
+    pub guest_policy: serde_json::Value,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[tauri::command]
+pub async fn list_im_channels(
+    state: tauri::State<'_, AppState>,
+    space_id: Option<String>,
+) -> Result<Vec<ImChannelRow>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
+    let sql = if space_id.is_some() {
+        "SELECT id, space_id, channel_type, name, config_json, enabled, streaming, \
+         reply_scope, permission_enabled, owners_json, guest_policy_json, created_at, updated_at \
+         FROM im_channel_instances WHERE space_id = ?1 ORDER BY created_at DESC"
+    } else {
+        "SELECT id, space_id, channel_type, name, config_json, enabled, streaming, \
+         reply_scope, permission_enabled, owners_json, guest_policy_json, created_at, updated_at \
+         FROM im_channel_instances WHERE 1=1 ORDER BY created_at DESC"
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows: Vec<ImChannelRow> = stmt.query_map(
+        rusqlite::params_from_iter(space_id.iter().map(|s| s.as_str())),
+        |r| {
+            Ok(ImChannelRow {
+                id: r.get(0)?,
+                space_id: r.get(1)?,
+                channel_type: r.get(2)?,
+                name: r.get(3)?,
+                config: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or_default(),
+                enabled: r.get::<_, i64>(5)? != 0,
+                streaming: r.get::<_, i64>(6)? != 0,
+                reply_scope: r.get(7)?,
+                permission_enabled: r.get::<_, i64>(8)? != 0,
+                owners: serde_json::from_str(&r.get::<_, String>(9)?).unwrap_or_default(),
+                guest_policy: serde_json::from_str(&r.get::<_, String>(10)?).unwrap_or_default(),
+                created_at: r.get(11)?,
+                updated_at: r.get(12)?,
+            })
+        },
+    )?
+    .filter_map(|r| r.ok())
+    .collect();
+    Ok(rows)
+}
+
+#[tauri::command]
+pub async fn create_im_channel(
+    state: tauri::State<'_, AppState>,
+    input: ImChannelInput,
+) -> Result<String, Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp_millis();
+    let config_json = serde_json::to_string(&input.config).unwrap_or_else(|_| "{}".into());
+    let creds_json  = serde_json::to_string(&input.credentials).unwrap_or_else(|_| "{}".into());
+    let owners_json = serde_json::to_string(&input.owners).unwrap_or_else(|_| "[]".into());
+    let gp_json     = serde_json::to_string(&input.guest_policy).unwrap_or_else(|_| "{}".into());
+    {
+        let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
+        conn.execute(
+            "INSERT INTO im_channel_instances \
+             (id, space_id, channel_type, name, config_json, credentials_json, enabled, streaming, \
+              reply_scope, permission_enabled, owners_json, guest_policy_json, created_at, updated_at) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?13)",
+            rusqlite::params![
+                id, input.space_id, input.channel_type, input.name,
+                config_json, creds_json,
+                input.enabled as i64, input.streaming as i64,
+                input.reply_scope, input.permission_enabled as i64,
+                owners_json, gp_json, now,
+            ],
+        )?;
+    }
+    let _ = state.im_channel_manager.start_all().await;
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn update_im_channel(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    input: ImChannelInput,
+) -> Result<(), Error> {
+    let now = chrono::Utc::now().timestamp_millis();
+    let config_json = serde_json::to_string(&input.config).unwrap_or_else(|_| "{}".into());
+    let creds_json  = serde_json::to_string(&input.credentials).unwrap_or_else(|_| "{}".into());
+    let owners_json = serde_json::to_string(&input.owners).unwrap_or_else(|_| "[]".into());
+    let gp_json     = serde_json::to_string(&input.guest_policy).unwrap_or_else(|_| "{}".into());
+    {
+        let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
+        conn.execute(
+            "UPDATE im_channel_instances SET \
+             space_id=?1, channel_type=?2, name=?3, config_json=?4, credentials_json=?5, \
+             enabled=?6, streaming=?7, reply_scope=?8, permission_enabled=?9, \
+             owners_json=?10, guest_policy_json=?11, updated_at=?12 \
+             WHERE id=?13",
+            rusqlite::params![
+                input.space_id, input.channel_type, input.name,
+                config_json, creds_json,
+                input.enabled as i64, input.streaming as i64,
+                input.reply_scope, input.permission_enabled as i64,
+                owners_json, gp_json, now, id,
+            ],
+        )?;
+    }
+    let _ = state.im_channel_manager.start_all().await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_im_channel(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), Error> {
+    {
+        let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM spec_channel_bindings WHERE channel_instance_id=?1",
+            [&id],
+        )?;
+        conn.execute("DELETE FROM im_channel_instances WHERE id=?1", [&id])?;
+    } // conn lock dropped here
+    state.im_channel_manager.stop_instance(&id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn toggle_im_channel(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    enabled: bool,
+) -> Result<(), Error> {
+    let now = chrono::Utc::now().timestamp_millis();
+    {
+        let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
+        conn.execute(
+            "UPDATE im_channel_instances SET enabled=?1, updated_at=?2 WHERE id=?3",
+            rusqlite::params![enabled as i64, now, id],
+        )?;
+    } // lock dropped
+    if enabled {
+        state
+            .im_channel_manager
+            .start_all()
+            .await
+            .map_err(|e| Error::Internal(e))?;
+    } else {
+        state.im_channel_manager.stop_instance(&id).await;
+    }
+    Ok(())
+}
+
+// ─── Spec-Channel Bindings ───────────────────────────────────────────────
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpecChannelBinding {
+    pub channel_instance_id: String,
+    pub enabled: bool,
+    pub channel_name: Option<String>,
+    pub channel_type: Option<String>,
+}
+
+#[tauri::command]
+pub async fn list_spec_channel_bindings(
+    state: tauri::State<'_, AppState>,
+    spec_id: String,
+) -> Result<Vec<SpecChannelBinding>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
+    let mut stmt = conn.prepare(
+        "SELECT b.channel_instance_id, b.enabled, i.name, i.channel_type \
+         FROM spec_channel_bindings b \
+         LEFT JOIN im_channel_instances i ON i.id = b.channel_instance_id \
+         WHERE b.spec_id = ?1",
+    )?;
+    let rows = stmt.query_map([&spec_id], |r| {
+        Ok(SpecChannelBinding {
+            channel_instance_id: r.get(0)?,
+            enabled: r.get::<_, i64>(1)? != 0,
+            channel_name: r.get(2)?,
+            channel_type: r.get(3)?,
+        })
+    })?
+    .filter_map(|r| r.ok())
+    .collect();
+    Ok(rows)
+}
+
+#[tauri::command]
+pub async fn update_spec_channel_bindings(
+    state: tauri::State<'_, AppState>,
+    spec_id: String,
+    bindings: Vec<SpecChannelBinding>,
+) -> Result<(), Error> {
+    let mut conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
+    let tx = conn.transaction().map_err(|e| Error::Internal(e.to_string()))?;
+    tx.execute(
+        "DELETE FROM spec_channel_bindings WHERE spec_id=?1",
+        [&spec_id],
+    )?;
+    for b in &bindings {
+        tx.execute(
+            "INSERT INTO spec_channel_bindings (spec_id, channel_instance_id, enabled) \
+             VALUES (?1,?2,?3)",
+            rusqlite::params![spec_id, b.channel_instance_id, b.enabled as i64],
+        )?;
+    }
+    tx.commit().map_err(|e| Error::Internal(e.to_string()))?;
+    Ok(())
+}
+
+/// Update per-spec IM settings: trigger_phrase and system_prompt_override.
+#[tauri::command]
+pub async fn update_spec_im_settings(
+    state: State<'_, AppState>,
+    spec_id: String,
+    trigger_phrase: Option<String>,
+    system_prompt_override: Option<String>,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE automation_specs
+         SET trigger_phrase        = CASE WHEN ?2 IS NOT NULL THEN ?2 ELSE trigger_phrase END,
+             system_prompt_override = CASE WHEN ?3 IS NOT NULL THEN ?3 ELSE system_prompt_override END,
+             updated_at            = ?4
+         WHERE id = ?1",
+        rusqlite::params![
+            spec_id,
+            trigger_phrase,
+            system_prompt_override,
+            chrono::Utc::now().timestamp_millis(),
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ─── Provider Commands ──────────────────────────────────────────────────
 
 /// List all built-in providers.

@@ -1285,6 +1285,54 @@ WHERE v.status = 'active'
   AND v.content IS NOT NULL AND v.content != '';
 ";
 
+/// V32 — IM channel infrastructure: instances, sessions, spec bindings,
+/// and three new columns on automation_specs (trigger_phrase, system_prompt override, description).
+const SQL_V32: &str = "
+CREATE TABLE IF NOT EXISTS im_channel_instances (
+    id                   TEXT PRIMARY KEY,
+    space_id             TEXT NOT NULL,
+    channel_type         TEXT NOT NULL,
+    name                 TEXT NOT NULL,
+    config_json          TEXT NOT NULL DEFAULT '{}',
+    credentials_json     TEXT NOT NULL DEFAULT '{}',
+    enabled              INTEGER NOT NULL DEFAULT 1,
+    streaming            INTEGER NOT NULL DEFAULT 0,
+    reply_scope          TEXT NOT NULL DEFAULT 'all',
+    permission_enabled   INTEGER NOT NULL DEFAULT 0,
+    owners_json          TEXT NOT NULL DEFAULT '[]',
+    guest_policy_json    TEXT NOT NULL DEFAULT '{}',
+    created_at           INTEGER NOT NULL,
+    updated_at           INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_im_channel_instances_space
+    ON im_channel_instances(space_id, enabled);
+
+CREATE TABLE IF NOT EXISTS im_sessions (
+    id               TEXT PRIMARY KEY,
+    space_id         TEXT NOT NULL,
+    channel_type     TEXT NOT NULL,
+    chat_id          TEXT NOT NULL,
+    agent_session_id TEXT NOT NULL,
+    created_at       INTEGER NOT NULL,
+    last_active_at   INTEGER NOT NULL,
+    UNIQUE(space_id, channel_type, chat_id)
+);
+
+CREATE TABLE IF NOT EXISTS spec_channel_bindings (
+    spec_id             TEXT NOT NULL,
+    channel_instance_id TEXT NOT NULL,
+    enabled             INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (spec_id, channel_instance_id)
+);
+";
+
+/// V32b — ALTER TABLE additions to automation_specs (separate statements for idempotency).
+const SQL_V32B: &str = "
+ALTER TABLE automation_specs ADD COLUMN trigger_phrase TEXT;
+ALTER TABLE automation_specs ADD COLUMN system_prompt_override TEXT;
+ALTER TABLE automation_specs ADD COLUMN spec_description TEXT;
+";
 pub fn run_v23a(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.execute_batch(V23A_MARKETPLACE_CACHE)
 }
@@ -1538,6 +1586,20 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     }
     if let Err(e) = conn.execute(V31_BACKFILL_MEMORY_FTS, []) {
         tracing::warn!("V31 memory_fts backfill failed: {}", e);
+    }
+    // V32: IM channel infrastructure (im_channel_instances, im_sessions, spec_channel_bindings).
+    tracing::debug!("Running migration V32: IM channel tables");
+    for stmt in SQL_V32.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute_batch(stmt) {
+            tracing::warn!("V32 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V32b: automation_specs additional columns (ALTER TABLE — idempotent, ignore if column exists).
+    tracing::debug!("Running migration V32b: automation_specs IM columns");
+    for stmt in SQL_V32B.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute_batch(stmt) {
+            tracing::warn!("V32b stmt skipped (likely already exists): {} :: {}", e, stmt);
+        }
     }
     tracing::info!("Database migrations complete");
     Ok(())
@@ -2248,5 +2310,50 @@ mod tests {
             |r| r.get(0),
         ).unwrap();
         assert_eq!(archived_at, 1, "conversations.archived_at column missing");
+    }
+
+    #[test]
+    fn v32_im_tables_created() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+
+        // im_channel_instances table exists
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='im_channel_instances'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "im_channel_instances table must exist after V32");
+
+        // im_sessions table exists
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='im_sessions'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "im_sessions table must exist after V32");
+
+        // spec_channel_bindings table exists
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='spec_channel_bindings'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "spec_channel_bindings table must exist after V32");
+
+        // automation_specs gains trigger_phrase column
+        conn.execute(
+            "INSERT INTO automation_specs (id, name, version, author, description, system_prompt, \
+             spec_yaml, spec_json, trigger_phrase, created_at, updated_at) \
+             VALUES ('t1','n','1','a','d','s','y','{}', '/test', 1, 1)",
+            [],
+        )
+        .unwrap();
     }
 }

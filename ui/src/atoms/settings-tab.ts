@@ -11,6 +11,7 @@ export type SettingsTab =
   | 'intelligence'   // 模型 + Agent + 提示词
   | 'tools'          // 工具 + 权限 + 已学技能
   | 'memoryRecall'   // 记忆召回设置
+  | 'imChannels'     // IM 渠道
   | 'general'        // 通用 + 外观
   | 'stt'            // 语音输入
   | 'shortcuts'

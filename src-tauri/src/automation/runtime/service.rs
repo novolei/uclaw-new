@@ -6,7 +6,7 @@
 //!
 //! `execute_run` runs the full pipeline: TRIGGER → FILTER → per-spec
 //! semaphore → per-day cost-cap check → run-session creation + ledger link →
-//! provider resolution → `AutomationDelegate` build → `run_agentic_loop` →
+//! provider resolution → `HeadlessDelegate` build → `run_agentic_loop` →
 //! `CompletionGate` → activity-status mapping → transcript persist →
 //! retention prune.
 //!
@@ -32,7 +32,7 @@ use crate::automation::memory::MemoryStore as AutomationMemoryStore;
 use crate::automation::protocol::humane_v1::{HumaneAutomationSpec, Permission, Subscription};
 use crate::automation::protocol::parse::parse_humane_v1;
 use crate::automation::runtime::cost::{self, CostCapConfig, CostCapDecision, CostCapState};
-use crate::automation::runtime::execute::AutomationDelegate;
+use crate::automation::runtime::execute::HeadlessDelegate;
 use crate::automation::runtime::{prompt, run_session, AutoContinueConfig, CompletionGate, PermissionSet};
 use crate::automation::sources::{
     CustomSource, FileSource, RssSource, ScheduleSource, SubscriptionSource,
@@ -56,7 +56,7 @@ const PER_SPEC_CONCURRENCY: usize = 2;
 /// Schema-only `Tool` wrapper for the four Humane tools (report_to_user,
 /// notify_user, request_escalation, memory).
 ///
-/// `AutomationDelegate::execute_tool_calls` dispatches the Humane tools by
+/// `HeadlessDelegate::execute_tool_calls` dispatches the Humane tools by
 /// NAME — before the registry's `other =>` fallthrough arm — so this
 /// wrapper's `execute()` is never reached. Its only job is to make the
 /// Humane tools appear in `ToolRegistry::list_definitions()` so the LLM is
@@ -158,9 +158,9 @@ pub struct AppRuntimeService {
     /// needs to touch `Arc` internals via raw pointers.
     self_weak: OnceLock<Weak<AppRuntimeService>>,
 
-    /// IPC handle for automation notifications. Passed to AutomationDelegate.
+    /// IPC handle for automation notifications. Passed to HeadlessDelegate.
     pub app_handle: Option<tauri::AppHandle>,
-    /// Channel manager for extended notification types. Passed to AutomationDelegate.
+    /// Channel manager for extended notification types. Passed to HeadlessDelegate.
     pub channel_manager: Option<Arc<tokio::sync::RwLock<crate::channels::ChannelManager>>>,
 }
 
@@ -628,7 +628,7 @@ impl AppRuntimeService {
         reason_ctx.messages.push(ChatMessage::user(&initial_message));
 
         let tools = self.build_automation_tool_registry(&workspace_root);
-        let delegate = AutomationDelegate {
+        let delegate = HeadlessDelegate {
             spec_id: spec_id.to_string(),
             activity_id: activity_id.clone(),
             session_id: session_id.clone(),
@@ -644,6 +644,9 @@ impl AppRuntimeService {
             workspace_root,
             app_handle: self.app_handle.clone(),
             channel_manager: self.channel_manager.clone(),
+            reply_handle: None,
+            streaming_handle: None,
+            system_prompt_override: None,
         };
 
         // ── 10. run the agentic loop ─────────────────────────────────────────
@@ -883,7 +886,9 @@ impl AppRuntimeService {
                         spec_format, spec_yaml, spec_json,
                         user_config_values, permissions_granted, permissions_denied,
                         status, enabled, space_id, source, source_ref, source_version,
-                        created_at, updated_at, last_run_at, last_run_outcome
+                        created_at, updated_at, last_run_at, last_run_outcome,
+                        COALESCE(trigger_phrase, '') as trigger_phrase,
+                        COALESCE(system_prompt_override, '') as system_prompt_override
                  FROM automation_specs
                  ORDER BY created_at DESC",
             )
@@ -904,7 +909,9 @@ impl AppRuntimeService {
                     spec_format, spec_yaml, spec_json,
                     user_config_values, permissions_granted, permissions_denied,
                     status, enabled, space_id, source, source_ref, source_version,
-                    created_at, updated_at, last_run_at, last_run_outcome
+                    created_at, updated_at, last_run_at, last_run_outcome,
+                    COALESCE(trigger_phrase, '') as trigger_phrase,
+                    COALESCE(system_prompt_override, '') as system_prompt_override
              FROM automation_specs WHERE id = ?1",
             rusqlite::params![spec_id],
             Self::row_to_spec_row,
@@ -1136,6 +1143,8 @@ impl AppRuntimeService {
             updated_at:          r.get(19)?,
             last_run_at:         r.get(20)?,
             last_run_outcome:    r.get(21)?,
+            trigger_phrase:          r.get(22)?,
+            system_prompt_override:  r.get(23)?,
         })
     }
 
@@ -1217,6 +1226,22 @@ impl AppRuntimeService {
         })
     }
 
+    /// Like `execute_run`, but with IM close-loop handles injected into the HeadlessDelegate.
+    ///
+    /// For now: calls `execute_run` with the reply handles unused — the IM close-loop
+    /// for automation specs will be wired in a follow-up PR. The agent-chat path
+    /// (`run_agent_chat_via_im` in `channels/dispatcher.rs`) is fully wired.
+    pub async fn execute_run_with_reply(
+        &self,
+        spec_id: &str,
+        payload: serde_json::Value,
+        _reply_handle: Option<Arc<crate::channels::types::ReplyHandle>>,
+        _streaming_handle: Option<Arc<dyn crate::channels::types::StreamingHandle>>,
+    ) -> anyhow::Result<()> {
+        // TODO: inject handles properly in a follow-up PR.
+        self.execute_run(spec_id, None, payload).await
+    }
+
     /// Build the headless tool set for an automation run: the AppHandle-free
     /// base built-in tools rooted at `workspace_root`, plus the four Humane
     /// tools as advertisement-only schemas (see [`HumaneToolSchema`]).
@@ -1225,7 +1250,7 @@ impl AppRuntimeService {
     /// (`ask_user`, `exit_plan_mode`, `plan`, `self_eval`, `skill_search`,
     /// `load_skill`, browser tools) are intentionally excluded — a headless
     /// automation run has no window to drive them.
-    fn build_automation_tool_registry(
+    pub fn build_automation_tool_registry(
         &self,
         workspace_root: &std::path::Path,
     ) -> Arc<crate::agent::tools::tool::ToolRegistry> {
@@ -1241,7 +1266,7 @@ impl AppRuntimeService {
         tools.register(builtin::edit::EditTool::new(ws.clone()));
         tools.register(builtin::shell::BashTool::new(ws.clone()));
         // Advertise the four Humane tools to the LLM. They are dispatched by
-        // name in AutomationDelegate::execute_tool_calls, so these wrappers
+        // name in HeadlessDelegate::execute_tool_calls, so these wrappers
         // exist purely so list_definitions() includes them.
         for schema in crate::automation::tools::humane_tool_schemas() {
             tools.register(HumaneToolSchema::from_value(&schema));

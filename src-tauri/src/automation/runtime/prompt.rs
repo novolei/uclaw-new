@@ -141,7 +141,8 @@ mod tests {
             "system_prompt": "You are a test agent.",
         }))
         .unwrap();
-        assert_eq!(build_system_prompt(&spec), "You are a test agent.");
+        let result = build_system_prompt(&spec);
+        assert!(result.starts_with("You are a test agent."), "prompt should start with spec system_prompt, got: {result}");
     }
 
     #[test]

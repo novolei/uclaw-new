@@ -276,6 +276,22 @@ fn main() {
                         tracing::info!("[Stage 3] AppRuntimeService registered");
                     }
 
+                    // Start ImChannelManager (load DB instances + start notify senders)
+                    {
+                        let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                        let im_mgr = state_ref.im_channel_manager.clone();
+                        let im_reg = state_ref.im_session_registry.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = im_reg.load_from_db().await {
+                                tracing::warn!("[Stage 3] ImSessionRegistry load_from_db failed: {}", e);
+                            }
+                            if let Err(e) = im_mgr.start_all().await {
+                                tracing::warn!("[Stage 3] ImChannelManager start_all failed: {}", e);
+                            }
+                            tracing::info!("[Stage 3] ImChannelManager started");
+                        });
+                    }
+
                     // Stage 4: 启动所有已注册服务
                     tracing::info!("[Stage 4] Starting all registered services...");
                     let results = service_manager.start_all().await;
@@ -475,6 +491,15 @@ fn main() {
             uclaw_core::tauri_commands::add_channel,
             uclaw_core::tauri_commands::remove_channel,
             uclaw_core::tauri_commands::toggle_channel,
+            // IM Channel Instance CRUD
+            uclaw_core::tauri_commands::list_im_channels,
+            uclaw_core::tauri_commands::create_im_channel,
+            uclaw_core::tauri_commands::update_im_channel,
+            uclaw_core::tauri_commands::delete_im_channel,
+            uclaw_core::tauri_commands::toggle_im_channel,
+            uclaw_core::tauri_commands::list_spec_channel_bindings,
+            uclaw_core::tauri_commands::update_spec_channel_bindings,
+            uclaw_core::tauri_commands::update_spec_im_settings,
             // Providers
             uclaw_core::tauri_commands::list_providers,
             uclaw_core::tauri_commands::list_configured_providers,

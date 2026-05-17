@@ -3,6 +3,7 @@ pub mod code_rescue;
 pub mod context;
 pub mod dispatcher;
 pub mod gep;
+pub mod headless;
 pub mod llm_stream;
 pub mod mode_prompts;
 pub mod plan_state;
