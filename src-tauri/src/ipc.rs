@@ -1037,6 +1037,51 @@ pub struct WikiArtifactDto {
     pub token_cost: i64,
 }
 
+// ─── Health Findings IPC types (Memory OS Foundation Phase 4) ──────────
+//
+// Read DTO for `memory_health_findings` rows + input shapes for the
+// three new `memory_health_*` commands.
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthListInput {
+    pub space_id: Option<String>,
+    /// When true, include rows with `dismissed=1`. Default false —
+    /// the frontend usually only shows the active queue.
+    pub include_dismissed: Option<bool>,
+    /// Optional `check_kind` filter (e.g. `"orphan"`). When None,
+    /// returns every kind.
+    pub check_kind: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthDismissInput {
+    pub finding_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthRunNowInput {
+    pub space_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthFindingDto {
+    pub id: String,
+    pub space_id: String,
+    pub severity: String,
+    pub check_kind: String,
+    pub subject: String,
+    pub payload_json: Option<String>,
+    pub is_lint: bool,
+    pub dismissed: bool,
+    pub discovered_at: i64,
+    pub dismissed_at: Option<i64>,
+}
+
 // ─── Cost dashboard ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

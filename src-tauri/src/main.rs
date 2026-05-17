@@ -628,6 +628,10 @@ fn main() {
             uclaw_core::tauri_commands::memory_wiki_get_overview,
             uclaw_core::tauri_commands::memory_wiki_get_index,
             uclaw_core::tauri_commands::memory_wiki_regenerate,
+            // Health findings (Memory OS Foundation Phase 4)
+            uclaw_core::tauri_commands::memory_health_list_findings,
+            uclaw_core::tauri_commands::memory_health_dismiss_finding,
+            uclaw_core::tauri_commands::memory_health_run_now,
             // Fragment / Daily Summary
             uclaw_core::tauri_commands::memory_graph_list_fragments,
             uclaw_core::tauri_commands::search_fragments,

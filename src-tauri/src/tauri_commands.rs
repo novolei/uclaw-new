@@ -5108,6 +5108,156 @@ fn read_latest_wiki_artifact(
     }
 }
 
+// ─── Health Findings Commands (Memory OS Foundation Phase 4) ────────────
+//
+// Three IPC commands powering the MemoryHealthPanel frontend:
+//   - memory_health_list_findings: read rows from memory_health_findings
+//     (default: open-only, paginated).
+//   - memory_health_dismiss_finding: flip dismissed=1 + dismissed_at on
+//     a specific finding.
+//   - memory_health_run_now: force a zero-LLM scan immediately and
+//     return the outcome (counts per check + duration).
+//
+// All three gate on `memubot_config.memory_os.memory_health_enabled`
+// EXCEPT list/dismiss — those keep working when the flag is off so the
+// user can still triage findings discovered before disabling. Only the
+// "run a fresh scan" command refuses.
+
+fn ensure_memory_health_enabled(state: &State<'_, AppState>) -> Result<(), String> {
+    if !state.memubot_config.memory_os.memory_health_enabled {
+        return Err(
+            "Memory health is disabled (memory_os.memory_health_enabled = false in \
+             memubot_config.json). Enable it and restart to re-enable periodic checks. \
+             Existing findings can still be listed / dismissed."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// List health findings for the given space. By default returns active
+/// (un-dismissed) rows only, ordered severity DESC then discovered_at DESC
+/// (so errors float above warns, newest first within the same severity).
+#[tauri::command]
+pub async fn memory_health_list_findings(
+    state: State<'_, AppState>,
+    input: HealthListInput,
+) -> Result<Vec<HealthFindingDto>, String> {
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let include_dismissed = input.include_dismissed.unwrap_or(false);
+    let limit = input.limit.unwrap_or(200) as i64;
+
+    let store = &state.memory_graph_store;
+    let conn = store
+        .conn
+        .lock()
+        .map_err(|e| format!("DB lock: {}", e))?;
+
+    // severity is stored as a free-form string but our writer only uses
+    // 'error' / 'warn' / 'info'. Ordering 'error' > 'warn' > 'info' is
+    // achieved by mapping to a numeric weight in SQL — simpler than
+    // adding a new column and works for all three known values.
+    //
+    // Phase 1 fix-up E0597 pattern: separate stmt + rows bindings.
+    let select = "SELECT id, space_id, severity, check_kind, subject, payload_json, \
+                         is_lint, dismissed, discovered_at, dismissed_at \
+                  FROM memory_health_findings \
+                  WHERE space_id = ?1 \
+                    AND (?2 = 1 OR dismissed = 0) \
+                    AND (?3 = '' OR check_kind = ?3) \
+                  ORDER BY \
+                    CASE severity \
+                      WHEN 'error' THEN 0 \
+                      WHEN 'warn'  THEN 1 \
+                      WHEN 'info'  THEN 2 \
+                      ELSE 3 \
+                    END ASC, \
+                    discovered_at DESC \
+                  LIMIT ?4";
+    let mut stmt = conn.prepare(select).map_err(|e| format!("prepare: {}", e))?;
+    let include_flag: i64 = if include_dismissed { 1 } else { 0 };
+    let check_kind_filter = input.check_kind.unwrap_or_default();
+    let rows = stmt
+        .query_map(
+            rusqlite::params![space_id, include_flag, check_kind_filter, limit],
+            |r| {
+                Ok(HealthFindingDto {
+                    id: r.get(0)?,
+                    space_id: r.get(1)?,
+                    severity: r.get(2)?,
+                    check_kind: r.get(3)?,
+                    subject: r.get(4)?,
+                    payload_json: r.get(5)?,
+                    is_lint: {
+                        let v: i64 = r.get(6)?;
+                        v != 0
+                    },
+                    dismissed: {
+                        let v: i64 = r.get(7)?;
+                        v != 0
+                    },
+                    discovered_at: r.get(8)?,
+                    dismissed_at: r.get(9)?,
+                })
+            },
+        )
+        .map_err(|e| format!("query: {}", e))?;
+    Ok(rows.flatten().collect())
+}
+
+/// Flip `dismissed=1` + `dismissed_at` on a single finding. Idempotent
+/// — repeated calls on the same id update the timestamp but don't
+/// resurrect the row. Returns `{success: true, findingId}` on success.
+#[tauri::command]
+pub async fn memory_health_dismiss_finding(
+    state: State<'_, AppState>,
+    input: HealthDismissInput,
+) -> Result<serde_json::Value, String> {
+    let store = &state.memory_graph_store;
+    let conn = store
+        .conn
+        .lock()
+        .map_err(|e| format!("DB lock: {}", e))?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let affected = conn
+        .execute(
+            "UPDATE memory_health_findings \
+             SET dismissed = 1, dismissed_at = ?1 \
+             WHERE id = ?2",
+            rusqlite::params![now_ms, input.finding_id],
+        )
+        .map_err(|e| format!("dismiss: {}", e))?;
+    Ok(serde_json::json!({
+        "success": affected > 0,
+        "findingId": input.finding_id,
+        "alreadyMissing": affected == 0,
+    }))
+}
+
+/// Force a health scan immediately, bypassing the every-60-tick
+/// schedule. Returns the per-check counts so the UI can flash a
+/// "scan complete: X new" toast. Gated on `memory_health_enabled`.
+#[tauri::command]
+pub async fn memory_health_run_now(
+    state: State<'_, AppState>,
+    input: HealthRunNowInput,
+) -> Result<serde_json::Value, String> {
+    ensure_memory_health_enabled(&state)?;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let store = state.memory_graph_store.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        let conn = store
+            .conn
+            .lock()
+            .map_err(|e| format!("DB lock: {}", e))?;
+        crate::proactive::scenarios::memory_health::run_health_checks(&conn, &space_id)
+            .map_err(|e| format!("run_health_checks: {}", e))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {}", e))??;
+    serde_json::to_value(&outcome).map_err(|e| format!("serialize: {}", e))
+}
+
 // ─── Fragment / Daily Summary Commands ─────────────────────────────────────
 
 /// Parse an RFC-3339 / ISO-8601 timestamp string into epoch millis.

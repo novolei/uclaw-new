@@ -114,6 +114,12 @@ import type {
   WikiRegenerateInput,
   WikiArtifactDto,
   WikiRegenerateOutcome,
+  // Health findings (Memory OS Foundation Phase 4)
+  HealthListInput,
+  HealthDismissInput,
+  HealthRunNowInput,
+  HealthFindingDto,
+  HealthRunOutcome,
   // Cost dashboard
   DailyCostRollup,
   ModelCostRollup,
@@ -798,6 +804,28 @@ export const memoryWikiRegenerate = (
   input: WikiRegenerateInput,
 ): Promise<WikiRegenerateOutcome> =>
   invoke('memory_wiki_regenerate', { input });
+
+// ─────────────────────────────────────────────────────────
+// Health findings (Memory OS Foundation Phase 4)
+// ─────────────────────────────────────────────────────────
+//
+// list/dismiss keep working when memory_health_enabled = false (so the
+// user can triage existing findings); only run_now refuses.
+
+export const memoryHealthListFindings = (
+  input: HealthListInput,
+): Promise<HealthFindingDto[]> =>
+  invoke('memory_health_list_findings', { input });
+
+export const memoryHealthDismissFinding = (
+  input: HealthDismissInput,
+): Promise<{ success: boolean; findingId: string; alreadyMissing: boolean }> =>
+  invoke('memory_health_dismiss_finding', { input });
+
+export const memoryHealthRunNow = (
+  input: HealthRunNowInput,
+): Promise<HealthRunOutcome> =>
+  invoke('memory_health_run_now', { input });
 
 // ─────────────────────────────────────────────────────────
 // Notifications

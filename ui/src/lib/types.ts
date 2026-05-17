@@ -1175,6 +1175,65 @@ export interface WikiRegenerateOutcome {
   synthesizerDescriptor?: string;
 }
 
+// ─── Health Findings (Memory OS Foundation Phase 4) ─────────────────────
+
+export interface HealthListInput {
+  spaceId?: string;
+  /** Default false — only return un-dismissed rows. */
+  includeDismissed?: boolean;
+  /** Optional `check_kind` filter (orphan / stub / dangling_fts / ...). */
+  checkKind?: string;
+  limit?: number;
+}
+
+export interface HealthDismissInput {
+  findingId: string;
+}
+
+export interface HealthRunNowInput {
+  spaceId?: string;
+}
+
+export type HealthCheckKind =
+  | 'orphan'
+  | 'stub'
+  | 'dangling_fts'
+  | 'index_drift'
+  | 'phantom_slug'
+  | 'empty_versions'
+  | 'missing_route'
+  | string; // forward-compat for future check kinds
+
+export type HealthSeverity = 'error' | 'warn' | 'info' | string;
+
+export interface HealthFindingDto {
+  id: string;
+  spaceId: string;
+  severity: HealthSeverity;
+  checkKind: HealthCheckKind;
+  subject: string;
+  payloadJson: string | null;
+  isLint: boolean;
+  dismissed: boolean;
+  discoveredAt: number; // epoch millis
+  dismissedAt: number | null;
+}
+
+/** Result of `memory_health_run_now` — mirrors Rust's HealthRunOutcome
+ *  (which serializes snake_case via serde Serialize). */
+export interface HealthRunOutcome {
+  orphan: number;
+  stub: number;
+  dangling_fts: number;
+  index_drift: number;
+  phantom_slug: number;
+  empty_versions: number;
+  missing_route: number;
+  total_inserted: number;
+  active_total: number;
+  duration_ms: number;
+}
+
 /**
  * Wire values for `memory_edges.relation_kind` after Memory OS Foundation
  * Phase 2 (auto-link). All four V1-V33 structural variants plus seven
