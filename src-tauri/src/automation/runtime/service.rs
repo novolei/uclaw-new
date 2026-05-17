@@ -885,7 +885,9 @@ impl AppRuntimeService {
                         spec_format, spec_yaml, spec_json,
                         user_config_values, permissions_granted, permissions_denied,
                         status, enabled, space_id, source, source_ref, source_version,
-                        created_at, updated_at, last_run_at, last_run_outcome
+                        created_at, updated_at, last_run_at, last_run_outcome,
+                        COALESCE(trigger_phrase, '') as trigger_phrase,
+                        COALESCE(system_prompt_override, '') as system_prompt_override
                  FROM automation_specs
                  ORDER BY created_at DESC",
             )
@@ -906,7 +908,9 @@ impl AppRuntimeService {
                     spec_format, spec_yaml, spec_json,
                     user_config_values, permissions_granted, permissions_denied,
                     status, enabled, space_id, source, source_ref, source_version,
-                    created_at, updated_at, last_run_at, last_run_outcome
+                    created_at, updated_at, last_run_at, last_run_outcome,
+                    COALESCE(trigger_phrase, '') as trigger_phrase,
+                    COALESCE(system_prompt_override, '') as system_prompt_override
              FROM automation_specs WHERE id = ?1",
             rusqlite::params![spec_id],
             Self::row_to_spec_row,
@@ -1138,6 +1142,8 @@ impl AppRuntimeService {
             updated_at:          r.get(19)?,
             last_run_at:         r.get(20)?,
             last_run_outcome:    r.get(21)?,
+            trigger_phrase:          r.get(22)?,
+            system_prompt_override:  r.get(23)?,
         })
     }
 

@@ -1356,6 +1356,8 @@ export interface HumaneSpecRow {
   updatedAt: number
   lastRunAt: number | null
   lastRunOutcome: string | null
+  triggerPhrase: string
+  systemPromptOverride: string
 }
 
 /** Typed row from the V21 automation_escalations table. */
@@ -1412,6 +1414,30 @@ export const readAutomationMemory = (specId: string): Promise<string> =>
 
 export const compactAutomationMemory = (specId: string): Promise<string> =>
   invoke<string>('compact_automation_memory', { specId })
+
+export interface SpecChannelBinding {
+  specId: string
+  channelInstanceId: string
+  enabled: boolean
+  channelName?: string
+  channelType?: string
+}
+
+export const listSpecChannelBindings = (specId: string): Promise<SpecChannelBinding[]> =>
+  invoke<SpecChannelBinding[]>('list_spec_channel_bindings', { specId })
+
+export const updateSpecChannelBindings = (
+  specId: string,
+  bindings: SpecChannelBinding[]
+): Promise<void> =>
+  invoke<void>('update_spec_channel_bindings', { specId, bindings })
+
+export const updateSpecImSettings = (
+  specId: string,
+  triggerPhrase: string | null,
+  systemPromptOverride: string | null
+): Promise<void> =>
+  invoke<void>('update_spec_im_settings', { specId, triggerPhrase, systemPromptOverride })
 
 // ─── Marketplace ──────────────────────────────────────────────────────
 

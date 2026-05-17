@@ -370,6 +370,7 @@ fn main() {
             uclaw_core::tauri_commands::toggle_im_channel,
             uclaw_core::tauri_commands::list_spec_channel_bindings,
             uclaw_core::tauri_commands::update_spec_channel_bindings,
+            uclaw_core::tauri_commands::update_spec_im_settings,
             // Providers
             uclaw_core::tauri_commands::list_providers,
             uclaw_core::tauri_commands::list_configured_providers,

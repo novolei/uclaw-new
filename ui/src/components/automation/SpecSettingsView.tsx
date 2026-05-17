@@ -1,6 +1,6 @@
-import { useState } from 'react'
-import { setAutomationEnabled } from '@/lib/tauri-bridge'
-import type { HumaneSpecRow } from '@/lib/tauri-bridge'
+import { useState, useEffect } from 'react'
+import { setAutomationEnabled, listSpecChannelBindings, updateSpecChannelBindings, updateSpecImSettings } from '@/lib/tauri-bridge'
+import type { HumaneSpecRow, SpecChannelBinding } from '@/lib/tauri-bridge'
 
 interface Props {
   spec: HumaneSpecRow
@@ -97,6 +97,25 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
             <p className="text-xs text-muted-foreground">{spec.description}</p>
             <p className="text-xs text-muted-foreground mt-1">来源：{spec.source}</p>
           </Section>
+
+          {/* 消息通道 — IM Channel Bindings */}
+          <ImChannelBindingsSection specId={spec.id} />
+
+          {/* IM触发 */}
+          <Section title="IM 触发">
+            <ImTriggerRow
+              specId={spec.id}
+              initialTriggerPhrase={spec.triggerPhrase ?? ''}
+            />
+          </Section>
+
+          {/* 开发者 */}
+          <Section title="开发者">
+            <SystemPromptRow
+              specId={spec.id}
+              initialValue={spec.systemPromptOverride ?? ''}
+            />
+          </Section>
         </div>
       )}
     </div>
@@ -144,5 +163,114 @@ function Toggle({ checked, disabled, onChange }: { checked: boolean; disabled: b
         ].join(' ')}
       />
     </button>
+  )
+}
+
+function ImChannelBindingsSection({ specId }: { specId: string }) {
+  const [bindings, setBindings] = useState<SpecChannelBinding[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    listSpecChannelBindings(specId)
+      .then(setBindings)
+      .catch(() => setBindings([]))
+      .finally(() => setLoading(false))
+  }, [specId])
+
+  async function handleToggle(channelInstanceId: string, enabled: boolean) {
+    const updated = bindings.map((b) =>
+      b.channelInstanceId === channelInstanceId ? { ...b, enabled } : b
+    )
+    setBindings(updated)
+    await updateSpecChannelBindings(specId, updated).catch(() => {})
+  }
+
+  if (loading) return null
+
+  return (
+    <Section title="消息通道">
+      <p className="text-xs text-muted-foreground mb-2">
+        AI 驱动：数字人决定何时以及通过配置的渠道通知什么内容。
+      </p>
+      {bindings.length === 0 ? (
+        <p className="text-xs text-muted-foreground">暂无渠道。请先在设置中配置 IM 渠道。</p>
+      ) : (
+        bindings.map((b) => (
+          <Row key={b.channelInstanceId} label={b.channelName ?? b.channelInstanceId} description={b.channelType ?? ''}>
+            <Toggle checked={b.enabled} disabled={false} onChange={() => handleToggle(b.channelInstanceId, !b.enabled)} />
+          </Row>
+        ))
+      )}
+      <button
+        className="titlebar-no-drag text-xs text-primary mt-1 hover:underline"
+        onClick={() => {}}
+      >
+        在设置中配置渠道 ↗
+      </button>
+    </Section>
+  )
+}
+
+function ImTriggerRow({ specId, initialTriggerPhrase }: { specId: string; initialTriggerPhrase: string }) {
+  const [value, setValue] = useState(initialTriggerPhrase)
+  const [saving, setSaving] = useState(false)
+
+  async function handleSave() {
+    setSaving(true)
+    await updateSpecImSettings(specId, value || null, null).catch(() => {})
+    setSaving(false)
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="text-sm">触发关键词</div>
+      <div className="text-xs text-muted-foreground">IM 消息以此关键词开头时触发本 automation</div>
+      <div className="flex gap-2 mt-1">
+        <input
+          className="flex-1 text-xs bg-muted/50 border border-border rounded px-2 py-1 font-mono"
+          placeholder="/daily-report"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+        />
+        <button
+          disabled={saving}
+          onClick={handleSave}
+          className="titlebar-no-drag text-xs px-3 py-1 bg-primary text-primary-foreground rounded disabled:opacity-50"
+        >
+          {saving ? '保存中…' : '保存'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function SystemPromptRow({ specId, initialValue }: { specId: string; initialValue: string }) {
+  const [value, setValue] = useState(initialValue)
+  const [saving, setSaving] = useState(false)
+
+  async function handleSave() {
+    setSaving(true)
+    await updateSpecImSettings(specId, null, value || null).catch(() => {})
+    setSaving(false)
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="text-sm">系统提示词</div>
+      <div className="text-xs text-muted-foreground">覆盖 Space 级默认 prompt（可选）</div>
+      <textarea
+        className="mt-1 text-xs bg-muted/50 border border-border rounded px-2 py-1 font-mono resize-y min-h-[80px]"
+        placeholder="（留空则使用 Space 默认提示词）"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+      />
+      <button
+        disabled={saving}
+        onClick={handleSave}
+        className="titlebar-no-drag self-end text-xs px-3 py-1 bg-primary text-primary-foreground rounded disabled:opacity-50 mt-1"
+      >
+        {saving ? '保存中…' : '保存'}
+      </button>
+    </div>
   )
 }

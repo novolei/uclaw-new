@@ -3069,6 +3069,30 @@ pub async fn update_spec_channel_bindings(
     Ok(())
 }
 
+/// Update per-spec IM settings: trigger_phrase and system_prompt_override.
+#[tauri::command]
+pub async fn update_spec_im_settings(
+    state: State<'_, AppState>,
+    spec_id: String,
+    trigger_phrase: Option<String>,
+    system_prompt_override: Option<String>,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE automation_specs
+         SET trigger_phrase = ?2, system_prompt_override = ?3, updated_at = ?4
+         WHERE id = ?1",
+        rusqlite::params![
+            spec_id,
+            trigger_phrase,
+            system_prompt_override,
+            chrono::Utc::now().timestamp_millis(),
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ─── Provider Commands ──────────────────────────────────────────────────
 
 /// List all built-in providers.
