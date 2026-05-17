@@ -1231,10 +1231,25 @@ impl LoopDelegate for ChatDelegate {
         // Cap: after MAX_PLAN_GUARD_NUDGES consecutive nudges without any tool
         // call response, give up and let the response through to avoid infinite
         // text-only loops (e.g. model did edits but forgot plan_update calls).
-        if let Some(undone) = crate::agent::plan_state::pending_plan_steps(
-            self.workspace_root.as_deref(),
-            300,
-        ) {
+        // Discover the active plan two ways, in priority order:
+        //   1. Scan message history for plan_write / plan_update calls THIS
+        //      session made — the authoritative answer regardless of mtime.
+        //      Fixes resume workflows where the plan file is hours old (the
+        //      2026-05-18 04:46 五子棋 "继续" silent termination was this case).
+        //   2. Fall back to mtime-based discovery (300s window) for truly
+        //      fresh sessions or external plan creation that left no trace
+        //      in this session's history.
+        let undone_opt = match extract_active_plan_from_history(&reason_ctx.messages) {
+            Some(filename) => crate::agent::plan_state::pending_plan_steps_in_file(
+                self.workspace_root.as_deref(),
+                &filename,
+            ),
+            None => crate::agent::plan_state::pending_plan_steps(
+                self.workspace_root.as_deref(),
+                300,
+            ),
+        };
+        if let Some(undone) = undone_opt {
             // ── Relevance gate: only nudge if the response signals plan work ──
             // We check whether the agent's own text indicates it was in the
             // middle of plan execution, rather than giving a complete answer to
