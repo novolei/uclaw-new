@@ -238,4 +238,81 @@ mod tests {
         assert!(output.context_messages[0].1.contains("候选学习记录"));
         assert_eq!(output.memory_types, vec!["gene", "learning"]);
     }
+
+    #[tokio::test]
+    async fn test_build_context_with_existing_genes() {
+        let scenario = GeneEvolutionScenario::new(default_gene_config());
+        let learning_card = LearningCard {
+            raw: "优化 prompt 结构可以提升准确率".to_string(),
+            card_type: LearningCardType::OptimizationTip,
+            failure_signal: None,
+            tool_name: Some("llm_call".to_string()),
+            strategy_hint: StrategyHint {
+                condition: Some("low accuracy".to_string()),
+                action: Some("optimize prompt".to_string()),
+                reason: Some("better structure improves results".to_string()),
+            },
+            files_touched: vec![],
+            session_id: "test-session-2".to_string(),
+            score: 0.92,
+            timestamp: 1715779300000,
+        };
+
+        let mut ctx = make_context(1, vec![learning_card], None);
+        ctx.existing_gene_fingerprints = vec![
+            "[optimization] gene-001: 优化 LLM 调用以减少 token 消耗".to_string(),
+            "[safety] gene-002: 文件操作前检测权限".to_string(),
+        ];
+
+        let output = scenario.build_context(&ctx).await.unwrap();
+
+        // First message should contain existing Gene fingerprints for dedup
+        assert!(output.context_messages.len() >= 2);
+        let first_msg = &output.context_messages[0].1;
+        assert!(first_msg.contains("已有 Gene 库"), "First message should contain existing gene fingerprints, got: {}", first_msg);
+        assert!(first_msg.contains("gene-001"), "Should include gene-001 fingerprint");
+        assert!(first_msg.contains("gene-002"), "Should include gene-002 fingerprint");
+    }
+
+    #[tokio::test]
+    async fn test_build_context_no_candidates() {
+        let scenario = GeneEvolutionScenario::new(default_gene_config());
+        let ctx = make_context(0, vec![], None);
+        let output = scenario.build_context(&ctx).await.unwrap();
+
+        assert_eq!(output.scenario_name, "gene_evolution");
+        // Even with no candidates, the output should still be valid
+        // (the build_context method formats whatever candidates it receives)
+        assert!(!output.system_prompt.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_should_trigger_custom_threshold() {
+        let mut config = default_gene_config();
+        config.gene_distillation_threshold = 10;
+        let scenario = GeneEvolutionScenario::new(config);
+
+        // 9 candidates below custom threshold of 10
+        let ctx = make_context(9, vec![], None);
+        assert!(!scenario.should_trigger(&ctx).await);
+
+        // 10 candidates meets custom threshold
+        let ctx = make_context(10, vec![], None);
+        assert!(scenario.should_trigger(&ctx).await);
+    }
+
+    #[tokio::test]
+    async fn test_should_trigger_custom_cooldown() {
+        let mut config = default_gene_config();
+        config.gene_distillation_cooldown_secs = 300;
+        let scenario = GeneEvolutionScenario::new(config);
+
+        // 200s ago < 300s cooldown => should NOT trigger
+        let ctx = make_context(5, vec![], Some(200));
+        assert!(!scenario.should_trigger(&ctx).await);
+
+        // 400s ago > 300s cooldown => should trigger
+        let ctx = make_context(5, vec![], Some(400));
+        assert!(scenario.should_trigger(&ctx).await);
+    }
 }
