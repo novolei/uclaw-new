@@ -28,6 +28,12 @@ pub struct MemubotConfig {
     /// Gene evolution configuration (GEP protocol).
     #[serde(default)]
     pub gene_evolution: GeneEvolutionConfig,
+    /// Symphony runtime configuration — DAG-of-agent-runs orchestrator.
+    /// Mirrors `AutomationConfig` shape with two extra knobs (concurrency
+    /// cap, stall timeout) and an explicit per-day cap separate from the
+    /// per-run cap. See `docs/superpowers/specs/2026-05-17-symphony-runtime-design.md` §7.
+    #[serde(default)]
+    pub symphony: SymphonyConfig,
     /// Maximum wall-clock seconds the agent loop may run for a single
     /// user message before forcibly terminating. Default 600s (10 min).
     /// Override via settings → Advanced (or edit ~/.uclaw/memubot_config.json).
@@ -239,6 +245,58 @@ impl Default for GeneEvolutionConfig {
     }
 }
 
+/// Symphony runtime configuration — guards a DAG-of-agent-runs orchestrator.
+///
+/// Mirrors `AutomationConfig` (cost caps + retention + max_iterations) and
+/// adds three Symphony-specific knobs: cross-workflow concurrency cap,
+/// per-workflow concurrency default, and node-level stall timeout.
+///
+/// Defaults intentionally conservative; can be raised once the feature is
+/// stable. See `docs/superpowers/specs/2026-05-17-symphony-runtime-design.md` §7.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SymphonyConfig {
+    /// Whether `SymphonyService` is registered + started by `main.rs` Stage 3.
+    pub enabled: bool,
+    /// Max concurrent in-flight runs across all workflows (global cap).
+    pub max_concurrent_runs: usize,
+    /// Default per-workflow concurrency for ready nodes (overridable in WORKFLOW.md).
+    pub default_max_concurrent_nodes: usize,
+    /// Per-node default cost cap (USD). Per-node override lives on the node.
+    pub default_per_node_cost_cap_usd: f64,
+    /// Per-run default cost cap (USD). Per-workflow override lives on the workflow.
+    pub default_per_run_cost_cap_usd: f64,
+    /// Daily cap across all Symphony runs (USD). Hard rejection when crossed.
+    pub per_day_cost_cap_usd: f64,
+    /// How long without a heartbeat before a node is considered stalled (ms).
+    /// Heartbeat ticks come from `LoopDelegate::on_usage` / partial-text events.
+    pub stall_timeout_ms: u64,
+    /// Default max iterations for the agentic loop inside a single node.
+    pub default_max_iterations: usize,
+    /// Default max retry backoff cap (ms). Symphony SPEC formula:
+    /// `delay = min(10_000 * 2^(attempt-1), max_retry_backoff_ms)`.
+    pub max_retry_backoff_ms: u64,
+    /// Per-workflow number of recent runs to retain before pruning.
+    pub retention_runs_per_workflow: u32,
+}
+
+impl Default for SymphonyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_concurrent_runs: 2,
+            default_max_concurrent_nodes: 4,
+            default_per_node_cost_cap_usd: 1.00,
+            default_per_run_cost_cap_usd: 5.00,
+            per_day_cost_cap_usd: 25.00,
+            stall_timeout_ms: 180_000, // 3 min
+            default_max_iterations: 30,
+            max_retry_backoff_ms: 300_000, // 5 min — Symphony SPEC default
+            retention_runs_per_workflow: 50,
+        }
+    }
+}
+
 fn default_agent_loop_timeout_secs() -> u64 { 600 }
 
 // ─── Default 实现 ────────────────────────────────────────────────────────
@@ -255,6 +313,7 @@ impl Default for MemubotConfig {
             scenarios: ScenariosConfig::default(),
             automation: AutomationConfig::default(),
             gene_evolution: GeneEvolutionConfig::default(),
+            symphony: SymphonyConfig::default(),
             agent_loop_timeout_secs: 600,
         }
     }
@@ -500,5 +559,39 @@ mod tests {
     fn memubot_config_includes_automation_section() {
         let config: MemubotConfig = serde_json::from_str("{}").unwrap();
         assert!(config.automation.per_run_cost_cap_usd > 0.0);
+    }
+
+    #[test]
+    fn symphony_config_has_defaults() {
+        let c = SymphonyConfig::default();
+        assert!(c.enabled);
+        assert!(c.max_concurrent_runs >= 1);
+        assert!(c.default_max_concurrent_nodes >= 1);
+        assert!(c.default_per_node_cost_cap_usd > 0.0);
+        assert!(c.default_per_run_cost_cap_usd > 0.0);
+        assert!(c.per_day_cost_cap_usd >= c.default_per_run_cost_cap_usd);
+        assert!(c.stall_timeout_ms > 45_000);
+        assert_eq!(c.max_retry_backoff_ms, 300_000);
+        assert!(c.default_max_iterations >= 5);
+        assert!(c.retention_runs_per_workflow >= 1);
+    }
+
+    #[test]
+    fn memubot_config_includes_symphony_section() {
+        let config: MemubotConfig = serde_json::from_str("{}").unwrap();
+        assert!(config.symphony.enabled);
+        assert!(config.symphony.per_day_cost_cap_usd > 0.0);
+    }
+
+    #[test]
+    fn symphony_config_roundtrip_serialization() {
+        let original = SymphonyConfig::default();
+        let json = serde_json::to_string(&original).unwrap();
+        let restored: SymphonyConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.enabled, original.enabled);
+        assert_eq!(restored.max_concurrent_runs, original.max_concurrent_runs);
+        assert_eq!(restored.per_day_cost_cap_usd, original.per_day_cost_cap_usd);
+        assert_eq!(restored.stall_timeout_ms, original.stall_timeout_ms);
+        assert_eq!(restored.max_retry_backoff_ms, original.max_retry_backoff_ms);
     }
 }
