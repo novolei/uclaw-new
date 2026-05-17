@@ -20,4 +20,5 @@ pub mod recovery;
 pub mod retry;
 pub mod run_actor;
 pub mod run_session;
+pub mod service;
 pub mod stall;
