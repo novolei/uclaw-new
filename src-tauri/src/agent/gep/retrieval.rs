@@ -197,8 +197,14 @@ impl GeneRetriever {
     }
 
     /// Set effective streaks for ranking, computed from Capsule history.
+    /// Also evicts stale embedding cache entries for genes no longer active.
     pub fn set_streaks(&mut self, streaks: HashMap<String, f32>) {
         self.gene_effective_streaks = streaks;
+        // Evict stale embedding cache entries for genes not in the current gene list
+        let active_ids: std::collections::HashSet<&str> = self.genes.iter().map(|g| g.gene_id.as_str()).collect();
+        if let Ok(mut cache) = self.gene_embeddings.lock() {
+            cache.retain(|k, _| active_ids.contains(k.as_str()));
+        }
     }
 
     /// Rank and deduplicate matches.

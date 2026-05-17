@@ -209,37 +209,24 @@ impl ChatDelegate {
                 lineage: vec![],
             };
 
-            // Compute effective streak from previous capsules
-            let effective_streak = if let Some(ref repo_arc) = self.gene_repo {
-                if let Ok(repo) = repo_arc.lock() {
-                    if let Ok(prev_capsules) = repo.list_capsules(&gm.gene.gene_id) {
-                        capsule.compute_effective_streak(&prev_capsules, now_ts)
-                    } else {
-                        0.0
-                    }
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
-
-            // Persist Capsule to file system
+            // Compute streaks and persist Capsule in a single lock acquire
+            // (avoids duplicate list_capsules calls that scan directory twice)
             if let Some(ref repo_arc) = self.gene_repo {
                 if let Ok(repo) = repo_arc.lock() {
+                    let prev_capsules = repo.list_capsules(&gm.gene.gene_id).unwrap_or_default();
+                    let effective_streak = capsule.compute_effective_streak(&prev_capsules, now_ts);
+                    let prev_successes = prev_capsules.iter()
+                        .filter(|c| c.outcome.status == OutcomeStatus::Success)
+                        .count() as u32;
+
                     let mut capsule_with_streak = capsule.clone();
                     capsule_with_streak.effective_streak = effective_streak;
-                    // Compute raw_streak from previous success count
-                    if let Ok(prev) = repo.list_capsules(&gm.gene.gene_id) {
-                        let prev_successes = prev.iter()
-                            .filter(|c| c.outcome.status == OutcomeStatus::Success)
-                            .count() as u32;
-                        capsule_with_streak.raw_streak = if outcome_status == OutcomeStatus::Success {
-                            prev_successes + 1
-                        } else {
-                            0
-                        };
-                    }
+                    capsule_with_streak.raw_streak = if outcome_status == OutcomeStatus::Success {
+                        prev_successes + 1
+                    } else {
+                        0
+                    };
+
                     if let Err(e) = repo.store_capsule(&capsule_with_streak) {
                         tracing::warn!(
                             gene_id = %gm.gene.gene_id,
@@ -1561,7 +1548,7 @@ impl LoopDelegate for ChatDelegate {
                             // Collect soft error for GeneRetriever matching
                             if soft_error {
                                 if let Ok(mut errors) = self.recent_tool_errors.lock() {
-                                    if errors.len() < 5 {
+                                    if errors.len() < 20 {
                                         let err_text = output
                                             .result
                                             .get("stderr")
@@ -1619,7 +1606,7 @@ impl LoopDelegate for ChatDelegate {
 
                             // Collect tool error for GeneRetriever matching
                             if let Ok(mut errors) = self.recent_tool_errors.lock() {
-                                if errors.len() < 5 {
+                                if errors.len() < 20 {
                                     errors.push(format!("{}: {}", tc.name, e));
                                 }
                             }

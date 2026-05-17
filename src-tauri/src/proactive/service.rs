@@ -1013,7 +1013,10 @@ impl ProactiveService {
 
         // Build existing Gene fingerprints from GeneRepository for dedup in distillation
         let existing_gene_fingerprints = {
-            let repo = refs.gene_repo.lock().unwrap();
+            let repo = refs.gene_repo.lock().unwrap_or_else(|e| {
+                tracing::warn!("[ProactiveService] gene_repo lock poisoned: {}", e);
+                std::process::abort()
+            });
             repo.list_active_genes()
                 .unwrap_or_default()
                 .iter()
