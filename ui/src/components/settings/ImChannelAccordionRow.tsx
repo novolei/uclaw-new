@@ -74,8 +74,8 @@ export function ImChannelAccordionRow({
   const [mcpEnabled, setMcpEnabled] = useState(channel?.guestPolicy.mcp_enabled ?? false)
 
   // channel-type-specific
-  const [corpId] = useState((channel?.config.corp_id as string | undefined) ?? '')
-  const [agentId] = useState((channel?.config.agent_id as string | undefined) ?? '')
+  const [corpId, setCorpId] = useState((channel?.config.corp_id as string | undefined) ?? '')
+  const [agentId, setAgentId] = useState((channel?.config.agent_id as string | undefined) ?? '')
   const [corpSecret, setCorpSecret] = useState('')
   const [wecomWsUrl, setWecomWsUrl] = useState((channel?.config.ws_url as string | undefined) ?? '')
   const [appId, setAppId] = useState((channel?.config.app_id as string | undefined) ?? '')
@@ -102,6 +102,31 @@ export function ImChannelAccordionRow({
     if (!channel && spaces.length > 0 && !spaceId) setSpaceId(spaces[0].id)
   }, [spaces, channel, spaceId])
 
+  // Sync non-credential form fields when channel prop changes after save
+  useEffect(() => {
+    if (!channel) return
+    setName(channel.name)
+    setSpaceId(channel.spaceId)
+    setStreaming(channel.streaming)
+    setPermissionEnabled(channel.permissionEnabled)
+    setOwners(channel.owners.join(', '))
+    setMcpEnabled(channel.guestPolicy.mcp_enabled)
+    setCorpId((channel.config.corp_id as string | undefined) ?? '')
+    setAgentId((channel.config.agent_id as string | undefined) ?? '')
+    setWecomWsUrl((channel.config.ws_url as string | undefined) ?? '')
+    setAppId((channel.config.app_id as string | undefined) ?? '')
+    setWebhookUrl(
+      (channel.config.url as string | undefined) ??
+      (channel.config.webhook_url as string | undefined) ?? ''
+    )
+    setSmtpHost((channel.config.smtp_host as string | undefined) ?? '')
+    setSmtpPort(String(channel.config.smtp_port ?? '587'))
+    setSmtpUser((channel.config.username as string | undefined) ?? '')
+    setToAddresses((channel.config.to_addresses as string[] | undefined)?.join(', ') ?? '')
+    setDirty(false)
+    setError(null)
+  }, [channel])
+
   function markDirty() { setDirty(true) }
 
   function handleCancel() {
@@ -111,6 +136,8 @@ export function ImChannelAccordionRow({
     setPermissionEnabled(channel?.permissionEnabled ?? false)
     setOwners(channel?.owners.join(', ') ?? '')
     setMcpEnabled(channel?.guestPolicy.mcp_enabled ?? false)
+    setCorpId((channel?.config.corp_id as string | undefined) ?? '')
+    setAgentId((channel?.config.agent_id as string | undefined) ?? '')
     setCorpSecret('')
     setWecomWsUrl((channel?.config.ws_url as string | undefined) ?? '')
     setAppId((channel?.config.app_id as string | undefined) ?? '')
@@ -222,11 +249,7 @@ export function ImChannelAccordionRow({
   }
 
   // ── save button label ──
-  const saveLabel = (() => {
-    if (!dirty) return '保存'
-    if (status?.state === 'online') return '保存并重连'
-    return '保存'
-  })()
+  const saveLabel = dirty && status?.state === 'online' ? '保存并重连' : '保存'
 
   // ── status block ──
   const stateColor = {
@@ -371,11 +394,11 @@ export function ImChannelAccordionRow({
         {channelType === 'wecom_bot' && <>
           <div>
             <label className="block text-xs text-muted-foreground mb-1">Corp ID</label>
-            <input value={corpId} readOnly className={`${inputCls()} font-mono opacity-70`} />
+            <input value={corpId} readOnly={!isNew} onChange={isNew ? e => { setCorpId(e.target.value); markDirty() } : undefined} className={`${inputCls()} font-mono ${!isNew ? 'opacity-70' : ''}`} />
           </div>
           <div>
             <label className="block text-xs text-muted-foreground mb-1">Agent ID</label>
-            <input value={agentId} readOnly className={`${inputCls()} font-mono opacity-70`} />
+            <input value={agentId} readOnly={!isNew} onChange={isNew ? e => { setAgentId(e.target.value); markDirty() } : undefined} className={`${inputCls()} font-mono ${!isNew ? 'opacity-70' : ''}`} />
           </div>
           <div className="col-span-2">
             <label className={`block text-xs mb-1 ${credHighlight ? 'text-destructive font-medium' : 'text-muted-foreground'}`}>
