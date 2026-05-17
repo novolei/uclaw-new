@@ -616,6 +616,85 @@ export const deleteUserSkill = async (name: string): Promise<void> =>
   invoke('delete_user_skill', { name });
 
 // ─────────────────────────────────────────────────────────
+// GEP Gene Evolution
+// ─────────────────────────────────────────────────────────
+
+export interface GeneSummary {
+  gene_id: string
+  asset_id: string
+  category: string
+  summary: string
+  version: string
+  status: string
+  created_at: number
+  updated_at: number
+  capsule_count: number
+}
+
+export interface GeneDetail {
+  gene: {
+    gene_id: string
+    version: string
+    category: string
+    signals_match: string[]
+    summary: string
+    strategy: string[]
+    avoid: string[]
+    constraints: { max_files: number; forbidden_paths: string[] }
+    validation: string
+    asset_id: string
+    status: string
+    created_at: number
+    updated_at: number
+  }
+  capsules: Array<{
+    id: string
+    gene_asset_id: string
+    gene_id: string
+    trigger: string[]
+    summary: string
+    confidence: number
+    blast_radius: { files: number; lines: number }
+    outcome: { status: string; score: number }
+    raw_streak: number
+    effective_streak: number
+    env_fingerprint: { rust_version: string; platform: string; arch: string }
+    created_at: number
+    lineage: string[]
+  }>
+  events: Array<{
+    capsule_id: string
+    created_at: number
+  }>
+}
+
+export interface GeneEvolutionTree {
+  gene_id: string
+  versions: Array<{
+    asset_id: string
+    version: string
+    parent_asset_id: string | null
+    created_at: number
+    summary: string
+  }>
+}
+
+export const listGenes = (statusFilter?: string): Promise<GeneSummary[]> =>
+  invoke<GeneSummary[]>('list_genes', { statusFilter });
+
+export const getGeneDetail = (assetId: string): Promise<GeneDetail> =>
+  invoke<GeneDetail>('get_gene_detail', { assetId });
+
+export const getGeneEvolutionTree = (geneId: string): Promise<GeneEvolutionTree> =>
+  invoke<GeneEvolutionTree>('get_gene_evolution_tree', { geneId });
+
+export const retireGene = (assetId: string, reason: string): Promise<void> =>
+  invoke('retire_gene', { assetId, reason });
+
+export const reactivateGene = (assetId: string): Promise<void> =>
+  invoke('reactivate_gene', { assetId });
+
+// ─────────────────────────────────────────────────────────
 // Memory Graph
 // ─────────────────────────────────────────────────────────
 

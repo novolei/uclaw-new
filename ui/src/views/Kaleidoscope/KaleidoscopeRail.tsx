@@ -21,7 +21,7 @@ import * as React from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import {
   ArrowLeft, Sparkles,
-  Bot, Store, LayoutGrid, FileText, Zap, Plug, Brain,
+  Bot, Store, LayoutGrid, FileText, Zap, Plug, Brain, GitBranch,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -44,6 +44,7 @@ const MODULE_ICON: Record<KaleidoscopeModuleId, LucideIcon> = {
   skills: Zap,
   integrations: Plug,
   memory: Brain,
+  evolution: GitBranch,
 }
 
 const ASSET_MODULES = KALEIDOSCOPE_MODULES.filter((m) => m.group === 'asset')

@@ -15,7 +15,7 @@ import { atom } from 'jotai'
 
 export type KaleidoscopeModuleId =
   | 'humans' | 'store' | 'apps' | 'artifacts'
-  | 'skills' | 'integrations' | 'memory'
+  | 'skills' | 'integrations' | 'memory' | 'evolution'
 
 export type KaleidoscopeGroup = 'asset' | 'capability'
 
@@ -34,6 +34,7 @@ export const KALEIDOSCOPE_MODULES: KaleidoscopeModuleMeta[] = [
   { id: 'skills', label: '技能', group: 'capability' },
   { id: 'integrations', label: '集成', group: 'capability' },
   { id: 'memory', label: '记忆', group: 'capability' },
+  { id: 'evolution', label: '进化', group: 'capability' },
 ]
 
 export const kaleidoscopeModuleAtom = atom<KaleidoscopeModuleId>('humans')

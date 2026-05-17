@@ -5,7 +5,9 @@ use async_trait::async_trait;
 use tauri::Emitter;
 use crate::agent::types::*;
 use crate::agent::tools::tool::{ToolRegistry, ToolOutput};
+use crate::agent::gep::repository::GeneRepository;
 use crate::agent::gep::retrieval::{GeneRetriever, GeneMatch, format_gene_injection};
+use crate::agent::gep::types::{Capsule, CapsuleOutcome, OutcomeStatus, BlastRadius, EnvFingerprint, EvolutionEvent};
 use crate::app::PendingApprovals;
 use crate::infra::InfraService;
 use crate::llm::LlmProvider;
@@ -81,6 +83,10 @@ pub struct ChatDelegate {
     gene_retriever: Option<Arc<GeneRetriever>>,
     /// Gene matches from the most recent call_llm — cleared after Capsule generation.
     last_gene_matches: Mutex<Vec<GeneMatch>>,
+    /// GEP GeneRepository for persisting Capsules and EvolutionEvents.
+    gene_repo: Option<Arc<Mutex<GeneRepository>>>,
+    /// Recent tool error messages for passing to GeneRetriever.match_genes.
+    recent_tool_errors: Mutex<Vec<String>>,
 }
 
 impl ChatDelegate {
@@ -115,6 +121,8 @@ impl ChatDelegate {
             skill_search_used: AtomicBool::new(false),
             gene_retriever: None,
             last_gene_matches: Mutex::new(Vec::new()),
+            gene_repo: None,
+            recent_tool_errors: Mutex::new(Vec::new()),
         }
     }
 
@@ -123,11 +131,17 @@ impl ChatDelegate {
         self.gene_retriever = Some(retriever);
     }
 
-    /// Generate and publish Capsules for the most recent Gene matches.
+    /// Set the GEP GeneRepository for Capsule persistence.
+    pub fn set_gene_repo(&mut self, repo: Arc<Mutex<GeneRepository>>) {
+        self.gene_repo = Some(repo);
+    }
+
+    /// Generate and persist Capsules for the most recent Gene matches.
     ///
-    /// Computes the blast radius from the workspace's git diff and
-    /// publishes a CapsuleCreated event via InfraService. Called after
-    /// tool execution completes for the turn.
+    /// Computes blast radius from workspace git diff, constructs full Capsule
+    /// and EvolutionEvent records, and persists them to GeneRepository.
+    /// Also publishes CapsuleCreated events via InfraService.
+    /// Called after tool execution completes for the turn.
     pub async fn generate_capsule_for_turn(&self) {
         let gene_matches: Vec<GeneMatch> = {
             match self.last_gene_matches.lock() {
@@ -144,11 +158,6 @@ impl ChatDelegate {
             return;
         }
 
-        let infra = match &self.infra_service {
-            Some(svc) => svc,
-            None => return,
-        };
-
         // Compute blast radius from workspace git diff
         let blast_radius = match &self.workspace_root {
             Some(root) => {
@@ -159,33 +168,147 @@ impl ChatDelegate {
             None => None,
         };
 
-        for gm in &gene_matches {
-            let mut metadata = serde_json::json!({
-                "gene_id": gm.gene.gene_id,
-                "gene_asset_id": gm.gene.asset_id,
-                "match_score": gm.match_score,
-                "rank_score": gm.rank_score,
-                "conversation_id": self.conversation_id,
-            });
+        let now_ts = chrono::Utc::now().timestamp_millis();
 
-            if let Some(ref br) = blast_radius {
+        for gm in &gene_matches {
+            let capsule_id = format!("cap_{}", uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string());
+
+            // Determine outcome status from recent tool errors
+            let (outcome_status, outcome_score) = {
+                let errors = self.recent_tool_errors.lock().map(|e| e.clone()).unwrap_or_default();
+                if errors.is_empty() {
+                    (OutcomeStatus::Success, 0.85)
+                } else if errors.len() <= 2 {
+                    (OutcomeStatus::Partial, 0.5)
+                } else {
+                    (OutcomeStatus::Failed, 0.2)
+                }
+            };
+
+            let br = blast_radius.unwrap_or(BlastRadius { files: 0, lines: 0 });
+
+            let capsule = Capsule {
+                id: capsule_id.clone(),
+                gene_asset_id: gm.gene.asset_id.clone(),
+                gene_id: gm.gene.gene_id.clone(),
+                trigger: gm.gene.signals_match.clone(),
+                summary: format!(
+                    "Gene {} matched (score={:.2})",
+                    gm.gene.gene_id, gm.match_score
+                ),
+                confidence: (gm.match_score / 5.0).min(1.0) as f32,
+                blast_radius: br.clone(),
+                outcome: CapsuleOutcome {
+                    status: outcome_status.clone(),
+                    score: outcome_score,
+                },
+                raw_streak: 0,
+                effective_streak: 0.0,
+                env_fingerprint: EnvFingerprint::default(),
+                created_at: now_ts,
+                lineage: vec![],
+            };
+
+            // Compute effective streak from previous capsules
+            let effective_streak = if let Some(ref repo_arc) = self.gene_repo {
+                if let Ok(repo) = repo_arc.lock() {
+                    if let Ok(prev_capsules) = repo.list_capsules(&gm.gene.gene_id) {
+                        capsule.compute_effective_streak(&prev_capsules, now_ts)
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+
+            // Persist Capsule to file system
+            if let Some(ref repo_arc) = self.gene_repo {
+                if let Ok(repo) = repo_arc.lock() {
+                    let mut capsule_with_streak = capsule.clone();
+                    capsule_with_streak.effective_streak = effective_streak;
+                    // Compute raw_streak from previous success count
+                    if let Ok(prev) = repo.list_capsules(&gm.gene.gene_id) {
+                        let prev_successes = prev.iter()
+                            .filter(|c| c.outcome.status == OutcomeStatus::Success)
+                            .count() as u32;
+                        capsule_with_streak.raw_streak = if outcome_status == OutcomeStatus::Success {
+                            prev_successes + 1
+                        } else {
+                            0
+                        };
+                    }
+                    if let Err(e) = repo.store_capsule(&capsule_with_streak) {
+                        tracing::warn!(
+                            gene_id = %gm.gene.gene_id,
+                            error = %e,
+                            "[ChatDelegate] Failed to store Capsule"
+                        );
+                    } else {
+                        tracing::info!(
+                            gene_id = %gm.gene.gene_id,
+                            capsule_id = %capsule_id,
+                            status = ?outcome_status,
+                            "[ChatDelegate] Capsule persisted"
+                        );
+                    }
+
+                    // Store EvolutionEvent audit record
+                    let event = EvolutionEvent {
+                        intent: gm.gene.category.to_string(),
+                        capsule_id: capsule_id.clone(),
+                        genes_used: vec![gm.gene.asset_id.clone()],
+                        mutations_tried: 0,
+                        total_cycles: 1,
+                        created_at: now_ts,
+                    };
+                    if let Err(e) = repo.store_event(&event) {
+                        tracing::warn!(
+                            "[ChatDelegate] Failed to store EvolutionEvent: {}", e
+                        );
+                    }
+                }
+            }
+
+            // Publish CapsuleCreated event via InfraService
+            if let Some(infra) = &self.infra_service {
+                let mut metadata = serde_json::json!({
+                    "gene_id": gm.gene.gene_id,
+                    "gene_asset_id": gm.gene.asset_id,
+                    "match_score": gm.match_score,
+                    "rank_score": gm.rank_score,
+                    "conversation_id": self.conversation_id,
+                    "capsule_id": capsule_id,
+                    "outcome": {
+                        "status": outcome_status,
+                        "score": outcome_score,
+                    },
+                });
+
                 metadata["blast_radius"] = serde_json::json!({
                     "files": br.files,
                     "lines": br.lines,
                 });
+
+                infra.publish_capsule_created(
+                    "local",
+                    &gm.gene.gene_id,
+                    metadata,
+                ).await;
+
+                tracing::info!(
+                    gene_id = %gm.gene.gene_id,
+                    match_score = gm.match_score,
+                    "[ChatDelegate] CapsuleCreated event published"
+                );
             }
+        }
 
-            infra.publish_capsule_created(
-                "local",
-                &gm.gene.gene_id,
-                metadata,
-            ).await;
-
-            tracing::info!(
-                gene_id = %gm.gene.gene_id,
-                match_score = gm.match_score,
-                "[ChatDelegate] CapsuleCreated event published"
-            );
+        // Clear recent tool errors after Capsule generation
+        if let Ok(mut errors) = self.recent_tool_errors.lock() {
+            errors.clear();
         }
     }
 
@@ -780,7 +903,10 @@ impl LoopDelegate for ChatDelegate {
                 .unwrap_or("");
 
             if !last_user_text.is_empty() {
-                let matches = retriever.match_genes(last_user_text, &[], 2);
+                let tool_errors: Vec<String> = self.recent_tool_errors.lock()
+                    .map(|e| e.clone())
+                    .unwrap_or_default();
+                let matches = retriever.match_genes(last_user_text, &tool_errors, 2);
                 if !matches.is_empty() {
                     let gene_block = format_gene_injection(&matches, 2);
                     if !gene_block.is_empty() {
