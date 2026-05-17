@@ -15,6 +15,7 @@ import { PetSettings } from './PetSettings'
 import { SettingsNav } from './SettingsNav'
 import { SttSettings } from './SttSettings'
 import { MemoryRecallTab } from './MemoryRecallTab'
+import { ImChannelsSettings } from './ImChannelsSettings'
 import { SettingsBreadcrumb } from './SettingsBreadcrumb'
 
 
@@ -28,6 +29,8 @@ function SettingsContent({ tab }: { tab: SettingsTab }) {
       return <ToolsTab />
     case 'memoryRecall':
       return <MemoryRecallTab />
+    case 'imChannels':
+      return <ImChannelsSettings />
     case 'general':
       return <GeneralTab />
     case 'stt':
@@ -57,6 +60,7 @@ export default function SettingsPanel() {
     intelligence: '智能',
     tools: '工具与能力',
     memoryRecall: '记忆召回',
+    imChannels: 'IM 渠道',
     general: '通用与外观',
     stt: '输入（语音）',
     shortcuts: '快捷键',
