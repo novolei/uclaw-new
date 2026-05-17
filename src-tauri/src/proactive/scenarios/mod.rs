@@ -6,6 +6,10 @@ pub mod gene_evolution;
 pub mod multimodal_context;
 pub mod plan_mode_calibration;
 pub mod skill_extraction;
+// Memory OS Foundation Phase 4 — zero-LLM structural health checks
+// over memory_graph. Does NOT implement ProactiveScenario trait;
+// invoked directly by ProactiveService::tick_inner.
+pub mod memory_health;
 
 pub use types::*;
 
