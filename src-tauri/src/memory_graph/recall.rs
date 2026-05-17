@@ -1635,6 +1635,7 @@ fn capitalize_kind(kind: &MemoryNodeKind) -> &'static str {
         MemoryNodeKind::Episode => "Episode",
         MemoryNodeKind::Procedure => "Procedure",
         MemoryNodeKind::Reference => "Reference",
+        MemoryNodeKind::EntityPage => "EntityPage",
     }
 }
 

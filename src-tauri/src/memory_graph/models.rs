@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-// ─── 9 种分类 ────────────────────────────────────────────────────────
+// ─── 10 种分类 ───────────────────────────────────────────────────────
+//
+// `EntityPage` is the 10th variant added by Memory OS Foundation (Phase 1).
+// It represents a per-entity, long-lived synthesis page (compiled-truth +
+// timeline doctrine) and is the foundation for the AI Wiki view. The 9
+// pre-existing variants are untouched and continue to behave identically.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -14,6 +19,9 @@ pub enum MemoryNodeKind {
     Episode,
     Procedure,
     Reference,
+    /// Per-entity compiled-truth + timeline page. See Memory OS Foundation
+    /// spec §4.2.1 and `memory_graph::entity_page` for the metadata schema.
+    EntityPage,
 }
 
 impl MemoryNodeKind {
@@ -28,6 +36,7 @@ impl MemoryNodeKind {
             "episode" => Self::Episode,
             "procedure" => Self::Procedure,
             "reference" => Self::Reference,
+            "entity_page" => Self::EntityPage,
             _ => Self::Reference,
         }
     }
@@ -43,6 +52,7 @@ impl MemoryNodeKind {
             Self::Episode => "episode",
             Self::Procedure => "procedure",
             Self::Reference => "reference",
+            Self::EntityPage => "entity_page",
         }
     }
 }
@@ -232,4 +242,52 @@ pub struct MemoryNodeDetail {
     pub active_version: Option<MemoryVersion>,
     pub routes: Vec<MemoryRoute>,
     pub keywords: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_kind_round_trip_all_variants() {
+        for kind in [
+            MemoryNodeKind::Boot,
+            MemoryNodeKind::Identity,
+            MemoryNodeKind::Value,
+            MemoryNodeKind::UserProfile,
+            MemoryNodeKind::Directive,
+            MemoryNodeKind::Curated,
+            MemoryNodeKind::Episode,
+            MemoryNodeKind::Procedure,
+            MemoryNodeKind::Reference,
+            MemoryNodeKind::EntityPage,
+        ] {
+            let s = kind.as_str();
+            let parsed = MemoryNodeKind::from_str(s);
+            assert_eq!(parsed, kind, "round-trip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn entity_page_variant_is_addressable() {
+        // Ensure the new variant has the expected wire name and is reachable
+        // through both serde and the manual `from_str` / `as_str` helpers.
+        assert_eq!(MemoryNodeKind::EntityPage.as_str(), "entity_page");
+        assert_eq!(
+            MemoryNodeKind::from_str("entity_page"),
+            MemoryNodeKind::EntityPage
+        );
+        let json = serde_json::to_string(&MemoryNodeKind::EntityPage).unwrap();
+        assert_eq!(json, "\"entity_page\"");
+        let parsed: MemoryNodeKind = serde_json::from_str("\"entity_page\"").unwrap();
+        assert_eq!(parsed, MemoryNodeKind::EntityPage);
+    }
+
+    #[test]
+    fn unknown_kind_falls_back_to_reference() {
+        // Forward-compatibility: stale on-disk rows with unknown kind strings
+        // must not panic the reader.
+        assert_eq!(MemoryNodeKind::from_str("some_future_kind"), MemoryNodeKind::Reference);
+        assert_eq!(MemoryNodeKind::from_str(""), MemoryNodeKind::Reference);
+    }
 }

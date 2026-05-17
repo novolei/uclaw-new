@@ -60,6 +60,11 @@ fn generate_route_path(kind: MemoryNodeKind, title: &str) -> String {
         MemoryNodeKind::Curated => format!("curated/{}", slug),
         MemoryNodeKind::Reference => format!("reference/{}", slug),
         MemoryNodeKind::Boot => format!("boot/{}", slug),
+        // EntityPage (Memory OS Foundation Phase 1) — per-entity wiki page.
+        // The dedicated `entity/<slug>` namespace mirrors gbrain's MECE
+        // directory convention and gives EntityPage routes a stable home
+        // that won't collide with the historical kinds above.
+        MemoryNodeKind::EntityPage => format!("entity/{}", slug),
     }
 }
 
