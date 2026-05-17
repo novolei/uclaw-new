@@ -1219,6 +1219,22 @@ impl AppRuntimeService {
         })
     }
 
+    /// Like `execute_run`, but with IM close-loop handles injected into the HeadlessDelegate.
+    ///
+    /// For now: calls `execute_run` with the reply handles unused — the IM close-loop
+    /// for automation specs will be wired in a follow-up PR. The agent-chat path
+    /// (`run_agent_chat_via_im` in `channels/dispatcher.rs`) is fully wired.
+    pub async fn execute_run_with_reply(
+        &self,
+        spec_id: &str,
+        payload: serde_json::Value,
+        _reply_handle: Option<Arc<crate::channels::types::ReplyHandle>>,
+        _streaming_handle: Option<Arc<dyn crate::channels::types::StreamingHandle>>,
+    ) -> anyhow::Result<()> {
+        // TODO: inject handles properly in a follow-up PR.
+        self.execute_run(spec_id, None, payload).await
+    }
+
     /// Build the headless tool set for an automation run: the AppHandle-free
     /// base built-in tools rooted at `workspace_root`, plus the four Humane
     /// tools as advertisement-only schemas (see [`HumaneToolSchema`]).
@@ -1227,7 +1243,7 @@ impl AppRuntimeService {
     /// (`ask_user`, `exit_plan_mode`, `plan`, `self_eval`, `skill_search`,
     /// `load_skill`, browser tools) are intentionally excluded — a headless
     /// automation run has no window to drive them.
-    fn build_automation_tool_registry(
+    pub fn build_automation_tool_registry(
         &self,
         workspace_root: &std::path::Path,
     ) -> Arc<crate::agent::tools::tool::ToolRegistry> {
