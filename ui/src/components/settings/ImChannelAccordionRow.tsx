@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { toast } from 'sonner'
 import type { ImChannelRow, ImChannelInput, ImChannelStatus } from '@/atoms/im-channel-atoms'
+import { WechatIlinkBindingPanel } from './WechatIlinkBindingPanel'
 
 // ──────────────── helpers ────────────────
 
@@ -33,8 +34,10 @@ function getMetaLine(channel: ImChannelRow, status?: ImChannelStatus): string {
     return `corp_id: ${prefix} · 已停用`
   }
   if (ct === 'wechat_ilink') {
-    const appId = (channel.config.app_id as string | undefined) ?? ''
-    return `app_id: ${appId.slice(0, 12) || '未设置'}`
+    const accountId = (channel.config.account_id as string | undefined) ?? ''
+    if (status?.state === 'needs_rebind') return `账号: ${accountId.slice(0, 16) || '未知'} · 需要重新绑定`
+    if (accountId) return `账号: ${accountId.slice(0, 16)}`
+    return '未绑定'
   }
   const url =
     (channel.config.url as string | undefined) ??
@@ -78,8 +81,6 @@ export function ImChannelAccordionRow({
   const [agentId, setAgentId] = useState((channel?.config.agent_id as string | undefined) ?? '')
   const [corpSecret, setCorpSecret] = useState('')
   const [wecomWsUrl, setWecomWsUrl] = useState((channel?.config.ws_url as string | undefined) ?? '')
-  const [appId, setAppId] = useState((channel?.config.app_id as string | undefined) ?? '')
-  const [apiKey, setApiKey] = useState('')
   const [webhookUrl, setWebhookUrl] = useState(
     (channel?.config.url as string | undefined) ??
     (channel?.config.webhook_url as string | undefined) ?? ''
@@ -114,7 +115,6 @@ export function ImChannelAccordionRow({
     setCorpId((channel.config.corp_id as string | undefined) ?? '')
     setAgentId((channel.config.agent_id as string | undefined) ?? '')
     setWecomWsUrl((channel.config.ws_url as string | undefined) ?? '')
-    setAppId((channel.config.app_id as string | undefined) ?? '')
     setWebhookUrl(
       (channel.config.url as string | undefined) ??
       (channel.config.webhook_url as string | undefined) ?? ''
@@ -140,8 +140,6 @@ export function ImChannelAccordionRow({
     setAgentId((channel?.config.agent_id as string | undefined) ?? '')
     setCorpSecret('')
     setWecomWsUrl((channel?.config.ws_url as string | undefined) ?? '')
-    setAppId((channel?.config.app_id as string | undefined) ?? '')
-    setApiKey('')
     setWebhookUrl(
       (channel?.config.url as string | undefined) ??
       (channel?.config.webhook_url as string | undefined) ?? ''
@@ -167,8 +165,8 @@ export function ImChannelAccordionRow({
         credentials = corpSecret ? { corp_secret: corpSecret } : {}
         break
       case 'wechat_ilink':
-        config = { app_id: appId }
-        credentials = apiKey ? { api_key: apiKey } : {}
+        config = {}
+        credentials = {}
         break
       case 'dingtalk':
       case 'feishu':
@@ -435,34 +433,31 @@ export function ImChannelAccordionRow({
           </div>
         </>}
 
-        {channelType === 'wechat_ilink' && <>
-          <div>
-            <label className="block text-xs text-muted-foreground mb-1">App ID</label>
-            <input
-              value={appId}
-              onChange={e => { setAppId(e.target.value); markDirty() }}
-              className={inputCls()}
-            />
-          </div>
-          <div>
-            <label className={`block text-xs mb-1 ${credHighlight ? 'text-destructive font-medium' : 'text-muted-foreground'}`}>
-              API Key{credHighlight && <span className="ml-0.5 text-destructive">*</span>}
-            </label>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={e => { setApiKey(e.target.value); markDirty() }}
-              className={inputCls(credHighlight)}
-              placeholder="留空则不修改"
-            />
-          </div>
-          <div className="col-span-2">
-            <label className="block text-xs text-muted-foreground mb-1">绑定 Space</label>
-            <select value={spaceId} onChange={e => { setSpaceId(e.target.value); markDirty() }} className={inputCls()}>
-              {spaces.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
-          </div>
-        </>}
+        {channelType === 'wechat_ilink' && (
+          <>
+            <div className="col-span-2">
+              <label className="block text-xs text-muted-foreground mb-1">绑定 Space</label>
+              <select
+                value={spaceId}
+                onChange={e => { setSpaceId(e.target.value); markDirty() }}
+                className={inputCls()}
+              >
+                {spaces.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            {!isNew && (
+              <div className="col-span-2">
+                <WechatIlinkBindingPanel
+                  instanceId={channel!.id}
+                  accountId={channel!.config.account_id as string | undefined}
+                  status={status}
+                  onSaved={onSaved}
+                  onDisconnect={onSaved}
+                />
+              </div>
+            )}
+          </>
+        )}
 
         {(channelType === 'dingtalk' || channelType === 'feishu') && <>
           <div className="col-span-2">
