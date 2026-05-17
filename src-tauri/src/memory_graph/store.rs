@@ -599,6 +599,32 @@ impl MemoryGraphStore {
                 edge.updated_at,
             ],
         ).map_err(crate::error::Error::Database)?;
+
+        // Phase 2 Task 2.4: every explicit `create_edge` call gets a
+        // matching audit row so Phase 2's stale-link reconciliation can
+        // distinguish "human/agent asserted" edges from "regex-inferred"
+        // edges and never accidentally delete the former. confidence=1.0
+        // marks the assertion as authoritative (no probabilistic
+        // inference involved), inferred_by=NULL because no inference
+        // happened, and extracted_from_version_id=NULL because the
+        // edge wasn't produced from a version's content.
+        //
+        // Best-effort: a missing V34 table (e.g. on a downgraded binary
+        // or partial migration) must not break the existing create_edge
+        // contract. The audit insert is logged but errors are swallowed.
+        let audit_id_for_log = edge.id.clone();
+        if let Err(e) = conn.execute(
+            "INSERT INTO memory_edge_audit \
+             (edge_id, source, inferred_by, confidence, extracted_from_version_id, created_at) \
+             VALUES (?1, 'explicit', NULL, 1.0, NULL, ?2)",
+            params![edge.id, chrono::Utc::now().timestamp_millis()],
+        ) {
+            tracing::warn!(
+                edge_id = %audit_id_for_log,
+                error = %e,
+                "memory_graph: failed to write explicit edge audit (non-fatal)"
+            );
+        }
         debug!(id = %edge.id, "memory_graph: created edge");
         Ok(())
     }
@@ -2561,6 +2587,123 @@ mod tests {
             )
             .unwrap();
         assert_eq!(total, 0, "hook must be skipped when flag is off");
+    }
+
+    #[test]
+    fn create_edge_writes_explicit_audit_row() {
+        // Phase 2 Task 2.4: explicit edge creation should emit an audit
+        // row with source='explicit', confidence=1.0, and no inference
+        // metadata.
+        let store = fresh_test_store();
+        let a = store
+            .create_entity_page("default", "a", "A", "", EntityPageMetadata::default())
+            .unwrap();
+        let b = store
+            .create_entity_page("default", "b", "B", "", EntityPageMetadata::default())
+            .unwrap();
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let edge = MemoryEdge {
+            id: uuid::Uuid::new_v4().to_string(),
+            space_id: "default".into(),
+            parent_node_id: Some(a.node.id.clone()),
+            child_node_id: b.node.id.clone(),
+            relation_kind: MemoryRelationKind::Advises,
+            visibility: MemoryVisibility::Private,
+            priority: 50,
+            trigger_text: None,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        store.create_edge(&edge).unwrap();
+
+        // Audit row should exist with source='explicit' + conf=1.0.
+        let conn = store.conn.lock().unwrap();
+        let row: (String, f64, Option<String>) = conn
+            .query_row(
+                "SELECT source, confidence, inferred_by FROM memory_edge_audit WHERE edge_id = ?1",
+                params![edge.id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "explicit");
+        assert!((row.1 - 1.0).abs() < f64::EPSILON);
+        assert!(row.2.is_none(), "explicit edges have no inference metadata");
+    }
+
+    #[test]
+    fn explicit_edge_via_create_edge_survives_stale_reconciliation() {
+        // End-to-end version of `auto_link_preserves_explicit_edges_…`
+        // but using `create_edge` (now audit-aware in Task 2.4) instead
+        // of hand-rolled SQL. Confirms the production path also protects
+        // explicit edges.
+        let store = fresh_test_store();
+        let acme = store
+            .create_entity_page("default", "acme", "Acme", "", EntityPageMetadata::default())
+            .unwrap();
+        let alice = store
+            .create_entity_page(
+                "default",
+                "alice",
+                "Alice",
+                "Alice works at [[entity:acme]].",
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+
+        // Add an EXPLICIT advises edge via the public API.
+        let now = chrono::Utc::now().to_rfc3339();
+        let explicit_edge = MemoryEdge {
+            id: uuid::Uuid::new_v4().to_string(),
+            space_id: "default".into(),
+            parent_node_id: Some(alice.node.id.clone()),
+            child_node_id: acme.node.id.clone(),
+            relation_kind: MemoryRelationKind::Advises,
+            visibility: MemoryVisibility::Private,
+            priority: 50,
+            trigger_text: None,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        store.create_edge(&explicit_edge).unwrap();
+
+        // New version drops the ref entirely.
+        let v1 = store.get_active_version(&alice.node.id).unwrap().unwrap();
+        let v2 = MemoryVersion {
+            id: uuid::Uuid::new_v4().to_string(),
+            node_id: alice.node.id.clone(),
+            supersedes_version_id: Some(v1.id),
+            status: MemoryVersionStatus::Active,
+            content: "Bio without any reference.".into(),
+            metadata: None,
+            embedding_json: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        store.create_version(&v2).unwrap();
+
+        // Auto-link edge gone, explicit edge preserved.
+        assert_eq!(
+            count_edges(&store, &alice.node.id, &acme.node.id, MemoryRelationKind::WorksAt),
+            0,
+            "auto_link works_at must be reconciled away"
+        );
+        assert_eq!(
+            count_edges(&store, &alice.node.id, &acme.node.id, MemoryRelationKind::Advises),
+            1,
+            "explicit advises must survive"
+        );
+        // Audit also confirms.
+        let conn = store.conn.lock().unwrap();
+        let explicit_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_edge_audit a \
+                 JOIN memory_edges e ON e.id = a.edge_id \
+                 WHERE e.parent_node_id = ?1 AND e.child_node_id = ?2 AND a.source = 'explicit'",
+                params![alice.node.id, acme.node.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(explicit_count, 1);
     }
 
     #[test]
