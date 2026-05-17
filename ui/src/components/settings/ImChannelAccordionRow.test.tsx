@@ -142,4 +142,20 @@ describe('ImChannelAccordionRow', () => {
       )
     })
   })
+
+  it('wechat_ilink expanded shows binding panel, not app_id field', () => {
+    renderRow({
+      channel: {
+        ...BASE_CHANNEL,
+        channelType: 'wechat_ilink',
+        config: { account_id: 'wx_user_abc' },
+      },
+      open: true,
+    })
+    // Should show binding panel content (confirmed state since accountId present)
+    expect(screen.getByText('重新绑定')).not.toBeNull()
+    // Must NOT show the old app_id or api_key form fields
+    expect(screen.queryByText('App ID')).toBeNull()
+    expect(screen.queryByText('API Key')).toBeNull()
+  })
 })

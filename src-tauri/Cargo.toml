@@ -170,6 +170,7 @@ pty-process = { version = "0.5", features = ["async"] }
 [dev-dependencies]
 tauri = { version = "2.11", features = ["test"] }
 tempfile = "3"
+mockito = "0.32"
 
 [features]
 default = []

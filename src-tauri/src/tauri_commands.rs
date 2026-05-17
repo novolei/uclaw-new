@@ -3394,6 +3394,146 @@ pub async fn toggle_im_channel(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn request_wechat_ilink_qrcode(
+    state: tauri::State<'_, AppState>,
+    instance_id: String,
+) -> Result<serde_json::Value, Error> {
+    let base_url = {
+        let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
+        let config_json: String = conn
+            .query_row(
+                "SELECT config_json FROM im_channel_instances WHERE id = ?1",
+                [&instance_id],
+                |r| r.get(0),
+            )
+            .map_err(|_| Error::NotFound(format!("Channel {instance_id} not found")))?;
+        let config: serde_json::Value =
+            serde_json::from_str(&config_json).unwrap_or_default();
+        config["base_url"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(crate::channels::im::ilink_binding::ILINK_BASE_URL)
+            .to_string()
+    };
+    let qrcode = crate::channels::im::ilink_binding::fetch_qr(&base_url)
+        .await
+        .map_err(|e| Error::Internal(e.to_string()))?;
+    Ok(serde_json::json!({ "qrcode": qrcode }))
+}
+
+#[tauri::command]
+pub async fn poll_wechat_ilink_qrcode_status(
+    state: tauri::State<'_, AppState>,
+    instance_id: String,
+    qrcode: String,
+) -> Result<serde_json::Value, Error> {
+    let base_url = {
+        let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
+        let config_json: String = conn
+            .query_row(
+                "SELECT config_json FROM im_channel_instances WHERE id = ?1",
+                [&instance_id],
+                |r| r.get(0),
+            )
+            .map_err(|_| Error::NotFound(format!("Channel {instance_id} not found")))?;
+        let config: serde_json::Value =
+            serde_json::from_str(&config_json).unwrap_or_default();
+        config["base_url"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(crate::channels::im::ilink_binding::ILINK_BASE_URL)
+            .to_string()
+    };
+    let status = crate::channels::im::ilink_binding::poll_qr_status(&base_url, &qrcode)
+        .await
+        .map_err(|e| Error::Internal(e.to_string()))?;
+    Ok(serde_json::to_value(&status).unwrap_or_default())
+}
+
+/// Save bot_token to credentials_json and account_id to config_json, then restart instance.
+#[tauri::command]
+pub async fn save_wechat_ilink_token(
+    state: tauri::State<'_, AppState>,
+    instance_id: String,
+    bot_token: String,
+    account_id: String,
+) -> Result<(), Error> {
+    if bot_token.trim().is_empty() || account_id.trim().is_empty() {
+        return Err(Error::Validation("bot_token and account_id cannot be empty".to_string()));
+    }
+    let now = chrono::Utc::now().timestamp_millis();
+    let creds_json = serde_json::json!({ "bot_token": bot_token }).to_string();
+    {
+        let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
+        // Merge account_id into existing config (preserves base_url etc.)
+        let existing_config: String = conn
+            .query_row(
+                "SELECT config_json FROM im_channel_instances WHERE id = ?1",
+                [&instance_id],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "{}".to_string());
+        let mut config: serde_json::Value =
+            serde_json::from_str(&existing_config).unwrap_or_default();
+        config["account_id"] = serde_json::Value::String(account_id);
+        let config_json = config.to_string();
+        let rows_changed = conn.execute(
+            "UPDATE im_channel_instances \
+             SET credentials_json = ?1, config_json = ?2, updated_at = ?3 WHERE id = ?4",
+            rusqlite::params![creds_json, config_json, now, instance_id],
+        )?;
+        if rows_changed == 0 {
+            return Err(Error::NotFound(format!("Channel {instance_id} not found")));
+        }
+    }
+    state
+        .im_channel_manager
+        .restart_instance_by_id(&instance_id)
+        .await
+        .map_err(|e| Error::Internal(e))?;
+    Ok(())
+}
+
+/// Clear bot_token from credentials and account_id from config, then restart instance.
+#[tauri::command]
+pub async fn disconnect_wechat_ilink(
+    state: tauri::State<'_, AppState>,
+    instance_id: String,
+) -> Result<(), Error> {
+    let now = chrono::Utc::now().timestamp_millis();
+    {
+        let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
+        let existing_config: String = conn
+            .query_row(
+                "SELECT config_json FROM im_channel_instances WHERE id = ?1",
+                [&instance_id],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "{}".to_string());
+        let mut config: serde_json::Value =
+            serde_json::from_str(&existing_config).unwrap_or_default();
+        if let Some(obj) = config.as_object_mut() {
+            obj.remove("account_id");
+        }
+        let config_json = config.to_string();
+        let rows_changed = conn.execute(
+            "UPDATE im_channel_instances \
+             SET credentials_json = '{}', config_json = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![config_json, now, instance_id],
+        )?;
+        if rows_changed == 0 {
+            return Err(Error::NotFound(format!("Channel {instance_id} not found")));
+        }
+    }
+    state
+        .im_channel_manager
+        .restart_instance_by_id(&instance_id)
+        .await
+        .map_err(|e| Error::Internal(e))?;
+    Ok(())
+}
+
 // ─── Spec-Channel Bindings ───────────────────────────────────────────────
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

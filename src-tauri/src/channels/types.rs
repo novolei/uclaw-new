@@ -45,6 +45,7 @@ pub enum ChannelState {
     Online,
     Error,
     Offline,
+    NeedsRebind,
 }
 
 /// Live status snapshot — emitted as `im_channel_status_changed` Tauri event
