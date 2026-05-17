@@ -30,6 +30,8 @@ futures = "0.3"
 # lossy-decodes binary as UTF-8 and downstream code panics on byte
 # slicing in the middle of "characters" that don't exist.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream", "gzip", "brotli", "deflate"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
 bytes = "1"
 
 # STT — local SenseVoice ONNX (vendored from if2Ai openflow)
