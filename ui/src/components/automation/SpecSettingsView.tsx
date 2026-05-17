@@ -217,17 +217,24 @@ function ImChannelBindingsSection({ specId }: { specId: string }) {
 
 function ImTriggerRow({ specId, initialTriggerPhrase }: { specId: string; initialTriggerPhrase: string }) {
   const [value, setValue] = useState(initialTriggerPhrase)
+  const [saved, setSaved] = useState(initialTriggerPhrase)
   const [saving, setSaving] = useState(false)
+  const dirty = value !== saved
 
   async function handleSave() {
+    if (!dirty) return
     setSaving(true)
     await updateSpecImSettings(specId, value || null, null).catch(() => {})
+    setSaved(value)
     setSaving(false)
   }
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="text-sm">触发关键词</div>
+      <div className="flex items-center gap-1.5">
+        <span className="text-sm">触发关键词</span>
+        {dirty && <span className="text-xs text-amber-500">未保存</span>}
+      </div>
       <div className="text-xs text-muted-foreground">IM 消息以此关键词开头时触发本 automation</div>
       <div className="flex gap-2 mt-1">
         <input
@@ -235,9 +242,10 @@ function ImTriggerRow({ specId, initialTriggerPhrase }: { specId: string; initia
           placeholder="/daily-report"
           value={value}
           onChange={(e) => setValue(e.target.value)}
+          onBlur={handleSave}
         />
         <button
-          disabled={saving}
+          disabled={saving || !dirty}
           onClick={handleSave}
           className="titlebar-no-drag text-xs px-3 py-1 bg-primary text-primary-foreground rounded disabled:opacity-50"
         >
@@ -250,26 +258,34 @@ function ImTriggerRow({ specId, initialTriggerPhrase }: { specId: string; initia
 
 function SystemPromptRow({ specId, initialValue }: { specId: string; initialValue: string }) {
   const [value, setValue] = useState(initialValue)
+  const [saved, setSaved] = useState(initialValue)
   const [saving, setSaving] = useState(false)
+  const dirty = value !== saved
 
   async function handleSave() {
+    if (!dirty) return
     setSaving(true)
     await updateSpecImSettings(specId, null, value || null).catch(() => {})
+    setSaved(value)
     setSaving(false)
   }
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="text-sm">系统提示词</div>
+      <div className="flex items-center gap-1.5">
+        <span className="text-sm">系统提示词</span>
+        {dirty && <span className="text-xs text-amber-500">未保存</span>}
+      </div>
       <div className="text-xs text-muted-foreground">覆盖 Space 级默认 prompt（可选）</div>
       <textarea
         className="mt-1 text-xs bg-muted/50 border border-border rounded px-2 py-1 font-mono resize-y min-h-[80px]"
         placeholder="（留空则使用 Space 默认提示词）"
         value={value}
         onChange={(e) => setValue(e.target.value)}
+        onBlur={handleSave}
       />
       <button
-        disabled={saving}
+        disabled={saving || !dirty}
         onClick={handleSave}
         className="titlebar-no-drag self-end text-xs px-3 py-1 bg-primary text-primary-foreground rounded disabled:opacity-50 mt-1"
       >
