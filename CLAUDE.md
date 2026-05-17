@@ -130,7 +130,7 @@ Track which V-number is claimed by which open PR before starting schema work:
 | V | What | Status |
 |---|---|---|
 | V1–V10 | Initial schema → V10 messages_fts (unicode61) | merged |
-| V11 | trigram tokenizer for messages_fts + agent_turns_fts | **PR #33** (open) |
+| V11 | trigram tokenizer for messages_fts + agent_turns_fts | merged (PR #33) |
 | V12 | agent_messages_fts (trigram) + sync triggers + backfill | merged |
 | V13 | cost_records + indexes | merged (PR #39) |
 | V14 | tool_permission_rules + permission_audit_log | merged (PR #41) |
@@ -143,9 +143,17 @@ Track which V-number is claimed by which open PR before starting schema work:
 | V21 | automation_subscriptions + automation_memory + automation_escalations | merged |
 | V22 | automation_installed_skills + idx_aut_inst_skills_slug | merged (PR #160) |
 | V23a | Marketplace cache (Phase 3a) | merged |
-| V24 | automation_activities +session_id +report_artifacts_json -tool_calls_json; agent_sessions +archived_at | PR #172 (Automation Phase 2a) |
+| V24 | automation_activities +session_id +report_artifacts_json -tool_calls_json; agent_sessions +archived_at | merged (PR #172, Automation Phase 2a) |
 | V25 | marketplace_standalone_installs (standalone skill/MCP install tracking) | merged (Phase 3b-γ) |
-| V26 | conversations.archived + conversations.archived_at | in progress |
+| V26 | conversations.archived + conversations.archived_at | merged |
+| V27 | system_prompts table — user-customizable system prompts | merged |
+| V28 | system_prompt_versions — prompt version history | merged |
+| V29 | compaction support — `compacted` column + compaction_markers (logical marking, replaces physical deletion) | merged |
+| V30 | fragment_reviews + daily_summaries for the memory fragment system | merged |
+| V31 | rebuild memory_fts with trigram tokenizer + backfill from memory_nodes + active memory_versions | merged |
+| V32 | IM channel infrastructure (im_channel_instances, im_sessions, spec_channel_bindings) | merged |
+| V32b | automation_specs IM columns (trigger_phrase + related ALTERs) | merged |
+| V33 | symphony_workflows + symphony_workflow_versions + symphony_runs + symphony_node_runs + seed 'symphonies' space | **in progress (Symphony runtime)** |
 
 If you're adding a migration: pick the next number after both merged AND open PRs to avoid conflicts. Update this table in your PR.
 
