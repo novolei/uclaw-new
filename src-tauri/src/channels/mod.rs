@@ -2,6 +2,7 @@
 //!
 //! Supports multiple notification backends: webhook, email, IM channels.
 
+pub mod dispatcher;
 pub mod im;
 pub mod notify;
 pub mod types;
