@@ -347,11 +347,15 @@ impl AppState {
         let channel_manager = Arc::new(RwLock::new(ChannelManager::new()));
 
         // IM channel manager and session registry
-        let im_channel_manager = Arc::new(
-            crate::channels::manager::ImChannelManager::new(db.clone())
-        );
         let im_session_registry = Arc::new(
             crate::channels::session_registry::ImSessionRegistry::new(db.clone())
+        );
+        let im_channel_manager = Arc::new(
+            crate::channels::manager::ImChannelManager::new(
+                db.clone(),
+                im_session_registry.clone(),
+                app_handle.clone(),
+            )
         );
 
         // Providers
