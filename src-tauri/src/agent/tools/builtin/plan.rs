@@ -178,21 +178,23 @@ impl Tool for PlanUpdateTool {
         }));
 
         let duration = start.elapsed().as_millis() as u64;
-        // When marking done, append an honesty reminder to the tool result so
-        // the LLM doesn't use plan_update as a shortcut to "complete" steps it
-        // didn't actually execute. Observed in the wild: agent calls
-        // mkdir + ls + plan_update(done:true) for a "build the game engine"
-        // step without ever calling write_file. The reminder makes the LLM
-        // re-check itself and prevents the plan-aware termination guard from
-        // being bypassed by fake completions.
+        // Append a short reminder when marking done. The hard enforcement
+        // ("did the model actually do work?") lives in dispatcher's mutation-
+        // evidence guard — this reminder is just a courtesy nudge.
+        //
+        // Earlier wording explicitly told the model to "undo this update
+        // (call plan_update again with done:false) and perform the actual
+        // work first." Observed in the 2026-05-18 gomoku session: turn 3
+        // marked step 0 done → turn 4 marked step 0 not-done (taking the
+        // reminder literally) → agent did write_file/edit but never called
+        // plan_update again. Result: 9/9 steps stayed undone. The new text
+        // states the discipline as a fact without instructing a reversal.
         let result_text = if done {
             format!(
                 "Step {} marked DONE in {}.\n\n\
-                 IMPORTANT: plan_update is a bookkeeping tool. It does NOT execute work. \
-                 If this step required code changes (writing files, editing, running commands), \
-                 you must have already called edit / write_file / bash to actually do that work. \
-                 If you haven't, undo this update (call plan_update again with done:false) and \
-                 perform the actual work first. Users see code on disk, not plan checkmarks.",
+                 Reminder: plan_update only flips the checkbox. \
+                 Make sure the actual work (write_file / edit / bash) happened first — \
+                 users see code on disk, not plan checkmarks.",
                 step_index, safe_filename
             )
         } else {

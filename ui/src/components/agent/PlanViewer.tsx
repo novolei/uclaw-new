@@ -13,18 +13,22 @@ interface ParsedPlan {
   notes: string
 }
 
-function parsePlanMarkdown(content: string): ParsedPlan {
+export function parsePlanMarkdown(content: string): ParsedPlan {
   let title = 'Unnamed Plan'
   let goal = ''
   let steps: PlanStep[] = []
   let notes = ''
 
-  // Parse YAML frontmatter
+  // Parse YAML frontmatter. Accept both `title:` (canonical) and `task:`
+  // (what plan_write actually emits — see src-tauri/src/agent/tools/builtin/plan.rs).
+  // Also strip surrounding double-quotes because plan_write always quotes the value.
   const fmMatch = content.match(/^---\n([\s\S]+?)\n---\n?/m)
   if (fmMatch) {
     const fm = fmMatch[1]
-    const titleMatch = fm.match(/^title:\s*(.+)$/m)
-    if (titleMatch) title = titleMatch[1].trim()
+    const titleMatch = fm.match(/^(?:title|task):\s*(.+)$/m)
+    if (titleMatch) {
+      title = titleMatch[1].trim().replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1')
+    }
   }
 
   // Strip frontmatter, parse body sections
