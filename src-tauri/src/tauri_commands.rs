@@ -2911,6 +2911,13 @@ pub async fn list_im_channels(
     Ok(rows)
 }
 
+#[tauri::command]
+pub async fn get_im_channel_statuses(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::channels::types::ChannelRuntimeStatus>, Error> {
+    Ok(state.im_channel_manager.get_all_statuses().await)
+}
+
 /// Reject URLs that could be used for SSRF: non-https/wss schemes or
 /// loopback / RFC-1918 host targets.
 fn validate_im_channel_url(raw: &str, field: &str) -> Result<(), Error> {
