@@ -13,6 +13,14 @@ const SKILL_DECAY_HALF_LIFE_DAYS: f64 = 30.0;
 /// Graph-based memory store backed by SQLite.
 pub struct MemoryGraphStore {
     pub(crate) conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
+    /// Memory OS Foundation Phase 2 — gates the zero-LLM auto-link
+    /// post-hook in `create_version` / `create_entity_page`. AtomicBool
+    /// so callers (notably the AppState bootstrap) can flip the flag
+    /// after construction without taking a mutable reference to the
+    /// store. Default `true` for fresh stores; the AppState bootstrap
+    /// overrides from `memubot_config.memory_os.auto_link_enabled`
+    /// (Phase 2 Task 2.5).
+    auto_link_enabled: std::sync::atomic::AtomicBool,
 }
 
 impl MemoryGraphStore {
@@ -21,7 +29,27 @@ impl MemoryGraphStore {
         if let Ok(c) = conn.lock() {
             let _ = c.execute_batch("PRAGMA foreign_keys = ON;");
         }
-        Self { conn }
+        Self {
+            conn,
+            auto_link_enabled: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
+    /// Toggle the Phase 2 auto-link post-hook at runtime.
+    ///
+    /// Disabling stops new auto-link edges from being inserted; existing
+    /// auto-link rows on disk are untouched (re-enabling the flag will
+    /// resume stale-link reconciliation on next create_version).
+    pub fn set_auto_link_enabled(&self, on: bool) {
+        self.auto_link_enabled
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Current value of the auto-link flag. Used by tests and by the
+    /// `memory_entity_page_*` IPC layer if it wants to surface state.
+    pub fn auto_link_enabled(&self) -> bool {
+        self.auto_link_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Ensure graph tables exist (V4 migration covers this; kept for safety).
@@ -489,6 +517,29 @@ impl MemoryGraphStore {
         );
 
         debug!(id = %version.id, node_id = %version.node_id, "memory_graph: created version");
+
+        // Phase 2 auto-link post-hook (zero-LLM). Failures are explicitly
+        // swallowed (warn + continue) so they cannot break the write path:
+        // a broken hook must not lose data, and the worst-case fallout
+        // (no auto-link edge inserted) is recoverable via Phase 4 Health
+        // scenario backfill later. The hook runs while we still hold the
+        // conn lock so the version row is guaranteed visible.
+        if self.auto_link_enabled() {
+            if let Err(e) = Self::run_auto_link_post_hook(
+                &conn,
+                &version.node_id,
+                &version.content,
+                version.supersedes_version_id.as_deref(),
+                &version.id,
+            ) {
+                tracing::warn!(
+                    node_id = %version.node_id,
+                    version_id = %version.id,
+                    error = %e,
+                    "memory_graph: auto-link hook failed (non-fatal)"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -1035,9 +1086,11 @@ impl MemoryGraphStore {
         let route_path = normalized_slug.clone();
 
         // Clone everything the closure needs (the `move` keyword consumes
-        // captured values; we still need `node_id` outside the closure to
-        // re-hydrate the detail at the end).
+        // captured values; we still need `node_id` + `version_id` outside
+        // the closure — the former to re-hydrate the detail at the end,
+        // the latter to feed the Phase 2 auto-link hook after commit).
         let node_id_for_closure = node_id.clone();
+        let version_id_for_closure = version_id.clone();
         let space_id_owned = space_id.to_string();
         let title_owned = title.to_string();
         let title_for_fts = title.to_string();
@@ -1090,7 +1143,7 @@ impl MemoryGraphStore {
                 "INSERT INTO memory_versions \
                  (id, node_id, supersedes_version_id, status, content, metadata_json, embedding_json, created_at) \
                  VALUES (?1, ?2, NULL, 'active', ?3, NULL, NULL, ?4)",
-                params![version_id, node_id_for_closure, content_owned, now],
+                params![version_id_for_closure, node_id_for_closure, content_owned, now],
             )
             .map_err(crate::error::Error::Database)?;
             // Clear any stale FTS row for this node_id, then insert the new one.
@@ -1116,6 +1169,32 @@ impl MemoryGraphStore {
 
             Ok(())
         })?;
+
+        // 4b. Phase 2 auto-link post-hook on the initial compiled_truth.
+        //     `create_version` is the canonical place to run this, but the
+        //     transactional INSERT above bypasses that path — we mirror the
+        //     hook here so a brand-new EntityPage whose compiled_truth
+        //     contains `[[entity:other]]` references still produces typed
+        //     edges. Runs OUTSIDE the transaction (so the just-committed
+        //     version row is visible to the hook's queries) and uses a
+        //     fresh lock acquisition. Failures are swallowed.
+        if self.auto_link_enabled() {
+            if let Ok(c) = self.conn.lock() {
+                if let Err(e) = Self::run_auto_link_post_hook(
+                    &c,
+                    &node_id,
+                    compiled_truth,
+                    None, // first version — no predecessor
+                    &version_id,
+                ) {
+                    tracing::warn!(
+                        node_id = %node_id,
+                        error = %e,
+                        "memory_graph: auto-link hook failed on create_entity_page (non-fatal)"
+                    );
+                }
+            }
+        }
 
         // 5. Re-hydrate from the canonical path so the return value reflects
         //    exactly what's on disk (including default fields filled in by
@@ -1317,6 +1396,232 @@ impl MemoryGraphStore {
         }
     }
 
+    // ── Auto-link post-hook (Phase 2) ───────────────────────────────────
+    //
+    // Inserts typed edges from `[[entity:slug]]` / `[[node:uuid]]` /
+    // `[Text](entity/slug)` references found in the version's content,
+    // and runs stale-link reconciliation against the superseded version.
+    //
+    // Always called from a context that already holds the conn lock —
+    // takes &Connection rather than &self so it can be reused by both
+    // `create_version` and `create_entity_page` without double-locking.
+
+    /// Resolve an `ExtractedRef` to a `memory_nodes.id`, or `None` when
+    /// the target doesn't exist yet (phantom slug — Phase 4 health
+    /// scenario surfaces these as review candidates).
+    fn resolve_auto_link_ref(
+        conn: &rusqlite::Connection,
+        space_id: &str,
+        r: &super::auto_link::ExtractedRef,
+    ) -> Option<String> {
+        use super::auto_link::ExtractedRef::*;
+        match r {
+            NodeUuid(uuid) => conn
+                .query_row(
+                    "SELECT id FROM memory_nodes WHERE id = ?1",
+                    params![uuid],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok(),
+            EntitySlug(slug) => Self::resolve_slug_to_entity_page(conn, space_id, slug),
+            MarkdownLink { dir, slug } if dir == "entity" => {
+                Self::resolve_slug_to_entity_page(conn, space_id, slug)
+            }
+            // concept/source/reference dirs aren't wired yet — Phase 8
+            // (Cognitive subkind taxonomy) handles concept, Phase 15
+            // (NER) handles source. Skip rather than guess.
+            MarkdownLink { .. } => None,
+        }
+    }
+
+    fn resolve_slug_to_entity_page(
+        conn: &rusqlite::Connection,
+        space_id: &str,
+        slug: &str,
+    ) -> Option<String> {
+        let normalized = slug.trim().to_lowercase();
+        if normalized.is_empty() {
+            return None;
+        }
+        conn.query_row(
+            "SELECT id FROM memory_nodes \
+             WHERE space_id = ?1 \
+               AND kind = 'entity_page' \
+               AND LOWER(COALESCE(json_extract(metadata_json, '$.slug'), '')) = ?2 \
+             LIMIT 1",
+            params![space_id, normalized],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+    }
+
+    /// Look up `space_id` + kind for a node. Errors when the node is
+    /// missing — callers should treat that as "abort this hook run"
+    /// since we cannot meaningfully infer edges without context.
+    fn fetch_node_space_and_kind(
+        conn: &rusqlite::Connection,
+        node_id: &str,
+    ) -> Result<(String, MemoryNodeKind), crate::error::Error> {
+        let (space_id, kind_str): (String, String) = conn
+            .query_row(
+                "SELECT space_id, kind FROM memory_nodes WHERE id = ?1",
+                params![node_id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .map_err(crate::error::Error::Database)?;
+        Ok((space_id, MemoryNodeKind::from_str(&kind_str)))
+    }
+
+    /// Core auto-link logic. Splits the work cleanly into three steps:
+    ///
+    /// 1. Extract refs from the new content + the superseded content
+    /// 2. For refs in the new set but not the previous: insert typed
+    ///    edge + audit row (source='auto_link')
+    /// 3. For refs in the previous set but not the new: DELETE only the
+    ///    edges that were originally auto-linked (audit.source='auto_link').
+    ///    Explicit edges (audit.source='explicit') are preserved — a
+    ///    human-asserted relationship always wins over the heuristic.
+    ///
+    /// The `extracted_from_version_id` is recorded in the audit row so
+    /// we know which version produced the edge — useful for Phase 4
+    /// dangling-edge detection.
+    fn run_auto_link_post_hook(
+        conn: &rusqlite::Connection,
+        version_node_id: &str,
+        version_content: &str,
+        supersedes_version_id: Option<&str>,
+        extracted_from_version_id: &str,
+    ) -> Result<(), crate::error::Error> {
+        use std::collections::HashSet;
+
+        // Extract refs from new content.
+        let current_refs: HashSet<super::auto_link::ExtractedRef> =
+            super::auto_link::extract_refs(version_content).into_iter().collect();
+
+        // Extract refs from prev content (if any). On lookup failure we
+        // treat it as empty so the hook degrades gracefully.
+        let prev_refs: HashSet<super::auto_link::ExtractedRef> = if let Some(prev_id) =
+            supersedes_version_id
+        {
+            let prev_content: Option<String> = conn
+                .query_row(
+                    "SELECT content FROM memory_versions WHERE id = ?1",
+                    params![prev_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok();
+            prev_content
+                .map(|c| super::auto_link::extract_refs(&c).into_iter().collect())
+                .unwrap_or_default()
+        } else {
+            HashSet::new()
+        };
+
+        // Short-circuit: nothing to add and nothing to reconcile.
+        if current_refs.is_empty() && prev_refs.is_empty() {
+            return Ok(());
+        }
+
+        let (space_id, src_kind) = Self::fetch_node_space_and_kind(conn, version_node_id)?;
+
+        // ─── Phase A: ADDED refs → insert edges + audit ─────────────────
+        for r in current_refs.difference(&prev_refs) {
+            let Some(dst_id) = Self::resolve_auto_link_ref(conn, &space_id, r) else {
+                // Phantom: target doesn't exist. Skip for now; Phase 4
+                // health scan will pick this up as a phantom_slug finding.
+                continue;
+            };
+            if dst_id == version_node_id {
+                // Self-reference. Harmless but pointless; skip to avoid
+                // cluttering memory_edges with self-loops.
+                continue;
+            }
+            // Look up dst kind (cheap — just a single SELECT).
+            let dst_kind_str: String = match conn.query_row(
+                "SELECT kind FROM memory_nodes WHERE id = ?1",
+                params![dst_id],
+                |row| row.get(0),
+            ) {
+                Ok(s) => s,
+                Err(_) => continue, // race: node deleted between resolve and read
+            };
+            let dst_kind = MemoryNodeKind::from_str(&dst_kind_str);
+
+            let link_type = super::auto_link::infer_link_type(src_kind, dst_kind, version_content);
+
+            // Idempotency: if an auto-link edge with the exact same
+            // (parent, child, relation_kind) already exists, skip. The
+            // memory_edges schema has no UNIQUE constraint so this guard
+            // is in application code.
+            let already_exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memory_edges e \
+                     JOIN memory_edge_audit a ON a.edge_id = e.id \
+                     WHERE e.parent_node_id = ?1 \
+                       AND e.child_node_id = ?2 \
+                       AND e.relation_kind = ?3 \
+                       AND a.source = 'auto_link'",
+                    params![version_node_id, dst_id, link_type.as_str()],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            if already_exists > 0 {
+                continue;
+            }
+
+            let edge_id = uuid::Uuid::new_v4().to_string();
+            let now_rfc = chrono::Utc::now().to_rfc3339();
+            let now_ms = chrono::Utc::now().timestamp_millis();
+
+            // Insert edge. memory_edges timestamps are TEXT (datetime
+            // rfc3339), but memory_edge_audit.created_at is INTEGER ms
+            // — see V4 vs V34 in db/migrations.rs.
+            conn.execute(
+                "INSERT INTO memory_edges \
+                 (id, space_id, parent_node_id, child_node_id, relation_kind, visibility, priority, trigger_text, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'private', 50, NULL, ?6, ?6)",
+                params![edge_id, space_id, version_node_id, dst_id, link_type.as_str(), now_rfc],
+            )
+            .map_err(crate::error::Error::Database)?;
+
+            // Insert audit row. Confidence = 0.6 because the inference
+            // is heuristic regex-based; Phase 15 (LLM disambiguation)
+            // will raise this when it confirms via Sonnet/Haiku.
+            conn.execute(
+                "INSERT INTO memory_edge_audit \
+                 (edge_id, source, inferred_by, confidence, extracted_from_version_id, created_at) \
+                 VALUES (?1, 'auto_link', 'heuristic', 0.6, ?2, ?3)",
+                params![edge_id, extracted_from_version_id, now_ms],
+            )
+            .map_err(crate::error::Error::Database)?;
+        }
+
+        // ─── Phase B: REMOVED refs → stale-link reconciliation ──────────
+        for r in prev_refs.difference(&current_refs) {
+            let Some(dst_id) = Self::resolve_auto_link_ref(conn, &space_id, r) else {
+                continue;
+            };
+            // Delete ONLY edges whose audit says they came from
+            // auto_link. Explicit edges (Task 2.4) are preserved no
+            // matter what the version content looks like.
+            conn.execute(
+                "DELETE FROM memory_edges \
+                 WHERE id IN ( \
+                   SELECT e.id FROM memory_edges e \
+                   JOIN memory_edge_audit a ON a.edge_id = e.id \
+                   WHERE e.parent_node_id = ?1 \
+                     AND e.child_node_id = ?2 \
+                     AND a.source = 'auto_link' \
+                 )",
+                params![version_node_id, dst_id],
+            )
+            .map_err(crate::error::Error::Database)?;
+            // memory_edge_audit row cascades away via FK (V34).
+        }
+
+        Ok(())
+    }
+
     // ── Private helpers ─────────────────────────────────────────────────
 
     /// Batch-load active versions, routes, and keywords for a set of nodes.
@@ -1488,12 +1793,22 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    /// Spin up an in-memory SQLite store with the V4 graph schema applied.
+    /// Spin up an in-memory SQLite store with the V4 graph schema +
+    /// V34 Memory OS Phase 1 tables applied. Phase 2 auto-link hook
+    /// writes to `memory_edge_audit` (V34), so all store tests need
+    /// both migrations in scope.
     fn fresh_test_store() -> MemoryGraphStore {
         let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
-        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).expect("schema");
-        let store = MemoryGraphStore::new(Arc::new(Mutex::new(conn)));
-        store
+        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).expect("V4 schema");
+        // V34 statements are split by `;` and applied individually in the
+        // real `run()` path. execute_batch handles the whole string in one
+        // shot, which is fine for fresh in-memory dbs (no existing rows
+        // to collide with).
+        conn.execute_batch(crate::db::migrations::V34_MEMORY_OS_PHASE_1)
+            .expect("V34 schema");
+        // FK enforcement is required for the audit-cascade test in Phase 2.
+        conn.execute_batch("PRAGMA foreign_keys = ON;").ok();
+        MemoryGraphStore::new(Arc::new(Mutex::new(conn)))
     }
 
     /// Insert a minimal Procedure node + active version with given metadata.
@@ -1894,5 +2209,393 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1, "FTS row should have been inserted by create_entity_page");
+    }
+
+    // ─── Auto-link post-hook (Memory OS Foundation Phase 2) ───────────
+
+    /// Count edges from `src` to `dst` with the given relation_kind.
+    fn count_edges(
+        store: &MemoryGraphStore,
+        src: &str,
+        dst: &str,
+        kind: MemoryRelationKind,
+    ) -> i64 {
+        let conn = store.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM memory_edges \
+             WHERE parent_node_id = ?1 AND child_node_id = ?2 AND relation_kind = ?3",
+            params![src, dst, kind.as_str()],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+    }
+
+    /// Count audit rows for edges between src and dst with a given source tag.
+    fn count_audit(store: &MemoryGraphStore, src: &str, dst: &str, source: &str) -> i64 {
+        let conn = store.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM memory_edge_audit a \
+             JOIN memory_edges e ON e.id = a.edge_id \
+             WHERE e.parent_node_id = ?1 AND e.child_node_id = ?2 AND a.source = ?3",
+            params![src, dst, source],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+    }
+
+    #[test]
+    fn auto_link_inserts_edge_for_entity_slug_ref() {
+        let store = fresh_test_store();
+        // Create destination first so the resolver can find it.
+        let acme = store
+            .create_entity_page(
+                "default",
+                "acme",
+                "Acme Inc",
+                "An infra startup.",
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+        // Now create source with a reference to acme.
+        let alice = store
+            .create_entity_page(
+                "default",
+                "alice",
+                "Alice",
+                "She works at [[entity:acme]] on search infrastructure.",
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+        // Expect: one WorksAt edge alice → acme, audit source=auto_link.
+        assert_eq!(
+            count_edges(&store, &alice.node.id, &acme.node.id, MemoryRelationKind::WorksAt),
+            1,
+            "expected works_at edge from alice to acme"
+        );
+        assert_eq!(
+            count_audit(&store, &alice.node.id, &acme.node.id, "auto_link"),
+            1
+        );
+    }
+
+    #[test]
+    fn auto_link_handles_node_uuid_ref() {
+        let store = fresh_test_store();
+        let dst = store
+            .create_entity_page(
+                "default",
+                "dst-node",
+                "Destination",
+                "",
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+        let uuid = dst.node.id.clone();
+        let src = store
+            .create_entity_page(
+                "default",
+                "src-node",
+                "Source",
+                &format!("Refers to [[node:{}]] explicitly.", uuid),
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+        // No specific cue → falls back to Mentions.
+        assert_eq!(
+            count_edges(&store, &src.node.id, &dst.node.id, MemoryRelationKind::Mentions),
+            1
+        );
+    }
+
+    #[test]
+    fn auto_link_handles_markdown_link_entity_dir() {
+        let store = fresh_test_store();
+        let acme = store
+            .create_entity_page(
+                "default",
+                "acme",
+                "Acme",
+                "",
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+        let bob = store
+            .create_entity_page(
+                "default",
+                "bob",
+                "Bob",
+                "Bob founded [Acme](entity/acme).",
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            count_edges(&store, &bob.node.id, &acme.node.id, MemoryRelationKind::Founded),
+            1,
+            "founded cue should yield a Founded edge"
+        );
+    }
+
+    #[test]
+    fn auto_link_skips_phantom_slug() {
+        let store = fresh_test_store();
+        let alice = store
+            .create_entity_page(
+                "default",
+                "alice",
+                "Alice",
+                "She mentions [[entity:not-yet-created]] frequently.",
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+        // No edge should exist — target doesn't resolve.
+        let conn = store.conn.lock().unwrap();
+        let total: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_edges WHERE parent_node_id = ?1",
+                params![alice.node.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total, 0, "phantom slug must not create edges");
+    }
+
+    #[test]
+    fn auto_link_skips_self_reference() {
+        let store = fresh_test_store();
+        let alice = store
+            .create_entity_page(
+                "default",
+                "alice",
+                "Alice",
+                "Alice references herself: [[entity:alice]]",
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+        let conn = store.conn.lock().unwrap();
+        let self_loops: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_edges \
+                 WHERE parent_node_id = ?1 AND child_node_id = ?1",
+                params![alice.node.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(self_loops, 0, "self-references must be skipped");
+    }
+
+    #[test]
+    fn auto_link_stale_reconciliation_removes_dropped_refs() {
+        let store = fresh_test_store();
+        let acme = store
+            .create_entity_page(
+                "default",
+                "acme",
+                "Acme",
+                "",
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+        let alice = store
+            .create_entity_page(
+                "default",
+                "alice",
+                "Alice",
+                "Alice works at [[entity:acme]].",
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            count_edges(&store, &alice.node.id, &acme.node.id, MemoryRelationKind::WorksAt),
+            1
+        );
+
+        // Now write a new version of alice that drops the ref.
+        let v1 = store.get_active_version(&alice.node.id).unwrap().unwrap();
+        let v2 = MemoryVersion {
+            id: uuid::Uuid::new_v4().to_string(),
+            node_id: alice.node.id.clone(),
+            supersedes_version_id: Some(v1.id.clone()),
+            status: MemoryVersionStatus::Active,
+            content: "Alice's new bio — no employer mentioned.".to_string(),
+            metadata: None,
+            embedding_json: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        store.create_version(&v2).unwrap();
+        // Stale reconciliation should delete the works_at edge.
+        assert_eq!(
+            count_edges(&store, &alice.node.id, &acme.node.id, MemoryRelationKind::WorksAt),
+            0,
+            "stale edge must be removed when ref drops from new version"
+        );
+    }
+
+    #[test]
+    fn auto_link_preserves_explicit_edges_during_reconciliation() {
+        let store = fresh_test_store();
+        let acme = store
+            .create_entity_page(
+                "default",
+                "acme",
+                "Acme",
+                "",
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+        let alice = store
+            .create_entity_page(
+                "default",
+                "alice",
+                "Alice",
+                "Works at [[entity:acme]].",
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+        // Manually insert an EXPLICIT edge (not via auto-link). Task 2.4
+        // will route this through `create_edge` + audit; for this test we
+        // simulate the post-Task-2.4 state directly.
+        {
+            let conn = store.conn.lock().unwrap();
+            let edge_id = uuid::Uuid::new_v4().to_string();
+            let now = chrono::Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO memory_edges \
+                 (id, space_id, parent_node_id, child_node_id, relation_kind, visibility, priority, created_at, updated_at) \
+                 VALUES (?1, 'default', ?2, ?3, 'advises', 'private', 50, ?4, ?4)",
+                params![edge_id, alice.node.id, acme.node.id, now],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO memory_edge_audit \
+                 (edge_id, source, inferred_by, confidence, created_at) \
+                 VALUES (?1, 'explicit', NULL, 1.0, ?2)",
+                params![edge_id, chrono::Utc::now().timestamp_millis()],
+            ).unwrap();
+        }
+        // Now drop the ref via a new version.
+        let v1 = store.get_active_version(&alice.node.id).unwrap().unwrap();
+        let v2 = MemoryVersion {
+            id: uuid::Uuid::new_v4().to_string(),
+            node_id: alice.node.id.clone(),
+            supersedes_version_id: Some(v1.id),
+            status: MemoryVersionStatus::Active,
+            content: "Bio without any reference.".to_string(),
+            metadata: None,
+            embedding_json: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        store.create_version(&v2).unwrap();
+        // Auto-link works_at edge → gone.
+        assert_eq!(
+            count_edges(&store, &alice.node.id, &acme.node.id, MemoryRelationKind::WorksAt),
+            0,
+            "auto_link edge should be reconciled away"
+        );
+        // Explicit advises edge → preserved.
+        assert_eq!(
+            count_edges(&store, &alice.node.id, &acme.node.id, MemoryRelationKind::Advises),
+            1,
+            "explicit edge must NOT be touched by reconciliation"
+        );
+    }
+
+    #[test]
+    fn auto_link_is_idempotent_for_same_ref_across_versions() {
+        let store = fresh_test_store();
+        let acme = store
+            .create_entity_page("default", "acme", "Acme", "", EntityPageMetadata::default())
+            .unwrap();
+        let alice = store
+            .create_entity_page(
+                "default",
+                "alice",
+                "Alice",
+                "Works at [[entity:acme]].",
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+        // Write a second version with the same content shape (cue still
+        // present, ref still there).
+        let v1 = store.get_active_version(&alice.node.id).unwrap().unwrap();
+        let v2 = MemoryVersion {
+            id: uuid::Uuid::new_v4().to_string(),
+            node_id: alice.node.id.clone(),
+            supersedes_version_id: Some(v1.id),
+            status: MemoryVersionStatus::Active,
+            content: "Alice works at [[entity:acme]] — same as before.".to_string(),
+            metadata: None,
+            embedding_json: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        store.create_version(&v2).unwrap();
+        // Should still be exactly one WorksAt edge (idempotent guard).
+        assert_eq!(
+            count_edges(&store, &alice.node.id, &acme.node.id, MemoryRelationKind::WorksAt),
+            1
+        );
+    }
+
+    #[test]
+    fn auto_link_disabled_flag_skips_hook() {
+        let store = fresh_test_store();
+        store.set_auto_link_enabled(false);
+        // Destination first.
+        let _acme = store
+            .create_entity_page("default", "acme", "Acme", "", EntityPageMetadata::default())
+            .unwrap();
+        let alice = store
+            .create_entity_page(
+                "default",
+                "alice",
+                "Alice",
+                "Works at [[entity:acme]].",
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+        // No edge should have been inserted.
+        let conn = store.conn.lock().unwrap();
+        let total: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_edges WHERE parent_node_id = ?1",
+                params![alice.node.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total, 0, "hook must be skipped when flag is off");
+    }
+
+    #[test]
+    fn auto_link_into_reference_node_yields_source_edge() {
+        let store = fresh_test_store();
+        // Create a Reference node directly via the lower-level API
+        // (Reference isn't a subkind of EntityPage so create_entity_page
+        // can't make one).
+        let now = chrono::Utc::now().to_rfc3339();
+        let ref_id = uuid::Uuid::new_v4().to_string();
+        store
+            .create_node(&MemoryNode {
+                id: ref_id.clone(),
+                space_id: "default".into(),
+                kind: MemoryNodeKind::Reference,
+                title: "Some paper".into(),
+                metadata: None,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            })
+            .unwrap();
+        // Then create an EntityPage that points to it via [[node:uuid]].
+        let page = store
+            .create_entity_page(
+                "default",
+                "study",
+                "Study",
+                &format!("Drawing from [[node:{}]] as primary source.", ref_id),
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+        // Reference dst → Source edge regardless of cue text.
+        assert_eq!(
+            count_edges(&store, &page.node.id, &ref_id, MemoryRelationKind::Source),
+            1
+        );
     }
 }
