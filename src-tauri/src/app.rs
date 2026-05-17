@@ -221,6 +221,12 @@ pub struct AppState {
     /// ProactiveService (None if proactive is disabled or init failed;
     /// populated asynchronously in main.rs Stage 3 via interior RwLock).
     pub proactive_service: Arc<tokio::sync::RwLock<Option<Arc<ProactiveService>>>>,
+
+    /// SymphonyService — third parallel runtime (DAG-of-agent-runs).
+    /// `None` until main.rs Stage 3 wires it (gated on
+    /// `memubot_config.symphony.enabled`). Follows the same lazy-init shape
+    /// as `proactive_service` so Tauri commands can borrow it via `RwLock`.
+    pub symphony_service: Arc<tokio::sync::RwLock<Option<Arc<crate::symphony::runtime::service::SymphonyService>>>>,
 }
 
 impl AppState {
@@ -510,6 +516,7 @@ impl AppState {
             files_rail_service,
             runtime_service,
             proactive_service: Arc::new(tokio::sync::RwLock::new(None)),
+            symphony_service: Arc::new(tokio::sync::RwLock::new(None)),
         })
     }
 
