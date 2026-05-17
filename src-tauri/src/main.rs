@@ -204,6 +204,17 @@ fn main() {
                             tracing::info!("[Stage 3] MultimodalContextScenario registered");
                         }
 
+                        // Scenario 4: Plan-mode calibration (no LLM; runs DB-only calibration)
+                        {
+                            let scenario = Arc::new(
+                                uclaw_core::proactive::scenarios::plan_mode_calibration::PlanModeCalibrationScenario::new(
+                                    db.clone(),
+                                )
+                            );
+                            scenario_manager.register(scenario);
+                            tracing::info!("[Stage 3] PlanModeCalibrationScenario registered");
+                        }
+
                         tracing::info!("[Stage 3] {} proactive scenarios registered", scenario_manager.scenario_count());
 
                         let pro_db_path = data_dir.join("proactive.db");

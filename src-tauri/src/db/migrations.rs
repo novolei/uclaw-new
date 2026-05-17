@@ -1457,6 +1457,12 @@ CREATE TABLE IF NOT EXISTS plan_suggest_events (
 CREATE INDEX IF NOT EXISTS idx_plan_suggest_session ON plan_suggest_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_plan_suggest_pattern ON plan_suggest_events(matched_pattern)
     WHERE matched_pattern IS NOT NULL;
+CREATE TABLE IF NOT EXISTS mode_suggest_overrides (
+    pattern         TEXT PRIMARY KEY,
+    disabled_until  INTEGER NOT NULL,
+    reason          TEXT,
+    updated_at      INTEGER NOT NULL
+);
 ";
 
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {

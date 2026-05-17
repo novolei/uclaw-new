@@ -1197,6 +1197,14 @@ impl ProactiveService {
         let mut responses = Vec::new();
 
         for scenario in &triggered_scenarios {
+            // plan_mode_calibration runs its logic in build_context and
+            // needs no LLM call — short-circuit here after calling it.
+            if scenario.name() == "plan_mode_calibration" {
+                let _ = scenario.build_context(&scenario_ctx).await;
+                refs.scenario_manager.mark_triggered(scenario.name()).await;
+                continue;
+            }
+
             match scenario.build_context(&scenario_ctx).await {
                 Ok(output) => {
                     // 增强 system prompt：通过五路混合检索引擎注入召回的记忆

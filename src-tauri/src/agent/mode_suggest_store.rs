@@ -134,11 +134,32 @@ pub fn query_per_pattern_stats(
     rows.collect()
 }
 
-/// Stub returning an empty list. Filled in by the
-/// plan_mode_calibration scenario (Task 10) which writes per-pattern
-/// silence flags into a sibling table.
-pub fn query_disabled_patterns(_conn: &Connection) -> rusqlite::Result<Vec<String>> {
-    Ok(Vec::new())
+/// Returns patterns whose silence window has not yet expired.
+pub fn query_disabled_patterns(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut stmt = conn.prepare(
+        "SELECT pattern FROM mode_suggest_overrides WHERE disabled_until > ?",
+    )?;
+    let rows = stmt.query_map([now], |r| r.get::<_, String>(0))?;
+    rows.collect()
+}
+
+pub fn upsert_disabled_pattern(
+    conn: &Connection,
+    pattern: &str,
+    disabled_until_ms: i64,
+    reason: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO mode_suggest_overrides (pattern, disabled_until, reason, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(pattern) DO UPDATE SET
+             disabled_until = excluded.disabled_until,
+             reason = excluded.reason,
+             updated_at = excluded.updated_at",
+        rusqlite::params![pattern, disabled_until_ms, reason, chrono::Utc::now().timestamp_millis()],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -265,5 +286,38 @@ mod tests {
         record_outcome(&conn, "old", Outcome::Accepted, None, 200).unwrap();
         // since_ms = 1000 → old event (fired_at=100) filtered out
         assert!(query_per_pattern_stats(&conn, 1_000).unwrap().is_empty());
+    }
+
+    #[test]
+    fn disabled_pattern_filtered_when_expired() {
+        let conn = fresh_db();
+        upsert_disabled_pattern(&conn, "plan", 500, "low accept").unwrap();
+        // disabled_until=500 < now → not returned
+        let disabled = query_disabled_patterns(&conn).unwrap();
+        assert!(disabled.is_empty());
+    }
+
+    #[test]
+    fn disabled_pattern_included_when_active() {
+        let conn = fresh_db();
+        let future = chrono::Utc::now().timestamp_millis() + 60_000;
+        upsert_disabled_pattern(&conn, "plan", future, "low accept").unwrap();
+        let disabled = query_disabled_patterns(&conn).unwrap();
+        assert_eq!(disabled, vec!["plan".to_string()]);
+    }
+
+    #[test]
+    fn upsert_replaces_existing_row() {
+        let conn = fresh_db();
+        upsert_disabled_pattern(&conn, "plan", 1_000, "first").unwrap();
+        upsert_disabled_pattern(&conn, "plan", 2_000, "second").unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mode_suggest_overrides WHERE pattern = 'plan'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
     }
 }
