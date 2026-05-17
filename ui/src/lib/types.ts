@@ -1139,6 +1139,48 @@ export interface EntityPageAppendTimelineInput {
   sourceSessionId?: string;
 }
 
+/**
+ * Wire values for `memory_edges.relation_kind` after Memory OS Foundation
+ * Phase 2 (auto-link). All four V1-V33 structural variants plus seven
+ * Phase 2 typed entity-graph edges.
+ *
+ * Frontend code that wants to filter or colour-code edges should match
+ * against these literals instead of hard-coding strings.
+ *
+ * The detailed visual mapping (stroke patterns, palette) will land in
+ * Phase 3 when WikiView + MemoryGraphView get the typed-edge UI; for now
+ * the constant exists so any consumer can reference the canonical names.
+ */
+export const MEMORY_RELATION_KINDS = {
+  // Structural (V1-V33, untouched in Phase 2)
+  CONTAINS: 'contains',
+  RELATES_TO: 'relates_to',
+  TIMELINE: 'timeline',
+  TRIGGER: 'trigger',
+  // Typed entity-graph (Phase 2 auto-link)
+  WORKS_AT: 'works_at',
+  FOUNDED: 'founded',
+  INVESTED_IN: 'invested_in',
+  ADVISES: 'advises',
+  ATTENDED: 'attended',
+  SOURCE: 'source',
+  MENTIONS: 'mentions',
+} as const;
+
+export type MemoryRelationKind =
+  typeof MEMORY_RELATION_KINDS[keyof typeof MEMORY_RELATION_KINDS];
+
+/** Phase 2 typed-edge subset — useful for "show only graph-y edges" filters. */
+export const PHASE_2_TYPED_RELATION_KINDS: readonly MemoryRelationKind[] = [
+  MEMORY_RELATION_KINDS.WORKS_AT,
+  MEMORY_RELATION_KINDS.FOUNDED,
+  MEMORY_RELATION_KINDS.INVESTED_IN,
+  MEMORY_RELATION_KINDS.ADVISES,
+  MEMORY_RELATION_KINDS.ATTENDED,
+  MEMORY_RELATION_KINDS.SOURCE,
+  MEMORY_RELATION_KINDS.MENTIONS,
+];
+
 // ─── Learned Skills ─────────────────────────────────────────────────────
 
 export interface LearnedSkill {

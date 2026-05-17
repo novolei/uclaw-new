@@ -331,7 +331,13 @@ pub struct MemoryOsConfig {
     /// When `false`, every IPC handler returns a structured error so the
     /// frontend can disable its EntityPage UI without crashing.
     pub entity_page_enabled: bool,
-    // (Future flags for Phase 2-7 will be added here, each pre-declared
+    /// Phase 2: Zero-LLM auto-link post-hook on `create_version` /
+    /// `create_entity_page`. When `false`, version writes still happen
+    /// normally but no auto_link edges are inserted and no stale-link
+    /// reconciliation runs (existing auto_link rows on disk are
+    /// untouched). Explicit `create_edge` calls are unaffected.
+    pub auto_link_enabled: bool,
+    // (Future flags for Phase 3-7 will be added here, each pre-declared
     //  with its default so existing configs deserialize against a stable
     //  shape.)
 }
@@ -340,6 +346,7 @@ impl Default for MemoryOsConfig {
     fn default() -> Self {
         Self {
             entity_page_enabled: true,
+            auto_link_enabled: true,
         }
     }
 }
@@ -661,6 +668,29 @@ mod tests {
     fn memory_os_config_default_has_entity_page_enabled() {
         let c = MemoryOsConfig::default();
         assert!(c.entity_page_enabled, "Phase 1 default should be on");
+    }
+
+    #[test]
+    fn memory_os_config_default_has_auto_link_enabled() {
+        let c = MemoryOsConfig::default();
+        assert!(c.auto_link_enabled, "Phase 2 default should be on");
+    }
+
+    #[test]
+    fn memory_os_config_phase2_round_trip_off() {
+        let json = r#"{"memory_os":{"auto_link_enabled":false}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        // Phase 2 off…
+        assert!(!config.memory_os.auto_link_enabled);
+        // …but Phase 1 default still applies (forward-compat: a config
+        // file that mentions only Phase 2 doesn't silently disable
+        // Phase 1).
+        assert!(config.memory_os.entity_page_enabled);
+        // Round-trip preserves both.
+        let re = serde_json::to_string(&config).unwrap();
+        let restored: MemubotConfig = serde_json::from_str(&re).unwrap();
+        assert!(!restored.memory_os.auto_link_enabled);
+        assert!(restored.memory_os.entity_page_enabled);
     }
 
     #[test]

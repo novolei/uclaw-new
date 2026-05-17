@@ -427,6 +427,18 @@ impl AppState {
             memubot_config.power.prevent_sleep,
         );
 
+        // Memory OS Foundation Phase 2 — apply the auto_link feature flag
+        // to the store now that we know what the user configured. The
+        // store defaults this to `true` in `MemoryGraphStore::new`; we
+        // override here so a user-set `false` in memubot_config.json takes
+        // effect from the very first create_version call.
+        memory_graph_store.set_auto_link_enabled(memubot_config.memory_os.auto_link_enabled);
+        tracing::info!(
+            "Memory OS flags applied: entity_page={}, auto_link={}",
+            memubot_config.memory_os.entity_page_enabled,
+            memubot_config.memory_os.auto_link_enabled,
+        );
+
         // Evaluation harness
         let trajectory_store = Arc::new(crate::harness::TrajectoryStore::new(db.clone()));
         let tool_budget = Arc::new(crate::harness::ToolBudgetManager::new(&data_dir));
