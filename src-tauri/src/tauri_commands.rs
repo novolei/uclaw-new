@@ -4817,8 +4817,26 @@ pub async fn memory_graph_delete_node(
 // existing `memory_graph_*` family; the frontend `tauri-bridge.ts`
 // wrapper layers typed views on top.
 //
+// Each command is gated by `memubot_config.memory_os.entity_page_enabled`.
+// When disabled, the handler returns a clear error string instead of
+// silently no-oping — the frontend can use that signal to hide the UI
+// entry points without crashing.
+//
 // Reminder for future Phase commits (per CLAUDE.md): each new command
 // here MUST also be registered in `main.rs::invoke_handler!`.
+
+/// Returns `Err(msg)` when the EntityPage feature is disabled.
+/// Used at the top of every `memory_entity_page_*` command.
+fn ensure_entity_page_enabled(state: &State<'_, AppState>) -> Result<(), String> {
+    if !state.memubot_config.memory_os.entity_page_enabled {
+        return Err(
+            "EntityPage feature is disabled (memory_os.entity_page_enabled = false in memubot_config.json). \
+             Enable it and restart to use EntityPage commands."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
 
 /// Create a new EntityPage with optional initial metadata + timeline.
 #[tauri::command]
@@ -4826,6 +4844,7 @@ pub async fn memory_entity_page_create(
     state: State<'_, AppState>,
     input: EntityPageCreateInput,
 ) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state)?;
     let store = &state.memory_graph_store;
     let space_id = input.space_id.unwrap_or_else(|| "default".into());
 
@@ -4850,6 +4869,7 @@ pub async fn memory_entity_page_get(
     state: State<'_, AppState>,
     input: EntityPageGetInput,
 ) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state)?;
     let store = &state.memory_graph_store;
     let detail = store
         .get_node_detail(&input.node_id)
@@ -4874,6 +4894,7 @@ pub async fn memory_entity_page_find_by_slug(
     state: State<'_, AppState>,
     input: EntityPageFindBySlugInput,
 ) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state)?;
     let store = &state.memory_graph_store;
     let space_id = input.space_id.unwrap_or_else(|| "default".into());
     let detail = store
@@ -4891,6 +4912,7 @@ pub async fn memory_entity_page_list(
     state: State<'_, AppState>,
     input: EntityPageListInput,
 ) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state)?;
     let store = &state.memory_graph_store;
     let space_id = input.space_id.unwrap_or_else(|| "default".into());
     let limit = input.limit.unwrap_or(50);
@@ -4906,6 +4928,7 @@ pub async fn memory_entity_page_append_timeline(
     state: State<'_, AppState>,
     input: EntityPageAppendTimelineInput,
 ) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state)?;
     let store = &state.memory_graph_store;
     let entry = crate::memory_graph::entity_page::TimelineEntry {
         date: input.date,

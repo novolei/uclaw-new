@@ -34,6 +34,12 @@ pub struct MemubotConfig {
     /// per-run cap. See `docs/superpowers/specs/2026-05-17-symphony-runtime-design.md` §7.
     #[serde(default)]
     pub symphony: SymphonyConfig,
+    /// Memory OS feature flags — three-layer architecture (Foundation /
+    /// Cognitive / Engines, Phases 1-21). Each phase ships an additive
+    /// flag that lets the user gracefully disable a feature without
+    /// rolling back schema. See `docs/superpowers/specs/2026-05-18-agent-memory-os-design.md`.
+    #[serde(default)]
+    pub memory_os: MemoryOsConfig,
     /// Maximum wall-clock seconds the agent loop may run for a single
     /// user message before forcibly terminating. Default 600s (10 min).
     /// Override via settings → Advanced (or edit ~/.uclaw/memubot_config.json).
@@ -305,6 +311,39 @@ impl Default for SymphonyConfig {
 fn default_agent_loop_timeout_secs() -> u64 { 600 }
 fn default_true() -> bool { true }
 
+/// Memory OS feature flags — three-layer architecture.
+///
+/// Each phase ships ONE additive flag. Defaults are conservative:
+/// Foundation Phase 1 (EntityPage CRUD) is on by default because it's
+/// purely additive and read-side; subsequent phases that introduce
+/// behavior changes default to on once they're stable, and to off
+/// during ramp-up. New flags MUST default to a value that preserves the
+/// behavior of an older binary — this is the contract that lets users
+/// flip a flag, restart, and recover from a regression without rolling
+/// back the binary.
+///
+/// Spec: `docs/superpowers/specs/2026-05-18-agent-memory-os-design.md` §5.4.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryOsConfig {
+    // ─── Foundation Layer (Phase 1-7) ───────────────────────────────
+    /// Phase 1: EntityPage CRUD via `memory_entity_page_*` commands.
+    /// When `false`, every IPC handler returns a structured error so the
+    /// frontend can disable its EntityPage UI without crashing.
+    pub entity_page_enabled: bool,
+    // (Future flags for Phase 2-7 will be added here, each pre-declared
+    //  with its default so existing configs deserialize against a stable
+    //  shape.)
+}
+
+impl Default for MemoryOsConfig {
+    fn default() -> Self {
+        Self {
+            entity_page_enabled: true,
+        }
+    }
+}
+
 // ─── Default 实现 ────────────────────────────────────────────────────────
 
 impl Default for MemubotConfig {
@@ -320,6 +359,7 @@ impl Default for MemubotConfig {
             automation: AutomationConfig::default(),
             gene_evolution: GeneEvolutionConfig::default(),
             symphony: SymphonyConfig::default(),
+            memory_os: MemoryOsConfig::default(),
             agent_loop_timeout_secs: 600,
             plan_mode_suggest_enabled: true,
         }
@@ -613,5 +653,45 @@ mod tests {
         assert_eq!(restored.per_day_cost_cap_usd, original.per_day_cost_cap_usd);
         assert_eq!(restored.stall_timeout_ms, original.stall_timeout_ms);
         assert_eq!(restored.max_retry_backoff_ms, original.max_retry_backoff_ms);
+    }
+
+    // ─── Memory OS Foundation Phase 1 ─────────────────────────────────
+
+    #[test]
+    fn memory_os_config_default_has_entity_page_enabled() {
+        let c = MemoryOsConfig::default();
+        assert!(c.entity_page_enabled, "Phase 1 default should be on");
+    }
+
+    #[test]
+    fn memubot_config_includes_memory_os_section() {
+        let config: MemubotConfig = serde_json::from_str("{}").unwrap();
+        assert!(config.memory_os.entity_page_enabled);
+    }
+
+    #[test]
+    fn memory_os_config_respects_explicit_disable() {
+        // Forward-compat: a config file written today with the flag off
+        // must round-trip back to off, not silently re-enable.
+        let json = r#"{"memory_os":{"entity_page_enabled":false}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.memory_os.entity_page_enabled);
+        let re_serialized = serde_json::to_string(&config).unwrap();
+        let restored: MemubotConfig = serde_json::from_str(&re_serialized).unwrap();
+        assert!(!restored.memory_os.entity_page_enabled);
+    }
+
+    #[test]
+    fn memory_os_config_partial_json_keeps_defaults() {
+        // A config file from an older binary that doesn't know `memory_os`
+        // should still deserialize and supply defaults.
+        let json = r#"{"agentLoopTimeoutSecs": 900}"#;
+        // Note: top-level fields use serde defaults (not camelCase rename),
+        // so the snake_case form works too. Just verifying the section
+        // defaults populate when missing entirely.
+        let config: MemubotConfig =
+            serde_json::from_str(r#"{"agent_loop_timeout_secs": 900}"#).unwrap();
+        assert!(config.memory_os.entity_page_enabled);
+        let _ = json;
     }
 }
