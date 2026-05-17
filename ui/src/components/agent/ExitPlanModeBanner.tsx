@@ -132,7 +132,12 @@ export function ExitPlanModeBanner({ sessionId }: ExitPlanModeBannerProps): Reac
   const canKeepPlan = allowed.length > 0
 
   return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 w-[min(720px,calc(100vw-2rem))] rounded-xl bg-card shadow-2xl border border-border/60 overflow-hidden animate-in slide-in-from-bottom-2 duration-200">
+    <div
+      className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 w-[min(720px,calc(100vw-2rem))] rounded-xl bg-card shadow-2xl border border-border/60 overflow-hidden animate-in slide-in-from-bottom-2 duration-200"
+      role="alertdialog"
+      aria-modal="true"
+      aria-label="Agent 计划待审批"
+    >
       {/* 头部 */}
       <div className="px-4 pt-3 pb-2 border-b border-border/40">
         <div className="flex items-center gap-2">
@@ -143,6 +148,7 @@ export function ExitPlanModeBanner({ sessionId }: ExitPlanModeBannerProps): Reac
             className="size-5 flex items-center justify-center rounded-md text-muted-foreground/50 hover:text-foreground hover:bg-muted/60 transition-colors"
             onClick={handleDismiss}
             title="关闭并终止 Agent"
+            aria-label="关闭"
           >
             <X className="size-3.5" />
           </button>

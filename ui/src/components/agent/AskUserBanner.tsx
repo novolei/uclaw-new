@@ -236,7 +236,12 @@ export function AskUserBanner({ sessionId }: AskUserBannerProps): React.ReactEle
   }
 
   return (
-    <div className="mx-4 mb-3 rounded-xl bg-card shadow-lg overflow-hidden animate-in slide-in-from-bottom-2 duration-200">
+    <div
+      className="mx-4 mb-3 rounded-xl bg-card shadow-lg overflow-hidden animate-in slide-in-from-bottom-2 duration-200"
+      role="alertdialog"
+      aria-modal="true"
+      aria-label="Agent 在问"
+    >
       {/* 头部 + Tab 栏 */}
       <div className="px-4 pt-3 pb-2">
         <div className="flex items-center justify-between mb-2">
@@ -250,6 +255,7 @@ export function AskUserBanner({ sessionId }: AskUserBannerProps): React.ReactEle
               className="size-5 flex items-center justify-center rounded-md text-muted-foreground/50 hover:text-foreground hover:bg-muted/60 transition-colors"
               onClick={handleDismiss}
               title="关闭并终止 Agent"
+              aria-label="关闭"
             >
               <X className="size-3.5" />
             </button>
