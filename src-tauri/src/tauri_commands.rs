@@ -3416,10 +3416,13 @@ pub async fn request_wechat_ilink_qrcode(
             .unwrap_or(crate::channels::im::ilink_binding::ILINK_BASE_URL)
             .to_string()
     };
-    let qrcode = crate::channels::im::ilink_binding::fetch_qr(&base_url)
+    let info = crate::channels::im::ilink_binding::fetch_qr(&base_url)
         .await
         .map_err(|e| Error::Internal(e.to_string()))?;
-    Ok(serde_json::json!({ "qrcode": qrcode }))
+    Ok(serde_json::json!({
+        "qrcode": info.qrcode,
+        "qrcode_img_content": info.qrcode_img_content,
+    }))
 }
 
 #[tauri::command]

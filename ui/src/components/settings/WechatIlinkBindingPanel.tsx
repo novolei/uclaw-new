@@ -7,8 +7,9 @@ import type { ImChannelStatus } from '@/atoms/im-channel-atoms'
 type BindState =
   | { kind: 'idle' }
   | { kind: 'loading' }
-  | { kind: 'qr-shown'; qrcode: string }
-  | { kind: 'scanning'; qrcode: string }
+  // qrcode = polling token; qrcodeImgContent = value encoded into the QR image
+  | { kind: 'qr-shown'; qrcode: string; qrcodeImgContent: string }
+  | { kind: 'scanning'; qrcode: string; qrcodeImgContent: string }
   | { kind: 'confirmed' }
   | { kind: 'qr-expired' }
   | { kind: 'error'; message: string }
@@ -43,12 +44,12 @@ export function WechatIlinkBindingPanel({
   // saveToken and startPolling are mutually recursive; use refs so each
   // useCallback can see the latest version of the other without listing it
   // as a dependency (avoiding an infinite dep cycle).
-  const saveTokenRef = useRef<(botToken: string, accId: string, qrcode: string) => Promise<void>>(
+  const saveTokenRef = useRef<(botToken: string, accId: string, qrcode: string, qrcodeImgContent: string) => Promise<void>>(
     async () => {}
   )
-  const startPollingRef = useRef<(qrcode: string) => void>(() => {})
+  const startPollingRef = useRef<(qrcode: string, qrcodeImgContent: string) => void>(() => {})
 
-  const startPolling = useCallback((qrcode: string) => {
+  const startPolling = useCallback((qrcode: string, qrcodeImgContent: string) => {
     stopPolling()
     pollStartRef.current = Date.now()
     pollRef.current = setInterval(async () => {
@@ -65,10 +66,10 @@ export function WechatIlinkBindingPanel({
         }>('poll_wechat_ilink_qrcode_status', { instanceId, qrcode })
 
         if (result.status === 'scaned') {
-          setBindState({ kind: 'scanning', qrcode })
+          setBindState({ kind: 'scanning', qrcode, qrcodeImgContent })
         } else if (result.status === 'confirmed' && result.bot_token && result.account_id) {
           stopPolling()
-          await saveTokenRef.current(result.bot_token, result.account_id, qrcode)
+          await saveTokenRef.current(result.bot_token, result.account_id, qrcode, qrcodeImgContent)
         } else if (result.status === 'expired') {
           stopPolling()
           setBindState({ kind: 'qr-expired' })
@@ -79,7 +80,7 @@ export function WechatIlinkBindingPanel({
     }, 2000)
   }, [instanceId, stopPolling])
 
-  const saveToken = useCallback(async (botToken: string, accId: string, qrcode: string) => {
+  const saveToken = useCallback(async (botToken: string, accId: string, qrcode: string, qrcodeImgContent: string) => {
     try {
       await invoke('save_wechat_ilink_token', {
         instanceId,
@@ -90,8 +91,8 @@ export function WechatIlinkBindingPanel({
       onSaved()
     } catch (e) {
       toast.error('保存绑定信息失败：' + String(e))
-      setBindState({ kind: 'qr-shown', qrcode })
-      startPollingRef.current(qrcode)
+      setBindState({ kind: 'qr-shown', qrcode, qrcodeImgContent })
+      startPollingRef.current(qrcode, qrcodeImgContent)
     }
   }, [instanceId, onSaved])
 
@@ -103,12 +104,12 @@ export function WechatIlinkBindingPanel({
     stopPolling()
     setBindState({ kind: 'loading' })
     try {
-      const result = await invoke<{ qrcode: string }>(
+      const result = await invoke<{ qrcode: string; qrcode_img_content: string }>(
         'request_wechat_ilink_qrcode',
         { instanceId }
       )
-      setBindState({ kind: 'qr-shown', qrcode: result.qrcode })
-      startPolling(result.qrcode)
+      setBindState({ kind: 'qr-shown', qrcode: result.qrcode, qrcodeImgContent: result.qrcode_img_content })
+      startPolling(result.qrcode, result.qrcode_img_content)
     } catch (e) {
       setBindState({ kind: 'error', message: String(e) })
     }
@@ -121,13 +122,14 @@ export function WechatIlinkBindingPanel({
     }
   }, [status?.state, fetchQr])
 
-  // Render QR canvas whenever qr-shown or scanning state is entered
+  // Render QR canvas using qrcodeImgContent (the URL/token WeChat understands),
+  // not qrcode (the polling token).
   useEffect(() => {
     if (
       (bindState.kind === 'qr-shown' || bindState.kind === 'scanning') &&
       canvasRef.current
     ) {
-      QRCode.toCanvas(canvasRef.current, bindState.qrcode, { width: 128 }).catch(() => {})
+      QRCode.toCanvas(canvasRef.current, bindState.qrcodeImgContent, { width: 128 }).catch(() => {})
     }
   }, [bindState])
 

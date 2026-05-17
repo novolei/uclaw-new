@@ -23,7 +23,17 @@ pub struct QrStatus {
     pub account_id: Option<String>,
 }
 
-pub async fn fetch_qr(base_url: &str) -> Result<String> {
+/// iLink QR fetch result.
+///
+/// `qrcode` is the opaque token used as `?qrcode=` in polling requests.
+/// `qrcode_img_content` is the value to encode into the QR image shown to the user.
+#[derive(Debug, Clone)]
+pub struct QrInfo {
+    pub qrcode: String,
+    pub qrcode_img_content: String,
+}
+
+pub async fn fetch_qr(base_url: &str) -> Result<QrInfo> {
     let url = format!("{base_url}/ilink/bot/get_bot_qrcode?bot_type=3");
     let resp: serde_json::Value = reqwest::Client::new()
         .get(&url)
@@ -33,11 +43,19 @@ pub async fn fetch_qr(base_url: &str) -> Result<String> {
         .await?
         .json()
         .await?;
-    resp["qrcode"]
+    let qrcode = resp["qrcode"]
         .as_str()
         .filter(|s| !s.is_empty())
         .map(String::from)
-        .ok_or_else(|| anyhow!("iLink QR response missing 'qrcode' field"))
+        .ok_or_else(|| anyhow!("iLink QR response missing 'qrcode' field"))?;
+    // qrcode_img_content is the URL/string to encode as a scannable QR image.
+    // Fall back to qrcode itself if the field is absent (graceful degradation).
+    let qrcode_img_content = resp["qrcode_img_content"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| qrcode.clone());
+    Ok(QrInfo { qrcode, qrcode_img_content })
 }
 
 pub async fn poll_qr_status(base_url: &str, qrcode: &str) -> Result<QrStatus> {
@@ -69,7 +87,23 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn fetch_qr_returns_qrcode_string() {
+    async fn fetch_qr_returns_qrcode_and_img_content() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/ilink/bot/get_bot_qrcode?bot_type=3")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"qrcode":"test_qr_abc","qrcode_img_content":"https://example.com/qr.png"}"#)
+            .create_async()
+            .await;
+
+        let result = fetch_qr(&server.url()).await.unwrap();
+        assert_eq!(result.qrcode, "test_qr_abc");
+        assert_eq!(result.qrcode_img_content, "https://example.com/qr.png");
+    }
+
+    #[tokio::test]
+    async fn fetch_qr_falls_back_to_qrcode_when_img_content_absent() {
         let mut server = mockito::Server::new_async().await;
         let _mock = server
             .mock("GET", "/ilink/bot/get_bot_qrcode?bot_type=3")
@@ -80,7 +114,8 @@ mod tests {
             .await;
 
         let result = fetch_qr(&server.url()).await.unwrap();
-        assert_eq!(result, "test_qr_abc");
+        assert_eq!(result.qrcode, "test_qr_abc");
+        assert_eq!(result.qrcode_img_content, "test_qr_abc");
     }
 
     #[tokio::test]

@@ -68,11 +68,9 @@ export function ImChannelsSettings() {
     channelsByType[ch.channelType].push(ch)
   }
 
-  const tabs = CHANNEL_TYPES_ORDER.filter(t => (channelsByType[t]?.length ?? 0) > 0)
-  // Include a virtual tab when addingToType is a type that has no existing instances yet
-  const virtualTab = addingToType && !tabs.includes(addingToType) ? addingToType : null
-  const allTabs = virtualTab ? [...tabs, virtualTab] : tabs
-  const currentTab = (activeTab && allTabs.includes(activeTab)) ? activeTab : (allTabs[0] ?? null)
+  // All channel types are always visible as tabs regardless of instance count.
+  const allTabs = CHANNEL_TYPES_ORDER
+  const currentTab = (activeTab && allTabs.includes(activeTab)) ? activeTab : allTabs[0]
 
   async function handleToggle(id: string, enabled: boolean) {
     setChannels(prev => prev.map(ch => ch.id === id ? { ...ch, enabled } : ch))
@@ -110,7 +108,7 @@ export function ImChannelsSettings() {
 
   return (
     <div className="space-y-0">
-      {/* Tab bar */}
+      {/* Tab bar — all channel types always visible */}
       <div className="flex items-end gap-0 border-b border-border overflow-x-auto">
         {allTabs.map(type => {
           const count = channelsByType[type]?.length ?? 0
@@ -142,88 +140,53 @@ export function ImChannelsSettings() {
             </button>
           )
         })}
-        {allTabs.length < CHANNEL_TYPES_ORDER.length && (
-          <div className="ml-auto relative group">
-            <button className="px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
-              + 新增渠道类型
-            </button>
-            <div className="absolute right-0 top-full z-10 hidden group-hover:flex flex-col min-w-[120px] rounded border border-border bg-popover shadow-md py-1">
-              {CHANNEL_TYPES_ORDER.filter(t => !allTabs.includes(t)).map(type => (
-                <button
-                  key={type}
-                  onClick={() => { setActiveTab(type); setAddingToType(type); setOpenRowId(null) }}
-                  className="px-3 py-1.5 text-sm text-left hover:bg-muted transition-colors"
-                >
-                  {CHANNEL_TYPE_LABELS[type] ?? type}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
-      {currentTab ? (
-        <div className="pt-3 space-y-1.5">
-          {CHANNEL_DESCRIPTIONS[currentTab] && (
-            <p className="text-xs text-muted-foreground px-1 pb-2">
-              {CHANNEL_DESCRIPTIONS[currentTab]}
-            </p>
-          )}
+      <div className="pt-3 space-y-1.5">
+        {CHANNEL_DESCRIPTIONS[currentTab] && (
+          <p className="text-xs text-muted-foreground px-1 pb-2">
+            {CHANNEL_DESCRIPTIONS[currentTab]}
+          </p>
+        )}
 
-          {tabChannels.map(ch => (
-            <ImChannelAccordionRow
-              key={ch.id}
-              channel={ch}
-              status={statuses[ch.id]}
-              spaces={spaces}
-              open={openRowId === ch.id}
-              onToggleOpen={() => handleToggleRow(ch.id)}
-              onToggleEnabled={(enabled) => handleToggle(ch.id, enabled)}
-              onSaved={handleSaved}
-              onDeleted={() => handleDelete(ch.id)}
-            />
-          ))}
+        {tabChannels.map(ch => (
+          <ImChannelAccordionRow
+            key={ch.id}
+            channel={ch}
+            status={statuses[ch.id]}
+            spaces={spaces}
+            open={openRowId === ch.id}
+            onToggleOpen={() => handleToggleRow(ch.id)}
+            onToggleEnabled={(enabled) => handleToggle(ch.id, enabled)}
+            onSaved={handleSaved}
+            onDeleted={() => handleDelete(ch.id)}
+          />
+        ))}
 
-          {/* New instance row */}
-          {addingToType === currentTab ? (
-            <ImChannelAccordionRow
-              key="__new__"
-              channel={undefined}
-              newChannelType={currentTab}
-              status={undefined}
-              spaces={spaces}
-              open={true}
-              onToggleOpen={() => setAddingToType(null)}
-              onToggleEnabled={(_enabled: boolean) => {}}
-              onSaved={handleSaved}
-              onDeleted={() => setAddingToType(null)}
-            />
-          ) : (
-            <button
-              onClick={() => { setAddingToType(currentTab); setOpenRowId(null) }}
-              className="flex w-full items-center gap-2 rounded border border-dashed border-border px-3 py-2 text-sm text-primary opacity-70 hover:opacity-100 transition-opacity"
-            >
-              <span className="text-base leading-none">+</span>
-              新增{CHANNEL_TYPE_LABELS[currentTab] ?? currentTab}实例
-            </button>
-          )}
-        </div>
-      ) : (
-        <div className="py-8 space-y-4">
-          <p className="text-center text-sm text-muted-foreground">选择要配置的渠道类型</p>
-          <div className="grid grid-cols-3 gap-2 px-1">
-            {CHANNEL_TYPES_ORDER.map(type => (
-              <button
-                key={type}
-                onClick={() => { setActiveTab(type); setAddingToType(type) }}
-                className="rounded border border-dashed border-border px-3 py-3 text-sm hover:border-primary hover:text-primary transition-colors"
-              >
-                {CHANNEL_TYPE_LABELS[type] ?? type}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
+        {/* New instance row */}
+        {addingToType === currentTab ? (
+          <ImChannelAccordionRow
+            key="__new__"
+            channel={undefined}
+            newChannelType={currentTab}
+            status={undefined}
+            spaces={spaces}
+            open={true}
+            onToggleOpen={() => setAddingToType(null)}
+            onToggleEnabled={(_enabled: boolean) => {}}
+            onSaved={handleSaved}
+            onDeleted={() => setAddingToType(null)}
+          />
+        ) : (
+          <button
+            onClick={() => { setAddingToType(currentTab); setOpenRowId(null) }}
+            className="flex w-full items-center gap-2 rounded border border-dashed border-border px-3 py-2 text-sm text-primary opacity-70 hover:opacity-100 transition-opacity"
+          >
+            <span className="text-base leading-none">+</span>
+            新增{CHANNEL_TYPE_LABELS[currentTab] ?? currentTab}实例
+          </button>
+        )}
+      </div>
     </div>
   )
 }
