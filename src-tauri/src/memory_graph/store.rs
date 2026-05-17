@@ -973,6 +973,320 @@ impl MemoryGraphStore {
         Ok(rows.flatten().collect())
     }
 
+    // ── EntityPage CRUD ─────────────────────────────────────────────────
+    //
+    // Higher-level helpers for the Memory OS Foundation Phase 1 EntityPage
+    // abstraction. These compose the existing node + version + (optional)
+    // route writes into a single atomic operation, and apply the
+    // EntityPageMetadata schema (`memory_graph::entity_page`) to the JSON
+    // column. None of this is a new table — EntityPage is just a node
+    // with `kind = MemoryNodeKind::EntityPage` and a structured metadata
+    // convention.
+
+    /// Create a new EntityPage in one atomic transaction.
+    ///
+    /// Workflow:
+    /// 1. Verify no existing EntityPage in `space_id` already has this slug
+    ///    (case-insensitive lookup on `metadata_json.$.slug`). If one
+    ///    exists, returns `Error::Internal` with a descriptive message;
+    ///    callers should fall back to `find_entity_page_by_slug` + update.
+    /// 2. Insert a new row into `memory_nodes` with `kind = entity_page`.
+    /// 3. Insert the initial active version into `memory_versions` with
+    ///    `content = compiled_truth` (so FTS5 indexes it automatically).
+    /// 4. Insert a primary route at `domain="entity"`, `path=<slug>` so
+    ///    `[[entity:<slug>]]` resolution (Phase 2 / Phase 15) has a stable
+    ///    handle.
+    /// 5. Re-hydrate to [`MemoryNodeDetail`] and return.
+    ///
+    /// The `slug` is normalized to lowercase before storage; callers that
+    /// pass arbitrary case will see the lowercased form on read.
+    pub fn create_entity_page(
+        &self,
+        space_id: &str,
+        slug: &str,
+        title: &str,
+        compiled_truth: &str,
+        mut metadata: super::entity_page::EntityPageMetadata,
+    ) -> Result<MemoryNodeDetail, crate::error::Error> {
+        let normalized_slug = slug.trim().to_lowercase();
+        if normalized_slug.is_empty() {
+            return Err(crate::error::Error::Internal(
+                "create_entity_page: slug must not be empty".into(),
+            ));
+        }
+
+        // Persist the canonical slug back into metadata so reads observe it
+        // even if the caller forgot to set it. We DO NOT overwrite an
+        // explicit caller-set slug if it matches the lowercased form;
+        // callers that intentionally pass a mixed-case slug see a soft
+        // normalization (which is the documented contract).
+        metadata.slug = Some(normalized_slug.clone());
+        let metadata_value = metadata.to_value();
+        let metadata_str = if metadata_value.is_null() {
+            None
+        } else {
+            Some(serde_json::to_string(&metadata_value).unwrap_or_default())
+        };
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let node_id = uuid::Uuid::new_v4().to_string();
+        let version_id = uuid::Uuid::new_v4().to_string();
+        let route_id = uuid::Uuid::new_v4().to_string();
+        let route_path = normalized_slug.clone();
+
+        // Clone everything the closure needs (the `move` keyword consumes
+        // captured values; we still need `node_id` outside the closure to
+        // re-hydrate the detail at the end).
+        let node_id_for_closure = node_id.clone();
+        let space_id_owned = space_id.to_string();
+        let title_owned = title.to_string();
+        let title_for_fts = title.to_string();
+        let content_owned = compiled_truth.to_string();
+        let content_for_fts = compiled_truth.to_string();
+        let slug_for_check = normalized_slug.clone();
+
+        // Run the whole sequence in one transaction so partial writes
+        // (e.g. node created without route) never leak.
+        self.with_transaction(move |conn| {
+            // 1. Uniqueness check on (space_id, slug). Use json_extract so
+            //    we don't depend on a new index — slug lookups are rare on
+            //    the write path (creation only) and the table is small.
+            let existing: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memory_nodes \
+                     WHERE space_id = ?1 \
+                       AND kind = 'entity_page' \
+                       AND LOWER(COALESCE(json_extract(metadata_json, '$.slug'), '')) = ?2",
+                    params![space_id_owned, slug_for_check],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(crate::error::Error::Database)?;
+            if existing > 0 {
+                return Err(crate::error::Error::Internal(format!(
+                    "EntityPage with slug '{}' already exists in space '{}'",
+                    slug_for_check, space_id_owned
+                )));
+            }
+
+            // 2. Insert node row.
+            conn.execute(
+                "INSERT INTO memory_nodes \
+                 (id, space_id, kind, title, metadata_json, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                params![
+                    node_id_for_closure,
+                    space_id_owned,
+                    MemoryNodeKind::EntityPage.as_str(),
+                    title_owned,
+                    metadata_str,
+                    now,
+                ],
+            )
+            .map_err(crate::error::Error::Database)?;
+
+            // 3. Insert initial active version + FTS row (mirrors
+            //    `create_version` but inline because we're inside the txn).
+            conn.execute(
+                "INSERT INTO memory_versions \
+                 (id, node_id, supersedes_version_id, status, content, metadata_json, embedding_json, created_at) \
+                 VALUES (?1, ?2, NULL, 'active', ?3, NULL, NULL, ?4)",
+                params![version_id, node_id_for_closure, content_owned, now],
+            )
+            .map_err(crate::error::Error::Database)?;
+            // Clear any stale FTS row for this node_id, then insert the new one.
+            let _ = conn.execute(
+                "DELETE FROM memory_fts WHERE node_id = ?1",
+                params![node_id_for_closure],
+            );
+            let _ = conn.execute(
+                "INSERT INTO memory_fts (node_id, title, content) VALUES (?1, ?2, ?3)",
+                params![node_id_for_closure, title_for_fts, content_for_fts],
+            );
+
+            // 4. Insert primary route (entity/<slug>). edge_id is NULL —
+            //    routes can hang off either an edge or a node; for an
+            //    EntityPage the route is node-anchored.
+            conn.execute(
+                "INSERT INTO memory_routes \
+                 (id, space_id, edge_id, node_id, domain, path, is_primary, created_at, updated_at) \
+                 VALUES (?1, ?2, NULL, ?3, 'entity', ?4, 1, ?5, ?5)",
+                params![route_id, space_id_owned, node_id_for_closure, route_path, now],
+            )
+            .map_err(crate::error::Error::Database)?;
+
+            Ok(())
+        })?;
+
+        // 5. Re-hydrate from the canonical path so the return value reflects
+        //    exactly what's on disk (including default fields filled in by
+        //    `from_value` round-trips elsewhere).
+        self.get_node_detail(&node_id)?
+            .ok_or_else(|| {
+                crate::error::Error::Internal(
+                    "create_entity_page: node disappeared between insert and read".into(),
+                )
+            })
+    }
+
+    /// Find an EntityPage by its slug (case-insensitive) within a space.
+    /// Returns `None` if no match. Slug lookup is on
+    /// `metadata_json.$.slug`; pages created via [`create_entity_page`]
+    /// always set this field.
+    pub fn find_entity_page_by_slug(
+        &self,
+        space_id: &str,
+        slug: &str,
+    ) -> Result<Option<MemoryNodeDetail>, crate::error::Error> {
+        let normalized = slug.trim().to_lowercase();
+        if normalized.is_empty() {
+            return Ok(None);
+        }
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, space_id, kind, title, metadata_json, created_at, updated_at \
+                 FROM memory_nodes \
+                 WHERE space_id = ?1 \
+                   AND kind = 'entity_page' \
+                   AND LOWER(COALESCE(json_extract(metadata_json, '$.slug'), '')) = ?2 \
+                 LIMIT 1",
+            )
+            .map_err(crate::error::Error::Database)?;
+        let node = stmt
+            .query_row(params![space_id, normalized], |row| Self::row_to_node(row))
+            .ok();
+        let node = match node {
+            Some(n) => n,
+            None => return Ok(None),
+        };
+        let details = Self::batch_hydrate_details(&conn, vec![node])?;
+        Ok(details.into_iter().next())
+    }
+
+    /// List EntityPage nodes within a space, optionally filtered by
+    /// `subkind` (`metadata.subkind`, e.g. `"entity"`, `"concept"`).
+    /// Ordered by `updated_at` DESC.
+    ///
+    /// When `subkind_filter` is `None`, returns every EntityPage. When
+    /// `Some`, applies a `json_extract` equality predicate; pages whose
+    /// metadata lacks the subkind field never match.
+    pub fn list_entity_pages(
+        &self,
+        space_id: &str,
+        subkind_filter: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MemoryNodeDetail>, crate::error::Error> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+
+        let nodes: Vec<MemoryNode> = if let Some(subkind) = subkind_filter {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, space_id, kind, title, metadata_json, created_at, updated_at \
+                     FROM memory_nodes \
+                     WHERE space_id = ?1 \
+                       AND kind = 'entity_page' \
+                       AND COALESCE(json_extract(metadata_json, '$.subkind'), '') = ?2 \
+                     ORDER BY updated_at DESC \
+                     LIMIT ?3",
+                )
+                .map_err(crate::error::Error::Database)?;
+            stmt.query_map(params![space_id, subkind, limit as i64], |row| {
+                Self::row_to_node(row)
+            })
+            .map_err(crate::error::Error::Database)?
+            .flatten()
+            .collect()
+        } else {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, space_id, kind, title, metadata_json, created_at, updated_at \
+                     FROM memory_nodes \
+                     WHERE space_id = ?1 AND kind = 'entity_page' \
+                     ORDER BY updated_at DESC \
+                     LIMIT ?2",
+                )
+                .map_err(crate::error::Error::Database)?;
+            stmt.query_map(params![space_id, limit as i64], |row| {
+                Self::row_to_node(row)
+            })
+            .map_err(crate::error::Error::Database)?
+            .flatten()
+            .collect()
+        };
+
+        Self::batch_hydrate_details(&conn, nodes)
+    }
+
+    /// Append a single timeline entry to an EntityPage's metadata.
+    ///
+    /// Read-modify-write on `memory_nodes.metadata_json`: decode the
+    /// existing JSON (or default if missing), push the entry, encode and
+    /// `UPDATE`. The node's `updated_at` is bumped so subsequent
+    /// `list_entity_pages` calls float the page to the top.
+    ///
+    /// Errors if the node doesn't exist or isn't an EntityPage — callers
+    /// should `find_entity_page_by_slug` first if they have a slug.
+    pub fn append_timeline_entry(
+        &self,
+        node_id: &str,
+        entry: super::entity_page::TimelineEntry,
+    ) -> Result<(), crate::error::Error> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+
+        // Fetch current row + verify kind.
+        let row: Option<(String, Option<String>)> = conn
+            .query_row(
+                "SELECT kind, metadata_json FROM memory_nodes WHERE id = ?1",
+                params![node_id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+            )
+            .ok();
+        let (kind_str, metadata_raw) = match row {
+            Some(r) => r,
+            None => {
+                return Err(crate::error::Error::Internal(format!(
+                    "append_timeline_entry: node '{}' not found",
+                    node_id
+                )));
+            }
+        };
+        if kind_str != MemoryNodeKind::EntityPage.as_str() {
+            return Err(crate::error::Error::Internal(format!(
+                "append_timeline_entry: node '{}' is kind '{}', not entity_page",
+                node_id, kind_str
+            )));
+        }
+
+        // Decode → push → encode.
+        let value_opt: Option<serde_json::Value> = metadata_raw
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok());
+        let mut meta = super::entity_page::EntityPageMetadata::from_optional(&value_opt);
+        meta.push_timeline(entry);
+        let new_json = serde_json::to_string(&meta.to_value())
+            .map_err(crate::error::Error::Serde)?;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE memory_nodes \
+             SET metadata_json = ?1, updated_at = ?2 \
+             WHERE id = ?3",
+            params![new_json, now, node_id],
+        )
+        .map_err(crate::error::Error::Database)?;
+        debug!(node_id, "memory_graph: appended timeline entry");
+        Ok(())
+    }
+
     // ── Transaction helper ───────────────────────────────────────────────
 
     /// Run a closure inside a BEGIN / COMMIT transaction.
@@ -1314,5 +1628,263 @@ mod tests {
         let result = store.list_promoted_learned_skills("default", 10).unwrap();
         assert_eq!(result.len(), 1, "grandfathered row should be included");
         assert_eq!(result[0].node.title, "legacy-skill");
+    }
+
+    // ─── EntityPage CRUD (Memory OS Foundation Phase 1) ───────────────────
+
+    use super::super::entity_page::{EntityPageMetadata, TimelineEntry};
+
+    #[test]
+    fn entity_page_create_round_trip() {
+        let store = fresh_test_store();
+        let meta = EntityPageMetadata {
+            subkind: Some("entity".into()),
+            aliases: vec!["Zhang San".into(), "张三".into()],
+            ..Default::default()
+        };
+        let detail = store
+            .create_entity_page("default", "Zhang-San", "Zhang San", "## Summary\nA test entity.", meta)
+            .expect("create");
+        assert_eq!(detail.node.kind, MemoryNodeKind::EntityPage);
+        assert_eq!(detail.node.title, "Zhang San");
+
+        // Slug is normalized to lowercase on write.
+        let stored_meta = EntityPageMetadata::from_optional(&detail.node.metadata);
+        assert_eq!(stored_meta.slug.as_deref(), Some("zhang-san"));
+        assert_eq!(stored_meta.subkind.as_deref(), Some("entity"));
+        assert_eq!(stored_meta.aliases.len(), 2);
+
+        // Active version content lands in memory_versions.
+        let ver = detail.active_version.expect("active version");
+        assert_eq!(ver.content, "## Summary\nA test entity.");
+        assert!(matches!(ver.status, MemoryVersionStatus::Active));
+
+        // Primary route lives at entity/<slug>.
+        let route = detail.routes.iter().find(|r| r.is_primary).expect("primary route");
+        assert_eq!(route.domain, "entity");
+        assert_eq!(route.path, "zhang-san");
+    }
+
+    #[test]
+    fn entity_page_rejects_duplicate_slug() {
+        let store = fresh_test_store();
+        store
+            .create_entity_page("default", "acme", "Acme Inc.", "first", EntityPageMetadata::default())
+            .expect("first create");
+        let err = store
+            .create_entity_page("default", "ACME", "Acme Inc Reloaded", "second", EntityPageMetadata::default())
+            .expect_err("should reject case-insensitive duplicate");
+        let msg = format!("{}", err);
+        assert!(msg.contains("already exists"), "got: {}", msg);
+    }
+
+    #[test]
+    fn entity_page_rejects_empty_slug() {
+        let store = fresh_test_store();
+        let err = store
+            .create_entity_page("default", "   ", "x", "x", EntityPageMetadata::default())
+            .expect_err("should reject empty slug");
+        let msg = format!("{}", err);
+        assert!(msg.contains("slug must not be empty"), "got: {}", msg);
+    }
+
+    #[test]
+    fn entity_page_slug_isolated_across_spaces() {
+        // Same slug in two different spaces is allowed — uniqueness is
+        // scoped per `space_id`.
+        let store = fresh_test_store();
+        let a = store.create_entity_page("space-a", "shared", "A", "a", EntityPageMetadata::default());
+        let b = store.create_entity_page("space-b", "shared", "B", "b", EntityPageMetadata::default());
+        assert!(a.is_ok());
+        assert!(b.is_ok());
+    }
+
+    #[test]
+    fn find_entity_page_by_slug_is_case_insensitive() {
+        let store = fresh_test_store();
+        store
+            .create_entity_page("default", "John-Smith", "John", "...", EntityPageMetadata::default())
+            .unwrap();
+        let by_exact = store.find_entity_page_by_slug("default", "john-smith").unwrap();
+        let by_mixed = store.find_entity_page_by_slug("default", "JOHN-Smith").unwrap();
+        let by_spaced = store.find_entity_page_by_slug("default", "  john-smith  ").unwrap();
+        assert!(by_exact.is_some());
+        assert!(by_mixed.is_some());
+        assert!(by_spaced.is_some());
+        assert_eq!(by_exact.unwrap().node.id, by_mixed.unwrap().node.id);
+
+        let miss = store.find_entity_page_by_slug("default", "nobody").unwrap();
+        assert!(miss.is_none());
+        // Empty slug never matches.
+        let empty = store.find_entity_page_by_slug("default", "").unwrap();
+        assert!(empty.is_none());
+    }
+
+    #[test]
+    fn list_entity_pages_filters_by_subkind() {
+        let store = fresh_test_store();
+        let entity_meta = EntityPageMetadata {
+            subkind: Some("entity".into()),
+            ..Default::default()
+        };
+        let concept_meta = EntityPageMetadata {
+            subkind: Some("concept".into()),
+            ..Default::default()
+        };
+        store
+            .create_entity_page("default", "alice", "Alice", "x", entity_meta.clone())
+            .unwrap();
+        store
+            .create_entity_page("default", "bob", "Bob", "x", entity_meta)
+            .unwrap();
+        store
+            .create_entity_page("default", "rag", "RAG", "x", concept_meta)
+            .unwrap();
+
+        let entities = store.list_entity_pages("default", Some("entity"), 10).unwrap();
+        assert_eq!(entities.len(), 2);
+        for d in &entities {
+            let m = EntityPageMetadata::from_optional(&d.node.metadata);
+            assert_eq!(m.subkind.as_deref(), Some("entity"));
+        }
+
+        let concepts = store.list_entity_pages("default", Some("concept"), 10).unwrap();
+        assert_eq!(concepts.len(), 1);
+        assert_eq!(concepts[0].node.title, "RAG");
+
+        let all = store.list_entity_pages("default", None, 10).unwrap();
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn list_entity_pages_orders_by_updated_at_desc() {
+        let store = fresh_test_store();
+        store
+            .create_entity_page("default", "first", "First", "x", EntityPageMetadata::default())
+            .unwrap();
+        // Sleep a moment so updated_at strictly differs (RFC3339 has
+        // millisecond precision; a 1ms gap is enough).
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store
+            .create_entity_page("default", "second", "Second", "x", EntityPageMetadata::default())
+            .unwrap();
+
+        let all = store.list_entity_pages("default", None, 10).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].node.title, "Second"); // newest first
+        assert_eq!(all[1].node.title, "First");
+    }
+
+    #[test]
+    fn append_timeline_entry_persists_and_orders() {
+        let store = fresh_test_store();
+        let detail = store
+            .create_entity_page("default", "acme", "Acme", "x", EntityPageMetadata::default())
+            .unwrap();
+
+        store
+            .append_timeline_entry(
+                &detail.node.id,
+                TimelineEntry {
+                    date: "2026-05-01".into(),
+                    text: "First mention".into(),
+                    source_node_id: None,
+                    source_session_id: None,
+                },
+            )
+            .expect("first append");
+        store
+            .append_timeline_entry(
+                &detail.node.id,
+                TimelineEntry {
+                    date: "2026-05-15".into(),
+                    text: "Second event".into(),
+                    source_node_id: Some("ep-1".into()),
+                    source_session_id: Some("sess-1".into()),
+                },
+            )
+            .expect("second append");
+
+        // Re-fetch and decode metadata to verify both entries persisted in order.
+        let again = store.get_node_detail(&detail.node.id).unwrap().expect("node");
+        let m = EntityPageMetadata::from_optional(&again.node.metadata);
+        assert_eq!(m.timeline.len(), 2);
+        assert_eq!(m.timeline[0].date, "2026-05-01");
+        assert_eq!(m.timeline[1].date, "2026-05-15");
+        assert_eq!(m.timeline[1].source_session_id.as_deref(), Some("sess-1"));
+    }
+
+    #[test]
+    fn append_timeline_entry_rejects_non_entity_page() {
+        let store = fresh_test_store();
+        // Create a Procedure node via the existing test helper.
+        make_node_with(
+            &store,
+            "some-skill",
+            serde_json::json!({"skill_type": "learned"}),
+        );
+        // Look it up.
+        let nodes = store
+            .list_nodes_by_kind("default", MemoryNodeKind::Procedure, 5)
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+        let err = store
+            .append_timeline_entry(
+                &nodes[0].id,
+                TimelineEntry {
+                    date: "2026-05-18".into(),
+                    text: "should fail".into(),
+                    source_node_id: None,
+                    source_session_id: None,
+                },
+            )
+            .expect_err("expected kind mismatch error");
+        let msg = format!("{}", err);
+        assert!(msg.contains("not entity_page"), "got: {}", msg);
+    }
+
+    #[test]
+    fn append_timeline_entry_errors_on_missing_node() {
+        let store = fresh_test_store();
+        let err = store
+            .append_timeline_entry(
+                "no-such-id",
+                TimelineEntry {
+                    date: "2026-05-18".into(),
+                    text: "doesn't matter".into(),
+                    source_node_id: None,
+                    source_session_id: None,
+                },
+            )
+            .expect_err("expected not found");
+        let msg = format!("{}", err);
+        assert!(msg.contains("not found"), "got: {}", msg);
+    }
+
+    #[test]
+    fn entity_page_fts_is_searchable() {
+        let store = fresh_test_store();
+        // The V4_MEMORY_GRAPH schema creates memory_fts with unicode61 (V31
+        // upgrades to trigram, but tests run V4 only). Either way the
+        // INSERT path is identical; we just check the row landed.
+        store
+            .create_entity_page(
+                "default",
+                "test-entity",
+                "Test Entity",
+                "Searchable content goes here.",
+                EntityPageMetadata::default(),
+            )
+            .unwrap();
+
+        let conn = store.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_fts WHERE content LIKE '%Searchable%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "FTS row should have been inserted by create_entity_page");
     }
 }
