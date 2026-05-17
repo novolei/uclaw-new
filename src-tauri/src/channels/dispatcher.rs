@@ -256,12 +256,11 @@ async fn run_agent_chat_via_im(
     for m in existing_messages.iter() {
         reason_ctx.messages.push(m.clone());
     }
-    reason_ctx.messages.push(ChatMessage::user(&msg.text));
-    // Snapshot AFTER adding the inbound user message so that only messages
-    // added by the agentic loop (assistant replies) land in the new_messages
-    // slice. Capturing start_idx before the push would cause the user message
-    // to be double-persisted on every turn.
+    // Snapshot the history length BEFORE adding the user message so that
+    // start_idx points at the user message itself. Both the user message and
+    // all subsequent assistant turns will be persisted after the loop.
     let start_idx = reason_ctx.messages.len();
+    reason_ctx.messages.push(ChatMessage::user(&msg.text));
 
     // Resolve LLM using the automation service's provider resolution.
     let active = runtime_service.provider_service

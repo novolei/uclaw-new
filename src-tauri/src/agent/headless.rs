@@ -193,8 +193,7 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
         _metadata: ResponseMetadata,
         _reason_ctx: &mut ReasoningContext,
     ) -> TextAction {
-        // IM close-loop: if a streaming handle is attached, forward the text
-        // as a complete streaming update and return early so the loop exits.
+        // IM close-loop: streaming path — forward partial text and exit loop.
         if let Some(sh) = &self.streaming_handle {
             if let Err(e) = sh.update(text).await {
                 tracing::warn!(
@@ -208,6 +207,16 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                     "headless run: streaming_handle finish error: {}", e
                 );
             }
+            return TextAction::Return(crate::agent::types::LoopOutcome::Response {
+                text: text.to_string(),
+                usage: None,
+                truncated: false,
+            });
+        }
+        // IM close-loop: non-streaming reply path — text response is also terminal.
+        // Without this early exit the loop would continue until max_iterations since
+        // TextAction::Continue re-invokes the LLM on every turn.
+        if self.reply_handle.is_some() {
             return TextAction::Return(crate::agent::types::LoopOutcome::Response {
                 text: text.to_string(),
                 usage: None,
