@@ -2,6 +2,12 @@
 //!
 //! Supports multiple notification backends: webhook, email, IM channels.
 
+pub mod im;
+pub mod notify;
+pub mod types;
+pub mod manager;
+pub mod session_registry;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
