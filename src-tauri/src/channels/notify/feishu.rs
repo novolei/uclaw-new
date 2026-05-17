@@ -4,8 +4,7 @@
 //!   - `webhook_url`    — Feishu robot webhook URL (required)
 //!   - `signing_secret` — Feishu signature secret (optional; omit to disable signing)
 //!
-//! Feishu signing formula: BASE64( HMAC-SHA256( key="{ts}\n{secret}", msg="" ) )
-//! (Note: unlike DingTalk, the message is empty and the key contains the timestamp.)
+//! Feishu signing formula: BASE64( HMAC-SHA256( key=secret, msg="{ts}\n{secret}" ) )
 
 use crate::channels::types::ImChannelSender;
 use async_trait::async_trait;
@@ -27,12 +26,12 @@ impl FeishuSender {
         }
     }
 
-    /// Feishu signature: HMAC-SHA256 where key = "{ts}\n{secret}" and message = "".
+    /// Feishu signature: HMAC-SHA256 where key = secret and message = "{ts}\n{secret}".
     fn sign(secret: &str, timestamp: i64) -> String {
-        let key = format!("{}\n{}", timestamp, secret);
+        let msg = format!("{}\n{}", timestamp, secret);
         let mut mac =
-            Hmac::<Sha256>::new_from_slice(key.as_bytes()).expect("HMAC accepts any key length");
-        mac.update(b"");
+            Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+        mac.update(msg.as_bytes());
         BASE64.encode(mac.finalize().into_bytes())
     }
 }
