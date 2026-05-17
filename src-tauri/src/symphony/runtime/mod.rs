@@ -15,4 +15,7 @@
 //!   space + per-node `agent_sessions` row + transcript persistence.
 
 pub mod cost;
+pub mod node_run;
 pub mod retry;
+pub mod run_session;
+pub mod stall;
