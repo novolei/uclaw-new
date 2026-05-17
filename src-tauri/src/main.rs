@@ -253,6 +253,9 @@ fn main() {
                                         // Phase 3: wiki view feature flag for the
                                         // periodic index regen in tick_inner.
                                         memubot_config.memory_os.wiki_view_enabled,
+                                        // Phase 4: gate the periodic memory_health
+                                        // scenario in tick_inner.
+                                        memubot_config.memory_os.memory_health_enabled,
                                     )
                                 );
                                 // Inject into AppState for tauri_commands access

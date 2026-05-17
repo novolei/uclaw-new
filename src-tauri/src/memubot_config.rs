@@ -343,7 +343,14 @@ pub struct MemoryOsConfig {
     /// `memory_wiki_regenerate` IPC command returns a structured error.
     /// Existing wiki_artifacts rows on disk are untouched.
     pub wiki_view_enabled: bool,
-    // (Future flags for Phase 4-7 will be added here, each pre-declared
+    /// Phase 4: Zero-LLM structural health checks. When `false`,
+    /// ProactiveService stops running `run_health_checks` on tick and
+    /// the manual `memory_health_run_now` IPC returns a structured
+    /// error. Existing `memory_health_findings` rows on disk are
+    /// untouched and the list/dismiss IPC commands keep working so the
+    /// user can still triage findings discovered before flag was off.
+    pub memory_health_enabled: bool,
+    // (Future flags for Phase 5-7 will be added here, each pre-declared
     //  with its default so existing configs deserialize against a stable
     //  shape.)
 }
@@ -354,6 +361,7 @@ impl Default for MemoryOsConfig {
             entity_page_enabled: true,
             auto_link_enabled: true,
             wiki_view_enabled: true,
+            memory_health_enabled: true,
         }
     }
 }
@@ -746,5 +754,22 @@ mod tests {
             serde_json::from_str(r#"{"agent_loop_timeout_secs": 900}"#).unwrap();
         assert!(config.memory_os.entity_page_enabled);
         let _ = json;
+    }
+
+    #[test]
+    fn memory_os_config_default_has_memory_health_enabled() {
+        let c = MemoryOsConfig::default();
+        assert!(c.memory_health_enabled, "Phase 4 default should be on");
+    }
+
+    #[test]
+    fn memory_os_phase4_explicit_disable_preserved() {
+        let json = r#"{"memory_os":{"memory_health_enabled":false}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.memory_os.memory_health_enabled);
+        // Forward-compat: disabling Phase 4 must not flip Phase 1/2/3 off.
+        assert!(config.memory_os.entity_page_enabled);
+        assert!(config.memory_os.auto_link_enabled);
+        assert!(config.memory_os.wiki_view_enabled);
     }
 }

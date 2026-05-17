@@ -173,6 +173,11 @@ struct ProactiveStateRefs {
     /// the periodic index refresh is skipped; manual regen via
     /// `memory_wiki_regenerate` is gated separately at the IPC layer.
     wiki_view_enabled: bool,
+    /// Memory OS Foundation Phase 4 — controls whether the tick loop
+    /// runs the zero-LLM health scenario. When `false` the periodic
+    /// check is skipped; the manual `memory_health_run_now` IPC is
+    /// gated separately.
+    memory_health_enabled: bool,
     /// Tauri AppHandle（用于发射 IPC 事件，测试时为 None）
     app_handle: Option<tauri::AppHandle>,
     /// 自上次触发以来的新消息数
@@ -296,6 +301,8 @@ pub struct ProactiveService {
     memory_graph_store: Arc<MemoryGraphStore>,
     /// Memory OS Foundation Phase 3 — periodic wiki index regen gate.
     wiki_view_enabled: bool,
+    /// Memory OS Foundation Phase 4 — periodic health-check gate.
+    memory_health_enabled: bool,
     /// Tauri AppHandle（用于发射 IPC 事件，测试时为 None）
     app_handle: Option<tauri::AppHandle>,
 
@@ -400,6 +407,7 @@ impl ProactiveService {
         gene_repo: Arc<Mutex<GeneRepository>>,
         gene_evolution_config: GeneEvolutionConfig,
         wiki_view_enabled: bool,
+        memory_health_enabled: bool,
     ) -> Self {
         let task_memory_manager = Arc::new(TaskMemoryManager::new(memory_graph_store.clone()));
         let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(memory_graph_store.clone()));
@@ -444,6 +452,7 @@ impl ProactiveService {
             memu_client,
             memory_graph_store,
             wiki_view_enabled,
+            memory_health_enabled,
             app_handle,
             tick_count: Arc::new(AtomicU64::new(0)),
             action_count: Arc::new(AtomicU64::new(0)),
@@ -496,6 +505,7 @@ impl ProactiveService {
             memu_client: self.memu_client.clone(),
             memory_graph_store: self.memory_graph_store.clone(),
             wiki_view_enabled: self.wiki_view_enabled,
+            memory_health_enabled: self.memory_health_enabled,
             app_handle: self.app_handle.clone(),
             new_message_count: self.new_message_count.clone(),
             new_execution_count: self.new_execution_count.clone(),
@@ -947,6 +957,51 @@ impl ProactiveService {
                             tracing::warn!("[ProactiveService] Gene lifecycle check failed: {}", e);
                         }
                     }
+                }
+            }
+        }
+
+        // Memory OS Foundation Phase 4 — periodic health checks.
+        // Every 60 ticks (~30 min @ default 30s interval) run the
+        // seven structural integrity checks. Zero LLM, ~50ms wall time
+        // on typical local DBs. Schedule is offset from Phase 3's wiki
+        // index regen (every 10 ticks) so the two scans don't collide
+        // on the SQLite lock more often than necessary — when both fire
+        // on the same tick the wiki regen runs first by source order.
+        if refs.memory_health_enabled && refs.tick_count.load(Ordering::SeqCst) % 60 == 0 {
+            let space_id = refs.active_space_id.read().await.clone();
+            let store = refs.memory_graph_store.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let conn = store
+                    .conn
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("DB lock poisoned: {}", e))?;
+                crate::proactive::scenarios::memory_health::run_health_checks(&conn, &space_id)
+                    .map_err(|e| anyhow::anyhow!("run_health_checks: {}", e))
+            })
+            .await;
+            match result {
+                Ok(Ok(outcome)) => {
+                    if outcome.total_inserted > 0 {
+                        tracing::info!(
+                            inserted = outcome.total_inserted,
+                            active = outcome.active_total,
+                            duration_ms = outcome.duration_ms,
+                            "[ProactiveService] memory_health: new findings detected"
+                        );
+                    } else {
+                        tracing::debug!(
+                            active = outcome.active_total,
+                            duration_ms = outcome.duration_ms,
+                            "[ProactiveService] memory_health: no new findings"
+                        );
+                    }
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "[ProactiveService] memory_health check failed");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "[ProactiveService] memory_health spawn_blocking failed");
                 }
             }
         }
@@ -2325,6 +2380,9 @@ mod tests {
             crate::memubot_config::GeneEvolutionConfig::default(),
             // Phase 3: tests default to wiki_view_enabled=true (matches
             // MemoryOsConfig::default()).
+            true,
+            // Phase 4: tests default to memory_health_enabled=true
+            // (matches MemoryOsConfig::default()).
             true,
         )
     }
