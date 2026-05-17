@@ -18,6 +18,8 @@ struct RunningInstance {
     sender: Arc<dyn ImChannelSender>,
     /// Present for bidirectional channels (WeCom/iLink); None for notify-only.
     _inbound_task: Option<AbortHandle>,
+    /// Present when config.enabled=true for bidirectional channels; None otherwise.
+    _fanout_task: Option<AbortHandle>,
 }
 
 pub struct ImChannelManager {
@@ -86,7 +88,7 @@ impl ImChannelManager {
     }
 
     pub async fn start_instance(&self, config: ImChannelInstanceConfig) -> Result<(), String> {
-        let (sender, inbound_task): (Arc<dyn ImChannelSender>, Option<AbortHandle>) =
+        let (sender, inbound_task, fanout_task): (Arc<dyn ImChannelSender>, Option<AbortHandle>, Option<AbortHandle>) =
             match config.channel_type {
                 ImChannelType::WecomBot => {
                     let (inbound_tx, inbound_rx) =
@@ -105,8 +107,14 @@ impl ImChannelManager {
                         None
                     };
 
-                    self.spawn_fanout_loop(config.id.clone(), inbound_rx);
-                    (Arc::new(WecomNoopSender) as Arc<dyn ImChannelSender>, abort)
+                    let fanout_abort = if config.enabled {
+                        Some(self.spawn_fanout_loop(config.id.clone(), inbound_rx))
+                    } else {
+                        // Drop inbound_rx so the channel is closed; no fanout needed.
+                        drop(inbound_rx);
+                        None
+                    };
+                    (Arc::new(WecomNoopSender) as Arc<dyn ImChannelSender>, abort, fanout_abort)
                 }
                 ImChannelType::WechatIlink => {
                     let (inbound_tx, inbound_rx) =
@@ -125,12 +133,18 @@ impl ImChannelManager {
                         None
                     };
 
-                    self.spawn_fanout_loop(config.id.clone(), inbound_rx);
-                    (Arc::new(IlinkNoopSender) as Arc<dyn ImChannelSender>, abort)
+                    let fanout_abort = if config.enabled {
+                        Some(self.spawn_fanout_loop(config.id.clone(), inbound_rx))
+                    } else {
+                        // Drop inbound_rx so the channel is closed; no fanout needed.
+                        drop(inbound_rx);
+                        None
+                    };
+                    (Arc::new(IlinkNoopSender) as Arc<dyn ImChannelSender>, abort, fanout_abort)
                 }
                 _ => {
                     let sender = self.build_sender(&config)?;
-                    (sender, None)
+                    (sender, None, None)
                 }
             };
 
@@ -138,6 +152,7 @@ impl ImChannelManager {
             config: config.clone(),
             sender,
             _inbound_task: inbound_task,
+            _fanout_task: fanout_task,
         };
         self.instances.write().await.insert(config.id.clone(), running);
         tracing::info!("ImChannelManager: started instance {} ({})", config.id, config.channel_type);
@@ -145,6 +160,7 @@ impl ImChannelManager {
     }
 
     /// Spawn the fanout loop that reads from `inbound_rx` and calls `dispatch_inbound`.
+    /// Returns an `AbortHandle` so the caller can cancel the task.
     fn spawn_fanout_loop(
         &self,
         instance_id: String,
@@ -152,13 +168,13 @@ impl ImChannelManager {
             crate::channels::types::InboundMessage,
             Arc<crate::channels::types::ReplyHandle>,
         )>,
-    ) {
+    ) -> AbortHandle {
         let instances = self.instances.clone();
         let session_registry = self.session_registry.clone();
         let db = self.db.clone();
         let app_handle = self.app_handle.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             while let Some((msg, reply)) = inbound_rx.recv().await {
                 let cfg = {
                     let guard = instances.read().await;
@@ -189,11 +205,15 @@ impl ImChannelManager {
                 }
             }
         });
+        handle.abort_handle()
     }
 
     pub async fn stop_instance(&self, id: &str) {
         if let Some(inst) = self.instances.write().await.remove(id) {
             if let Some(handle) = inst._inbound_task {
+                handle.abort();
+            }
+            if let Some(handle) = inst._fanout_task {
                 handle.abort();
             }
             tracing::info!("ImChannelManager: stopped instance {}", id);
