@@ -2979,8 +2979,15 @@ pub async fn delete_im_channel(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<(), Error> {
-    let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
-    conn.execute("DELETE FROM im_channel_instances WHERE id=?1", [&id])?;
+    {
+        let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM spec_channel_bindings WHERE channel_instance_id=?1",
+            [&id],
+        )?;
+        conn.execute("DELETE FROM im_channel_instances WHERE id=?1", [&id])?;
+    } // conn lock dropped here
+    state.im_channel_manager.stop_instance(&id).await;
     Ok(())
 }
 
@@ -2991,11 +2998,22 @@ pub async fn toggle_im_channel(
     enabled: bool,
 ) -> Result<(), Error> {
     let now = chrono::Utc::now().timestamp_millis();
-    let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
-    conn.execute(
-        "UPDATE im_channel_instances SET enabled=?1, updated_at=?2 WHERE id=?3",
-        rusqlite::params![enabled as i64, now, id],
-    )?;
+    {
+        let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
+        conn.execute(
+            "UPDATE im_channel_instances SET enabled=?1, updated_at=?2 WHERE id=?3",
+            rusqlite::params![enabled as i64, now, id],
+        )?;
+    } // lock dropped
+    if enabled {
+        state
+            .im_channel_manager
+            .start_all()
+            .await
+            .map_err(|e| Error::Internal(e))?;
+    } else {
+        state.im_channel_manager.stop_instance(&id).await;
+    }
     Ok(())
 }
 
