@@ -121,7 +121,7 @@ impl WecomSender {
             guard.clone()
         };
         let instance_id = self.instance_id.clone();
-        tokio::spawn(async move {
+        let hb_handle = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).await;
                 if let Some(ref tx) = hb_tx {
@@ -137,38 +137,44 @@ impl WecomSender {
             }
         });
 
-        loop {
-            tokio::select! {
-                msg = read.next() => {
-                    match msg {
-                        Some(Ok(Message::Text(text))) => {
-                            if let Err(e) = self.handle_message(&text, &inbound_tx).await {
-                                tracing::warn!(
-                                    "[WecomBot:{}] message handler error: {e}",
+        let result = async {
+            loop {
+                tokio::select! {
+                    msg = read.next() => {
+                        match msg {
+                            Some(Ok(Message::Text(text))) => {
+                                if let Err(e) = self.handle_message(&text, &inbound_tx).await {
+                                    tracing::warn!(
+                                        "[WecomBot:{}] message handler error: {e}",
+                                        self.instance_id
+                                    );
+                                }
+                            }
+                            Some(Ok(Message::Close(_))) | None => {
+                                tracing::info!(
+                                    "[WecomBot:{}] WebSocket closed",
                                     self.instance_id
                                 );
+                                *self.tx.lock().await = None;
+                                return Err(anyhow!("WebSocket closed"));
+                            }
+                            Some(Ok(_)) => {}
+                            Some(Err(e)) => {
+                                *self.tx.lock().await = None;
+                                return Err(e.into());
                             }
                         }
-                        Some(Ok(Message::Close(_))) | None => {
-                            tracing::info!(
-                                "[WecomBot:{}] WebSocket closed",
-                                self.instance_id
-                            );
-                            *self.tx.lock().await = None;
-                            return Err(anyhow!("WebSocket closed"));
-                        }
-                        Some(Ok(_)) => {}
-                        Some(Err(e)) => {
-                            *self.tx.lock().await = None;
-                            return Err(e.into());
-                        }
                     }
-                }
-                Some(out) = out_rx.recv() => {
-                    write.send(out).await?;
+                    Some(out) = out_rx.recv() => {
+                        write.send(out).await?;
+                    }
                 }
             }
         }
+        .await;
+
+        hb_handle.abort();
+        result
     }
 
     async fn handle_message(
