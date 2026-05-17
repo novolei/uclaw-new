@@ -12,13 +12,23 @@
  *
  * Payload fields are snake_case, matching what serde emits from Rust without
  * rename_all: "camelCase" on the JSON payload object.
+ *
+ * Per-session dedupe: once the user acts on the banner (any action), the session
+ * is added to silencedPlanModeSessionsAtom. Future backend fires for the same
+ * session are dropped at the listener level. The silenced set is cleared when the
+ * user manually changes safety mode via PermissionModeSelector — user intent has
+ * clearly changed, so re-evaluation is warranted on the next matching message.
  */
 
 import * as React from 'react'
-import { useAtom } from 'jotai'
+import { useAtom, useSetAtom } from 'jotai'
 import { listen } from '@tauri-apps/api/event'
 import { Button } from '@/components/ui/button'
-import { pendingPlanModeSuggestsAtom, type PlanModeSuggestRequest } from '@/atoms/plan-mode-suggest-atoms'
+import {
+  pendingPlanModeSuggestsAtom,
+  silencedPlanModeSessionsAtom,
+  type PlanModeSuggestRequest,
+} from '@/atoms/plan-mode-suggest-atoms'
 import { planModeSuggestEnabledAtom } from '@/atoms/ui-preferences'
 import { respondPlanModeSuggest, setSafetyMode } from '@/lib/tauri-bridge'
 
@@ -27,7 +37,14 @@ interface Props { sessionId: string }
 export function PlanModeSuggestBanner({ sessionId }: Props): React.ReactElement | null {
   const [queue, setQueue] = useAtom(pendingPlanModeSuggestsAtom)
   const [enabled, setEnabled] = useAtom(planModeSuggestEnabledAtom)
+  const [silenced, setSilenced] = useAtom(silencedPlanModeSessionsAtom)
   const req = queue[sessionId] ?? null
+
+  // Use a ref so the listener callback always reads the latest silenced set
+  // without needing to be in the useEffect dependency array (which would cause
+  // the listener to re-register on every set-change).
+  const silencedRef = React.useRef(silenced)
+  silencedRef.current = silenced
 
   React.useEffect(() => {
     let cancelled = false
@@ -35,6 +52,7 @@ export function PlanModeSuggestBanner({ sessionId }: Props): React.ReactElement 
     listen<PlanModeSuggestRequest>('agent:plan_mode_suggest', ({ payload }) => {
       // Backend emits snake_case keys via serde_json::json! macro.
       if (payload.session_id !== sessionId) return
+      if (silencedRef.current.has(sessionId)) return  // skip silenced sessions
       setQueue((q) => ({ ...q, [sessionId]: payload }))
     }).then((fn) => { if (cancelled) fn(); else unlisten = fn })
     return () => { cancelled = true; unlisten?.() }
@@ -44,7 +62,17 @@ export function PlanModeSuggestBanner({ sessionId }: Props): React.ReactElement 
 
   const clear = () => setQueue((q) => ({ ...q, [sessionId]: null }))
 
+  const addToSilenced = () => setSilenced((s: Set<string>) => {
+    const next = new Set(s)
+    next.add(sessionId)
+    return next
+  })
+
   const handleSwitch = async (): Promise<void> => {
+    // NOTE: handleSwitch adds to silenced but does NOT reset the full silenced
+    // set — that would re-arm the banner. The mode switch already prevents
+    // future fires (keyword detector gates on Yolo/Supervised modes).
+    addToSilenced()
     try {
       await setSafetyMode({ mode: 'plan' })
       await respondPlanModeSuggest(req.id, 'accepted')
@@ -56,6 +84,7 @@ export function PlanModeSuggestBanner({ sessionId }: Props): React.ReactElement 
   }
 
   const handleSkip = async (): Promise<void> => {
+    addToSilenced()
     try {
       await respondPlanModeSuggest(req.id, 'skipped')
     } finally {
@@ -64,6 +93,7 @@ export function PlanModeSuggestBanner({ sessionId }: Props): React.ReactElement 
   }
 
   const handleNever = async (): Promise<void> => {
+    addToSilenced()
     setEnabled(false)
     try {
       await respondPlanModeSuggest(req.id, 'silenced')

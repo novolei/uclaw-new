@@ -10,6 +10,7 @@
  */
 
 import * as React from 'react'
+import { useSetAtom } from 'jotai'
 import { Shield, ShieldAlert, ShieldCheck, ShieldOff, ChevronDown } from 'lucide-react'
 import {
   DropdownMenu,
@@ -21,6 +22,7 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { getSafetyPolicy, setSafetyMode } from '@/lib/tauri-bridge'
+import { silencedPlanModeSessionsAtom } from '@/atoms/plan-mode-suggest-atoms'
 import type { SafetyMode } from '@/lib/types'
 
 interface ModeConfig {
@@ -62,6 +64,7 @@ interface SafetyModeSelectorProps {
 export function SafetyModeSelector({ className }: SafetyModeSelectorProps): React.ReactElement {
   const [mode, setMode] = React.useState<SafetyMode>('supervised')
   const [loading, setLoading] = React.useState(false)
+  const setSilenced = useSetAtom(silencedPlanModeSessionsAtom)
 
   // 初始化：获取当前安全策略
   React.useEffect(() => {
@@ -79,6 +82,9 @@ export function SafetyModeSelector({ className }: SafetyModeSelectorProps): Reac
     try {
       await setSafetyMode({ mode: newMode })
       setMode(newMode)
+      // User explicitly changed mode → clear silenced sessions so the
+      // banner can re-fire if the next message matches again.
+      setSilenced(new Set())
     } catch (err) {
       console.error('[SafetyModeSelector] 设置安全模式失败:', err)
     } finally {
