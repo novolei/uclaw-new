@@ -385,6 +385,7 @@ pub async fn send_message(
     tools.register(builtin::plan_mode::RequestPlanModeSwitchTool::new(
         app_handle.clone(),
         input.conversation_id.clone(),
+        Arc::clone(&state.db),
     ));
     tools.register(
         builtin::self_eval::SelfEvalTool::new(
@@ -6961,22 +6962,19 @@ pub async fn send_agent_message(
     // stubbed to empty until then. Settings toggle lands in Task 11 —
     // hardcoded true here for now.
     {
+        // Read all async-protected state BEFORE acquiring any std::sync::Mutex.
+        // Tokio's RwLock must not be held across .await, and std::Mutex must
+        // not be held across .await either — so resolve both async reads first.
         let suggest_enabled = state.memubot_config.read().await.plan_mode_suggest_enabled;
+        let current_mode = state.safety_manager.read().await.policy().global_mode.clone();
         if suggest_enabled {
+            // Now safe to take the std::sync::Mutex — no .await below this point.
             if let Ok(conn) = state.db.lock() {
                 let disabled = crate::agent::mode_suggest_store::query_disabled_patterns(&conn)
                     .unwrap_or_default();
-                // Read current mode from safety policy (RwLock — use blocking_read to avoid await
-                // inside a non-async block; the lock is uncontended here).
-                let current_mode = {
-                    let mgr = state.safety_manager.blocking_read();
-                    mgr.policy().global_mode.clone()
-                };
-                // Already-suggested check: best-effort. ReasoningContext is created fresh per
-                // send_agent_message call — no persistent per-session store across turns.
-                // Task 9 will revisit if needed; duplicate banners suppressed on the frontend
-                // via per-session atom anyway.
-                let already_suggested = false; // FIXME Task 9: thread session state
+                // Duplicate-banner suppression is handled on the frontend via a
+                // per-session Jotai atom (Task 9 reshape). No backend state needed.
+                let already_suggested = false;
                 if let Some(hint) = crate::agent::mode_suggest::suggest_plan_mode(
                     &input.user_message, &current_mode, already_suggested, &disabled,
                 ) {
@@ -7274,6 +7272,7 @@ pub async fn send_agent_message(
     tools.register(builtin::plan_mode::RequestPlanModeSwitchTool::new(
         app_handle.clone(),
         input.session_id.clone(),
+        Arc::clone(&state.db),
     ));
     tools.register(
         builtin::self_eval::SelfEvalTool::new(

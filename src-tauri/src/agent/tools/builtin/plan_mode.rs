@@ -3,6 +3,7 @@
 //! The user clicks accept/skip asynchronously; the next agent
 //! iteration sees the (possibly) updated effective mode.
 
+use std::sync::Arc;
 use std::time::Instant;
 use async_trait::async_trait;
 use tauri::Emitter;
@@ -11,11 +12,16 @@ use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput
 pub struct RequestPlanModeSwitchTool {
     app_handle: tauri::AppHandle,
     session_id: String,
+    db: Arc<std::sync::Mutex<rusqlite::Connection>>,
 }
 
 impl RequestPlanModeSwitchTool {
-    pub fn new(app_handle: tauri::AppHandle, session_id: String) -> Self {
-        Self { app_handle, session_id }
+    pub fn new(
+        app_handle: tauri::AppHandle,
+        session_id: String,
+        db: Arc<std::sync::Mutex<rusqlite::Connection>>,
+    ) -> Self {
+        Self { app_handle, session_id, db }
     }
 }
 
@@ -58,6 +64,25 @@ impl Tool for RequestPlanModeSwitchTool {
             .unwrap_or_default();
 
         let event_id = uuid::Uuid::new_v4().to_string();
+
+        // Persist the pending row BEFORE emitting — if the user responds before
+        // the next await, respond_plan_mode_suggest must find an existing row.
+        if let Ok(conn) = self.db.lock() {
+            let _ = crate::agent::mode_suggest_store::record_fired(
+                &conn,
+                crate::agent::mode_suggest_store::FireRecord {
+                    id: &event_id,
+                    session_id: &self.session_id,
+                    message_id: "",  // agent-source has no specific user message id
+                    source: crate::agent::mode_suggest_store::SuggestSource::Agent,
+                    matched_pattern: None,
+                    reason: Some(reason),
+                    user_msg_preview: reason,  // use reason as preview for agent-source rows
+                    fired_at: chrono::Utc::now().timestamp_millis(),
+                },
+            );
+        }
+
         let payload = serde_json::json!({
             "id": event_id,
             "session_id": self.session_id,
