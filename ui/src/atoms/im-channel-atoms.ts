@@ -34,7 +34,7 @@ export interface ImChannelInput {
 /** Runtime connection status for one channel instance. */
 export interface ImChannelStatus {
   instanceId: string
-  state: 'online' | 'error' | 'offline'
+  state: 'online' | 'error' | 'offline' | 'needs_rebind'
   lastError?: string
   /** Epoch ms when WebSocket connected. Defined only when state === 'online'. */
   connectedSinceMs?: number

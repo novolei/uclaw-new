@@ -253,15 +253,17 @@ export function ImChannelAccordionRow({
 
   // ── status block ──
   const stateColor = {
-    online: 'bg-success/10 border-success/30',
-    error:  'bg-destructive/10 border-destructive/30',
-    offline: 'bg-muted border-border',
+    online:       'bg-success/10 border-success/30',
+    error:        'bg-destructive/10 border-destructive/30',
+    offline:      'bg-muted border-border',
+    needs_rebind: 'bg-amber-500/10 border-amber-500/30',
   }[status?.state ?? 'offline']
 
   const stateDotCls = {
-    online:  'bg-success',
-    error:   'bg-destructive',
-    offline: 'bg-muted-foreground',
+    online:       'bg-success',
+    error:        'bg-destructive',
+    offline:      'bg-muted-foreground',
+    needs_rebind: 'bg-amber-500',
   }[status?.state ?? 'offline']
 
   const stateTitle = status?.state === 'online'
