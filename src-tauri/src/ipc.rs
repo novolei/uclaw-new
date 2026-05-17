@@ -942,6 +942,65 @@ pub struct MemoryGraphDeleteNodeInput {
     pub node_id: String,
 }
 
+// ─── EntityPage IPC types (Memory OS Foundation Phase 1) ───────────────
+//
+// Wire shape for the `memory_entity_page_*` Tauri commands. The Rust-side
+// EntityPageMetadata schema is fully expressed by these DTOs, but for IPC
+// we keep `metadata` as a raw `serde_json::Value` to mirror the existing
+// Memory Graph command style (see MemoryGraphCreateNodeInput) and to keep
+// the frontend free to extend the schema without round-trip Rust changes.
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageCreateInput {
+    /// Workspace scope. Defaults to `"default"` if omitted.
+    pub space_id: Option<String>,
+    /// Stable handle; lowercased + trimmed before storage.
+    pub slug: String,
+    pub title: String,
+    /// Initial compiled_truth markdown body (lands in
+    /// `memory_versions.content` as the active version).
+    pub compiled_truth: String,
+    /// Optional EntityPageMetadata-shaped JSON. Unknown fields are
+    /// tolerated (forward-compat). Schema documented in
+    /// `memory_graph::entity_page::EntityPageMetadata`.
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageGetInput {
+    pub node_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageFindBySlugInput {
+    pub space_id: Option<String>,
+    pub slug: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageListInput {
+    pub space_id: Option<String>,
+    /// Optional metadata.subkind filter (`"entity"`, `"concept"`, ...).
+    pub subkind: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageAppendTimelineInput {
+    pub node_id: String,
+    /// One timeline entry; matches
+    /// `memory_graph::entity_page::TimelineEntry`. Date is `YYYY-MM-DD`.
+    pub date: String,
+    pub text: String,
+    pub source_node_id: Option<String>,
+    pub source_session_id: Option<String>,
+}
+
 // ─── Cost dashboard ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

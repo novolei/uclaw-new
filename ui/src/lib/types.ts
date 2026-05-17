@@ -1072,6 +1072,73 @@ export interface MemoryGraphDeleteNodeInput {
   nodeId: string;
 }
 
+// ─── EntityPage (Memory OS Foundation Phase 1) ──────────────────────────
+//
+// Wire types for the `memory_entity_page_*` Tauri commands. Mirrors the
+// Rust IPC structs in `src-tauri/src/ipc.rs`. `metadata` is left as
+// `Record<string, unknown>` so the frontend can extend the schema without
+// a round-trip Rust change; full field list lives in
+// `src-tauri/src/memory_graph/entity_page.rs`.
+
+/** One append-only event on an EntityPage timeline. */
+export interface EntityPageTimelineEntry {
+  date: string; // YYYY-MM-DD
+  text: string;
+  sourceNodeId?: string;
+  sourceSessionId?: string;
+}
+
+/** Decoded view of `memory_nodes.metadata_json` for an EntityPage. */
+export interface EntityPageMetadata {
+  timeline?: EntityPageTimelineEntry[];
+  aliases?: string[];
+  contradictions?: Array<{
+    betweenSourceIds: string[];
+    claimA: string;
+    claimB: string;
+    noticedAt: string;
+  }>;
+  slug?: string;
+  subkind?: string;
+  enrichmentTier?: number;
+  lastSynthesizedAt?: string;
+  synthesisSourceCount?: number;
+  // Forward-compat: unknown fields are preserved by the JSON column.
+  [key: string]: unknown;
+}
+
+export interface EntityPageCreateInput {
+  spaceId?: string;
+  slug: string;
+  title: string;
+  compiledTruth: string;
+  metadata?: EntityPageMetadata;
+}
+
+export interface EntityPageGetInput {
+  nodeId: string;
+}
+
+export interface EntityPageFindBySlugInput {
+  spaceId?: string;
+  slug: string;
+}
+
+export interface EntityPageListInput {
+  spaceId?: string;
+  /** Filter by `metadata.subkind` (e.g. `"entity"`, `"concept"`). */
+  subkind?: string;
+  limit?: number;
+}
+
+export interface EntityPageAppendTimelineInput {
+  nodeId: string;
+  date: string; // YYYY-MM-DD
+  text: string;
+  sourceNodeId?: string;
+  sourceSessionId?: string;
+}
+
 // ─── Learned Skills ─────────────────────────────────────────────────────
 
 export interface LearnedSkill {

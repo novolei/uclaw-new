@@ -103,6 +103,12 @@ import type {
   MemoryGraphCreateNodeInput,
   MemoryGraphUpdateNodeInput,
   MemoryGraphDeleteNodeInput,
+  // EntityPage (Memory OS Foundation Phase 1)
+  EntityPageCreateInput,
+  EntityPageGetInput,
+  EntityPageFindBySlugInput,
+  EntityPageListInput,
+  EntityPageAppendTimelineInput,
   // Cost dashboard
   DailyCostRollup,
   ModelCostRollup,
@@ -738,6 +744,32 @@ export const memoryGraphUpdateNode = (input: MemoryGraphUpdateNodeInput): Promis
 
 export const memoryGraphDeleteNode = (input: MemoryGraphDeleteNodeInput): Promise<unknown> =>
   invoke('memory_graph_delete_node', { input });
+
+// ─────────────────────────────────────────────────────────
+// EntityPage (Memory OS Foundation Phase 1)
+// ─────────────────────────────────────────────────────────
+//
+// Thin invoke wrappers for the `memory_entity_page_*` commands. All return
+// `unknown` (matching the existing Memory Graph wrapper style) — caller
+// code that wants typed access should narrow via the response shape from
+// the Rust side (`MemoryNodeDetail`).
+
+export const memoryEntityPageCreate = (input: EntityPageCreateInput): Promise<unknown> =>
+  invoke('memory_entity_page_create', { input });
+
+export const memoryEntityPageGet = (input: EntityPageGetInput): Promise<unknown> =>
+  invoke('memory_entity_page_get', { input });
+
+export const memoryEntityPageFindBySlug = (input: EntityPageFindBySlugInput): Promise<unknown> =>
+  invoke('memory_entity_page_find_by_slug', { input });
+
+export const memoryEntityPageList = (input: EntityPageListInput): Promise<unknown> =>
+  invoke('memory_entity_page_list', { input });
+
+export const memoryEntityPageAppendTimeline = (
+  input: EntityPageAppendTimelineInput,
+): Promise<unknown> =>
+  invoke('memory_entity_page_append_timeline', { input });
 
 // ─────────────────────────────────────────────────────────
 // Notifications

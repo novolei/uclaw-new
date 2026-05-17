@@ -4810,6 +4810,115 @@ pub async fn memory_graph_delete_node(
     Ok(serde_json::json!({ "success": true, "nodeId": input.node_id }))
 }
 
+// ─── EntityPage Commands (Memory OS Foundation Phase 1) ────────────────
+//
+// Five high-level IPC commands wrapping `memory_graph/store.rs` EntityPage
+// CRUD. All return `serde_json::Value` for wire compatibility with the
+// existing `memory_graph_*` family; the frontend `tauri-bridge.ts`
+// wrapper layers typed views on top.
+//
+// Reminder for future Phase commits (per CLAUDE.md): each new command
+// here MUST also be registered in `main.rs::invoke_handler!`.
+
+/// Create a new EntityPage with optional initial metadata + timeline.
+#[tauri::command]
+pub async fn memory_entity_page_create(
+    state: State<'_, AppState>,
+    input: EntityPageCreateInput,
+) -> Result<serde_json::Value, String> {
+    let store = &state.memory_graph_store;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+
+    // Decode optional caller-supplied metadata; unknown fields are tolerated.
+    let metadata = input
+        .metadata
+        .as_ref()
+        .map(crate::memory_graph::entity_page::EntityPageMetadata::from_value)
+        .unwrap_or_default();
+
+    let detail = store
+        .create_entity_page(&space_id, &input.slug, &input.title, &input.compiled_truth, metadata)
+        .map_err(|e| format!("Failed to create entity page: {}", e))?;
+
+    serde_json::to_value(&detail).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+/// Fetch an EntityPage by `node_id`. Returns `null` when not found
+/// (NOT an error — mirrors `memory_graph_get_node` semantics).
+#[tauri::command]
+pub async fn memory_entity_page_get(
+    state: State<'_, AppState>,
+    input: EntityPageGetInput,
+) -> Result<serde_json::Value, String> {
+    let store = &state.memory_graph_store;
+    let detail = store
+        .get_node_detail(&input.node_id)
+        .map_err(|e| format!("Failed to get entity page: {}", e))?;
+
+    // Guard against the caller fetching a non-EntityPage by mistake; this
+    // command is for EntityPage retrieval, and returning a Procedure here
+    // would be a footgun for callers writing back via the EntityPage write
+    // path. A `null` response is preferable to a confusing mixed type.
+    match detail {
+        Some(d) if d.node.kind == crate::memory_graph::models::MemoryNodeKind::EntityPage => {
+            serde_json::to_value(&d).map_err(|e| format!("Serialization failed: {}", e))
+        }
+        Some(_) | None => Ok(serde_json::Value::Null),
+    }
+}
+
+/// Look up an EntityPage by slug (case-insensitive) within a space.
+/// Returns `null` when no page matches.
+#[tauri::command]
+pub async fn memory_entity_page_find_by_slug(
+    state: State<'_, AppState>,
+    input: EntityPageFindBySlugInput,
+) -> Result<serde_json::Value, String> {
+    let store = &state.memory_graph_store;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let detail = store
+        .find_entity_page_by_slug(&space_id, &input.slug)
+        .map_err(|e| format!("Failed to find entity page: {}", e))?;
+    match detail {
+        Some(d) => serde_json::to_value(&d).map_err(|e| format!("Serialization failed: {}", e)),
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
+/// List EntityPage nodes in a space, optionally filtered by subkind.
+#[tauri::command]
+pub async fn memory_entity_page_list(
+    state: State<'_, AppState>,
+    input: EntityPageListInput,
+) -> Result<serde_json::Value, String> {
+    let store = &state.memory_graph_store;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let limit = input.limit.unwrap_or(50);
+    let pages = store
+        .list_entity_pages(&space_id, input.subkind.as_deref(), limit)
+        .map_err(|e| format!("Failed to list entity pages: {}", e))?;
+    serde_json::to_value(&pages).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+/// Append a single timeline entry to an EntityPage's metadata.
+#[tauri::command]
+pub async fn memory_entity_page_append_timeline(
+    state: State<'_, AppState>,
+    input: EntityPageAppendTimelineInput,
+) -> Result<serde_json::Value, String> {
+    let store = &state.memory_graph_store;
+    let entry = crate::memory_graph::entity_page::TimelineEntry {
+        date: input.date,
+        text: input.text,
+        source_node_id: input.source_node_id,
+        source_session_id: input.source_session_id,
+    };
+    store
+        .append_timeline_entry(&input.node_id, entry)
+        .map_err(|e| format!("Failed to append timeline entry: {}", e))?;
+    Ok(serde_json::json!({ "success": true, "nodeId": input.node_id }))
+}
+
 // ─── Fragment / Daily Summary Commands ─────────────────────────────────────
 
 /// Parse an RFC-3339 / ISO-8601 timestamp string into epoch millis.

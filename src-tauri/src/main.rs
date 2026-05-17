@@ -612,6 +612,12 @@ fn main() {
             uclaw_core::tauri_commands::memory_graph_quick_capture,
             uclaw_core::tauri_commands::memory_graph_update_node,
             uclaw_core::tauri_commands::memory_graph_delete_node,
+            // EntityPage (Memory OS Foundation Phase 1)
+            uclaw_core::tauri_commands::memory_entity_page_create,
+            uclaw_core::tauri_commands::memory_entity_page_get,
+            uclaw_core::tauri_commands::memory_entity_page_find_by_slug,
+            uclaw_core::tauri_commands::memory_entity_page_list,
+            uclaw_core::tauri_commands::memory_entity_page_append_timeline,
             // Fragment / Daily Summary
             uclaw_core::tauri_commands::memory_graph_list_fragments,
             uclaw_core::tauri_commands::search_fragments,
