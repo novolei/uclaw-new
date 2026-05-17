@@ -6,7 +6,7 @@
 
 use crate::agent::headless::HeadlessDelegate;
 use crate::agent::types::{AgenticLoopConfig, ChatMessage, ContentBlock, MessageRole, ReasoningContext};
-use crate::automation::runtime::{AutoContinueConfig, CompletionGate, PermissionSet};
+use crate::automation::runtime::{AutoContinueConfig, PermissionSet};
 use crate::channels::session_registry::ImSessionRegistry;
 use crate::channels::types::{ImChannelInstanceConfig, InboundMessage, ReplyHandle, StreamingHandle};
 use anyhow::Result;
@@ -178,6 +178,8 @@ async fn run_automation_via_im(
     let streaming_cl = streaming.clone();
     let spec_id = spec.spec_id.clone();
 
+    let _ = reply.send("正在处理中，请稍候…").await;
+
     tokio::spawn(async move {
         if let Err(e) = runtime_service.execute_run_with_reply(
             &spec_id,
@@ -232,8 +234,6 @@ async fn run_agent_chat_via_im(
             .collect()
     };
 
-    let start_idx = existing_messages.len();
-
     let state: tauri::State<'_, crate::app::AppState> = app_handle.state();
     let runtime_service = state.runtime_service.clone();
     let workspace_root = state.workspace_root.clone();
@@ -248,6 +248,11 @@ async fn run_agent_chat_via_im(
         reason_ctx.messages.push(m.clone());
     }
     reason_ctx.messages.push(ChatMessage::user(&msg.text));
+    // Snapshot AFTER adding the inbound user message so that only messages
+    // added by the agentic loop (assistant replies) land in the new_messages
+    // slice. Capturing start_idx before the push would cause the user message
+    // to be double-persisted on every turn.
+    let start_idx = reason_ctx.messages.len();
 
     // Resolve LLM using the automation service's provider resolution.
     let active = runtime_service.provider_service
@@ -291,12 +296,18 @@ async fn run_agent_chat_via_im(
     };
 
     let loop_config = AgenticLoopConfig::default();
-    let _outcome = crate::agent::agentic_loop::run_agentic_loop(
+    let outcome = crate::agent::agentic_loop::run_agentic_loop(
         &delegate,
         &mut reason_ctx,
         &loop_config,
     )
     .await;
+
+    // On failure, send an error reply and return early without persisting.
+    if let crate::agent::types::LoopOutcome::Failure { error, .. } = &outcome {
+        let _ = reply.send(&format!("处理请求时出错：{error}")).await;
+        return Ok(());
+    }
 
     let final_assistant_text = reason_ctx
         .messages
