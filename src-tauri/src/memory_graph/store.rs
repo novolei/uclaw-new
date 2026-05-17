@@ -1184,6 +1184,16 @@ impl MemoryGraphStore {
             .lock()
             .map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
 
+        // E0597 fix (same shape as symphony/run_session.rs:173):
+        // The `MappedRows` returned by `query_map` borrows `&mut stmt`.
+        // Chaining `.flatten().collect()` on the same line as `query_map`
+        // causes Rust's borrow-checker to extend the `stmt` borrow through
+        // to the end of the block, after `stmt` itself goes out of scope.
+        //
+        // Solution: bind the `MappedRows` to its own `let` so it's dropped
+        // before `stmt` does. Then collecting from the bound iterator only
+        // borrows `stmt` for as long as the binding lives — which is
+        // strictly less than the block.
         let nodes: Vec<MemoryNode> = if let Some(subkind) = subkind_filter {
             let mut stmt = conn
                 .prepare(
@@ -1196,12 +1206,12 @@ impl MemoryGraphStore {
                      LIMIT ?3",
                 )
                 .map_err(crate::error::Error::Database)?;
-            stmt.query_map(params![space_id, subkind, limit as i64], |row| {
-                Self::row_to_node(row)
-            })
-            .map_err(crate::error::Error::Database)?
-            .flatten()
-            .collect()
+            let rows = stmt
+                .query_map(params![space_id, subkind, limit as i64], |row| {
+                    Self::row_to_node(row)
+                })
+                .map_err(crate::error::Error::Database)?;
+            rows.flatten().collect()
         } else {
             let mut stmt = conn
                 .prepare(
@@ -1212,12 +1222,10 @@ impl MemoryGraphStore {
                      LIMIT ?2",
                 )
                 .map_err(crate::error::Error::Database)?;
-            stmt.query_map(params![space_id, limit as i64], |row| {
-                Self::row_to_node(row)
-            })
-            .map_err(crate::error::Error::Database)?
-            .flatten()
-            .collect()
+            let rows = stmt
+                .query_map(params![space_id, limit as i64], |row| Self::row_to_node(row))
+                .map_err(crate::error::Error::Database)?;
+            rows.flatten().collect()
         };
 
         Self::batch_hydrate_details(&conn, nodes)
