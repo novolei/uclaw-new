@@ -112,6 +112,16 @@ pub trait ImChannelSender: Send + Sync {
     }
 }
 
+/// Streaming reply handle — only WeCom Bot supports real streaming.
+/// Other channels ignore the update() calls and deliver on finish().
+#[async_trait::async_trait]
+pub trait StreamingHandle: Send + Sync {
+    /// Send a partial update. May be called multiple times before finish().
+    async fn update(&self, partial: &str) -> anyhow::Result<()>;
+    /// Mark the stream complete with the final full text.
+    async fn finish(&self, final_text: &str) -> anyhow::Result<()>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +159,10 @@ mod tests {
         let gp = GuestPolicy::default();
         assert!(gp.tool_allowlist.is_empty());
         assert!(!gp.mcp_enabled);
+    }
+
+    #[test]
+    fn streaming_handle_is_object_safe() {
+        fn _accepts(_: &dyn StreamingHandle) {}
     }
 }
