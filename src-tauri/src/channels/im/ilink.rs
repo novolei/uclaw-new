@@ -111,6 +111,7 @@ impl IlinkSender {
                     break;
                 }
                 Err(e) => {
+                    connected = false;
                     let _ = self.status_tx.send(ChannelRuntimeStatus {
                         instance_id: self.instance_id.clone(),
                         state: ChannelState::Error,
@@ -123,6 +124,13 @@ impl IlinkSender {
                             "[IlinkBot:{}] Max reconnect attempts reached",
                             self.instance_id
                         );
+                        let _ = self.status_tx.send(ChannelRuntimeStatus {
+                            instance_id: self.instance_id.clone(),
+                            state: ChannelState::Offline,
+                            last_error: Some("已达到最大重连次数，渠道已停止".to_string()),
+                            connected_since_ms: None,
+                            message_count_today: 0,
+                        });
                         break;
                     }
                     let delay = std::cmp::min(
