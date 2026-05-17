@@ -11,6 +11,7 @@ import { visibleTabsAtom } from '@/atoms/tab-atoms'
 import { ChatView } from '@/components/chat/ChatView'
 import { AgentView } from '@/components/agent/AgentView'
 import { BrowserViewer } from '@/components/canvas/BrowserViewer'
+import { SymphonyCanvas } from '@/components/symphony'
 import { TabErrorBoundary } from './TabErrorBoundary'
 
 export interface TabContentProps {
@@ -48,6 +49,14 @@ export function TabContent({ tabId }: TabContentProps): React.ReactElement {
     return (
       <TabErrorBoundary key={tab.sessionId} sessionId={tab.sessionId}>
         <BrowserViewer />
+      </TabErrorBoundary>
+    )
+  }
+
+  if (tab.type === 'symphony') {
+    return (
+      <TabErrorBoundary key={tab.sessionId} sessionId={tab.sessionId}>
+        <SymphonyCanvas workflowId={tab.sessionId} />
       </TabErrorBoundary>
     )
   }

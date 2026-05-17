@@ -50,6 +50,7 @@
     "@tauri-apps/plugin-shell": "^2.3.5",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "@tiptap/extension-code-block-lowlight": "^3.23.2",
+    "@xyflow/react": "^12.3.5",
     "@tiptap/extension-link": "^3.23.2",
     "@tiptap/extension-placeholder": "^3.23.2",
     "@tiptap/react": "^3.23.2",
