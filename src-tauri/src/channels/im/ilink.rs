@@ -10,10 +10,13 @@ use crate::channels::types::{ChannelRuntimeStatus, ChannelState, ImChannelSender
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::AbortHandle;
+use lru::LruCache;
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const ILINK_BASE_URL: &str = "https://ilinkai.weixin.qq.com";
 const CHANNEL_VERSION: &str = "1.0.2";
@@ -23,14 +26,41 @@ const RECONNECT_MAX_MS: u64 = 30_000;
 const MAX_RECONNECT_ATTEMPTS: u32 = 100;
 
 const DEDUP_CAPACITY: usize = 200;
+const CONTEXT_TOKEN_CACHE_CAP: usize = 500;
+const MAX_REPLY_CHARS: usize = 4_000;
+
+struct IlinkSharedState {
+    /// user_id → 最新 context_token，LRU 上限 500 条。
+    context_tokens: RwLock<LruCache<String, String>>,
+    /// false = -14 已触发，poll_loop 下次迭代后退出。
+    session_active: AtomicBool,
+    /// 已见过的消息去重缓冲。
+    seen_msg_ids: Mutex<VecDeque<String>>,
+}
+
+impl IlinkSharedState {
+    fn new() -> Self {
+        Self {
+            context_tokens: RwLock::new(
+                LruCache::new(NonZeroUsize::new(CONTEXT_TOKEN_CACHE_CAP).unwrap()),
+            ),
+            session_active: AtomicBool::new(true),
+            seen_msg_ids: Mutex::new(VecDeque::with_capacity(DEDUP_CAPACITY)),
+        }
+    }
+
+    async fn invalidate(&self) {
+        self.session_active.store(false, Ordering::Relaxed);
+        self.context_tokens.write().await.clear();
+        self.seen_msg_ids.lock().await.clear();
+    }
+}
 
 pub struct IlinkSender {
     instance_id: String,
     bot_token: String,
     base_url: String,
-    context_tokens: Arc<RwLock<HashMap<String, String>>>,
-    // Circular buffer of recently-seen message IDs to suppress retransmissions.
-    seen_msg_ids: Arc<Mutex<VecDeque<String>>>,
+    shared: Arc<IlinkSharedState>,
     client: reqwest::Client,
     status_tx: tokio::sync::mpsc::UnboundedSender<ChannelRuntimeStatus>,
 }
@@ -52,8 +82,7 @@ impl IlinkSender {
             instance_id: instance_id.to_string(),
             bot_token,
             base_url,
-            context_tokens: Arc::new(RwLock::new(HashMap::new())),
-            seen_msg_ids: Arc::new(Mutex::new(VecDeque::with_capacity(DEDUP_CAPACITY))),
+            shared: Arc::new(IlinkSharedState::new()),
             client: reqwest::Client::new(),
             status_tx,
         }
@@ -87,6 +116,22 @@ impl IlinkSender {
         let mut connected = false;
 
         loop {
+            // Check if sendmessage path already set -14 (IlinkReplySender.send_text called invalidate()).
+            if !self.shared.session_active.load(Ordering::Relaxed) {
+                tracing::warn!(
+                    "[IlinkBot:{}] session_active=false (set via sendmessage -14), stopping poll",
+                    self.instance_id
+                );
+                let _ = self.status_tx.send(ChannelRuntimeStatus {
+                    instance_id: self.instance_id.clone(),
+                    state: ChannelState::NeedsRebind,
+                    last_error: Some("会话已失效（-14），请重新扫码绑定".to_string()),
+                    connected_since_ms: None,
+                    message_count_today: 0,
+                });
+                break;
+            }
+
             match self.single_poll(&mut updates_buf, &inbound_tx).await {
                 Ok(true) => {
                     if !connected {
@@ -180,6 +225,7 @@ impl IlinkSender {
             .as_i64()
             .unwrap_or(resp["errcode"].as_i64().unwrap_or(0));
         if ret_code == SESSION_EXPIRED_CODE {
+            self.shared.invalidate().await;
             return Ok(false);
         }
         if ret_code != 0 {
@@ -207,12 +253,21 @@ impl IlinkSender {
         msg: &Value,
         inbound_tx: &mpsc::UnboundedSender<(InboundMessage, Arc<ReplyHandle>)>,
     ) {
+        // iLink 是个人号 DM-only；群消息在协议层面不可达，防御性过滤。
+        if let Some(gid) = msg["group_id"].as_str().filter(|s| !s.is_empty()) {
+            tracing::debug!(
+                "[IlinkBot:{}] group message (group_id={gid}) — iLink DM-only, skipping",
+                self.instance_id
+            );
+            return;
+        }
+
         let user_id = match msg["from_user_id"].as_str() {
             Some(id) if !id.is_empty() => id.to_string(),
             _ => return,
         };
 
-        // Dedup: iLink retransmits unacknowledged messages; skip already-seen IDs.
+        // 去重：iLink 在 ACK 前重传同一条消息，跳过已见过的 ID。
         let dedup_key = msg["message_id"]
             .as_i64()
             .map(|id| id.to_string())
@@ -222,7 +277,7 @@ impl IlinkSender {
                     .map(|ct| format!("{}:{}", user_id, ct))
             });
         if let Some(ref key) = dedup_key {
-            let mut seen = self.seen_msg_ids.lock().await;
+            let mut seen = self.shared.seen_msg_ids.lock().await;
             if seen.contains(key) {
                 tracing::debug!(
                     "[IlinkBot:{}] duplicate msg key={key}, skipping",
@@ -238,10 +293,11 @@ impl IlinkSender {
 
         let context_token = msg["context_token"].as_str().map(String::from);
         if let Some(ref ct) = context_token {
-            self.context_tokens
+            self.shared
+                .context_tokens
                 .write()
                 .await
-                .insert(user_id.clone(), ct.clone());
+                .put(user_id.clone(), ct.clone());
         }
 
         let items = &msg["item_list"];
@@ -271,6 +327,7 @@ impl IlinkSender {
             bot_token: self.bot_token.clone(),
             base_url: self.base_url.clone(),
             client: self.client.clone(),
+            shared: self.shared.clone(),
         });
         let reply = Arc::new(ReplyHandle {
             sender: sender_arc,
@@ -338,6 +395,18 @@ struct IlinkReplySender {
     bot_token: String,
     base_url: String,
     client: reqwest::Client,
+    shared: Arc<IlinkSharedState>,
+}
+
+impl IlinkReplySender {
+    fn truncate_reply(text: &str) -> String {
+        if text.chars().count() > MAX_REPLY_CHARS {
+            let truncated: String = text.chars().take(MAX_REPLY_CHARS).collect();
+            format!("{truncated}\n\n…（内容已截断）")
+        } else {
+            text.to_string()
+        }
+    }
 }
 
 #[async_trait]
@@ -350,6 +419,15 @@ impl ImChannelSender for IlinkReplySender {
     ) -> Result<(), String> {
         let context_token = ctx
             .and_then(|c| c["context_token"].as_str())
+            .map(String::from)
+            .or_else(|| {
+                // Fallback: channel_ctx accidentally lost — read latest token from LRU cache.
+                self.shared
+                    .context_tokens
+                    .try_read()
+                    .ok()
+                    .and_then(|cache| cache.peek(chat_id).cloned())
+            })
             .ok_or_else(|| {
                 format!(
                     "[IlinkBot:{}] Cannot reply to {chat_id}: missing context_token",
@@ -357,9 +435,12 @@ impl ImChannelSender for IlinkReplySender {
                 )
             })?;
 
+        let text_to_send = Self::truncate_reply(text);
+
         use base64::Engine;
         let n: u32 = rand::random();
-        let uin = base64::engine::general_purpose::STANDARD.encode(n.to_string().as_bytes());
+        let uin =
+            base64::engine::general_purpose::STANDARD.encode(n.to_string().as_bytes());
 
         let url = format!("{}/ilink/bot/sendmessage", self.base_url);
         let body = json!({
@@ -372,7 +453,7 @@ impl ImChannelSender for IlinkReplySender {
                 "context_token": context_token,
                 "item_list": [{
                     "type": 1,
-                    "text_item": { "text": text }
+                    "text_item": { "text": text_to_send }
                 }]
             },
             "base_info": { "channel_version": CHANNEL_VERSION }
@@ -392,18 +473,26 @@ impl ImChannelSender for IlinkReplySender {
             .map_err(|e| e.to_string())?;
 
         let http_status = resp.status();
-        let resp_body: Value = resp
-            .json()
-            .await
-            .unwrap_or_else(|_| json!({}));
+        let resp_body: Value = resp.json().await.unwrap_or_else(|_| json!({}));
         let ret = resp_body["ret"]
             .as_i64()
             .unwrap_or(resp_body["errcode"].as_i64().unwrap_or(0));
+
         if !http_status.is_success() {
             return Err(format!("iLink sendmessage HTTP {http_status} ret={ret}"));
         }
+        if ret == SESSION_EXPIRED_CODE {
+            self.shared.invalidate().await;
+            return Err(format!(
+                "[IlinkBot:{}] sendmessage session expired (-14), poll_loop notified",
+                self.instance_id
+            ));
+        }
         if ret != 0 {
-            return Err(format!("iLink sendmessage error ret={ret}: {}", resp_body["errmsg"].as_str().unwrap_or("")));
+            return Err(format!(
+                "iLink sendmessage error ret={ret}: {}",
+                resp_body["errmsg"].as_str().unwrap_or("")
+            ));
         }
         Ok(())
     }
@@ -469,5 +558,208 @@ mod tests {
     fn extract_text_image_placeholder() {
         let items = serde_json::json!([{ "type": 2 }]);
         assert_eq!(IlinkSender::extract_text(&items), "[Image]");
+    }
+
+    #[tokio::test]
+    async fn invalidate_clears_all_shared_state() {
+        let shared = Arc::new(IlinkSharedState::new());
+        shared.context_tokens.write().await.put("u1".to_string(), "ct1".to_string());
+        shared.seen_msg_ids.lock().await.push_back("id1".to_string());
+        assert!(shared.session_active.load(std::sync::atomic::Ordering::Relaxed));
+
+        shared.invalidate().await;
+
+        assert!(!shared.session_active.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(shared.context_tokens.read().await.len(), 0);
+        assert_eq!(shared.seen_msg_ids.lock().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn group_id_message_skipped() {
+        let (status_tx, _) = tokio::sync::mpsc::unbounded_channel();
+        let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::unbounded_channel();
+        let sender = Arc::new(IlinkSender::new(
+            "test",
+            &serde_json::json!({}),
+            &serde_json::json!({ "bot_token": "tok" }),
+            status_tx,
+        ));
+
+        let msg = serde_json::json!({
+            "from_user_id": "user1",
+            "group_id": "group123",
+            "context_token": "ct1",
+            "item_list": [{ "type": 1, "text_item": { "text": "hello" } }]
+        });
+        sender.handle_inbound(&msg, &inbound_tx).await;
+
+        assert!(inbound_rx.try_recv().is_err(), "group message must not be dispatched");
+    }
+
+    #[tokio::test]
+    async fn context_token_lru_evicts_at_capacity() {
+        let shared = Arc::new(IlinkSharedState::new());
+        for i in 0..=CONTEXT_TOKEN_CACHE_CAP {
+            shared
+                .context_tokens
+                .write()
+                .await
+                .put(format!("user{i}"), format!("ct{i}"));
+        }
+        assert_eq!(
+            shared.context_tokens.read().await.len(),
+            CONTEXT_TOKEN_CACHE_CAP
+        );
+    }
+
+    #[tokio::test]
+    async fn sendmessage_14_calls_invalidate() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/ilink/bot/sendmessage")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"ret":-14}"#)
+            .create_async()
+            .await;
+
+        let shared = Arc::new(IlinkSharedState::new());
+        shared.context_tokens.write().await.put("user1".to_string(), "ct1".to_string());
+        shared.seen_msg_ids.lock().await.push_back("id1".to_string());
+
+        let reply_sender = IlinkReplySender {
+            instance_id: "test".to_string(),
+            bot_token: "tok".to_string(),
+            base_url: server.url(),
+            client: reqwest::Client::new(),
+            shared: shared.clone(),
+        };
+
+        let ctx = serde_json::json!({ "context_token": "ct1" });
+        let result = reply_sender.send_text("user1", "hello", Some(&ctx)).await;
+
+        assert!(result.is_err(), "sendmessage -14 must return Err");
+        assert!(
+            !shared.session_active.load(Ordering::Relaxed),
+            "session_active must be false after -14"
+        );
+        assert_eq!(shared.context_tokens.read().await.len(), 0, "context_tokens cleared");
+        assert_eq!(shared.seen_msg_ids.lock().await.len(), 0, "seen_msg_ids cleared");
+    }
+
+    #[test]
+    fn truncate_reply_at_4000_chars() {
+        let input = "x".repeat(4001);
+        let result = IlinkReplySender::truncate_reply(&input);
+        let first_line: &str = result.split('\n').next().unwrap();
+        assert_eq!(first_line.chars().count(), MAX_REPLY_CHARS);
+        assert!(result.contains("内容已截断"));
+    }
+
+    #[test]
+    fn no_truncation_under_limit() {
+        let input = "x".repeat(MAX_REPLY_CHARS);
+        assert_eq!(IlinkReplySender::truncate_reply(&input), input);
+    }
+
+    #[tokio::test]
+    async fn context_token_fallback_from_lru() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/ilink/bot/sendmessage")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"ret":0}"#)
+            .create_async()
+            .await;
+
+        let shared = Arc::new(IlinkSharedState::new());
+        shared
+            .context_tokens
+            .write()
+            .await
+            .put("user1".to_string(), "cached_ct".to_string());
+
+        let reply_sender = IlinkReplySender {
+            instance_id: "test".to_string(),
+            bot_token: "tok".to_string(),
+            base_url: server.url(),
+            client: reqwest::Client::new(),
+            shared,
+        };
+
+        // ctx=None — should fall back to LRU cache, not error
+        let result = reply_sender.send_text("user1", "hi", None).await;
+        assert!(result.is_ok(), "LRU fallback should succeed: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn session_active_false_stops_poll_loop() {
+        // No HTTP mock needed — session_active=false is detected before any HTTP.
+        // Using an unconnectable port to ensure no HTTP is attempted.
+        let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (inbound_tx, _) = tokio::sync::mpsc::unbounded_channel();
+
+        let sender = Arc::new(IlinkSender::new(
+            "test-stop",
+            &serde_json::json!({ "base_url": "http://127.0.0.1:1" }),
+            &serde_json::json!({ "bot_token": "tok" }),
+            status_tx,
+        ));
+
+        // Mark session as already-expired before starting
+        sender.shared.session_active.store(false, Ordering::Relaxed);
+
+        let abort = sender.clone().start(inbound_tx);
+
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            status_rx.recv(),
+        )
+        .await
+        .expect("timeout: NeedsRebind not emitted within 3s")
+        .expect("channel closed");
+
+        abort.abort();
+        assert_eq!(status.state, crate::channels::types::ChannelState::NeedsRebind);
+        assert_eq!(status.instance_id, "test-stop");
+    }
+
+    #[tokio::test]
+    async fn getupdates_14_calls_invalidate() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/ilink/bot/getupdates")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"ret":-14}"#)
+            .create_async()
+            .await;
+
+        let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (inbound_tx, _) = tokio::sync::mpsc::unbounded_channel();
+
+        let sender = Arc::new(IlinkSender::new(
+            "test-gtu14",
+            &serde_json::json!({ "base_url": server.url() }),
+            &serde_json::json!({ "bot_token": "tok" }),
+            status_tx,
+        ));
+        sender.shared.context_tokens.write().await.put("u1".to_string(), "ct1".to_string());
+
+        let abort = sender.clone().start(inbound_tx);
+
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            status_rx.recv(),
+        )
+        .await
+        .expect("timeout")
+        .expect("channel closed");
+
+        abort.abort();
+        assert_eq!(status.state, crate::channels::types::ChannelState::NeedsRebind);
+        assert!(!sender.shared.session_active.load(Ordering::Relaxed));
+        assert_eq!(sender.shared.context_tokens.read().await.len(), 0);
     }
 }

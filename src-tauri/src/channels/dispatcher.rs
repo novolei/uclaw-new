@@ -126,6 +126,23 @@ pub fn load_session_messages(
     rows.collect()
 }
 
+/// Collect all non-empty text blocks from Assistant messages, joined in order.
+/// Replaces the earlier find_map(rev()) approach that only returned the last block.
+pub(super) fn extract_final_assistant_text(messages: &[ChatMessage]) -> String {
+    messages
+        .iter()
+        .filter(|m| m.role == MessageRole::Assistant)
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } if !text.trim().is_empty() => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        .trim()
+        .to_string()
+}
+
 /// Dispatch an inbound IM message to either the automation or agent-chat path.
 pub async fn dispatch_inbound(
     msg: InboundMessage,
@@ -203,6 +220,11 @@ async fn run_agent_chat_via_im(
     db: Arc<std::sync::Mutex<rusqlite::Connection>>,
     app_handle: tauri::AppHandle,
 ) -> Result<()> {
+    if msg.text.trim().is_empty() {
+        tracing::debug!("[IM] empty inbound text from {}, skipping agent run", msg.chat_id);
+        return Ok(());
+    }
+
     let channel_type_str = instance.channel_type.as_str().to_string();
 
     let session_id = session_registry
@@ -326,26 +348,23 @@ async fn run_agent_chat_via_im(
         return Ok(());
     }
 
-    let final_assistant_text = reason_ctx
-        .messages
-        .iter()
-        .rev()
-        .find_map(|m| {
-            if m.role == MessageRole::Assistant {
-                m.content.iter().find_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text.clone()),
-                    _ => None,
-                })
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default();
+    let final_assistant_text = extract_final_assistant_text(&reason_ctx.messages);
 
     if let Some(ref sh) = delegate.streaming_handle {
-        let _ = sh.finish(&final_assistant_text).await;
+        if let Err(e) = sh.finish(&final_assistant_text).await {
+            tracing::error!("[IM] streaming finish failed for session {session_id}: {e}");
+        }
     } else if let Some(ref rh) = delegate.reply_handle {
-        let _ = rh.sender.send_text(&rh.chat_id, &final_assistant_text, rh.channel_ctx.as_ref()).await;
+        if let Err(e) = rh
+            .sender
+            .send_text(&rh.chat_id, &final_assistant_text, rh.channel_ctx.as_ref())
+            .await
+        {
+            tracing::error!(
+                "[IM] reply send failed for {} (session {session_id}): {e}",
+                rh.chat_id
+            );
+        }
     }
 
     let new_messages = &reason_ctx.messages[start_idx..];
@@ -477,5 +496,39 @@ mod tests {
             [], |r| r.get(0),
         ).unwrap();
         assert_eq!(id, "sess1-2");
+    }
+
+    #[test]
+    fn extract_final_text_joins_all_blocks() {
+        use crate::agent::types::{ChatMessage, ContentBlock, MessageRole};
+        let messages = vec![
+            ChatMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::Text { text: "q".into() }],
+                compacted: false,
+            },
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::Text { text: "first reply".into() }],
+                compacted: false,
+            },
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::Text { text: "second reply".into() }],
+                compacted: false,
+            },
+        ];
+        let result = extract_final_assistant_text(&messages);
+        assert_eq!(result, "first reply\n\nsecond reply");
+    }
+
+    #[test]
+    fn empty_text_guard_predicate() {
+        // Verify the guard condition catches all whitespace-only inputs.
+        let empty_inputs = ["", "   ", "\t\n", "\r\n"];
+        for input in empty_inputs {
+            assert!(input.trim().is_empty(), "should be empty: {:?}", input);
+        }
+        assert!(!("hello".trim().is_empty()));
     }
 }
