@@ -403,6 +403,9 @@ mod tests {
             active_session_id: None,
             session_context: None,
             existing_skill_fingerprints: vec![],
+            gene_candidate_count: 0,
+            gene_candidates: vec![],
+            existing_gene_fingerprints: vec![],
         }
     }
 
@@ -483,6 +486,9 @@ mod tests {
             active_session_id: None,
             session_context: None,
             existing_skill_fingerprints: vec![],
+            gene_candidate_count: 0,
+            gene_candidates: vec![],
+            existing_gene_fingerprints: vec![],
         };
 
         let output = scenario.build_context(&ctx).await.unwrap();

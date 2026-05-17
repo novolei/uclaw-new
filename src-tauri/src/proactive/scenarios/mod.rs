@@ -2,6 +2,7 @@ pub mod types;
 // 预留：后续 Task 创建
 pub mod conversation_learning;
 pub mod failure_signals;
+pub mod gene_evolution;
 pub mod skill_extraction;
 pub mod multimodal_context;
 
@@ -138,6 +139,9 @@ mod tests {
             active_session_id: None,
             session_context: None,
             existing_skill_fingerprints: vec![],
+            gene_candidate_count: 0,
+            gene_candidates: vec![],
+            existing_gene_fingerprints: vec![],
         }
     }
 

@@ -33,6 +33,9 @@ pub enum InfraEventType {
     // ─── 工作区相关 ───
     /// 活跃工作区切换事件
     WorkspaceSwitched,
+    // ─── GEP 相关 ───
+    /// Gene 应用后生成的 Capsule
+    CapsuleCreated,
 }
 
 // ─── 对话消息 ─────────────────────────────────────────────────────────

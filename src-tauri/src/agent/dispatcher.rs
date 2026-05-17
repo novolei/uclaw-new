@@ -1,9 +1,11 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use async_trait::async_trait;
 use tauri::Emitter;
 use crate::agent::types::*;
 use crate::agent::tools::tool::{ToolRegistry, ToolOutput};
+use crate::agent::gep::retrieval::{GeneRetriever, GeneMatch, format_gene_injection};
 use crate::app::PendingApprovals;
 use crate::infra::InfraService;
 use crate::llm::LlmProvider;
@@ -75,6 +77,10 @@ pub struct ChatDelegate {
     /// resets when the next user message constructs a fresh
     /// `ChatDelegate`).
     skill_search_used: AtomicBool,
+    /// GEP Gene retriever for control signal injection into system prompt
+    gene_retriever: Option<Arc<GeneRetriever>>,
+    /// Gene matches from the most recent call_llm — cleared after Capsule generation.
+    last_gene_matches: Mutex<Vec<GeneMatch>>,
 }
 
 impl ChatDelegate {
@@ -107,6 +113,79 @@ impl ChatDelegate {
             workspace_root,
             skills_manifest_block: String::new(),
             skill_search_used: AtomicBool::new(false),
+            gene_retriever: None,
+            last_gene_matches: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Set the GEP Gene retriever for control signal injection.
+    pub fn set_gene_retriever(&mut self, retriever: Arc<GeneRetriever>) {
+        self.gene_retriever = Some(retriever);
+    }
+
+    /// Generate and publish Capsules for the most recent Gene matches.
+    ///
+    /// Computes the blast radius from the workspace's git diff and
+    /// publishes a CapsuleCreated event via InfraService. Called after
+    /// tool execution completes for the turn.
+    pub async fn generate_capsule_for_turn(&self) {
+        let gene_matches: Vec<GeneMatch> = {
+            match self.last_gene_matches.lock() {
+                Ok(mut stored) => {
+                    let matches = stored.clone();
+                    stored.clear();
+                    matches
+                }
+                Err(_) => return,
+            }
+        };
+
+        if gene_matches.is_empty() {
+            return;
+        }
+
+        let infra = match &self.infra_service {
+            Some(svc) => svc,
+            None => return,
+        };
+
+        // Compute blast radius from workspace git diff
+        let blast_radius = match &self.workspace_root {
+            Some(root) => {
+                let repo_path = root.to_string_lossy();
+                crate::agent::gep::git_integration::compute_blast_radius(&repo_path)
+                    .unwrap_or(None)
+            }
+            None => None,
+        };
+
+        for gm in &gene_matches {
+            let mut metadata = serde_json::json!({
+                "gene_id": gm.gene.gene_id,
+                "gene_asset_id": gm.gene.asset_id,
+                "match_score": gm.match_score,
+                "rank_score": gm.rank_score,
+                "conversation_id": self.conversation_id,
+            });
+
+            if let Some(ref br) = blast_radius {
+                metadata["blast_radius"] = serde_json::json!({
+                    "files": br.files,
+                    "lines": br.lines,
+                });
+            }
+
+            infra.publish_capsule_created(
+                "local",
+                &gm.gene.gene_id,
+                metadata,
+            ).await;
+
+            tracing::info!(
+                gene_id = %gm.gene.gene_id,
+                match_score = gm.match_score,
+                "[ChatDelegate] CapsuleCreated event published"
+            );
         }
     }
 
@@ -685,7 +764,39 @@ impl LoopDelegate for ChatDelegate {
         // as authoritative context. This prevents unnecessary `bash date`
         // roundtrips when the user asks time-related questions.
         let time_block = self.build_system_time_block();
-        let full_system_prompt = format!("{}\n\n{}", effective_prompt, time_block);
+        let mut full_system_prompt = format!("{}\n\n{}", effective_prompt, time_block);
+
+        // Inject matched GEP Genes as control signals
+        if let Some(ref retriever) = self.gene_retriever {
+            let last_user_text = reason_ctx.messages.iter().rev()
+                .find(|m| matches!(m.role, crate::agent::types::MessageRole::User))
+                .and_then(|m| m.content.iter().find_map(|b| {
+                    if let crate::agent::types::ContentBlock::Text { text } = b {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                }))
+                .unwrap_or("");
+
+            if !last_user_text.is_empty() {
+                let matches = retriever.match_genes(last_user_text, &[], 2);
+                if !matches.is_empty() {
+                    let gene_block = format_gene_injection(&matches, 2);
+                    if !gene_block.is_empty() {
+                        full_system_prompt.push_str(&gene_block);
+                        tracing::debug!(
+                            gene_count = matches.len(),
+                            "[ChatDelegate] Injected Gene control signals into system prompt"
+                        );
+                    }
+                    // Store matches for Capsule generation after tool execution
+                    if let Ok(mut stored) = self.last_gene_matches.lock() {
+                        *stored = matches;
+                    }
+                }
+            }
+        }
 
         let mut messages = vec![ChatMessage::system(&full_system_prompt)];
         // Skip compacted messages — they stay in memory for UI replay
@@ -1550,6 +1661,11 @@ impl LoopDelegate for ChatDelegate {
                 None
             }
         }
+    }
+
+    /// After each iteration, generate Capsules for any Gene matches from this turn.
+    async fn after_iteration(&self, _iteration: usize) {
+        self.generate_capsule_for_turn().await;
     }
 }
 

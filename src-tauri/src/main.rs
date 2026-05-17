@@ -170,7 +170,7 @@ fn main() {
                             tracing::info!("[Stage 3] ConversationLearningScenario registered");
                         }
 
-                        // Scenario 2: Self-Improving Agent
+                        // Scenario 2: Self-Improving Agent (Skill Extraction)
                         if memubot_config.scenarios.skill_extraction.enabled {
                             let scenario = Arc::new(
                                 uclaw_core::proactive::scenarios::skill_extraction::SkillExtractionScenario::new(
@@ -179,6 +179,17 @@ fn main() {
                             );
                             scenario_manager.register(scenario);
                             tracing::info!("[Stage 3] SkillExtractionScenario registered");
+                        }
+
+                        // Scenario 2b: GEP Gene Evolution
+                        if memubot_config.gene_evolution.enabled {
+                            let scenario = Arc::new(
+                                uclaw_core::proactive::scenarios::gene_evolution::GeneEvolutionScenario::new(
+                                    memubot_config.gene_evolution.clone(),
+                                )
+                            );
+                            scenario_manager.register(scenario);
+                            tracing::info!("[Stage 3] GeneEvolutionScenario registered");
                         }
 
                         // Scenario 3: Multimodal Context Builder
@@ -195,6 +206,19 @@ fn main() {
                         tracing::info!("[Stage 3] {} proactive scenarios registered", scenario_manager.scenario_count());
 
                         let pro_db_path = data_dir.join("proactive.db");
+                        let gep_path = data_dir.join("gep");
+                        let gene_repo = match uclaw_core::agent::gep::repository::GeneRepository::new(gep_path) {
+                            Ok(repo) => Arc::new(std::sync::Mutex::new(repo)),
+                            Err(e) => {
+                                tracing::warn!("[Stage 3] GeneRepository init failed: {}, gene evolution disabled", e);
+                                // Create a fallback with temp dir to avoid crash
+                                Arc::new(std::sync::Mutex::new(
+                                    uclaw_core::agent::gep::repository::GeneRepository::new(
+                                        std::env::temp_dir().join("uclaw_gep_fallback")
+                                    ).unwrap_or_else(|_| panic!("Cannot create GeneRepository fallback"))
+                                ))
+                            }
+                        };
                         match uclaw_core::proactive::ProactiveStorage::new(&pro_db_path) {
                             Ok(storage) => {
                                 let pro_svc = Arc::new(
@@ -210,6 +234,7 @@ fn main() {
                                         memory_graph_store.clone(),
                                         Some(app_handle.clone()),
                                         db.clone(),
+                                        gene_repo,
                                     )
                                 );
                                 // Inject into AppState for tauri_commands access
@@ -518,6 +543,12 @@ fn main() {
             uclaw_core::tauri_commands::set_skill_lifecycle,
             uclaw_core::tauri_commands::list_invocable_skills,
             uclaw_core::tauri_commands::get_skill_versions,
+            // GEP Gene Evolution
+            uclaw_core::tauri_commands::list_genes,
+            uclaw_core::tauri_commands::get_gene_detail,
+            uclaw_core::tauri_commands::get_gene_evolution_tree,
+            uclaw_core::tauri_commands::retire_gene,
+            uclaw_core::tauri_commands::reactivate_gene,
             uclaw_core::tauri_commands::backfill_skill_keywords,
             uclaw_core::tauri_commands::propose_skill_consolidation,
             uclaw_core::tauri_commands::cancel_skill_consolidation,

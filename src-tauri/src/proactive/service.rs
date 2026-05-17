@@ -23,10 +23,12 @@
 //!                                           ProactiveStorage (持久化)
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use std::path::PathBuf;
 
 use rusqlite::Connection;
 
@@ -113,6 +115,9 @@ use super::proactive_recall::ProactiveRecallService;
 use super::task_memory::{TaskMemoryManager, TaskRecord, TaskStatus, TaskType};
 use super::tool_memory::{ToolUsageMemoryManager, ToolUsageRecord};
 use super::types::*;
+use crate::agent::gep::types::{Capsule, BlastRadius, CapsuleOutcome, EnvFingerprint, EvolutionEvent, Gene, GeneCandidate, LearningCard, LearningCardType, OutcomeStatus, StrategyHint};
+use crate::agent::gep::repository::GeneRepository;
+use crate::agent::gep::distillation;
 
 /// 上下文滑动窗口最大容量（每个 session 保留最近 N 条消息）
 const CONTEXT_WINDOW_SIZE: usize = 20;
@@ -189,10 +194,16 @@ struct ProactiveStateRefs {
     personality_model: Arc<PersonalityModel>,
     /// 主动召回服务
     proactive_recall_service: Arc<ProactiveRecallService>,
+    /// Gene 候选池 — 收集 self_eval 产出的 LearningCard，等待蒸馏
+    gene_candidate_pool: Arc<RwLock<VecDeque<GeneCandidate>>>,
+    /// Gene 候选池有新候选的标记
+    new_gene_candidates: Arc<AtomicBool>,
     /// 主数据库连接（用于查询 agent_messages/agent_turns/agent_sessions）
     db: Arc<Mutex<Connection>>,
     /// 上次人格画像更新时间
     last_personality_update: Arc<Mutex<Instant>>,
+    /// GEP Gene 文件存储
+    gene_repo: Arc<Mutex<GeneRepository>>,
 }
 
 // ─── ProactiveService ─────────────────────────────────────────────────
@@ -282,6 +293,14 @@ pub struct ProactiveService {
     /// 上次人格画像更新时间
     last_personality_update: Arc<Mutex<Instant>>,
 
+    /// GEP Gene 文件存储
+    gene_repo: Arc<Mutex<GeneRepository>>,
+
+    /// Gene 候选池 — 收集 self_eval 产出的 LearningCard，等待蒸馏
+    gene_candidate_pool: Arc<RwLock<VecDeque<GeneCandidate>>>,
+    /// Gene 候选池有新候选的标记
+    new_gene_candidates: Arc<AtomicBool>,
+
     /// 轮询循环任务句柄
     tick_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     /// 上下文监听任务句柄
@@ -306,6 +325,7 @@ impl ProactiveService {
         memory_graph_store: Arc<MemoryGraphStore>,
         app_handle: Option<tauri::AppHandle>,
         db: Arc<Mutex<Connection>>,
+        gene_repo: Arc<Mutex<GeneRepository>>,
     ) -> Self {
         let task_memory_manager = Arc::new(TaskMemoryManager::new(memory_graph_store.clone()));
         let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(memory_graph_store.clone()));
@@ -360,6 +380,9 @@ impl ProactiveService {
             proactive_recall_service,
             db,
             last_personality_update: Arc::new(Mutex::new(Instant::now())),
+            gene_repo,
+            gene_candidate_pool: Arc::new(RwLock::new(VecDeque::new())),
+            new_gene_candidates: Arc::new(AtomicBool::new(false)),
             tick_handle: Arc::new(RwLock::new(None)),
             listener_handle: Arc::new(RwLock::new(None)),
         }
@@ -401,7 +424,15 @@ impl ProactiveService {
             proactive_recall_service: self.proactive_recall_service.clone(),
             db: self.db.clone(),
             last_personality_update: self.last_personality_update.clone(),
+            gene_repo: self.gene_repo.clone(),
+            gene_candidate_pool: self.gene_candidate_pool.clone(),
+            new_gene_candidates: self.new_gene_candidates.clone(),
         }
+    }
+
+    /// Get a reference to the GEP GeneRepository.
+    pub fn gene_repository(&self) -> Arc<Mutex<GeneRepository>> {
+        self.gene_repo.clone()
     }
 
     /// 启动上下文监听任务
@@ -419,6 +450,8 @@ impl ProactiveService {
         let last_session = self.last_active_session_id.clone();
         let active_space_id = self.active_space_id.clone();
         let tool_memory = self.tool_memory_manager.clone();
+        let gene_pool = self.gene_candidate_pool.clone();
+        let new_gene_candidates_flag = self.new_gene_candidates.clone();
 
         let handle = tokio::spawn(async move {
             while is_running.load(Ordering::SeqCst) {
@@ -526,6 +559,86 @@ impl ProactiveService {
                                     tracing::info!(
                                         "[ProactiveService] 工作区切换: {} -> {}",
                                         old, new_id
+                                    );
+                                }
+                            }
+                            // Gene 学习事件 → 解析 LearningCard 推入候选池
+                            InfraEventType::SkillLearned => {
+                                if let Some(card_json) = event.metadata.get("learning_card") {
+                                    let card_obj: serde_json::Value = match serde_json::from_value(card_json.clone()) {
+                                        Ok(v) => v,
+                                        Err(e) => {
+                                            tracing::warn!("[ProactiveService] Failed to parse learning_card: {}", e);
+                                            continue;
+                                        }
+                                    };
+
+                                    let card_type = match card_obj.get("card_type").and_then(|v| v.as_str()).unwrap_or("noise") {
+                                        "failure_lesson" => LearningCardType::FailureLesson,
+                                        "success_pattern" => LearningCardType::SuccessPattern,
+                                        "optimization_tip" => LearningCardType::OptimizationTip,
+                                        _ => LearningCardType::Noise,
+                                    };
+
+                                    // Skip noise (self_eval already filtered, double-check)
+                                    if card_type == LearningCardType::Noise {
+                                        continue;
+                                    }
+
+                                    let strategy_hint: StrategyHint = card_obj
+                                        .get("strategy_hint")
+                                        .map(|v| serde_json::from_value(v.clone()).unwrap_or_default())
+                                        .unwrap_or_default();
+
+                                    let learning_card = LearningCard {
+                                        raw: event.message.content.clone(),
+                                        card_type,
+                                        failure_signal: card_obj.get("failure_signal").and_then(|v| v.as_str()).map(String::from),
+                                        tool_name: card_obj.get("tool_name").and_then(|v| v.as_str()).map(String::from),
+                                        strategy_hint,
+                                        files_touched: vec![],
+                                        session_id: event.metadata
+                                            .get("session_id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("unknown")
+                                            .to_string(),
+                                        score: event.metadata
+                                            .get("score")
+                                            .and_then(|v| v.as_f64())
+                                            .unwrap_or(0.0) as f32,
+                                        timestamp: event.timestamp,
+                                    };
+
+                                    let candidate = GeneCandidate {
+                                        source: "self_eval".to_string(),
+                                        content: learning_card.raw.clone(),
+                                        score: Some(learning_card.score as f64),
+                                        session_id: Some(learning_card.session_id.clone()),
+                                        reasoning: learning_card.strategy_hint.reason.clone(),
+                                        timestamp: chrono::Utc::now(),
+                                    };
+
+                                    let mut pool = gene_pool.write().await;
+                                    // Capacity control: max 20, evict lowest-score entry
+                                    const MAX_CANDIDATES: usize = 20;
+                                    if pool.len() >= MAX_CANDIDATES {
+                                        let mut min_idx = 0usize;
+                                        let mut min_score = f64::MAX;
+                                        for (i, c) in pool.iter().enumerate() {
+                                            let s = c.score.unwrap_or(0.0);
+                                            if s < min_score {
+                                                min_score = s;
+                                                min_idx = i;
+                                            }
+                                        }
+                                        pool.remove(min_idx);
+                                    }
+                                    pool.push_back(candidate);
+                                    new_gene_candidates_flag.store(true, Ordering::SeqCst);
+                                    has_new.store(true, Ordering::SeqCst);
+                                    tracing::info!(
+                                        "[ProactiveService] Gene candidate added, pool_size={}",
+                                        pool.len()
                                     );
                                 }
                             }
@@ -796,6 +909,32 @@ impl ProactiveService {
         let skill_fingerprints =
             Self::compute_skill_fingerprints_for_extraction(refs.memory_graph_store.as_ref(), &active_space_id, 50);
 
+        // 从 Gene 候选池读取当前快照
+        let (gene_count, gene_candidates_snapshot) = {
+            let pool = refs.gene_candidate_pool.read().await;
+            let count = pool.len();
+            // Convert GeneCandidate to LearningCard snapshot for scenario context
+            let cards: Vec<LearningCard> = pool.iter().map(|c| LearningCard {
+                raw: c.content.clone(),
+                card_type: LearningCardType::FailureLesson, // best-effort: candidates come from classified cards
+                failure_signal: None,
+                tool_name: None,
+                strategy_hint: StrategyHint {
+                    condition: None,
+                    action: None,
+                    reason: c.reasoning.clone(),
+                },
+                files_touched: vec![],
+                session_id: c.session_id.clone().unwrap_or_default(),
+                score: c.score.unwrap_or(0.0) as f32,
+                timestamp: c.timestamp.timestamp_millis(),
+            }).collect();
+            (count, cards)
+        };
+
+        // TODO: Build existing_gene_fingerprints from GeneRepository when integrated
+        let existing_gene_fingerprints = Vec::new();
+
         let scenario_ctx = ScenarioContext {
             recent_messages,
             execution_logs,
@@ -809,6 +948,9 @@ impl ProactiveService {
             active_session_id,
             session_context,
             existing_skill_fingerprints: skill_fingerprints,
+            gene_candidate_count: gene_count,
+            gene_candidates: gene_candidates_snapshot,
+            existing_gene_fingerprints,
         };
 
         // 2. 评估场景触发
@@ -1026,6 +1168,84 @@ impl ProactiveService {
                                             "summary": summary,
                                             "sessionId": session_id,
                                         }));
+                                    }
+                                } else if scenario.name() == "gene_evolution" {
+                                    // GEP Gene Evolution: parse Gene XML from LLM output
+                                    let distillation_outcome: Option<(Gene, Capsule, EvolutionEvent)> =
+                                    match distillation::parse_gene_xml(&llm_response) {
+                                        Ok(gene) => {
+                                            // Validate gene
+                                            if let Err(e) = distillation::validate_gene(&gene) {
+                                                tracing::warn!("[gene_evolution] Gene validation failed: {}", e);
+                                                None
+                                            } else {
+                                                // Check duplicates and store — keep lock scope minimal
+                                                let mut repo = refs.gene_repo.lock().unwrap();
+                                                let existing = repo.list_active_genes().unwrap_or_default();
+                                                if let Some(dup_id) = distillation::check_duplicate(&gene, &existing) {
+                                                    tracing::info!("[gene_evolution] Duplicate gene detected: {}", dup_id);
+                                                    None
+                                                } else {
+                                                    let mut gene = gene;
+                                                    match repo.store_gene(&mut gene) {
+                                                        Ok(()) => {
+                                                            // Generate initial Capsule
+                                                            let capsule = Capsule {
+                                                                id: format!("cap_init_{}", &gene.asset_id[..8]),
+                                                                gene_asset_id: gene.asset_id.clone(),
+                                                                gene_id: gene.gene_id.clone(),
+                                                                trigger: gene.signals_match.clone(),
+                                                                summary: format!("Initial capsule for gene {}", gene.gene_id),
+                                                                confidence: 0.8,
+                                                                blast_radius: BlastRadius { files: 0, lines: 0 },
+                                                                outcome: CapsuleOutcome {
+                                                                    status: OutcomeStatus::Success,
+                                                                    score: 0.8,
+                                                                },
+                                                                raw_streak: 0,
+                                                                effective_streak: 0.0,
+                                                                env_fingerprint: EnvFingerprint::default(),
+                                                                created_at: chrono::Utc::now().timestamp_millis(),
+                                                                lineage: vec![],
+                                                            };
+                                                            let _ = repo.store_capsule(&capsule);
+
+                                                            // Store EvolutionEvent
+                                                            let event = EvolutionEvent {
+                                                                intent: gene.category.to_string(),
+                                                                capsule_id: capsule.id.clone(),
+                                                                genes_used: vec![gene.asset_id.clone()],
+                                                                mutations_tried: 0,
+                                                                total_cycles: 1,
+                                                                created_at: chrono::Utc::now().timestamp_millis(),
+                                                            };
+                                                            let _ = repo.store_event(&event);
+
+                                                            tracing::info!(
+                                                                gene_id = %gene.gene_id,
+                                                                asset_id = %gene.asset_id,
+                                                                "[gene_evolution] New gene distilled and stored"
+                                                            );
+                                                            Some((gene, capsule, event))
+                                                        }
+                                                        Err(e) => {
+                                                            tracing::error!("[gene_evolution] Failed to store gene: {}", e);
+                                                            None
+                                                        }
+                                                    }
+                                                }
+                                            } // MutexGuard dropped here
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("[gene_evolution] Failed to parse Gene XML: {}", e);
+                                            None
+                                        }
+                                    };
+
+                                    // Clear consumed candidates (after MutexGuard is dropped)
+                                    if distillation_outcome.is_some() {
+                                        refs.gene_candidate_pool.write().await.clear();
+                                        refs.new_gene_candidates.store(false, Ordering::SeqCst);
                                     }
                                 } else {
                                     // 其他场景保持原有的 memorize_with_config 逻辑
@@ -1623,6 +1843,11 @@ mod tests {
             memory_graph_store,
             None, // app_handle — 测试环境不需要 Tauri IPC
             Arc::new(std::sync::Mutex::new(Connection::open_in_memory().unwrap())),
+            Arc::new(std::sync::Mutex::new(
+                crate::agent::gep::repository::GeneRepository::new(
+                    std::env::temp_dir().join("uclaw_gep_test")
+                ).expect("GeneRepository for test")
+            )),
         )
     }
 

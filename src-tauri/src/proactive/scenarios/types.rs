@@ -4,6 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use crate::infra::ConversationMessage;
+use crate::agent::gep::types::{GeneCandidate, LearningCard};
 
 // ─── Per-Session 上下文窗口 ───────────────────────────────────────────
 
@@ -91,6 +92,13 @@ pub struct ScenarioContext {
     /// 在 run_scenario_loop 中预计算并注入，用于提取阶段前置去重。
     /// 空 Vec 表示不需要去重参考（其他场景或技能数不足）。
     pub existing_skill_fingerprints: Vec<String>,
+    // ─── GEP Gene Evolution 字段 ───
+    /// Gene 候选池当前数量
+    pub gene_candidate_count: usize,
+    /// Gene 候选列表（LearningCard 快照，供蒸馏场景使用）
+    pub gene_candidates: Vec<LearningCard>,
+    /// 已有 Gene 指纹列表（用于去重）
+    pub existing_gene_fingerprints: Vec<String>,
 }
 
 /// 会话上下文摘要 — 从 Agent Session 中提取的结构化信息

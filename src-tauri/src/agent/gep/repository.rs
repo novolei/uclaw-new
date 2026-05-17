@@ -156,6 +156,23 @@ impl GeneRepository {
         Ok(())
     }
 
+    /// List all EvolutionEvents (sorted by created_at descending).
+    pub fn list_events(&self) -> Result<Vec<EvolutionEvent>> {
+        let mut events = Vec::new();
+        self.scan_json_files(&self.events_dir(), &mut events)?;
+        events.sort_by(|a: &EvolutionEvent, b: &EvolutionEvent| b.created_at.cmp(&a.created_at));
+        Ok(events)
+    }
+
+    /// List EvolutionEvents for a specific Gene (match by gene_id in capsule_id).
+    pub fn list_events_for_gene(&self, gene_id: &str) -> Result<Vec<EvolutionEvent>> {
+        let all = self.list_events()?;
+        Ok(all
+            .into_iter()
+            .filter(|e| e.capsule_id.contains(gene_id))
+            .collect())
+    }
+
     // ─── Helpers ────────────────────────────────────────────────────────
 
     /// Recursively scan a directory for .json files and deserialize them.

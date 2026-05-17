@@ -304,6 +304,28 @@ impl InfraService {
         };
         self.publish(event).await;
     }
+
+    /// 快捷方法：发布「Capsule 生成」事件
+    pub async fn publish_capsule_created(
+        &self,
+        platform: &str,
+        gene_id: &str,
+        metadata: serde_json::Value,
+    ) {
+        let event = InfraEvent {
+            id: 0,
+            event_type: InfraEventType::CapsuleCreated,
+            platform: platform.to_string(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            message: ConversationMessage {
+                role: "system".to_string(),
+                content: gene_id.to_string(),
+            },
+            metadata,
+            trace_id: None,
+        };
+        self.publish(event).await;
+    }
 }
 
 // ─── 单元测试 ─────────────────────────────────────────────────────────
