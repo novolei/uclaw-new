@@ -39,6 +39,19 @@ pub enum InfraEventType {
     // ─── 用户反馈相关 ───
     /// 用户否定/纠正反馈（拒绝计划、停止执行、纠正输出等）
     UserCorrection,
+    // ─── Symphony 相关 ───
+    /// A Symphony workflow run has been dispatched (queued → running). Lets
+    /// proactive subscribers attach lifecycle hooks at the moment the run
+    /// begins (e.g. start a stopwatch, snapshot the workflow def).
+    SymphonyRunStarted,
+    /// A Symphony workflow run reached terminal state (completed / failed /
+    /// cancelled / quota_exceeded). `metadata` carries `run_id`, `workflow_id`,
+    /// `outcome`, `total_cost_usd`.
+    SymphonyRunCompleted,
+    /// A Symphony node run finished one attempt. `metadata` carries
+    /// `run_id`, `node_id`, `attempt`, `status`, `cost_usd`. Lets the
+    /// proactive subsystem learn from node-level outcomes without polling.
+    SymphonyNodeCompleted,
 }
 
 // ─── 对话消息 ─────────────────────────────────────────────────────────
