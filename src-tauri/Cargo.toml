@@ -32,6 +32,9 @@ futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream", "gzip", "brotli", "deflate"] }
 bytes = "1"
 
+# Email (SMTP transport)
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-native-tls", "builder"] }
+
 # STT — local SenseVoice ONNX (vendored from if2Ai openflow)
 # 默认 features 含 download-binaries：cargo build 自动下载对应 target 的
 # onnxruntime tarball 并静态链接进 binary。运行时零 dlopen / 零 ORT_DYLIB_PATH /
