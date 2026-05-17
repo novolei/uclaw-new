@@ -185,7 +185,7 @@ impl ChatDelegate {
                 }
             };
 
-            let br = blast_radius.unwrap_or(BlastRadius { files: 0, lines: 0 });
+            let br = blast_radius.clone().unwrap_or(BlastRadius { files: 0, lines: 0 });
 
             let capsule = Capsule {
                 id: capsule_id.clone(),
@@ -906,7 +906,7 @@ impl LoopDelegate for ChatDelegate {
                 let tool_errors: Vec<String> = self.recent_tool_errors.lock()
                     .map(|e| e.clone())
                     .unwrap_or_default();
-                let matches = retriever.match_genes(last_user_text, &tool_errors, 2);
+                let matches = retriever.match_genes(last_user_text, &tool_errors, 2).await;
                 if !matches.is_empty() {
                     let gene_block = format_gene_injection(&matches, 2);
                     if !gene_block.is_empty() {
@@ -1557,6 +1557,22 @@ impl LoopDelegate for ChatDelegate {
                             // ContentBlock::ToolResult carries is_error correctly. Without this,
                             // historical view would show a green check for failed bash commands.
                             let soft_error = detect_soft_tool_error(&output.result);
+
+                            // Collect soft error for GeneRetriever matching
+                            if soft_error {
+                                if let Ok(mut errors) = self.recent_tool_errors.lock() {
+                                    if errors.len() < 5 {
+                                        let err_text = output
+                                            .result
+                                            .get("stderr")
+                                            .or_else(|| output.result.get("output"))
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("tool error");
+                                        errors.push(format!("{}: {}", tc.name, truncate_utf8(err_text, 200)));
+                                    }
+                                }
+                            }
+
                             reason_ctx.messages.push(ChatMessage::user_tool_result(
                                 &tc.id,
                                 &result_str,
@@ -1600,6 +1616,13 @@ impl LoopDelegate for ChatDelegate {
                             // running until end-of-turn final cleanup.
                             self.emit_tool_error(&tc.name, &tc.id, &e.to_string(), duration_ms);
                             self.emit_error(&e.to_string());
+
+                            // Collect tool error for GeneRetriever matching
+                            if let Ok(mut errors) = self.recent_tool_errors.lock() {
+                                if errors.len() < 5 {
+                                    errors.push(format!("{}: {}", tc.name, e));
+                                }
+                            }
 
                             let error_result_str = format!("Error: {}", e);
 

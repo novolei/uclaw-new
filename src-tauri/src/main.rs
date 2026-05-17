@@ -235,6 +235,7 @@ fn main() {
                                         Some(app_handle.clone()),
                                         db.clone(),
                                         gene_repo,
+                                        memubot_config.gene_evolution.clone(),
                                     )
                                 );
                                 // Inject into AppState for tauri_commands access

@@ -117,7 +117,9 @@ use super::tool_memory::{ToolUsageMemoryManager, ToolUsageRecord};
 use super::types::*;
 use crate::agent::gep::types::{Capsule, BlastRadius, CapsuleOutcome, EnvFingerprint, EvolutionEvent, Gene, GeneCandidate, LearningCard, LearningCardType, OutcomeStatus, StrategyHint};
 use crate::agent::gep::repository::GeneRepository;
+use crate::agent::gep::lifecycle::GeneLifecycleManager;
 use crate::agent::gep::distillation;
+use crate::memubot_config::GeneEvolutionConfig;
 
 /// 上下文滑动窗口最大容量（每个 session 保留最近 N 条消息）
 const CONTEXT_WINDOW_SIZE: usize = 20;
@@ -204,9 +206,11 @@ struct ProactiveStateRefs {
     last_personality_update: Arc<Mutex<Instant>>,
     /// GEP Gene 文件存储
     gene_repo: Arc<Mutex<GeneRepository>>,
+    /// GEP Gene 生命周期管理器
+    gene_lifecycle: Arc<Mutex<GeneLifecycleManager>>,
+    /// Gene 进化配置
+    gene_evolution_config: GeneEvolutionConfig,
 }
-
-// ─── ProactiveService ─────────────────────────────────────────────────
 
 /// 24/7 主动代理服务
 ///
@@ -296,6 +300,12 @@ pub struct ProactiveService {
     /// GEP Gene 文件存储
     gene_repo: Arc<Mutex<GeneRepository>>,
 
+    /// GEP Gene 生命周期管理器
+    gene_lifecycle: Arc<Mutex<GeneLifecycleManager>>,
+
+    /// Gene 进化配置
+    gene_evolution_config: GeneEvolutionConfig,
+
     /// Gene 候选池 — 收集 self_eval 产出的 LearningCard，等待蒸馏
     gene_candidate_pool: Arc<RwLock<VecDeque<GeneCandidate>>>,
     /// Gene 候选池有新候选的标记
@@ -305,6 +315,25 @@ pub struct ProactiveService {
     tick_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     /// 上下文监听任务句柄
     listener_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
+}
+
+/// Self-eval 会话评估汇总（激活 KR4 数据回路）
+#[derive(Debug, Clone)]
+struct SessionEvalSummary {
+    /// 分析窗口内的评估总数
+    total_evals: usize,
+    /// 平均得分
+    avg_score: f64,
+    /// 最近 10 条评估的平均得分（用于趋势检测）
+    recent_avg_score: f64,
+    /// 最近 10 条评估的条目数
+    recent_count: usize,
+    /// 总学习记录数
+    total_learnings: usize,
+    /// 最近一次评估的时间戳（毫秒）
+    last_eval_at: Option<i64>,
+    /// 是否存在得分下降趋势（recent_avg < overall_avg - 0.1）
+    score_degrading: bool,
 }
 
 impl ProactiveService {
@@ -326,6 +355,7 @@ impl ProactiveService {
         app_handle: Option<tauri::AppHandle>,
         db: Arc<Mutex<Connection>>,
         gene_repo: Arc<Mutex<GeneRepository>>,
+        gene_evolution_config: GeneEvolutionConfig,
     ) -> Self {
         let task_memory_manager = Arc::new(TaskMemoryManager::new(memory_graph_store.clone()));
         let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(memory_graph_store.clone()));
@@ -344,6 +374,15 @@ impl ProactiveService {
             tool_memory_manager.clone(),
             failure_memory_manager.clone(),
         ));
+
+        // Extract GEP base path before gene_repo is moved into Self
+        let gep_base_path = gene_repo
+            .lock()
+            .map_err(|e| anyhow::anyhow!("GeneRepository lock poisoned: {}", e))
+            .unwrap()
+            .base_path()
+            .clone();
+
         Self {
             config,
             state: Arc::new(RwLock::new(ProactiveState::Stopped)),
@@ -381,6 +420,8 @@ impl ProactiveService {
             db,
             last_personality_update: Arc::new(Mutex::new(Instant::now())),
             gene_repo,
+            gene_lifecycle: Arc::new(Mutex::new(GeneLifecycleManager::new(gep_base_path))),
+            gene_evolution_config,
             gene_candidate_pool: Arc::new(RwLock::new(VecDeque::new())),
             new_gene_candidates: Arc::new(AtomicBool::new(false)),
             tick_handle: Arc::new(RwLock::new(None)),
@@ -425,6 +466,8 @@ impl ProactiveService {
             db: self.db.clone(),
             last_personality_update: self.last_personality_update.clone(),
             gene_repo: self.gene_repo.clone(),
+            gene_lifecycle: self.gene_lifecycle.clone(),
+            gene_evolution_config: self.gene_evolution_config.clone(),
             gene_candidate_pool: self.gene_candidate_pool.clone(),
             new_gene_candidates: self.new_gene_candidates.clone(),
         }
@@ -612,6 +655,7 @@ impl ProactiveService {
                                     let candidate = GeneCandidate {
                                         source: "self_eval".to_string(),
                                         content: learning_card.raw.clone(),
+                                        card_type: Some(learning_card.card_type.clone()),
                                         score: Some(learning_card.score as f64),
                                         session_id: Some(learning_card.session_id.clone()),
                                         reasoning: learning_card.strategy_hint.reason.clone(),
@@ -735,6 +779,41 @@ impl ProactiveService {
                     );
                 }
             }
+        }
+
+        // 每 20 个 tick 运行 Gene 生命周期检查（退役、变异等）
+        if refs.tick_count.load(Ordering::SeqCst) % 20 == 0 {
+            if let Ok(mut lifecycle) = refs.gene_lifecycle.lock() {
+                if let Ok(repo) = refs.gene_repo.lock() {
+                    match lifecycle.check_all_genes(&repo, &refs.gene_evolution_config) {
+                        Ok(report) => {
+                            if report.stale_count > 0 || report.retired_count > 0 || report.mutations_performed > 0 {
+                                tracing::info!(
+                                    stale = report.stale_count,
+                                    retired = report.retired_count,
+                                    mutations = report.mutations_performed,
+                                    "[ProactiveService] Gene lifecycle check completed"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("[ProactiveService] Gene lifecycle check failed: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 每 30 次 tick 分析 session_evals 数据（激活 KR4 数据回路）
+        if refs.tick_count.load(Ordering::SeqCst) % 30 == 0 {
+            let db = refs.db.clone();
+            let pool = refs.gene_candidate_pool.clone();
+            let flag = refs.new_gene_candidates.clone();
+            tokio::task::spawn_blocking(move || {
+                Self::analyze_session_evals(&db, &pool, &flag);
+            })
+            .await
+            .ok();
         }
 
         // 每 100 次 tick 更新人格画像（并带最小时间间隔 5 分钟）
@@ -916,7 +995,7 @@ impl ProactiveService {
             // Convert GeneCandidate to LearningCard snapshot for scenario context
             let cards: Vec<LearningCard> = pool.iter().map(|c| LearningCard {
                 raw: c.content.clone(),
-                card_type: LearningCardType::FailureLesson, // best-effort: candidates come from classified cards
+                card_type: c.card_type.clone().unwrap_or(LearningCardType::FailureLesson),
                 failure_signal: None,
                 tool_name: None,
                 strategy_hint: StrategyHint {
@@ -932,8 +1011,15 @@ impl ProactiveService {
             (count, cards)
         };
 
-        // TODO: Build existing_gene_fingerprints from GeneRepository when integrated
-        let existing_gene_fingerprints = Vec::new();
+        // Build existing Gene fingerprints from GeneRepository for dedup in distillation
+        let existing_gene_fingerprints = {
+            let repo = refs.gene_repo.lock().unwrap();
+            repo.list_active_genes()
+                .unwrap_or_default()
+                .iter()
+                .map(|g| format!("[{}] {}: {}", g.category, g.gene_id, g.summary))
+                .collect::<Vec<_>>()
+        };
 
         let scenario_ctx = ScenarioContext {
             recent_messages,
@@ -1450,6 +1536,136 @@ impl ProactiveService {
         (reasoning_steps, cumulative_tokens, turn_count, workspace_files)
     }
 
+    /// 从主 DB 的 session_evals 表读取并分析评估数据。
+    ///
+    /// 激活 KR4 数据回路：session_evals 不再只写不读。
+    /// 定期分析近期评估质量趋势，检测得分下降等异常信号，
+    /// 并将退化信号注入 Gene 候选池供蒸馏使用。
+    fn analyze_session_evals(
+        db: &Arc<Mutex<Connection>>,
+        gene_candidate_pool: &Arc<RwLock<VecDeque<GeneCandidate>>>,
+        new_gene_candidates_flag: &Arc<AtomicBool>,
+    ) -> Option<SessionEvalSummary> {
+        let conn = match db.lock() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("[ProactiveService] analyze_session_evals: DB lock failed: {}", e);
+                return None;
+            }
+        };
+
+        // 查询最近 200 条 session_evals
+        let mut stmt = match conn.prepare(
+            "SELECT score, learnings, session_id, created_at FROM session_evals \
+             ORDER BY created_at DESC LIMIT 200"
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("[ProactiveService] analyze_session_evals: prepare failed: {}", e);
+                return None;
+            }
+        };
+
+        let rows: Vec<(f64, String, String, i64)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, f64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .into_iter()
+            .flat_map(|r| r.filter_map(|v| v.ok()))
+            .collect();
+
+        if rows.is_empty() {
+            return None;
+        }
+
+        let total_evals = rows.len();
+        let total_score: f64 = rows.iter().map(|r| r.0).sum();
+        let avg_score = total_score / total_evals as f64;
+
+        let total_learnings: usize = rows
+            .iter()
+            .filter_map(|r| serde_json::from_str::<Vec<String>>(&r.1).ok())
+            .map(|l| l.len())
+            .sum();
+
+        // 最近 10 条的趋势
+        let recent_count = total_evals.min(10);
+        let recent_slice = &rows[..recent_count];
+        let recent_avg_score: f64 = recent_slice.iter().map(|r| r.0).sum::<f64>() / recent_count as f64;
+
+        let last_eval_at = rows.first().map(|r| r.3);
+
+        // 如果最近 10 条平均分显著低于总体平均（差值 > 0.1），标记为退化
+        let score_degrading = recent_count >= 5 && (avg_score - recent_avg_score) > 0.1;
+
+        tracing::info!(
+            total = total_evals,
+            avg = %format!("{:.2}", avg_score),
+            recent_avg = %format!("{:.2}", recent_avg_score),
+            learnings = total_learnings,
+            degrading = score_degrading,
+            "[ProactiveService] session_evals analysis"
+        );
+
+        // 如果检测到得分退化，将信号注入 Gene 候选池
+        if score_degrading {
+            let degraded_sessions: Vec<String> = recent_slice
+                .iter()
+                .filter(|r| r.0 < avg_score)
+                .map(|r| r.2.clone())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .take(5)
+                .collect();
+
+            let observation = format!(
+                "Recent self-eval scores ({:.2} avg over {} evals) are \
+                 declining compared to historical average ({:.2} over {} evals). \
+                 Degraded sessions: {}.",
+                recent_avg_score, recent_count,
+                avg_score, total_evals,
+                degraded_sessions.join(", ")
+            );
+
+            // 使用 tokio spawn 异步注入候选（避免阻塞 tick）
+            let pool = gene_candidate_pool.clone();
+            let flag = new_gene_candidates_flag.clone();
+            tokio::spawn(async move {
+                let candidate = GeneCandidate {
+                    source: "session_evals_analysis".to_string(),
+                    content: observation,
+                    card_type: Some(LearningCardType::FailureLesson),
+                    score: Some(recent_avg_score),
+                    session_id: Some("proactive_analytics".to_string()),
+                    reasoning: Some(
+                        "Self-eval score degradation detected: agent performance may be declining. \
+                         Consider reviewing recent session patterns and adjusting strategies."
+                            .to_string(),
+                    ),
+                    timestamp: chrono::Utc::now(),
+                };
+                pool.write().await.push_back(candidate);
+                flag.store(true, Ordering::SeqCst);
+                tracing::info!("[ProactiveService] Injected score-degradation signal into gene candidate pool");
+            });
+        }
+
+        Some(SessionEvalSummary {
+            total_evals,
+            avg_score,
+            recent_avg_score,
+            recent_count,
+            total_learnings,
+            last_eval_at,
+            score_degrading,
+        })
+    }
+
     /// 为 skill_extraction 场景计算已有技能的紧凑指纹列表。
     ///
     /// 每条指纹格式: "title | description(≤60chars) | category | cited:N"
@@ -1848,6 +2064,7 @@ mod tests {
                     std::env::temp_dir().join("uclaw_gep_test")
                 ).expect("GeneRepository for test")
             )),
+            crate::memubot_config::GeneEvolutionConfig::default(),
         )
     }
 

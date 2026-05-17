@@ -515,10 +515,12 @@ pub async fn send_message(
     // Extract active_genes as owned Vec first so the MutexGuard is dropped
     // before any further .await points (avoids E0597 lifetime error).
     let mut active_genes: Vec<crate::agent::gep::types::Gene> = Vec::new();
+    let mut gene_repo_opt: Option<std::sync::Arc<std::sync::Mutex<crate::agent::gep::repository::GeneRepository>>> = None;
     {
         let proactive_svc = state.proactive_service.read().await;
         if let Some(ref pro_svc) = *proactive_svc {
             let gene_repo = pro_svc.gene_repository();
+            gene_repo_opt = Some(gene_repo.clone());
             // Chain operations to avoid temporary-lifetime issues (E0597)
             active_genes = gene_repo
                 .lock()
@@ -526,18 +528,56 @@ pub async fn send_message(
                 .and_then(|repo| repo.list_active_genes().ok())
                 .unwrap_or_default();
             // MutexGuard dropped here before next .await
+        } else {
+            gene_repo_opt = None;
         }
     }
     if !active_genes.is_empty() {
         let count = active_genes.len();
-        let retriever = std::sync::Arc::new(
-            crate::agent::gep::retrieval::GeneRetriever::new(active_genes, false)
-        );
+        let mut retriever = crate::agent::gep::retrieval::GeneRetriever::new(active_genes, false, None);
+        // Compute effective streaks from Capsule history for ranking
+        if let Some(ref gene_repo) = gene_repo_opt {
+            if let Ok(repo) = gene_repo.lock() {
+                let now_ts = chrono::Utc::now().timestamp_millis();
+                let mut streaks = std::collections::HashMap::new();
+                if let Ok(active) = repo.list_active_genes() {
+                    for gene in &active {
+                        if let Ok(capsules) = repo.list_capsules(&gene.gene_id) {
+                            let dummy = crate::agent::gep::types::Capsule {
+                                id: String::new(),
+                                gene_asset_id: String::new(),
+                                gene_id: gene.gene_id.clone(),
+                                trigger: vec![],
+                                summary: String::new(),
+                                confidence: 0.0,
+                                blast_radius: crate::agent::gep::types::BlastRadius { files: 0, lines: 0 },
+                                outcome: crate::agent::gep::types::CapsuleOutcome {
+                                    status: crate::agent::gep::types::OutcomeStatus::Success,
+                                    score: 0.85,
+                                },
+                                raw_streak: 0,
+                                effective_streak: 0.0,
+                                env_fingerprint: crate::agent::gep::types::EnvFingerprint::default(),
+                                created_at: now_ts,
+                                lineage: vec![],
+                            };
+                            streaks.insert(gene.gene_id.clone(), dummy.compute_effective_streak(&capsules, now_ts));
+                        }
+                    }
+                }
+                retriever.set_streaks(streaks);
+            }
+        }
+        let retriever = std::sync::Arc::new(retriever);
         delegate.set_gene_retriever(retriever);
         tracing::debug!(
             "[tauri_commands] GeneRetriever injected with {} active genes",
             count
         );
+    }
+    // Inject GeneRepository for Capsule persistence
+    if let Some(ref gene_repo) = gene_repo_opt {
+        delegate.set_gene_repo(gene_repo.clone());
     }
 
     // ── Memory Recall Integration ────────────────────────────────────
@@ -6818,10 +6858,12 @@ pub async fn send_agent_message(
         // ── GEP Gene Retriever Integration ────────────────────────────────
         {
             let mut active_genes: Vec<crate::agent::gep::types::Gene> = Vec::new();
+            let mut gene_repo_opt: Option<std::sync::Arc<std::sync::Mutex<crate::agent::gep::repository::GeneRepository>>> = None;
             {
                 let proactive_guard = proactive_service_for_spawn.read().await;
                 if let Some(ref pro_svc) = *proactive_guard {
                     let gene_repo = pro_svc.gene_repository();
+                    gene_repo_opt = Some(gene_repo.clone());
                     active_genes = gene_repo
                         .lock()
                         .ok()
@@ -6831,14 +6873,50 @@ pub async fn send_agent_message(
             }
             if !active_genes.is_empty() {
                 let count = active_genes.len();
-                let retriever = std::sync::Arc::new(
-                    crate::agent::gep::retrieval::GeneRetriever::new(active_genes, false)
-                );
+                let mut retriever = crate::agent::gep::retrieval::GeneRetriever::new(active_genes, false, None);
+                // Compute effective streaks from Capsule history for ranking
+                if let Some(ref gene_repo) = gene_repo_opt {
+                    if let Ok(repo) = gene_repo.lock() {
+                        let now_ts = chrono::Utc::now().timestamp_millis();
+                        let mut streaks = std::collections::HashMap::new();
+                        if let Ok(active) = repo.list_active_genes() {
+                            for gene in &active {
+                                if let Ok(capsules) = repo.list_capsules(&gene.gene_id) {
+                                    let dummy = crate::agent::gep::types::Capsule {
+                                        id: String::new(),
+                                        gene_asset_id: String::new(),
+                                        gene_id: gene.gene_id.clone(),
+                                        trigger: vec![],
+                                        summary: String::new(),
+                                        confidence: 0.0,
+                                        blast_radius: crate::agent::gep::types::BlastRadius { files: 0, lines: 0 },
+                                        outcome: crate::agent::gep::types::CapsuleOutcome {
+                                            status: crate::agent::gep::types::OutcomeStatus::Success,
+                                            score: 0.85,
+                                        },
+                                        raw_streak: 0,
+                                        effective_streak: 0.0,
+                                        env_fingerprint: crate::agent::gep::types::EnvFingerprint::default(),
+                                        created_at: now_ts,
+                                        lineage: vec![],
+                                    };
+                                    streaks.insert(gene.gene_id.clone(), dummy.compute_effective_streak(&capsules, now_ts));
+                                }
+                            }
+                        }
+                        retriever.set_streaks(streaks);
+                    }
+                }
+                let retriever = std::sync::Arc::new(retriever);
                 delegate.set_gene_retriever(retriever);
                 tracing::debug!(
                     "[skill_agent] GeneRetriever injected with {} active genes",
                     count
                 );
+            }
+            // Inject GeneRepository for Capsule persistence
+            if let Some(ref repo) = gene_repo_opt {
+                delegate.set_gene_repo(repo.clone());
             }
         }
 
@@ -9467,17 +9545,18 @@ pub async fn start_agent_teams(
     let handle = tokio::spawn(async move {
         // Load active genes for GeneRetriever injection (before orchestrator,
         // so genes can be moved into the sync delegate_factory closure).
-        let active_genes: Vec<crate::agent::gep::types::Gene> = {
+        let (active_genes, gene_repo_for_teams): (Vec<crate::agent::gep::types::Gene>, Option<std::sync::Arc<std::sync::Mutex<crate::agent::gep::repository::GeneRepository>>>) = {
             let proactive_guard = proactive_service_for_teams.read().await;
             if let Some(ref pro_svc) = *proactive_guard {
                 let gene_repo = pro_svc.gene_repository();
-                gene_repo
+                let genes = gene_repo
                     .lock()
                     .ok()
                     .and_then(|repo| repo.list_active_genes().ok())
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                (genes, Some(gene_repo))
             } else {
-                Vec::new()
+                (Vec::new(), None)
             }
         };
 
@@ -9521,14 +9600,50 @@ pub async fn start_agent_teams(
                 );
                 // Inject GeneRetriever if we have active genes
                 if !active_genes.is_empty() {
-                    let retriever = std::sync::Arc::new(
-                        crate::agent::gep::retrieval::GeneRetriever::new(active_genes.clone(), false)
-                    );
+                    let mut retriever = crate::agent::gep::retrieval::GeneRetriever::new(active_genes.clone(), false, None);
+                    // Compute effective streaks from Capsule history for ranking
+                    if let Some(ref gene_repo) = gene_repo_for_teams {
+                        if let Ok(repo) = gene_repo.lock() {
+                            let now_ts = chrono::Utc::now().timestamp_millis();
+                            let mut streaks = std::collections::HashMap::new();
+                            if let Ok(active) = repo.list_active_genes() {
+                                for gene in &active {
+                                    if let Ok(capsules) = repo.list_capsules(&gene.gene_id) {
+                                        let dummy = crate::agent::gep::types::Capsule {
+                                            id: String::new(),
+                                            gene_asset_id: String::new(),
+                                            gene_id: gene.gene_id.clone(),
+                                            trigger: vec![],
+                                            summary: String::new(),
+                                            confidence: 0.0,
+                                            blast_radius: crate::agent::gep::types::BlastRadius { files: 0, lines: 0 },
+                                            outcome: crate::agent::gep::types::CapsuleOutcome {
+                                                status: crate::agent::gep::types::OutcomeStatus::Success,
+                                                score: 0.85,
+                                            },
+                                            raw_streak: 0,
+                                            effective_streak: 0.0,
+                                            env_fingerprint: crate::agent::gep::types::EnvFingerprint::default(),
+                                            created_at: now_ts,
+                                            lineage: vec![],
+                                        };
+                                        streaks.insert(gene.gene_id.clone(), dummy.compute_effective_streak(&capsules, now_ts));
+                                    }
+                                }
+                            }
+                            retriever.set_streaks(streaks);
+                        }
+                    }
+                    let retriever = std::sync::Arc::new(retriever);
                     delegate.set_gene_retriever(retriever);
                     tracing::debug!(
                         "[agent_teams] GeneRetriever injected with {} active genes",
                         active_genes.len()
                     );
+                }
+                // Inject GeneRepository for Capsule persistence
+                if let Some(ref repo) = gene_repo_for_teams {
+                    delegate.set_gene_repo(repo.clone());
                 }
                 Box::new(delegate)
             },
