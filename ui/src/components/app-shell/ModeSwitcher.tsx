@@ -19,6 +19,7 @@ import {
 } from '@/atoms/symphony'
 import { visibleTabsAtom } from '@/atoms/tab-atoms'
 import { useOpenSession } from '@/hooks/useOpenSession'
+import { SYMPHONY_NEW_TAB_SENTINEL } from '@/components/symphony/SymphonyCanvas'
 import { Bot, MessageSquare, Network } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -98,6 +99,10 @@ export function ModeSwitcher(): React.ReactElement {
           openSession('symphony', recent.id, recent.name)
           return
         }
+        // 零 workflow：开 sentinel tab，SymphonyCanvas 检测到后渲染
+        // 空状态 + 模板画廊，让用户一键创建第一个 workflow。
+        openSession('symphony', SYMPHONY_NEW_TAB_SENTINEL, 'New workflow')
+        return
       }
       // 4. 没有任何项目，仅切换模式
       setMode(targetMode)

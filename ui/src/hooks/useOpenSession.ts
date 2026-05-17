@@ -24,6 +24,7 @@ import {
   automationActiveTabAtom,
   automationActivityRunSessionIdAtom,
 } from '@/atoms/automation-ui'
+import { currentSymphonyWorkflowIdAtom } from '@/atoms/symphony'
 type OpenSessionFn = (type: TabType, sessionId: string, title: string) => void
 
 export function useOpenSession(): OpenSessionFn {
@@ -41,6 +42,7 @@ export function useOpenSession(): OpenSessionFn {
   const setAutomationSelectedSpecId = useSetAtom(automationSelectedSpecIdAtom)
   const setAutomationActiveTab = useSetAtom(automationActiveTabAtom)
   const setAutomationActivityRunSessionId = useSetAtom(automationActivityRunSessionIdAtom)
+  const setCurrentSymphonyWorkflowId = useSetAtom(currentSymphonyWorkflowIdAtom)
 
   return React.useCallback(
     (type: TabType, sessionId: string, title: string): void => {
@@ -95,6 +97,13 @@ export function useOpenSession(): OpenSessionFn {
 
       if (type === 'chat') {
         setCurrentConversationId(sessionId)
+      } else if (type === 'symphony') {
+        // Sentinel sessionId ('__symphony_new__') is reserved for the
+        // empty-state hand-off; don't mark it as the "current workflow"
+        // since it doesn't exist in the DB.
+        if (sessionId !== '__symphony_new__') {
+          setCurrentSymphonyWorkflowId(sessionId)
+        }
       } else if (type === 'agent') {
         setCurrentAgentSessionId(sessionId)
 
@@ -115,6 +124,6 @@ export function useOpenSession(): OpenSessionFn {
     [tabs, setTabs, setActiveTabId, setAppMode, setCurrentConversationId, setCurrentAgentSessionId,
      agentSessions, setCurrentAgentWorkspaceId, setUnviewedCompleted, activeWorkspaceId,
      setTopLevelView, setKaleidoscopeModule, setAutomationSelectedSpecId,
-     setAutomationActiveTab, setAutomationActivityRunSessionId],
+     setAutomationActiveTab, setAutomationActivityRunSessionId, setCurrentSymphonyWorkflowId],
   )
 }

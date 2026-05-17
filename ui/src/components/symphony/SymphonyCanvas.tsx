@@ -43,6 +43,17 @@ import { Play, Square, FileCode, GitBranch, Activity } from 'lucide-react'
 import { WorkflowCanvas } from './canvas/WorkflowCanvas'
 import { WorkflowMarkdownEditor } from './WorkflowMarkdownEditor'
 import { RunHistoryPanel } from './RunHistoryPanel'
+import { SymphonyEmptyState } from './EmptyState'
+import { activeTabIdAtom, closeTab, tabsAtom } from '@/atoms/tab-atoms'
+import { useOpenSession } from '@/hooks/useOpenSession'
+
+/**
+ * Sentinel sessionId used when `ModeSwitcher` opens a Symphony tab with no
+ * workflow id available yet (zero workflows in DB). The canvas detects
+ * this and renders `<SymphonyEmptyState>` instead of trying to load a
+ * non-existent workflow.
+ */
+export const SYMPHONY_NEW_TAB_SENTINEL = '__symphony_new__'
 
 export interface SymphonyCanvasProps {
   workflowId: string
@@ -67,6 +78,11 @@ export function SymphonyCanvas({
   const setCurrentWorkflow = useSetAtom(currentSymphonyWorkflowIdAtom)
   const [details, setDetails] = useAtom(symphonyWorkflowDetailsAtom)
   const [workflows, setWorkflows] = useAtom(symphonyWorkflowsAtom)
+  const [tabs, setTabs] = useAtom(tabsAtom)
+  const [activeTabId, setActiveTabId] = useAtom(activeTabIdAtom)
+  const openSession = useOpenSession()
+  const [loadFailed, setLoadFailed] = React.useState(false)
+  const isSentinel = workflowId === SYMPHONY_NEW_TAB_SENTINEL
   const [runs, setRuns] = useAtom(symphonyRunsByWorkflowAtom)
   const nodeRunsByRun = useAtomValue(symphonyNodeRunsByRunAtom)
   const [currentRunId, setCurrentRunId] = useAtom(currentSymphonyRunIdAtom)
@@ -77,14 +93,23 @@ export function SymphonyCanvas({
   const detail = details[workflowId]
   const workflowRuns = runs[workflowId] ?? []
 
-  // Mark current workflow on mount + when the prop changes.
+  // Mark current workflow on mount + when the prop changes (skip sentinel —
+  // it doesn't represent a real workflow).
   React.useEffect(() => {
-    setCurrentWorkflow(workflowId)
-  }, [workflowId, setCurrentWorkflow])
+    if (!isSentinel) setCurrentWorkflow(workflowId)
+  }, [workflowId, isSentinel, setCurrentWorkflow])
 
-  // Initial data load.
+  // Initial data load. Skipped entirely when the tab is the sentinel
+  // "new workflow" placeholder — there's nothing to fetch.
   React.useEffect(() => {
+    if (isSentinel) {
+      // Still refresh the workflows list so the empty state can hand off
+      // to a normal workflow tab if one shows up.
+      void symphonyListWorkflows().then(setWorkflows).catch(() => {})
+      return
+    }
     let cancelled = false
+    setLoadFailed(false)
     void (async () => {
       try {
         const [list, d, r] = await Promise.all([
@@ -97,15 +122,45 @@ export function SymphonyCanvas({
         setDetails((prev) => ({ ...prev, [workflowId]: d }))
         setRuns((prev) => ({ ...prev, [workflowId]: r }))
       } catch (e) {
+        if (cancelled) return
         // SymphonyCanvas tolerates a missing workflow during initial load —
         // the empty state below renders an "import or create" prompt.
         console.warn('[symphony] initial fetch failed:', e)
+        setLoadFailed(true)
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [workflowId, setWorkflows, setDetails, setRuns])
+  }, [workflowId, isSentinel, setWorkflows, setDetails, setRuns])
+
+  const handleCreated = React.useCallback(
+    async ({
+      workflowId: newId,
+      name,
+    }: {
+      workflowId: string
+      name: string
+    }) => {
+      // Refresh the workflows list so the swap target shows up in atoms.
+      try {
+        const list = await symphonyListWorkflows()
+        setWorkflows(list)
+      } catch (e) {
+        console.warn('[symphony] refresh after create failed:', e)
+      }
+      // Close the sentinel/failed tab we're currently in; openSession
+      // will then mount the real workflow under a new tab.
+      const currentTab = tabs.find((t) => t.sessionId === workflowId && t.type === 'symphony')
+      if (currentTab) {
+        const next = closeTab(tabs, activeTabId, currentTab.id)
+        setTabs(next.tabs)
+        setActiveTabId(next.activeTabId)
+      }
+      openSession('symphony', newId, name)
+    },
+    [tabs, activeTabId, setTabs, setActiveTabId, workflowId, setWorkflows, openSession],
+  )
 
   // IPC subscriptions. Symmetric with AgentView's listen pattern.
   React.useEffect(() => {
@@ -172,6 +227,12 @@ export function SymphonyCanvas({
       console.error('[symphony] cancel failed:', e)
     }
   }, [currentRunId])
+
+  // Sentinel tab OR a real workflow id that came back not-found: show the
+  // empty state with template gallery instead of an infinite spinner.
+  if (isSentinel || loadFailed) {
+    return <SymphonyEmptyState onCreated={handleCreated} />
+  }
 
   if (!detail) {
     return (
