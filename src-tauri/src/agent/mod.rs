@@ -6,6 +6,7 @@ pub mod gep;
 pub mod headless;
 pub mod llm_stream;
 pub mod mode_prompts;
+pub mod mode_suggest;
 pub mod mode_suggest_store;
 pub mod plan_state;
 pub mod retry;
