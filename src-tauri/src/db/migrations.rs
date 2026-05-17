@@ -1171,6 +1171,120 @@ ALTER TABLE conversations ADD COLUMN archived  INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE conversations ADD COLUMN archived_at INTEGER;
 ";
 
+/// V27 — user-customizable system prompts for chat/agent paths.
+const SQL_V27: &str = "
+CREATE TABLE IF NOT EXISTS system_prompts (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    content    TEXT NOT NULL DEFAULT '',
+    is_builtin INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_system_prompts_sort ON system_prompts(sort_order);
+
+INSERT OR IGNORE INTO system_prompts (id, name, content, is_builtin, sort_order, created_at, updated_at)
+VALUES ('builtin-default', '默认', 'You are a helpful assistant.', 1, 0,
+        CAST(strftime('%s', 'now') AS INTEGER) * 1000,
+        CAST(strftime('%s', 'now') AS INTEGER) * 1000);
+";
+
+/// V28 — version history for system prompts.
+/// Records a snapshot every time a prompt is created or updated.
+const SQL_V28: &str = "
+CREATE TABLE IF NOT EXISTS system_prompt_versions (
+    id         TEXT PRIMARY KEY,
+    prompt_id  TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    content    TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (prompt_id) REFERENCES system_prompts(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_sp_versions_prompt ON system_prompt_versions(prompt_id, created_at DESC);
+";
+
+/// V29 — logical compaction support.
+///
+/// Replaces physical DELETE with logical marking:
+/// - agent_messages.compacted: 0 = active, 1 = logically removed
+/// - compaction_markers: records each compaction event's metadata
+///
+/// This aligns with openhanako's appendCompaction() pattern — messages
+/// persist in the database and can be re-rendered by the UI, while the
+/// LLM context builder skips compacted messages.
+const V29_COMPACTION_SUPPORT: &str = "
+ALTER TABLE agent_messages ADD COLUMN compacted INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS compaction_markers (
+    id                    TEXT PRIMARY KEY,
+    session_id            TEXT NOT NULL,
+    summary               TEXT NOT NULL DEFAULT '',
+    removed_count         INTEGER NOT NULL DEFAULT 0,
+    tokens_before         INTEGER,
+    tokens_after          INTEGER,
+    first_kept_message_id TEXT,
+    model_window          INTEGER,
+    created_at            INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_compaction_markers_session ON compaction_markers(session_id);
+";
+
+// ---------------------------------------------------------------------------
+// V30 — fragment_reviews + daily_summaries for the memory fragment system
+// ---------------------------------------------------------------------------
+const V30_FRAGMENT_TABLES: &str = "
+CREATE TABLE IF NOT EXISTS fragment_reviews (
+    id TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL,
+    session_id TEXT,
+    review_count INTEGER DEFAULT 0,
+    next_review_at INTEGER,
+    last_reviewed_at INTEGER,
+    completed INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fragment_reviews_next ON fragment_reviews(next_review_at);
+CREATE INDEX IF NOT EXISTS idx_fragment_reviews_node ON fragment_reviews(node_id);
+
+CREATE TABLE IF NOT EXISTS daily_summaries (
+    id TEXT PRIMARY KEY,
+    summary_date TEXT NOT NULL,
+    content TEXT NOT NULL,
+    fragment_count INTEGER DEFAULT 0,
+    fragment_ids_json TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_summaries_date ON daily_summaries(summary_date);
+";
+
+// V31 — rebuild memory_fts with trigram tokenizer for CJK + substring search.
+// Drops the old unicode61 table, recreates with trigram, then backfills from
+// memory_nodes + active memory_versions. Same pattern as V11 for messages_fts.
+const V31_MEMORY_FTS_TRIGRAM: &str = "
+DROP TABLE IF EXISTS memory_fts;
+
+CREATE VIRTUAL TABLE memory_fts USING fts5(
+    node_id UNINDEXED,
+    title,
+    content,
+    tokenize='trigram'
+);
+";
+
+const V31_BACKFILL_MEMORY_FTS: &str = "
+INSERT INTO memory_fts(node_id, title, content)
+SELECT n.id, n.title, v.content
+FROM memory_nodes n
+INNER JOIN memory_versions v ON v.node_id = n.id
+WHERE v.status = 'active'
+  AND v.content IS NOT NULL AND v.content != '';
+";
+
 /// V32 — IM channel infrastructure: instances, sessions, spec bindings,
 /// and three new columns on automation_specs (trigger_phrase, system_prompt override, description).
 const SQL_V32: &str = "
@@ -1431,6 +1545,48 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V26 stmt skipped: {} :: {}", e, stmt);
         }
+    }
+    // V27: system_prompts table for user-customizable system prompts.
+    tracing::debug!("Running migration V27: system_prompts");
+    for stmt in SQL_V27.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V27 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V28: system_prompt_versions table for prompt version history.
+    tracing::debug!("Running migration V28: system_prompt_versions");
+    for stmt in SQL_V28.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V28 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V29: compaction support — logical marking (compacted column + compaction_markers table).
+    // Replaces the old physical-deletion approach so compacted messages stay in the DB
+    // and can be replayed in the UI with "compacted" visual treatment.
+    tracing::debug!("Running migration V29: compaction support (logical marking)");
+    for stmt in V29_COMPACTION_SUPPORT.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V29 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V30: fragment_reviews + daily_summaries for the memory fragment system.
+    tracing::debug!("Running migration V30: fragment tables");
+    for stmt in V30_FRAGMENT_TABLES.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V30 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V31: rebuild memory_fts with trigram tokenizer for CJK + substring search.
+    // Like V11 for messages_fts, drops the old unicode61 table and recreates
+    // with trigram, then backfills from memory_nodes + active memory_versions.
+    tracing::info!("Running migration V31: memory_fts trigram tokenizer");
+    for stmt in V31_MEMORY_FTS_TRIGRAM.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V31 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    if let Err(e) = conn.execute(V31_BACKFILL_MEMORY_FTS, []) {
+        tracing::warn!("V31 memory_fts backfill failed: {}", e);
     }
     // V32: IM channel infrastructure (im_channel_instances, im_sessions, spec_channel_bindings).
     tracing::debug!("Running migration V32: IM channel tables");
