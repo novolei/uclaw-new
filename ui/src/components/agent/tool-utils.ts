@@ -22,6 +22,7 @@ import {
   Globe,
   ImagePlus,
   Layers,
+  Lightbulb,
   List,
   ListChecks,
   LogIn,
@@ -80,6 +81,28 @@ export const TOOL_ICONS: Record<string, LucideIcon> = {
   ReadMcpResourceTool: Database,
   ListMcpResourcesTool: Server,
   SendMessage: Send,
+
+  // ── uClaw native snake_case tool names ────────────────────────────
+  // The PascalCase keys above are leftover from Proma's Claude-Code-SDK
+  // era; uClaw's Rust-side built-in tools all use snake_case names. Both
+  // shapes coexist so chat-mode SDK-flavoured rendering still finds its
+  // icons while agent-mode native rendering finds the right ones.
+  ask_user: MessageCircleQuestion,
+  exit_plan_mode: MapPinOff,
+  plan_write: Map,
+  plan_update: ListChecks,
+  request_plan_mode_switch: Lightbulb,
+  read_file: FileText,
+  write_file: FilePenLine,
+  edit: Pencil,
+  bash: Terminal,
+  grep: Search,
+  glob: FolderSearch,
+  web_fetch: Download,
+  web_search: Globe,
+  self_eval: SquareCheck,
+  skill_search: Zap,
+  load_skill: BookOpen,
 }
 
 /**
