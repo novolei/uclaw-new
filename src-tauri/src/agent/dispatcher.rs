@@ -845,10 +845,14 @@ fn text_signals_plan_work(text: &str) -> bool {
     let lower = text.to_lowercase();
 
     // Explicit plan references: the agent is aware it's working through a plan.
-    // Check both English and Chinese keywords.
+    // Check both English and Chinese keywords. Chinese action verbs ("实现/添加/
+    // 编写/完成") are added because Mandarin verbs sit where English would have
+    // "implement / add / write / finish" — they're the strongest signal that
+    // the agent narrated intent to act on a plan step.
     let plan_keywords = [
         "plan", "step", "task", "todo",
         "计划", "步骤", "任务", "待办",
+        "实现", "添加", "编写", "完成",
     ];
     if plan_keywords.iter().any(|kw| lower.contains(kw) || text.contains(kw)) {
         return true;
@@ -858,10 +862,15 @@ fn text_signals_plan_work(text: &str) -> bool {
     // A complete answer to an unrelated question is typically longer and
     // self-contained. Short plan-related snippets like "Working on it..."
     // or "Let me check the next step" should still trigger the guard.
+    //
+    // Chinese "now-starting" markers ("现在/目前/马上/即将/开始/下面") cover what
+    // "正在" alone doesn't — semantically the model uses them interchangeably
+    // for "about to do X" but "正在" only matches "currently doing X".
     if text.len() < 200 {
         let continuation_markers = [
             "continue", "continuing", "next", "working on",
             "继续", "接下来", "下一步", "正在",
+            "现在", "目前", "马上", "即将", "开始", "下面",
         ];
         if continuation_markers.iter().any(|m| lower.contains(m) || text.contains(m)) {
             return true;
@@ -869,6 +878,22 @@ fn text_signals_plan_work(text: &str) -> bool {
     }
 
     false
+}
+
+/// Fallback heuristic for the plan guard when keyword matching misses.
+///
+/// Shape: a large output_tokens budget combined with a tiny text body means
+/// the model spent its tokens on thinking / tool composition but emitted
+/// only a transition stub — almost always plan continuation that forgot a
+/// `tool_use` block. Observed in production (2026-05-18 gomoku session,
+/// 14 chars / 1722 tokens).
+///
+/// The thresholds are deliberately conservative: 800 tokens excludes normal
+/// short replies, 100 chars excludes complete answers that just happened to
+/// be terse. Together they describe the specific failure mode without
+/// hijacking healthy conversations.
+fn signals_truncated_plan_continuation(text_len: usize, output_tokens: u32) -> bool {
+    output_tokens > 800 && text_len < 100
 }
 
 #[async_trait]
@@ -1132,9 +1157,24 @@ impl LoopDelegate for ChatDelegate {
             // an unrelated user question. This prevents the guard from hijacking
             // conversations where the user asked about something completely
             // different (health, weather, general knowledge, etc.).
-            if !text_signals_plan_work(text) {
-                tracing::debug!(
+            //
+            // Fallback (signals_truncated_plan_continuation): when the keyword
+            // gate misses but the response shape screams "I composed a lot of
+            // thinking and emitted only a transition stub" (large output_tokens
+            // + tiny text), nudge anyway. This catches Chinese phrasings the
+            // keyword list will never cover.
+            let output_tokens = metadata.usage.as_ref().map(|u| u.output_tokens).unwrap_or(0);
+            let signals_work = text_signals_plan_work(text)
+                || signals_truncated_plan_continuation(text.len(), output_tokens);
+            if !signals_work {
+                // Upgraded from debug to warn: a skipped guard with undone
+                // steps is the silent-termination smoking gun (2026-05-18
+                // gomoku session). Logging at default-visible level lets
+                // post-mortems happen without a debug build.
+                tracing::warn!(
                     undone_steps = undone,
+                    output_tokens,
+                    text_len = text.len(),
                     text_preview = %&text[..text.len().min(120)],
                     "Plan guard skipped: response does not signal plan-related work"
                 );
@@ -2245,5 +2285,71 @@ mod plan_guard_relevance_tests {
             excellent error messages to guide developers.";
         assert!(long_answer.len() >= 200, "sanity: test answer should be >= 200 chars");
         assert!(!text_signals_plan_work(long_answer));
+    }
+
+    // ── Regression coverage: 2026-05-18 五子棋 session (50596741) ─────
+    // Real LLM transition stubs that the original gate missed. These
+    // strings come from observed silent terminations — fixing the gate
+    // here is fixing the exact production bug.
+
+    #[test]
+    fn recognises_now_starting_action_chinese() {
+        // Final assistant message from gomoku session — agent emitted a
+        // 14-char transition stub then loop exited cleanly. The bug.
+        assert!(text_signals_plan_work("现在添加游戏逻辑和事件处理："));
+        // Other observed "now-starting" variants from prior sessions.
+        assert!(text_signals_plan_work("现在开始构建棋盘"));
+        assert!(text_signals_plan_work("目前实现胜利检测"));
+        assert!(text_signals_plan_work("马上编写事件处理"));
+        assert!(text_signals_plan_work("即将开始下一步"));
+        assert!(text_signals_plan_work("下面来实现金币系统"));
+    }
+
+    #[test]
+    fn recognises_action_verbs_chinese() {
+        // Chinese action verbs the agent uses when announcing intent to
+        // act on a plan step but failing to call the tool.
+        assert!(text_signals_plan_work("添加事件监听器"));
+        assert!(text_signals_plan_work("编写游戏循环"));
+        assert!(text_signals_plan_work("实现胜负判定"));
+        assert!(text_signals_plan_work("完成棋盘渲染"));
+    }
+}
+
+#[cfg(test)]
+mod truncated_continuation_tests {
+    use super::signals_truncated_plan_continuation;
+
+    // Large-output + tiny-text is the shape of "thinking-heavy LLM
+    // produced a transition stub but forgot the tool_use block". Triggers
+    // the plan guard as a final fallback when the keyword gate misses.
+
+    #[test]
+    fn gomoku_signal_passes() {
+        // The actual production case: 14 chars of text, 1722 output tokens.
+        assert!(signals_truncated_plan_continuation(14, 1722));
+    }
+
+    #[test]
+    fn long_text_does_not_pass() {
+        // A real long answer can have many output tokens — we must not
+        // hijack it. Threshold is text_len < 100.
+        assert!(!signals_truncated_plan_continuation(300, 1722));
+        assert!(!signals_truncated_plan_continuation(100, 1722));
+    }
+
+    #[test]
+    fn small_output_does_not_pass() {
+        // Tiny output (a normal short reply, no thinking) → not suspicious.
+        assert!(!signals_truncated_plan_continuation(14, 50));
+        assert!(!signals_truncated_plan_continuation(14, 800));
+    }
+
+    #[test]
+    fn boundary_around_thresholds() {
+        // > 800 tokens AND < 100 chars.
+        assert!(signals_truncated_plan_continuation(99, 801));
+        assert!(!signals_truncated_plan_continuation(99, 800));
+        assert!(!signals_truncated_plan_continuation(100, 801));
     }
 }
