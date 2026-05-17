@@ -1910,3 +1910,242 @@ export const searchFragments = (query: string): Promise<FragmentSearchHit[]> =>
 
 export const listDailySummaries = (limit?: number): Promise<DailySummaryItem[]> =>
   invoke('list_daily_summaries', { limit })
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Symphony runtime — T14 frontend bindings.
+//
+// Schema mirrors `src-tauri/src/symphony/protocol/types.rs` + the DTOs in
+// `tauri_commands.rs` (symphony_*). Keep these typed mirrors in sync when
+// either side changes — there's no codegen step today.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export type SymphonyNodeStatus =
+  | 'pending'
+  | 'ready'
+  | 'running'
+  | 'stalled'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+
+export type SymphonyRunStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'quota_exceeded'
+
+export type SymphonyRunOutcome = 'succeeded' | 'partial' | 'failed'
+
+export type SymphonyNodeKind = 'agent' | 'shell' | 'http'
+export type SymphonyFailureMode = 'abort' | 'continue_others' | 'branch_only'
+
+export interface SymphonyRetryPolicy {
+  max_attempts: number
+  max_backoff_ms?: number | null
+}
+
+export interface SymphonyNode {
+  id: string
+  label: string
+  kind: SymphonyNodeKind
+  prompt: string
+  deps: string[]
+  cost_cap_usd?: number | null
+  max_iterations?: number | null
+  retry: SymphonyRetryPolicy
+  after_create_command?: string | null
+  after_run_command?: string | null
+  model?: string | null
+}
+
+export interface SymphonyEdge {
+  from: string
+  to: string
+  label?: string | null
+}
+
+export interface SymphonyWorkflowDef {
+  id: string
+  name: string
+  description?: string | null
+  space_id?: string | null
+  default_model?: string | null
+  per_run_cost_cap_usd?: number | null
+  max_concurrent_nodes?: number | null
+  failure_mode: SymphonyFailureMode
+  nodes: SymphonyNode[]
+  edges: SymphonyEdge[]
+}
+
+export interface SymphonyWorkflowSummary {
+  id: string
+  name: string
+  description: string | null
+  spaceId: string | null
+  currentVersion: number
+  enabled: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface SymphonyWorkflowDetailDto {
+  summary: SymphonyWorkflowSummary
+  definition: SymphonyWorkflowDef
+  definitionMd: string
+}
+
+export interface SymphonyRunRow {
+  id: string
+  workflowId: string
+  workflowVersion: number
+  status: SymphonyRunStatus
+  outcome: SymphonyRunOutcome | null
+  totalCostUsd: number
+  queuedAt: number
+  startedAt: number | null
+  completedAt: number | null
+}
+
+export interface SymphonyNodeRunRow {
+  id: string
+  runId: string
+  nodeId: string
+  attempt: number
+  status: SymphonyNodeStatus
+  sessionId: string | null
+  costUsd: number
+  iterations: number
+  lastHeartbeatMs: number | null
+  errorText: string | null
+  outputJson: string | null
+}
+
+export interface SymphonyRunDetail {
+  run: SymphonyRunRow
+  nodes: SymphonyNodeRunRow[]
+}
+
+export interface SymphonySaveResult {
+  workflowId: string
+  version: number
+}
+
+// ─── IPC events (listen via @tauri-apps/api/event) ─────────────────────────
+
+export interface SymphonyNodeUpdateEvent {
+  runId: string
+  nodeId: string
+  status: SymphonyNodeStatus
+}
+
+export interface SymphonyNodeLogEvent {
+  runId: string
+  nodeId: string
+  role: 'assistant' | 'tool' | 'user'
+  content: string
+}
+
+export interface SymphonyRunStartedEvent {
+  runId: string
+  workflowId: string
+  startedAt: number
+}
+
+export interface SymphonyRunCompletedEvent {
+  runId: string
+  status: SymphonyRunStatus
+  totalCostUsd: number
+  succeeded: number
+  failed: number
+  cancelled: number
+}
+
+export interface SymphonyCostCapHitEvent {
+  runId: string
+  nodeId?: string
+  scope: 'per_run' | 'per_day'
+  usd: number
+  capUsd: number
+}
+
+// ─── Tauri command wrappers ────────────────────────────────────────────────
+
+export const symphonyListWorkflows = (): Promise<SymphonyWorkflowSummary[]> =>
+  invoke('symphony_list_workflows')
+
+export const symphonyGetWorkflow = (
+  workflowId: string,
+): Promise<SymphonyWorkflowDetailDto> =>
+  invoke('symphony_get_workflow', { workflowId })
+
+export const symphonySaveWorkflow = (
+  definition: SymphonyWorkflowDef,
+  definitionMd: string,
+): Promise<SymphonySaveResult> =>
+  invoke('symphony_save_workflow', { definition, definitionMd })
+
+export const symphonyDeleteWorkflow = (workflowId: string): Promise<void> =>
+  invoke('symphony_delete_workflow', { workflowId })
+
+export const symphonyImportWorkflowMd = (
+  source: string,
+): Promise<SymphonySaveResult> =>
+  invoke('symphony_import_workflow_md', { source })
+
+export const symphonyExportWorkflowMd = (workflowId: string): Promise<string> =>
+  invoke('symphony_export_workflow_md', { workflowId })
+
+export const symphonyListRuns = (
+  workflowId?: string,
+): Promise<SymphonyRunRow[]> =>
+  invoke('symphony_list_runs', { workflowId })
+
+export const symphonyGetRun = (runId: string): Promise<SymphonyRunDetail> =>
+  invoke('symphony_get_run', { runId })
+
+export const symphonyTriggerRun = (
+  workflowId: string,
+  inputsJson?: string,
+): Promise<string> =>
+  invoke('symphony_trigger_run', { workflowId, inputsJson })
+
+export const symphonyCancelRun = (runId: string): Promise<void> =>
+  invoke('symphony_cancel_run', { runId })
+
+export const symphonyGetNodeSessionId = (
+  runId: string,
+  nodeId: string,
+): Promise<string | null> =>
+  invoke('symphony_get_node_session_id', { runId, nodeId })
+
+// ─── Symphony service health (audit P2b) ──────────────────────────────────
+
+export type SymphonyServiceStatus =
+  | { status: 'Stopped' }
+  | { status: 'Starting' }
+  | { status: 'Running' }
+  | { status: 'Stopping' }
+  | { status: 'Failed'; reason: string }
+
+export interface SymphonyServiceHealthDto {
+  /** True when memubot_config.symphony.enabled was false at boot. */
+  disabled: boolean
+  // Note: nested `health` keys are snake_case because `ServiceHealth` in
+  // src-tauri/src/services/types.rs has no `#[serde(rename_all)]`. Only
+  // the DTO wrapper itself uses camelCase.
+  health: {
+    name: string
+    status: SymphonyServiceStatus
+    uptime_secs: number | null
+    last_error: string | null
+    metrics: { active_runs?: number; stall_tracking_nodes?: number } & Record<
+      string,
+      unknown
+    >
+  } | null
+}
+
+export const symphonyGetServiceHealth = (): Promise<SymphonyServiceHealthDto> =>
+  invoke('symphony_get_service_health')

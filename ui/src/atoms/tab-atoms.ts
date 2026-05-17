@@ -26,7 +26,7 @@ import type { SessionIndicatorStatus } from './agent-atoms'
 
 // ===== 类型定义 =====
 
-export type TabType = 'chat' | 'agent' | 'browser'
+export type TabType = 'chat' | 'agent' | 'browser' | 'symphony'
 
 export interface TabItem {
   id: string
