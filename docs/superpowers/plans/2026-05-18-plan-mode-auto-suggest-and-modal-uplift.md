@@ -303,6 +303,122 @@ three decision paths (accept+auto, accept+keep, reject+feedback)."
 
 ---
 
+## Task 1.6 — Tool icon snake_case mapping + drop "Proma" branding from AskUserBanner
+
+**Why insert here, after Task 1.5:** User feedback during execution (2026-05-18):
+
+1. **Tool icons all show 🔧 Wrench in chat trajectory.** Root cause: `ui/src/components/agent/tool-utils.ts` `TOOL_ICONS` map uses **PascalCase** keys (`Edit`, `Write`, `Bash`, `AskUserQuestion`, `ExitPlanMode`, ...) — leftover from the Proma / Claude Code SDK era when tool names were PascalCase. uClaw's actual Rust-side tool names are **snake_case** (`ask_user`, `exit_plan_mode`, `read_file`, `write_file`, `plan_write`, `plan_update`, `grep`, `glob`, `bash`, `web_fetch`, `web_search`, `self_eval`, `skill_search`, `load_skill`, `edit`). All snake_case calls miss the map → fallback to `Wrench`.
+
+2. **`AskUserBanner.tsx:243` says "Proma Agent 需要你的输入"** — leftover Proma branding. Should say "Agent 需要你的输入" (drop the brand entirely; matches `ExitPlanModeBanner.tsx`'s neutral "Agent 计划待审批" wording).
+
+3. **ExitPlanModeBanner.tsx confirmed clean** of Proma branding (verified by grep).
+
+**Files:**
+- Modify: `ui/src/components/agent/tool-utils.ts` (extend `TOOL_ICONS` with snake_case keys)
+- Modify: `ui/src/components/agent/AskUserBanner.tsx:243` (drop "Proma" word)
+
+- [ ] **Step 1: Read tool-utils.ts to see current TOOL_ICONS shape**
+
+```bash
+sed -n '40,80p' ui/src/components/agent/tool-utils.ts
+```
+
+- [ ] **Step 2: Add snake_case keys (do NOT remove existing PascalCase keys — chat/ContentBlock may still rely on them)**
+
+In `ui/src/components/agent/tool-utils.ts`, inside the `TOOL_ICONS` object literal, add (after the existing entries, before the closing `}`):
+
+```ts
+  // ── uClaw native snake_case tool names ────────────────────────────
+  // The PascalCase keys above are leftover from Proma's Claude-Code-SDK
+  // era; uClaw's Rust-side built-in tools all use snake_case names. Both
+  // shapes coexist so chat-mode SDK-flavoured rendering still finds its
+  // icons while agent-mode native rendering finds the right ones.
+  ask_user: MessageCircleQuestion,
+  exit_plan_mode: MapPinOff,
+  plan_write: Map,
+  plan_update: ListChecks,
+  request_plan_mode_switch: Lightbulb,
+  read_file: FileText,
+  write_file: FilePenLine,
+  edit: Pencil,
+  bash: Terminal,
+  grep: Search,
+  glob: FolderSearch,
+  web_fetch: Download,
+  web_search: Globe,
+  self_eval: SquareCheck,
+  skill_search: Zap,
+  load_skill: BookOpen,
+```
+
+You'll need to add `Lightbulb` to the lucide-react import list at the top of the file (alphabetical insertion alongside `Layers` / `List`). All other icons (`MessageCircleQuestion`, `MapPinOff`, `Map`, `ListChecks`, `FileText`, `FilePenLine`, `Pencil`, `Terminal`, `Search`, `FolderSearch`, `Download`, `Globe`, `SquareCheck`, `Zap`, `BookOpen`) are already imported.
+
+- [ ] **Step 3: Fix the Proma branding in AskUserBanner**
+
+In `ui/src/components/agent/AskUserBanner.tsx` line 243, change:
+
+```tsx
+<span className="text-sm font-medium text-foreground">Proma Agent 需要你的输入</span>
+```
+
+to:
+
+```tsx
+<span className="text-sm font-medium text-foreground">Agent 需要你的输入</span>
+```
+
+(Drop the brand word entirely — matches the neutral "Agent 计划待审批" wording in ExitPlanModeBanner.)
+
+- [ ] **Step 4: TypeScript check**
+
+```bash
+cd ui && npx tsc --noEmit 2>&1 | head -10
+```
+
+Expected: clean.
+
+- [ ] **Step 5: Optional sanity grep**
+
+```bash
+grep -n "Proma" ui/src/components/agent/AskUserBanner.tsx ui/src/components/agent/ExitPlanModeBanner.tsx
+```
+
+Expected: empty output.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git -C /Users/ryanliu/Documents/uclaw/.claude/worktrees/feat-plan-mode-auto-suggest add \
+  ui/src/components/agent/tool-utils.ts \
+  ui/src/components/agent/AskUserBanner.tsx
+
+git -C /Users/ryanliu/Documents/uclaw/.claude/worktrees/feat-plan-mode-auto-suggest commit -m "fix(ui): tool icons for uClaw snake_case names + drop Proma branding
+
+Two leftover-from-Proma issues user-reported during P1 execution:
+
+1. tool-utils.ts TOOL_ICONS map keyed by PascalCase Claude-Code-SDK
+   names (Edit/Write/Bash/AskUserQuestion/ExitPlanMode/...) — uClaw's
+   actual built-in tools use snake_case (ask_user/exit_plan_mode/
+   read_file/write_file/plan_write/plan_update/edit/bash/grep/glob/
+   web_fetch/web_search/self_eval/skill_search/load_skill). All
+   snake_case lookups missed → fallback to Wrench for every tool in
+   the trajectory. Added snake_case aliases mirroring Proma's lucide
+   choices (MessageCircleQuestion for ask_user, MapPinOff for
+   exit_plan_mode, etc.). PascalCase keys kept for backward compat
+   with chat-mode SDK-flavoured rendering.
+
+2. AskUserBanner.tsx title said 'Proma Agent 需要你的输入' — Proma
+   leftover. Changed to 'Agent 需要你的输入' (matches the neutral
+   'Agent 计划待审批' wording in ExitPlanModeBanner).
+
+3. ExitPlanModeBanner verified clean of Proma branding.
+
+Also pre-registers icon for request_plan_mode_switch (Task 4's new
+LLM tool) → Lightbulb, matching the 💡 in PlanModeSuggestBanner."
+```
+
+---
+
 ## Task 2 — V34 schema + mode_suggest_store
 
 **Files:**
