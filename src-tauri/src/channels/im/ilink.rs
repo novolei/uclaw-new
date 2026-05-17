@@ -6,7 +6,7 @@
 //! context_token has no expiry — valid until next message from same user.
 //! errcode/ret -14 = session expired, stop and require re-auth.
 
-use crate::channels::types::{ImChannelSender, InboundMessage, ReplyHandle};
+use crate::channels::types::{ChannelRuntimeStatus, ChannelState, ImChannelSender, InboundMessage, ReplyHandle};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -28,10 +28,16 @@ pub struct IlinkSender {
     base_url: String,
     context_tokens: Arc<RwLock<HashMap<String, String>>>,
     client: reqwest::Client,
+    status_tx: tokio::sync::mpsc::UnboundedSender<ChannelRuntimeStatus>,
 }
 
 impl IlinkSender {
-    pub fn new(instance_id: &str, config: &Value, credentials: &Value) -> Self {
+    pub fn new(
+        instance_id: &str,
+        config: &Value,
+        credentials: &Value,
+        status_tx: tokio::sync::mpsc::UnboundedSender<ChannelRuntimeStatus>,
+    ) -> Self {
         let bot_token = credentials["bot_token"].as_str().unwrap_or("").to_string();
         let base_url = config["base_url"]
             .as_str()
@@ -44,6 +50,7 @@ impl IlinkSender {
             base_url,
             context_tokens: Arc::new(RwLock::new(HashMap::new())),
             client: reqwest::Client::new(),
+            status_tx,
         }
     }
 
@@ -72,10 +79,21 @@ impl IlinkSender {
 
         let mut updates_buf = String::new();
         let mut attempt = 0u32;
+        let mut connected = false;
 
         loop {
             match self.single_poll(&mut updates_buf, &inbound_tx).await {
                 Ok(true) => {
+                    if !connected {
+                        connected = true;
+                        let _ = self.status_tx.send(ChannelRuntimeStatus {
+                            instance_id: self.instance_id.clone(),
+                            state: ChannelState::Online,
+                            last_error: None,
+                            connected_since_ms: Some(chrono::Utc::now().timestamp_millis()),
+                            message_count_today: 0,
+                        });
+                    }
                     attempt = 0;
                 }
                 Ok(false) => {
@@ -83,9 +101,23 @@ impl IlinkSender {
                         "[IlinkBot:{}] Session expired (code -14) — re-auth required",
                         self.instance_id
                     );
+                    let _ = self.status_tx.send(ChannelRuntimeStatus {
+                        instance_id: self.instance_id.clone(),
+                        state: ChannelState::NeedsRebind,
+                        last_error: Some("iLink 会话已失效（-14），请重新扫码绑定".to_string()),
+                        connected_since_ms: None,
+                        message_count_today: 0,
+                    });
                     break;
                 }
                 Err(e) => {
+                    let _ = self.status_tx.send(ChannelRuntimeStatus {
+                        instance_id: self.instance_id.clone(),
+                        state: ChannelState::Error,
+                        last_error: Some(e.to_string()),
+                        connected_since_ms: None,
+                        message_count_today: 0,
+                    });
                     if attempt >= MAX_RECONNECT_ATTEMPTS {
                         tracing::error!(
                             "[IlinkBot:{}] Max reconnect attempts reached",
@@ -321,6 +353,41 @@ impl ImChannelSender for IlinkReplySender {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn status_tx_receives_needs_rebind_on_session_expired() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/ilink/bot/getupdates")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"ret":-14}"#)
+            .create_async()
+            .await;
+
+        let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let sender = Arc::new(IlinkSender::new(
+            "test-inst",
+            &serde_json::json!({ "base_url": server.url() }),
+            &serde_json::json!({ "bot_token": "tok123" }),
+            status_tx,
+        ));
+        let abort = sender.clone().start(inbound_tx);
+
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            status_rx.recv(),
+        )
+        .await
+        .expect("timeout waiting for NeedsRebind status")
+        .expect("status channel closed unexpectedly");
+
+        abort.abort();
+        assert_eq!(status.state, crate::channels::types::ChannelState::NeedsRebind);
+        assert_eq!(status.instance_id, "test-inst");
+    }
 
     #[test]
     fn extract_text_from_text_item() {
