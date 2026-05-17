@@ -43,3 +43,8 @@ package-lock.json
 
 # Veo sprite generation intermediate output
 .cache/
+
+# ulooi iOS app — separate public repo at github.com/novolei/ulooi.
+# Earlier `git add .` from uclaw root accidentally added it as a submodule
+# (596e2a8). 2fbe327 rm'd the gitlink; this ignore prevents recurrence.
+ulooi/
