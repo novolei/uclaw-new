@@ -76,6 +76,46 @@ pub fn pending_plan_steps(workspace_root: Option<&Path>, recent_secs: u64) -> Op
     }
 }
 
+/// Read a specific plan file by name and count `- [ ]` (undone) steps,
+/// **ignoring mtime**. Used by callers that already know which plan is
+/// active for this session (e.g. via scanning message history for
+/// plan_write / plan_update tool calls). This is the resume-friendly
+/// path: the mtime-based `pending_plan_steps` misses plans that haven't
+/// been touched in the last 5 minutes, which silently kills the guard
+/// for "user comes back after an hour and types 继续" workflows.
+///
+/// Filename is treated as a bare basename: anything containing path
+/// separators or `..` is rejected. Plan files only ever live in
+/// `<root>/.uclaw/plans/`, so a directory-walking input is wrong by
+/// construction and gets blocked here.
+pub fn pending_plan_steps_in_file(
+    workspace_root: Option<&Path>,
+    filename: &str,
+) -> Option<usize> {
+    let root = workspace_root?;
+    if root.as_os_str().is_empty() {
+        return None;
+    }
+    // Defense in depth: filename ultimately comes from tool arguments
+    // (plan_update.filename or parsed from plan_write result text). Reject
+    // anything that could escape the plans directory or denote a non-file.
+    if filename.is_empty()
+        || filename.contains('/')
+        || filename.contains('\\')
+        || filename.contains("..")
+        || filename == "."
+    {
+        return None;
+    }
+    let path = root.join(".uclaw").join("plans").join(filename);
+    let content = std::fs::read_to_string(&path).ok()?;
+    if content.contains("status: completed") {
+        return None;
+    }
+    let undone = count_undone_steps(&content);
+    if undone == 0 { None } else { Some(undone) }
+}
+
 /// Count `- [ ]` checkbox lines (anywhere in the content). Tolerates
 /// leading whitespace + lowercase `x`/`X` for done state.
 fn count_undone_steps(content: &str) -> usize {
@@ -179,5 +219,99 @@ mod tests {
     fn count_undone_steps_handles_indentation_and_asterisk() {
         let content = "  - [ ] indented\n* [ ] asterisk-style\n  - [x] done\n";
         assert_eq!(count_undone_steps(content), 2);
+    }
+
+    // ── pending_plan_steps_in_file (session-history-driven path) ─────
+    // Regression: 2026-05-18 04:46 五子棋 resume — user came back >1h after
+    // last plan_update so mtime fallback returned None and the guard never
+    // engaged. New entry point bypasses mtime and reads a specific file by
+    // name, intended for callers that already know which plan is active
+    // (e.g. via scanning message history for plan_write/plan_update calls).
+
+    #[test]
+    fn in_file_returns_count_regardless_of_mtime() {
+        // The whole point: don't care about mtime, just count undone steps.
+        let content =
+            "---\nstatus: in_progress\n---\n## Steps\n- [ ] 1. a\n- [ ] 2. b\n";
+        let dir = workspace_with_plan("any-age.md", content);
+        // Even with 0-second window (which kills the mtime-based fn), the
+        // explicit-file variant must still return the count.
+        assert_eq!(
+            pending_plan_steps_in_file(Some(dir.path()), "any-age.md"),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn in_file_returns_none_for_completed_status() {
+        let content = "---\nstatus: completed\n---\n## Steps\n- [ ] still here\n";
+        let dir = workspace_with_plan("done.md", content);
+        assert_eq!(
+            pending_plan_steps_in_file(Some(dir.path()), "done.md"),
+            None
+        );
+    }
+
+    #[test]
+    fn in_file_returns_none_when_all_done() {
+        let content = "---\nstatus: in_progress\n---\n## Steps\n- [x] a\n- [x] b\n";
+        let dir = workspace_with_plan("alldone.md", content);
+        assert_eq!(
+            pending_plan_steps_in_file(Some(dir.path()), "alldone.md"),
+            None
+        );
+    }
+
+    #[test]
+    fn in_file_returns_none_when_file_missing() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join(".uclaw").join("plans")).unwrap();
+        assert_eq!(
+            pending_plan_steps_in_file(Some(dir.path()), "missing.md"),
+            None
+        );
+    }
+
+    #[test]
+    fn in_file_rejects_path_traversal() {
+        // Defense: filename came from message history which is influenced by
+        // tool arguments. Reject anything that could escape .uclaw/plans/.
+        let dir = workspace_with_plan(
+            "plan.md",
+            "---\nstatus: in_progress\n---\n## Steps\n- [ ] x\n",
+        );
+        // Plant a fake plan-like file OUTSIDE plans/ to prove we don't read it.
+        fs::write(
+            dir.path().join("escaped.md"),
+            "---\nstatus: in_progress\n---\n## Steps\n- [ ] should not be read\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            pending_plan_steps_in_file(Some(dir.path()), "../escaped.md"),
+            None
+        );
+        assert_eq!(
+            pending_plan_steps_in_file(Some(dir.path()), "subdir/plan.md"),
+            None
+        );
+        assert_eq!(
+            pending_plan_steps_in_file(Some(dir.path()), "."),
+            None
+        );
+    }
+
+    #[test]
+    fn in_file_returns_none_for_missing_workspace() {
+        assert_eq!(pending_plan_steps_in_file(None, "any.md"), None);
+    }
+
+    #[test]
+    fn in_file_returns_none_for_empty_pathbuf() {
+        let empty = std::path::PathBuf::from("");
+        assert_eq!(
+            pending_plan_steps_in_file(Some(empty.as_path()), "any.md"),
+            None
+        );
     }
 }
