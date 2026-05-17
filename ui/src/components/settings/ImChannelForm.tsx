@@ -93,6 +93,14 @@ export function ImChannelForm({ spaces, editing, onDone }: Props) {
     setSaving(true)
     setError(null)
     try {
+      if (channelType === 'email') {
+        const port = Number(smtpPort)
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+          setError('端口号必须是 1–65535 之间的整数')
+          setSaving(false)
+          return
+        }
+      }
       const input = buildInput()
       if (editing) {
         await invoke('update_im_channel', { id: editing.id, input })

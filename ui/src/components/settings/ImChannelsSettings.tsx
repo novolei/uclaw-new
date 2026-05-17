@@ -29,14 +29,24 @@ export function ImChannelsSettings() {
   }, [fetchChannels])
 
   async function handleToggle(id: string, enabled: boolean) {
-    await invoke('toggle_im_channel', { id, enabled })
-    fetchChannels()
+    try {
+      await invoke('toggle_im_channel', { id, enabled })
+      fetchChannels()
+    } catch (e) {
+      console.error('toggle_im_channel failed:', e)
+      alert('操作失败，请查看控制台了解详情')
+    }
   }
 
   async function handleDelete(id: string) {
     if (!confirm('确定删除此渠道实例？')) return
-    await invoke('delete_im_channel', { id })
-    fetchChannels()
+    try {
+      await invoke('delete_im_channel', { id })
+      fetchChannels()
+    } catch (e) {
+      console.error('delete_im_channel failed:', e)
+      alert('删除失败，请查看控制台了解详情')
+    }
   }
 
   function handleEdit(ch: ImChannelRow) {
