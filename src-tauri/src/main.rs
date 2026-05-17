@@ -580,6 +580,7 @@ fn main() {
             uclaw_core::tauri_commands::approve_tool_call,
             uclaw_core::tauri_commands::respond_ask_user,
             uclaw_core::tauri_commands::respond_exit_plan_mode,
+            uclaw_core::tauri_commands::respond_plan_mode_suggest,
             uclaw_core::tauri_commands::list_permission_rules,
             uclaw_core::tauri_commands::create_permission_rule,
             uclaw_core::tauri_commands::delete_permission_rule,

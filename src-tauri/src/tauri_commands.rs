@@ -382,6 +382,10 @@ pub async fn send_message(
     ));
     tools.register(builtin::plan::PlanWriteTool::new(workspace.clone(), app_handle.clone()));
     tools.register(builtin::plan::PlanUpdateTool::new(workspace.clone(), app_handle.clone()));
+    tools.register(builtin::plan_mode::RequestPlanModeSwitchTool::new(
+        app_handle.clone(),
+        input.conversation_id.clone(),
+    ));
     tools.register(
         builtin::self_eval::SelfEvalTool::new(
             input.conversation_id.clone(),
@@ -6926,6 +6930,63 @@ pub async fn send_agent_message(
         "send_agent_message ENTRY",
     );
 
+    // ── Plan-mode auto-suggest (high-recall keyword detector) ─────────
+    // Disabled patterns come from the calibration scenario (Task 10);
+    // stubbed to empty until then. Settings toggle lands in Task 11 —
+    // hardcoded true here for now.
+    {
+        let suggest_enabled = true; // TODO Task 11: read from settings
+        if suggest_enabled {
+            if let Ok(conn) = state.db.lock() {
+                let disabled = crate::agent::mode_suggest_store::query_disabled_patterns(&conn)
+                    .unwrap_or_default();
+                // Read current mode from safety policy (RwLock — use blocking_read to avoid await
+                // inside a non-async block; the lock is uncontended here).
+                let current_mode = {
+                    let mgr = state.safety_manager.blocking_read();
+                    mgr.policy().global_mode.clone()
+                };
+                // Already-suggested check: best-effort. ReasoningContext is created fresh per
+                // send_agent_message call — no persistent per-session store across turns.
+                // Task 9 will revisit if needed; duplicate banners suppressed on the frontend
+                // via per-session atom anyway.
+                let already_suggested = false; // FIXME Task 9: thread session state
+                if let Some(hint) = crate::agent::mode_suggest::suggest_plan_mode(
+                    &input.user_message, &current_mode, already_suggested, &disabled,
+                ) {
+                    let event_id = uuid::Uuid::new_v4().to_string();
+                    let pattern = hint.pattern;
+                    let display_reason = hint.display_reason;
+                    let _ = crate::agent::mode_suggest_store::record_fired(
+                        &conn,
+                        crate::agent::mode_suggest_store::FireRecord {
+                            id: &event_id,
+                            session_id: &input.session_id,
+                            message_id: "",  // user_msg_id not yet created at this point; updated post-insert by Task 9 if needed
+                            source: crate::agent::mode_suggest_store::SuggestSource::Keyword,
+                            matched_pattern: Some(pattern),
+                            reason: None,
+                            user_msg_preview: &input.user_message.chars().take(200).collect::<String>(),
+                            fired_at: chrono::Utc::now().timestamp_millis(),
+                        },
+                    );
+                    let _ = app_handle.emit("agent:plan_mode_suggest", serde_json::json!({
+                        "id": event_id,
+                        "session_id": input.session_id,
+                        "source": "keyword",
+                        "matched_pattern": pattern,
+                        "reason": display_reason,
+                        "fired_at_ms": chrono::Utc::now().timestamp_millis(),
+                    }));
+                    tracing::info!(
+                        pattern = %pattern, session_id = %input.session_id,
+                        "Plan-mode suggest banner fired (keyword)"
+                    );
+                }
+            }
+        }
+    }
+
     // ── /compact intercept (agent path) ─────────────────────────────
     // Same handling as the chat path: user typed `/compact` either via
     // the input box or the ContextUsageBadge button. Compact the agent
@@ -7184,6 +7245,10 @@ pub async fn send_agent_message(
     ));
     tools.register(builtin::plan::PlanWriteTool::new(workspace.clone(), app_handle.clone()));
     tools.register(builtin::plan::PlanUpdateTool::new(workspace.clone(), app_handle.clone()));
+    tools.register(builtin::plan_mode::RequestPlanModeSwitchTool::new(
+        app_handle.clone(),
+        input.session_id.clone(),
+    ));
     tools.register(
         builtin::self_eval::SelfEvalTool::new(
             input.session_id.clone(),
@@ -12243,4 +12308,31 @@ pub async fn symphony_get_node_session_id(
         )
         .ok();
     Ok(sid)
+}
+
+/// Frontend → backend: user has decided on a plan-mode suggestion.
+/// Outcome is one of accepted | skipped | silenced | aborted.
+#[tauri::command]
+pub async fn respond_plan_mode_suggest(
+    state: State<'_, AppState>,
+    event_id: String,
+    outcome: String,
+    decline_reason: Option<String>,
+) -> Result<(), Error> {
+    use crate::agent::mode_suggest_store::Outcome as O;
+    let outcome_enum = match outcome.as_str() {
+        "accepted" => O::Accepted,
+        "skipped" => O::Skipped,
+        "silenced" => O::Silenced,
+        "aborted" => O::Aborted,
+        other => return Err(Error::InvalidInput(format!("invalid outcome: {}", other))),
+    };
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    crate::agent::mode_suggest_store::record_outcome(
+        &conn,
+        &event_id,
+        outcome_enum,
+        decline_reason.as_deref(),
+        chrono::Utc::now().timestamp_millis(),
+    ).map_err(|e| Error::Database(e))
 }
