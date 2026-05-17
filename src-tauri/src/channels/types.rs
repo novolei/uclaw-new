@@ -39,7 +39,7 @@ impl std::fmt::Display for ImChannelType {
 }
 
 /// Runtime connection state for a bidirectional channel instance.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelState {
     Online,
@@ -49,7 +49,7 @@ pub enum ChannelState {
 
 /// Live status snapshot — emitted as `im_channel_status_changed` Tauri event
 /// and returned by `get_im_channel_statuses`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelRuntimeStatus {
     pub instance_id: String,
     pub state: ChannelState,
@@ -190,6 +190,7 @@ mod tests {
 
     #[test]
     fn channel_runtime_status_serializes_correctly() {
+        // Online case
         let s = ChannelRuntimeStatus {
             instance_id: "inst-1".into(),
             state: ChannelState::Online,
@@ -197,11 +198,14 @@ mod tests {
             connected_since_ms: Some(1_700_000_000_000),
             message_count_today: 42,
         };
-        let json = serde_json::to_string(&s).unwrap();
-        assert!(json.contains("\"state\":\"online\""));
-        assert!(json.contains("\"instance_id\":\"inst-1\""));
-        assert!(json.contains("\"message_count_today\":42"));
+        let v: serde_json::Value = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["state"], "online");
+        assert_eq!(v["instance_id"], "inst-1");
+        assert_eq!(v["message_count_today"], 42);
+        assert!(v["last_error"].is_null());
+        assert_eq!(v["connected_since_ms"], 1_700_000_000_000_i64);
 
+        // Error case with Chinese text
         let err_s = ChannelRuntimeStatus {
             instance_id: "inst-2".into(),
             state: ChannelState::Error,
@@ -209,8 +213,20 @@ mod tests {
             connected_since_ms: None,
             message_count_today: 0,
         };
-        let json2 = serde_json::to_string(&err_s).unwrap();
-        assert!(json2.contains("\"state\":\"error\""));
-        assert!(json2.contains("认证失败"));
+        let v2: serde_json::Value = serde_json::to_value(&err_s).unwrap();
+        assert_eq!(v2["state"], "error");
+        assert_eq!(v2["last_error"], "认证失败");
+        assert!(v2["connected_since_ms"].is_null());
+
+        // Offline case
+        let off_s = ChannelRuntimeStatus {
+            instance_id: "inst-3".into(),
+            state: ChannelState::Offline,
+            last_error: Some("max retries".into()),
+            connected_since_ms: None,
+            message_count_today: 0,
+        };
+        let v3: serde_json::Value = serde_json::to_value(&off_s).unwrap();
+        assert_eq!(v3["state"], "offline");
     }
 }
