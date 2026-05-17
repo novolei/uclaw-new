@@ -1075,6 +1075,7 @@ pub struct AskUserQuestion {
     pub question: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub header: Option<String>,
+    #[serde(default)]
     pub multi_select: bool,
     #[serde(default)]
     pub options: Vec<AskUserOption>,
@@ -1239,5 +1240,34 @@ mod workspace_capabilities_tests {
         assert!(json_str.contains("\"mcpServers\""), "expected camelCase mcpServers in JSON: {}", json_str);
         assert!(json_str.contains("\"autoApprove\""), "expected camelCase autoApprove in JSON: {}", json_str);
         assert!(!json_str.contains("\"mcp_servers\""), "snake_case leaked: {}", json_str);
+    }
+}
+
+#[cfg(test)]
+mod ask_user_tests {
+    use super::*;
+
+    #[test]
+    fn ask_user_question_accepts_camel_case_multiselect() {
+        // Schema advertises multiSelect — LLM sends multiSelect — must deserialize.
+        let json = serde_json::json!({
+            "question": "Q1?",
+            "multiSelect": false,
+            "options": [{"label": "A"}],
+        });
+        let q: AskUserQuestion = serde_json::from_value(json).unwrap();
+        assert!(!q.multi_select);
+    }
+
+    #[test]
+    fn ask_user_question_defaults_multiselect_when_absent() {
+        // Some LLM calls omit multiSelect entirely — default to false
+        // rather than fail the whole tool call.
+        let json = serde_json::json!({
+            "question": "Q1?",
+            "options": [{"label": "A"}],
+        });
+        let q: AskUserQuestion = serde_json::from_value(json).unwrap();
+        assert!(!q.multi_select);
     }
 }

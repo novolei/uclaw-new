@@ -49,7 +49,7 @@ impl Tool for AskUserTool {
                         "properties": {
                             "question": {"type": "string"},
                             "header":   {"type": "string"},
-                            "multi_select": {"type": "boolean", "default": false},
+                            "multiSelect": {"type": "boolean", "default": false, "description": "Allow selecting multiple options"},
                             "options": {
                                 "type": "array",
                                 "items": {
@@ -63,7 +63,7 @@ impl Tool for AskUserTool {
                                 }
                             }
                         },
-                        "required": ["question", "multi_select"]
+                        "required": ["question"]
                     }
                 }
             },
@@ -89,6 +89,9 @@ impl Tool for AskUserTool {
         let request_id = uuid::Uuid::new_v4().to_string();
         let rx = self.pending.register(request_id.clone());
 
+        // Clone questions before moving into payload so we can format the
+        // human-readable result text after the user responds.
+        let questions_for_result = questions.clone();
         let payload = AskUserRequestPayload {
             request_id: request_id.clone(),
             session_id: self.session_id.clone(),
@@ -100,9 +103,31 @@ impl Tool for AskUserTool {
             ToolError::Execution("ask_user channel dropped — user closed without answering".into())
         })?;
 
-        let result_json = serde_json::json!({ "answers": result.answers });
+        // Format as human-readable text so the chat trajectory renders it the
+        // same way Proma's Claude Code SDK auto-formatted tool_results.
+        // The frontend (AskUserBanner.tsx) uses q.question as the answer key.
+        let mut answer_pairs: Vec<String> = Vec::with_capacity(questions_for_result.len());
+        for q in &questions_for_result {
+            let key = &q.question;
+            let answer_str = match result.answers.get(key) {
+                Some(v) => match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Array(arr) => arr.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    other => other.to_string(),
+                },
+                None => "(no answer)".to_string(),
+            };
+            answer_pairs.push(format!("\"{}\"=\"{}\"", q.question, answer_str));
+        }
+        let result_text = format!(
+            "User has answered your questions: {}. You can now continue with the user's answers in mind.",
+            answer_pairs.join(", "),
+        );
         Ok(ToolOutput::success(
-            &serde_json::to_string(&result_json).unwrap_or_default(),
+            &result_text,
             start.elapsed().as_millis() as u64,
         ))
     }
