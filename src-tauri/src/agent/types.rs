@@ -128,6 +128,15 @@ pub struct ReasoningContext {
     /// After MAX_PLAN_GUARD_NUDGES, the guard gives up and returns the
     /// response as-is to avoid infinite text-only loops.
     pub consecutive_plan_guard_nudges: usize,
+    /// Set true when either the backend keyword detector (Task 6) or the
+    /// LLM tool request_plan_mode_switch (Task 4) has fired a plan-mode
+    /// suggestion in this session. Cleared on accept or on manual mode
+    /// change. Prevents double-banners between the two paths.
+    pub plan_mode_suggested_in_session: bool,
+    /// The event id of the latest plan-mode suggestion. None until first
+    /// fire. Used by respond_plan_mode_suggest to update the outcome row
+    /// without the frontend needing to know it.
+    pub plan_mode_suggest_event_id: Option<String>,
 }
 
 impl ReasoningContext {
@@ -144,6 +153,8 @@ impl ReasoningContext {
             consecutive_length_truncations: 0,
             partial_code_buffer: None,
             consecutive_plan_guard_nudges: 0,
+            plan_mode_suggested_in_session: false,
+            plan_mode_suggest_event_id: None,
         }
     }
 
