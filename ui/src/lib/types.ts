@@ -1139,6 +1139,42 @@ export interface EntityPageAppendTimelineInput {
   sourceSessionId?: string;
 }
 
+// ─── Wiki Artifacts (Memory OS Foundation Phase 3) ──────────────────────
+
+export interface WikiGetInput {
+  spaceId?: string;
+}
+
+export interface WikiRegenerateInput {
+  spaceId?: string;
+  /** `"index"` (free, SQL-only) or `"overview"` (calls WikiSynthesizer).
+   * Omit to default to `"index"`. */
+  kind?: 'index' | 'overview';
+}
+
+/** Mirrors `wiki_artifacts` rows (Rust `ipc::WikiArtifactDto`). */
+export interface WikiArtifactDto {
+  id: string;
+  spaceId: string;
+  kind: string;
+  content: string;
+  generatedAt: number; // epoch millis
+  sourceNodeIds: string[];
+  llmModel: string | null;
+  tokenCost: number;
+}
+
+export interface WikiRegenerateOutcome {
+  kind: string;
+  artifactId: string;
+  bytesWritten: number;
+  tokenCost: number;
+  llmModel: string | null;
+  /** Set only when `kind === "overview"` — e.g. `"stub:no-llm"` until a
+   * real LLM client is wired into AppState. */
+  synthesizerDescriptor?: string;
+}
+
 /**
  * Wire values for `memory_edges.relation_kind` after Memory OS Foundation
  * Phase 2 (auto-link). All four V1-V33 structural variants plus seven

@@ -4942,6 +4942,172 @@ pub async fn memory_entity_page_append_timeline(
     Ok(serde_json::json!({ "success": true, "nodeId": input.node_id }))
 }
 
+// ─── Wiki Artifact Commands (Memory OS Foundation Phase 3) ─────────────
+//
+// Three IPC commands powering the WikiView frontend:
+//   - memory_wiki_get_overview / memory_wiki_get_index: read the latest
+//     row of the corresponding `wiki_artifacts(kind=...)` for a space.
+//   - memory_wiki_regenerate: manual trigger; calls
+//     `wiki_synth::regenerate_index` (free) or
+//     `wiki_synth::regenerate_overview` (uses configured synthesizer).
+//
+// All three gate on `memubot_config.memory_os.wiki_view_enabled` — when
+// the flag is off, IPC returns a structured error so the frontend can
+// hide the Wiki tab without crashing.
+
+fn ensure_wiki_view_enabled(state: &State<'_, AppState>) -> Result<(), String> {
+    if !state.memubot_config.memory_os.wiki_view_enabled {
+        return Err(
+            "Wiki view is disabled (memory_os.wiki_view_enabled = false in memubot_config.json). \
+             Enable it and restart to use memory_wiki_* commands."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Read the latest row of `wiki_artifacts(kind='overview')` for the
+/// given space. Returns null when no row exists yet (e.g. fresh DB or
+/// regenerate hasn't run).
+#[tauri::command]
+pub async fn memory_wiki_get_overview(
+    state: State<'_, AppState>,
+    input: WikiGetInput,
+) -> Result<serde_json::Value, String> {
+    ensure_wiki_view_enabled(&state)?;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    read_latest_wiki_artifact(&state, &space_id, "overview")
+}
+
+/// Read the latest row of `wiki_artifacts(kind='index')` for the given
+/// space. The ProactiveService tick refreshes this every ~5 minutes,
+/// so on a running app the row is always reasonably current.
+#[tauri::command]
+pub async fn memory_wiki_get_index(
+    state: State<'_, AppState>,
+    input: WikiGetInput,
+) -> Result<serde_json::Value, String> {
+    ensure_wiki_view_enabled(&state)?;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    read_latest_wiki_artifact(&state, &space_id, "index")
+}
+
+/// Force a regenerate of the index (SQL-only, free) or overview
+/// (synthesizer-driven, may call LLM). When `kind` is omitted defaults
+/// to "index" so accidental clicks don't burn tokens.
+#[tauri::command]
+pub async fn memory_wiki_regenerate(
+    state: State<'_, AppState>,
+    input: WikiRegenerateInput,
+) -> Result<serde_json::Value, String> {
+    ensure_wiki_view_enabled(&state)?;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let kind = input.kind.unwrap_or_else(|| "index".to_string());
+
+    match kind.as_str() {
+        "index" => {
+            // Take the store conn lock, run sync regen, drop the lock.
+            // Same spawn_blocking pattern as the tick loop.
+            let store = state.memory_graph_store.clone();
+            let space_id_owned = space_id.clone();
+            let outcome = tokio::task::spawn_blocking(move || {
+                let conn = store
+                    .conn
+                    .lock()
+                    .map_err(|e| format!("DB lock: {}", e))?;
+                crate::memory_graph::wiki_synth::regenerate_index(
+                    &conn,
+                    &space_id_owned,
+                    crate::memory_graph::wiki_synth::RegenerateTrigger::Manual,
+                )
+                .map_err(|e| format!("regenerate_index: {}", e))
+            })
+            .await
+            .map_err(|e| format!("spawn_blocking: {}", e))??;
+            Ok(serde_json::json!({
+                "kind": "index",
+                "artifactId": outcome.artifact_id,
+                "bytesWritten": outcome.bytes_written,
+                "tokenCost": outcome.token_cost,
+                "llmModel": outcome.llm_model,
+            }))
+        }
+        "overview" => {
+            let store_conn = state.memory_graph_store.conn.clone();
+            let synthesizer = state.wiki_synthesizer.clone();
+            let outcome = crate::memory_graph::wiki_synth::regenerate_overview(
+                store_conn,
+                synthesizer,
+                &space_id,
+                crate::memory_graph::wiki_synth::RegenerateTrigger::Manual,
+            )
+            .await
+            .map_err(|e| format!("regenerate_overview: {}", e))?;
+            Ok(serde_json::json!({
+                "kind": "overview",
+                "artifactId": outcome.artifact_id,
+                "bytesWritten": outcome.bytes_written,
+                "tokenCost": outcome.token_cost,
+                "llmModel": outcome.llm_model,
+                "synthesizerDescriptor": state.wiki_synthesizer.descriptor(),
+            }))
+        }
+        other => Err(format!(
+            "Unknown wiki kind '{}'. Use 'index' or 'overview'.",
+            other
+        )),
+    }
+}
+
+/// Shared read path — fetches the row with the largest `generated_at`
+/// for (space_id, kind). Returns null on miss.
+fn read_latest_wiki_artifact(
+    state: &State<'_, AppState>,
+    space_id: &str,
+    kind: &str,
+) -> Result<serde_json::Value, String> {
+    let store = &state.memory_graph_store;
+    let conn = store
+        .conn
+        .lock()
+        .map_err(|e| format!("DB lock: {}", e))?;
+
+    // Phase 1 fix-up pattern: bind stmt + rows separately so the borrow
+    // ends before stmt drops.
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, space_id, kind, content, generated_at, source_node_ids, \
+                    llm_model, token_cost \
+             FROM wiki_artifacts \
+             WHERE space_id = ?1 AND kind = ?2 \
+             ORDER BY generated_at DESC \
+             LIMIT 1",
+        )
+        .map_err(|e| format!("prepare: {}", e))?;
+    let row: Option<WikiArtifactDto> = stmt
+        .query_row(rusqlite::params![space_id, kind], |r| {
+            let source_node_ids_json: String = r.get(5)?;
+            let source_node_ids: Vec<String> =
+                serde_json::from_str(&source_node_ids_json).unwrap_or_default();
+            Ok(WikiArtifactDto {
+                id: r.get(0)?,
+                space_id: r.get(1)?,
+                kind: r.get(2)?,
+                content: r.get(3)?,
+                generated_at: r.get(4)?,
+                source_node_ids,
+                llm_model: r.get(6)?,
+                token_cost: r.get(7)?,
+            })
+        })
+        .ok();
+
+    match row {
+        Some(dto) => serde_json::to_value(&dto).map_err(|e| format!("serialize: {}", e)),
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
 // ─── Fragment / Daily Summary Commands ─────────────────────────────────────
 
 /// Parse an RFC-3339 / ISO-8601 timestamp string into epoch millis.

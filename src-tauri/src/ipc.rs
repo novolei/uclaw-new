@@ -1001,6 +1001,42 @@ pub struct EntityPageAppendTimelineInput {
     pub source_session_id: Option<String>,
 }
 
+// ─── Wiki Artifacts IPC types (Memory OS Foundation Phase 3) ───────────
+//
+// Wire types for the `memory_wiki_*` Tauri commands. Read shape is a
+// `WikiArtifactDto` mirroring the `wiki_artifacts` row; the frontend
+// renders `content` as markdown.
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WikiGetInput {
+    pub space_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WikiRegenerateInput {
+    pub space_id: Option<String>,
+    /// Which artifact to regenerate. `"index"` is free; `"overview"`
+    /// calls the configured `WikiSynthesizer` (stub in Phase 3, real
+    /// LLM in a follow-up). Default behaviour when omitted: regenerate
+    /// `"index"` only (the cheap path).
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WikiArtifactDto {
+    pub id: String,
+    pub space_id: String,
+    pub kind: String,
+    pub content: String,
+    pub generated_at: i64,
+    pub source_node_ids: Vec<String>,
+    pub llm_model: Option<String>,
+    pub token_cost: i64,
+}
+
 // ─── Cost dashboard ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

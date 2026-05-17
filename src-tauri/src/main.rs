@@ -621,6 +621,10 @@ fn main() {
             uclaw_core::tauri_commands::memory_entity_page_find_by_slug,
             uclaw_core::tauri_commands::memory_entity_page_list,
             uclaw_core::tauri_commands::memory_entity_page_append_timeline,
+            // Wiki artifacts (Memory OS Foundation Phase 3)
+            uclaw_core::tauri_commands::memory_wiki_get_overview,
+            uclaw_core::tauri_commands::memory_wiki_get_index,
+            uclaw_core::tauri_commands::memory_wiki_regenerate,
             // Fragment / Daily Summary
             uclaw_core::tauri_commands::memory_graph_list_fragments,
             uclaw_core::tauri_commands::search_fragments,

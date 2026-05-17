@@ -109,6 +109,11 @@ import type {
   EntityPageFindBySlugInput,
   EntityPageListInput,
   EntityPageAppendTimelineInput,
+  // Wiki artifacts (Memory OS Foundation Phase 3)
+  WikiGetInput,
+  WikiRegenerateInput,
+  WikiArtifactDto,
+  WikiRegenerateOutcome,
   // Cost dashboard
   DailyCostRollup,
   ModelCostRollup,
@@ -770,6 +775,29 @@ export const memoryEntityPageAppendTimeline = (
   input: EntityPageAppendTimelineInput,
 ): Promise<unknown> =>
   invoke('memory_entity_page_append_timeline', { input });
+
+// ─────────────────────────────────────────────────────────
+// Wiki artifacts (Memory OS Foundation Phase 3)
+// ─────────────────────────────────────────────────────────
+//
+// All three commands return `null` when no row exists (rather than
+// throwing) — the WikiView treats null as "empty state, prompt the
+// user to regenerate".
+
+export const memoryWikiGetOverview = (
+  input: WikiGetInput,
+): Promise<WikiArtifactDto | null> =>
+  invoke('memory_wiki_get_overview', { input });
+
+export const memoryWikiGetIndex = (
+  input: WikiGetInput,
+): Promise<WikiArtifactDto | null> =>
+  invoke('memory_wiki_get_index', { input });
+
+export const memoryWikiRegenerate = (
+  input: WikiRegenerateInput,
+): Promise<WikiRegenerateOutcome> =>
+  invoke('memory_wiki_regenerate', { input });
 
 // ─────────────────────────────────────────────────────────
 // Notifications
