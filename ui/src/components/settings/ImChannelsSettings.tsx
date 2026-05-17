@@ -69,7 +69,10 @@ export function ImChannelsSettings() {
   }
 
   const tabs = CHANNEL_TYPES_ORDER.filter(t => (channelsByType[t]?.length ?? 0) > 0)
-  const currentTab = (activeTab && tabs.includes(activeTab)) ? activeTab : (tabs[0] ?? null)
+  // Include a virtual tab when addingToType is a type that has no existing instances yet
+  const virtualTab = addingToType && !tabs.includes(addingToType) ? addingToType : null
+  const allTabs = virtualTab ? [...tabs, virtualTab] : tabs
+  const currentTab = (activeTab && allTabs.includes(activeTab)) ? activeTab : (allTabs[0] ?? null)
 
   async function handleToggle(id: string, enabled: boolean) {
     setChannels(prev => prev.map(ch => ch.id === id ? { ...ch, enabled } : ch))
@@ -109,7 +112,7 @@ export function ImChannelsSettings() {
     <div className="space-y-0">
       {/* Tab bar */}
       <div className="flex items-end gap-0 border-b border-border overflow-x-auto">
-        {tabs.map(type => {
+        {allTabs.map(type => {
           const count = channelsByType[type]?.length ?? 0
           const hasError = (channelsByType[type] ?? []).some(
             ch => statuses[ch.id]?.state === 'error'
@@ -139,9 +142,24 @@ export function ImChannelsSettings() {
             </button>
           )
         })}
-        <span className="ml-auto cursor-not-allowed px-3 py-2 text-sm text-muted-foreground opacity-40">
-          + 新增渠道类型
-        </span>
+        {allTabs.length < CHANNEL_TYPES_ORDER.length && (
+          <div className="ml-auto relative group">
+            <button className="px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
+              + 新增渠道类型
+            </button>
+            <div className="absolute right-0 top-full z-10 hidden group-hover:flex flex-col min-w-[120px] rounded border border-border bg-popover shadow-md py-1">
+              {CHANNEL_TYPES_ORDER.filter(t => !allTabs.includes(t)).map(type => (
+                <button
+                  key={type}
+                  onClick={() => { setActiveTab(type); setAddingToType(type); setOpenRowId(null) }}
+                  className="px-3 py-1.5 text-sm text-left hover:bg-muted transition-colors"
+                >
+                  {CHANNEL_TYPE_LABELS[type] ?? type}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {currentTab ? (
@@ -191,8 +209,19 @@ export function ImChannelsSettings() {
           )}
         </div>
       ) : (
-        <div className="py-10 text-center text-sm text-muted-foreground">
-          还没有配置任何渠道。
+        <div className="py-8 space-y-4">
+          <p className="text-center text-sm text-muted-foreground">选择要配置的渠道类型</p>
+          <div className="grid grid-cols-3 gap-2 px-1">
+            {CHANNEL_TYPES_ORDER.map(type => (
+              <button
+                key={type}
+                onClick={() => { setActiveTab(type); setAddingToType(type) }}
+                className="rounded border border-dashed border-border px-3 py-3 text-sm hover:border-primary hover:text-primary transition-colors"
+              >
+                {CHANNEL_TYPE_LABELS[type] ?? type}
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>
