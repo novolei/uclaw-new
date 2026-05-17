@@ -14,6 +14,9 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::AbortHandle;
+use lru::LruCache;
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const ILINK_BASE_URL: &str = "https://ilinkai.weixin.qq.com";
 const CHANNEL_VERSION: &str = "1.0.2";
@@ -23,6 +26,35 @@ const RECONNECT_MAX_MS: u64 = 30_000;
 const MAX_RECONNECT_ATTEMPTS: u32 = 100;
 
 const DEDUP_CAPACITY: usize = 200;
+const CONTEXT_TOKEN_CACHE_CAP: usize = 500;
+const MAX_REPLY_CHARS: usize = 4_000;
+
+struct IlinkSharedState {
+    /// user_id → 最新 context_token，LRU 上限 500 条。
+    context_tokens: RwLock<LruCache<String, String>>,
+    /// false = -14 已触发，poll_loop 下次迭代后退出。
+    session_active: AtomicBool,
+    /// 已见过的消息去重缓冲。
+    seen_msg_ids: Mutex<VecDeque<String>>,
+}
+
+impl IlinkSharedState {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            context_tokens: RwLock::new(
+                LruCache::new(NonZeroUsize::new(CONTEXT_TOKEN_CACHE_CAP).unwrap()),
+            ),
+            session_active: AtomicBool::new(true),
+            seen_msg_ids: Mutex::new(VecDeque::with_capacity(DEDUP_CAPACITY)),
+        })
+    }
+
+    async fn invalidate(&self) {
+        self.session_active.store(false, Ordering::Relaxed);
+        self.context_tokens.write().await.clear();
+        self.seen_msg_ids.lock().await.clear();
+    }
+}
 
 pub struct IlinkSender {
     instance_id: String,
@@ -469,5 +501,19 @@ mod tests {
     fn extract_text_image_placeholder() {
         let items = serde_json::json!([{ "type": 2 }]);
         assert_eq!(IlinkSender::extract_text(&items), "[Image]");
+    }
+
+    #[tokio::test]
+    async fn invalidate_clears_all_shared_state() {
+        let shared = IlinkSharedState::new();
+        shared.context_tokens.write().await.put("u1".to_string(), "ct1".to_string());
+        shared.seen_msg_ids.lock().await.push_back("id1".to_string());
+        assert!(shared.session_active.load(std::sync::atomic::Ordering::Relaxed));
+
+        shared.invalidate().await;
+
+        assert!(!shared.session_active.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(shared.context_tokens.read().await.len(), 0);
+        assert_eq!(shared.seen_msg_ids.lock().await.len(), 0);
     }
 }
