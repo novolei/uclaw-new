@@ -36,6 +36,7 @@ export function ImChannelForm({ spaces, editing, onDone }: Props) {
   const [corpId, setCorpId] = useState((editing?.config.corp_id as string) ?? '')
   const [agentId, setAgentId] = useState((editing?.config.agent_id as string) ?? '')
   const [corpSecret, setCorpSecret] = useState('')
+  const [wecomWsUrl, setWecomWsUrl] = useState((editing?.config.ws_url as string) ?? '')
   const [appId, setAppId] = useState((editing?.config.app_id as string) ?? '')
   const [apiKey, setApiKey] = useState('')
   const [signingSecret, setSigningSecret] = useState('')
@@ -65,7 +66,7 @@ export function ImChannelForm({ spaces, editing, onDone }: Props) {
         credentials = { signing_secret: signingSecret }
         break
       case 'wecom_bot':
-        config = { corp_id: corpId, agent_id: agentId }
+        config = { corp_id: corpId, agent_id: agentId, ...(wecomWsUrl ? { ws_url: wecomWsUrl } : {}) }
         credentials = { corp_secret: corpSecret }
         break
       case 'wechat_ilink':
@@ -232,6 +233,14 @@ export function ImChannelForm({ spaces, editing, onDone }: Props) {
               type="password"
               className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
               placeholder="留空则不修改" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">
+              WebSocket 服务器（可选，私有化部署时填写）
+            </label>
+            <input value={wecomWsUrl} onChange={e => setWecomWsUrl(e.target.value)}
+              className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm font-mono"
+              placeholder="wss://openws.work.weixin.qq.com" />
           </div>
         </>
       )}
