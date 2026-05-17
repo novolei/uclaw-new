@@ -337,7 +337,13 @@ pub struct MemoryOsConfig {
     /// reconciliation runs (existing auto_link rows on disk are
     /// untouched). Explicit `create_edge` calls are unaffected.
     pub auto_link_enabled: bool,
-    // (Future flags for Phase 3-7 will be added here, each pre-declared
+    /// Phase 3: AI Wiki view backing (`wiki_artifacts` table population).
+    /// When `false`, ProactiveService stops regenerating
+    /// `wiki_artifacts(kind='index')` automatically, and the manual
+    /// `memory_wiki_regenerate` IPC command returns a structured error.
+    /// Existing wiki_artifacts rows on disk are untouched.
+    pub wiki_view_enabled: bool,
+    // (Future flags for Phase 4-7 will be added here, each pre-declared
     //  with its default so existing configs deserialize against a stable
     //  shape.)
 }
@@ -347,6 +353,7 @@ impl Default for MemoryOsConfig {
         Self {
             entity_page_enabled: true,
             auto_link_enabled: true,
+            wiki_view_enabled: true,
         }
     }
 }
@@ -674,6 +681,22 @@ mod tests {
     fn memory_os_config_default_has_auto_link_enabled() {
         let c = MemoryOsConfig::default();
         assert!(c.auto_link_enabled, "Phase 2 default should be on");
+    }
+
+    #[test]
+    fn memory_os_config_default_has_wiki_view_enabled() {
+        let c = MemoryOsConfig::default();
+        assert!(c.wiki_view_enabled, "Phase 3 default should be on");
+    }
+
+    #[test]
+    fn memory_os_phase3_explicit_disable_preserved() {
+        let json = r#"{"memory_os":{"wiki_view_enabled":false}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.memory_os.wiki_view_enabled);
+        // Forward-compat: disabling Phase 3 must not flip Phase 1/2 off.
+        assert!(config.memory_os.entity_page_enabled);
+        assert!(config.memory_os.auto_link_enabled);
     }
 
     #[test]

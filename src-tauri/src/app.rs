@@ -189,6 +189,13 @@ pub struct AppState {
     // Memory graph store for Steward memory system
     pub memory_graph_store: Arc<MemoryGraphStore>,
 
+    /// AI Wiki synthesizer — drives `wiki_artifacts(kind="overview")`
+    /// regeneration. Memory OS Foundation Phase 3 ships
+    /// `wiki_synth::StubSynthesizer` as the default; future PRs swap in
+    /// a real Anthropic / OpenAI client without touching the IPC or
+    /// scenario code paths.
+    pub wiki_synthesizer: Arc<dyn crate::memory_graph::wiki_synth::WikiSynthesizer>,
+
     // ─── Phased Boot: 新增服务 ───────────────────────────────────────
     /// 中央消息总线
     pub infra_service: Arc<InfraService>,
@@ -517,6 +524,11 @@ impl AppState {
             pending_exit_plans,
             memu_client,
             memory_graph_store,
+            // Phase 3 ships the stub synthesizer — real LLM client lands
+            // in a follow-up. The synthesizer is shared as Arc<dyn …> so
+            // hot-swapping at runtime stays trivial.
+            wiki_synthesizer: Arc::new(crate::memory_graph::wiki_synth::StubSynthesizer)
+                as Arc<dyn crate::memory_graph::wiki_synth::WikiSynthesizer>,
             infra_service,
             service_manager,
             metrics_service,

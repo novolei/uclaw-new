@@ -168,6 +168,11 @@ struct ProactiveStateRefs {
     memu_client: Option<Arc<MemUClient>>,
     /// Memory Graph 存储
     memory_graph_store: Arc<MemoryGraphStore>,
+    /// Memory OS Foundation Phase 3 — controls whether the tick loop
+    /// auto-regenerates `wiki_artifacts(kind='index')`. When `false`
+    /// the periodic index refresh is skipped; manual regen via
+    /// `memory_wiki_regenerate` is gated separately at the IPC layer.
+    wiki_view_enabled: bool,
     /// Tauri AppHandle（用于发射 IPC 事件，测试时为 None）
     app_handle: Option<tauri::AppHandle>,
     /// 自上次触发以来的新消息数
@@ -289,6 +294,8 @@ pub struct ProactiveService {
     memu_client: Option<Arc<MemUClient>>,
     /// Memory Graph 存储
     memory_graph_store: Arc<MemoryGraphStore>,
+    /// Memory OS Foundation Phase 3 — periodic wiki index regen gate.
+    wiki_view_enabled: bool,
     /// Tauri AppHandle（用于发射 IPC 事件，测试时为 None）
     app_handle: Option<tauri::AppHandle>,
 
@@ -392,6 +399,7 @@ impl ProactiveService {
         db: Arc<Mutex<Connection>>,
         gene_repo: Arc<Mutex<GeneRepository>>,
         gene_evolution_config: GeneEvolutionConfig,
+        wiki_view_enabled: bool,
     ) -> Self {
         let task_memory_manager = Arc::new(TaskMemoryManager::new(memory_graph_store.clone()));
         let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(memory_graph_store.clone()));
@@ -435,6 +443,7 @@ impl ProactiveService {
             provider_service,
             memu_client,
             memory_graph_store,
+            wiki_view_enabled,
             app_handle,
             tick_count: Arc::new(AtomicU64::new(0)),
             action_count: Arc::new(AtomicU64::new(0)),
@@ -486,6 +495,7 @@ impl ProactiveService {
             provider_service: self.provider_service.clone(),
             memu_client: self.memu_client.clone(),
             memory_graph_store: self.memory_graph_store.clone(),
+            wiki_view_enabled: self.wiki_view_enabled,
             app_handle: self.app_handle.clone(),
             new_message_count: self.new_message_count.clone(),
             new_execution_count: self.new_execution_count.clone(),
@@ -937,6 +947,46 @@ impl ProactiveService {
                             tracing::warn!("[ProactiveService] Gene lifecycle check failed: {}", e);
                         }
                     }
+                }
+            }
+        }
+
+        // Memory OS Foundation Phase 3 — periodic wiki index regeneration.
+        // Every 10 ticks (~5 min @ default 30s interval) we refresh
+        // `wiki_artifacts(kind="index")` from the current EntityPage set.
+        // SQL-only, never calls LLM; the overview is regenerated only on
+        // explicit `memory_wiki_regenerate` IPC calls (see Task 3.3).
+        if refs.wiki_view_enabled && refs.tick_count.load(Ordering::SeqCst) % 10 == 0 {
+            let space_id = refs.active_space_id.read().await.clone();
+            let store = refs.memory_graph_store.clone();
+            // Run on the blocking pool — rusqlite lock acquisition is
+            // sync and we don't want to stall the tokio runtime even
+            // for a sub-millisecond contention.
+            let result = tokio::task::spawn_blocking(move || {
+                let conn = store
+                    .conn
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("DB lock poisoned: {}", e))?;
+                crate::memory_graph::wiki_synth::regenerate_index(
+                    &conn,
+                    &space_id,
+                    crate::memory_graph::wiki_synth::RegenerateTrigger::Tick,
+                )
+                .map_err(|e| anyhow::anyhow!("regenerate_index: {}", e))
+            })
+            .await;
+            match result {
+                Ok(Ok(outcome)) => {
+                    tracing::debug!(
+                        bytes = outcome.bytes_written,
+                        "[ProactiveService] wiki index regenerated"
+                    );
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "[ProactiveService] wiki index regen failed");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "[ProactiveService] wiki index spawn_blocking failed");
                 }
             }
         }
@@ -2273,6 +2323,9 @@ mod tests {
                 ).expect("GeneRepository for test")
             )),
             crate::memubot_config::GeneEvolutionConfig::default(),
+            // Phase 3: tests default to wiki_view_enabled=true (matches
+            // MemoryOsConfig::default()).
+            true,
         )
     }
 

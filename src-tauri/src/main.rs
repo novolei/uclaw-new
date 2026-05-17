@@ -250,6 +250,9 @@ fn main() {
                                         db.clone(),
                                         gene_repo,
                                         memubot_config.gene_evolution.clone(),
+                                        // Phase 3: wiki view feature flag for the
+                                        // periodic index regen in tick_inner.
+                                        memubot_config.memory_os.wiki_view_enabled,
                                     )
                                 );
                                 // Inject into AppState for tauri_commands access
