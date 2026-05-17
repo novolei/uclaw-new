@@ -454,7 +454,7 @@ export function ImChannelAccordionRow({
               type="password"
               value={signingSecret}
               onChange={e => { setSigningSecret(e.target.value); markDirty() }}
-              className={inputCls()}
+              className={inputCls(credHighlight)}
             />
           </div>
           <div className="col-span-2">
