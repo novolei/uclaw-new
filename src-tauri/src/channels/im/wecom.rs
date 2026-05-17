@@ -24,6 +24,7 @@ const HEARTBEAT_INTERVAL_SECS: u64 = 30;
 const RECONNECT_BASE_MS: u64 = 2_000;
 const RECONNECT_MAX_MS: u64 = 30_000;
 const REQ_ID_TTL_SECS: i64 = 5 * 60; // 5 minutes
+const MAX_RECONNECT_ATTEMPTS: u32 = 100;
 
 /// Stored req_id entry for passive reply.
 #[derive(Clone)]
@@ -79,12 +80,20 @@ impl WecomSender {
     ) {
         let mut attempt = 0u32;
         loop {
+            if attempt >= MAX_RECONNECT_ATTEMPTS {
+                tracing::error!(
+                    "[WecomBot:{}] giving up after {MAX_RECONNECT_ATTEMPTS} reconnect attempts",
+                    self.instance_id
+                );
+                break;
+            }
             match self.connect_and_run(inbound_tx.clone()).await {
                 Ok(()) => break,
                 Err(e) => {
                     tracing::warn!(
-                        "[WecomBot:{}] connection error: {e}; reconnecting (attempt {attempt})",
-                        self.instance_id
+                        "[WecomBot:{}] connection error: {e}; reconnecting (attempt {attempt}/{})",
+                        self.instance_id,
+                        MAX_RECONNECT_ATTEMPTS
                     );
                 }
             }

@@ -88,6 +88,11 @@ impl ImChannelManager {
     }
 
     pub async fn start_instance(&self, config: ImChannelInstanceConfig) -> Result<(), String> {
+        // Stop any currently-running tasks for this id before spawning new ones.
+        // Dropping an AbortHandle does NOT abort the task, so we must call abort()
+        // explicitly. Without this, update/toggle calls would orphan old tasks while
+        // inserting new ones — two WecomBot connections on a single-connection protocol.
+        self.stop_instance(&config.id).await;
         let (sender, inbound_task, fanout_task): (Arc<dyn ImChannelSender>, Option<AbortHandle>, Option<AbortHandle>) =
             match config.channel_type {
                 ImChannelType::WecomBot => {
@@ -258,6 +263,23 @@ impl ImChannelManager {
 
     pub async fn list_instances(&self) -> Vec<ImChannelInstanceConfig> {
         self.instances.read().await.values().map(|r| r.config.clone()).collect()
+    }
+
+    /// Reload one instance from DB and (re)start it, or stop it if disabled.
+    /// Safer than calling start_all() from CRUD commands because it only
+    /// affects the single instance being modified.
+    pub async fn restart_instance_by_id(&self, id: &str) -> Result<(), String> {
+        let config = self.load_config_from_db_by_id(id)?;
+        match config {
+            Some(c) if c.enabled => self.start_instance(c).await,
+            Some(c)              => { self.stop_instance(&c.id).await; Ok(()) }
+            None                 => { self.stop_instance(id).await; Ok(()) }
+        }
+    }
+
+    fn load_config_from_db_by_id(&self, id: &str) -> Result<Option<ImChannelInstanceConfig>, String> {
+        let configs = self.load_configs_from_db()?;
+        Ok(configs.into_iter().find(|c| c.id == id))
     }
 
     fn load_configs_from_db(&self) -> Result<Vec<ImChannelInstanceConfig>, String> {

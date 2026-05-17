@@ -70,35 +70,54 @@ impl ImSessionRegistry {
             }
         }
 
-        // Slow path: create new agent_session + im_session row
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let im_session_id = uuid::Uuid::new_v4().to_string();
+        // Slow path: attempt to create new agent_session + im_session rows.
+        // INSERT OR IGNORE lets the DB UNIQUE constraint be the arbiter under
+        // concurrent calls — the second caller's INSERT is silently dropped.
+        // We then SELECT to get the canonical session_id regardless of which
+        // caller "won" the insert race.
+        let candidate_session_id = uuid::Uuid::new_v4().to_string();
+        let candidate_im_session_id = uuid::Uuid::new_v4().to_string();
         let now_ms = chrono::Utc::now().timestamp_millis();
         let title = match sender_name {
             Some(name) => format!("{} via {}", name, channel_type),
             None => format!("IM {} {}", channel_type, &chat_id[..chat_id.len().min(8)]),
         };
 
-        {
+        let canonical_session_id = {
             let conn = self.db.lock().map_err(|e| e.to_string())?;
             conn.execute(
-                "INSERT INTO agent_sessions (id, title, space_id, created_at, updated_at, message_count) \
+                "INSERT OR IGNORE INTO agent_sessions \
+                 (id, title, space_id, created_at, updated_at, message_count) \
                  VALUES (?1, ?2, ?3, ?4, ?4, 0)",
-                rusqlite::params![session_id, title, space_id, now_ms],
+                rusqlite::params![candidate_session_id, title, space_id, now_ms],
             )
             .map_err(|e| format!("create agent_session: {e}"))?;
 
             conn.execute(
-                "INSERT INTO im_sessions (id, space_id, channel_type, chat_id, agent_session_id, created_at, last_active_at) \
+                "INSERT OR IGNORE INTO im_sessions \
+                 (id, space_id, channel_type, chat_id, agent_session_id, created_at, last_active_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-                rusqlite::params![im_session_id, space_id, channel_type, chat_id, session_id, now_ms],
+                rusqlite::params![
+                    candidate_im_session_id, space_id, channel_type, chat_id,
+                    candidate_session_id, now_ms
+                ],
             )
             .map_err(|e| format!("create im_session: {e}"))?;
-        }
+
+            // Always read back the winner — handles both the "we just inserted" case
+            // and the "a concurrent caller won" case.
+            conn.query_row(
+                "SELECT agent_session_id FROM im_sessions \
+                 WHERE space_id=?1 AND channel_type=?2 AND chat_id=?3",
+                rusqlite::params![space_id, channel_type, chat_id],
+                |r| r.get::<_, String>(0),
+            )
+            .map_err(|e| format!("get canonical session: {e}"))?
+        };
 
         let mut cache = self.cache.write().await;
-        cache.insert(key, session_id.clone());
-        Ok(session_id)
+        cache.insert(key, canonical_session_id.clone());
+        Ok(canonical_session_id)
     }
 
     /// Update last_active_at for a session.
@@ -159,6 +178,23 @@ mod tests {
         let s1 = registry.get_or_create_session("space-1", "wecom_bot", "user-A", None).await.unwrap();
         let s2 = registry.get_or_create_session("space-1", "wecom_bot", "user-B", None).await.unwrap();
         assert_ne!(s1, s2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_cold_miss_returns_same_session() {
+        // Two registries sharing the same DB but with empty caches simulate the
+        // TOCTOU scenario: both miss the cache, both attempt INSERT, only one wins
+        // the DB race, both must return the same canonical session_id.
+        let db = in_memory_conn();
+        let r1 = ImSessionRegistry::new(db.clone());
+        let r2 = ImSessionRegistry::new(db.clone());
+        // Intentionally no load_from_db — cold cache on both
+
+        let (s1, s2) = tokio::join!(
+            r1.get_or_create_session("space-1", "wecom_bot", "user-X", Some("Bob")),
+            r2.get_or_create_session("space-1", "wecom_bot", "user-X", Some("Bob")),
+        );
+        assert_eq!(s1.unwrap(), s2.unwrap(), "concurrent cold misses must converge to the same session");
     }
 
     #[tokio::test]
