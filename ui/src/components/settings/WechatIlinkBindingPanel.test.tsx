@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, waitFor } from '@testing-library/react'
 import { renderWithProviders, screen } from '@/test-utils/render'
 import type { ImChannelStatus } from '@/atoms/im-channel-atoms'
@@ -24,6 +24,10 @@ beforeEach(() => {
 })
 
 describe('WechatIlinkBindingPanel', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('idle: shows get-qr button, no canvas', () => {
     renderWithProviders(
       <WechatIlinkBindingPanel {...PROPS} status={undefined} />
@@ -60,7 +64,6 @@ describe('WechatIlinkBindingPanel', () => {
     // fire second interval tick and drain all resulting promises
     await act(async () => { await vi.advanceTimersByTimeAsync(2100) })
     expect(screen.getByText('已扫码，等待确认…')).not.toBeNull()
-    vi.useRealTimers()
   })
 
   it('confirmed: poll returning confirmed calls save_wechat_ilink_token and onSaved', async () => {
@@ -80,6 +83,5 @@ describe('WechatIlinkBindingPanel', () => {
       expect.objectContaining({ instanceId: 'inst-1', botToken: 'tok999', accountId: 'acc456' })
     )
     expect(PROPS.onSaved).toHaveBeenCalledOnce()
-    vi.useRealTimers()
   })
 })

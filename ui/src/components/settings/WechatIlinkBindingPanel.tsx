@@ -40,40 +40,15 @@ export function WechatIlinkBindingPanel({
 
   useEffect(() => () => { stopPolling() }, [stopPolling])
 
-  // Render QR canvas whenever qr-shown or scanning state is entered
-  useEffect(() => {
-    if (
-      (bindState.kind === 'qr-shown' || bindState.kind === 'scanning') &&
-      canvasRef.current
-    ) {
-      QRCode.toCanvas(canvasRef.current, bindState.qrcode, { width: 128 }).catch(() => {})
-    }
-  }, [bindState])
+  // saveToken and startPolling are mutually recursive; use refs so each
+  // useCallback can see the latest version of the other without listing it
+  // as a dependency (avoiding an infinite dep cycle).
+  const saveTokenRef = useRef<(botToken: string, accId: string, qrcode: string) => Promise<void>>(
+    async () => {}
+  )
+  const startPollingRef = useRef<(qrcode: string) => void>(() => {})
 
-  // Auto-trigger QR fetch on iLink session expiry (-14)
-  useEffect(() => {
-    if (status?.state === 'needs_rebind') {
-      fetchQr()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status?.state])
-
-  async function fetchQr() {
-    stopPolling()
-    setBindState({ kind: 'loading' })
-    try {
-      const result = await invoke<{ qrcode: string }>(
-        'request_wechat_ilink_qrcode',
-        { instanceId }
-      )
-      setBindState({ kind: 'qr-shown', qrcode: result.qrcode })
-      startPolling(result.qrcode)
-    } catch (e) {
-      setBindState({ kind: 'error', message: String(e) })
-    }
-  }
-
-  function startPolling(qrcode: string) {
+  const startPolling = useCallback((qrcode: string) => {
     stopPolling()
     pollStartRef.current = Date.now()
     pollRef.current = setInterval(async () => {
@@ -93,7 +68,7 @@ export function WechatIlinkBindingPanel({
           setBindState({ kind: 'scanning', qrcode })
         } else if (result.status === 'confirmed' && result.bot_token && result.account_id) {
           stopPolling()
-          await saveToken(result.bot_token, result.account_id, qrcode)
+          await saveTokenRef.current(result.bot_token, result.account_id, qrcode)
         } else if (result.status === 'expired') {
           stopPolling()
           setBindState({ kind: 'qr-expired' })
@@ -102,9 +77,9 @@ export function WechatIlinkBindingPanel({
         // Network error during poll — keep retrying
       }
     }, 2000)
-  }
+  }, [instanceId, stopPolling])
 
-  async function saveToken(botToken: string, accId: string, qrcode: string) {
+  const saveToken = useCallback(async (botToken: string, accId: string, qrcode: string) => {
     try {
       await invoke('save_wechat_ilink_token', {
         instanceId,
@@ -116,9 +91,45 @@ export function WechatIlinkBindingPanel({
     } catch (e) {
       toast.error('保存绑定信息失败：' + String(e))
       setBindState({ kind: 'qr-shown', qrcode })
-      startPolling(qrcode)
+      startPollingRef.current(qrcode)
     }
-  }
+  }, [instanceId, onSaved])
+
+  // Keep refs in sync so the interval callbacks always call the latest version
+  useEffect(() => { startPollingRef.current = startPolling }, [startPolling])
+  useEffect(() => { saveTokenRef.current = saveToken }, [saveToken])
+
+  const fetchQr = useCallback(async () => {
+    stopPolling()
+    setBindState({ kind: 'loading' })
+    try {
+      const result = await invoke<{ qrcode: string }>(
+        'request_wechat_ilink_qrcode',
+        { instanceId }
+      )
+      setBindState({ kind: 'qr-shown', qrcode: result.qrcode })
+      startPolling(result.qrcode)
+    } catch (e) {
+      setBindState({ kind: 'error', message: String(e) })
+    }
+  }, [instanceId, stopPolling, startPolling])
+
+  // Auto-trigger QR fetch on iLink session expiry (-14)
+  useEffect(() => {
+    if (status?.state === 'needs_rebind') {
+      fetchQr()
+    }
+  }, [status?.state, fetchQr])
+
+  // Render QR canvas whenever qr-shown or scanning state is entered
+  useEffect(() => {
+    if (
+      (bindState.kind === 'qr-shown' || bindState.kind === 'scanning') &&
+      canvasRef.current
+    ) {
+      QRCode.toCanvas(canvasRef.current, bindState.qrcode, { width: 128 }).catch(() => {})
+    }
+  }, [bindState])
 
   async function handleDisconnect() {
     stopPolling()
