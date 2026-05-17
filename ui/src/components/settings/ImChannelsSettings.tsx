@@ -15,7 +15,7 @@ const CHANNEL_TYPE_LABELS: Record<string, string> = {
 }
 
 export function ImChannelsSettings() {
-  const [channels] = useAtom(imChannelsAtom)
+  const [channels, setChannels] = useAtom(imChannelsAtom)
   const fetchChannels = useSetAtom(fetchImChannelsAtom)
   const [spaces, setSpaces] = useState<{ id: string; name: string }[]>([])
   const [showForm, setShowForm] = useState(false)
@@ -29,11 +29,14 @@ export function ImChannelsSettings() {
   }, [fetchChannels])
 
   async function handleToggle(id: string, enabled: boolean) {
+    // Optimistic update — flip the local state before the round-trip so the
+    // toggle feels instant. Revert + re-fetch on failure.
+    setChannels(prev => prev.map(ch => ch.id === id ? { ...ch, enabled } : ch))
     try {
       await invoke('toggle_im_channel', { id, enabled })
-      fetchChannels()
     } catch (e) {
       console.error('toggle_im_channel failed:', e)
+      fetchChannels() // revert to server state
       alert('操作失败，请查看控制台了解详情')
     }
   }
