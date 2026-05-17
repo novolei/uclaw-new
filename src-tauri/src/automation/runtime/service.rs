@@ -6,7 +6,7 @@
 //!
 //! `execute_run` runs the full pipeline: TRIGGER → FILTER → per-spec
 //! semaphore → per-day cost-cap check → run-session creation + ledger link →
-//! provider resolution → `AutomationDelegate` build → `run_agentic_loop` →
+//! provider resolution → `HeadlessDelegate` build → `run_agentic_loop` →
 //! `CompletionGate` → activity-status mapping → transcript persist →
 //! retention prune.
 //!
@@ -32,7 +32,7 @@ use crate::automation::memory::MemoryStore as AutomationMemoryStore;
 use crate::automation::protocol::humane_v1::{HumaneAutomationSpec, Permission, Subscription};
 use crate::automation::protocol::parse::parse_humane_v1;
 use crate::automation::runtime::cost::{self, CostCapConfig, CostCapDecision, CostCapState};
-use crate::automation::runtime::execute::AutomationDelegate;
+use crate::automation::runtime::execute::HeadlessDelegate;
 use crate::automation::runtime::{prompt, run_session, AutoContinueConfig, CompletionGate, PermissionSet};
 use crate::automation::sources::{
     CustomSource, FileSource, RssSource, ScheduleSource, SubscriptionSource,
@@ -56,7 +56,7 @@ const PER_SPEC_CONCURRENCY: usize = 2;
 /// Schema-only `Tool` wrapper for the four Humane tools (report_to_user,
 /// notify_user, request_escalation, memory).
 ///
-/// `AutomationDelegate::execute_tool_calls` dispatches the Humane tools by
+/// `HeadlessDelegate::execute_tool_calls` dispatches the Humane tools by
 /// NAME — before the registry's `other =>` fallthrough arm — so this
 /// wrapper's `execute()` is never reached. Its only job is to make the
 /// Humane tools appear in `ToolRegistry::list_definitions()` so the LLM is
@@ -158,9 +158,9 @@ pub struct AppRuntimeService {
     /// needs to touch `Arc` internals via raw pointers.
     self_weak: OnceLock<Weak<AppRuntimeService>>,
 
-    /// IPC handle for automation notifications. Passed to AutomationDelegate.
+    /// IPC handle for automation notifications. Passed to HeadlessDelegate.
     pub app_handle: Option<tauri::AppHandle>,
-    /// Channel manager for extended notification types. Passed to AutomationDelegate.
+    /// Channel manager for extended notification types. Passed to HeadlessDelegate.
     pub channel_manager: Option<Arc<tokio::sync::RwLock<crate::channels::ChannelManager>>>,
 }
 
@@ -628,7 +628,7 @@ impl AppRuntimeService {
         reason_ctx.messages.push(ChatMessage::user(&initial_message));
 
         let tools = self.build_automation_tool_registry(&workspace_root);
-        let delegate = AutomationDelegate {
+        let delegate = HeadlessDelegate {
             spec_id: spec_id.to_string(),
             activity_id: activity_id.clone(),
             session_id: session_id.clone(),
@@ -644,6 +644,9 @@ impl AppRuntimeService {
             workspace_root,
             app_handle: self.app_handle.clone(),
             channel_manager: self.channel_manager.clone(),
+            reply_handle: None,
+            streaming_handle: None,
+            system_prompt_override: None,
         };
 
         // ── 10. run the agentic loop ─────────────────────────────────────────
@@ -1240,7 +1243,7 @@ impl AppRuntimeService {
         tools.register(builtin::edit::EditTool::new(ws.clone()));
         tools.register(builtin::shell::BashTool::new(ws.clone()));
         // Advertise the four Humane tools to the LLM. They are dispatched by
-        // name in AutomationDelegate::execute_tool_calls, so these wrappers
+        // name in HeadlessDelegate::execute_tool_calls, so these wrappers
         // exist purely so list_definitions() includes them.
         for schema in crate::automation::tools::humane_tool_schemas() {
             tools.register(HumaneToolSchema::from_value(&schema));
