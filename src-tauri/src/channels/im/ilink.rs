@@ -10,7 +10,7 @@ use crate::channels::types::{ChannelRuntimeStatus, ChannelState, ImChannelSender
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::AbortHandle;
@@ -39,14 +39,14 @@ struct IlinkSharedState {
 }
 
 impl IlinkSharedState {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
+    fn new() -> Self {
+        Self {
             context_tokens: RwLock::new(
                 LruCache::new(NonZeroUsize::new(CONTEXT_TOKEN_CACHE_CAP).unwrap()),
             ),
             session_active: AtomicBool::new(true),
             seen_msg_ids: Mutex::new(VecDeque::with_capacity(DEDUP_CAPACITY)),
-        })
+        }
     }
 
     async fn invalidate(&self) {
@@ -60,9 +60,7 @@ pub struct IlinkSender {
     instance_id: String,
     bot_token: String,
     base_url: String,
-    context_tokens: Arc<RwLock<HashMap<String, String>>>,
-    // Circular buffer of recently-seen message IDs to suppress retransmissions.
-    seen_msg_ids: Arc<Mutex<VecDeque<String>>>,
+    shared: Arc<IlinkSharedState>,
     client: reqwest::Client,
     status_tx: tokio::sync::mpsc::UnboundedSender<ChannelRuntimeStatus>,
 }
@@ -84,8 +82,7 @@ impl IlinkSender {
             instance_id: instance_id.to_string(),
             bot_token,
             base_url,
-            context_tokens: Arc::new(RwLock::new(HashMap::new())),
-            seen_msg_ids: Arc::new(Mutex::new(VecDeque::with_capacity(DEDUP_CAPACITY))),
+            shared: Arc::new(IlinkSharedState::new()),
             client: reqwest::Client::new(),
             status_tx,
         }
@@ -239,12 +236,21 @@ impl IlinkSender {
         msg: &Value,
         inbound_tx: &mpsc::UnboundedSender<(InboundMessage, Arc<ReplyHandle>)>,
     ) {
+        // iLink 是个人号 DM-only；群消息在协议层面不可达，防御性过滤。
+        if let Some(gid) = msg["group_id"].as_str().filter(|s| !s.is_empty()) {
+            tracing::debug!(
+                "[IlinkBot:{}] group message (group_id={gid}) — iLink DM-only, skipping",
+                self.instance_id
+            );
+            return;
+        }
+
         let user_id = match msg["from_user_id"].as_str() {
             Some(id) if !id.is_empty() => id.to_string(),
             _ => return,
         };
 
-        // Dedup: iLink retransmits unacknowledged messages; skip already-seen IDs.
+        // 去重：iLink 在 ACK 前重传同一条消息，跳过已见过的 ID。
         let dedup_key = msg["message_id"]
             .as_i64()
             .map(|id| id.to_string())
@@ -254,7 +260,7 @@ impl IlinkSender {
                     .map(|ct| format!("{}:{}", user_id, ct))
             });
         if let Some(ref key) = dedup_key {
-            let mut seen = self.seen_msg_ids.lock().await;
+            let mut seen = self.shared.seen_msg_ids.lock().await;
             if seen.contains(key) {
                 tracing::debug!(
                     "[IlinkBot:{}] duplicate msg key={key}, skipping",
@@ -270,10 +276,11 @@ impl IlinkSender {
 
         let context_token = msg["context_token"].as_str().map(String::from);
         if let Some(ref ct) = context_token {
-            self.context_tokens
+            self.shared
+                .context_tokens
                 .write()
                 .await
-                .insert(user_id.clone(), ct.clone());
+                .put(user_id.clone(), ct.clone());
         }
 
         let items = &msg["item_list"];
@@ -303,6 +310,7 @@ impl IlinkSender {
             bot_token: self.bot_token.clone(),
             base_url: self.base_url.clone(),
             client: self.client.clone(),
+            // shared will be added in Task 3
         });
         let reply = Arc::new(ReplyHandle {
             sender: sender_arc,
@@ -505,7 +513,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalidate_clears_all_shared_state() {
-        let shared = IlinkSharedState::new();
+        let shared = Arc::new(IlinkSharedState::new());
         shared.context_tokens.write().await.put("u1".to_string(), "ct1".to_string());
         shared.seen_msg_ids.lock().await.push_back("id1".to_string());
         assert!(shared.session_active.load(std::sync::atomic::Ordering::Relaxed));
@@ -515,5 +523,43 @@ mod tests {
         assert!(!shared.session_active.load(std::sync::atomic::Ordering::Relaxed));
         assert_eq!(shared.context_tokens.read().await.len(), 0);
         assert_eq!(shared.seen_msg_ids.lock().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn group_id_message_skipped() {
+        let (status_tx, _) = tokio::sync::mpsc::unbounded_channel();
+        let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::unbounded_channel();
+        let sender = Arc::new(IlinkSender::new(
+            "test",
+            &serde_json::json!({}),
+            &serde_json::json!({ "bot_token": "tok" }),
+            status_tx,
+        ));
+
+        let msg = serde_json::json!({
+            "from_user_id": "user1",
+            "group_id": "group123",
+            "context_token": "ct1",
+            "item_list": [{ "type": 1, "text_item": { "text": "hello" } }]
+        });
+        sender.handle_inbound(&msg, &inbound_tx).await;
+
+        assert!(inbound_rx.try_recv().is_err(), "group message must not be dispatched");
+    }
+
+    #[tokio::test]
+    async fn context_token_lru_evicts_at_capacity() {
+        let shared = Arc::new(IlinkSharedState::new());
+        for i in 0..=CONTEXT_TOKEN_CACHE_CAP {
+            shared
+                .context_tokens
+                .write()
+                .await
+                .put(format!("user{i}"), format!("ct{i}"));
+        }
+        assert_eq!(
+            shared.context_tokens.read().await.len(),
+            CONTEXT_TOKEN_CACHE_CAP
+        );
     }
 }
