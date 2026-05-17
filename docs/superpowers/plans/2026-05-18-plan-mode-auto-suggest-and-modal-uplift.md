@@ -1682,11 +1682,24 @@ in AskUser question text, channel-drop disconnect state."
 
 ---
 
-## Task 9 — Clear dedupe flag on accept + manual mode change
+## Task 9 — Frontend per-session dedupe (RESHAPED from original spec)
+
+**Why reshape:** Task 6 implementer discovered that no persistent per-session
+`ReasoningContext` store exists in uClaw — a fresh `ReasoningContext` is created
+per `send_agent_message` invocation. So the backend `already_suggested_in_session`
+flag (added in Task 5) can never carry across turns. Dedupe must happen frontend-
+side instead.
+
+The actual UX target: once a user has clicked any of the three actions (accept /
+skip / silence) for a session, the banner should not re-fire in the same UI
+session — even if backend keyword detector matches again on the next message.
+The silence resets when the user manually changes safety mode (since intent has
+clearly changed).
 
 **Files:**
-- Modify: `src-tauri/src/tauri_commands.rs` (set_safety_mode body)
-- Modify: `src-tauri/src/agent/dispatcher.rs` (find the right spot to reset, if any)
+- Modify: `ui/src/atoms/plan-mode-suggest-atoms.ts` (add `silencedSessionsAtom`)
+- Modify: `ui/src/components/agent/PlanModeSuggestBanner.tsx` (gate listener + clear actions to update silenced set)
+- Modify: `ui/src/atoms/safety-atoms.ts` (or wherever setSafetyMode wrapper lives — subscribe to mode change to clear silenced set)
 
 - [ ] **Step 1: Find set_safety_mode**
 
