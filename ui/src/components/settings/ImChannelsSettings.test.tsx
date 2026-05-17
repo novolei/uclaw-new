@@ -73,14 +73,20 @@ describe('ImChannelsSettings', () => {
   })
 
   it('reverts optimistic toggle on invoke failure', async () => {
-    invokeMock.mockRejectedValue(new Error('network error'))
+    const ch = makeChannel({ enabled: true })
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'toggle_im_channel') return Promise.reject(new Error('network error'))
+      if (cmd === 'list_im_channels') return Promise.resolve([ch])
+      return Promise.resolve([])
+    })
     const store = createStore()
-    store.set(imChannelsAtom, [makeChannel({ enabled: true })])
+    store.set(imChannelsAtom, [ch])
     renderWithProviders(<ImChannelsSettings />, { store })
     const toggleBtn = screen.getByRole('button', { name: '停用' })
     fireEvent.click(toggleBtn)
+    // After revert, the toggle should be back to '停用' (enabled=true restored)
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith('list_im_channels')
+      expect(screen.getByRole('button', { name: '停用' })).not.toBeNull()
     })
   })
 })

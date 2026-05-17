@@ -60,12 +60,10 @@ describe('ImChannelAccordionRow', () => {
     renderRow({
       status: { instanceId: 'ch-1', state: 'error', lastError: '认证失败 xyz' },
     })
-    // Multiple elements may contain this text (badge + meta line); verify at least one badge exists
-    const matches = screen.getAllByText(/认证失/)
-    expect(matches.length).toBeGreaterThan(0)
-    // The first match should be the badge span with destructive styling
-    const badge = matches.find(el => el.tagName === 'SPAN' && el.className.includes('destructive'))
-    expect(badge).not.toBeUndefined()
+    // The badge renders the first 10 chars of lastError
+    const badge = screen.getByText('认证失败 xyz'.slice(0, 10))
+    expect(badge.tagName).toBe('SPAN')
+    expect(badge.className).toMatch(/destructive/)
   })
 
   it('renders status block in open state for online channel', () => {
@@ -124,7 +122,7 @@ describe('ImChannelAccordionRow', () => {
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith(
         'update_im_channel',
-        expect.objectContaining({ id: 'ch-1' })
+        expect.objectContaining({ id: 'ch-1', input: expect.objectContaining({ name: '新名称' }) })
       )
     })
   })
