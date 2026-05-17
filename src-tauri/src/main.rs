@@ -362,6 +362,14 @@ fn main() {
             uclaw_core::tauri_commands::add_channel,
             uclaw_core::tauri_commands::remove_channel,
             uclaw_core::tauri_commands::toggle_channel,
+            // IM Channel Instance CRUD
+            uclaw_core::tauri_commands::list_im_channels,
+            uclaw_core::tauri_commands::create_im_channel,
+            uclaw_core::tauri_commands::update_im_channel,
+            uclaw_core::tauri_commands::delete_im_channel,
+            uclaw_core::tauri_commands::toggle_im_channel,
+            uclaw_core::tauri_commands::list_spec_channel_bindings,
+            uclaw_core::tauri_commands::update_spec_channel_bindings,
             // Providers
             uclaw_core::tauri_commands::list_providers,
             uclaw_core::tauri_commands::list_configured_providers,
