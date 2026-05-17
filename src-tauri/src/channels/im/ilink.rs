@@ -10,9 +10,9 @@ use crate::channels::types::{ChannelRuntimeStatus, ChannelState, ImChannelSender
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::AbortHandle;
 
 const ILINK_BASE_URL: &str = "https://ilinkai.weixin.qq.com";
@@ -22,11 +22,15 @@ const RECONNECT_BASE_MS: u64 = 2_000;
 const RECONNECT_MAX_MS: u64 = 30_000;
 const MAX_RECONNECT_ATTEMPTS: u32 = 100;
 
+const DEDUP_CAPACITY: usize = 200;
+
 pub struct IlinkSender {
     instance_id: String,
     bot_token: String,
     base_url: String,
     context_tokens: Arc<RwLock<HashMap<String, String>>>,
+    // Circular buffer of recently-seen message IDs to suppress retransmissions.
+    seen_msg_ids: Arc<Mutex<VecDeque<String>>>,
     client: reqwest::Client,
     status_tx: tokio::sync::mpsc::UnboundedSender<ChannelRuntimeStatus>,
 }
@@ -49,6 +53,7 @@ impl IlinkSender {
             bot_token,
             base_url,
             context_tokens: Arc::new(RwLock::new(HashMap::new())),
+            seen_msg_ids: Arc::new(Mutex::new(VecDeque::with_capacity(DEDUP_CAPACITY))),
             client: reqwest::Client::new(),
             status_tx,
         }
@@ -207,6 +212,30 @@ impl IlinkSender {
             _ => return,
         };
 
+        // Dedup: iLink retransmits unacknowledged messages; skip already-seen IDs.
+        let dedup_key = msg["message_id"]
+            .as_i64()
+            .map(|id| id.to_string())
+            .or_else(|| {
+                msg["context_token"]
+                    .as_str()
+                    .map(|ct| format!("{}:{}", user_id, ct))
+            });
+        if let Some(ref key) = dedup_key {
+            let mut seen = self.seen_msg_ids.lock().await;
+            if seen.contains(key) {
+                tracing::debug!(
+                    "[IlinkBot:{}] duplicate msg key={key}, skipping",
+                    self.instance_id
+                );
+                return;
+            }
+            if seen.len() >= DEDUP_CAPACITY {
+                seen.pop_front();
+            }
+            seen.push_back(key.clone());
+        }
+
         let context_token = msg["context_token"].as_str().map(String::from);
         if let Some(ref ct) = context_token {
             self.context_tokens
@@ -328,14 +357,25 @@ impl ImChannelSender for IlinkReplySender {
                 )
             })?;
 
+        use base64::Engine;
+        let n: u32 = rand::random();
+        let uin = base64::engine::general_purpose::STANDARD.encode(n.to_string().as_bytes());
+
         let url = format!("{}/ilink/bot/sendmessage", self.base_url);
         let body = json!({
-            "to_user_id": chat_id,
-            "context_token": context_token,
-            "item_list": [{
-                "type": 1,
-                "text_item": { "text": text }
-            }]
+            "msg": {
+                "from_user_id": "",
+                "to_user_id": chat_id,
+                "client_id": uuid::Uuid::new_v4().to_string(),
+                "message_type": 2,
+                "message_state": 2,
+                "context_token": context_token,
+                "item_list": [{
+                    "type": 1,
+                    "text_item": { "text": text }
+                }]
+            },
+            "base_info": { "channel_version": CHANNEL_VERSION }
         });
 
         let resp = self
@@ -344,15 +384,26 @@ impl ImChannelSender for IlinkReplySender {
             .header("Content-Type", "application/json")
             .header("AuthorizationType", "ilink_bot_token")
             .header("Authorization", format!("Bearer {}", self.bot_token))
+            .header("X-WECHAT-UIN", uin)
             .json(&body)
             .timeout(std::time::Duration::from_secs(15))
             .send()
             .await
             .map_err(|e| e.to_string())?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            return Err(format!("iLink sendmessage HTTP {status}"));
+        let http_status = resp.status();
+        let resp_body: Value = resp
+            .json()
+            .await
+            .unwrap_or_else(|_| json!({}));
+        let ret = resp_body["ret"]
+            .as_i64()
+            .unwrap_or(resp_body["errcode"].as_i64().unwrap_or(0));
+        if !http_status.is_success() {
+            return Err(format!("iLink sendmessage HTTP {http_status} ret={ret}"));
+        }
+        if ret != 0 {
+            return Err(format!("iLink sendmessage error ret={ret}: {}", resp_body["errmsg"].as_str().unwrap_or("")));
         }
         Ok(())
     }
