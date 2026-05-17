@@ -104,6 +104,205 @@ Drop the AppShell mounts. AgentView path is unchanged."
 
 ---
 
+## Task 1.5 — ask_user fixes (multiselect serde mismatch + human-readable tool_result for ask_user/exit_plan_mode)
+
+**Why insert here, after the dedup fix:** User reported two issues during execution that share the same surface area:
+
+1. **`Error: Invalid parameters: questions: missing field 'multiSelect'`** toast fires on every ask_user call. Root cause: `AskUserQuestion` in [ipc.rs:1074](src-tauri/src/ipc.rs#L1074) has `#[serde(rename_all = "camelCase")]` so serde expects `multiSelect`, but the JSON schema advertised to the LLM in [ask_user.rs:52,66](src-tauri/src/agent/tools/builtin/ask_user.rs#L52-L66) says `multi_select` (snake_case) AND marks it required. LLM follows schema → serde rejects.
+2. **Tool-result text** — `ask_user` returns `{"answers": {...}}` JSON which renders as an ugly tool_result blob. Proma's UX shows the Claude Code SDK auto-generated text "User has answered your questions: \"<q>\"=\"<a>\". You can now continue with the user's answers in mind." — we should match that human-readable shape (uClaw's agent loop is pure Rust, no SDK, so we generate the text ourselves in the tool's `execute()` return value). Apply same treatment to `exit_plan_mode` accept/reject paths.
+
+**Files:**
+- Modify: `src-tauri/src/ipc.rs` (AskUserQuestion struct — add `#[serde(default)]` on `multi_select`)
+- Modify: `src-tauri/src/agent/tools/builtin/ask_user.rs:52,66` (schema: rename to camelCase + drop required) and `:103-107` (human-readable result)
+- Modify: `src-tauri/src/agent/tools/builtin/exit_plan_mode.rs` (human-readable result for accept/reject paths)
+
+- [ ] **Step 1: Write the failing serde test (Part A — multiselect bug)**
+
+In `src-tauri/src/ipc.rs`, append a test module if one doesn't exist, OR add to the existing one:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ask_user_question_accepts_camel_case_multiselect() {
+        // Schema advertises multiSelect — LLM sends multiSelect — must deserialize.
+        let json = serde_json::json!({
+            "question": "Q1?",
+            "multiSelect": false,
+            "options": [{"label": "A"}],
+        });
+        let q: AskUserQuestion = serde_json::from_value(json).unwrap();
+        assert!(!q.multi_select);
+    }
+
+    #[test]
+    fn ask_user_question_defaults_multiselect_when_absent() {
+        // Some LLM calls might omit multiSelect entirely — default to false
+        // rather than fail the whole tool call.
+        let json = serde_json::json!({
+            "question": "Q1?",
+            "options": [{"label": "A"}],
+        });
+        let q: AskUserQuestion = serde_json::from_value(json).unwrap();
+        assert!(!q.multi_select);
+    }
+}
+```
+
+- [ ] **Step 2: Run test — expect red on the second case**
+
+```bash
+cd src-tauri && cargo test --lib ipc::tests::ask_user_question 2>&1 | tail -10
+```
+
+Expected: first test green (camelCase already works due to `rename_all`), second test red (no `#[serde(default)]`).
+
+- [ ] **Step 3: Fix the struct (Part A green)**
+
+In `src-tauri/src/ipc.rs:1074` `AskUserQuestion` struct, add `#[serde(default)]` to the `multi_select` field:
+
+```rust
+#[serde(rename_all = "camelCase")]
+pub struct AskUserQuestion {
+    pub question: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    #[serde(default)]
+    pub multi_select: bool,
+    #[serde(default)]
+    pub options: Vec<AskUserOption>,
+}
+```
+
+- [ ] **Step 4: Fix the JSON schema in ask_user.rs**
+
+In `src-tauri/src/agent/tools/builtin/ask_user.rs` `parameters_schema()` (around L52, L66):
+- Rename `"multi_select"` → `"multiSelect"` (matches serde camelCase)
+- Drop `"multi_select"` from the `required` array (now optional with default false)
+
+Result fragment:
+```rust
+"multiSelect": {"type": "boolean", "default": false, "description": "Allow selecting multiple options"},
+// ...
+"required": ["question"]
+```
+
+- [ ] **Step 5: Rerun the serde tests — expect green**
+
+```bash
+cd src-tauri && cargo test --lib ipc::tests::ask_user_question 2>&1 | tail -10
+```
+
+Expected: both tests pass.
+
+- [ ] **Step 6: Implement human-readable ask_user tool result (Part B)**
+
+Replace `ask_user.rs:103-107`:
+
+```rust
+let result_json = serde_json::json!({ "answers": result.answers });
+Ok(ToolOutput::success(
+    &serde_json::to_string(&result_json).unwrap_or_default(),
+    start.elapsed().as_millis() as u64,
+))
+```
+
+with:
+
+```rust
+// Format as human-readable text so the chat trajectory renders it the
+// same way Proma's Claude Code SDK auto-formatted tool_results — see
+// 2026-05-18 user feedback during execution of this plan.
+let q_count = payload.questions.len();
+let mut answer_pairs: Vec<String> = Vec::with_capacity(q_count);
+for (idx, q) in payload.questions.iter().enumerate() {
+    let key = format!("question_{}", idx);
+    let answer_str = match result.answers.get(&key) {
+        Some(v) => match v {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Array(arr) => arr.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect::<Vec<_>>()
+                .join(", "),
+            other => other.to_string(),
+        },
+        None => "(no answer)".to_string(),
+    };
+    answer_pairs.push(format!("\"{}\"=\"{}\"", q.question, answer_str));
+}
+let result_text = format!(
+    "User has answered your questions: {}. You can now continue with the user's answers in mind.",
+    answer_pairs.join(", "),
+);
+Ok(ToolOutput::success(
+    &result_text,
+    start.elapsed().as_millis() as u64,
+))
+```
+
+Note: `payload` already exists in scope (constructed at L92). If `payload` was consumed by the `emit` call, refactor to keep a reference (`let payload = AskUserRequestPayload { ... }; let _ = self.app_handle.emit(...);` is fine since `emit` takes `&payload`).
+
+- [ ] **Step 7: Verify compile**
+
+```bash
+cd src-tauri && cargo build 2>&1 | grep -E "^error" | head -10
+```
+
+Expected: clean.
+
+- [ ] **Step 8: Human-readable exit_plan_mode tool_result (Part C)**
+
+Read `src-tauri/src/agent/tools/builtin/exit_plan_mode.rs` to find the accept and reject return points. Replace status-only returns with human-readable text:
+
+- **Accept + Auto path:** `"User accepted the plan and switched to Auto mode. Proceed with execution."`
+- **Accept + Keep Plan path:** `"User accepted the plan but kept Plan mode (allowed prompts: {comma-separated list}). Only those commands will auto-execute."`
+- **Reject path:** `"User rejected the plan with feedback: \"{feedback}\". Revise the plan and resubmit."` (`feedback` is already in the existing reject struct)
+
+If the existing exit_plan_mode tool already returns descriptive strings, just inspect and confirm — don't rewrite. The intent is to surface the user's decision verbatim in the chat trajectory.
+
+- [ ] **Step 9: Compile + run any existing exit_plan_mode tests**
+
+```bash
+cd src-tauri && cargo build 2>&1 | grep -E "^error" | head
+cd src-tauri && cargo test --lib agent::tools::builtin::exit_plan_mode 2>&1 | grep "test result"
+```
+
+Expected: clean build, tests green (if any).
+
+- [ ] **Step 10: Commit**
+
+```bash
+git -C /Users/ryanliu/Documents/uclaw/.claude/worktrees/feat-plan-mode-auto-suggest add \
+  src-tauri/src/ipc.rs \
+  src-tauri/src/agent/tools/builtin/ask_user.rs \
+  src-tauri/src/agent/tools/builtin/exit_plan_mode.rs
+
+git -C /Users/ryanliu/Documents/uclaw/.claude/worktrees/feat-plan-mode-auto-suggest commit -m "fix(agent): ask_user multiSelect schema/serde mismatch + human-readable tool_result
+
+Two fixes folded into one commit (same surface area, both user-reported
+during P1 execution 2026-05-18):
+
+Part A (bug): AskUserQuestion has #[serde(rename_all = camelCase)] so
+serde expects multiSelect. JSON schema advertised multi_select and
+marked it required. LLM followed schema → 'missing field multiSelect'
+toast on every call. Fix: schema uses multiSelect, drops it from
+required, and field gains #[serde(default)] so absent value defaults
+to false.
+
+Part B (UX): ask_user.execute() returned {answers:{}} JSON which
+rendered as ugly tool_result blob. Now formats as natural text
+'User has answered your questions: \"<q>\"=\"<a>\". You can now
+continue with the user's answers in mind.' — mirrors how Proma's
+Claude Code SDK auto-formatted tool_results.
+
+Part C: exit_plan_mode tool_result similarly humanized for the
+three decision paths (accept+auto, accept+keep, reject+feedback)."
+```
+
+---
+
 ## Task 2 — V34 schema + mode_suggest_store
 
 **Files:**
