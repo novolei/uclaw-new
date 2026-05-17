@@ -116,6 +116,22 @@ impl IlinkSender {
         let mut connected = false;
 
         loop {
+            // Check if sendmessage path already set -14 (IlinkReplySender.send_text called invalidate()).
+            if !self.shared.session_active.load(Ordering::Relaxed) {
+                tracing::warn!(
+                    "[IlinkBot:{}] session_active=false (set via sendmessage -14), stopping poll",
+                    self.instance_id
+                );
+                let _ = self.status_tx.send(ChannelRuntimeStatus {
+                    instance_id: self.instance_id.clone(),
+                    state: ChannelState::NeedsRebind,
+                    last_error: Some("会话已失效（-14），请重新扫码绑定".to_string()),
+                    connected_since_ms: None,
+                    message_count_today: 0,
+                });
+                break;
+            }
+
             match self.single_poll(&mut updates_buf, &inbound_tx).await {
                 Ok(true) => {
                     if !connected {
@@ -209,6 +225,7 @@ impl IlinkSender {
             .as_i64()
             .unwrap_or(resp["errcode"].as_i64().unwrap_or(0));
         if ret_code == SESSION_EXPIRED_CODE {
+            self.shared.invalidate().await;
             return Ok(false);
         }
         if ret_code != 0 {
@@ -674,5 +691,75 @@ mod tests {
         // ctx=None — should fall back to LRU cache, not error
         let result = reply_sender.send_text("user1", "hi", None).await;
         assert!(result.is_ok(), "LRU fallback should succeed: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn session_active_false_stops_poll_loop() {
+        // No HTTP mock needed — session_active=false is detected before any HTTP.
+        // Using an unconnectable port to ensure no HTTP is attempted.
+        let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (inbound_tx, _) = tokio::sync::mpsc::unbounded_channel();
+
+        let sender = Arc::new(IlinkSender::new(
+            "test-stop",
+            &serde_json::json!({ "base_url": "http://127.0.0.1:1" }),
+            &serde_json::json!({ "bot_token": "tok" }),
+            status_tx,
+        ));
+
+        // Mark session as already-expired before starting
+        sender.shared.session_active.store(false, Ordering::Relaxed);
+
+        let abort = sender.clone().start(inbound_tx);
+
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            status_rx.recv(),
+        )
+        .await
+        .expect("timeout: NeedsRebind not emitted within 3s")
+        .expect("channel closed");
+
+        abort.abort();
+        assert_eq!(status.state, crate::channels::types::ChannelState::NeedsRebind);
+        assert_eq!(status.instance_id, "test-stop");
+    }
+
+    #[tokio::test]
+    async fn getupdates_14_calls_invalidate() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/ilink/bot/getupdates")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"ret":-14}"#)
+            .create_async()
+            .await;
+
+        let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (inbound_tx, _) = tokio::sync::mpsc::unbounded_channel();
+
+        let sender = Arc::new(IlinkSender::new(
+            "test-gtu14",
+            &serde_json::json!({ "base_url": server.url() }),
+            &serde_json::json!({ "bot_token": "tok" }),
+            status_tx,
+        ));
+        sender.shared.context_tokens.write().await.put("u1".to_string(), "ct1".to_string());
+
+        let abort = sender.clone().start(inbound_tx);
+
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            status_rx.recv(),
+        )
+        .await
+        .expect("timeout")
+        .expect("channel closed");
+
+        abort.abort();
+        assert_eq!(status.state, crate::channels::types::ChannelState::NeedsRebind);
+        assert!(!sender.shared.session_active.load(Ordering::Relaxed));
+        assert_eq!(sender.shared.context_tokens.read().await.len(), 0);
     }
 }
