@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
+import { useSetAtom } from 'jotai'
 import { setAutomationEnabled, listSpecChannelBindings, updateSpecChannelBindings, updateSpecImSettings } from '@/lib/tauri-bridge'
 import type { HumaneSpecRow, SpecChannelBinding } from '@/lib/tauri-bridge'
+import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
 
 interface Props {
   spec: HumaneSpecRow
@@ -169,6 +171,8 @@ function Toggle({ checked, disabled, onChange }: { checked: boolean; disabled: b
 function ImChannelBindingsSection({ specId }: { specId: string }) {
   const [bindings, setBindings] = useState<SpecChannelBinding[]>([])
   const [loading, setLoading] = useState(true)
+  const setSettingsOpen = useSetAtom(settingsOpenAtom)
+  const setSettingsTab = useSetAtom(settingsTabAtom)
 
   useEffect(() => {
     listSpecChannelBindings(specId)
@@ -203,7 +207,7 @@ function ImChannelBindingsSection({ specId }: { specId: string }) {
       )}
       <button
         className="titlebar-no-drag text-xs text-primary mt-1 hover:underline"
-        onClick={() => {}}
+        onClick={() => { setSettingsTab('imChannels'); setSettingsOpen(true) }}
       >
         在设置中配置渠道 ↗
       </button>

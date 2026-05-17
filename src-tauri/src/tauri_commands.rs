@@ -3024,6 +3024,8 @@ pub async fn toggle_im_channel(
 pub struct SpecChannelBinding {
     pub channel_instance_id: String,
     pub enabled: bool,
+    pub channel_name: Option<String>,
+    pub channel_type: Option<String>,
 }
 
 #[tauri::command]
@@ -3033,12 +3035,17 @@ pub async fn list_spec_channel_bindings(
 ) -> Result<Vec<SpecChannelBinding>, Error> {
     let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
     let mut stmt = conn.prepare(
-        "SELECT channel_instance_id, enabled FROM spec_channel_bindings WHERE spec_id=?1",
+        "SELECT b.channel_instance_id, b.enabled, i.name, i.channel_type \
+         FROM spec_channel_bindings b \
+         LEFT JOIN im_channel_instances i ON i.id = b.channel_instance_id \
+         WHERE b.spec_id = ?1",
     )?;
     let rows = stmt.query_map([&spec_id], |r| {
         Ok(SpecChannelBinding {
             channel_instance_id: r.get(0)?,
             enabled: r.get::<_, i64>(1)? != 0,
+            channel_name: r.get(2)?,
+            channel_type: r.get(3)?,
         })
     })?
     .filter_map(|r| r.ok())
@@ -3080,7 +3087,9 @@ pub async fn update_spec_im_settings(
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE automation_specs
-         SET trigger_phrase = ?2, system_prompt_override = ?3, updated_at = ?4
+         SET trigger_phrase        = CASE WHEN ?2 IS NOT NULL THEN ?2 ELSE trigger_phrase END,
+             system_prompt_override = CASE WHEN ?3 IS NOT NULL THEN ?3 ELSE system_prompt_override END,
+             updated_at            = ?4
          WHERE id = ?1",
         rusqlite::params![
             spec_id,
