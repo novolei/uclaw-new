@@ -7,7 +7,7 @@ use crate::channels::notify::{
     dingtalk::DingtalkSender, email::EmailSender, feishu::FeishuSender,
     webhook::WebhookImSender,
 };
-use crate::channels::types::{ImChannelInstanceConfig, ImChannelSender, ImChannelType};
+use crate::channels::types::{ChannelRuntimeStatus, ImChannelInstanceConfig, ImChannelSender, ImChannelType};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -20,10 +20,13 @@ struct RunningInstance {
     _inbound_task: Option<AbortHandle>,
     /// Present when config.enabled=true for bidirectional channels; None otherwise.
     _fanout_task: Option<AbortHandle>,
+    /// Consumes ChannelRuntimeStatus from WecomBot and updates the shared statuses map.
+    _status_relay_task: Option<AbortHandle>,
 }
 
 pub struct ImChannelManager {
     instances: Arc<RwLock<HashMap<String, RunningInstance>>>,
+    pub statuses: Arc<RwLock<HashMap<String, ChannelRuntimeStatus>>>,
     db: Arc<std::sync::Mutex<rusqlite::Connection>>,
     session_registry: Arc<crate::channels::session_registry::ImSessionRegistry>,
     app_handle: tauri::AppHandle,
@@ -37,6 +40,7 @@ impl ImChannelManager {
     ) -> Self {
         Self {
             instances: Arc::new(RwLock::new(HashMap::new())),
+            statuses: Arc::new(RwLock::new(HashMap::new())),
             db,
             session_registry,
             app_handle,
@@ -88,34 +92,58 @@ impl ImChannelManager {
     }
 
     pub async fn start_instance(&self, config: ImChannelInstanceConfig) -> Result<(), String> {
+        // Stop any currently-running tasks for this id before spawning new ones.
+        // Dropping an AbortHandle does NOT abort the task, so we must call abort()
+        // explicitly. Without this, update/toggle calls would orphan old tasks while
+        // inserting new ones — two WecomBot connections on a single-connection protocol.
+        self.stop_instance(&config.id).await;
+
+        // WecomBot has its own early-return path with status relay.
+        if config.channel_type == ImChannelType::WecomBot {
+            let (inbound_tx, inbound_rx) =
+                tokio::sync::mpsc::unbounded_channel::<(
+                    crate::channels::types::InboundMessage,
+                    Arc<crate::channels::types::ReplyHandle>,
+                )>();
+            let (status_tx, status_rx) =
+                tokio::sync::mpsc::unbounded_channel::<crate::channels::types::ChannelRuntimeStatus>();
+            let wecom = Arc::new(crate::channels::im::WecomSender::new(
+                &config.id,
+                &config.config,
+                &config.credentials,
+                status_tx,
+            ));
+            let abort = if config.enabled {
+                Some(wecom.clone().start(inbound_tx))
+            } else {
+                None
+            };
+            let fanout_abort = if config.enabled {
+                Some(self.spawn_fanout_loop(config.id.clone(), inbound_rx))
+            } else {
+                drop(inbound_rx);
+                None
+            };
+            let relay_abort = if config.enabled {
+                Some(self.spawn_status_relay(status_rx))
+            } else {
+                None
+            };
+            let running = RunningInstance {
+                config: config.clone(),
+                sender: Arc::new(WecomNoopSender) as Arc<dyn ImChannelSender>,
+                _inbound_task: abort,
+                _fanout_task: fanout_abort,
+                _status_relay_task: relay_abort,
+            };
+            self.instances.write().await.insert(config.id.clone(), running);
+            tracing::info!("ImChannelManager: started instance {} ({})", config.id, config.channel_type);
+            return Ok(());
+        }
+
+        // All other channel types use the tuple pattern.
         let (sender, inbound_task, fanout_task): (Arc<dyn ImChannelSender>, Option<AbortHandle>, Option<AbortHandle>) =
             match config.channel_type {
-                ImChannelType::WecomBot => {
-                    let (inbound_tx, inbound_rx) =
-                        tokio::sync::mpsc::unbounded_channel::<(
-                            crate::channels::types::InboundMessage,
-                            Arc<crate::channels::types::ReplyHandle>,
-                        )>();
-                    let wecom = Arc::new(crate::channels::im::WecomSender::new(
-                        &config.id,
-                        &config.config,
-                        &config.credentials,
-                    ));
-                    let abort = if config.enabled {
-                        Some(wecom.clone().start(inbound_tx))
-                    } else {
-                        None
-                    };
-
-                    let fanout_abort = if config.enabled {
-                        Some(self.spawn_fanout_loop(config.id.clone(), inbound_rx))
-                    } else {
-                        // Drop inbound_rx so the channel is closed; no fanout needed.
-                        drop(inbound_rx);
-                        None
-                    };
-                    (Arc::new(WecomNoopSender) as Arc<dyn ImChannelSender>, abort, fanout_abort)
-                }
                 ImChannelType::WechatIlink => {
                     let (inbound_tx, inbound_rx) =
                         tokio::sync::mpsc::unbounded_channel::<(
@@ -153,6 +181,7 @@ impl ImChannelManager {
             sender,
             _inbound_task: inbound_task,
             _fanout_task: fanout_task,
+            _status_relay_task: None,
         };
         self.instances.write().await.insert(config.id.clone(), running);
         tracing::info!("ImChannelManager: started instance {} ({})", config.id, config.channel_type);
@@ -216,6 +245,9 @@ impl ImChannelManager {
             if let Some(handle) = inst._fanout_task {
                 handle.abort();
             }
+            if let Some(handle) = inst._status_relay_task {
+                handle.abort();
+            }
             tracing::info!("ImChannelManager: stopped instance {}", id);
         }
     }
@@ -258,6 +290,47 @@ impl ImChannelManager {
 
     pub async fn list_instances(&self) -> Vec<ImChannelInstanceConfig> {
         self.instances.read().await.values().map(|r| r.config.clone()).collect()
+    }
+
+    /// Return a snapshot of all known channel runtime statuses.
+    pub async fn get_all_statuses(&self) -> Vec<ChannelRuntimeStatus> {
+        self.statuses.read().await.values().cloned().collect()
+    }
+
+    /// Spawn a task that drains `status_rx`, updates the shared statuses map,
+    /// and emits `im_channel_status_changed` to the Tauri frontend.
+    /// Returns an AbortHandle so stop_instance() can cancel it.
+    fn spawn_status_relay(
+        &self,
+        mut status_rx: tokio::sync::mpsc::UnboundedReceiver<ChannelRuntimeStatus>,
+    ) -> AbortHandle {
+        use tauri::Emitter;
+        let statuses = self.statuses.clone();
+        let app_handle = self.app_handle.clone();
+        let handle = tokio::spawn(async move {
+            while let Some(status) = status_rx.recv().await {
+                statuses.write().await.insert(status.instance_id.clone(), status.clone());
+                let _ = app_handle.emit("im_channel_status_changed", &status);
+            }
+        });
+        handle.abort_handle()
+    }
+
+    /// Reload one instance from DB and (re)start it, or stop it if disabled.
+    /// Safer than calling start_all() from CRUD commands because it only
+    /// affects the single instance being modified.
+    pub async fn restart_instance_by_id(&self, id: &str) -> Result<(), String> {
+        let config = self.load_config_from_db_by_id(id)?;
+        match config {
+            Some(c) if c.enabled => self.start_instance(c).await,
+            Some(c)              => { self.stop_instance(&c.id).await; Ok(()) }
+            None                 => { self.stop_instance(id).await; Ok(()) }
+        }
+    }
+
+    fn load_config_from_db_by_id(&self, id: &str) -> Result<Option<ImChannelInstanceConfig>, String> {
+        let configs = self.load_configs_from_db()?;
+        Ok(configs.into_iter().find(|c| c.id == id))
     }
 
     fn load_configs_from_db(&self) -> Result<Vec<ImChannelInstanceConfig>, String> {
@@ -421,5 +494,28 @@ mod tests {
         // build_sender for webhook works without AppHandle
         let sender = WebhookImSender::new();
         let _ = sender; // just ensure it compiles
+    }
+
+    #[tokio::test]
+    async fn statuses_arc_starts_empty_and_tracks_entries() {
+        use crate::channels::types::{ChannelRuntimeStatus, ChannelState};
+        let statuses: Arc<RwLock<HashMap<String, ChannelRuntimeStatus>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        assert!(statuses.read().await.is_empty());
+
+        let status = ChannelRuntimeStatus {
+            instance_id: "x1".into(),
+            state: ChannelState::Online,
+            last_error: None,
+            connected_since_ms: Some(1_700_000_000_000),
+            message_count_today: 5,
+        };
+        statuses.write().await.insert("x1".into(), status);
+
+        let all: Vec<_> = statuses.read().await.values().cloned().collect();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].instance_id, "x1");
+        assert_eq!(all[0].message_count_today, 5);
     }
 }

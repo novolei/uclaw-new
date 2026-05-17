@@ -28,9 +28,9 @@ pub fn check(
 
 fn required_for(tool: &str) -> Option<Permission> {
     match tool {
-        "shell" => Some(Permission::Shell),
+        "shell" | "bash"          => Some(Permission::Shell),
         "edit" | "file"           => Some(Permission::Filesystem),
-        "web"                     => Some(Permission::Network),
+        "web" | "web_fetch" | "http_request" => Some(Permission::Network),
         "notify_user"             => Some(Permission::Notification),
         t if t.starts_with("browser_") => Some(Permission::AiBrowser),
         "memory" | "report_to_user" | "request_escalation" => None,

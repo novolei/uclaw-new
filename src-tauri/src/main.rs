@@ -493,6 +493,7 @@ fn main() {
             uclaw_core::tauri_commands::toggle_channel,
             // IM Channel Instance CRUD
             uclaw_core::tauri_commands::list_im_channels,
+            uclaw_core::tauri_commands::get_im_channel_statuses,
             uclaw_core::tauri_commands::create_im_channel,
             uclaw_core::tauri_commands::update_im_channel,
             uclaw_core::tauri_commands::delete_im_channel,

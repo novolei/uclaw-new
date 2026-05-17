@@ -3235,10 +3235,67 @@ pub async fn list_im_channels(
 }
 
 #[tauri::command]
+pub async fn get_im_channel_statuses(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::channels::types::ChannelRuntimeStatus>, Error> {
+    Ok(state.im_channel_manager.get_all_statuses().await)
+}
+
+/// Reject URLs that could be used for SSRF: non-https/wss schemes or
+/// loopback / RFC-1918 host targets.
+fn validate_im_channel_url(raw: &str, field: &str) -> Result<(), Error> {
+    if raw.is_empty() {
+        return Ok(());
+    }
+    let parsed = url::Url::parse(raw)
+        .map_err(|_| Error::InvalidInput(format!("{field}: not a valid URL")))?;
+
+    match parsed.scheme() {
+        "https" | "wss" => {}
+        s => return Err(Error::InvalidInput(format!("{field}: scheme '{s}' not allowed; use https or wss"))),
+    }
+
+    let host = parsed.host_str().unwrap_or("");
+    // Reject loopback
+    if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+        return Err(Error::InvalidInput(format!("{field}: loopback target not allowed")));
+    }
+    // Reject RFC-1918 and link-local
+    if let Ok(addr) = host.parse::<std::net::IpAddr>() {
+        let blocked = match addr {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_private() || v4.is_loopback() || v4.is_link_local()
+            }
+            std::net::IpAddr::V6(v6) => v6.is_loopback(),
+        };
+        if blocked {
+            return Err(Error::InvalidInput(format!("{field}: private/loopback IP not allowed")));
+        }
+    }
+    Ok(())
+}
+
+/// Check all URL fields embedded in the channel config/credentials JSON blobs.
+fn validate_im_channel_urls(input: &ImChannelInput) -> Result<(), Error> {
+    for field in &["ws_url", "base_url", "polling_url"] {
+        if let Some(v) = input.config.get(field).and_then(|v| v.as_str()) {
+            validate_im_channel_url(v, field)?;
+        }
+    }
+    for field in &["webhook_url"] {
+        if let Some(v) = input.credentials.get(field).and_then(|v| v.as_str()) {
+            validate_im_channel_url(v, field)?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn create_im_channel(
     state: tauri::State<'_, AppState>,
     input: ImChannelInput,
 ) -> Result<String, Error> {
+    validate_im_channel_urls(&input).map_err(|e| e)?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
     let config_json = serde_json::to_string(&input.config).unwrap_or_else(|_| "{}".into());
@@ -3261,7 +3318,7 @@ pub async fn create_im_channel(
             ],
         )?;
     }
-    let _ = state.im_channel_manager.start_all().await;
+    let _ = state.im_channel_manager.restart_instance_by_id(&id).await;
     Ok(id)
 }
 
@@ -3271,6 +3328,7 @@ pub async fn update_im_channel(
     id: String,
     input: ImChannelInput,
 ) -> Result<(), Error> {
+    validate_im_channel_urls(&input).map_err(|e| e)?;
     let now = chrono::Utc::now().timestamp_millis();
     let config_json = serde_json::to_string(&input.config).unwrap_or_else(|_| "{}".into());
     let creds_json  = serde_json::to_string(&input.credentials).unwrap_or_else(|_| "{}".into());
@@ -3293,7 +3351,7 @@ pub async fn update_im_channel(
             ],
         )?;
     }
-    let _ = state.im_channel_manager.start_all().await;
+    let _ = state.im_channel_manager.restart_instance_by_id(&id).await;
     Ok(())
 }
 
@@ -3328,15 +3386,11 @@ pub async fn toggle_im_channel(
             rusqlite::params![enabled as i64, now, id],
         )?;
     } // lock dropped
-    if enabled {
-        state
-            .im_channel_manager
-            .start_all()
-            .await
-            .map_err(|e| Error::Internal(e))?;
-    } else {
-        state.im_channel_manager.stop_instance(&id).await;
-    }
+    state
+        .im_channel_manager
+        .restart_instance_by_id(&id)
+        .await
+        .map_err(|e| Error::Internal(e))?;
     Ok(())
 }
 

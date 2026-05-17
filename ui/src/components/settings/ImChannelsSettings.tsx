@@ -1,41 +1,96 @@
 import { useAtom, useSetAtom } from 'jotai'
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { imChannelsAtom, fetchImChannelsAtom, type ImChannelRow } from '@/atoms/im-channel-atoms'
-import { ImChannelForm } from './ImChannelForm'
+import { listen } from '@tauri-apps/api/event'
+import { toast } from 'sonner'
+import {
+  imChannelsAtom,
+  fetchImChannelsAtom,
+  imChannelStatusesAtom,
+  fetchImChannelStatusesAtom,
+} from '@/atoms/im-channel-atoms'
+import type { ImChannelStatus } from '@/atoms/im-channel-atoms'
+import { ImChannelAccordionRow } from './ImChannelAccordionRow'
 import type { SpaceSummary } from '@/lib/types'
 
+const CHANNEL_TYPES_ORDER = [
+  'wecom_bot', 'wechat_ilink', 'email', 'dingtalk', 'feishu', 'webhook',
+]
+
 const CHANNEL_TYPE_LABELS: Record<string, string> = {
-  wecom_bot:    '企业微信 Bot',
+  wecom_bot:    '企业微信',
   wechat_ilink: '微信 iLink',
-  email:        '电子邮件',
+  email:        '邮件',
   dingtalk:     '钉钉',
   feishu:       '飞书',
   webhook:      'Webhook',
 }
 
+const CHANNEL_DESCRIPTIONS: Record<string, string> = {
+  wecom_bot:    '企业微信 Bot 通过 WebSocket 长连接收发消息，每个实例对应一个独立的 Corp App。',
+  wechat_ilink: '微信 iLink 通过 HTTP 长轮询桥接个人微信账号，需配合 iLink 桥接服务运行。',
+  email:        '通过 SMTP 发送邮件通知，适用于低频告警场景。',
+  dingtalk:     '钉钉 Webhook 通知，不支持双向对话。',
+  feishu:       '飞书 Webhook 通知，不支持双向对话。',
+  webhook:      '通用 HTTP Webhook，POST JSON 到目标 URL。',
+}
+
 export function ImChannelsSettings() {
-  const [channels] = useAtom(imChannelsAtom)
+  const [channels, setChannels] = useAtom(imChannelsAtom)
   const fetchChannels = useSetAtom(fetchImChannelsAtom)
+  const [statuses, setStatuses] = useAtom(imChannelStatusesAtom)
+  const fetchStatuses = useSetAtom(fetchImChannelStatusesAtom)
   const [spaces, setSpaces] = useState<{ id: string; name: string }[]>([])
-  const [showForm, setShowForm] = useState(false)
-  const [editing, setEditing] = useState<ImChannelRow | undefined>()
+  const [activeTab, setActiveTab] = useState<string | null>(null)
+  const [openRowId, setOpenRowId] = useState<string | null>(null)
+  const [addingToType, setAddingToType] = useState<string | null>(null)
 
   useEffect(() => {
     fetchChannels()
+    fetchStatuses()
     invoke<SpaceSummary[]>('list_spaces')
       .then(rows => setSpaces(rows.map(s => ({ id: s.id, name: s.name }))))
       .catch(() => {})
-  }, [fetchChannels])
+  }, [fetchChannels, fetchStatuses])
+
+  // Realtime status updates from backend
+  useEffect(() => {
+    const unlisten = listen<ImChannelStatus>('im_channel_status_changed', ({ payload }) => {
+      setStatuses(prev => ({ ...prev, [payload.instanceId]: payload }))
+    })
+    return () => { unlisten.then(fn => fn()) }
+  }, [setStatuses])
+
+  // Group channels by type
+  const channelsByType: Record<string, typeof channels> = {}
+  for (const ch of channels) {
+    if (!channelsByType[ch.channelType]) channelsByType[ch.channelType] = []
+    channelsByType[ch.channelType].push(ch)
+  }
+
+  const tabs = CHANNEL_TYPES_ORDER.filter(t => (channelsByType[t]?.length ?? 0) > 0)
+  const currentTab = (activeTab && tabs.includes(activeTab)) ? activeTab : (tabs[0] ?? null)
 
   async function handleToggle(id: string, enabled: boolean) {
+    setChannels(prev => prev.map(ch => ch.id === id ? { ...ch, enabled } : ch))
     try {
       await invoke('toggle_im_channel', { id, enabled })
-      fetchChannels()
     } catch (e) {
-      console.error('toggle_im_channel failed:', e)
-      alert('操作失败，请查看控制台了解详情')
+      fetchChannels()
+      toast.error('切换失败：' + String(e))
     }
+  }
+
+  function handleToggleRow(id: string) {
+    setOpenRowId(prev => (prev === id ? null : id))
+    setAddingToType(null)
+  }
+
+  function handleSaved() {
+    setOpenRowId(null)
+    setAddingToType(null)
+    fetchChannels()
+    fetchStatuses()
   }
 
   async function handleDelete(id: string) {
@@ -44,106 +99,100 @@ export function ImChannelsSettings() {
       await invoke('delete_im_channel', { id })
       fetchChannels()
     } catch (e) {
-      console.error('delete_im_channel failed:', e)
-      alert('删除失败，请查看控制台了解详情')
+      toast.error('删除失败：' + String(e))
     }
   }
 
-  function handleEdit(ch: ImChannelRow) {
-    setEditing(ch)
-    setShowForm(true)
-  }
-
-  function handleDone() {
-    setShowForm(false)
-    setEditing(undefined)
-    fetchChannels()
-  }
-
-  if (showForm) {
-    return (
-      <div className="max-w-lg">
-        <div className="mb-3 flex items-center gap-2">
-          <button onClick={() => { setShowForm(false); setEditing(undefined) }}
-            className="text-sm text-muted-foreground hover:text-foreground">
-            ← 返回
-          </button>
-          <span className="text-sm font-medium">{editing ? '编辑渠道' : '新增渠道'}</span>
-        </div>
-        <ImChannelForm spaces={spaces} editing={editing} onDone={handleDone} />
-      </div>
-    )
-  }
+  const tabChannels = currentTab ? (channelsByType[currentTab] ?? []) : []
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-sm font-medium">IM 渠道</h3>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            配置通知渠道和双向 IM 机器人，绑定到工作空间
-          </p>
-        </div>
-        <button
-          onClick={() => setShowForm(true)}
-          className="rounded bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90"
-        >
-          + 新增渠道
-        </button>
+    <div className="space-y-0">
+      {/* Tab bar */}
+      <div className="flex items-end gap-0 border-b border-border overflow-x-auto">
+        {tabs.map(type => {
+          const count = channelsByType[type]?.length ?? 0
+          const hasError = (channelsByType[type] ?? []).some(
+            ch => statuses[ch.id]?.state === 'error'
+          )
+          return (
+            <button
+              key={type}
+              onClick={() => { setActiveTab(type); setOpenRowId(null); setAddingToType(null) }}
+              className={[
+                'flex items-center gap-1.5 whitespace-nowrap px-3 py-2 text-sm border-b-2 transition-colors',
+                currentTab === type
+                  ? 'border-primary font-medium text-foreground'
+                  : 'border-transparent text-muted-foreground hover:text-foreground',
+              ].join(' ')}
+            >
+              {CHANNEL_TYPE_LABELS[type] ?? type}
+              {count > 0 && (
+                <span className={[
+                  'rounded-full px-1.5 py-0.5 text-xs font-medium leading-none',
+                  hasError
+                    ? 'bg-destructive text-destructive-foreground'
+                    : 'bg-muted text-muted-foreground',
+                ].join(' ')}>
+                  {count}
+                </span>
+              )}
+            </button>
+          )
+        })}
+        <span className="ml-auto cursor-not-allowed px-3 py-2 text-sm text-muted-foreground opacity-40">
+          + 新增渠道类型
+        </span>
       </div>
 
-      {channels.length === 0 ? (
-        <div className="rounded border border-dashed border-border py-8 text-center text-sm text-muted-foreground">
-          还没有配置任何渠道。点击「新增渠道」开始。
+      {currentTab ? (
+        <div className="pt-3 space-y-1.5">
+          {CHANNEL_DESCRIPTIONS[currentTab] && (
+            <p className="text-xs text-muted-foreground px-1 pb-2">
+              {CHANNEL_DESCRIPTIONS[currentTab]}
+            </p>
+          )}
+
+          {tabChannels.map(ch => (
+            <ImChannelAccordionRow
+              key={ch.id}
+              channel={ch}
+              status={statuses[ch.id]}
+              spaces={spaces}
+              open={openRowId === ch.id}
+              onToggleOpen={() => handleToggleRow(ch.id)}
+              onToggleEnabled={(enabled) => handleToggle(ch.id, enabled)}
+              onSaved={handleSaved}
+              onDeleted={() => handleDelete(ch.id)}
+            />
+          ))}
+
+          {/* New instance row */}
+          {addingToType === currentTab ? (
+            <ImChannelAccordionRow
+              key="__new__"
+              channel={undefined}
+              newChannelType={currentTab}
+              status={undefined}
+              spaces={spaces}
+              open={true}
+              onToggleOpen={() => setAddingToType(null)}
+              onToggleEnabled={(_enabled: boolean) => {}}
+              onSaved={handleSaved}
+              onDeleted={() => setAddingToType(null)}
+            />
+          ) : (
+            <button
+              onClick={() => { setAddingToType(currentTab); setOpenRowId(null) }}
+              className="flex w-full items-center gap-2 rounded border border-dashed border-border px-3 py-2 text-sm text-primary opacity-70 hover:opacity-100 transition-opacity"
+            >
+              <span className="text-base leading-none">+</span>
+              新增{CHANNEL_TYPE_LABELS[currentTab] ?? currentTab}实例
+            </button>
+          )}
         </div>
       ) : (
-        <div className="space-y-2">
-          {channels.map(ch => {
-            const space = spaces.find(s => s.id === ch.spaceId)
-            return (
-              <div key={ch.id}
-                className="flex items-center gap-3 rounded border border-border bg-card px-3 py-2.5">
-                <div
-                  className={`h-2 w-2 rounded-full flex-shrink-0 ${
-                    ch.enabled ? 'bg-success' : 'bg-muted-foreground'
-                  }`}
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium truncate">{ch.name}</span>
-                    <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                      {CHANNEL_TYPE_LABELS[ch.channelType] ?? ch.channelType}
-                    </span>
-                    {space && (
-                      <span className="rounded bg-accent/20 px-1.5 py-0.5 text-xs text-accent-foreground">
-                        {space.name}
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  <button
-                    onClick={() => handleToggle(ch.id, !ch.enabled)}
-                    className="rounded px-2 py-1 text-xs hover:bg-muted"
-                  >
-                    {ch.enabled ? '停用' : '启用'}
-                  </button>
-                  <button
-                    onClick={() => handleEdit(ch)}
-                    className="rounded px-2 py-1 text-xs hover:bg-muted"
-                  >
-                    编辑
-                  </button>
-                  <button
-                    onClick={() => handleDelete(ch.id)}
-                    className="rounded px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
-                  >
-                    删除
-                  </button>
-                </div>
-              </div>
-            )
-          })}
+        <div className="py-10 text-center text-sm text-muted-foreground">
+          还没有配置任何渠道。
         </div>
       )}
     </div>
