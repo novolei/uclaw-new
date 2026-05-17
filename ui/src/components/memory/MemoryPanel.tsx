@@ -25,6 +25,7 @@ import {
   RefreshCw,
   Sparkles,
   BookOpen,
+  FileText,
 } from 'lucide-react'
 import { cn, formatDateTime } from '@/lib/utils'
 import { memoryGraphListTimeline } from '@/lib/tauri-bridge'
@@ -35,6 +36,7 @@ import { MemoryGraphView } from './MemoryGraphView'
 import { MemoryNodeCard } from './MemoryNodeCard'
 import { FragmentCardView } from './FragmentCardView'
 import { DailySummaryView } from './DailySummaryView'
+import { WikiView } from './WikiView'
 
 // ─── Kind 配色 ──────────────────────────────────────────────────────────
 
@@ -99,6 +101,10 @@ export function MemoryPanel({ spaceId, className }: MemoryPanelProps): React.Rea
               <BookOpen className="size-3" />
               日记
             </TabsTrigger>
+            <TabsTrigger value="wiki" className="text-xs gap-1 h-6 px-2.5">
+              <FileText className="size-3" />
+              Wiki
+            </TabsTrigger>
           </TabsList>
         </div>
 
@@ -141,6 +147,11 @@ export function MemoryPanel({ spaceId, className }: MemoryPanelProps): React.Rea
         {/* 日记摘要 */}
         <TabsContent value="daily" className="flex-1 m-0">
           <DailySummaryView />
+        </TabsContent>
+
+        {/* AI Wiki — Memory OS Foundation Phase 3 */}
+        <TabsContent value="wiki" className="flex-1 m-0">
+          <WikiView spaceId={spaceId} className="h-full" />
         </TabsContent>
       </Tabs>
 
