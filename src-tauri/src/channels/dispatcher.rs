@@ -11,7 +11,7 @@ use crate::channels::session_registry::ImSessionRegistry;
 use crate::channels::types::{ImChannelInstanceConfig, InboundMessage, ReplyHandle, StreamingHandle};
 use anyhow::Result;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
 
 /// Check whether this inbound message is allowed by the channel's permission config.
@@ -255,12 +255,10 @@ async fn run_agent_chat_via_im(
     for m in existing_messages.iter() {
         reason_ctx.messages.push(m.clone());
     }
-    reason_ctx.messages.push(ChatMessage::user(&msg.text));
-    // Snapshot AFTER adding the inbound user message so that only messages
-    // added by the agentic loop (assistant replies) land in the new_messages
-    // slice. Capturing start_idx before the push would cause the user message
-    // to be double-persisted on every turn.
+    // Snapshot BEFORE pushing the user message so persist_im_messages includes
+    // both the inbound user turn and any assistant replies produced by the loop.
     let start_idx = reason_ctx.messages.len();
+    reason_ctx.messages.push(ChatMessage::user(&msg.text));
 
     // Resolve LLM using the automation service's provider resolution.
     let active = runtime_service.provider_service
@@ -356,6 +354,13 @@ async fn run_agent_chat_via_im(
             tracing::warn!("persist_im_messages error: {e}");
         }
     }
+
+    // Notify the frontend so it reloads the session messages (same event the
+    // streaming agent loop fires; AgentView uses it to trigger a DB re-fetch).
+    let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
+        "conversationId": session_id,
+        "text": final_assistant_text,
+    }));
 
     let _ = session_registry
         .touch(&instance.space_id, &channel_type_str, &msg.chat_id)
