@@ -2873,30 +2873,39 @@ pub struct ImChannelRow {
 #[tauri::command]
 pub async fn list_im_channels(
     state: tauri::State<'_, AppState>,
+    space_id: Option<String>,
 ) -> Result<Vec<ImChannelRow>, Error> {
     let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
-    let mut stmt = conn.prepare(
+    let sql = if space_id.is_some() {
         "SELECT id, space_id, channel_type, name, config_json, enabled, streaming, \
          reply_scope, permission_enabled, owners_json, guest_policy_json, created_at, updated_at \
-         FROM im_channel_instances ORDER BY created_at DESC",
-    )?;
-    let rows = stmt.query_map([], |r| {
-        Ok(ImChannelRow {
-            id: r.get(0)?,
-            space_id: r.get(1)?,
-            channel_type: r.get(2)?,
-            name: r.get(3)?,
-            config: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or_default(),
-            enabled: r.get::<_, i64>(5)? != 0,
-            streaming: r.get::<_, i64>(6)? != 0,
-            reply_scope: r.get(7)?,
-            permission_enabled: r.get::<_, i64>(8)? != 0,
-            owners: serde_json::from_str(&r.get::<_, String>(9)?).unwrap_or_default(),
-            guest_policy: serde_json::from_str(&r.get::<_, String>(10)?).unwrap_or_default(),
-            created_at: r.get(11)?,
-            updated_at: r.get(12)?,
-        })
-    })?
+         FROM im_channel_instances WHERE space_id = ?1 ORDER BY created_at DESC"
+    } else {
+        "SELECT id, space_id, channel_type, name, config_json, enabled, streaming, \
+         reply_scope, permission_enabled, owners_json, guest_policy_json, created_at, updated_at \
+         FROM im_channel_instances WHERE 1=1 ORDER BY created_at DESC"
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows: Vec<ImChannelRow> = stmt.query_map(
+        rusqlite::params_from_iter(space_id.iter().map(|s| s.as_str())),
+        |r| {
+            Ok(ImChannelRow {
+                id: r.get(0)?,
+                space_id: r.get(1)?,
+                channel_type: r.get(2)?,
+                name: r.get(3)?,
+                config: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or_default(),
+                enabled: r.get::<_, i64>(5)? != 0,
+                streaming: r.get::<_, i64>(6)? != 0,
+                reply_scope: r.get(7)?,
+                permission_enabled: r.get::<_, i64>(8)? != 0,
+                owners: serde_json::from_str(&r.get::<_, String>(9)?).unwrap_or_default(),
+                guest_policy: serde_json::from_str(&r.get::<_, String>(10)?).unwrap_or_default(),
+                created_at: r.get(11)?,
+                updated_at: r.get(12)?,
+            })
+        },
+    )?
     .filter_map(|r| r.ok())
     .collect();
     Ok(rows)
@@ -3025,18 +3034,20 @@ pub async fn update_spec_channel_bindings(
     spec_id: String,
     bindings: Vec<SpecChannelBinding>,
 ) -> Result<(), Error> {
-    let conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
-    conn.execute(
+    let mut conn = state.db.lock().map_err(|e| Error::Internal(e.to_string()))?;
+    let tx = conn.transaction().map_err(|e| Error::Internal(e.to_string()))?;
+    tx.execute(
         "DELETE FROM spec_channel_bindings WHERE spec_id=?1",
         [&spec_id],
     )?;
     for b in &bindings {
-        conn.execute(
+        tx.execute(
             "INSERT INTO spec_channel_bindings (spec_id, channel_instance_id, enabled) \
              VALUES (?1,?2,?3)",
             rusqlite::params![spec_id, b.channel_instance_id, b.enabled as i64],
         )?;
     }
+    tx.commit().map_err(|e| Error::Internal(e.to_string()))?;
     Ok(())
 }
 
