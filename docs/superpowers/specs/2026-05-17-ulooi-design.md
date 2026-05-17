@@ -86,6 +86,8 @@
 
 **为什么不是 C（完整 Rust 下沉到 iOS）：** Python 子进程在 iOS 沙盒不可用 → memU bridge 砍掉或重写；provider key 多端同步是另一个项目；范围会失控（半年起）。
 
+**iOS 端技术栈（2026-05-17 补记）：** **Pure SwiftUI / Swift**，iOS 端不引入 Rust。Apple Foundation Model 只能从 Swift 调；AVFoundation / Speech / CoreBluetooth 全 Swift-native；reflex 层逻辑 < 2000 行 Swift Concurrency 完全胜任；避免 cargo + xcframework + uniffi 复杂度。协议一致性靠 **schema-first codegen**：单一 CDDL 文件（`ulooi/Schemas/wire-envelope-v1.cddl`）同时生成 Swift `Codable` 类型和 Rust serde 结构。详见 [`ulooi/docs/architecture.md`](https://github.com/novolei/ulooi/blob/main/docs/architecture.md) §2。
+
 ---
 
 ## 3. V1 范围：S3 (full embodied agent)
@@ -391,6 +393,7 @@ public protocol LooiDevice {
 - [splattydoesstuff/sooperchargeforbots](https://github.com/splattydoesstuff/sooperchargeforbots) — Looi mod 工具
 - UCLAW `local_api/` 与 `api/` 模块（现有 HTTP 层，作为 transport 参考）
 - UCLAW 已有 spaces / agent_sessions / memory_graph 抽象（被 ulooi 复用 + 扩展）
+- [`novolei/ulooi`](https://github.com/novolei/ulooi) — iOS 实现 repo（含 [PRD](https://github.com/novolei/ulooi/blob/main/docs/prd.md) 和 [总体框架设计](https://github.com/novolei/ulooi/blob/main/docs/architecture.md)）
 
 ### 8.2 术语
 
