@@ -6,9 +6,13 @@
 //!
 //! Brainstomed decision (Q3): Two-stage hybrid retrieval.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use tracing::debug;
+
+use crate::memu::client::MemUClient;
+use crate::memu::embedding::cosine_sim;
 
 use super::types::*;
 
@@ -18,14 +22,27 @@ pub struct GeneRetriever {
     genes: Vec<Gene>,
     /// Whether Stage 2 (semantic search) is enabled
     semantic_fallback_enabled: bool,
+    /// memU client for embedding (None if fastembed unavailable)
+    memu_client: Option<Arc<MemUClient>>,
+    /// Cached gene embedding vectors (gene_id → vector)
+    gene_embeddings: Mutex<HashMap<String, Vec<f32>>>,
+    /// Cached effective streaks for ranking (gene_id → streak, computed from Capsule history)
+    gene_effective_streaks: HashMap<String, f32>,
 }
 
 impl GeneRetriever {
     /// Create a new retriever with the given genes.
-    pub fn new(genes: Vec<Gene>, semantic_fallback_enabled: bool) -> Self {
+    pub fn new(
+        genes: Vec<Gene>,
+        semantic_fallback_enabled: bool,
+        memu_client: Option<Arc<MemUClient>>,
+    ) -> Self {
         Self {
             genes,
             semantic_fallback_enabled,
+            memu_client,
+            gene_embeddings: Mutex::new(HashMap::new()),
+            gene_effective_streaks: HashMap::new(),
         }
     }
 
@@ -33,7 +50,7 @@ impl GeneRetriever {
     ///
     /// Returns up to `max_genes` matched genes, ranked by
     /// `effective_streak × match_score`, with one gene per category.
-    pub fn match_genes(
+    pub async fn match_genes(
         &self,
         user_message: &str,
         tool_errors: &[String],
@@ -43,9 +60,9 @@ impl GeneRetriever {
         let mut matches = self.stage1_exact_match(user_message, tool_errors);
 
         // Stage 2: Semantic fallback (only if Stage 1 produced nothing)
-        if matches.is_empty() && self.semantic_fallback_enabled {
+        if matches.is_empty() && self.semantic_fallback_enabled && self.memu_client.is_some() {
             debug!("Stage 1 no hits — falling back to semantic search");
-            matches = self.stage2_semantic_match(user_message);
+            matches = self.stage2_semantic_match(user_message).await;
         }
 
         // Rank by effective_streak × match_score
@@ -103,36 +120,85 @@ impl GeneRetriever {
         candidates
     }
 
-    /// Stage 2: Semantic embedding fallback (placeholder).
+    /// Stage 2: Semantic embedding fallback via fastembed.
     ///
-    /// Uses fastembed for vector similarity search.
-    /// Currently returns empty — to be implemented when fastembed is integrated.
-    fn stage2_semantic_match(&self, user_message: &str) -> Vec<GeneMatchCandidate> {
-        debug!(
-            "Stage 2 semantic match requested for: {} (not yet implemented)",
-            &user_message[..60.min(user_message.len())]
-        );
+    /// Embeds the user message and compares with gene summary+signals
+    /// embedding vectors via cosine similarity. Gene embeddings are
+    /// lazily computed and cached.
+    async fn stage2_semantic_match(&self, user_message: &str) -> Vec<GeneMatchCandidate> {
+        let client = match &self.memu_client {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
 
-        // TODO: Integrate fastembed for semantic vector search
-        // For now, fall back to exact match on gene_id as a crude substitute
-        let lower_msg = user_message.to_lowercase();
+        let preview = &user_message[..60.min(user_message.len())];
+        debug!("Stage 2 semantic match: embedding query '{}...'", preview);
+
+        // Embed user query
+        let query_embedding = match client.embed_text(&[user_message]).await {
+            Ok(mut vecs) if !vecs.is_empty() => vecs.remove(0),
+            _ => {
+                tracing::warn!("[GeneRetriever] Stage 2: failed to embed user query");
+                return Vec::new();
+            }
+        };
+
         let mut candidates = Vec::new();
 
         for gene in &self.genes {
             if gene.status != GeneStatus::Active {
                 continue;
             }
-            // Crude fallback: check if any word from the message matches gene_id
-            let gene_lower = gene.gene_id.to_lowercase().replace('_', " ");
-            if lower_msg.split_whitespace().any(|w| gene_lower.contains(w)) {
+
+            // Build gene text for embedding: summary + signals
+            let gene_text = format!("{} {}", gene.summary, gene.signals_match.join(" "));
+
+            // Check cache first
+            let gene_embedding = {
+                let cache = self.gene_embeddings.lock().unwrap();
+                cache.get(&gene.gene_id).cloned()
+            };
+
+            let gene_embedding = match gene_embedding {
+                Some(emb) => emb,
+                None => {
+                    // Embed and cache
+                    match client.embed_text(&[&gene_text]).await {
+                        Ok(mut vecs) if !vecs.is_empty() => {
+                            let emb = vecs.remove(0);
+                            if let Ok(mut cache) = self.gene_embeddings.lock() {
+                                cache.insert(gene.gene_id.clone(), emb.clone());
+                            }
+                            emb
+                        }
+                        _ => continue,
+                    }
+                }
+            };
+
+            let sim = cosine_sim(&query_embedding, &gene_embedding);
+
+            // Only include matches above threshold (0.5 = moderate semantic similarity)
+            if sim > 0.5 {
                 candidates.push(GeneMatchCandidate {
                     gene: gene.clone(),
-                    match_score: 0.5, // lower confidence than exact match
+                    match_score: sim as f64 * 2.0, // scale similarity to [1.0, 2.0] range
                 });
             }
         }
 
+        debug!(
+            "Stage 2 semantic match: {} hits from {} active genes",
+            candidates.len(),
+            self.genes.iter().filter(|g| g.status == GeneStatus::Active).count()
+        );
+
         candidates
+    }
+
+    /// Set effective streaks for ranking, computed from Capsule history.
+    pub fn set_streaks(&mut self, streaks: HashMap<String, f32>) {
+        self.gene_effective_streaks = streaks;
     }
 
     /// Rank and deduplicate matches.
@@ -147,8 +213,11 @@ impl GeneRetriever {
         let mut scored: Vec<GeneMatch> = candidates
             .into_iter()
             .map(|c| {
-                let effective_streak = 1.0; // placeholder — should come from Capsule data
-                let rank_score = c.match_score * (effective_streak as f64 + 1.0).ln();
+                let effective_streak = self.gene_effective_streaks
+                    .get(&c.gene.gene_id)
+                    .copied()
+                    .unwrap_or(1.0) as f64; // default 1.0 if no Capsule history
+                let rank_score = c.match_score * (effective_streak + 1.0).ln();
                 GeneMatch {
                     gene: c.gene,
                     match_score: c.match_score,
@@ -299,51 +368,51 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn test_stage1_match_user_message() {
+    #[tokio::test]
+    async fn test_stage1_match_user_message() {
         let genes = make_test_genes();
-        let retriever = GeneRetriever::new(genes, false);
+        let retriever = GeneRetriever::new(genes, false, None);
 
-        let matches = retriever.match_genes("遇到403错误", &[], 5);
+        let matches = retriever.match_genes("遇到403错误", &[], 5).await;
         assert!(!matches.is_empty());
         assert_eq!(matches[0].gene.gene_id, "stock-fallback");
     }
 
-    #[test]
-    fn test_stage1_match_tool_error() {
+    #[tokio::test]
+    async fn test_stage1_match_tool_error() {
         let genes = make_test_genes();
-        let retriever = GeneRetriever::new(genes, false);
+        let retriever = GeneRetriever::new(genes, false, None);
 
         let matches = retriever.match_genes(
             "something else",
             &["grep command failed".to_string()],
             5,
-        );
+        ).await;
         // grep should match batch-read
         assert!(matches.iter().any(|m| m.gene.gene_id == "batch-read"));
     }
 
-    #[test]
-    fn test_no_match() {
+    #[tokio::test]
+    async fn test_no_match() {
         let genes = make_test_genes();
-        let retriever = GeneRetriever::new(genes, false);
+        let retriever = GeneRetriever::new(genes, false, None);
 
-        let matches = retriever.match_genes("completely unrelated", &[], 5);
+        let matches = retriever.match_genes("completely unrelated", &[], 5).await;
         assert!(matches.is_empty());
     }
 
-    #[test]
-    fn test_retired_gene_excluded() {
+    #[tokio::test]
+    async fn test_retired_gene_excluded() {
         let genes = make_test_genes();
-        let retriever = GeneRetriever::new(genes, false);
+        let retriever = GeneRetriever::new(genes, false, None);
 
-        let matches = retriever.match_genes("test something", &[], 5);
+        let matches = retriever.match_genes("test something", &[], 5).await;
         // "test" matches retired-gene's signals_match, but retired genes are excluded
         assert!(matches.iter().all(|m| m.gene.gene_id != "retired-gene"));
     }
 
-    #[test]
-    fn test_category_dedup() {
+    #[tokio::test]
+    async fn test_category_dedup() {
         // Two repair genes with overlapping signals
         let genes = vec![
             Gene {
@@ -378,8 +447,8 @@ mod tests {
             },
         ];
 
-        let retriever = GeneRetriever::new(genes, false);
-        let matches = retriever.match_genes("403 error", &[], 5);
+        let retriever = GeneRetriever::new(genes, false, None);
+        let matches = retriever.match_genes("403 error", &[], 5).await;
         // Should only return one repair gene (deduped by category)
         let repair_count = matches.iter().filter(|m| m.gene.category == GeneCategory::Repair).count();
         assert_eq!(repair_count, 1, "Should deduplicate by category");

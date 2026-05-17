@@ -434,6 +434,8 @@ pub struct GeneCandidate {
     pub source: String,
     /// Raw learning content
     pub content: String,
+    /// Original LearningCard type preserved through the pool
+    pub card_type: Option<LearningCardType>,
     /// self_eval score (if available)
     pub score: Option<f64>,
     /// Session that produced this candidate

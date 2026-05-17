@@ -26,6 +26,11 @@ impl GeneRepository {
         Ok(repo)
     }
 
+    /// Returns the base path of this repository.
+    pub fn base_path(&self) -> &PathBuf {
+        &self.base_path
+    }
+
     /// Create the subdirectory structure if missing.
     fn ensure_dirs(&self) -> Result<()> {
         std::fs::create_dir_all(self.genes_dir())?;
