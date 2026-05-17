@@ -20,7 +20,9 @@ function GeneEvolutionSection(): React.ReactElement {
   const refresh = React.useCallback(() => {
     proactiveStatus()
       .then((s: unknown) => {
-        const st = (s as { running?: boolean })?.running ? 'running' : 'stopped'
+        // ServiceHealth.status 是 ServiceStatus 枚举（#[serde(tag = "status")]），
+        // 序列化为 { status: { status: "Running" | "Stopped" } } 的嵌套结构
+        const st = ((s as any)?.status?.status === 'Running') ? 'running' : 'stopped'
         setStatus(st)
       })
       .catch(() => setStatus('error'))

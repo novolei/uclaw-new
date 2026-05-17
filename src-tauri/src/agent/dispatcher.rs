@@ -293,6 +293,35 @@ impl ChatDelegate {
             }
         }
 
+        // P0-1: Push computed effective_streaks back to GeneRetriever for ranking freshness.
+        // Without this, GeneRetriever uses stale streak data from the last build_gene_retriever() call.
+        // Only update genes that were matched in this turn — avoid O(all_active) file scans.
+        if let Some(ref retriever) = self.gene_retriever {
+            if let Some(ref repo_arc) = self.gene_repo {
+                if let Ok(repo) = repo_arc.lock() {
+                    let now_ts = chrono::Utc::now().timestamp_millis();
+                    let mut streaks = std::collections::HashMap::new();
+                    for gm in &gene_matches {
+                        if let Ok(capsules) = repo.list_capsules(&gm.gene.gene_id) {
+                            if let Some(latest) = capsules.first() {
+                                let prev: Vec<Capsule> = capsules.iter().skip(1).take(5).cloned().collect();
+                                let streak = latest.compute_effective_streak(&prev, now_ts);
+                                streaks.insert(gm.gene.gene_id.clone(), streak);
+                            }
+                        }
+                    }
+                    if !streaks.is_empty() {
+                        let count = streaks.len();
+                        retriever.set_streaks(streaks);
+                        tracing::info!(
+                            gene_count = count,
+                            "[ChatDelegate] effective_streaks pushed back to GeneRetriever"
+                        );
+                    }
+                }
+            }
+        }
+
         // Clear recent tool errors after Capsule generation
         if let Ok(mut errors) = self.recent_tool_errors.lock() {
             errors.clear();
@@ -1608,6 +1637,36 @@ impl LoopDelegate for ChatDelegate {
                             if let Ok(mut errors) = self.recent_tool_errors.lock() {
                                 if errors.len() < 20 {
                                     errors.push(format!("{}: {}", tc.name, e));
+                                }
+                            }
+
+                            // P1-3b: Detect user rejection/correction feedback and publish UserCorrection event.
+                            // This captures user negative feedback (plan rejection, stop, output correction)
+                            // into the GEP learning loop so it can feed into GeneCandidate pool.
+                            if let Some(ref infra) = self.infra_service {
+                                let err_msg = e.to_string();
+                                // Pattern 1: exit_plan_mode rejection → "User rejected the plan. Feedback: ..."
+                                if tc.name == "exit_plan_mode" && err_msg.starts_with("User rejected the plan.") {
+                                    let feedback = err_msg
+                                        .strip_prefix("User rejected the plan. Feedback: ")
+                                        .unwrap_or(&err_msg)
+                                        .to_string();
+                                    infra.publish_user_correction(
+                                        "local",
+                                        &feedback,
+                                        serde_json::json!({
+                                            "session_id": self.conversation_id,
+                                            "source": "plan_rejection",
+                                            "feedback": feedback,
+                                            "trigger_context": "Agent submitted a plan via exit_plan_mode; user rejected it.",
+                                            "tool_name": tc.name,
+                                        }),
+                                    ).await;
+                                    tracing::info!(
+                                        session_id = %self.conversation_id,
+                                        feedback = %feedback,
+                                        "[ChatDelegate] UserCorrection event published (plan_rejection)"
+                                    );
                                 }
                             }
 

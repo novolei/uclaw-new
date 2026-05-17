@@ -326,6 +326,35 @@ impl InfraService {
         };
         self.publish(event).await;
     }
+
+    /// 快捷方法：发布「用户纠正」事件
+    ///
+    /// 当用户否定或纠正 Agent 的输出时触发（拒绝计划、停止执行、纠正输出）。
+    /// metadata 中应包含：
+    /// - `session_id`: 会话标识
+    /// - `source`: "plan_rejection" | "stop_execution" | "output_correction"
+    /// - `feedback`: 用户的纠正文本
+    /// - `trigger_context`: 触发纠正的上下文（最近的 agent 操作）
+    pub async fn publish_user_correction(
+        &self,
+        platform: &str,
+        feedback: &str,
+        metadata: serde_json::Value,
+    ) {
+        let event = InfraEvent {
+            id: 0,
+            event_type: InfraEventType::UserCorrection,
+            platform: platform.to_string(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            message: ConversationMessage {
+                role: "user".to_string(),
+                content: feedback.to_string(),
+            },
+            metadata,
+            trace_id: None,
+        };
+        self.publish(event).await;
+    }
 }
 
 // ─── 单元测试 ─────────────────────────────────────────────────────────

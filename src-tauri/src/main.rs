@@ -90,6 +90,7 @@ fn main() {
                 let debug_submenu = SubmenuBuilder::new(app, "Debug")
                     .text("emit-memory-recall", "发射 Memory Recall 测试事件")
                     .text("emit-proactive-learning", "发射 Proactive Learning 测试事件")
+                    .text("emit-self-eval", "发射 Self-Eval 测试数据（含 SkillLearned 事件）")
                     .separator()
                     .text("generate-default-config", "生成默认配置文件 (memubot_config.json)")
                     .build()?;
@@ -757,6 +758,83 @@ fn main() {
                         "sessionId": null,
                     }));
                     tracing::info!("[Debug] Emitted test proactive-learning event");
+                }
+                "emit-self-eval" => {
+                    // 模拟 SelfEvalTool.execute() 的完整流程：
+                    // 1. INSERT session_evals
+                    // 2. 对每个 learning 分类并 publish SkillLearned（非 Noise 类）
+                    // 3. Emit session:eval-complete 给前端
+                    // 注意：publish_skill_learned 是 async，需要在 spawn 中执行
+                    let session_id = format!("debug-self-eval-{}", uuid::Uuid::new_v4());
+                    let score: f32 = 0.72;
+                    let reasoning = "[Debug] 手动注入测试数据 — 模拟 Agent 完成任务后调用 self_eval";
+                    let learnings: Vec<String> = vec![
+                        "先检查文件是否存在再写入，避免覆盖用户已有数据".to_string(),
+                        "工具调用失败时先重试一次，重试前检查网络连接".to_string(),
+                        "大文件应分批读取，每批不超过10MB避免内存溢出".to_string(),
+                        "路径拼接使用 PathBuf 而非字符串拼接，跨平台更安全".to_string(),
+                        "错误信息应区分网络错误和权限错误，分别给出不同建议".to_string(),
+                        "在完成多步任务后应主动总结已完成步骤供用户确认".to_string(),
+                    ];
+                    let learnings_json = serde_json::to_string(&learnings).unwrap_or_default();
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+
+                    // 1. INSERT into session_evals（同步）
+                    {
+                        let db = state.db.lock().unwrap();
+                        if let Err(e) = db.execute(
+                            "INSERT INTO session_evals (id, session_id, score, reasoning, learnings, created_at) VALUES (?1,?2,?3,?4,?5,?6)",
+                            rusqlite::params![uuid::Uuid::new_v4().to_string(), session_id, score, reasoning, learnings_json, now_ms],
+                        ) {
+                            tracing::error!("[Debug] self-eval DB insert failed: {}", e);
+                        } else {
+                            tracing::info!("[Debug] self-eval INSERT into session_evals OK (score={:.2}, {} learnings)", score, learnings.len());
+                        }
+                    }
+
+                    // 2. Publish SkillLearned events via InfraService（异步：spawn）
+                    let infra_clone = state.infra_service.clone();
+                    let session_id_clone = session_id.clone();
+                    let learnings_clone = learnings.clone();
+                    tauri::async_runtime::spawn(async move {
+                        for learning in &learnings_clone {
+                            let card = uclaw_core::agent::tools::builtin::self_eval::classify_learning(
+                                learning, score, &session_id_clone, None,
+                            );
+                            if card.card_type == uclaw_core::agent::gep::types::LearningCardType::Noise {
+                                continue;
+                            }
+                            infra_clone.publish_skill_learned(
+                                "self_eval",
+                                learning,
+                                serde_json::json!({
+                                    "session_id": session_id_clone,
+                                    "score": score,
+                                    "source": "self_eval",
+                                    "learning_card": {
+                                        "card_type": card.card_type,
+                                        "failure_signal": card.failure_signal,
+                                        "tool_name": card.tool_name,
+                                        "strategy_hint": {
+                                            "condition": card.strategy_hint.condition,
+                                            "action": card.strategy_hint.action,
+                                            "reason": card.strategy_hint.reason,
+                                        },
+                                    },
+                                }),
+                            ).await;
+                        }
+                        tracing::info!("[Debug] Published {} SkillLearned events via InfraService", learnings_clone.len());
+                    });
+
+                    // 3. Emit session:eval-complete to frontend（同步）
+                    let _ = app_handle.emit("session:eval-complete", serde_json::json!({
+                        "sessionId": session_id,
+                        "score": score,
+                        "reasoning": reasoning,
+                        "learnings": learnings,
+                    }));
+                    tracing::info!("[Debug] Emitted test self-eval data ({} learnings, score={:.2})", learnings.len(), score);
                 }
                 "generate-default-config" => {
                     let config_path = data_dir.join("memubot_config.json");

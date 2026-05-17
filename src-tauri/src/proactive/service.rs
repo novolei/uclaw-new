@@ -212,6 +212,42 @@ struct ProactiveStateRefs {
     gene_evolution_config: GeneEvolutionConfig,
 }
 
+// ─── Gene Candidate Pool Helpers ───────────────────────────────────────────
+
+/// Injection priority for gene_candidate_pool entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidatePriority {
+    /// UserCorrection: push_front — highest distillation priority
+    High,
+    /// self_eval / tool_failure: push_back
+    Normal,
+}
+
+/// Unified helper to inject a GeneCandidate into the pool with capacity control.
+///
+/// When the pool is full (≥20), the lowest-score entry is evicted regardless of
+/// insertion priority, ensuring the pool always retains the most valuable candidates.
+fn inject_candidate(pool: &mut VecDeque<GeneCandidate>, candidate: GeneCandidate, priority: CandidatePriority) {
+    const MAX_CANDIDATES: usize = 20;
+    if pool.len() >= MAX_CANDIDATES {
+        // Evict the lowest-score entry (unified strategy across all injection sites)
+        let mut min_idx = 0usize;
+        let mut min_score = f64::MAX;
+        for (i, c) in pool.iter().enumerate() {
+            let s = c.score.unwrap_or(0.0);
+            if s < min_score {
+                min_score = s;
+                min_idx = i;
+            }
+        }
+        pool.remove(min_idx);
+    }
+    match priority {
+        CandidatePriority::High => pool.push_front(candidate),
+        CandidatePriority::Normal => pool.push_back(candidate),
+    }
+}
+
 /// 24/7 主动代理服务
 ///
 /// 通过 `ManagedService` trait 由 `ServiceManager` 统一管理。
@@ -590,6 +626,55 @@ impl ProactiveService {
                                     task_description: None,
                                 };
                                 let _ = tool_memory.record_tool_usage(&space_id, &tool_usage);
+
+                                // P0-2: 工具失败聚合注入到 gene_candidate_pool
+                                // When a tool fails, extract the error pattern and inject as a
+                                // GeneCandidate so the GEP distillation pipeline can learn from it.
+                                if !success {
+                                    let error_summary: String = {
+                                        let s = tool_output_str.trim();
+                                        if s.len() > 200 {
+                                            format!("{}...", &s[..200])
+                                        } else {
+                                            s.to_string()
+                                        }
+                                    };
+                                    let session_id = last_session.read().await.clone().unwrap_or_default();
+
+                                    // Only inject if this is a novel failure (simple dedup by error prefix)
+                                    let dedup_key = format!("{}:{}", tool_name, &error_summary[..error_summary.len().min(80)]);
+                                    let mut pool = gene_pool.write().await;
+                                    let already_exists = pool.iter().any(|c| {
+                                        c.content.contains(&dedup_key[..dedup_key.len().min(40)])
+                                    });
+
+                                    if !already_exists {
+                                        let candidate = GeneCandidate {
+                                            source: "tool_failure".to_string(),
+                                            content: format!(
+                                                "Tool '{}' failed: {} | Session: {}",
+                                                tool_name, error_summary, session_id
+                                            ),
+                                            card_type: Some(LearningCardType::FailureLesson),
+                                            score: Some(0.3), // Medium-low score = moderate distillation priority
+                                            session_id: Some(session_id),
+                                            reasoning: Some(format!(
+                                                "Tool '{}' execution failed. Error pattern may indicate a systemic issue.",
+                                                tool_name
+                                            )),
+                                            timestamp: chrono::Utc::now(),
+                                        };
+
+                                        inject_candidate(&mut pool, candidate, CandidatePriority::Normal);
+                                        new_gene_candidates_flag.store(true, Ordering::SeqCst);
+                                        has_new.store(true, Ordering::SeqCst);
+                                        tracing::info!(
+                                            tool_name = %tool_name,
+                                            pool_size = pool.len(),
+                                            "[ProactiveService] Tool failure injected into gene candidate pool"
+                                        );
+                                    }
+                                }
                             }
                             // 工作区切换事件 → 更新 active_space_id
                             InfraEventType::WorkspaceSwitched => {
@@ -663,21 +748,7 @@ impl ProactiveService {
                                     };
 
                                     let mut pool = gene_pool.write().await;
-                                    // Capacity control: max 20, evict lowest-score entry
-                                    const MAX_CANDIDATES: usize = 20;
-                                    if pool.len() >= MAX_CANDIDATES {
-                                        let mut min_idx = 0usize;
-                                        let mut min_score = f64::MAX;
-                                        for (i, c) in pool.iter().enumerate() {
-                                            let s = c.score.unwrap_or(0.0);
-                                            if s < min_score {
-                                                min_score = s;
-                                                min_idx = i;
-                                            }
-                                        }
-                                        pool.remove(min_idx);
-                                    }
-                                    pool.push_back(candidate);
+                                    inject_candidate(&mut pool, candidate, CandidatePriority::Normal);
                                     new_gene_candidates_flag.store(true, Ordering::SeqCst);
                                     has_new.store(true, Ordering::SeqCst);
                                     tracing::info!(
@@ -685,6 +756,72 @@ impl ProactiveService {
                                         pool.len()
                                     );
                                 }
+                            }
+                            // P1-3c: 用户纠正事件 → 解析为高优先级 FailureLesson 注入候选池
+                            InfraEventType::UserCorrection => {
+                                let source = event.metadata
+                                    .get("source")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                let session_id = event.metadata
+                                    .get("session_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                let feedback = event.metadata
+                                    .get("feedback")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(&event.message.content);
+                                let trigger_context = event.metadata
+                                    .get("trigger_context")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+
+                                // Build a LearningCard from user correction
+                                let learning_card = LearningCard {
+                                    raw: format!(
+                                        "[UserCorrection:{}] {} — Context: {}",
+                                        source, feedback, trigger_context
+                                    ),
+                                    card_type: LearningCardType::FailureLesson,
+                                    failure_signal: Some(source.to_string()),
+                                    tool_name: event.metadata
+                                        .get("tool_name")
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from),
+                                    strategy_hint: StrategyHint {
+                                        condition: Some(format!("User {} detected", source)),
+                                        action: Some(feedback.to_string()),
+                                        reason: Some(trigger_context.to_string()),
+                                    },
+                                    files_touched: vec![],
+                                    session_id: session_id.to_string(),
+                                    score: 0.1, // User corrections signal high failure confidence
+                                    timestamp: event.timestamp,
+                                };
+
+                                let candidate = GeneCandidate {
+                                    source: format!("user_correction:{}", source),
+                                    content: learning_card.raw.clone(),
+                                    card_type: Some(LearningCardType::FailureLesson),
+                                    score: Some(0.1), // Low score = high priority for distillation
+                                    session_id: Some(session_id.to_string()),
+                                    reasoning: Some(format!(
+                                        "User {} feedback captured: {}", source, feedback
+                                    )),
+                                    timestamp: chrono::Utc::now(),
+                                };
+
+                                // Inject into gene candidate pool with priority (push front for user corrections)
+                                let mut pool = gene_pool.write().await;
+                                inject_candidate(&mut pool, candidate, CandidatePriority::High);
+                                new_gene_candidates_flag.store(true, Ordering::SeqCst);
+                                has_new.store(true, Ordering::SeqCst);
+                                tracing::info!(
+                                    source = %source,
+                                    session_id = %session_id,
+                                    pool_size = pool.len(),
+                                    "[ProactiveService] UserCorrection injected into gene candidate pool"
+                                );
                             }
                             _ => {} // 忽略其他事件类型
                         }
@@ -1147,6 +1284,10 @@ impl ProactiveService {
                                     for skill in &mut parsed_skills {
                                         skill.signals_seen = signals_seen.clone();
                                     }
+
+                                    // Resolve session_id early for event publishing
+                                    let session_id = refs.last_active_session_id.read().await.clone();
+
                                     let items_extracted = if !parsed_skills.is_empty() {
                                         let space_id = scenario_ctx.active_space_id.clone();
                                         let mut stored_count = 0usize;
@@ -1161,6 +1302,63 @@ impl ProactiveService {
                                                         "Stored learned skill as Procedure node"
                                                     );
                                                     stored_count += 1;
+
+                                                    // ─── Publish SkillLearned with learning_card ───
+                                                    // Bridges skill_extraction → gene_candidate_pool:
+                                                    // each extracted skill becomes a GeneCandidate,
+                                                    // closing the learning loop between skill extraction
+                                                    // and gene evolution.
+                                                    {
+                                                        let card_type = match skill.category.as_deref() {
+                                                            Some("repair") => "failure_lesson",
+                                                            Some("optimize") => "optimization_tip",
+                                                            Some("innovate") => "success_pattern",
+                                                            _ => "success_pattern",
+                                                        };
+                                                        let failure_signal = skill.signals_seen.first().cloned();
+                                                        let description = skill.description.as_deref()
+                                                            .unwrap_or(&skill.context);
+                                                        let action_first_line = skill.steps
+                                                            .lines()
+                                                            .next()
+                                                            .unwrap_or("")
+                                                            .trim()
+                                                            .to_string();
+                                                        let reason_text = skill.principles
+                                                            .lines()
+                                                            .take(2)
+                                                            .collect::<Vec<_>>()
+                                                            .join(" ");
+
+                                                        refs.infra.publish_skill_learned(
+                                                            "proactive",
+                                                            &skill.name,
+                                                            serde_json::json!({
+                                                                "scenario": "skill_extraction",
+                                                                "session_id": session_id,
+                                                                "score": 0.7,
+                                                                "source": "skill_extraction",
+                                                                "learning_card": {
+                                                                    "card_type": card_type,
+                                                                    "failure_signal": failure_signal,
+                                                                    "tool_name": null,
+                                                                    "strategy_hint": {
+                                                                        "condition": description,
+                                                                        "action": action_first_line,
+                                                                        "reason": reason_text,
+                                                                    },
+                                                                },
+                                                            }),
+                                                        ).await;
+
+                                                        tracing::info!(
+                                                            skill_name = %skill.name,
+                                                            card_type,
+                                                            pool_feed = true,
+                                                            "[skill_extraction] Published SkillLearned with learning_card → gene_candidate_pool"
+                                                        );
+                                                    }
+
                                                     // Best-effort: embed the skill body and persist
                                                     // to memory_versions.embedding_json. Failure
                                                     // is logged but never aborts skill storage.
@@ -1226,7 +1424,7 @@ impl ProactiveService {
                                         }
                                     };
 
-                                    // InfraService 事件
+                                    // Generic heartbeat event for frontend observability
                                     refs.infra.publish_skill_learned(
                                         "proactive",
                                         scenario.name(),
@@ -1238,7 +1436,6 @@ impl ProactiveService {
 
                                     // Tauri IPC 发射到前端
                                     let summary = extract_summary_text(&llm_response);
-                                    let session_id = refs.last_active_session_id.read().await.clone();
                                     // Diagnostic: surface the sessionId we tag the
                                     // event with so we can correlate with the
                                     // frontend's filter when chips don't show.

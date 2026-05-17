@@ -8,7 +8,7 @@ use crate::infra::InfraService;
 
 /// Classify a raw learning string into a LearningCard.
 /// Uses lightweight rule-based classification (P0 — Phase 0 of LearningCard).
-fn classify_learning(raw: &str, score: f32, session_id: &str, tool_name: Option<&str>) -> LearningCard {
+pub fn classify_learning(raw: &str, score: f32, session_id: &str, tool_name: Option<&str>) -> LearningCard {
     let card_type = if is_generic_advice(raw) {
         LearningCardType::Noise
     } else if score < 0.5 {

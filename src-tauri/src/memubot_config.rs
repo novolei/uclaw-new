@@ -225,7 +225,7 @@ pub struct GeneEvolutionConfig {
 impl Default for GeneEvolutionConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             gene_distillation_threshold: 5,
             gene_distillation_cooldown_secs: 600,
             max_gene_candidates: 20,

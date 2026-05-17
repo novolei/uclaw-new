@@ -26,8 +26,9 @@ pub struct GeneRetriever {
     memu_client: Option<Arc<MemUClient>>,
     /// Cached gene embedding vectors (gene_id → vector)
     gene_embeddings: Mutex<HashMap<String, Vec<f32>>>,
-    /// Cached effective streaks for ranking (gene_id → streak, computed from Capsule history)
-    gene_effective_streaks: HashMap<String, f32>,
+    /// Cached effective streaks for ranking (gene_id → streak, computed from Capsule history).
+    /// Wrapped in Mutex so dispatcher can update it through Arc after Capsule generation.
+    gene_effective_streaks: Mutex<HashMap<String, f32>>,
 }
 
 impl GeneRetriever {
@@ -42,7 +43,7 @@ impl GeneRetriever {
             semantic_fallback_enabled,
             memu_client,
             gene_embeddings: Mutex::new(HashMap::new()),
-            gene_effective_streaks: HashMap::new(),
+            gene_effective_streaks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -198,8 +199,11 @@ impl GeneRetriever {
 
     /// Set effective streaks for ranking, computed from Capsule history.
     /// Also evicts stale embedding cache entries for genes no longer active.
-    pub fn set_streaks(&mut self, streaks: HashMap<String, f32>) {
-        self.gene_effective_streaks = streaks;
+    /// Takes &self (not &mut self) so it can be called through Arc.
+    pub fn set_streaks(&self, streaks: HashMap<String, f32>) {
+        if let Ok(mut guard) = self.gene_effective_streaks.lock() {
+            *guard = streaks;
+        }
         // Evict stale embedding cache entries for genes not in the current gene list
         let active_ids: std::collections::HashSet<&str> = self.genes.iter().map(|g| g.gene_id.as_str()).collect();
         if let Ok(mut cache) = self.gene_embeddings.lock() {
@@ -216,13 +220,11 @@ impl GeneRetriever {
         candidates: Vec<GeneMatchCandidate>,
         max_genes: usize,
     ) -> Vec<GeneMatch> {
+        let streak_guard = self.gene_effective_streaks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut scored: Vec<GeneMatch> = candidates
             .into_iter()
             .map(|c| {
-                let effective_streak = self.gene_effective_streaks
-                    .get(&c.gene.gene_id)
-                    .copied()
-                    .unwrap_or(1.0) as f64; // default 1.0 if no Capsule history
+                let effective_streak = streak_guard.get(&c.gene.gene_id).copied().unwrap_or(1.0) as f64;
                 let rank_score = c.match_score * (effective_streak + 1.0).ln();
                 GeneMatch {
                     gene: c.gene,
@@ -231,6 +233,7 @@ impl GeneRetriever {
                 }
             })
             .collect();
+        drop(streak_guard);
 
         // Sort by rank_score descending
         scored.sort_by(|a, b| b.rank_score.partial_cmp(&a.rank_score).unwrap());

@@ -757,36 +757,35 @@ MemoryGraph 中仅存 `GeneRef` 轻量索引节点（id, asset_id, signals_match
 ## 6. 实施路径
 
 ### Phase 0: 基础准备（1-2 天）
-- [ ] 定义 Gene、Capsule、EvolutionEvent 数据结构（`types.rs`）
-- [ ] 创建 `src-tauri/src/agent/gep/` 模块骨架
-- [ ] 新增 `memubot_config.rs` 配置项
-- [ ] 编写 Gene/Capsule 的序列化/反序列化测试
+- [x] 定义 Gene、Capsule、EvolutionEvent 数据结构（`types.rs`）
+- [x] 创建 `src-tauri/src/agent/gep/` 模块骨架
+- [x] 新增 `memubot_config.rs` 配置项
+- [x] 编写 Gene/Capsule 的序列化/反序列化测试
 
-### Phase 1: P0-1 核心重构（2-3 天）
-- [ ] 重写 `skill_extraction.rs` 的 `SKILL_EXTRACTION_SYSTEM_PROMPT`
-- [ ] 将输出解析从 11 字段 Skill 改为 6 字段 Gene
-- [ ] 新增 GeneRepository 存储层
-- [ ] 编译测试 + 回归测试
+### Phase 1: P0 关键回路修复（2-3 天）
+- [x] P0-1: Capsule→effective_streak 回写到 GeneRetriever（`dispatcher.rs`）
+- [x] P0-2: 工具失败聚合注入到 gene_candidate_pool（`proactive/service.rs`）
+- [ ] P0-3: self_eval 系统提示增强（`system_prompt` 中插入 self_eval 调用指引）
+- [ ] P0-4: session_evals 定期分析数据回路验证
 
-### Phase 2: P0-2 数据回路（1-2 天）
-- [ ] 扩展 `self_eval.rs` metadata
-- [ ] ProactiveService context_listener 消费 SkillLearned
-- [ ] 实现 gene_candidates 池（VecDeque + 容量控制）
-- [ ] 集成测试
+### Phase 2: P1 用户反馈捕获回路（2-3 天）
+- [x] P1-3a: 新增 `InfraEventType::UserCorrection` 事件类型 + `publish_user_correction` 方法（`infra/types.rs`, `infra/service.rs`）
+- [x] P1-3b: dispatcher 检测用户拒绝反馈并发布 UserCorrection 事件（`dispatcher.rs`）
+- [x] P1-3c: context_listener 消费 UserCorrection 事件并注入 gene_candidate_pool（`proactive/service.rs`）
+- [ ] P1-1: Capsule failure→MutationCandidate 反馈回路（AVOID cues 自动增补, `gep/lifecycle.rs`）
+- [ ] P1-2: self_eval 系统提示增强（确保 Agent 在 session 结束前调用 self_eval）
 
-### Phase 3: P1-1 蒸馏场景（2-3 天）
-- [ ] 实现 `GeneEvolutionScenario`
+### Phase 3: P2 审计与兜底（1-2 天）
+- [ ] P2-1: Gene 生命周期自动审计（`gep/lifecycle.rs` 定时任务）
+- [ ] P2-2: session 结束自动 eval 兜底（`dispatcher.rs` 或 `agentic_loop.rs`）
+
+### Phase 4: P3 蒸馏验证（2-3 天）
+- [ ] 实现 `GeneEvolutionScenario` 消费 gene_candidate_pool
 - [ ] 编写 `GENE_DISTILLATION_PROMPT`
-- [ ] Capsule 生成逻辑
-- [ ] EvolutionEvent 审计记录
-- [ ] 端到端测试
+- [ ] Capsule 生成 + EvolutionEvent 审计端到端测试
+- [ ] Gene 检索注入 system prompt + Agent 行为对比测试
 
-### Phase 4: P1-2 检索注入（1-2 天）
-- [ ] Gene 匹配算法
-- [ ] system prompt 注入
-- [ ] Agent 行为对比测试（with/without Gene）
-
-### Phase 5: P1-3 Git 集成（1 天）
+### Phase 5: Git 集成（1 天）
 - [ ] blast_radius 计算
 - [ ] git stash 回滚
 
@@ -801,6 +800,8 @@ MemoryGraph 中仅存 `GeneRef` 轻量索引节点（id, asset_id, signals_match
 | MemoryGraph 存储格式不兼容 | 中 | Gene 作为新 `node_type`，不影响已有 skill nodes |
 | 检索注入过多 Gene 导致 prompt 膨胀 | 低 | max_genes=2 硬限制，每个 Gene ≤80 tokens prompt |
 | Git 回滚误操作 | 低 | 默认 stash 模式（可恢复），需要用户显式选择 hard |
+| 用户反馈噪声过多 | 中 | 同一 session 内 source+feedback 前缀去重；FailureLesson score=0.1 强制高优先级但不重复注入 |
+| effective_streak 回写性能 | 低 | 仅在 Capsule 生成后批量计算，不在每次检索时计算 |
 
 ---
 
@@ -942,6 +943,50 @@ GeneEvolutionScenario 的蒸馏 prompt 消费的是结构化 LearningCard 而非
 - built-in/user 手写 Skill **永久保留**（人类可读的知识传递价值不替代）
 
 关键命名区分：Skill 叫"技能"，Gene 叫"策略基因"。
+
+### 8.11 用户否定反馈捕获回路：UserCorrection 事件（Q11）
+
+**决策**：新增 `InfraEventType::UserCorrection` 事件类型，将用户对 Agent 输出的否定/纠正反馈从一次性工具错误信号升级为可持久化的学习信号。
+
+**问题现状**：
+1. 用户在 Plan mode 中拒绝 Agent 的计划并给出反馈文本（如"the test plan is too thin"），该反馈仅作为 `ToolError` 返回给 Agent 在当前 turn 内消费，**未被任何持久化或学习机制捕获**
+2. 用户点击"停止"按钮中止 Agent 执行时，**无任何反馈信号被采集**
+3. 用户纠正 Agent 输出后继续执行时，纠正行为**不可被追溯**
+4. 上述用户否定反馈是 GEP 体系中最高价值的失败信号（论文研究表明 AVOID cues 是最强控制信号），但当前完全缺失
+
+**修复方案**：
+
+```
+用户否定反馈 → ToolError (exit_plan_mode reject / stop /纠正)
+    ↓
+dispatcher 检测 tool error 中的用户反馈模式
+    ↓
+publish UserCorrection event to InfraService
+    ↓
+context_listener 消费 → 构建 LearningCard (FailureLesson, score=0.1)
+    ↓
+inject as GeneCandidate to gene_candidate_pool (push_front 高优先级)
+    ↓
+GeneEvolutionScenario 蒸馏 → AVOID cues 增补 / 新 Gene 生成
+```
+
+**事件元数据结构**：
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `session_id` | String | 会话标识 |
+| `source` | String | 纠正来源：`plan_rejection` / `stop_execution` / `output_correction` |
+| `feedback` | String | 用户的纠正文本 |
+| `trigger_context` | String | 触发纠正的上下文描述 |
+| `tool_name` | String? | 触发纠正的 tool 名称（如 exit_plan_mode） |
+
+**注入优先级**：UserCorrection 生成的 GeneCandidate 使用 `push_front`（队列头部插入），score 固定为 0.1（最低分 = 最高优先级），确保用户反馈优先于系统自我评估信号被蒸馏处理。
+
+**冷却机制**：同一 session 内同一 source 类型的 UserCorrection 在 5 分钟内去重（通过 pool 内容匹配），避免重复注入。
+
+**与现有机制的关系**：
+- 与 `self_eval` LearningCard 同走 `gene_candidate_pool → GeneEvolutionScenario` 蒸馏管线
+- 与 `ToolExecuted` 失败事件互补：工具失败是系统内信号，UserCorrection 是跨系统（人→机）信号
+- 与 `Capsule outcome=Failed` 互补：Capsule 失败是事后评估，UserCorrection 是实时干预
 
 ---
 
