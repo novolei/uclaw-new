@@ -880,6 +880,90 @@ fn text_signals_plan_work(text: &str) -> bool {
     false
 }
 
+/// Scan session message history for the most recently referenced plan
+/// filename. Used by the plan-guard to anchor on the session's actual
+/// active plan rather than relying on the 5-minute mtime window — which
+/// silently misses resume workflows (user comes back after an hour and
+/// types "继续").
+///
+/// Recognises two shapes:
+///   - `plan_update` tool_use: take `input.filename` directly.
+///   - `plan_write` tool_use: pair with the matching ToolResult and
+///     parse the canonical "Plan created at .../<filename>" text. Failed
+///     (is_error=true) results are ignored so a botched plan_write
+///     doesn't lock the guard onto a non-existent file.
+///
+/// Returns the filename from the LATEST plan-tool reference in the
+/// history (forward walk, last-write-wins).
+fn extract_active_plan_from_history(
+    messages: &[crate::agent::types::ChatMessage],
+) -> Option<String> {
+    use crate::agent::types::ContentBlock;
+    use std::collections::HashMap;
+    // Pending plan_write ids -> nothing yet (we'll fill in filename from
+    // result). We need this because the result message comes after the
+    // ToolUse in the history.
+    let mut pending_writes: HashMap<String, ()> = HashMap::new();
+    let mut latest: Option<String> = None;
+
+    for msg in messages {
+        for block in &msg.content {
+            match block {
+                ContentBlock::ToolUse { id, name, input } => {
+                    if name == "plan_update" {
+                        if let Some(f) = input
+                            .get("filename")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                        {
+                            latest = Some(f.to_string());
+                        }
+                    } else if name == "plan_write" {
+                        pending_writes.insert(id.clone(), ());
+                    }
+                }
+                ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                    if !pending_writes.contains_key(tool_use_id) {
+                        continue;
+                    }
+                    // Always consume the pending entry so a later unrelated
+                    // ToolResult with the same id (shouldn't happen, but be safe)
+                    // doesn't get reprocessed.
+                    pending_writes.remove(tool_use_id);
+                    if is_error.unwrap_or(false) {
+                        continue;
+                    }
+                    if let Some(f) = parse_plan_write_result_filename(content) {
+                        latest = Some(f);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    latest
+}
+
+/// Parse `Plan created at /path/to/.uclaw/plans/<filename>.md` for the
+/// trailing basename. Returns None if the canonical prefix is absent or
+/// the path component looks unsafe (contains `..` or path separators
+/// after the basename — defensive only, the producer never emits these).
+fn parse_plan_write_result_filename(result_text: &str) -> Option<String> {
+    let prefix = "Plan created at ";
+    let path_str = result_text.find(prefix).map(|i| &result_text[i + prefix.len()..])?;
+    // Trim at first newline / whitespace separator in case the message
+    // continues after the path.
+    let path_str = path_str.lines().next().unwrap_or(path_str).trim();
+    let filename = std::path::Path::new(path_str)
+        .file_name()
+        .and_then(|n| n.to_str())?
+        .to_string();
+    if filename.is_empty() || filename.contains("..") {
+        return None;
+    }
+    Some(filename)
+}
+
 /// Fallback heuristic for the plan guard when keyword matching misses.
 ///
 /// Shape: a large output_tokens budget combined with a tiny text body means
@@ -1147,10 +1231,25 @@ impl LoopDelegate for ChatDelegate {
         // Cap: after MAX_PLAN_GUARD_NUDGES consecutive nudges without any tool
         // call response, give up and let the response through to avoid infinite
         // text-only loops (e.g. model did edits but forgot plan_update calls).
-        if let Some(undone) = crate::agent::plan_state::pending_plan_steps(
-            self.workspace_root.as_deref(),
-            300,
-        ) {
+        // Discover the active plan two ways, in priority order:
+        //   1. Scan message history for plan_write / plan_update calls THIS
+        //      session made — the authoritative answer regardless of mtime.
+        //      Fixes resume workflows where the plan file is hours old (the
+        //      2026-05-18 04:46 五子棋 "继续" silent termination was this case).
+        //   2. Fall back to mtime-based discovery (300s window) for truly
+        //      fresh sessions or external plan creation that left no trace
+        //      in this session's history.
+        let undone_opt = match extract_active_plan_from_history(&reason_ctx.messages) {
+            Some(filename) => crate::agent::plan_state::pending_plan_steps_in_file(
+                self.workspace_root.as_deref(),
+                &filename,
+            ),
+            None => crate::agent::plan_state::pending_plan_steps(
+                self.workspace_root.as_deref(),
+                300,
+            ),
+        };
+        if let Some(undone) = undone_opt {
             // ── Relevance gate: only nudge if the response signals plan work ──
             // We check whether the agent's own text indicates it was in the
             // middle of plan execution, rather than giving a complete answer to
@@ -2351,5 +2450,157 @@ mod truncated_continuation_tests {
         assert!(signals_truncated_plan_continuation(99, 801));
         assert!(!signals_truncated_plan_continuation(99, 800));
         assert!(!signals_truncated_plan_continuation(100, 801));
+    }
+}
+
+#[cfg(test)]
+mod active_plan_history_tests {
+    use super::extract_active_plan_from_history;
+    use crate::agent::types::{ChatMessage, ContentBlock, MessageRole};
+    use serde_json::json;
+
+    fn plan_write_use(id: &str) -> ChatMessage {
+        ChatMessage::assistant_with_tool_use(
+            id,
+            "plan_write",
+            json!({"title": "demo", "steps": ["a", "b"]}),
+        )
+    }
+
+    fn plan_write_result(id: &str, filename: &str, is_error: bool) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: format!(
+                    "Plan created at /Users/u/Documents/workground/test/.uclaw/plans/{}",
+                    filename
+                ),
+                is_error: Some(is_error),
+            }],
+            compacted: false,
+        }
+    }
+
+    fn plan_update_use(id: &str, filename: &str) -> ChatMessage {
+        ChatMessage::assistant_with_tool_use(
+            id,
+            "plan_update",
+            json!({"filename": filename, "step_index": 0, "done": true}),
+        )
+    }
+
+    fn bash_use(id: &str) -> ChatMessage {
+        ChatMessage::assistant_with_tool_use(id, "bash", json!({"command": "ls"}))
+    }
+
+    #[test]
+    fn extracts_filename_from_recent_plan_update() {
+        let history = vec![
+            ChatMessage::user("start"),
+            plan_update_use("call_1", "2026-05-17_网页五子棋开发.md"),
+        ];
+        assert_eq!(
+            extract_active_plan_from_history(&history),
+            Some("2026-05-17_网页五子棋开发.md".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_filename_from_plan_write_result() {
+        let history = vec![
+            plan_write_use("call_w"),
+            plan_write_result("call_w", "fresh.md", false),
+        ];
+        assert_eq!(
+            extract_active_plan_from_history(&history),
+            Some("fresh.md".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_most_recent_when_multiple_plan_calls_exist() {
+        // older plan_write, then a fresher plan_update for a DIFFERENT
+        // filename — the latest wins regardless of which call shape it was.
+        let history = vec![
+            plan_write_use("call_w"),
+            plan_write_result("call_w", "old.md", false),
+            bash_use("call_b"),
+            plan_update_use("call_u", "newest.md"),
+        ];
+        assert_eq!(
+            extract_active_plan_from_history(&history),
+            Some("newest.md".to_string())
+        );
+    }
+
+    #[test]
+    fn last_plan_write_overrides_earlier_plan_update() {
+        // Symmetric to the above — plan_write wins if it's the last one.
+        let history = vec![
+            plan_update_use("call_u1", "first.md"),
+            plan_write_use("call_w"),
+            plan_write_result("call_w", "rewritten.md", false),
+        ];
+        assert_eq!(
+            extract_active_plan_from_history(&history),
+            Some("rewritten.md".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_failed_plan_write_result() {
+        // is_error=true → don't trust the parsed filename.
+        let history = vec![
+            plan_write_use("call_w"),
+            plan_write_result("call_w", "shouldnt-stick.md", /*is_error=*/ true),
+        ];
+        assert_eq!(extract_active_plan_from_history(&history), None);
+    }
+
+    #[test]
+    fn returns_none_when_no_plan_history() {
+        let history = vec![
+            ChatMessage::user("hi"),
+            bash_use("call_b"),
+            ChatMessage::assistant("ran ls"),
+        ];
+        assert_eq!(extract_active_plan_from_history(&history), None);
+    }
+
+    #[test]
+    fn returns_none_for_empty_history() {
+        let history: Vec<ChatMessage> = Vec::new();
+        assert_eq!(extract_active_plan_from_history(&history), None);
+    }
+
+    #[test]
+    fn plan_update_without_filename_is_skipped() {
+        // Malformed argument shouldn't crash or surface a bogus result.
+        let bad = ChatMessage::assistant_with_tool_use(
+            "call_x",
+            "plan_update",
+            json!({"step_index": 0}),
+        );
+        assert_eq!(extract_active_plan_from_history(&[bad]), None);
+    }
+
+    #[test]
+    fn plan_write_result_without_match_is_skipped() {
+        // ToolResult content that doesn't look like the canonical
+        // "Plan created at /.../plans/<name>" — don't fabricate a filename.
+        let history = vec![
+            plan_write_use("call_w"),
+            ChatMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_w".to_string(),
+                    content: "something went wrong".to_string(),
+                    is_error: Some(false),
+                }],
+                compacted: false,
+            },
+        ];
+        assert_eq!(extract_active_plan_from_history(&history), None);
     }
 }
