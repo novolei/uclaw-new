@@ -28,6 +28,15 @@ export const agentStatusBarEnabledAtom = atomWithStorage<boolean>(
   false,
 )
 
+/**
+ * 是否启用 Plan 模式自动建议横幅（PlanModeSuggestBanner）。
+ * 用户点击"不再建议"后置为 false，持久化到 localStorage。
+ */
+export const planModeSuggestEnabledAtom = atomWithStorage<boolean>(
+  'uclaw-plan-mode-suggest-enabled',
+  true,
+)
+
 // ===== 缓存读取 =====
 
 function getCachedStickyUserMessage(): boolean {

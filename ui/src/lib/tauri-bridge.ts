@@ -2149,3 +2149,19 @@ export interface SymphonyServiceHealthDto {
 
 export const symphonyGetServiceHealth = (): Promise<SymphonyServiceHealthDto> =>
   invoke('symphony_get_service_health')
+
+// ── Plan-mode auto-suggest ────────────────────────────────────────────────────
+
+/**
+ * Report the user's decision on a plan-mode suggestion event.
+ * @param eventId  UUID emitted by the backend alongside the IPC event.
+ * @param outcome  One of accepted | skipped | silenced | aborted.
+ * @param declineReason  Optional free-text reason (currently unused by backend, reserved).
+ */
+export async function respondPlanModeSuggest(
+  eventId: string,
+  outcome: 'accepted' | 'skipped' | 'silenced' | 'aborted',
+  declineReason?: string,
+): Promise<void> {
+  await invoke('respond_plan_mode_suggest', { eventId, outcome, declineReason })
+}
