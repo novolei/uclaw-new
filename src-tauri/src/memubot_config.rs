@@ -39,6 +39,11 @@ pub struct MemubotConfig {
     /// Override via settings → Advanced (or edit ~/.uclaw/memubot_config.json).
     #[serde(default = "default_agent_loop_timeout_secs")]
     pub agent_loop_timeout_secs: u64,
+    /// Whether Plan-mode auto-suggest is enabled. When false, the keyword
+    /// detector and agent tool request_plan_mode_switch are both suppressed.
+    /// Default true. Toggle exposed in Settings → Intelligence → Agent.
+    #[serde(default = "default_true")]
+    pub plan_mode_suggest_enabled: bool,
 }
 
 /// 后台记忆提取配置
@@ -298,6 +303,7 @@ impl Default for SymphonyConfig {
 }
 
 fn default_agent_loop_timeout_secs() -> u64 { 600 }
+fn default_true() -> bool { true }
 
 // ─── Default 实现 ────────────────────────────────────────────────────────
 
@@ -315,6 +321,7 @@ impl Default for MemubotConfig {
             gene_evolution: GeneEvolutionConfig::default(),
             symphony: SymphonyConfig::default(),
             agent_loop_timeout_secs: 600,
+            plan_mode_suggest_enabled: true,
         }
     }
 }
@@ -581,6 +588,19 @@ mod tests {
         let config: MemubotConfig = serde_json::from_str("{}").unwrap();
         assert!(config.symphony.enabled);
         assert!(config.symphony.per_day_cost_cap_usd > 0.0);
+    }
+
+    #[test]
+    fn plan_mode_suggest_enabled_defaults_true() {
+        let config: MemubotConfig = serde_json::from_str("{}").unwrap();
+        assert!(config.plan_mode_suggest_enabled);
+    }
+
+    #[test]
+    fn plan_mode_suggest_enabled_can_be_set_false() {
+        let json = r#"{"plan_mode_suggest_enabled": false}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.plan_mode_suggest_enabled);
     }
 
     #[test]

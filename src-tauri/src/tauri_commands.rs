@@ -595,6 +595,8 @@ pub async fn send_message(
     if let Some(ref gene_repo) = gene_repo_opt {
         delegate.set_gene_repo(gene_repo.clone());
     }
+    // Inject DB for plan-suggest aggregate-rate GEP signal
+    delegate.set_db(Arc::clone(&state.db));
 
     // ── Memory Recall Integration ────────────────────────────────────
     // Build a recall plan and inject memory context into the system prompt.
@@ -4768,7 +4770,31 @@ pub async fn metrics_summary(
 pub async fn memubot_config_get(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    serde_json::to_value(&state.memubot_config).map_err(|e| e.to_string())
+    let cfg = state.memubot_config.read().await;
+    serde_json::to_value(&*cfg).map_err(|e| e.to_string())
+}
+
+/// 读取 Plan 模式自动建议开关
+#[tauri::command]
+pub async fn get_plan_mode_suggest_enabled(
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    Ok(state.memubot_config.read().await.plan_mode_suggest_enabled)
+}
+
+/// 设置 Plan 模式自动建议开关，并持久化到 memubot_config.json
+#[tauri::command]
+pub async fn set_plan_mode_suggest_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    {
+        let mut cfg = state.memubot_config.write().await;
+        cfg.plan_mode_suggest_enabled = enabled;
+        cfg.save(&state.data_dir).map_err(|e| e.to_string())?;
+    }
+    tracing::info!(enabled, "plan_mode_suggest_enabled updated and persisted");
+    Ok(())
 }
 
 /// 删除记忆节点
@@ -6935,7 +6961,7 @@ pub async fn send_agent_message(
     // stubbed to empty until then. Settings toggle lands in Task 11 —
     // hardcoded true here for now.
     {
-        let suggest_enabled = true; // TODO Task 11: read from settings
+        let suggest_enabled = state.memubot_config.read().await.plan_mode_suggest_enabled;
         if suggest_enabled {
             if let Ok(conn) = state.db.lock() {
                 let disabled = crate::agent::mode_suggest_store::query_disabled_patterns(&conn)
@@ -7289,7 +7315,7 @@ pub async fn send_agent_message(
         sessions.insert(input.session_id.clone(), token.clone());
     }
 
-    let agent_loop_timeout_secs = state.memubot_config.agent_loop_timeout_secs;
+    let agent_loop_timeout_secs = state.memubot_config.read().await.agent_loop_timeout_secs;
 
     // Clone for spawn
     let session_id = input.session_id.clone();
@@ -7427,6 +7453,8 @@ pub async fn send_agent_message(
             if let Some(ref repo) = gene_repo_opt {
                 delegate.set_gene_repo(repo.clone());
             }
+            // Inject DB for plan-suggest aggregate-rate GEP signal
+            delegate.set_db(Arc::clone(&db));
         }
 
         let mut config = AgenticLoopConfig::default();
@@ -10069,6 +10097,7 @@ pub async fn start_agent_teams(
             }
         };
 
+        let db_for_factory = Arc::clone(&db);
         let orchestrator = crate::agent::teams::AgentTeamOrchestrator::new(
             llm_for_orchestrator,
             model_for_orchestrator,
@@ -10121,6 +10150,8 @@ pub async fn start_agent_teams(
                 if let Some(ref repo) = gene_repo_for_teams {
                     delegate.set_gene_repo(repo.clone());
                 }
+                // Inject DB for plan-suggest aggregate-rate GEP signal
+                delegate.set_db(Arc::clone(&db_for_factory));
                 Box::new(delegate)
             },
         );
