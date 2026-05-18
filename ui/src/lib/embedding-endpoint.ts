@@ -86,12 +86,13 @@ export interface SetupScriptRunResult {
 
 export async function runSetupScript(
   name: SetupScriptName,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; runId?: string } = {},
 ): Promise<SetupScriptRunResult> {
   return await invoke<SetupScriptRunResult>('run_setup_script', {
     args: {
       script_name: name,
       force: opts.force ?? false,
+      run_id: opts.runId ?? null,
     },
   })
 }

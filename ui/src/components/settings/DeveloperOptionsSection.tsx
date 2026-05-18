@@ -45,9 +45,6 @@ export function DeveloperOptionsSection(): React.ReactElement {
   const [states, setStates] = React.useState<Record<SetupScriptName, ScriptState>>(makeInitial())
   const [forceConfirm, setForceConfirm] = React.useState<SetupScriptName | null>(null)
 
-  const statesRef = React.useRef(states)
-  React.useEffect(() => { statesRef.current = states }, [states])
-
   React.useEffect(() => {
     if (!expanded) return
     let unlistenOutput: UnlistenFn | null = null
@@ -118,11 +115,17 @@ export function DeveloperOptionsSection(): React.ReactElement {
   }, [states])
 
   const handleRun = async (name: SetupScriptName, force: boolean) => {
+    // Generate the run_id BEFORE invoke so the event listeners can
+    // route output to this card from the very first emit. Without
+    // this, runSetupScript's promise only resolves at child exit
+    // (because backend awaits the wait) — and during the entire run
+    // the card's runId would be null, dropping every output line.
+    const runId = `setup-${name}-${Date.now()}`
     setStates((prev) => ({
       ...prev,
       [name]: {
         running: true,
-        runId: null,
+        runId,
         log: [],
         exitCode: null,
         progressPct: 1,
@@ -132,14 +135,7 @@ export function DeveloperOptionsSection(): React.ReactElement {
     }))
     setForceConfirm(null)
     try {
-      const result = await runSetupScript(name, { force })
-      setStates((prev) => ({
-        ...prev,
-        [name]: {
-          ...prev[name],
-          runId: result.run_id,
-        },
-      }))
+      await runSetupScript(name, { force, runId })
     } catch (e) {
       setStates((prev) => ({
         ...prev,

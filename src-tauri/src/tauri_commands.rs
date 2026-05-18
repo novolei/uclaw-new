@@ -444,9 +444,13 @@ pub async fn set_embedding_config(
             gbrain_run_sh.display()
         )));
     }
+    // Apply dimensions BEFORE model so a model→dimension upgrade
+    // (bge-small 384 → bge-m3 1024) never lands a model that's wider
+    // than the active dimensions count, in case gbrain ever
+    // cross-validates the two keys.
     for (key, value) in [
-        ("embedding_model", payload.model.clone()),
         ("embedding_dimensions", payload.dimensions.to_string()),
+        ("embedding_model", payload.model.clone()),
         ("base_urls.llama-server", payload.base_url.clone()),
     ] {
         let output = tokio::process::Command::new(&gbrain_run_sh)
@@ -530,6 +534,14 @@ pub struct RunSetupScriptArgs {
     /// Currently only honored by `init-gbrain`. Default false.
     #[serde(default)]
     pub force: bool,
+    /// Optional caller-supplied correlation id. When `None`, the
+    /// backend generates one. The frontend supplies its own id so it
+    /// can route incoming `system-setup-script:output` / `:end`
+    /// events to the right card BEFORE this invoke promise resolves
+    /// (which only happens at child exit — without a pre-known id,
+    /// every output line would be dropped during the run).
+    #[serde(default)]
+    pub run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -592,14 +604,15 @@ pub async fn run_setup_script(
         argv.push("--force".to_string());
     }
 
-    // 4. Generate a run_id for event correlation. Frontend uses it to
-    // route output to the right card when multiple scripts run in
-    // parallel.
-    let run_id = format!(
-        "setup-{}-{}",
-        args.script_name,
-        chrono::Utc::now().timestamp_millis()
-    );
+    // 4. Honor caller-supplied run_id; fall back to a backend-generated
+    // one when the caller didn't pass one (e.g. CLI / test harness).
+    let run_id = args.run_id.clone().unwrap_or_else(|| {
+        format!(
+            "setup-{}-{}",
+            args.script_name,
+            chrono::Utc::now().timestamp_millis()
+        )
+    });
 
     // 5. Spawn + drain.
     tracing::info!(
