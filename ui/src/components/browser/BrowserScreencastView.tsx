@@ -1,7 +1,11 @@
 import * as React from 'react'
 import { useAtomValue } from 'jotai'
 import { MonitorPlay } from 'lucide-react'
-import { browserScreencastFrameAtom, browserDOMStateAtom, browserDOMOverlayVisibleAtom } from '@/atoms/browser-atoms'
+import {
+  browserScreencastFrameAtom,
+  browserDOMStateAtom,
+  browserDOMOverlayVisibleAtom,
+} from '@/atoms/browser-atoms'
 import { BrowserDOMOverlay } from './BrowserDOMOverlay'
 
 interface BrowserScreencastViewProps {
@@ -12,21 +16,50 @@ export function BrowserScreencastView({ sessionId }: BrowserScreencastViewProps)
   const frameMap = useAtomValue(browserScreencastFrameAtom)
   const domMap = useAtomValue(browserDOMStateAtom)
   const overlayVisible = useAtomValue(browserDOMOverlayVisibleAtom)
-  const imgRef = React.useRef<HTMLImageElement>(null)
+
+  const canvasRef = React.useRef<HTMLCanvasElement>(null)
   const [displaySize, setDisplaySize] = React.useState({ w: 0, h: 0 })
+  const lastDimsRef = React.useRef({ w: 0, h: 0 })
 
   const frame = frameMap.get(sessionId)
   const domEntry = domMap.get(sessionId)
 
   React.useLayoutEffect(() => {
-    if (!imgRef.current) return
+    const canvas = canvasRef.current
+    if (!canvas) return
     const obs = new ResizeObserver(([entry]) => {
       const { width, height } = entry.contentRect
       setDisplaySize({ w: width, h: height })
     })
-    obs.observe(imgRef.current)
+    obs.observe(canvas)
     return () => obs.disconnect()
   }, [])
+
+  React.useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || !frame) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const binary = atob(frame.dataB64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    const blob = new Blob([bytes], { type: 'image/jpeg' })
+
+    let cancelled = false
+    createImageBitmap(blob).then((bitmap) => {
+      if (cancelled) { bitmap.close(); return }
+      if (lastDimsRef.current.w !== bitmap.width || lastDimsRef.current.h !== bitmap.height) {
+        canvas.width = bitmap.width
+        canvas.height = bitmap.height
+        lastDimsRef.current = { w: bitmap.width, h: bitmap.height }
+      }
+      ctx.drawImage(bitmap, 0, 0)
+      bitmap.close()
+    }).catch(() => {})
+
+    return () => { cancelled = true }
+  }, [frame])
 
   if (!frame) {
     return (
@@ -39,12 +72,10 @@ export function BrowserScreencastView({ sessionId }: BrowserScreencastViewProps)
 
   return (
     <div className="flex-1 relative overflow-hidden bg-black">
-      <img
-        ref={imgRef}
-        src={`data:image/jpeg;base64,${frame.dataB64}`}
-        alt="浏览器实时画面"
+      <canvas
+        ref={canvasRef}
         className="w-full h-full object-contain"
-        draggable={false}
+        style={{ display: 'block' }}
       />
       {overlayVisible && domEntry && displaySize.w > 0 && (
         <BrowserDOMOverlay

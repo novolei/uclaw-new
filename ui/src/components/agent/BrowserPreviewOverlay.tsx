@@ -35,7 +35,32 @@ export function BrowserPreviewOverlay({ sessionId }: BrowserPreviewOverlayProps)
 
   // Latest screencast frame for this session.
   const frame = frameMap.get(sessionId)
-  const imageSrc = frame ? `data:image/jpeg;base64,${frame.dataB64}` : null
+
+  const canvasRef = React.useRef<HTMLCanvasElement>(null)
+  const lastDimsRef = React.useRef({ w: 0, h: 0 })
+
+  React.useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || !frame) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const binary = atob(frame.dataB64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    const blob = new Blob([bytes], { type: 'image/jpeg' })
+    let cancelled = false
+    createImageBitmap(blob).then((bitmap) => {
+      if (cancelled) { bitmap.close(); return }
+      if (lastDimsRef.current.w !== bitmap.width || lastDimsRef.current.h !== bitmap.height) {
+        canvas.width = bitmap.width
+        canvas.height = bitmap.height
+        lastDimsRef.current = { w: bitmap.width, h: bitmap.height }
+      }
+      ctx.drawImage(bitmap, 0, 0)
+      bitmap.close()
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [frame])
 
   const update = (patch: Partial<typeof preview>) => {
     setPreviewMap((prev) => {
@@ -105,15 +130,14 @@ export function BrowserPreviewOverlay({ sessionId }: BrowserPreviewOverlayProps)
         </button>
       </div>
 
-      {/* Screencast image — hidden when collapsed */}
+      {/* Screencast canvas — hidden when collapsed */}
       {!isCollapsed && (
         <div className="relative bg-muted/20" style={{ aspectRatio: '16/10' }}>
-          {imageSrc ? (
-            <img
-              src={imageSrc}
-              alt="浏览器实时画面"
+          {frame ? (
+            <canvas
+              ref={canvasRef}
               className="w-full h-full object-cover object-top"
-              draggable={false}
+              style={{ display: 'block' }}
             />
           ) : (
             <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
