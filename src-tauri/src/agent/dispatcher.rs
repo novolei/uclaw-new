@@ -462,13 +462,13 @@ impl ChatDelegate {
     /// resolves it before invoking; we don't read SafetyManager here because
     /// this method is sync and called from the LLM hot path.
     fn effective_system_prompt(&self, effective_mode: &SafetyMode) -> String {
-        let memory_block = self.memory_context.as_deref().filter(|s| !s.is_empty());
-        let base_with_memory = match memory_block {
-            Some(ctx) => format!("{}\n\n{}", self.system_prompt, ctx),
-            None => self.system_prompt.clone(),
-        };
+        // system_prompt is byte-stable per session: no memory recall or profile
+        // injection here. Both live in build_dynamic_context() (prepended to the
+        // last user message each turn) so the Anthropic cache_control: ephemeral
+        // breakpoint can hit from iteration 2 onward. Adding dynamic content here
+        // would change system prompt bytes every turn → 0% cache hit rate.
         let composed = crate::agent::mode_prompts::compose_system_prompt(
-            &base_with_memory,
+            &self.system_prompt,
             self.workspace_root.as_deref(),
             effective_mode,
         );
@@ -479,20 +479,10 @@ impl ChatDelegate {
         // The flag stays sticky for the remainder of the loop because the
         // agent loop reuses the same `ChatDelegate` across iterations.
         let suppress_manifest = self.skill_search_used.load(Ordering::Relaxed);
-        let with_manifest = if self.skills_manifest_block.is_empty() || suppress_manifest {
+        if self.skills_manifest_block.is_empty() || suppress_manifest {
             composed
         } else {
             format!("{}{}", composed, self.skills_manifest_block)
-        };
-        // Memory OS Sprint 1.8 — append learned user-profile block.
-        // Always-on (not suppressed across iterations) because facets
-        // change at the 30-min rebuild cadence, not at agent-loop
-        // granularity. Empty when memory_os.learning_enabled=false or
-        // FacetCache hasn't picked up any active facets yet.
-        if self.learned_profile_block.is_empty() {
-            with_manifest
-        } else {
-            format!("{}\n\n{}", with_manifest, self.learned_profile_block)
         }
     }
 
@@ -530,6 +520,24 @@ impl ChatDelegate {
             block.push_str(&format!("\n工作区路径: {}", root.display()));
         }
         block.push_str("\n</system_info>");
+
+        // Memory recall results — per-turn fresh content injected here (not in
+        // the system prompt) so Anthropic cache_control: ephemeral on the system
+        // prompt block can hit reliably from iteration 2 onward.
+        if let Some(ctx) = self.memory_context.as_deref().filter(|s| !s.is_empty()) {
+            block.push_str("\n\n<memory_context>\n");
+            block.push_str(ctx);
+            block.push_str("\n</memory_context>");
+        }
+
+        // Learned user profile (30-min rebuild cadence) — same rationale as
+        // memory_context: injected here rather than in the system prompt so
+        // rebuilds don't bust the Anthropic cache breakpoint.
+        if !self.learned_profile_block.is_empty() {
+            block.push_str("\n\n");
+            block.push_str(&self.learned_profile_block);
+        }
+
         block
     }
 

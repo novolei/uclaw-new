@@ -4,6 +4,7 @@ pub mod context;
 pub mod dispatcher;
 pub mod gep;
 pub mod headless;
+pub mod history_window;
 pub mod llm_stream;
 pub mod mode_prompts;
 pub mod mode_suggest;

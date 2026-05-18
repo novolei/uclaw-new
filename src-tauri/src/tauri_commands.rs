@@ -8737,24 +8737,27 @@ pub async fn send_agent_message(
         );
     }
 
-    // Load conversation history for context — rolling window of last 40 messages.
-    // DESC + LIMIT fetches the most-recent 40; we reverse to restore ASC order.
-    // Older messages beyond 40 should already have been summarised into a
-    // compaction entry by the agentic loop's soft_compress_context; the LIMIT
-    // prevents unbounded linear growth in per-call input tokens on long sessions.
+    // Load conversation history using a token-budget head+tail window.
+    // Fetch all uncompacted messages ASC, then apply history_budget_window()
+    // to keep within HISTORY_TOKEN_BUDGET tokens while preserving both the
+    // oldest context (head) and the most recent turns (tail).  The fixed
+    // LIMIT 40 approach was replaced because a single large tool result can
+    // span thousands of tokens, making message-count a poor proxy for cost.
     let history: Vec<(String, String)> = {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
         let mut stmt = conn.prepare(
             "SELECT role, content FROM agent_messages \
              WHERE session_id = ?1 AND compacted = 0 \
-             ORDER BY created_at DESC LIMIT 40"
+             ORDER BY created_at ASC"
         ).map_err(|e| Error::Database(e))?;
         let rows = stmt.query_map(rusqlite::params![input.session_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         }).map_err(|e| Error::Database(e))?;
-        let mut result: Vec<(String, String)> = rows.filter_map(|r| r.ok()).collect();
-        result.reverse(); // restore chronological order
-        result
+        let all: Vec<(String, String)> = rows.filter_map(|r| r.ok()).collect();
+        crate::agent::history_window::history_budget_window(
+            all,
+            crate::agent::history_window::HISTORY_TOKEN_BUDGET,
+        )
     };
 
     // Build tool registry. Tools must run inside the workspace folder that
