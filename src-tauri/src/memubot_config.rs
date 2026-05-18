@@ -384,8 +384,12 @@ pub struct MemoryOsConfig {
     /// surface that bounds upgrade-driven LLM cost. Downgrades are
     /// uncapped (they save tokens by demoting irrelevant pages).
     pub tier_escalator_daily_cap: u32,
-    // (Future flags for Phase 6.2 will be added here with their
-    //  defaults so older configs deserialize cleanly.)
+    /// Phase 6.2: Swap the EntitySynthesizer from Stub (deterministic
+    /// placeholder) to Real (LLM via MemoryOsLlmClient). Default OFF
+    /// for the same reason as Phase 6b/6c — opt-in once a provider
+    /// is configured. The manual `memory_entity_page_synthesize_now`
+    /// IPC still works with the Stub, just produces placeholder text.
+    pub entity_synthesizer_enabled: bool,
 }
 
 impl Default for MemoryOsConfig {
@@ -413,6 +417,11 @@ impl Default for MemoryOsConfig {
             // synthesis cost when Phase 6.2 lands.
             tier_escalator_enabled: true,
             tier_escalator_daily_cap: 10,
+            // Phase 6.2 default OFF. The IPC works either way — with
+            // the flag off, the manual Synthesize button produces a
+            // clearly-labelled stub; with it on, runs through the
+            // configured LLM. Restart required to swap.
+            entity_synthesizer_enabled: false,
         }
     }
 }
@@ -964,5 +973,25 @@ mod tests {
         let config: MemubotConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.memory_os.tier_escalator_daily_cap, 3);
         assert!(config.memory_os.tier_escalator_enabled, "flag default holds");
+    }
+
+    #[test]
+    fn memory_os_phase62_default_keeps_stub_synthesizer() {
+        let c = MemoryOsConfig::default();
+        assert!(
+            !c.entity_synthesizer_enabled,
+            "Phase 6.2 default must be OFF (stub stays baseline)"
+        );
+    }
+
+    #[test]
+    fn memory_os_phase62_explicit_enable_preserved() {
+        let json = r#"{"memory_os":{"entity_synthesizer_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(config.memory_os.entity_synthesizer_enabled);
+        // Forward-compat: 6.2 alone doesn't flip the related flags.
+        assert!(!config.memory_os.wiki_real_synthesizer_enabled);
+        assert!(!config.memory_os.lint_real_analyzer_enabled);
+        assert!(config.memory_os.tier_escalator_enabled);
     }
 }

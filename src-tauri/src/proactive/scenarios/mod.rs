@@ -18,6 +18,11 @@ pub mod memory_lint;
 // EntityPage backlink count to `enrichment_tier` (1/2/3); upgrades
 // capped at 10/day. Invoked from tick_inner (~every 240 ticks).
 pub mod tier_escalator;
+// Memory OS Foundation Phase 6.2 — EntitySynthesizer: LLM rewrites
+// EntityPage compiled_truth from current timeline + old compiled_truth.
+// Trait-object behind AppState.entity_synthesizer; manually triggered
+// via IPC (Phase 6.3) — no automatic tick yet.
+pub mod entity_synthesizer;
 
 pub use types::*;
 

@@ -203,6 +203,14 @@ pub struct AppState {
     /// client when Phase 5 has soaked in production.
     pub lint_analyzer: Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
 
+    /// EntityPage synthesizer — used by the Phase 6.2
+    /// `memory_entity_page_synthesize_now` IPC + future auto-synth
+    /// hooks. Defaults to `StubEntitySynthesizer`; flipping
+    /// `memory_os.entity_synthesizer_enabled` to true installs the
+    /// LLM-backed `RealEntitySynthesizer` at boot.
+    pub entity_synthesizer:
+        Arc<dyn crate::proactive::scenarios::entity_synthesizer::EntitySynthesizer>,
+
     // ─── Phased Boot: 新增服务 ───────────────────────────────────────
     /// 中央消息总线
     pub infra_service: Arc<InfraService>,
@@ -544,6 +552,27 @@ impl AppState {
                 Arc::new(crate::proactive::scenarios::memory_lint::StubAnalyzer)
             };
 
+        // Memory OS Phase 6.2 — entity synthesizer trait object. Same
+        // Stub/Real branch as 6b/6c; controls whether the manual
+        // synthesize-now IPC + future auto-synth hooks call the LLM.
+        let entity_synthesizer: Arc<
+            dyn crate::proactive::scenarios::entity_synthesizer::EntitySynthesizer,
+        > = if memubot_config.memory_os.entity_synthesizer_enabled {
+            use crate::memory_graph::memory_os_llm::MemoryOsLlmClient;
+            use crate::proactive::scenarios::entity_synthesizer::RealEntitySynthesizer;
+            let llm = Arc::new(MemoryOsLlmClient::new(
+                provider_service.clone(),
+                db.clone(),
+            ));
+            tracing::info!("Memory OS Phase 6.2: RealEntitySynthesizer installed");
+            Arc::new(RealEntitySynthesizer::new(llm))
+        } else {
+            tracing::info!(
+                "Memory OS Phase 6.2: StubEntitySynthesizer (default — flip entity_synthesizer_enabled to opt in)"
+            );
+            Arc::new(crate::proactive::scenarios::entity_synthesizer::StubEntitySynthesizer)
+        };
+
         tracing::info!("Application state initialized successfully (phased boot)");
 
         Ok(Self {
@@ -580,6 +609,9 @@ impl AppState {
             // (Phase 6c). Defaults to StubAnalyzer; flipping the flag
             // routes lint candidates through the active LLM provider.
             lint_analyzer,
+            // Phase 6.2 entity synthesizer trait object (Stub or Real),
+            // picked above. Drives the manual Synthesize button IPC.
+            entity_synthesizer,
             infra_service,
             service_manager,
             metrics_service,
