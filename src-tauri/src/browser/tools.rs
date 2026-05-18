@@ -33,6 +33,7 @@ browser_tool!(BrowserEvaluateTool);
 browser_tool!(BrowserManageTabsTool);
 browser_tool!(BrowserGetCookiesTool);
 browser_tool!(BrowserSetCookieTool);
+browser_tool!(BrowserWaitTool);
 
 // ── 1. BrowserNavigateTool ────────────────────────────────────────────────────
 
@@ -792,6 +793,84 @@ session tokens before navigating to a page that requires them.
     }
 }
 
+// ── 17. BrowserWaitTool ───────────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserWaitTool {
+    fn name(&self) -> &str { "browser_wait" }
+
+    fn description(&self) -> &str {
+        "Wait for a CSS selector to appear in the DOM, or pause for a fixed duration.\n\
+         Use after browser_navigate or browser_click when a page or element needs time to load.\n\
+         \n\
+         **Parameters**\n\
+         - `tab_id` (string, required): Tab ID from a previous browser_navigate call.\n\
+         - `selector` (string, optional): CSS selector to wait for (e.g. '#main', '.loaded', 'button[type=submit]').\n\
+         - `timeout_ms` (number, optional): Maximum wait in milliseconds (default 10000)."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": { "type": "string", "description": "Tab ID from a previous browser_navigate call" },
+                "selector": {
+                    "type": "string",
+                    "description": "CSS selector to wait for (e.g. '#main', '.loaded'). If omitted, waits for timeout_ms."
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Maximum wait in milliseconds (default 10000)"
+                }
+            },
+            "required": ["tab_id"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let tab_id = params["tab_id"]
+            .as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id required".to_string()))?;
+        let selector = params["selector"].as_str();
+        let timeout_ms = params["timeout_ms"].as_u64().unwrap_or(10_000);
+        let start = Instant::now();
+        let timeout = std::time::Duration::from_millis(timeout_ms);
+
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        if let Some(sel) = selector {
+            let escaped = sel.replace('\\', "\\\\").replace('"', "\\\"");
+            loop {
+                if start.elapsed() >= timeout {
+                    return Ok(ToolOutput::error(
+                        &format!("Timeout: selector '{}' not found after {}ms", sel, timeout_ms),
+                        start.elapsed().as_millis() as u64,
+                    ));
+                }
+                let found = ctx
+                    .execute_js(tab_id, &format!("!!document.querySelector(\"{}\")", escaped))
+                    .await
+                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                if found.trim() == "true" {
+                    let elapsed = start.elapsed().as_millis() as u64;
+                    return Ok(ToolOutput::success(
+                        &format!("Element '{}' found after {}ms", sel, elapsed),
+                        elapsed,
+                    ));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        } else {
+            tokio::time::sleep(timeout).await;
+            Ok(ToolOutput::success(
+                &format!("Waited {}ms", timeout_ms),
+                start.elapsed().as_millis() as u64,
+            ))
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -808,5 +887,21 @@ mod tests {
         let params = serde_json::json!({"tab_id": "t1", "direction": "down"});
         let pixels = params["pixels"].as_u64().unwrap_or(300) as u32;
         assert_eq!(pixels, 300);
+    }
+
+    #[test]
+    fn wait_selector_escapes_quotes() {
+        let sel = r#"input[name="q"]"#;
+        let escaped = sel.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!("!!document.querySelector(\"{}\")", escaped);
+        assert!(script.contains(r#"input[name=\"q\"]"#), "got: {script}");
+        assert!(!script.contains(r#"input[name="q"]"#), "unescaped quote would break JS eval, got: {script}");
+    }
+
+    #[test]
+    fn wait_timeout_default() {
+        let params = serde_json::json!({"tab_id": "t1"});
+        let timeout_ms = params["timeout_ms"].as_u64().unwrap_or(10_000);
+        assert_eq!(timeout_ms, 10_000);
     }
 }

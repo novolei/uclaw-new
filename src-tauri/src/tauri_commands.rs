@@ -901,6 +901,9 @@ pub async fn send_message(
         tools.register(bt!(BrowserSendKeysTool));
         tools.register(bt!(BrowserEvaluateTool));
         tools.register(bt!(BrowserManageTabsTool));
+        tools.register(bt!(BrowserGetCookiesTool));
+        tools.register(bt!(BrowserSetCookieTool));
+        tools.register(bt!(BrowserWaitTool));
     }
     // MCP tool proxies — agents see tools from any currently-connected
     // MCP server as `mcp__{server_id}__{tool_name}`. Sourced from
@@ -8831,6 +8834,9 @@ pub async fn send_agent_message(
         tools.register(bt!(BrowserSendKeysTool));
         tools.register(bt!(BrowserEvaluateTool));
         tools.register(bt!(BrowserManageTabsTool));
+        tools.register(bt!(BrowserGetCookiesTool));
+        tools.register(bt!(BrowserSetCookieTool));
+        tools.register(bt!(BrowserWaitTool));
     }
     // MCP tool proxies — see send_message above for the rationale (PR-1).
     {
