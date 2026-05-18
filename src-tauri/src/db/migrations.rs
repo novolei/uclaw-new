@@ -1533,6 +1533,35 @@ CREATE INDEX IF NOT EXISTS idx_health_findings_subject
     ON memory_health_findings(subject);
 ";
 
+/// V38 — Automation Phase 2b cluster A · per-(spec, identity) chat session index.
+///
+/// `automation_chat_sessions` maps a (spec_id, identity_key) pair to the
+/// agent_sessions row that hosts the long-lived chat thread for that pair.
+///
+/// identity_key conventions (string):
+///   - "local"                       → spec owner's local chat thread
+///   - "{channel_type}:{chat_id}"    → per-IM-user thread (e.g. "wechat_ilink:UIN_abc")
+///
+/// UNIQUE(spec_id, identity_key) guarantees idempotent get-or-create.
+/// FK CASCADE on agent_sessions deletion keeps the index clean.
+///
+/// V-number history: originally drafted at V36; bumped to V38 when parallel
+/// sessions claimed V36 and V37 before this work pushed. See the Active
+/// migration registry in CLAUDE.md.
+pub const V38_AUTOMATION_CHAT_SESSIONS: &str = "
+CREATE TABLE IF NOT EXISTS automation_chat_sessions (
+    spec_id          TEXT NOT NULL,
+    identity_key     TEXT NOT NULL,
+    agent_session_id TEXT NOT NULL,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    PRIMARY KEY (spec_id, identity_key),
+    FOREIGN KEY (agent_session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_aut_chat_sess_agent_id
+    ON automation_chat_sessions(agent_session_id);
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -1800,6 +1829,15 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V35_MEMORY_OS_PHASE_1.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V35 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V38: Automation Phase 2b cluster A — per-(spec, identity) chat session index.
+    // (V36 and V37 are claimed by parallel in-flight sessions; see CLAUDE.md
+    // Active migration registry.)
+    tracing::debug!("Running migration V38: automation_chat_sessions");
+    for stmt in V38_AUTOMATION_CHAT_SESSIONS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V38 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");

@@ -1,4 +1,5 @@
 pub mod auto_continue;
+pub mod chat_sessions;
 pub mod cost;
 pub mod execute;
 pub mod prompt;
