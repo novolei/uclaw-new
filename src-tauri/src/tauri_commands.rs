@@ -901,6 +901,11 @@ pub async fn send_message(
         tools.register(bt!(BrowserSendKeysTool));
         tools.register(bt!(BrowserEvaluateTool));
         tools.register(bt!(BrowserManageTabsTool));
+        tools.register(bt!(BrowserGetCookiesTool));
+        tools.register(bt!(BrowserSetCookieTool));
+        tools.register(bt!(BrowserWaitTool));
+        tools.register(bt!(BrowserHoverTool));
+        tools.register(bt!(BrowserUploadFileTool));
     }
     // MCP tool proxies — agents see tools from any currently-connected
     // MCP server as `mcp__{server_id}__{tool_name}`. Sourced from
@@ -8831,6 +8836,11 @@ pub async fn send_agent_message(
         tools.register(bt!(BrowserSendKeysTool));
         tools.register(bt!(BrowserEvaluateTool));
         tools.register(bt!(BrowserManageTabsTool));
+        tools.register(bt!(BrowserGetCookiesTool));
+        tools.register(bt!(BrowserSetCookieTool));
+        tools.register(bt!(BrowserWaitTool));
+        tools.register(bt!(BrowserHoverTool));
+        tools.register(bt!(BrowserUploadFileTool));
     }
     // MCP tool proxies — see send_message above for the rationale (PR-1).
     {
@@ -13711,9 +13721,9 @@ pub async fn reactivate_gene(
 // adjacent-edits rule).
 // ═══════════════════════════════════════════════════════════════════════════
 
-use crate::symphony::manager::{ManagerError, SymphonyManager, WorkflowDetail, WorkflowRow};
-use crate::symphony::protocol::SymphonyWorkflowDef;
-use crate::symphony::runtime::service::{SymphonyService, TriggerCmd};
+use crate::symphony_graph::manager::{ManagerError, SymphonyManager, WorkflowDetail, WorkflowRow};
+use crate::symphony_graph::protocol::SymphonyWorkflowDef;
+use crate::symphony_graph::runtime::service::{SymphonyService, TriggerCmd};
 
 fn manager_err(e: ManagerError) -> Error {
     Error::Internal(format!("symphony: {}", e))

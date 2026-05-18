@@ -33,6 +33,9 @@ browser_tool!(BrowserEvaluateTool);
 browser_tool!(BrowserManageTabsTool);
 browser_tool!(BrowserGetCookiesTool);
 browser_tool!(BrowserSetCookieTool);
+browser_tool!(BrowserWaitTool);
+browser_tool!(BrowserHoverTool);
+browser_tool!(BrowserUploadFileTool);
 
 // ── 1. BrowserNavigateTool ────────────────────────────────────────────────────
 
@@ -792,10 +795,306 @@ session tokens before navigating to a page that requires them.
     }
 }
 
+// ── 17. BrowserWaitTool ───────────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserWaitTool {
+    fn name(&self) -> &str { "browser_wait" }
+
+    fn description(&self) -> &str {
+        "Wait for a CSS selector to appear in the DOM, or pause for a fixed duration.\n\
+         Use after browser_navigate or browser_click when a page or element needs time to load.\n\
+         \n\
+         **Parameters**\n\
+         - `tab_id` (string, required): Tab ID from a previous browser_navigate call.\n\
+         - `selector` (string, optional): CSS selector to wait for (e.g. '#main', '.loaded', 'button[type=submit]').\n\
+         - `timeout_ms` (number, optional): Maximum wait in milliseconds (default 10000)."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": { "type": "string", "description": "Tab ID from a previous browser_navigate call" },
+                "selector": {
+                    "type": "string",
+                    "description": "CSS selector to wait for (e.g. '#main', '.loaded'). If omitted, waits for timeout_ms."
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Maximum wait in milliseconds (default 10000)"
+                }
+            },
+            "required": ["tab_id"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let tab_id = params["tab_id"]
+            .as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id required".to_string()))?;
+        let selector = params["selector"].as_str();
+        let timeout_ms = params["timeout_ms"].as_u64().unwrap_or(10_000);
+        let start = Instant::now();
+        let timeout = std::time::Duration::from_millis(timeout_ms);
+
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        if let Some(sel) = selector {
+            let escaped = sel.replace('\\', "\\\\").replace('"', "\\\"");
+            loop {
+                if start.elapsed() >= timeout {
+                    return Ok(ToolOutput::error(
+                        &format!("Timeout: selector '{}' not found after {}ms", sel, timeout_ms),
+                        start.elapsed().as_millis() as u64,
+                    ));
+                }
+                let found = ctx
+                    .execute_js(tab_id, &format!("!!document.querySelector(\"{}\")", escaped))
+                    .await
+                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                if found.trim() == "true" {
+                    let elapsed = start.elapsed().as_millis() as u64;
+                    return Ok(ToolOutput::success(
+                        &format!("Element '{}' found after {}ms", sel, elapsed),
+                        elapsed,
+                    ));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        } else {
+            tokio::time::sleep(timeout).await;
+            Ok(ToolOutput::success(
+                &format!("Waited {}ms", timeout_ms),
+                start.elapsed().as_millis() as u64,
+            ))
+        }
+    }
+}
+
+// ── 18. BrowserHoverTool ──────────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserHoverTool {
+    fn name(&self) -> &str { "browser_hover" }
+
+    fn description(&self) -> &str {
+        "Move the mouse cursor over an element to trigger CSS :hover states and JS mouseover events.\n\
+         Required for dropdown menus, tooltips, and any reveal-on-hover UI pattern.\n\
+         \n\
+         **Parameters**\n\
+         - `tab_id` (string, required): Tab ID.\n\
+         - `index` (number, required): Element index from browser_get_dom."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": { "type": "string", "description": "Tab ID" },
+                "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Element index from browser_get_dom"
+                }
+            },
+            "required": ["tab_id", "index"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let tab_id = params["tab_id"]
+            .as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id required".to_string()))?;
+        let index = params["index"]
+            .as_u64()
+            .ok_or_else(|| ToolError::Execution("index required".to_string()))? as u32;
+
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        // Step 1: get bounding box and dispatch JS mouse events (triggers JS listeners).
+        let js = format!(
+            r#"(function(){{
+                const el = document.querySelector('[data-uclaw-index="{}"]');
+                if (!el) return null;
+                const r = el.getBoundingClientRect();
+                const x = r.left + r.width / 2, y = r.top + r.height / 2;
+                el.dispatchEvent(new MouseEvent('mouseenter', {{bubbles:false,cancelable:true,clientX:x,clientY:y}}));
+                el.dispatchEvent(new MouseEvent('mouseover',  {{bubbles:true, cancelable:true,clientX:x,clientY:y}}));
+                el.dispatchEvent(new MouseEvent('mousemove',  {{bubbles:true, cancelable:true,clientX:x,clientY:y}}));
+                return {{x: Math.round(x), y: Math.round(y)}};
+            }})()"#,
+            index
+        );
+
+        let result = ctx.execute_js(tab_id, &js).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        if result.trim() == "null" {
+            return Err(ToolError::Execution(format!("Element with index {} not found", index)));
+        }
+
+        // Step 2: send CDP Input.dispatchMouseEvent to activate CSS :hover pseudo-class.
+        let coords: serde_json::Value = serde_json::from_str(&result)
+            .unwrap_or(serde_json::Value::Null);
+        if let (Some(x), Some(y)) = (coords["x"].as_f64(), coords["y"].as_f64()) {
+            use chromiumoxide::cdp::browser_protocol::input::{
+                DispatchMouseEventParams, DispatchMouseEventType,
+            };
+            let pages = ctx.pages.read().await;
+            if let Some(page) = pages.get(tab_id) {
+                let _ = page.execute(
+                    DispatchMouseEventParams::new(DispatchMouseEventType::MouseMoved, x, y)
+                ).await;
+            }
+        }
+
+        Ok(ToolOutput::success(
+            &format!("Hovered element at index {}", index),
+            start.elapsed().as_millis() as u64,
+        ))
+    }
+}
+
+// ── 19. BrowserUploadFileTool ─────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserUploadFileTool {
+    fn name(&self) -> &str { "browser_upload_file" }
+
+    fn description(&self) -> &str {
+        "Set a file on a file input element (<input type='file'>).\n\
+         The file must exist in the agent workspace (~/Documents/workground/).\n\
+         \n\
+         **Parameters**\n\
+         - `tab_id` (string, required): Tab ID.\n\
+         - `index` (number, required): Index of the file input element from browser_get_dom.\n\
+         - `file_path` (string, required): Path relative to ~/Documents/workground/ \
+           (e.g. 'report.pdf' or 'images/photo.jpg'). Must not contain '..'."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": { "type": "string", "description": "Tab ID" },
+                "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Index of the file input element from browser_get_dom"
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": "Path relative to ~/Documents/workground/ (e.g. 'report.pdf'). Must not contain '..'."
+                }
+            },
+            "required": ["tab_id", "index", "file_path"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let tab_id = params["tab_id"]
+            .as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id required".to_string()))?;
+        let index = params["index"]
+            .as_u64()
+            .ok_or_else(|| ToolError::Execution("index required".to_string()))? as u32;
+        let file_path = params["file_path"]
+            .as_str()
+            .ok_or_else(|| ToolError::Execution("file_path required".to_string()))?;
+
+        // Reject obvious traversal attempts before any filesystem access.
+        if file_path.contains("..") {
+            return Err(ToolError::InvalidParams(
+                "file_path must not contain '..'".to_string(),
+            ));
+        }
+
+        // Resolve to absolute path and verify it stays under the workspace root.
+        let workspace_root = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .join("Documents/workground");
+        let abs_path = workspace_root.join(file_path);
+
+        // Canonicalize both paths to resolve any remaining symlinks / components.
+        let canonical_root = workspace_root.canonicalize().unwrap_or(workspace_root.clone());
+        let canonical_abs = abs_path.canonicalize().map_err(|_| ToolError::Execution(format!(
+            "File not found: {} (looked in {})",
+            file_path,
+            abs_path.display()
+        )))?;
+        if !canonical_abs.starts_with(&canonical_root) {
+            return Err(ToolError::InvalidParams(
+                "file_path must not escape the workspace directory".to_string(),
+            ));
+        }
+
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        // Use CDP DOM.setFileInputFiles with the element's NodeId.
+        let selector = format!("[data-uclaw-index=\"{}\"]", index);
+        let pages = ctx.pages.read().await;
+        let page = pages.get(tab_id)
+            .ok_or_else(|| ToolError::Execution(format!("tab_id {} not found", tab_id)))?;
+
+        let element = page.find_element(selector).await
+            .map_err(|_| ToolError::Execution(format!("Element with index {} not found", index)))?;
+
+        use chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams;
+        let mut cmd = SetFileInputFilesParams::new(
+            vec![canonical_abs.to_string_lossy().to_string()]
+        );
+        cmd.node_id = Some(element.node_id);
+
+        page.execute(cmd)
+            .await
+            .map_err(|e| ToolError::Execution(format!("setFileInputFiles failed: {e}")))?;
+
+        Ok(ToolOutput::success(
+            &format!("File '{}' set on input element at index {}", file_path, index),
+            start.elapsed().as_millis() as u64,
+        ))
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hover_script_escapes_index() {
+        let index: u32 = 42;
+        let script = format!(
+            r#"(function(){{ const el = document.querySelector('[data-uclaw-index="{}"]'); return el ? JSON.stringify(el.getBoundingClientRect()) : null; }})()"#,
+            index
+        );
+        assert!(script.contains(r#"[data-uclaw-index="42"]"#), "got: {script}");
+    }
+
+    #[test]
+    fn upload_rejects_path_traversal() {
+        let file_path = "../../../etc/passwd";
+        let base = std::path::PathBuf::from("/home/user/Documents/workground");
+        let joined = base.join(file_path);
+        // Path::join with ".." does NOT resolve ".." components — starts_with gives a false
+        // "safe" result on the unresolved path. The real tool must call canonicalize() (or
+        // normalize manually) before the starts_with guard.
+        // Here we verify the raw joined path contains ".." (i.e. it was not resolved):
+        assert!(
+            joined.to_string_lossy().contains(".."),
+            "expected unresolved '..' in joined path, got: {}",
+            joined.display()
+        );
+        // And that a truly-resolved path would escape the base:
+        let resolved = std::path::PathBuf::from("/etc/passwd");
+        assert!(!resolved.starts_with(&base), "resolved traversal path escapes base");
+    }
+
     #[test]
     fn navigate_params_defaults() {
         let params = serde_json::json!({});
@@ -808,5 +1107,21 @@ mod tests {
         let params = serde_json::json!({"tab_id": "t1", "direction": "down"});
         let pixels = params["pixels"].as_u64().unwrap_or(300) as u32;
         assert_eq!(pixels, 300);
+    }
+
+    #[test]
+    fn wait_selector_escapes_quotes() {
+        let sel = r#"input[name="q"]"#;
+        let escaped = sel.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!("!!document.querySelector(\"{}\")", escaped);
+        assert!(script.contains(r#"input[name=\"q\"]"#), "got: {script}");
+        assert!(!script.contains(r#"input[name="q"]"#), "unescaped quote would break JS eval, got: {script}");
+    }
+
+    #[test]
+    fn wait_timeout_default() {
+        let params = serde_json::json!({"tab_id": "t1"});
+        let timeout_ms = params["timeout_ms"].as_u64().unwrap_or(10_000);
+        assert_eq!(timeout_ms, 10_000);
     }
 }
