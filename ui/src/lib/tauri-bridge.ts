@@ -123,6 +123,15 @@ import type {
   // Lint (Memory OS Foundation Phase 5)
   LintRunNowInput,
   LintRunOutcome,
+  // Learning / openhuman facets (Sprint 1.10 + Sprint 2.2 + Sprint 2.3)
+  LearningListFacetsInput,
+  LearningRebuildNowInput,
+  LearningDismissFacetInput,
+  LearningDismissOutcome,
+  LearningPromoteFacetInput,
+  LearningDemoteFacetInput,
+  LearningSetStateOutcome,
+  FacetDto,
   // EntityPage manual synth (Memory OS Foundation Phase 6.3)
   EntityPageSynthesizeNowInput,
   EntitySynthesisOutcome,
@@ -851,6 +860,45 @@ export const memoryLintRunNow = (
   input: LintRunNowInput,
 ): Promise<LintRunOutcome> =>
   invoke('memory_lint_run_now', { input });
+
+// ─────────────────────────────────────────────────────────
+// Learning / openhuman facets (Sprint 1.10 + Sprint 2.2)
+// ─────────────────────────────────────────────────────────
+//
+// list/dismiss work regardless of `memory_os.learning_enabled` so the
+// user can still inspect/triage existing facets if they turn the
+// pipeline off; only rebuild_now refuses (returns a structured error).
+
+export const memoryLearningListFacets = (
+  input: LearningListFacetsInput,
+): Promise<FacetDto[]> =>
+  invoke('memory_learning_list_facets', { input });
+
+export const memoryLearningDismissFacet = (
+  input: LearningDismissFacetInput,
+): Promise<LearningDismissOutcome> =>
+  invoke('memory_learning_dismiss_facet', { input });
+
+/** Returns the raw `RebuildOutcome` shape (snake_case via serde
+ *  default). Frontend treats it as `unknown` because the only fields
+ *  the UI needs (totals) are forwarded into a toast. */
+export const memoryLearningRebuildNow = (
+  input: LearningRebuildNowInput,
+): Promise<Record<string, unknown>> =>
+  invoke('memory_learning_rebuild_now', { input });
+
+// Sprint 2.3 — soft promote / demote a facet's state. Both return the
+// same `{ facet_id, rows_updated, new_state }` shape as dismiss.
+
+export const memoryLearningPromoteFacet = (
+  input: LearningPromoteFacetInput,
+): Promise<LearningSetStateOutcome> =>
+  invoke('memory_learning_promote_facet', { input });
+
+export const memoryLearningDemoteFacet = (
+  input: LearningDemoteFacetInput,
+): Promise<LearningSetStateOutcome> =>
+  invoke('memory_learning_demote_facet', { input });
 
 // ─────────────────────────────────────────────────────────
 // Memory OS Phase 6.3 — Manual EntityPage Synthesis

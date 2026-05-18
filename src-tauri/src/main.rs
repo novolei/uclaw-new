@@ -664,10 +664,12 @@ fn main() {
             uclaw_core::tauri_commands::memory_wiki_export,
             // Markdown sync-from-disk (Memory OS Foundation Phase 7.2)
             uclaw_core::tauri_commands::memory_wiki_sync_from_disk,
-            // Learning pipeline (Memory OS Sprint 1.10)
+            // Learning pipeline (Memory OS Sprint 1.10 + Sprint 2.3)
             uclaw_core::tauri_commands::memory_learning_rebuild_now,
             uclaw_core::tauri_commands::memory_learning_list_facets,
             uclaw_core::tauri_commands::memory_learning_dismiss_facet,
+            uclaw_core::tauri_commands::memory_learning_promote_facet,
+            uclaw_core::tauri_commands::memory_learning_demote_facet,
             // Fragment / Daily Summary
             uclaw_core::tauri_commands::memory_graph_list_fragments,
             uclaw_core::tauri_commands::search_fragments,

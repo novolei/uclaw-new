@@ -1148,6 +1148,29 @@ pub struct LearningDismissFacetInput {
     pub facet_id: String,
 }
 
+/// Sprint 2.3 — user-driven promote: flag a facet as Active so the
+/// next prompt build picks it up immediately, even if its scored
+/// stability is below the auto-promotion threshold. The next rebuild
+/// re-evaluates: if stability stays high enough the override persists;
+/// if not, the facet decays back to its computed state. This is
+/// "trust this fact for now", not a sticky override.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningPromoteFacetInput {
+    pub facet_id: String,
+}
+
+/// Sprint 2.3 — user-driven demote: knock an active or candidate
+/// facet down to Provisional, so it stops appearing in the system
+/// prompt but remains visible in the UI / on disk for evidence to
+/// accumulate. Symmetric to `LearningPromoteFacetInput`; both are
+/// soft overrides the next rebuild can override.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningDemoteFacetInput {
+    pub facet_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthFindingDto {

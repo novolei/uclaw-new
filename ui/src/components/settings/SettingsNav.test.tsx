@@ -4,7 +4,7 @@ import { renderWithProviders, screen } from '@/test-utils/render'
 import { SettingsNav } from './SettingsNav'
 
 describe('SettingsNav', () => {
-  it('renders all 9 tabs grouped under 3 group headers', () => {
+  it('renders the tabs grouped under 3 group headers', () => {
     renderWithProviders(
       <SettingsNav
         active="connectivity"
@@ -21,6 +21,7 @@ describe('SettingsNav', () => {
     expect(screen.getByText('服务商与用量')).not.toBeNull()
     expect(screen.getByText('智能')).not.toBeNull()
     expect(screen.getByText('工具与能力')).not.toBeNull()
+    expect(screen.getByText('学到的偏好')).not.toBeNull()
     expect(screen.getByText('通用与外观')).not.toBeNull()
     expect(screen.getByText('输入（语音）')).not.toBeNull()
     expect(screen.getByText('代理')).not.toBeNull()
