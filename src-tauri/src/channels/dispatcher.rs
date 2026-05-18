@@ -248,6 +248,25 @@ async fn run_automation_via_im(
     let state: tauri::State<'_, crate::app::AppState> = app_handle.state();
     let runtime_service = state.runtime_service.clone();
 
+    // Phase 2b cluster A: look up the channel_type for the instance so the
+    // identity_key is the canonical "{channel_type}:{chat_id}" form. Defaults
+    // to "unknown" if the instance row is missing, which lets the dispatch
+    // proceed under a stable (if opaque) identity rather than dropping the
+    // message on the floor.
+    let channel_type = {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+        conn.query_row(
+            "SELECT channel_type FROM im_channel_instances WHERE id = ?1",
+            rusqlite::params![&msg.instance_id],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap_or_else(|_| "unknown".to_string())
+    };
+    let identity_key = format!("{}:{}", channel_type, msg.chat_id);
+
     let payload = serde_json::json!({
         "trigger": "im",
         "channel_instance_id": msg.instance_id,
@@ -258,16 +277,22 @@ async fn run_automation_via_im(
     let reply_cl = reply.clone();
     let streaming_cl = streaming.clone();
     let spec_id = spec.spec_id.clone();
+    let app_handle_cl = app_handle.clone();
 
     let _ = reply.send("正在处理中，请稍候…").await;
 
     tokio::spawn(async move {
-        if let Err(e) = runtime_service.execute_run_with_reply(
-            &spec_id,
-            payload,
-            Some(reply_cl),
-            streaming_cl,
-        ).await {
+        if let Err(e) = runtime_service
+            .execute_run_in_chat_session(
+                &spec_id,
+                &identity_key,
+                payload,
+                streaming_cl,
+                Some(reply_cl),
+                Some(app_handle_cl),
+            )
+            .await
+        {
             tracing::warn!("run_automation_via_im error: {e}");
         }
     });
@@ -802,5 +827,76 @@ mod tests {
         }])
         .unwrap();
         assert!(row_to_chat_message("assistant", stored).is_none());
+    }
+
+    // Phase 2b cluster A: per-identity chat session routing for IM-triggered specs.
+
+    #[test]
+    fn im_dispatcher_identity_key_isolates_per_user_chat_sessions() {
+        // Mirrors the identity_key construction done inside run_automation_via_im.
+        // Verifies two IM users on the same channel for the same spec get
+        // distinct (spec, identity) chat sessions, while a second message
+        // from the first user reuses theirs.
+        use crate::automation::runtime::chat_sessions::get_or_create_chat_session;
+        let conn = setup_db();
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO im_channel_instances
+             (id, space_id, channel_type, name, config_json, credentials_json,
+              enabled, streaming, reply_scope, permission_enabled, owners_json,
+              created_at, updated_at)
+             VALUES ('chan_x', 'default', 'wechat_ilink', 'test', '{}', '{}',
+                     1, 0, 'all', 0, '[]', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        // Simulate run_automation_via_im's identity_key construction by
+        // looking up channel_type and combining with chat_id.
+        let lookup_channel_type = |instance_id: &str| -> String {
+            conn.query_row(
+                "SELECT channel_type FROM im_channel_instances WHERE id = ?1",
+                rusqlite::params![instance_id],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap_or_else(|_| "unknown".to_string())
+        };
+
+        let key_a = format!("{}:{}", lookup_channel_type("chan_x"), "UIN_a");
+        let key_b = format!("{}:{}", lookup_channel_type("chan_x"), "UIN_b");
+        let key_a_again = format!("{}:{}", lookup_channel_type("chan_x"), "UIN_a");
+        assert_eq!(key_a, "wechat_ilink:UIN_a");
+        assert_eq!(key_b, "wechat_ilink:UIN_b");
+        assert_eq!(key_a, key_a_again);
+
+        let id_a = get_or_create_chat_session(&conn, "spec_y", &key_a, "default").unwrap();
+        let id_b = get_or_create_chat_session(&conn, "spec_y", &key_b, "default").unwrap();
+        let id_a_again = get_or_create_chat_session(&conn, "spec_y", &key_a_again, "default").unwrap();
+
+        assert_ne!(id_a, id_b, "two IM users must get distinct chat sessions");
+        assert_eq!(id_a, id_a_again, "same IM user's second message reuses session");
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM automation_chat_sessions WHERE spec_id='spec_y'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn im_dispatcher_identity_key_falls_back_to_unknown_when_instance_missing() {
+        // If the im_channel_instances row is missing (race / DB inconsistency),
+        // the lookup must return "unknown" so dispatch still proceeds under a
+        // stable identity rather than dropping the message.
+        let conn = setup_db();
+        let lookup_channel_type = |instance_id: &str| -> String {
+            conn.query_row(
+                "SELECT channel_type FROM im_channel_instances WHERE id = ?1",
+                rusqlite::params![instance_id],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap_or_else(|_| "unknown".to_string())
+        };
+        let key = format!("{}:{}", lookup_channel_type("nonexistent"), "UIN_z");
+        assert_eq!(key, "unknown:UIN_z");
     }
 }
