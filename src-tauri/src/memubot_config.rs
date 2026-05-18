@@ -117,8 +117,8 @@ pub struct LocalApiConfig {
 #[serde(default)]
 pub struct EmbeddingEndpointConfig {
     /// gbrain's `base_urls.llama-server` value. Default
-    /// `http://localhost:27270/v1` (uClaw local API; pairs with
-    /// `local_api.port = 27270`).
+    /// `http://localhost:7337/v1` (uClaw LocalApiService; pairs with
+    /// `local_api.port = 7337`).
     pub base_url: String,
     /// gbrain's `embedding_model` value, in the `<recipe>:<model>` shape
     /// gbrain expects. Default `llama-server:bge-small-en-v1.5`.
@@ -617,7 +617,7 @@ impl Default for LocalApiConfig {
 impl Default for EmbeddingEndpointConfig {
     fn default() -> Self {
         Self {
-            base_url: "http://localhost:27270/v1".to_string(),
+            base_url: "http://localhost:7337/v1".to_string(),
             model: "llama-server:bge-small-en-v1.5".to_string(),
             dimensions: 384,
             fastembed_model: "BAAI/bge-small-en-v1.5".to_string(),
@@ -1108,7 +1108,7 @@ mod embedding_endpoint_tests {
     #[test]
     fn default_points_at_local_api() {
         let cfg = EmbeddingEndpointConfig::default();
-        assert_eq!(cfg.base_url, "http://localhost:27270/v1");
+        assert_eq!(cfg.base_url, "http://localhost:7337/v1");
         assert_eq!(cfg.model, "llama-server:bge-small-en-v1.5");
         assert_eq!(cfg.dimensions, 384);
         assert_eq!(cfg.fastembed_model, "BAAI/bge-small-en-v1.5");
@@ -1145,6 +1145,6 @@ mod embedding_endpoint_tests {
         let legacy_json = r#"{}"#;
         let cfg: MemubotConfig = serde_json::from_str(legacy_json).unwrap();
         // Default values land:
-        assert_eq!(cfg.embedding_endpoint.base_url, "http://localhost:27270/v1");
+        assert_eq!(cfg.embedding_endpoint.base_url, "http://localhost:7337/v1");
     }
 }
