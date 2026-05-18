@@ -254,6 +254,9 @@ pub struct AppState {
     /// Browser service for headless Chrome automation
     pub browser_service: Arc<crate::browser::BrowserService>,
 
+    /// Browser context manager — per-session Chrome lifecycle for Browser Agent v2.
+    pub browser_context_manager: Arc<crate::browser::BrowserContextManager>,
+
     // Evaluation harness
     pub trajectory_store: Arc<crate::harness::TrajectoryStore>,
     pub tool_budget: Arc<crate::harness::ToolBudgetManager>,
@@ -756,6 +759,7 @@ impl AppState {
             memubot_config: Arc::new(tokio::sync::RwLock::new(memubot_config)),
             running_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             browser_service: Arc::new(crate::browser::BrowserService::new()),
+            browser_context_manager: Arc::new(crate::browser::BrowserContextManager::new(app_handle.clone())),
             trajectory_store,
             tool_budget,
             files_rail_service,

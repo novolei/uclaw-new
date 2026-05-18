@@ -543,16 +543,28 @@ pub async fn send_message(
             app_handle.clone(),
         ).with_infra(Arc::clone(&state.infra_service))
     );
-    // Browser tools
+    // Browser tools (v2 — BrowserContextManager)
     {
         use crate::browser::tools::*;
-        let b = Arc::clone(&state.browser_service);
-        tools.register(BrowserNavigateTool::new(Arc::clone(&b)));
-        tools.register(BrowserScreenshotTool::new(Arc::clone(&b)));
-        tools.register(BrowserExtractTool::new(Arc::clone(&b)));
-        tools.register(BrowserClickTool::new(Arc::clone(&b)));
-        tools.register(BrowserTypeTool::new(Arc::clone(&b)));
-        tools.register(BrowserWaitTool::new(Arc::clone(&b)));
+        let ctx_mgr = Arc::clone(&state.browser_context_manager);
+        let sid = input.conversation_id.clone();
+        macro_rules! bt {
+            ($T:ident) => { $T { ctx_mgr: Arc::clone(&ctx_mgr), session_id: sid.clone() } };
+        }
+        tools.register(bt!(BrowserNavigateTool));
+        tools.register(bt!(BrowserGoBackTool));
+        tools.register(bt!(BrowserGoForwardTool));
+        tools.register(bt!(BrowserReloadTool));
+        tools.register(bt!(BrowserGetDomTool));
+        tools.register(bt!(BrowserScreenshotTool));
+        tools.register(bt!(BrowserExtractTool));
+        tools.register(bt!(BrowserClickTool));
+        tools.register(bt!(BrowserTypeTool));
+        tools.register(bt!(BrowserSelectTool));
+        tools.register(bt!(BrowserScrollTool));
+        tools.register(bt!(BrowserSendKeysTool));
+        tools.register(bt!(BrowserEvaluateTool));
+        tools.register(bt!(BrowserManageTabsTool));
     }
     // MCP tool proxies — agents see tools from any currently-connected
     // MCP server as `mcp__{server_id}__{tool_name}`. Sourced from
@@ -8452,15 +8464,28 @@ pub async fn send_agent_message(
         input.session_id.clone(),
         "default".into(),
     ));
+    // Browser tools (v2 — BrowserContextManager)
     {
         use crate::browser::tools::*;
-        let b = Arc::clone(&state.browser_service);
-        tools.register(BrowserNavigateTool::new(Arc::clone(&b)));
-        tools.register(BrowserScreenshotTool::new(Arc::clone(&b)));
-        tools.register(BrowserExtractTool::new(Arc::clone(&b)));
-        tools.register(BrowserClickTool::new(Arc::clone(&b)));
-        tools.register(BrowserTypeTool::new(Arc::clone(&b)));
-        tools.register(BrowserWaitTool::new(Arc::clone(&b)));
+        let ctx_mgr = Arc::clone(&state.browser_context_manager);
+        let sid = input.session_id.clone();
+        macro_rules! bt {
+            ($T:ident) => { $T { ctx_mgr: Arc::clone(&ctx_mgr), session_id: sid.clone() } };
+        }
+        tools.register(bt!(BrowserNavigateTool));
+        tools.register(bt!(BrowserGoBackTool));
+        tools.register(bt!(BrowserGoForwardTool));
+        tools.register(bt!(BrowserReloadTool));
+        tools.register(bt!(BrowserGetDomTool));
+        tools.register(bt!(BrowserScreenshotTool));
+        tools.register(bt!(BrowserExtractTool));
+        tools.register(bt!(BrowserClickTool));
+        tools.register(bt!(BrowserTypeTool));
+        tools.register(bt!(BrowserSelectTool));
+        tools.register(bt!(BrowserScrollTool));
+        tools.register(bt!(BrowserSendKeysTool));
+        tools.register(bt!(BrowserEvaluateTool));
+        tools.register(bt!(BrowserManageTabsTool));
     }
     // MCP tool proxies — see send_message above for the rationale (PR-1).
     {
@@ -9086,6 +9111,115 @@ pub async fn browser_take_screenshot(
 ) -> Result<String, Error> {
     let result = state.browser_service.screenshot(&tab_id).await?;
     Ok(result.data)
+}
+
+#[tauri::command]
+pub async fn browser_list_sessions(
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    Ok(state.browser_context_manager.list_active_sessions().await)
+}
+
+#[tauri::command]
+pub async fn browser_destroy_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.browser_context_manager.destroy(&session_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn browser_start_screencast(
+    session_id: String,
+    tab_id: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    ctx.start_screencast(&tab_id, app_handle).await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn browser_stop_screencast(
+    session_id: String,
+    tab_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if let Ok(ctx) = state.browser_context_manager.get_or_create(&session_id).await {
+        ctx.stop_screencast(&tab_id).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn browser_get_dom_state(
+    session_id: String,
+    tab_id: String,
+    state: State<'_, AppState>,
+) -> Result<crate::browser::types::DOMState, String> {
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    ctx.get_dom_state(&tab_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn browser_ui_navigate(
+    session_id: String,
+    tab_id: String,
+    url: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    ctx.navigate(&tab_id, &url).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn browser_ui_go_back(
+    session_id: String,
+    tab_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    ctx.go_back(&tab_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn browser_ui_go_forward(
+    session_id: String,
+    tab_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    ctx.go_forward(&tab_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn browser_ui_reload(
+    session_id: String,
+    tab_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    ctx.reload(&tab_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn browser_ui_close_tab(
+    session_id: String,
+    tab_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if let Ok(ctx) = state.browser_context_manager.get_or_create(&session_id).await {
+        let _ = ctx.close_tab(&tab_id).await;
+    }
+    Ok(())
 }
 
 // ─── System Tray / Badge Commands (Phase 3) ─────────────────────────────────
