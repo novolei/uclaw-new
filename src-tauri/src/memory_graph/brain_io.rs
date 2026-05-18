@@ -178,7 +178,7 @@ pub fn parse_file(raw: &str) -> Option<(BrainFrontmatter, String)> {
             return None;
         }
     };
-    Some((fm, body.to_string()))
+    Some((fm, body.trim().to_string()))
 }
 
 /// SHA-256 the bytes as a lowercase hex string. Used to gate
