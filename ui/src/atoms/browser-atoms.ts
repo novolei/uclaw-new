@@ -47,3 +47,47 @@ export const browserScreencastActiveAtom = atom(new Set<string>())
 
 /** Whether the DOM element bounding-box overlay is visible in BrowserPanel. */
 export const browserDOMOverlayVisibleAtom = atom(false)
+
+// ── V1 compatibility shims (Sprint 2.2 hotfix) ────────────────────────
+//
+// PR #213 (Browser Agent v2) rewrote this file's atom surface from the
+// V1 single-global model (`browserStateAtom`, `isBrowserLoadingAtom`,
+// type `BrowserState`) to the V2 session-keyed Map model (above). Two
+// legacy consumers were NOT migrated in the same PR and still import the
+// V1 names:
+//
+//   ui/src/components/agent/BrowserViewer.tsx   ← mounted by RightSidePanel
+//   ui/src/components/canvas/BrowserViewer.tsx  ← mounted by TabContent
+//
+// Without these names exported, vite fails the module graph at boot
+// (`SyntaxError: Importing binding name 'isBrowserLoadingAtom' is not
+// found`) and the entire app renders blank.
+//
+// Re-export V1 names as no-op stubs so the legacy components keep
+// compiling + rendering their static "Browser Idle" UI. They lose the
+// actual data flow (which now lives in V2 atoms keyed by sessionId) —
+// that's acceptable because launch/shutdown control is migrating to
+// BrowserPanel anyway. Proper migration: delete agent/BrowserViewer +
+// canvas/BrowserViewer entirely and wire BrowserPanel into the two
+// mount points. Tracked as a separate PR; this hotfix only unblocks
+// the white screen.
+//
+// DO NOT add new code that depends on these V1 atoms. Use the V2
+// session-keyed Map atoms above.
+
+/** @deprecated V1 — use V2 session-keyed atoms above. */
+export interface BrowserState {
+  running: boolean
+  tabs: BrowserTabEntry[]
+  activeTabId: string | null
+}
+
+/** @deprecated V1 — no-op stub; superseded by V2 session-keyed atoms. */
+export const browserStateAtom = atom<BrowserState>({
+  running: false,
+  tabs: [],
+  activeTabId: null,
+})
+
+/** @deprecated V1 — no-op stub; superseded by V2 session-keyed atoms. */
+export const isBrowserLoadingAtom = atom<boolean>(false)
