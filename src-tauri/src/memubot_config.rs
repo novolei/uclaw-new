@@ -13,6 +13,10 @@ pub struct MemubotConfig {
     pub proactive: ProactiveConfig,
     /// 本地 API 服务配置
     pub local_api: LocalApiConfig,
+    /// Embedding endpoint configuration (gbrain pointer + memU FastEmbed
+    /// model). New in Sprint 2.2 followon #4.
+    #[serde(default)]
+    pub embedding_endpoint: EmbeddingEndpointConfig,
     /// 防休眠配置
     pub power: PowerConfig,
     /// 上下文管理配置
@@ -91,6 +95,41 @@ pub struct LocalApiConfig {
     pub enabled: bool,
     /// 监听端口
     pub port: u16,
+}
+
+/// Embedding endpoint configuration (Sprint 2.2 followon #4)
+///
+/// Three gbrain config keys + one memU env var, surfaced as a single
+/// settings page section so the user doesn't have to coordinate them
+/// manually.
+///
+/// Default points gbrain at uClaw's own `/v1/embeddings` route
+/// (`POST http://localhost:<local_api.port>/v1/embeddings` — backed by
+/// memU's FastEmbed bridge, ~100ms warm-path per chunk, no external
+/// API key required). Users can override to point at OpenAI / Voyage /
+/// llama-server / ollama / any openai-compatible endpoint.
+///
+/// `fastembed_model` drives the actual FastEmbed model memU loads
+/// inside its Python bridge (read at bridge spawn time via
+/// `FASTEMBED_MODEL` env). Changing this requires a memU bridge
+/// restart, which `set_embedding_config` handles transparently.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmbeddingEndpointConfig {
+    /// gbrain's `base_urls.llama-server` value. Default
+    /// `http://localhost:27270/v1` (uClaw local API; pairs with
+    /// `local_api.port = 27270`).
+    pub base_url: String,
+    /// gbrain's `embedding_model` value, in the `<recipe>:<model>` shape
+    /// gbrain expects. Default `llama-server:bge-small-en-v1.5`.
+    pub model: String,
+    /// gbrain's `embedding_dimensions` value. Default `384` (bge-small).
+    pub dimensions: u32,
+    /// FastEmbed model id loaded by the memU bridge (via
+    /// `FASTEMBED_MODEL` env). Default `BAAI/bge-small-en-v1.5`.
+    /// Changing this triggers a memU bridge restart so the new model
+    /// is loaded on the next embed call.
+    pub fastembed_model: String,
 }
 
 /// 防休眠配置
@@ -469,6 +508,7 @@ impl Default for MemubotConfig {
             memorization: MemorizationConfig::default(),
             proactive: ProactiveConfig::default(),
             local_api: LocalApiConfig::default(),
+            embedding_endpoint: EmbeddingEndpointConfig::default(),
             power: PowerConfig::default(),
             context: ContextConfig::default(),
             observability: ObservabilityConfig::default(),
@@ -570,6 +610,17 @@ impl Default for LocalApiConfig {
         Self {
             enabled: true,
             port: 7337,
+        }
+    }
+}
+
+impl Default for EmbeddingEndpointConfig {
+    fn default() -> Self {
+        Self {
+            base_url: "http://localhost:27270/v1".to_string(),
+            model: "llama-server:bge-small-en-v1.5".to_string(),
+            dimensions: 384,
+            fastembed_model: "BAAI/bge-small-en-v1.5".to_string(),
         }
     }
 }
@@ -1047,5 +1098,53 @@ mod tests {
         // Forward-compat — turning on 7.4 leaves Phase 6 flags alone.
         assert!(!config.memory_os.wiki_real_synthesizer_enabled);
         assert!(!config.memory_os.entity_synthesizer_enabled);
+    }
+}
+
+#[cfg(test)]
+mod embedding_endpoint_tests {
+    use super::*;
+
+    #[test]
+    fn default_points_at_local_api() {
+        let cfg = EmbeddingEndpointConfig::default();
+        assert_eq!(cfg.base_url, "http://localhost:27270/v1");
+        assert_eq!(cfg.model, "llama-server:bge-small-en-v1.5");
+        assert_eq!(cfg.dimensions, 384);
+        assert_eq!(cfg.fastembed_model, "BAAI/bge-small-en-v1.5");
+    }
+
+    #[test]
+    fn memubot_default_includes_embedding_endpoint() {
+        let cfg = MemubotConfig::default();
+        // The field is present + has the right default.
+        assert_eq!(cfg.embedding_endpoint.dimensions, 384);
+    }
+
+    #[test]
+    fn embedding_endpoint_round_trips_through_json() {
+        let cfg = EmbeddingEndpointConfig {
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "openai:text-embedding-3-large".to_string(),
+            dimensions: 3072,
+            fastembed_model: "BAAI/bge-m3".to_string(),
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let parsed: EmbeddingEndpointConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.base_url, cfg.base_url);
+        assert_eq!(parsed.model, cfg.model);
+        assert_eq!(parsed.dimensions, cfg.dimensions);
+        assert_eq!(parsed.fastembed_model, cfg.fastembed_model);
+    }
+
+    #[test]
+    fn missing_field_falls_back_to_default() {
+        // Older config files won't have embedding_endpoint at all —
+        // verify `#[serde(default)]` on the field + `#[serde(default)]`
+        // on EmbeddingEndpointConfig together cover this.
+        let legacy_json = r#"{}"#;
+        let cfg: MemubotConfig = serde_json::from_str(legacy_json).unwrap();
+        // Default values land:
+        assert_eq!(cfg.embedding_endpoint.base_url, "http://localhost:27270/v1");
     }
 }
