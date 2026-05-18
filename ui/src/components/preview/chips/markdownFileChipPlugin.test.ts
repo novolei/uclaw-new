@@ -79,4 +79,25 @@ describe('markdownFileChipPlugin', () => {
     const chips = findChipNodes(tree)
     expect(chips).toHaveLength(0)
   })
+
+  it('converts inline-code Chinese filename to a chip', () => {
+    const tree = run('已保存至工作区的 `微小说_飞升之后.md`。')
+    const chips = findChipNodes(tree)
+    expect(chips).toHaveLength(1)
+    expect(chips[0].data.hProperties).toMatchObject({ rawPath: '微小说_飞升之后.md', label: '微小说_飞升之后.md' })
+  })
+
+  it('converts markdown link with Chinese filename to a chip', () => {
+    const tree = run('查看 [微小说_飞升之后.md](微小说_飞升之后.md) 预览。')
+    const chips = findChipNodes(tree)
+    expect(chips).toHaveLength(1)
+    expect(chips[0].data.hProperties).toMatchObject({ rawPath: '微小说_飞升之后.md', label: '微小说_飞升之后.md' })
+  })
+
+  it('converts slash-bearing path with Chinese filename to a chip', () => {
+    const tree = run('文件保存到 workground/微小说_飞升之后.md 路径下。')
+    const chips = findChipNodes(tree)
+    expect(chips).toHaveLength(1)
+    expect(chips[0].data.hProperties.rawPath).toBe('workground/微小说_飞升之后.md')
+  })
 })

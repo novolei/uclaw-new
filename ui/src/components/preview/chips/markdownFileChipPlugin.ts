@@ -29,10 +29,13 @@ import { parseLineCol } from './line-col-parser'
 
 const PROTOCOL_RE = /^[a-z][a-z0-9+.-]*:\/\//i
 
-const INLINE_CODE_FILENAME_RE = /^[\w.@-]+\.([a-z0-9]+)$/i
+// Unicode flag (u) enables \p{L} (letter) and \p{N} (number) property escapes,
+// allowing Chinese / Japanese / Korean and other non-ASCII filename characters
+// to be detected. \w keeps ASCII word-char coverage (a–z, A–Z, 0–9, _).
+const INLINE_CODE_FILENAME_RE = /^[\w\p{L}\p{N}.@-]+\.([a-z0-9]+)$/iu
 
 const PATH_TOKEN_RE =
-  /(?:^|[\s\(])((?:[\w.@-]+\/)+[\w.-]+\.[a-z0-9]+(?::\d+(?::\d+)?)?)(?=[\s\)\.,;:!?]|$)/g
+  /(?:^|[\s(])((?:[\w\p{L}\p{N}.@-]+\/)+[\w\p{L}\p{N}.-]+\.[a-z0-9]+(?::\d+(?::\d+)?)?)(?=[\s).,;:!?]|$)/gu
 
 interface ChipHProperties {
   rawPath: string
