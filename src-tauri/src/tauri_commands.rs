@@ -9515,44 +9515,48 @@ pub async fn browser_ui_navigate(
     session_id: String,
     tab_id: String,
     url: String,
+    app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let ctx = state.browser_context_manager.get_or_create(&session_id).await
         .map_err(|e| e.to_string())?;
-    ctx.navigate(&tab_id, &url).await.map_err(|e| e.to_string())
+    ctx.navigate(&tab_id, &url, &app_handle).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn browser_ui_go_back(
     session_id: String,
     tab_id: String,
+    app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let ctx = state.browser_context_manager.get_or_create(&session_id).await
         .map_err(|e| e.to_string())?;
-    ctx.go_back(&tab_id).await.map_err(|e| e.to_string())
+    ctx.go_back(&tab_id, &app_handle).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn browser_ui_go_forward(
     session_id: String,
     tab_id: String,
+    app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let ctx = state.browser_context_manager.get_or_create(&session_id).await
         .map_err(|e| e.to_string())?;
-    ctx.go_forward(&tab_id).await.map_err(|e| e.to_string())
+    ctx.go_forward(&tab_id, &app_handle).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn browser_ui_reload(
     session_id: String,
     tab_id: String,
+    app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let ctx = state.browser_context_manager.get_or_create(&session_id).await
         .map_err(|e| e.to_string())?;
-    ctx.reload(&tab_id).await.map_err(|e| e.to_string())
+    ctx.reload(&tab_id, &app_handle).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

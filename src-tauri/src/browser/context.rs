@@ -171,8 +171,62 @@ impl BrowserContext {
 
     // ── Navigation ────────────────────────────────────────────────────────────
 
+    /// Emit a `browser:nav-state` event to the frontend.
+    async fn emit_nav_state(
+        &self,
+        tab_id: &str,
+        page: &Page,
+        app_handle: &tauri::AppHandle,
+        is_loading: bool,
+    ) {
+        let url = page
+            .evaluate("window.location.href")
+            .await
+            .ok()
+            .and_then(|v| v.into_value::<String>().ok())
+            .unwrap_or_default();
+        let title = page
+            .evaluate("document.title")
+            .await
+            .ok()
+            .and_then(|v| v.into_value::<String>().ok())
+            .unwrap_or_default();
+        let history_len = page
+            .evaluate("history.length")
+            .await
+            .ok()
+            .and_then(|v| v.into_value::<i64>().ok())
+            .unwrap_or(1);
+        let payload = NavStatePayload {
+            session_id: self.session_id.clone(),
+            tab_id: tab_id.to_string(),
+            url,
+            title,
+            is_loading,
+            can_go_back: history_len > 1,
+            can_go_forward: false,
+        };
+        let _ = app_handle.emit("browser:nav-state", &payload);
+    }
+
     /// Navigate to `url` in the given tab. Returns the resolved tab_id.
-    pub async fn navigate(&self, tab_id: &str, url: &str) -> Result<String> {
+    pub async fn navigate(
+        &self,
+        tab_id: &str,
+        url: &str,
+        app_handle: &tauri::AppHandle,
+    ) -> Result<String> {
+        // Emit loading=true immediately so the address bar shows a spinner.
+        let _ = app_handle.emit("browser:nav-state", NavStatePayload {
+            session_id: self.session_id.clone(),
+            tab_id: if tab_id == "new" { "new".to_string() } else { tab_id.to_string() },
+            url: url.to_string(),
+            title: String::new(),
+            is_loading: true,
+            can_go_back: false,
+            can_go_forward: false,
+        });
+
         let mut pages = self.pages.write().await;
         if tab_id != "new" {
             if let Some(page) = pages.get(tab_id) {
@@ -182,6 +236,7 @@ impl BrowserContext {
                     .await
                     .map_err(|e| anyhow!("navigate to {url}: {e}"))?;
                 self.invalidate_dom_cache(tab_id).await;
+                self.emit_nav_state(tab_id, &page, app_handle, false).await;
                 return Ok(tab_id.to_string());
             }
         }
@@ -193,35 +248,50 @@ impl BrowserContext {
             .await
             .map_err(|e| anyhow!("new_page: {e}"))?;
         let new_id = Uuid::new_v4().to_string();
-        self.pages.write().await.insert(new_id.clone(), page);
+        self.pages.write().await.insert(new_id.clone(), page.clone());
         self.invalidate_dom_cache(&new_id).await;
+        self.emit_nav_state(&new_id, &page, app_handle, false).await;
         Ok(new_id)
     }
 
-    pub async fn go_back(&self, tab_id: &str) -> Result<()> {
+    pub async fn go_back(&self, tab_id: &str, app_handle: &tauri::AppHandle) -> Result<()> {
         let page = self.get_page(tab_id).await?;
         page.evaluate("history.back()")
             .await
             .map_err(|e| anyhow!("go_back failed: {}", e))?;
         self.invalidate_dom_cache(tab_id).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        self.emit_nav_state(tab_id, &page, app_handle, false).await;
         Ok(())
     }
 
-    pub async fn go_forward(&self, tab_id: &str) -> Result<()> {
+    pub async fn go_forward(&self, tab_id: &str, app_handle: &tauri::AppHandle) -> Result<()> {
         let page = self.get_page(tab_id).await?;
         page.evaluate("history.forward()")
             .await
             .map_err(|e| anyhow!("go_forward failed: {}", e))?;
         self.invalidate_dom_cache(tab_id).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        self.emit_nav_state(tab_id, &page, app_handle, false).await;
         Ok(())
     }
 
-    pub async fn reload(&self, tab_id: &str) -> Result<()> {
+    pub async fn reload(&self, tab_id: &str, app_handle: &tauri::AppHandle) -> Result<()> {
         let page = self.get_page(tab_id).await?;
+        let _ = app_handle.emit("browser:nav-state", NavStatePayload {
+            session_id: self.session_id.clone(),
+            tab_id: tab_id.to_string(),
+            url: String::new(),
+            title: String::new(),
+            is_loading: true,
+            can_go_back: false,
+            can_go_forward: false,
+        });
         page.reload()
             .await
             .map_err(|e| anyhow!("reload failed: {}", e))?;
         self.invalidate_dom_cache(tab_id).await;
+        self.emit_nav_state(tab_id, &page, app_handle, false).await;
         Ok(())
     }
 

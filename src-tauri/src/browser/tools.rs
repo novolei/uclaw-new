@@ -84,7 +84,7 @@ impl Tool for BrowserNavigateTool {
         let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
-        let resolved_id = ctx.navigate(tab_id, url).await
+        let resolved_id = ctx.navigate(tab_id, url, self.ctx_mgr.app_handle()).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
         if let Err(e) = ctx.apply_device_emulation(&resolved_id, device).await {
@@ -126,7 +126,7 @@ impl Tool for BrowserGoBackTool {
         let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
-        ctx.go_back(tab_id).await
+        ctx.go_back(tab_id, self.ctx_mgr.app_handle()).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
         Ok(ToolOutput::success("Navigated back.", start.elapsed().as_millis() as u64))
@@ -161,7 +161,7 @@ impl Tool for BrowserGoForwardTool {
         let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
-        ctx.go_forward(tab_id).await
+        ctx.go_forward(tab_id, self.ctx_mgr.app_handle()).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
         Ok(ToolOutput::success("Navigated forward.", start.elapsed().as_millis() as u64))
@@ -196,7 +196,7 @@ impl Tool for BrowserReloadTool {
         let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
-        ctx.reload(tab_id).await
+        ctx.reload(tab_id, self.ctx_mgr.app_handle()).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
         Ok(ToolOutput::success("Page reloaded.", start.elapsed().as_millis() as u64))
