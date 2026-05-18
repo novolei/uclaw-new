@@ -354,16 +354,34 @@ impl AppRuntimeService {
             let sub_id = format!("{}-sub-{}", spec_id, idx);
             let tag = Self::source_tag(sub).to_string();
 
-            // Build the callback that funnels fire events into execute_run.
+            // Phase 2b cluster A: autonomous triggers (scheduled / file /
+            // webhook / webpage / rss / wecom / custom) route into the spec
+            // owner's "local" chat session instead of creating per-fire
+            // automation:scheduled sessions. The sub_id is preserved in
+            // logging but no longer passed as a per-fire identifier.
             let svc = self.weak_ref();
-            let sub_id_cb = sub_id.clone();
+            let _sub_id_for_log = sub_id.clone();
             let cb: TriggerCallback = Arc::new(move |sid: String, _sub: String, payload: serde_json::Value| {
                 let svc = svc.clone();
-                let sub_id_inner = sub_id_cb.clone();
                 tokio::spawn(async move {
                     if let Some(svc) = svc.upgrade() {
-                        if let Err(e) = svc.execute_run(&sid, Some(&sub_id_inner), payload).await {
-                            tracing::warn!("[AppRuntimeService] execute_run error for spec {}: {}", sid, e);
+                        let app = svc.app_handle.clone();
+                        if let Err(e) = svc
+                            .execute_run_in_chat_session(
+                                &sid,
+                                "local",
+                                payload,
+                                None, // no UI streaming on autonomous fire
+                                None, // no IM reply target for autonomous fire
+                                app,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                "[AppRuntimeService] execute_run_in_chat_session error for spec {}: {}",
+                                sid,
+                                e
+                            );
                         }
                     }
                 });
