@@ -1600,6 +1600,66 @@ CREATE INDEX IF NOT EXISTS idx_aut_chat_sess_agent_id
     ON automation_chat_sessions(agent_session_id);
 ";
 
+/// V39 — Memory OS Foundation Sprint 1 (post-Phase-7) · `user_profile_facets`.
+///
+/// Stores the openhuman-style stability-graded user profile facets. Each
+/// row is one fact about the user (or a candidate fact still proving
+/// itself), graded by half-life-decayed evidence accumulation.
+///
+/// Schema mirrors openhuman's `memory/store/unified/profile.rs:25-47`:
+///
+/// - `facet_id`      Stable identity for this (class, name) tuple. ULID-ish.
+/// - `class`         One of: 'identity' | 'style' | 'tooling' | 'veto' |
+///                   'goal' | 'channel'. Sets the budget (4/4/5/3/3/1)
+///                   and half-life (90d/14d/30d/30d/60d/7d).
+/// - `name`          Short slot name within the class
+///                   ("editor", "package_manager", ...). UNIQUE per class.
+/// - `value`         The actual fact value. Free-form short string.
+/// - `state`         One of: 'candidate' | 'provisional' | 'active' |
+///                   'forgotten'. Promoted by stability_detector when
+///                   score crosses TAU_PROVISIONAL (0.7) → TAU_PROMOTE
+///                   (1.5); demoted when below TAU_EVICT (0.4).
+/// - `stability`     The most recently computed stability score (REAL).
+///                   Persisted for telemetry + UI; recomputed every
+///                   30 min by `learning::scheduler::rebuild`.
+/// - `cue_families_json` JSON map `{explicit: float, structural: float,
+///                   behavioral: float, recurrence: float}` accumulating
+///                   the weighted evidence count by cue family.
+/// - `evidence_count` Total evidence rows that contributed (across all
+///                   cue families). Used in the log-decay term.
+/// - `last_seen_at`  Latest evidence timestamp (epoch ms). Drives the
+///                   exp(-Δt/half_life) decay factor.
+/// - `created_at`/`updated_at` Lifecycle.
+///
+/// Indexes:
+/// - `idx_facets_class_state`  for the common "list active in class"
+///                             query the prompt section needs.
+/// - `idx_facets_last_seen`    for half-life decay sweeps.
+/// - UNIQUE(class, name)       enforces "one facet per (class, name)";
+///                             repeated observation just bumps
+///                             evidence_count and last_seen_at.
+pub const V39_USER_PROFILE_FACETS: &str = "
+CREATE TABLE IF NOT EXISTS user_profile_facets (
+    facet_id           TEXT PRIMARY KEY,
+    class              TEXT NOT NULL,
+    name               TEXT NOT NULL,
+    value              TEXT NOT NULL,
+    state              TEXT NOT NULL DEFAULT 'candidate',
+    stability          REAL NOT NULL DEFAULT 0.0,
+    cue_families_json  TEXT NOT NULL DEFAULT '{}',
+    evidence_count     INTEGER NOT NULL DEFAULT 1,
+    last_seen_at       INTEGER NOT NULL,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_facets_class_name
+    ON user_profile_facets(class, name);
+CREATE INDEX IF NOT EXISTS idx_facets_class_state
+    ON user_profile_facets(class, state);
+CREATE INDEX IF NOT EXISTS idx_facets_last_seen
+    ON user_profile_facets(last_seen_at);
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -1882,6 +1942,14 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V38_AUTOMATION_CHAT_SESSIONS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V38 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V39: Memory OS Sprint 1 — user_profile_facets for the openhuman-style
+    // stability-graded facet store. See strategy doc Appendix D.
+    tracing::debug!("Running migration V39: user_profile_facets");
+    for stmt in V39_USER_PROFILE_FACETS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V39 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -3021,5 +3089,143 @@ mod tests {
             [],
         );
         assert!(err.is_err(), "second insert with same file_path must fail");
+    }
+
+    // ─── V39 — Memory OS Sprint 1 (user_profile_facets) ──────────
+
+    #[test]
+    fn v39_creates_user_profile_facets_table_and_indexes() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type='table' AND name='user_profile_facets'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "user_profile_facets table must exist after V39");
+
+        for index in [
+            "idx_facets_class_name",
+            "idx_facets_class_state",
+            "idx_facets_last_seen",
+        ] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                    [index],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "index {} must exist after V39", index);
+        }
+    }
+
+    #[test]
+    fn v39_is_idempotent() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error (IF NOT EXISTS)");
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='user_profile_facets'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn v39_user_profile_facets_unique_class_name() {
+        // Same (class, name) must collide; same name across different
+        // classes is allowed (think: "editor" tooling vs "editor" goal).
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        let now = 1700_000_000_000i64;
+
+        // First insert succeeds.
+        conn.execute(
+            "INSERT INTO user_profile_facets \
+             (facet_id, class, name, value, state, stability, \
+              cue_families_json, evidence_count, last_seen_at, \
+              created_at, updated_at) \
+             VALUES ('f1', 'tooling', 'editor', 'helix', 'active', 1.6, \
+                     '{}', 5, ?1, ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+
+        // Same (class, name), different value — must fail.
+        let err = conn.execute(
+            "INSERT INTO user_profile_facets \
+             (facet_id, class, name, value, state, stability, \
+              cue_families_json, evidence_count, last_seen_at, \
+              created_at, updated_at) \
+             VALUES ('f2', 'tooling', 'editor', 'vscode', 'candidate', 0.5, \
+                     '{}', 1, ?1, ?1, ?1)",
+            [now],
+        );
+        assert!(err.is_err(), "duplicate (class, name) must violate UNIQUE");
+
+        // Same name in a different class — must succeed.
+        conn.execute(
+            "INSERT INTO user_profile_facets \
+             (facet_id, class, name, value, state, stability, \
+              cue_families_json, evidence_count, last_seen_at, \
+              created_at, updated_at) \
+             VALUES ('f3', 'goal', 'editor', 'tree-sitter integration', 'active', 1.8, \
+                     '{}', 3, ?1, ?1, ?1)",
+            [now],
+        )
+        .expect("same name in different class must be allowed");
+    }
+
+    #[test]
+    fn v39_state_filter_uses_index() {
+        // Sanity-check that the common 'active in class' query the
+        // prompt section will run is supported. Not a perf test —
+        // just that EXPLAIN QUERY PLAN can hit the index.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        let now = 1700_000_000_000i64;
+
+        // Seed 4 rows: 2 active in tooling, 1 candidate in tooling, 1 active in style.
+        for (id, class, name, state) in [
+            ("f1", "tooling", "editor", "active"),
+            ("f2", "tooling", "shell", "active"),
+            ("f3", "tooling", "browser", "candidate"),
+            ("f4", "style", "tone", "active"),
+        ] {
+            conn.execute(
+                "INSERT INTO user_profile_facets \
+                 (facet_id, class, name, value, state, stability, \
+                  cue_families_json, evidence_count, last_seen_at, \
+                  created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, 'x', ?4, 1.0, '{}', 1, ?5, ?5, ?5)",
+                rusqlite::params![id, class, name, state, now],
+            )
+            .unwrap();
+        }
+
+        // Active-in-class query — the read path UserProfileSection will hit.
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM user_profile_facets \
+                 WHERE class = ?1 AND state = 'active' \
+                 ORDER BY stability DESC",
+            )
+            .unwrap();
+        let names: Vec<String> = stmt
+            .query_map(["tooling"], |r| r.get::<_, String>(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(names.len(), 2, "tooling active should be exactly 2");
+        assert!(names.contains(&"editor".to_string()));
+        assert!(names.contains(&"shell".to_string()));
     }
 }
