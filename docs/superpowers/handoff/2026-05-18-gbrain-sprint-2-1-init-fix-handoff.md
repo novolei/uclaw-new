@@ -128,5 +128,4 @@ docs/superpowers/plans/2026-05-18-gbrain-sprint-2-1-init-fix.md
 docs/superpowers/handoff/2026-05-18-gbrain-sprint-2-1-init-fix-handoff.md
 docs/superpowers/handoff/COMMIT_GBRAIN_SPRINT_2_1_INIT_FIX.txt
 docs/superpowers/handoff/2026-05-18-gbrain-sprint-2-1-handoff.md
-docs/superpowers/handoff/2026-05-18-gbrain-sprint-2-2-preflight-handoff.md
 ```
