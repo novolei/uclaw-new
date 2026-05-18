@@ -96,6 +96,24 @@ pub struct ChatDelegate {
     /// Empty when memory_os.learning_enabled = false OR FacetCache is
     /// empty — `effective_system_prompt` skips the append in that case.
     learned_profile_block: String,
+    /// Memory OS Sprint 2.0 — producer-side handles for the learning
+    /// pipeline. When `learning_enabled = true` AND both handles are
+    /// `Some`, `before_llm_call` at iteration=0 spawns the chat-turn
+    /// extractor over the user's latest message text. Buffer is shared
+    /// with ProactiveService's LearningScheduler so candidates pushed
+    /// here surface in the next 30-min stability rebuild.
+    learning_buffer: Option<Arc<crate::learning::candidate::Buffer>>,
+    learning_llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
+    learning_enabled: bool,
+    /// Db handle for the producer's daily-token-cap check
+    /// (Sprint 2.1b) — sums today's `cost_records.model LIKE
+    /// 'memory_learning%'` before the LLM layer runs.
+    learning_db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
+    /// Sprint 2.1b — daily token budget for the LLM extractor. When
+    /// today's spend exceeds this, the LLM layer is skipped (regex
+    /// layer still runs). Set via `set_learning_pipeline`; default 0
+    /// = effectively disabled.
+    learning_llm_daily_budget: u32,
 }
 
 impl ChatDelegate {
@@ -134,6 +152,11 @@ impl ChatDelegate {
             recent_tool_errors: Mutex::new(Vec::new()),
             db: None,
             learned_profile_block: String::new(),
+            learning_buffer: None,
+            learning_llm: None,
+            learning_enabled: false,
+            learning_db: None,
+            learning_llm_daily_budget: 0,
         }
     }
 
@@ -398,6 +421,30 @@ impl ChatDelegate {
     /// Empty input → no append in `effective_system_prompt`.
     pub fn set_learned_profile_block(&mut self, block: String) {
         self.learned_profile_block = block;
+    }
+
+    /// Memory OS Sprint 2.0 — wire the learning producer pipeline.
+    ///
+    /// Once set, `before_llm_call` at iteration=0 spawns the chat-turn
+    /// extractor over the latest user message text. Candidates land in
+    /// `buffer`; the next ProactiveService tick drains it into facets.
+    ///
+    /// All four params take their non-trivial value from AppState. Passing
+    /// `enabled=false` keeps the field handles for IPC use but skips
+    /// the per-turn spawn.
+    pub fn set_learning_pipeline(
+        &mut self,
+        buffer: Arc<crate::learning::candidate::Buffer>,
+        llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
+        db: Arc<std::sync::Mutex<rusqlite::Connection>>,
+        enabled: bool,
+        llm_daily_budget: u32,
+    ) {
+        self.learning_buffer = Some(buffer);
+        self.learning_llm = llm;
+        self.learning_db = Some(db);
+        self.learning_enabled = enabled;
+        self.learning_llm_daily_budget = llm_daily_budget;
     }
 
     /// Build the effective system prompt including memory context, the user's
@@ -1027,7 +1074,74 @@ impl LoopDelegate for ChatDelegate {
         LoopSignal::Continue
     }
 
-    async fn before_llm_call(&self, _reason_ctx: &mut ReasoningContext, _iteration: usize) -> Option<LoopOutcome> {
+    async fn before_llm_call(&self, reason_ctx: &mut ReasoningContext, iteration: usize) -> Option<LoopOutcome> {
+        // Memory OS Sprint 2.0 — chat-turn extractor hook.
+        // Only fires at iteration=0 (first LLM call after the new user
+        // message), and only when the learning pipeline is wired and
+        // enabled. Failures are explicitly logged-and-swallowed inside
+        // the spawned task so producer bugs cannot stall the LLM call.
+        if iteration == 0 && self.learning_enabled {
+            if let Some(buffer) = self.learning_buffer.as_ref().cloned() {
+                // Find the latest User-role message text. The agent loop
+                // always appends the new turn before before_llm_call fires.
+                let user_text = reason_ctx
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| matches!(m.role, MessageRole::User))
+                    .and_then(|m| m.content.iter().find_map(|c| match c {
+                        ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    }));
+                if let Some(text) = user_text {
+                    if !text.trim().is_empty() {
+                        let session_id = self.conversation_id.clone();
+                        let turn_id = format!(
+                            "{}-{}",
+                            session_id,
+                            self.turn_index.load(Ordering::Relaxed)
+                        );
+                        let llm = self.learning_llm.clone();
+                        let db = self.learning_db.clone();
+                        let daily_budget = self.learning_llm_daily_budget;
+                        tokio::spawn(async move {
+                            // Sprint 2.1b — check today's spend before LLM layer.
+                            // The regex layer is free and always runs; the LLM
+                            // layer fires only when regex empty + budget left.
+                            let llm_allowed = match (&db, llm.as_ref()) {
+                                (Some(db_arc), Some(_)) if daily_budget > 0 => {
+                                    // Sync DB query — no .await. cost_records
+                                    // lookups are cheap (1 indexed row), and
+                                    // we're already inside a spawned task so
+                                    // blocking briefly here doesn't stall the
+                                    // agent loop.
+                                    let spent =
+                                        crate::cost_store::today_learning_tokens(db_arc);
+                                    spent < daily_budget
+                                }
+                                _ => false,
+                            };
+                            let llm_for_call = if llm_allowed { llm.as_ref() } else { None };
+                            let n = crate::learning::extractor::extract_from_chat_turn(
+                                &text,
+                                &session_id,
+                                &turn_id,
+                                &buffer,
+                                llm_allowed,
+                                llm_for_call,
+                            )
+                            .await;
+                            if n > 0 {
+                                tracing::debug!(
+                                    candidates = n,
+                                    "[ChatDelegate] learning::extractor pushed candidates"
+                                );
+                            }
+                        });
+                    }
+                }
+            }
+        }
         None
     }
 

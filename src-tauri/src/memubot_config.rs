@@ -402,6 +402,14 @@ pub struct MemoryOsConfig {
     /// into the agent system prompt. Default ON (zero cost when there
     /// are no candidates) — flip OFF to A/B test prompts.
     pub learning_enabled: bool,
+    /// Sprint 2.1b — daily token budget for the per-turn LLM extractor
+    /// inside `ChatDelegate::before_llm_call`. The dispatcher sums
+    /// `cost_records.model LIKE 'memory_learning%'` for today (UTC) and
+    /// skips the LLM layer when spend exceeds this. The regex layer is
+    /// free and always runs regardless. Defaults to 30_000 tokens/day
+    /// (≈$0.05 with Haiku) — a comfortable ceiling for "openhuman
+    /// warm-start" budgets where the LLM is a fallback to regex.
+    pub learning_llm_daily_token_budget: u32,
 }
 
 impl Default for MemoryOsConfig {
@@ -444,6 +452,11 @@ impl Default for MemoryOsConfig {
             // candidate is pushed. Flip OFF only to A/B test the
             // prompt without the learned profile block.
             learning_enabled: true,
+            // Sprint 2.1b default 30_000 tokens/day. Regex layer is
+            // free + always runs; LLM layer is the budgeted fallback.
+            // Set to 0 to disable the LLM layer entirely (regex-only
+            // operation, no per-day token spend on extraction).
+            learning_llm_daily_token_budget: 30_000,
         }
     }
 }
