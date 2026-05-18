@@ -375,7 +375,16 @@ pub struct MemoryOsConfig {
     /// real analyzer writes `cost_records.model = 'memory_lint:<actual>'`
     /// which the `LIKE 'memory_lint%'` cost guard already sums.
     pub lint_real_analyzer_enabled: bool,
-    // (Future flags for Phase 6.1, 6.2 will be added here with their
+    /// Phase 6.1: Run the periodic tier_escalator (mention_count →
+    /// enrichment_tier). Zero LLM, so default ON. When off, EntityPages
+    /// stay at whatever tier they were assigned at creation.
+    pub tier_escalator_enabled: bool,
+    /// Phase 6.1: Daily cap on tier upgrades. Each upgrade eventually
+    /// makes a downstream synthesizer call eligible, so this is the
+    /// surface that bounds upgrade-driven LLM cost. Downgrades are
+    /// uncapped (they save tokens by demoting irrelevant pages).
+    pub tier_escalator_daily_cap: u32,
+    // (Future flags for Phase 6.2 will be added here with their
     //  defaults so older configs deserialize cleanly.)
 }
 
@@ -399,6 +408,11 @@ impl Default for MemoryOsConfig {
             // existing daily_token_budget cap will gate spend once
             // turned on.
             lint_real_analyzer_enabled: false,
+            // Phase 6.1 default ON (zero LLM). The daily cap (10) is
+            // the actual safety mechanism that bounds downstream
+            // synthesis cost when Phase 6.2 lands.
+            tier_escalator_enabled: true,
+            tier_escalator_daily_cap: 10,
         }
     }
 }
@@ -914,5 +928,41 @@ mod tests {
         let config: MemubotConfig = serde_json::from_str(json).unwrap();
         assert!(config.memory_os.wiki_real_synthesizer_enabled);
         assert!(config.memory_os.lint_real_analyzer_enabled);
+    }
+
+    #[test]
+    fn memory_os_phase61_defaults_are_sensible() {
+        let c = MemoryOsConfig::default();
+        assert!(
+            c.tier_escalator_enabled,
+            "tier_escalator is zero-LLM — default should be ON"
+        );
+        assert!(c.tier_escalator_daily_cap > 0);
+        assert!(
+            c.tier_escalator_daily_cap <= 100,
+            "cap should keep upgrade-driven LLM spend bounded; got {}",
+            c.tier_escalator_daily_cap
+        );
+    }
+
+    #[test]
+    fn memory_os_phase61_explicit_disable_preserved() {
+        let json = r#"{"memory_os":{"tier_escalator_enabled":false}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.memory_os.tier_escalator_enabled);
+        // The cap default still applies — disabling doesn't zero it out.
+        assert_eq!(config.memory_os.tier_escalator_daily_cap, 10);
+        // Forward-compat: turning off 6.1 must not flip earlier phases off.
+        assert!(config.memory_os.entity_page_enabled);
+        assert!(config.memory_os.memory_health_enabled);
+        assert!(config.memory_os.memory_lint_enabled);
+    }
+
+    #[test]
+    fn memory_os_phase61_explicit_cap_override_preserved() {
+        let json = r#"{"memory_os":{"tier_escalator_daily_cap":3}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.memory_os.tier_escalator_daily_cap, 3);
+        assert!(config.memory_os.tier_escalator_enabled, "flag default holds");
     }
 }
