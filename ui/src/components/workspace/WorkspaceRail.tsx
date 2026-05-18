@@ -255,6 +255,7 @@ export function WorkspaceRail({
                     isPinned
                     isArchived={!!s.archived}
                     isOpen={openSessionIds.has(s.id)}
+                    imChannelType={s.imChannelType}
                     onClick={() => onSelectSession(s.id)}
                     onDelete={onDeleteSession ? () => onDeleteSession(s.id) : undefined}
                     onMove={() => setMoveTargetSessionId(s.id)}
@@ -281,6 +282,7 @@ export function WorkspaceRail({
                 isPinned={false}
                 isArchived={!!s.archived}
                 isOpen={openSessionIds.has(s.id)}
+                imChannelType={s.imChannelType}
                 onClick={() => onSelectSession(s.id)}
                 onDelete={onDeleteSession ? () => onDeleteSession(s.id) : undefined}
                 onMove={() => setMoveTargetSessionId(s.id)}

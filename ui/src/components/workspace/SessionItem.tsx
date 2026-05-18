@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { LoaderCircle, MoreHorizontal, FolderInput, Trash2, Pin, PinOff, Archive, ArchiveRestore } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { imChannelDisplay } from '@/lib/im-channel-display'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,6 +24,10 @@ interface SessionItemProps {
    *  left-edge marker (Mail.app-style) so users can see at a glance
    *  which rows in the rail are already loaded in the tab bar. */
   isOpen?: boolean
+  /** IM channel this session originated from (wechat_ilink, wecom_bot, …).
+   *  When present, the leading emoji is replaced with `[channelEmoji]`
+   *  and a tooltip surfaces the channel name. */
+  imChannelType?: string
   onClick: () => void
   onDelete?: () => void
   onMove?: () => void
@@ -42,6 +47,7 @@ function SessionItemImpl({
   running,
   isPinned,
   isOpen,
+  imChannelType,
   onClick,
   onDelete,
   onMove,
@@ -50,6 +56,7 @@ function SessionItemImpl({
   isArchived,
 }: SessionItemProps): React.ReactElement {
   const hasMenu = Boolean(onDelete || onMove || onTogglePin || onToggleArchive)
+  const channel = imChannelDisplay(imChannelType)
   return (
     <div
       onClick={onClick}
@@ -78,9 +85,28 @@ function SessionItemImpl({
           className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-primary/60"
         />
       )}
-      <span className="shrink-0 inline-flex items-center justify-center text-primary" style={{ width: '18px' }}>
+      <span
+        className="shrink-0 inline-flex items-center justify-center text-primary"
+        style={{ width: '18px' }}
+        title={channel ? `来自 ${channel.label}` : undefined}
+      >
         {titlePending ? (
           <LoaderCircle size={14} strokeWidth={2} className="animate-spin" />
+        ) : channel?.logoSrc ? (
+          <img
+            src={channel.logoSrc}
+            alt={`来自 ${channel.label}`}
+            className="w-[14px] h-[14px] object-contain rounded-sm"
+            draggable={false}
+          />
+        ) : channel ? (
+          <span
+            className="text-[14px] leading-none"
+            style={{ fontFamily: "'Noto Emoji', sans-serif" }}
+            aria-label={`来自 ${channel.label}`}
+          >
+            {channel.emoji}
+          </span>
         ) : (
           <span className="text-[14px] leading-none" style={{ fontFamily: "'Noto Emoji', sans-serif" }}>
             {titleEmoji || '💬'}

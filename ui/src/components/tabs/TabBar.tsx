@@ -137,6 +137,9 @@ function TabBarInner({
    *  from right; backward → slide in from left). Matches LeftSidebar. */
   switchDirection: 'forward' | 'backward'
 }): React.ReactElement {
+  // Read agent sessions here (not via prop drilling) so per-tab IM-origin
+  // lookup stays colocated with the render that uses it.
+  const agentSessions = useAtomValue(agentSessionsAtom)
   const [hoveredTabId, setHoveredTabId] = React.useState<string | null>(null)
   const [isLeaving, setIsLeaving] = React.useState(false)
   const enterTimerRef = React.useRef<ReturnType<typeof setTimeout>>()
@@ -206,25 +209,34 @@ function TabBarInner({
         <div className="flex items-center px-1 py-1 shrink-0 self-stretch">
           <TabBarWorkspaceChip />
         </div>
-        {tabs.map((tab) => (
-          <TabBarItem
-            key={tab.id}
-            id={tab.id}
-            type={tab.type}
-            title={tab.title}
-            isActive={tab.id === activeTabId}
-            isStreaming={streamingMap.get(tab.id) ?? 'idle'}
-            isHovered={hoveredTabId === tab.id}
-            isLeaving={hoveredTabId === tab.id && isLeaving}
-            onActivate={() => onActivate(tab.id)}
-            onClose={() => onClose(tab.id)}
-            onMiddleClick={() => onClose(tab.id)}
-            onHoverEnter={() => handleTabHoverEnter(tab.id)}
-            onHoverLeave={handleTabHoverLeave}
-            onPanelHoverEnter={handlePanelHoverEnter}
-            onPanelHoverLeave={handleTabHoverLeave}
-          />
-        ))}
+        {tabs.map((tab) => {
+          // Look up IM origin from agentSessions so the tab can show a
+          // channel-source badge. Only relevant for 'agent' tabs — chat/
+          // browser/symphony don't bind to im_sessions.
+          const session = tab.type === 'agent'
+            ? agentSessions.find((s) => s.id === tab.sessionId)
+            : undefined
+          return (
+            <TabBarItem
+              key={tab.id}
+              id={tab.id}
+              type={tab.type}
+              title={tab.title}
+              isActive={tab.id === activeTabId}
+              isStreaming={streamingMap.get(tab.id) ?? 'idle'}
+              isHovered={hoveredTabId === tab.id}
+              isLeaving={hoveredTabId === tab.id && isLeaving}
+              imChannelType={session?.imChannelType}
+              onActivate={() => onActivate(tab.id)}
+              onClose={() => onClose(tab.id)}
+              onMiddleClick={() => onClose(tab.id)}
+              onHoverEnter={() => handleTabHoverEnter(tab.id)}
+              onHoverLeave={handleTabHoverLeave}
+              onPanelHoverEnter={handlePanelHoverEnter}
+              onPanelHoverLeave={handleTabHoverLeave}
+            />
+          )
+        })}
         </motion.div>
       </AnimatePresence>
     </div>

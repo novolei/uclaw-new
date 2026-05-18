@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils'
 import type { TabType, TabMinimapItem } from '@/atoms/tab-atoms'
 import type { SessionIndicatorStatus } from '@/atoms/agent-atoms'
 import { tabMinimapCacheAtom } from '@/atoms/tab-atoms'
+import { imChannelDisplay } from '@/lib/im-channel-display'
 import { TabPreviewPanel } from './TabPreviewPanel'
 
 export interface TabBarItemProps {
@@ -26,6 +27,10 @@ export interface TabBarItemProps {
   isHovered: boolean
   /** 预览面板是否正在退出动画 */
   isLeaving: boolean
+  /** IM channel that originated this session, if any. When present, a
+   *  `[channelEmoji]` badge is prefixed to the title so users can tell at
+   *  a glance which tab is bridged from an external IM. */
+  imChannelType?: string
   onActivate: () => void
   onClose: () => void
   onMiddleClick: () => void
@@ -47,6 +52,7 @@ export function TabBarItem({
   isStreaming,
   isHovered,
   isLeaving,
+  imChannelType,
   onActivate,
   onClose,
   onMiddleClick,
@@ -55,6 +61,7 @@ export function TabBarItem({
   onPanelHoverEnter,
   onPanelHoverLeave,
 }: TabBarItemProps): React.ReactElement {
+  const channel = imChannelDisplay(imChannelType)
   const buttonRef = React.useRef<HTMLButtonElement>(null)
   const [isNarrow, setIsNarrow] = React.useState(false)
   const minimapCache = useAtomValue(tabMinimapCacheAtom)
@@ -134,6 +141,29 @@ export function TabBarItem({
         {/* 类型图标（agent tab 用 emoji 标题作为视觉标识，不需要额外图标） */}
         {type !== 'agent' && (
           <Icon className={cn('shrink-0', isNarrow ? 'size-3.5' : 'size-3')} />
+        )}
+
+        {/* IM 渠道徽章 — 替换 type Icon，让用户一眼知道 tab 来自哪个 IM。
+            narrow 状态下也保留（取代 Icon 的视觉位置）。 */}
+        {channel && (
+          channel.logoSrc ? (
+            <img
+              src={channel.logoSrc}
+              alt={`来自 ${channel.label}`}
+              title={`来自 ${channel.label}`}
+              className="shrink-0 w-3.5 h-3.5 object-contain rounded-sm"
+              draggable={false}
+            />
+          ) : (
+            <span
+              className="shrink-0 text-[12px] leading-none"
+              style={{ fontFamily: "'Noto Emoji', sans-serif" }}
+              title={`来自 ${channel.label}`}
+              aria-label={`来自 ${channel.label}`}
+            >
+              {channel.emoji}
+            </span>
+          )
         )}
 
         {/* 标题（窄状态下隐藏，用 spacer 撑开让关闭按钮靠右） */}
