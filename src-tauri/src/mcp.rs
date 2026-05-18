@@ -1632,6 +1632,16 @@ impl McpManager {
         self.connect_server(id).await
     }
 
+    /// Snapshot the IDs of enabled servers. Cheap; takes only a `&self`
+    /// borrow so callers can release the lock before doing async work.
+    pub fn list_enabled_ids(&self) -> Vec<String> {
+        self.servers
+            .values()
+            .filter(|s| s.config.enabled)
+            .map(|s| s.config.id.clone())
+            .collect()
+    }
+
     /// Connect all enabled servers
     pub async fn connect_all_enabled(&mut self) {
         let ids: Vec<String> = self
