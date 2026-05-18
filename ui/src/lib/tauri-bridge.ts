@@ -1665,12 +1665,47 @@ export const getTeamChannel = (teamId: string): Promise<TeamChannelMessage[]> =>
 export const stopAgentTeams = (teamId: string): Promise<void> =>
   invoke('stop_agent_teams', { teamId })
 
-// ─── Browser (Phase 3) ────────────────────────────────────────────────
+// ─── Browser (v2) ────────────────────────────────────────────────────
+
 export interface BrowserStateResponse {
   running: boolean
   tabs: { tabId: string; url: string; title: string }[]
   activeTabId: string | null
 }
+
+export interface ScreencastFramePayload {
+  sessionId: string
+  tabId: string
+  dataB64: string
+  pageWidth: number
+  pageHeight: number
+}
+
+export interface DOMElementResponse {
+  index: number
+  tag: string
+  text: string
+  isInViewport: boolean
+  xpath: string
+  boundingBox?: { x: number; y: number; width: number; height: number }
+}
+
+export interface BrowserTabResponse {
+  tabId: string
+  url: string
+  title: string
+  active: boolean
+}
+
+export interface DOMStateResponse {
+  url: string
+  title: string
+  elements: DOMElementResponse[]
+  pageText: string
+  tabs: BrowserTabResponse[]
+}
+
+// ── Legacy commands (backward compat) ────────────────────────────────
 
 export const browserGetState = (): Promise<BrowserStateResponse> =>
   invoke<BrowserStateResponse>('browser_get_state')
@@ -1683,6 +1718,46 @@ export const browserShutdown = (): Promise<boolean> =>
 
 export const browserTakeScreenshot = (tabId: string): Promise<string> =>
   invoke<string>('browser_take_screenshot', { tab_id: tabId })
+
+// ── v2 session commands ───────────────────────────────────────────────
+
+export const browserListSessions = (): Promise<string[]> =>
+  invoke<string[]>('browser_list_sessions')
+
+export const browserDestroySession = (sessionId: string): Promise<void> =>
+  invoke<void>('browser_destroy_session', { session_id: sessionId })
+
+// ── v2 UI control commands ────────────────────────────────────────────
+
+export const browserUINavigate = (sessionId: string, tabId: string, url: string): Promise<string> =>
+  invoke<string>('browser_ui_navigate', { session_id: sessionId, tab_id: tabId, url })
+
+export const browserUIGoBack = (sessionId: string, tabId: string): Promise<void> =>
+  invoke<void>('browser_ui_go_back', { session_id: sessionId, tab_id: tabId })
+
+export const browserUIGoForward = (sessionId: string, tabId: string): Promise<void> =>
+  invoke<void>('browser_ui_go_forward', { session_id: sessionId, tab_id: tabId })
+
+export const browserUIReload = (sessionId: string, tabId: string): Promise<void> =>
+  invoke<void>('browser_ui_reload', { session_id: sessionId, tab_id: tabId })
+
+export const browserUICloseTab = (sessionId: string, tabId: string): Promise<void> =>
+  invoke<void>('browser_ui_close_tab', { session_id: sessionId, tab_id: tabId })
+
+export const browserGetDOMState = (sessionId: string, tabId: string): Promise<DOMStateResponse> =>
+  invoke<DOMStateResponse>('browser_get_dom_state', { session_id: sessionId, tab_id: tabId })
+
+export const browserStartScreencast = (sessionId: string, tabId: string): Promise<void> =>
+  invoke<void>('browser_start_screencast', { session_id: sessionId, tab_id: tabId })
+
+export const browserStopScreencast = (sessionId: string, tabId: string): Promise<void> =>
+  invoke<void>('browser_stop_screencast', { session_id: sessionId, tab_id: tabId })
+
+/** Subscribe to CDP screencast frames. Returns an unlisten function. */
+export const listenScreencastFrames = (
+  handler: (payload: ScreencastFramePayload) => void,
+): Promise<UnlistenFn> =>
+  listen<ScreencastFramePayload>('browser:screencast-frame', ({ payload }) => handler(payload))
 
 // ─── Automation (Phase 3) ─────────────────────────────────────────────
 export interface AutomationActivity {
