@@ -28,3 +28,4 @@ pub mod candidate;
 pub mod stability_detector;
 pub mod scheduler;
 pub mod cache;
+pub mod prompt_section;
