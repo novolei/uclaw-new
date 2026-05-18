@@ -7,7 +7,7 @@
  *   - missing  : 45% opacity + strikethrough label, tooltip "文件未找到"
  *
  * Click semantics (uniform with FileTreeNode after Task 11):
- *   - Click       → openPreviewAction
+ *   - Click       → openPreviewTabAction (source: 'manual')
  *   - Shift-click → addPendingAttachmentAction
  *   - Cmd/Ctrl    → reserved for W5; no-op today
  */
