@@ -47,7 +47,7 @@ export function NativeBlockRenderer({
       {blocks.map((b, idx) => {
         if (b.type === 'text') {
           return (
-            <MessageResponse key={`b-${idx}-text`}>{b.text}</MessageResponse>
+            <MessageResponse key={`b-${idx}-text`} sessionId={conversationId ?? null}>{b.text}</MessageResponse>
           )
         }
         if (b.type === 'thinking') {
