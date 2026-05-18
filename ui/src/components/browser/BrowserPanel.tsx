@@ -23,7 +23,7 @@ import {
   type BrowserTabEntry,
   type ScreencastFrameEntry,
 } from '@/atoms/browser-atoms'
-import { sessionBrowserPreviewMapAtom } from '@/atoms/agent-atoms'
+import { sessionBrowserPreviewMapAtom, type BrowserPreviewState } from '@/atoms/agent-atoms'
 import { BrowserAddressBar } from './BrowserAddressBar'
 import { BrowserTabBar } from './BrowserTabBar'
 import { BrowserScreencastView } from './BrowserScreencastView'
@@ -38,6 +38,7 @@ export function BrowserPanel({ agentSessionId }: BrowserPanelProps): React.React
   const setDomMap = useSetAtom(browserDOMStateAtom)
   const setActiveSet = useSetAtom(browserScreencastActiveAtom)
   const setNavState = useSetAtom(browserNavStateAtom)
+  const setPreviewMap = useSetAtom(sessionBrowserPreviewMapAtom)
   const overlayVisible = useAtomValue(browserDOMOverlayVisibleAtom)
   const previewMap = useAtomValue(sessionBrowserPreviewMapAtom)
 
@@ -99,6 +100,22 @@ export function BrowserPanel({ agentSessionId }: BrowserPanelProps): React.React
   }, [agentSessionId, activeTabId, setFrameMap, setActiveSet])
 
   // Subscribe to navigation state events for this session.
+  //
+  // Nav-state events are the backend's canonical "what tab is currently
+  // active" signal — they fire after every navigate / goBack / goForward /
+  // reload. We keep both the nav-state atom (for the address bar's live
+  // URL/loading/back-state) AND the preview map's tabId in sync.
+  //
+  // Why update preview.tabId here too:
+  //   When the Rust binary restarts (e.g. cargo tauri dev rebuild), all
+  //   in-memory BrowserContexts die. The frontend atom still holds the
+  //   pre-restart tab_id; the backend's `browser_ui_navigate` sees an
+  //   unknown id, opens a fresh tab, and returns the new id — but the
+  //   frontend ignored the return value, leaving preview.tabId pointing
+  //   at the dead tab. Screencast then can't start. Folding the new id
+  //   into preview.tabId here closes the loop: BrowserPanel re-renders
+  //   with the live activeTabId, the screencast useEffect re-runs, and
+  //   frames flow.
   React.useEffect(() => {
     let unlisten: (() => void) | null = null
     listenNavState((payload) => {
@@ -115,9 +132,19 @@ export function BrowserPanel({ agentSessionId }: BrowserPanelProps): React.React
         })
         return next
       })
+      setPreviewMap((prev) => {
+        const existing = prev.get(payload.sessionId)
+        if (existing?.tabId === payload.tabId && existing?.url === payload.url) return prev
+        const base: BrowserPreviewState = existing ?? {
+          url: null, tabId: null, screenshotData: null, visible: true, minimized: false,
+        }
+        const next = new Map(prev)
+        next.set(payload.sessionId, { ...base, tabId: payload.tabId, url: payload.url })
+        return next
+      })
     }).then((fn) => { unlisten = fn })
     return () => { if (unlisten) unlisten() }
-  }, [agentSessionId, setNavState])
+  }, [agentSessionId, setNavState, setPreviewMap])
 
   // Fetch DOM state when overlay is turned on.
   React.useEffect(() => {
