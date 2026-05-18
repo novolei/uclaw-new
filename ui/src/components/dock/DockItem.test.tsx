@@ -1,24 +1,16 @@
-import * as React from 'react'
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+import React from 'react'
+import { DockItem } from './DockItem'
 import { Bot } from 'lucide-react'
 
-vi.mock('motion/react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('motion/react')>()
-  return {
-    ...actual,
-    motion: {
-      ...actual.motion,
-      button: (props: React.ComponentPropsWithoutRef<'button'>) =>
-        React.createElement('button', props),
-    },
-    useSpring: () => ({
-      set: vi.fn(),
-    }),
-  }
-})
-
-import { DockItem } from './DockItem'
+vi.mock('motion/react', () => ({
+  motion: {
+    button: ({ style: _style, ...rest }: React.ComponentPropsWithoutRef<'button'>) =>
+      React.createElement('button', rest),
+  },
+  useSpring: () => ({ set: vi.fn() }),
+}))
 
 describe('DockItem', () => {
   it('renders the label when active', () => {
