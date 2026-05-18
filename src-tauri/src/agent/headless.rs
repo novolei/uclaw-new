@@ -376,10 +376,19 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                 "notify_user" => {
                     let input: NotifyInput = serde_json::from_value(call.arguments.clone())?;
 
-                    // IM close-loop: if a reply handle is attached, send the
-                    // notification body directly to the originating IM chat
-                    // first, then fall through to the legacy channel dispatch
-                    // so other channels also receive it.
+                    // Phase 2b cluster A · §2.5 — origin-aware routing.
+                    //
+                    // When a reply_handle is attached, the run was triggered
+                    // by an external IM user. The notification belongs to
+                    // that originating chat, not to the legacy system / wecom /
+                    // email channels which would broadcast to the spec owner
+                    // and any other identity. The `continue` below skips the
+                    // legacy dispatch so we don't spam — IM users get a
+                    // single push into their own thread.
+                    //
+                    // When reply_handle is None (autonomous: scheduled / file /
+                    // webhook), control falls through to the legacy dispatch
+                    // below, which routes per `input.channels` to the owner.
                     if let Some(reply) = &self.reply_handle {
                         let report_text = format!(
                             "[{}] {}: {}",
