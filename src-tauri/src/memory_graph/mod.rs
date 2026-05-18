@@ -15,3 +15,5 @@ pub mod wiki_synth;
 pub mod memory_os_llm;
 // Memory OS Foundation Phase 7 — markdown frontmatter + disk-mirror sync state.
 pub mod brain_io;
+// Memory OS Foundation Phase 7.4 — opt-in fs watcher over the brain dir.
+pub mod brain_watcher;

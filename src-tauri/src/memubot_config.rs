@@ -390,6 +390,12 @@ pub struct MemoryOsConfig {
     /// is configured. The manual `memory_entity_page_synthesize_now`
     /// IPC still works with the Stub, just produces placeholder text.
     pub entity_synthesizer_enabled: bool,
+    /// Phase 7.4: Opt-in fs watcher over
+    /// `~/Documents/workground/brain/`. When ON, edits to `.md` files
+    /// under the brain dir auto-trigger `sync_from_disk` after a
+    /// 500ms debounce. Default OFF because fs events are noisy on
+    /// macOS and `Sync` button (Phase 7.2) covers most users.
+    pub brain_watcher_enabled: bool,
 }
 
 impl Default for MemoryOsConfig {
@@ -422,6 +428,11 @@ impl Default for MemoryOsConfig {
             // clearly-labelled stub; with it on, runs through the
             // configured LLM. Restart required to swap.
             entity_synthesizer_enabled: false,
+            // Phase 7.4 default OFF. The watcher is fine but enables
+            // background DB writes whenever any file under brain/
+            // changes; the manual Sync button (Phase 7.2) is the
+            // safer default. Restart required to swap.
+            brain_watcher_enabled: false,
         }
     }
 }
@@ -993,5 +1004,24 @@ mod tests {
         assert!(!config.memory_os.wiki_real_synthesizer_enabled);
         assert!(!config.memory_os.lint_real_analyzer_enabled);
         assert!(config.memory_os.tier_escalator_enabled);
+    }
+
+    #[test]
+    fn memory_os_phase74_default_keeps_watcher_off() {
+        let c = MemoryOsConfig::default();
+        assert!(
+            !c.brain_watcher_enabled,
+            "Phase 7.4 default must be OFF — fs events too noisy for blanket-on"
+        );
+    }
+
+    #[test]
+    fn memory_os_phase74_explicit_enable_preserved() {
+        let json = r#"{"memory_os":{"brain_watcher_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(config.memory_os.brain_watcher_enabled);
+        // Forward-compat — turning on 7.4 leaves Phase 6 flags alone.
+        assert!(!config.memory_os.wiki_real_synthesizer_enabled);
+        assert!(!config.memory_os.entity_synthesizer_enabled);
     }
 }
