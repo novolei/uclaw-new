@@ -302,6 +302,15 @@ impl MemUBridge {
         }
     }
 
+    /// Stop the bridge if running, then restart it. Best-effort — ignores
+    /// stop errors so a failed process doesn't block restart.
+    pub async fn force_restart(&self) -> Result<(), BridgeError> {
+        let _ = self.stop().await;
+        // Reset shutdown flag so send_request guards don't reject new calls.
+        self.shutdown.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.start().await
+    }
+
     /// Stop the Python subprocess gracefully.
     pub async fn stop(&self) -> Result<(), BridgeError> {
         self.shutdown.store(true, Ordering::SeqCst);
@@ -478,6 +487,22 @@ mod tests {
     #[test]
     fn test_bridge_new() {
         let bridge = MemUBridge::new("python3", "/tmp/test.py", "/tmp/data", vec![]);
+        assert!(!bridge.is_alive());
+    }
+
+    #[tokio::test]
+    async fn force_restart_on_unstarted_bridge_does_not_panic() {
+        // A real subprocess won't start in tests (no Python), so we
+        // just verify force_restart doesn't panic and returns Err
+        // (start will fail with "not found").
+        let bridge = MemUBridge::new(
+            "/nonexistent/python",
+            std::path::PathBuf::from("/nonexistent/script.py"),
+            std::path::PathBuf::from("/tmp"),
+            vec![],
+        );
+        // force_restart on a never-started bridge should not panic
+        let _ = bridge.force_restart().await;
         assert!(!bridge.is_alive());
     }
 }

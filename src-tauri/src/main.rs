@@ -395,6 +395,7 @@ fn main() {
                         // (which would require app_handle to outlive the
                         // task — easier to just clone the Arc once).
                         let db_for_mcp = state_ref.db.clone();
+                        let gbrain_mcp_id_slot = state_ref.gbrain_mcp_id.clone();
                         // gbrain Sprint 2.1 init-fix — resolve bundled
                         // artifacts. Returning Option lets the seed below
                         // skip cleanly if the bundle is missing (fresh
@@ -506,12 +507,20 @@ fn main() {
                                     }
                                 }
                                 match guard.seed_bundled_gbrain(bun, entry, &gbrain_home) {
-                                    Ok(true) => tracing::info!(
-                                        "[Stage 3] gbrain MCP entry seeded (first launch)"
-                                    ),
-                                    Ok(false) => tracing::debug!(
-                                        "[Stage 3] gbrain MCP entry already present, skipping seed"
-                                    ),
+                                    Ok(seeded) => {
+                                        if seeded {
+                                            tracing::info!(
+                                                "[Stage 3] gbrain MCP entry seeded (first launch)"
+                                            );
+                                        } else {
+                                            tracing::debug!(
+                                                "[Stage 3] gbrain MCP entry already present, skipping seed"
+                                            );
+                                        }
+                                        // Store the server ID so diagnostics + restart commands can find it.
+                                        *gbrain_mcp_id_slot.lock().unwrap() =
+                                            Some("gbrain".to_string());
+                                    }
                                     Err(e) => tracing::warn!(
                                         error = %e,
                                         "[Stage 3] gbrain MCP seed failed (continuing without bundled gbrain)"
@@ -878,6 +887,12 @@ fn main() {
             uclaw_core::tauri_commands::propose_skill_consolidation,
             uclaw_core::tauri_commands::cancel_skill_consolidation,
             uclaw_core::tauri_commands::apply_skill_consolidation,
+            // System Diagnostics
+            uclaw_core::tauri_commands::get_system_diagnostics,
+            uclaw_core::tauri_commands::restart_memu_bridge,
+            uclaw_core::tauri_commands::restart_gbrain_mcp,
+            uclaw_core::tauri_commands::reset_ai_engine,
+            uclaw_core::tauri_commands::restart_app,
             // MEMUBOT Services
             uclaw_core::tauri_commands::services_health,
             uclaw_core::tauri_commands::memorization_status,

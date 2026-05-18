@@ -269,6 +269,12 @@ impl MemUClient {
         self.bridge.stop().await
     }
 
+    /// Force-restart the underlying Python subprocess. Stops first (ignores
+    /// stop errors), then starts fresh.
+    pub async fn force_restart(&self) -> Result<(), BridgeError> {
+        self.bridge.force_restart().await
+    }
+
     // ── Scene-aware Bridge Methods ──────────────────────────────────────
 
     /// 带场景配置的 memorize — 支持指定记忆类型和分类

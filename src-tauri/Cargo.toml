@@ -153,6 +153,9 @@ cron = "0.12"
 # Base64 encoding
 base64 = "0.22"
 
+# System info (process RSS, CPU, uptime) for Diagnostics tab
+sysinfo = { version = "0.31", default-features = false, features = ["system"] }
+
 # URL encoding for DingTalk signature
 urlencoding = "2"
 

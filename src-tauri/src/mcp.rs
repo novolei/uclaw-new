@@ -1311,6 +1311,12 @@ impl McpManager {
         self.servers.get(id).map(|s| s.status.clone())
     }
 
+    /// Return the number of discovered tools for a server, or None if the
+    /// server ID is not registered.
+    pub fn server_tool_count(&self, id: &str) -> Option<usize> {
+        self.servers.get(id).map(|s| s.tools.len())
+    }
+
     /// Get detailed status for all servers (for IPC)
     pub fn all_server_statuses(&self) -> Vec<(String, McpServerStatus, Option<String>)> {
         self.servers
@@ -2069,6 +2075,13 @@ mod tests {
             untrusted_proxy.requires_approval(&v),
             ApprovalRequirement::UnlessAutoApproved
         );
+    }
+
+    #[test]
+    fn server_tool_count_returns_none_for_missing_server() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = McpManager::new(tmp.path());
+        assert_eq!(mgr.server_tool_count("gbrain"), None);
     }
 }
 

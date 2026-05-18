@@ -17,6 +17,7 @@ import { SttSettings } from './SttSettings'
 import { MemoryRecallTab } from './MemoryRecallTab'
 import { LearnedProfileTab } from './LearnedProfileTab'
 import { ImChannelsSettings } from './ImChannelsSettings'
+import { SystemTab } from './SystemTab'
 import { SettingsBreadcrumb } from './SettingsBreadcrumb'
 
 
@@ -44,6 +45,8 @@ function SettingsContent({ tab }: { tab: SettingsTab }) {
       return <PetSettings />
     case 'proxy':
       return <ProxySetting />
+    case 'system':
+      return <SystemTab />
     case 'about':
       return <AboutSettings />
     default:
@@ -70,6 +73,7 @@ export default function SettingsPanel() {
     shortcuts: '快捷键',
     pet: '桌面宠物',
     proxy: '代理',
+    system: '系统诊断',
     about: '关于',
   }
   const activeLabel = TAB_LABEL[activeTab] ?? '设置'
