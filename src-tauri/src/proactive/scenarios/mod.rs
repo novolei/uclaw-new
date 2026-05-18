@@ -10,6 +10,10 @@ pub mod skill_extraction;
 // over memory_graph. Does NOT implement ProactiveScenario trait;
 // invoked directly by ProactiveService::tick_inner.
 pub mod memory_health;
+// Memory OS Foundation Phase 5 — LLM-driven semantic lint checks.
+// Like memory_health, invoked directly by tick_inner (every 15
+// EntityPage writes, max 4/day) — does NOT implement ProactiveScenario.
+pub mod memory_lint;
 
 pub use types::*;
 
