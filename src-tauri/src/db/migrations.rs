@@ -1574,6 +1574,31 @@ CREATE INDEX IF NOT EXISTS idx_brain_sync_space ON brain_sync_state(space_id);
 CREATE INDEX IF NOT EXISTS idx_brain_sync_last_at ON brain_sync_state(last_synced_at_ms);
 ";
 
+/// V38 — Automation Phase 2b cluster A · per-(spec, identity) chat session index.
+///
+/// `automation_chat_sessions` maps a (spec_id, identity_key) pair to the
+/// agent_sessions row that hosts the long-lived chat thread for that pair.
+///
+/// identity_key conventions (string):
+///   - "local"                       → spec owner's local chat thread
+///   - "{channel_type}:{chat_id}"    → per-IM-user thread (e.g. "wechat_ilink:UIN_abc")
+///
+/// UNIQUE(spec_id, identity_key) guarantees idempotent get-or-create.
+/// FK CASCADE on agent_sessions deletion keeps the index clean.
+pub const V38_AUTOMATION_CHAT_SESSIONS: &str = "
+CREATE TABLE IF NOT EXISTS automation_chat_sessions (
+    spec_id          TEXT NOT NULL,
+    identity_key     TEXT NOT NULL,
+    agent_session_id TEXT NOT NULL,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    PRIMARY KEY (spec_id, identity_key),
+    FOREIGN KEY (agent_session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_aut_chat_sess_agent_id
+    ON automation_chat_sessions(agent_session_id);
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -1851,6 +1876,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V37_MEMORY_OS_PHASE_7.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V37 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V38: Automation Phase 2b cluster A — per-(spec, identity) chat session index.
+    tracing::debug!("Running migration V38: automation_chat_sessions");
+    for stmt in V38_AUTOMATION_CHAT_SESSIONS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V38 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
