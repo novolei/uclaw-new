@@ -16,7 +16,7 @@ import * as React from 'react'
 import { useSetAtom } from 'jotai'
 import { FileIcon } from '@react-symbols/icons/utils'
 import { cn } from '@/lib/utils'
-import { openPreviewAction } from '@/atoms/preview-panel-atoms'
+import { openPreviewTabAction } from '@/atoms/preview-panel-atoms'
 import { addPendingAttachmentAction } from '@/atoms/preview-chip-atoms'
 
 export type ChipState = 'ok' | 'pending' | 'missing'
@@ -42,7 +42,7 @@ export interface FilePathChipProps {
 }
 
 export function FilePathChip(props: FilePathChipProps): React.ReactElement {
-  const openPreview = useSetAtom(openPreviewAction)
+  const openPreview = useSetAtom(openPreviewTabAction)
   const addAttachment = useSetAtom(addPendingAttachmentAction)
 
   const isMissing = props.state === 'missing'
@@ -69,20 +69,26 @@ export function FilePathChip(props: FilePathChipProps): React.ReactElement {
       if (props.state !== 'ok') {
         // Still open so user sees the "not found" surface (master spec §6.8).
         openPreview({
-          mountId: props.mountId || 'workspace:default',
-          relPath: props.relPath || props.rawPath,
-          name: props.label,
-          sessionId: props.sessionId ?? null,
-          absolutePath: props.absolutePath,
+          target: {
+            mountId: props.mountId || 'workspace:default',
+            relPath: props.relPath || props.rawPath,
+            name: props.label,
+            sessionId: props.sessionId ?? null,
+            absolutePath: props.absolutePath,
+          },
+          source: 'manual',
         })
         return
       }
       openPreview({
-        mountId: props.mountId,
-        relPath: props.relPath,
-        name: props.label,
-        sessionId: props.sessionId ?? null,
-        absolutePath: props.absolutePath,
+        target: {
+          mountId: props.mountId,
+          relPath: props.relPath,
+          name: props.label,
+          sessionId: props.sessionId ?? null,
+          absolutePath: props.absolutePath,
+        },
+        source: 'manual',
       })
     },
     [openPreview, addAttachment, isMissing, props],
