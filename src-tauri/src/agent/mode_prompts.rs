@@ -125,9 +125,14 @@ pub fn compose_system_prompt(
     // agent has no signal about the actual filesystem location and either
     // makes one up or asks to run `pwd`. The shell, read_file, glob, etc.
     // tools are all already pinned to this directory at registration time.
+    //
+    // NOTE: do NOT include phrases like "run pwd to verify" here — they
+    // implicitly permit the model to probe the workspace with shell tools
+    // in response to conversational status questions ("你在干啥" etc.),
+    // triggering spurious glob/ls/date calls the user never requested.
     let workspace_path_block = workspace_root.map(|p| {
         format!(
-            "[WORKSPACE]\nYour current working directory is: {}\nAll relative paths in shell, file, and glob tools resolve from this directory. When the user asks where files live or what the cwd is, answer with this path — do not guess. Run `pwd` only if you need to verify, never invent paths.",
+            "[WORKSPACE]\nYour current working directory is: {}\nAll relative paths in shell, file, and glob tools resolve from this directory. When the user asks where files live or what the cwd is, answer directly with this path. Do NOT call shell commands (pwd, ls, glob, find, etc.) to probe or verify the workspace unless the user explicitly requests a file or directory operation.",
             p.display()
         )
     }).unwrap_or_default();
