@@ -476,9 +476,9 @@ function EntityPageDetail({ nodeId }: { nodeId: string }): React.ReactElement {
               {meta.subkind}
             </Badge>
           )}
-          {meta?.enrichmentTier !== undefined && (
+          {meta?.enrichment_tier !== undefined && (
             <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-              tier {meta.enrichmentTier}
+              tier {meta.enrichment_tier}
             </Badge>
           )}
         </div>
@@ -519,6 +519,47 @@ function EntityPageDetail({ nodeId }: { nodeId: string }): React.ReactElement {
                       <span className="flex-1 min-w-0">{entry.text}</span>
                     </div>
                   ))}
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Phase 5 Task 5.4 — surface lint-detected contradictions.
+            metadata.contradictions[] is populated by memory_lint when
+            the analyzer detects two timeline entries that disagree. We
+            render them as a separate, visually distinct section so the
+            user can see at a glance that this page has unresolved
+            conflicts. */}
+        {meta?.contradictions && meta.contradictions.length > 0 && (
+          <>
+            <Separator />
+            <div>
+              <div className="text-xs font-medium mb-2 text-amber-500 flex items-center gap-1">
+                <span>⚠</span>
+                Contradictions ({meta.contradictions.length})
+              </div>
+              <div className="space-y-2">
+                {meta.contradictions.map((c, i) => (
+                  <div
+                    key={`contradiction-${i}`}
+                    className="border border-amber-500/40 rounded-sm p-2 bg-amber-500/5 text-xs"
+                  >
+                    <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+                      <span className="text-[10px] font-mono text-amber-500/80">A:</span>
+                      <span>{c.claim_a}</span>
+                      <span className="text-[10px] font-mono text-amber-500/80">B:</span>
+                      <span>{c.claim_b}</span>
+                    </div>
+                    {c.between_source_ids && c.between_source_ids.length > 0 && (
+                      <div className="text-[10px] text-muted-foreground/70 mt-1">
+                        sources: {c.between_source_ids.map((s) => s.slice(0, 8)).join(' / ')}
+                      </div>
+                    )}
+                    <div className="text-[10px] text-muted-foreground/50 mt-0.5">
+                      noticed {c.noticed_at}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           </>

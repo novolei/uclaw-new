@@ -1080,29 +1080,40 @@ export interface MemoryGraphDeleteNodeInput {
 // a round-trip Rust change; full field list lives in
 // `src-tauri/src/memory_graph/entity_page.rs`.
 
-/** One append-only event on an EntityPage timeline. */
+/** One append-only event on an EntityPage timeline.
+ *  Wire format is snake_case to match Rust's `TimelineEntry` struct
+ *  (`#[serde(rename_all = "snake_case")]`). */
 export interface EntityPageTimelineEntry {
   date: string; // YYYY-MM-DD
   text: string;
-  sourceNodeId?: string;
-  sourceSessionId?: string;
+  source_node_id?: string;
+  source_session_id?: string;
 }
 
-/** Decoded view of `memory_nodes.metadata_json` for an EntityPage. */
+/** One contradiction recorded by memory_lint (Phase 5). Wire format
+ *  is snake_case because Rust's Contradiction struct uses
+ *  `#[serde(rename_all = "snake_case")]`. */
+export interface EntityPageContradiction {
+  between_source_ids: string[];
+  claim_a: string;
+  claim_b: string;
+  noticed_at: string;
+}
+
+/** Decoded view of `memory_nodes.metadata_json` for an EntityPage. The
+ *  surrounding EntityPageMetadata struct also uses snake_case in Rust
+ *  serde — fields without underscores (like `slug`, `aliases`) look the
+ *  same in both camelCase and snake_case; the ones below that DO have
+ *  underscores are spelled snake_case here to match the wire. */
 export interface EntityPageMetadata {
   timeline?: EntityPageTimelineEntry[];
   aliases?: string[];
-  contradictions?: Array<{
-    betweenSourceIds: string[];
-    claimA: string;
-    claimB: string;
-    noticedAt: string;
-  }>;
+  contradictions?: EntityPageContradiction[];
   slug?: string;
   subkind?: string;
-  enrichmentTier?: number;
-  lastSynthesizedAt?: string;
-  synthesisSourceCount?: number;
+  enrichment_tier?: number;
+  last_synthesized_at?: string;
+  synthesis_source_count?: number;
   // Forward-compat: unknown fields are preserved by the JSON column.
   [key: string]: unknown;
 }
