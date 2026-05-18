@@ -20,6 +20,7 @@ import { usePreviewState } from '@/components/preview/hooks/usePreviewState'
 import { closePreviewAction } from '@/atoms/preview-panel-atoms'
 import { PreviewHeader } from './PreviewHeader'
 import { PreviewSurface } from './PreviewSurface'
+import { PreviewTabBar } from './PreviewTabBar'
 
 export function PreviewPanel(): React.ReactElement | null {
   const { open, target } = usePreviewState()
@@ -44,6 +45,7 @@ export function PreviewPanel(): React.ReactElement | null {
       className="flex flex-col h-full w-full min-w-0 bg-popover"
       aria-label="文件预览"
     >
+      <PreviewTabBar />
       <PreviewHeader target={target} />
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         <PreviewSurface target={target} />

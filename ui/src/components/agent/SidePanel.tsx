@@ -9,7 +9,7 @@ import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { FilesRail } from '@/components/files-rail'
 import type { MountRoot } from '@/atoms/files-rail-atoms'
-import { openPreviewAction } from '@/atoms/preview-panel-atoms'
+import { openPreviewTabAction } from '@/atoms/preview-panel-atoms'
 import { addPendingAttachmentAction } from '@/atoms/preview-chip-atoms'
 import type { TreeNode } from '@/components/files-rail/utils/tree-patch'
 import {
@@ -26,7 +26,7 @@ interface WorkspaceFilesViewProps {
 
 export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesViewProps): React.ReactElement {
   const setSidePanelOpenMap = useSetAtom(agentSidePanelOpenMapAtom)
-  const openPreview = useSetAtom(openPreviewAction)
+  const openPreview = useSetAtom(openPreviewTabAction)
   const addAttachment = useSetAtom(addPendingAttachmentAction)
 
   // filesVersion is still observed here so the auto-open effect below can
@@ -80,11 +80,14 @@ export function WorkspaceFilesView({ sessionId, sessionPath }: WorkspaceFilesVie
                 }
                 if (event.metaKey || event.ctrlKey) return // reserved for W5
                 openPreview({
-                  mountId: mount.id,
-                  relPath: node.relPath,
-                  name: node.name,
-                  sessionId,
-                  absolutePath: `${mount.path}/${node.relPath}`,
+                  target: {
+                    mountId: mount.id,
+                    relPath: node.relPath,
+                    name: node.name,
+                    sessionId,
+                    absolutePath: `${mount.path}/${node.relPath}`,
+                  },
+                  source: 'manual',
                 })
               }}
             />

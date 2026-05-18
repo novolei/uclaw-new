@@ -89,8 +89,9 @@ export function KaleidoscopeShell(): React.ReactElement {
           </AnimatePresence>
         </div>
       </div>
-      {/* PreviewPanel — responds to openPreviewAction fired by FilePathChip
-          in AgentMessages. Returns null when closed. */}
+      {/* PreviewPanel — responds to openPreviewTabAction fired by FilePathChip
+          in AgentMessages (source: 'manual') or useGlobalAgentListeners
+          (source: 'agent'). Returns null when closed. */}
       <PreviewPanel />
     </div>
   )
