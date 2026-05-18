@@ -1,53 +1,48 @@
 //! BrowserContext — one Chrome instance per agent session.
 //!
 //! Wraps a `chromiumoxide::Browser`, a map of tab_id → `Page`, a DOM-state
-//! cache with a 500 ms TTL, and a map of screencast task handles.
+//! cache with a 500 ms TTL, and a map of screencast stop-signal senders.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use base64::{Engine, engine::general_purpose::STANDARD};
-use chromiumoxide::{Browser, Page};
+use anyhow::{anyhow, Result};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use chromiumoxide::browser::BrowserConfig;
-use chromiumoxide::cdp::browser_protocol::page::{
-    StartScreencastParams, StartScreencastFormat, StopScreencastParams, ScreencastFrameAckParams,
-    EventScreencastFrame,
+use chromiumoxide::cdp::browser_protocol::input::{
+    DispatchKeyEventParams, DispatchKeyEventType,
 };
-use chromiumoxide::page::ScreenshotParams;
+use chromiumoxide::cdp::browser_protocol::page::{
+    ScreencastFrameAckParams, StartScreencastFormat, StartScreencastParams,
+};
+use chromiumoxide::{Browser, Page};
 use futures::StreamExt;
 use tauri::Emitter;
-use tokio::time::Instant;
+use tokio::sync::{oneshot, Mutex, RwLock};
+use uuid::Uuid;
 
 use crate::browser::dom_state::{dom_state_from_raw, DOM_QUERY_SCRIPT};
-use crate::browser::types::{DOMState, DomStateRaw, ScreencastFramePayload, ScreenshotResult, TabInfo};
-use crate::error::Error;
+use crate::browser::types::{DOMState, DomStateRaw, ScreencastFramePayload, TabInfo};
 
 // ── DOM cache ─────────────────────────────────────────────────────────────────
-
-struct DomCache {
-    state: DOMState,
-    fetched_at: Instant,
-}
 
 const DOM_CACHE_TTL: Duration = Duration::from_millis(500);
 
 // ── BrowserContext ────────────────────────────────────────────────────────────
 
 pub struct BrowserContext {
-    browser: Browser,
-    pages: HashMap<String, Page>,
-    app_handle: Arc<tauri::AppHandle>,
-    dom_cache: HashMap<String, DomCache>,
-    screencast_tasks: HashMap<String, tokio::task::JoinHandle<()>>,
+    pub browser: Arc<Browser>,
+    pub pages: Arc<RwLock<HashMap<String, Page>>>,
+    dom_cache: Arc<RwLock<HashMap<String, (DOMState, Instant)>>>,
+    screencast_stops: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
+    session_id: String,
 }
 
 impl BrowserContext {
     /// Launch Chrome and open one initial blank tab.
-    pub async fn new(
-        app_handle: Arc<tauri::AppHandle>,
-        profile_dir: std::path::PathBuf,
-    ) -> Result<Self, Error> {
+    pub async fn launch(session_id: &str, profile_dir: PathBuf) -> Result<Self> {
         // Remove stale Chrome lock files so a crashed session doesn't block relaunch.
         for lock in &["SingletonLock", "SingletonCookie", "SingletonSocket"] {
             let path = profile_dir.join(lock);
@@ -69,210 +64,209 @@ impl BrowserContext {
                 "--disable-extensions",
             ])
             .build()
-            .map_err(|e| Error::Internal(format!("Browser config error: {}", e)))?;
+            .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
         let (browser, mut handler) = Browser::launch(config)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to launch browser: {}", e)))?;
+            .map_err(|e| anyhow!("Failed to launch browser: {}", e))?;
 
         // Drive the CDP event loop in a background task.
         tokio::spawn(async move {
             while let Some(_event) = handler.next().await {}
         });
 
-        let mut ctx = Self {
-            browser,
-            pages: HashMap::new(),
-            app_handle,
-            dom_cache: HashMap::new(),
-            screencast_tasks: HashMap::new(),
-        };
+        let browser = Arc::new(browser);
+        let pages: Arc<RwLock<HashMap<String, Page>>> =
+            Arc::new(RwLock::new(HashMap::new()));
 
         // Open one initial blank tab so the browser is ready to use.
-        let init_page = ctx
-            .browser
+        let init_page = browser
             .new_page("about:blank")
             .await
-            .map_err(|e| Error::Internal(format!("Failed to open initial tab: {}", e)))?;
-        let init_id = uuid::Uuid::new_v4().to_string();
-        ctx.pages.insert(init_id, init_page);
+            .map_err(|e| anyhow!("Failed to open initial tab: {}", e))?;
+        let init_id = Uuid::new_v4().to_string();
+        pages.write().await.insert(init_id, init_page);
 
-        Ok(ctx)
+        Ok(Self {
+            browser,
+            pages,
+            dom_cache: Arc::new(RwLock::new(HashMap::new())),
+            screencast_stops: Arc::new(Mutex::new(HashMap::new())),
+            session_id: session_id.to_string(),
+        })
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    fn get_page(&self, tab_id: &str) -> Result<&Page, Error> {
+    async fn get_page(&self, tab_id: &str) -> Result<Page> {
         self.pages
+            .read()
+            .await
             .get(tab_id)
-            .ok_or_else(|| Error::Internal(format!("Tab '{}' not found", tab_id)))
+            .cloned()
+            .ok_or_else(|| anyhow!("Tab '{}' not found", tab_id))
     }
 
-    fn invalidate_dom_cache(&mut self, tab_id: &str) {
-        self.dom_cache.remove(tab_id);
+    /// Resolve tab_id: if "new" or not found, open a blank page and return the
+    /// new id. Otherwise return the existing id and page clone.
+    async fn resolve_tab(&self, tab_id: &str) -> Result<(String, Page)> {
+        if tab_id != "new" {
+            if let Some(page) = self.pages.read().await.get(tab_id).cloned() {
+                return Ok((tab_id.to_string(), page));
+            }
+        }
+        // Need a new tab.
+        let page = self
+            .browser
+            .new_page("about:blank")
+            .await
+            .map_err(|e| anyhow!("Failed to open new tab: {}", e))?;
+        let new_id = Uuid::new_v4().to_string();
+        self.pages.write().await.insert(new_id.clone(), page.clone());
+        Ok((new_id, page))
     }
 
-    fn collect_tab_infos(&self) -> Vec<TabInfo> {
-        self.pages
-            .keys()
-            .map(|id| TabInfo {
-                tab_id: id.clone(),
-                // URL and title require async calls; return empty strings for now.
-                url: String::new(),
-                title: String::new(),
-                active: false,
-            })
-            .collect()
+    fn index_selector(index: u32) -> String {
+        format!("[data-uclaw-index=\"{}\"]", index)
     }
 
     // ── Navigation ────────────────────────────────────────────────────────────
 
     /// Navigate to `url` in the given tab. Returns the resolved tab_id.
-    ///
-    /// If `tab_id` is `"new"` or not present in the map, a new Chrome tab is
-    /// opened and assigned a fresh UUID.
-    pub async fn navigate(&mut self, tab_id: &str, url: &str) -> Result<String, Error> {
-        if tab_id == "new" || !self.pages.contains_key(tab_id) {
+    pub async fn navigate(&self, tab_id: &str, url: &str) -> Result<String> {
+        if tab_id == "new" || !self.pages.read().await.contains_key(tab_id) {
             let page = self
                 .browser
                 .new_page(url)
                 .await
-                .map_err(|e| Error::Internal(format!("Failed to open page: {}", e)))?;
-            let new_id = uuid::Uuid::new_v4().to_string();
-            self.pages.insert(new_id.clone(), page);
+                .map_err(|e| anyhow!("Failed to open page: {}", e))?;
+            let new_id = Uuid::new_v4().to_string();
+            self.pages.write().await.insert(new_id.clone(), page);
             Ok(new_id)
         } else {
-            self.get_page(tab_id)?
-                .goto(url)
+            let page = self.get_page(tab_id).await?;
+            page.goto(url)
                 .await
-                .map_err(|e| Error::Internal(format!("Navigation failed: {}", e)))?;
-            self.invalidate_dom_cache(tab_id);
+                .map_err(|e| anyhow!("Navigation failed: {}", e))?;
+            self.invalidate_dom_cache(tab_id).await;
             Ok(tab_id.to_string())
         }
     }
 
-    pub async fn go_back(&mut self, tab_id: &str) -> Result<(), Error> {
-        self.get_page(tab_id)?
-            .evaluate("history.back()")
+    pub async fn go_back(&self, tab_id: &str) -> Result<()> {
+        let page = self.get_page(tab_id).await?;
+        page.evaluate("history.back()")
             .await
-            .map_err(|e| Error::Internal(format!("go_back failed: {}", e)))?;
-        self.invalidate_dom_cache(tab_id);
+            .map_err(|e| anyhow!("go_back failed: {}", e))?;
+        self.invalidate_dom_cache(tab_id).await;
         Ok(())
     }
 
-    pub async fn go_forward(&mut self, tab_id: &str) -> Result<(), Error> {
-        self.get_page(tab_id)?
-            .evaluate("history.forward()")
+    pub async fn go_forward(&self, tab_id: &str) -> Result<()> {
+        let page = self.get_page(tab_id).await?;
+        page.evaluate("history.forward()")
             .await
-            .map_err(|e| Error::Internal(format!("go_forward failed: {}", e)))?;
-        self.invalidate_dom_cache(tab_id);
+            .map_err(|e| anyhow!("go_forward failed: {}", e))?;
+        self.invalidate_dom_cache(tab_id).await;
         Ok(())
     }
 
-    pub async fn reload(&mut self, tab_id: &str) -> Result<(), Error> {
-        self.get_page(tab_id)?
-            .reload()
+    pub async fn reload(&self, tab_id: &str) -> Result<()> {
+        let page = self.get_page(tab_id).await?;
+        page.reload()
             .await
-            .map_err(|e| Error::Internal(format!("reload failed: {}", e)))?;
-        self.invalidate_dom_cache(tab_id);
+            .map_err(|e| anyhow!("reload failed: {}", e))?;
+        self.invalidate_dom_cache(tab_id).await;
         Ok(())
     }
 
     // ── DOM state ─────────────────────────────────────────────────────────────
 
     /// Return the DOM state for `tab_id`, using a 500 ms TTL cache.
-    pub async fn get_dom_state(&mut self, tab_id: &str) -> Result<DOMState, Error> {
+    pub async fn get_dom_state(&self, tab_id: &str) -> Result<DOMState> {
         // Check cache first.
-        if let Some(cached) = self.dom_cache.get(tab_id) {
-            if cached.fetched_at.elapsed() < DOM_CACHE_TTL {
-                return Ok(cached.state.clone());
+        {
+            let cache = self.dom_cache.read().await;
+            if let Some((state, fetched_at)) = cache.get(tab_id) {
+                if fetched_at.elapsed() < DOM_CACHE_TTL {
+                    return Ok(state.clone());
+                }
             }
         }
 
         // Cache is stale — re-evaluate the DOM query script.
-        let result = self
-            .get_page(tab_id)?
+        let page = self.get_page(tab_id).await?;
+        let result = page
             .evaluate(DOM_QUERY_SCRIPT)
             .await
-            .map_err(|e| Error::Internal(format!("DOM query failed: {}", e)))?;
+            .map_err(|e| anyhow!("DOM query failed: {}", e))?;
 
-        // The script returns a JSON string.
         let json_str: String = result
             .into_value()
-            .map_err(|e| Error::Internal(format!("DOM result not a string: {}", e)))?;
+            .map_err(|e| anyhow!("DOM result not a string: {}", e))?;
 
         let raw: DomStateRaw = serde_json::from_str(&json_str)
-            .map_err(|e| Error::Internal(format!("DOM JSON parse error: {}", e)))?;
+            .map_err(|e| anyhow!("DOM JSON parse error: {}", e))?;
 
-        let tabs = self.collect_tab_infos();
+        let tabs = self.get_all_tabs().await;
         let state = dom_state_from_raw(raw, tabs);
 
-        self.dom_cache.insert(
-            tab_id.to_string(),
-            DomCache {
-                state: state.clone(),
-                fetched_at: Instant::now(),
-            },
-        );
+        self.dom_cache
+            .write()
+            .await
+            .insert(tab_id.to_string(), (state.clone(), Instant::now()));
 
         Ok(state)
     }
 
+    pub async fn invalidate_dom_cache(&self, tab_id: &str) {
+        self.dom_cache.write().await.remove(tab_id);
+    }
+
     // ── Screenshot ────────────────────────────────────────────────────────────
 
-    pub async fn screenshot(&mut self, tab_id: &str) -> Result<ScreenshotResult, Error> {
-        let png_bytes = self
-            .get_page(tab_id)?
+    /// Capture a PNG screenshot and return it as a base64 string.
+    pub async fn screenshot(&self, tab_id: &str) -> Result<String> {
+        use chromiumoxide::page::ScreenshotParams;
+
+        let page = self.get_page(tab_id).await?;
+        let png_bytes = page
             .screenshot(ScreenshotParams::default())
             .await
-            .map_err(|e| Error::Internal(format!("Screenshot failed: {}", e)))?;
+            .map_err(|e| anyhow!("Screenshot failed: {}", e))?;
 
-        Ok(ScreenshotResult {
-            data: STANDARD.encode(&png_bytes),
-            width: 1280,
-            height: 800,
-        })
+        Ok(STANDARD.encode(&png_bytes))
     }
 
     // ── Interaction ───────────────────────────────────────────────────────────
 
-    fn index_selector(index: u32) -> String {
-        format!("[data-uclaw-index=\"{}\"]", index)
-    }
-
-    pub async fn click(&mut self, tab_id: &str, index: u32) -> Result<(), Error> {
+    pub async fn click(&self, tab_id: &str, index: u32) -> Result<()> {
         let selector = Self::index_selector(index);
-        self.get_page(tab_id)?
-            .find_element(&selector)
+        let page = self.get_page(tab_id).await?;
+        page.find_element(&selector)
             .await
-            .map_err(|e| Error::Internal(format!("Element [{}] not found: {}", index, e)))?
+            .map_err(|e| anyhow!("Element [{}] not found: {}", index, e))?
             .click()
             .await
-            .map_err(|e| Error::Internal(format!("Click [{}] failed: {}", index, e)))?;
+            .map_err(|e| anyhow!("Click [{}] failed: {}", index, e))?;
         Ok(())
     }
 
-    pub async fn type_text(&mut self, tab_id: &str, index: u32, text: &str) -> Result<(), Error> {
+    pub async fn type_text(&self, tab_id: &str, index: u32, text: &str) -> Result<()> {
         let selector = Self::index_selector(index);
-        self.get_page(tab_id)?
-            .find_element(&selector)
+        let page = self.get_page(tab_id).await?;
+        page.find_element(&selector)
             .await
-            .map_err(|e| Error::Internal(format!("Element [{}] not found: {}", index, e)))?
+            .map_err(|e| anyhow!("Element [{}] not found: {}", index, e))?
             .type_str(text)
             .await
-            .map_err(|e| Error::Internal(format!("type_text [{}] failed: {}", index, e)))?;
-        self.invalidate_dom_cache(tab_id);
+            .map_err(|e| anyhow!("type_text [{}] failed: {}", index, e))?;
+        self.invalidate_dom_cache(tab_id).await;
         Ok(())
     }
 
-    pub async fn select_option(
-        &mut self,
-        tab_id: &str,
-        index: u32,
-        value: &str,
-    ) -> Result<(), Error> {
+    pub async fn select_option(&self, tab_id: &str, index: u32, value: &str) -> Result<()> {
         let selector = Self::index_selector(index);
-        // Escape single quotes in the value to prevent JS injection.
         let safe_value = value.replace('\'', "\\'");
         let safe_selector = selector.replace('\'', "\\'");
         let script = format!(
@@ -286,32 +280,27 @@ impl BrowserContext {
             selector = safe_selector,
             value = safe_value,
         );
-        self.get_page(tab_id)?
-            .evaluate(script)
+        let page = self.get_page(tab_id).await?;
+        page.evaluate(script)
             .await
-            .map_err(|e| Error::Internal(format!("select_option [{}] failed: {}", index, e)))?;
-        self.invalidate_dom_cache(tab_id);
+            .map_err(|e| anyhow!("select_option [{}] failed: {}", index, e))?;
+        self.invalidate_dom_cache(tab_id).await;
         Ok(())
     }
 
     pub async fn scroll(
-        &mut self,
+        &self,
         tab_id: &str,
         index: Option<u32>,
         direction: &str,
-        amount: u32,
-    ) -> Result<(), Error> {
+        pixels: u32,
+    ) -> Result<()> {
         let (dx, dy) = match direction {
-            "up" => (0, -(amount as i64)),
-            "down" => (0, amount as i64),
-            "left" => (-(amount as i64), 0),
-            "right" => (amount as i64, 0),
-            _ => {
-                return Err(Error::Internal(format!(
-                    "Unknown scroll direction: {}",
-                    direction
-                )))
-            }
+            "up" => (0i64, -(pixels as i64)),
+            "down" => (0i64, pixels as i64),
+            "left" => (-(pixels as i64), 0i64),
+            "right" => (pixels as i64, 0i64),
+            _ => return Err(anyhow!("Unknown scroll direction: {}", direction)),
         };
 
         let script = if let Some(idx) = index {
@@ -330,67 +319,84 @@ impl BrowserContext {
                 dy = dy,
             )
         } else {
-            format!(
-                r#"window.scrollBy({dx}, {dy})"#,
-                dx = dx,
-                dy = dy,
-            )
+            format!(r#"window.scrollBy({dx}, {dy})"#, dx = dx, dy = dy,)
         };
 
-        self.get_page(tab_id)?
-            .evaluate(script)
+        let page = self.get_page(tab_id).await?;
+        page.evaluate(script)
             .await
-            .map_err(|e| Error::Internal(format!("scroll failed: {}", e)))?;
+            .map_err(|e| anyhow!("scroll failed: {}", e))?;
         Ok(())
     }
 
-    pub async fn send_keys(&mut self, tab_id: &str, index: u32, keys: &str) -> Result<(), Error> {
-        let selector = Self::index_selector(index);
-        self.get_page(tab_id)?
-            .find_element(&selector)
+    /// Send key events to the whole page (no element targeting).
+    pub async fn send_keys(&self, tab_id: &str, keys: &str) -> Result<()> {
+        let page = self.get_page(tab_id).await?;
+
+        let down = DispatchKeyEventParams::builder()
+            .r#type(DispatchKeyEventType::KeyDown)
+            .key(keys.to_string())
+            .build()
+            .map_err(|e| anyhow!("key_down params: {e}"))?;
+        let up = DispatchKeyEventParams::builder()
+            .r#type(DispatchKeyEventType::KeyUp)
+            .key(keys.to_string())
+            .build()
+            .map_err(|e| anyhow!("key_up params: {e}"))?;
+
+        page.execute(down)
             .await
-            .map_err(|e| Error::Internal(format!("Element [{}] not found: {}", index, e)))?
-            .press_key(keys)
+            .map_err(|e| anyhow!("key_down: {e}"))?;
+        page.execute(up)
             .await
-            .map_err(|e| Error::Internal(format!("send_keys [{}] failed: {}", index, e)))?;
-        self.invalidate_dom_cache(tab_id);
+            .map_err(|e| anyhow!("key_up: {e}"))?;
         Ok(())
     }
 
-    pub async fn execute_js(&mut self, tab_id: &str, script: &str) -> Result<serde_json::Value, Error> {
-        let result = self
-            .get_page(tab_id)?
+    /// Execute JavaScript and return the result as a JSON string.
+    pub async fn execute_js(&self, tab_id: &str, script: &str) -> Result<String> {
+        let page = self.get_page(tab_id).await?;
+        let val = page
             .evaluate(script)
             .await
-            .map_err(|e| Error::Internal(format!("execute_js failed: {}", e)))?;
-
-        let value = result
-            .value()
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-
-        self.invalidate_dom_cache(tab_id);
-        Ok(value)
+            .map_err(|e| anyhow!("execute_js: {}", e))?;
+        let s = val
+            .into_value::<serde_json::Value>()
+            .map(|v| serde_json::to_string_pretty(&v).unwrap_or_default())
+            .unwrap_or_else(|_| "<no return value>".to_string());
+        Ok(s)
     }
 
     // ── Tab management ────────────────────────────────────────────────────────
 
-    pub fn get_all_tabs(&self) -> Vec<TabInfo> {
-        self.collect_tab_infos()
+    pub async fn get_all_tabs(&self) -> Vec<TabInfo> {
+        self.pages
+            .read()
+            .await
+            .keys()
+            .map(|id| TabInfo {
+                tab_id: id.clone(),
+                url: String::new(),
+                title: String::new(),
+                active: false,
+            })
+            .collect()
     }
 
-    pub async fn close_tab(&mut self, tab_id: &str) -> Result<(), Error> {
+    pub async fn close_tab(&self, tab_id: &str) -> Result<()> {
         let page = self
             .pages
+            .write()
+            .await
             .remove(tab_id)
-            .ok_or_else(|| Error::Internal(format!("Tab '{}' not found", tab_id)))?;
+            .ok_or_else(|| anyhow!("Tab '{}' not found", tab_id))?;
         page.close()
             .await
-            .map_err(|e| Error::Internal(format!("close_tab failed: {}", e)))?;
-        self.dom_cache.remove(tab_id);
-        // Also stop any running screencast task.
-        if let Some(handle) = self.screencast_tasks.remove(tab_id) {
-            handle.abort();
+            .map_err(|e| anyhow!("close_tab failed: {}", e))?;
+        self.dom_cache.write().await.remove(tab_id);
+        // Send stop signal to any running screencast task.
+        if let Some(stop_tx) = self.screencast_stops.lock().await.remove(tab_id) {
+            let _ = stop_tx.send(());
         }
         Ok(())
     }
@@ -398,11 +404,11 @@ impl BrowserContext {
     // ── Screencast ────────────────────────────────────────────────────────────
 
     pub async fn start_screencast(
-        &mut self,
+        &self,
         tab_id: &str,
-        session_id: String,
-    ) -> Result<(), Error> {
-        let page = self.get_page(tab_id)?;
+        app_handle: tauri::AppHandle,
+    ) -> Result<()> {
+        let page = self.get_page(tab_id).await?;
 
         page.execute(
             StartScreencastParams::builder()
@@ -414,58 +420,63 @@ impl BrowserContext {
                 .build(),
         )
         .await
-        .map_err(|e| Error::Internal(format!("start_screencast failed: {}", e)))?;
+        .map_err(|e| anyhow!("start_screencast failed: {}", e))?;
 
         let mut frame_stream = page
-            .event_listener::<EventScreencastFrame>()
+            .event_listener::<chromiumoxide::cdp::browser_protocol::page::EventScreencastFrame>()
             .await
-            .map_err(|e| Error::Internal(format!("event_listener failed: {}", e)))?;
+            .map_err(|e| anyhow!("event_listener failed: {}", e))?;
+
+        let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+        self.screencast_stops
+            .lock()
+            .await
+            .insert(tab_id.to_string(), stop_tx);
 
         let page_clone = page.clone();
-        let app_handle = Arc::clone(&self.app_handle);
         let tab_id_owned = tab_id.to_string();
+        let session_id = self.session_id.clone();
 
-        let handle = tokio::spawn(async move {
-            while let Some(frame) = frame_stream.next().await {
-                // Ack the frame so Chrome sends the next one.
-                let _ = page_clone
-                    .execute(ScreencastFrameAckParams::new(frame.session_id))
-                    .await;
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut stop_rx => break,
+                    frame_opt = frame_stream.next() => {
+                        let frame = match frame_opt {
+                            Some(f) => f,
+                            None => break,
+                        };
 
-                // Binary wraps a base64 string; cast through AsRef<str>.
-                let data_b64: String = <_ as AsRef<str>>::as_ref(&frame.data).to_string();
+                        // Ack the frame so Chrome sends the next one.
+                        let _ = page_clone
+                            .execute(ScreencastFrameAckParams::new(frame.session_id))
+                            .await;
 
-                let payload = ScreencastFramePayload {
-                    session_id: session_id.clone(),
-                    tab_id: tab_id_owned.clone(),
-                    data_b64,
-                    page_width: frame.metadata.device_width as u32,
-                    page_height: frame.metadata.device_height as u32,
-                };
+                        // Binary wraps a base64 string; cast through AsRef<str>.
+                        let data_b64: String =
+                            <_ as AsRef<str>>::as_ref(&frame.data).to_string();
 
-                let _ = app_handle.emit("browser:screencast-frame", &payload);
+                        let payload = ScreencastFramePayload {
+                            session_id: session_id.clone(),
+                            tab_id: tab_id_owned.clone(),
+                            data_b64,
+                            page_width: frame.metadata.device_width as u32,
+                            page_height: frame.metadata.device_height as u32,
+                        };
+
+                        let _ = app_handle.emit("browser:screencast-frame", &payload);
+                    }
+                }
             }
         });
-
-        // Abort any previous task for this tab before storing the new one.
-        if let Some(old) = self.screencast_tasks.insert(tab_id.to_string(), handle) {
-            old.abort();
-        }
 
         Ok(())
     }
 
-    pub async fn stop_screencast(&mut self, tab_id: &str) -> Result<(), Error> {
-        self.get_page(tab_id)?
-            .execute(StopScreencastParams::default())
-            .await
-            .map_err(|e| Error::Internal(format!("stop_screencast failed: {}", e)))?;
-
-        if let Some(handle) = self.screencast_tasks.remove(tab_id) {
-            handle.abort();
+    pub async fn stop_screencast(&self, tab_id: &str) {
+        if let Some(stop_tx) = self.screencast_stops.lock().await.remove(tab_id) {
+            let _ = stop_tx.send(());
         }
-
-        Ok(())
     }
 }
 
