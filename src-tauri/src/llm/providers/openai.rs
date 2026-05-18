@@ -334,8 +334,11 @@ impl LlmProvider for OpenAIProvider {
             usage: json["usage"].as_object().map(|u| TokenUsage {
                 input_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
                 output_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
+                // OpenAI: prompt_tokens_details.cached_tokens
+                // DeepSeek: prompt_cache_hit_tokens (top-level)
                 cache_read_tokens: u.get("prompt_tokens_details")
                     .and_then(|d| d["cached_tokens"].as_u64())
+                    .or_else(|| u.get("prompt_cache_hit_tokens").and_then(|v| v.as_u64()))
                     .unwrap_or(0) as u32,
                 cache_creation_tokens: 0,
             }),
@@ -588,8 +591,11 @@ impl OpenAiSseState {
             TokenUsage {
                 input_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                 output_tokens: u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                // OpenAI: prompt_tokens_details.cached_tokens
+                // DeepSeek: prompt_cache_hit_tokens (top-level)
                 cache_read_tokens: u.get("prompt_tokens_details")
                     .and_then(|d| d["cached_tokens"].as_u64())
+                    .or_else(|| u.get("prompt_cache_hit_tokens").and_then(|v| v.as_u64()))
                     .unwrap_or(0) as u32,
                 cache_creation_tokens: 0,
             }
