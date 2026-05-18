@@ -306,6 +306,8 @@ impl MemUBridge {
     /// stop errors so a failed process doesn't block restart.
     pub async fn force_restart(&self) -> Result<(), BridgeError> {
         let _ = self.stop().await;
+        // Reset shutdown flag so send_request guards don't reject new calls.
+        self.shutdown.store(false, std::sync::atomic::Ordering::SeqCst);
         self.start().await
     }
 
@@ -489,7 +491,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn force_restart_toggles_alive_state() {
+    async fn force_restart_on_unstarted_bridge_does_not_panic() {
         // A real subprocess won't start in tests (no Python), so we
         // just verify force_restart doesn't panic and returns Err
         // (start will fail with "not found").
