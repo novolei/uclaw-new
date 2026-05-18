@@ -24,7 +24,7 @@
 
 import * as React from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Loader2, RefreshCw, ChevronRight, ChevronDown, FileText, Sparkles, Wand2 } from 'lucide-react'
+import { Loader2, RefreshCw, ChevronRight, ChevronDown, FileText, Sparkles, Wand2, FolderDown, FolderSync } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -38,6 +38,8 @@ import {
   memoryEntityPageList,
   memoryEntityPageGet,
   memoryEntityPageSynthesizeNow,
+  memoryWikiExport,
+  memoryWikiSyncFromDisk,
 } from '@/lib/tauri-bridge'
 import type {
   WikiArtifactDto,
@@ -167,6 +169,82 @@ export function WikiView({ spaceId, className }: WikiViewProps): React.ReactElem
     }
   }
 
+  // Phase 7.1 — export all EntityPages to ~/Documents/workground/brain
+  // as markdown files. Idempotent: unchanged pages short-circuit on
+  // SHA-256 in the backend.
+  const [exporting, setExporting] = React.useState(false)
+  const handleExportToDisk = async (): Promise<void> => {
+    if (exporting) return
+    setExporting(true)
+    setError(null)
+    try {
+      const outcome = await memoryWikiExport({ spaceId: space })
+      const parts: string[] = []
+      if (outcome.pages_written > 0)
+        parts.push(`${outcome.pages_written} written`)
+      if (outcome.pages_unchanged > 0)
+        parts.push(`${outcome.pages_unchanged} unchanged`)
+      if (outcome.overview_written) parts.push('overview')
+      if (outcome.index_written) parts.push('index')
+      const summary = parts.length > 0 ? parts.join(', ') : 'nothing to export'
+      if (outcome.errors.length > 0) {
+        toast.warning(
+          `Exported with ${outcome.errors.length} error(s): ${summary}`,
+        )
+      } else {
+        toast.success(`Exported to brain dir: ${summary}`)
+      }
+    } catch (e) {
+      const msg = String(e)
+      toast.error(`Export failed: ${msg}`)
+      setError(msg)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  // Phase 7.2 — sync from disk back into memory_graph. Idempotent
+  // (unchanged files short-circuit on mtime + SHA-256 match). Conflicts
+  // (disk and DB both moved) are counted but the sync still applies
+  // disk-wins; Phase 7.3 surfaces conflicts in the Health tab.
+  const [syncing, setSyncing] = React.useState(false)
+  const handleSyncFromDisk = async (): Promise<void> => {
+    if (syncing) return
+    setSyncing(true)
+    setError(null)
+    try {
+      const outcome = await memoryWikiSyncFromDisk({ spaceId: space })
+      const parts: string[] = []
+      if (outcome.pages_updated > 0)
+        parts.push(`${outcome.pages_updated} updated`)
+      if (outcome.new_pages_created > 0)
+        parts.push(`${outcome.new_pages_created} new`)
+      if (outcome.files_unchanged > 0)
+        parts.push(`${outcome.files_unchanged} unchanged`)
+      const summary = parts.length > 0 ? parts.join(', ') : 'nothing to sync'
+      if (outcome.conflicts > 0) {
+        toast.warning(
+          `Sync: ${summary} · ${outcome.conflicts} conflict(s) — disk won, check Health tab`,
+        )
+      } else if (outcome.errors.length > 0) {
+        toast.warning(
+          `Synced with ${outcome.errors.length} error(s): ${summary}`,
+        )
+      } else {
+        toast.success(`Synced from brain dir: ${summary}`)
+      }
+      // Refresh the side-list since new pages may have been created
+      // and existing ones may have new titles.
+      await fetchPages()
+    } catch (e) {
+      const msg = String(e)
+      toast.error(`Sync failed: ${msg}`)
+      setError(msg)
+    } finally {
+      setSyncing(false)
+    }
+  }
+
   // ─── Derived: pages grouped by subkind ────────────────────────────────
 
   const grouped = React.useMemo(() => {
@@ -234,6 +312,36 @@ export function WikiView({ spaceId, className }: WikiViewProps): React.ReactElem
               className={cn('size-3', regenerating === 'overview' && 'animate-spin')}
             />
             Overview
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-xs h-7 gap-1"
+            onClick={handleExportToDisk}
+            disabled={exporting || syncing}
+            title="Export every EntityPage in this workspace to ~/Documents/workground/brain/<subkind>/<slug>.md. Edit those files in Obsidian/VSCode, then sync back."
+          >
+            {exporting ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <FolderDown className="size-3" />
+            )}
+            Export
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-xs h-7 gap-1"
+            onClick={handleSyncFromDisk}
+            disabled={syncing || exporting}
+            title="Pull edits from ~/Documents/workground/brain/ back into the wiki. Disk wins on conflict; conflicts show up as 'sync_conflict' findings in the Health tab."
+          >
+            {syncing ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <FolderSync className="size-3" />
+            )}
+            Sync
           </Button>
         </div>
       </div>

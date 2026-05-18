@@ -126,7 +126,11 @@ pub fn run_health_checks(
 /// inserted, 0 if skipped due to dedup. Dismissed rows are NOT counted
 /// — re-detecting an issue the user already dismissed inserts a fresh
 /// row so the panel surfaces it again.
-fn upsert_finding(
+///
+/// `pub(crate)` so Phase 7.3 (brain_io::sync_one_file) can write
+/// `check_kind='sync_conflict'` rows the same way the structural
+/// checks do.
+pub(crate) fn upsert_finding(
     conn: &rusqlite::Connection,
     space_id: &str,
     severity: &str,

@@ -26,7 +26,7 @@ import { cn } from '@/lib/utils'
 import { MessageResponse } from '@/components/ai-elements/message'
 import { getToolIcon } from './tool-utils'
 import { getToolPhrase } from './tool-phrase'
-import { ToolResultRenderer } from './tool-result-renderers'
+import { ToolResultRenderer } from './tool-renderers'
 import { formatDuration } from './AgentMessages'
 // Local content-block types (SDK types removed; these structural equivalents are sufficient)
 interface SDKContentBlock { type: string; text?: string; id?: string; name?: string; input?: Record<string, any>; thinking?: string; tool_use_id?: string; content?: string | SDKContentBlock[]; is_error?: boolean; [key: string]: unknown }

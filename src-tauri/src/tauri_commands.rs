@@ -5378,6 +5378,93 @@ pub async fn memory_entity_page_synthesize_now(
     serde_json::to_value(&outcome).map_err(|e| format!("serialize outcome: {}", e))
 }
 
+// ─── Memory OS Phase 7.1 — Export to markdown ──────────────────────────
+//
+// `memory_wiki_export` writes every EntityPage in the space to
+// `<brain_root>/<subkind>/<slug>.md` plus `overview.md` / `index.md`
+// at the brain root. Idempotent per-file: unchanged content
+// short-circuits via SHA-256 compared to `brain_sync_state`.
+//
+// When `brainRoot` is omitted the backend resolves the default
+// `~/Documents/workground/brain/`. Errors per page bubble up into the
+// outcome's `errors` array — the export is "best-effort"; one bad
+// page does not block the rest.
+//
+// Gate: `memory_os.entity_page_enabled` must be on (sync involves
+// reading EntityPage rows). No new sync-specific flag in this commit;
+// Phase 7.4 (fs watcher) adds `brain_watcher_enabled` for the
+// realtime hook only.
+
+#[tauri::command]
+pub async fn memory_wiki_export(
+    state: State<'_, AppState>,
+    input: WikiExportInput,
+) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state).await?;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let brain_root = match input.brain_root.as_deref() {
+        Some(s) if !s.trim().is_empty() => std::path::PathBuf::from(s),
+        _ => crate::memory_graph::brain_io::BrainExportConfig::default_brain_root()
+            .ok_or_else(|| {
+                "Could not resolve default brain root (no Documents directory found). \
+                 Pass an explicit brainRoot."
+                    .to_string()
+            })?,
+    };
+    let cfg = crate::memory_graph::brain_io::BrainExportConfig {
+        brain_root,
+        space_id,
+    };
+    let store = state.memory_graph_store.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        crate::memory_graph::brain_io::export_all(&store, &cfg)
+            .map_err(|e| format!("export_all: {}", e))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {}", e))??;
+    serde_json::to_value(&outcome).map_err(|e| format!("serialize outcome: {}", e))
+}
+
+// ─── Memory OS Phase 7.2 — Sync from markdown ──────────────────────────
+//
+// `memory_wiki_sync_from_disk` walks the brain directory and for each
+// `.md` file: (1) parses frontmatter, (2) compares mtime + SHA-256
+// against `brain_sync_state`, (3) writes a new memory_version when
+// disk content changed, (4) counts conflicts when DB also moved since
+// the last sync.
+//
+// Gate: `entity_page_enabled` only — the sync writes EntityPage
+// versions. No new flag; the user gates intent via the WikiView Sync
+// button (manual trigger). Phase 7.4 will add an opt-in fs watcher.
+
+#[tauri::command]
+pub async fn memory_wiki_sync_from_disk(
+    state: State<'_, AppState>,
+    input: WikiSyncInput,
+) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state).await?;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let brain_root = match input.brain_root.as_deref() {
+        Some(s) if !s.trim().is_empty() => std::path::PathBuf::from(s),
+        _ => crate::memory_graph::brain_io::BrainExportConfig::default_brain_root()
+            .ok_or_else(|| {
+                "Could not resolve default brain root. Pass an explicit brainRoot.".to_string()
+            })?,
+    };
+    let cfg = crate::memory_graph::brain_io::BrainExportConfig {
+        brain_root,
+        space_id,
+    };
+    let store = state.memory_graph_store.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        crate::memory_graph::brain_io::sync_from_disk(&store, &cfg)
+            .map_err(|e| format!("sync_from_disk: {}", e))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {}", e))??;
+    serde_json::to_value(&outcome).map_err(|e| format!("serialize outcome: {}", e))
+}
+
 // ─── Fragment / Daily Summary Commands ─────────────────────────────────────
 
 /// Parse an RFC-3339 / ISO-8601 timestamp string into epoch millis.

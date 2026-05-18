@@ -211,6 +211,14 @@ pub struct AppState {
     pub entity_synthesizer:
         Arc<dyn crate::proactive::scenarios::entity_synthesizer::EntitySynthesizer>,
 
+    /// Phase 7.4 — opt-in fs watcher over the brain dir. `None` when
+    /// `memory_os.brain_watcher_enabled` is false at boot OR when the
+    /// watcher failed to start (logged and ignored — manual Sync
+    /// still works). The handle keeps the watcher + debounce worker
+    /// alive for the lifetime of AppState.
+    pub brain_watcher:
+        std::sync::Mutex<Option<crate::memory_graph::brain_watcher::BrainWatcherHandle>>,
+
     // ─── Phased Boot: 新增服务 ───────────────────────────────────────
     /// 中央消息总线
     pub infra_service: Arc<InfraService>,
@@ -573,6 +581,50 @@ impl AppState {
             Arc::new(crate::proactive::scenarios::entity_synthesizer::StubEntitySynthesizer)
         };
 
+        // Memory OS Phase 7.4 — opt-in fs watcher. Resolves the default
+        // brain root if no override is configured. Errors degrade
+        // gracefully: the manual Sync button (Phase 7.2) still works.
+        let brain_watcher_handle: Option<
+            crate::memory_graph::brain_watcher::BrainWatcherHandle,
+        > = if memubot_config.memory_os.brain_watcher_enabled
+            && memubot_config.memory_os.entity_page_enabled
+        {
+            match crate::memory_graph::brain_io::BrainExportConfig::default_brain_root() {
+                Some(root) => {
+                    let store_clone = memory_graph_store.clone();
+                    match crate::memory_graph::brain_watcher::start_brain_watcher(
+                        store_clone,
+                        root.clone(),
+                        "default".to_string(),
+                        crate::memory_graph::brain_watcher::DEFAULT_DEBOUNCE_MS,
+                    ) {
+                        Ok(h) => {
+                            tracing::info!(
+                                root = %root.display(),
+                                "Memory OS Phase 7.4: brain_watcher started"
+                            );
+                            Some(h)
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "Memory OS Phase 7.4: brain_watcher failed to start (manual Sync still works)"
+                            );
+                            None
+                        }
+                    }
+                }
+                None => {
+                    tracing::warn!(
+                        "Memory OS Phase 7.4: brain_watcher enabled but no Documents dir; not started"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         tracing::info!("Application state initialized successfully (phased boot)");
 
         Ok(Self {
@@ -612,6 +664,8 @@ impl AppState {
             // Phase 6.2 entity synthesizer trait object (Stub or Real),
             // picked above. Drives the manual Synthesize button IPC.
             entity_synthesizer,
+            // Phase 7.4 — Some when the fs watcher started successfully.
+            brain_watcher: std::sync::Mutex::new(brain_watcher_handle),
             infra_service,
             service_manager,
             metrics_service,
