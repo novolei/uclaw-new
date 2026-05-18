@@ -17,3 +17,5 @@ pub mod memory_os_llm;
 pub mod brain_io;
 // Memory OS Foundation Phase 7.4 — opt-in fs watcher over the brain dir.
 pub mod brain_watcher;
+// Memory OS Sprint 1.7 — PROFILE.md managed-block parser/renderer.
+pub mod profile_md;

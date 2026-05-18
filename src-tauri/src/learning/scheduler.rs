@@ -200,6 +200,20 @@ impl LearningScheduler {
         Self { store, buffer }
     }
 
+    /// Borrow the underlying FacetStore handle. ProactiveService uses
+    /// this to refresh FacetCache after `rebuild_now` without
+    /// constructing a parallel store.
+    pub fn store_handle(&self) -> Arc<FacetStore> {
+        self.store.clone()
+    }
+
+    /// Borrow the underlying producer buffer. Used by IPC paths
+    /// (Sprint 1.10) that want to push a candidate synchronously
+    /// from a tauri command handler.
+    pub fn buffer_handle(&self) -> Arc<Buffer> {
+        self.buffer.clone()
+    }
+
     /// One rebuild pass. Drains the buffer, reads current snapshots,
     /// runs the detector, writes transitions back.
     ///

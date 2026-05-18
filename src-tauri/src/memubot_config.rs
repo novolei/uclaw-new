@@ -396,6 +396,12 @@ pub struct MemoryOsConfig {
     /// 500ms debounce. Default OFF because fs events are noisy on
     /// macOS and `Sync` button (Phase 7.2) covers most users.
     pub brain_watcher_enabled: bool,
+    /// Sprint 1 (post-Phase-7): openhuman-style stability_detector +
+    /// PROFILE.md system-prompt injection. When ON, ProactiveService
+    /// rebuilds the FacetCache every 30 min and injects active facets
+    /// into the agent system prompt. Default ON (zero cost when there
+    /// are no candidates) — flip OFF to A/B test prompts.
+    pub learning_enabled: bool,
 }
 
 impl Default for MemoryOsConfig {
@@ -433,6 +439,11 @@ impl Default for MemoryOsConfig {
             // changes; the manual Sync button (Phase 7.2) is the
             // safer default. Restart required to swap.
             brain_watcher_enabled: false,
+            // Sprint 1 default ON — facet store is zero-cost when
+            // empty + first rebuild happens 30 min after first
+            // candidate is pushed. Flip OFF only to A/B test the
+            // prompt without the learned profile block.
+            learning_enabled: true,
         }
     }
 }

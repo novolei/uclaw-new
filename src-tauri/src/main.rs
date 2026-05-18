@@ -258,10 +258,17 @@ fn main() {
                                         // site.
                                         {
                                             let state_ref: tauri::State<'_, AppState> = app_handle.state();
-                                            uclaw_core::proactive::MemoryOsRuntimeConfig::from_memubot_config(
+                                            let mut cfg = uclaw_core::proactive::MemoryOsRuntimeConfig::from_memubot_config(
                                                 &memubot_config.memory_os,
                                                 state_ref.lint_analyzer.clone(),
-                                            )
+                                            );
+                                            // Sprint 1.10 — wire learning pipeline handles in
+                                            // here so ProactiveService tick can drive the
+                                            // 30-min stability rebuild + FacetCache refresh.
+                                            cfg.learning_scheduler =
+                                                Some(state_ref.learning_scheduler.clone());
+                                            cfg.facet_cache = Some(state_ref.facet_cache.clone());
+                                            cfg
                                         },
                                     )
                                 );
@@ -647,6 +654,10 @@ fn main() {
             uclaw_core::tauri_commands::memory_wiki_export,
             // Markdown sync-from-disk (Memory OS Foundation Phase 7.2)
             uclaw_core::tauri_commands::memory_wiki_sync_from_disk,
+            // Learning pipeline (Memory OS Sprint 1.10)
+            uclaw_core::tauri_commands::memory_learning_rebuild_now,
+            uclaw_core::tauri_commands::memory_learning_list_facets,
+            uclaw_core::tauri_commands::memory_learning_dismiss_facet,
             // Fragment / Daily Summary
             uclaw_core::tauri_commands::memory_graph_list_fragments,
             uclaw_core::tauri_commands::search_fragments,

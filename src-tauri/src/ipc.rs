@@ -1100,6 +1100,54 @@ pub struct WikiSyncInput {
     pub brain_root: Option<String>,
 }
 
+// ─── Memory OS Sprint 1.10 — learning IPC ──────────────────────────────
+
+/// Manual trigger for the stability rebuild. Returns the
+/// `RebuildOutcome` shape (snake_case via serde default).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningRebuildNowInput {
+    /// Reserved for future per-space scoping. Currently ignored
+    /// (the facet store is global).
+    pub space_id: Option<String>,
+}
+
+/// Filter for the list endpoint. Empty filters return everything.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningListFacetsInput {
+    /// "identity" / "style" / "tooling" / "veto" / "goal" / "channel"
+    /// or None for all classes.
+    pub class: Option<String>,
+    /// "active" / "provisional" / "candidate" / "forgotten" or None
+    /// for all states.
+    pub state: Option<String>,
+}
+
+/// Camel-case mirror of `FacetSnapshot` for the wire. State / class
+/// are strings here so frontend doesn't need to mirror the Rust enums.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FacetDto {
+    pub facet_id: String,
+    pub class: String,
+    pub name: String,
+    pub value: String,
+    pub state: String,
+    pub stability: f64,
+    pub evidence_count: u32,
+    pub last_seen_at_ms: i64,
+}
+
+/// User-driven forget: flag a facet as Forgotten regardless of its
+/// current stability. The next rebuild may resurface it if evidence
+/// accumulates again — this is "dismiss for now", not "tombstone".
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningDismissFacetInput {
+    pub facet_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthFindingDto {

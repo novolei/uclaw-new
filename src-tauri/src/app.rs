@@ -219,6 +219,16 @@ pub struct AppState {
     pub brain_watcher:
         std::sync::Mutex<Option<crate::memory_graph::brain_watcher::BrainWatcherHandle>>,
 
+    /// Sprint 1 — openhuman-style stability_detector + PROFILE.md
+    /// pipeline. Producer (chat-turn extractor) pushes into
+    /// `learning_buffer`; ProactiveService scheduler tick drains
+    /// every 30 min via `learning_scheduler` and refreshes
+    /// `facet_cache`. Agent prompt builder reads `facet_cache` via
+    /// `learning::prompt_section::UserProfileSection::render`.
+    pub learning_buffer: Arc<crate::learning::candidate::Buffer>,
+    pub learning_scheduler: Arc<crate::learning::scheduler::LearningScheduler>,
+    pub facet_cache: Arc<crate::learning::cache::FacetCache>,
+
     // ─── Phased Boot: 新增服务 ───────────────────────────────────────
     /// 中央消息总线
     pub infra_service: Arc<InfraService>,
@@ -625,6 +635,31 @@ impl AppState {
             None
         };
 
+        // Memory OS Sprint 1.10 — learning pipeline bootstrap.
+        // Producer side (chat-turn extractor) pushes candidates into
+        // `learning_buffer`; ProactiveService scheduler tick (every
+        // 60 ticks = 30 min) drains via `learning_scheduler` and
+        // refreshes `facet_cache`. Always constructed regardless of
+        // the flag so the IPC list/dismiss endpoints work even when
+        // the periodic rebuild is disabled.
+        let learning_buffer = Arc::new(
+            crate::learning::candidate::Buffer::new(2048),
+        );
+        let learning_facet_store = Arc::new(
+            crate::learning::scheduler::FacetStore::new(db.clone()),
+        );
+        let learning_scheduler = Arc::new(
+            crate::learning::scheduler::LearningScheduler::new(
+                learning_facet_store,
+                learning_buffer.clone(),
+            ),
+        );
+        let facet_cache = Arc::new(crate::learning::cache::FacetCache::new());
+        tracing::info!(
+            learning_enabled = memubot_config.memory_os.learning_enabled,
+            "Memory OS Sprint 1: facet store + buffer + cache initialized"
+        );
+
         tracing::info!("Application state initialized successfully (phased boot)");
 
         Ok(Self {
@@ -666,6 +701,9 @@ impl AppState {
             entity_synthesizer,
             // Phase 7.4 — Some when the fs watcher started successfully.
             brain_watcher: std::sync::Mutex::new(brain_watcher_handle),
+            learning_buffer,
+            learning_scheduler,
+            facet_cache,
             infra_service,
             service_manager,
             metrics_service,

@@ -186,6 +186,18 @@ pub struct MemoryOsRuntimeConfig {
     /// Phase 6.1 — daily upgrade cap. Downgrades are uncapped because
     /// they SAVE token spend on the next synthesis pass.
     pub tier_escalator_daily_cap: u32,
+    /// Sprint 1 — gates the openhuman-style stability_detector +
+    /// PROFILE.md rebuild. Default ON; rebuild itself is zero cost
+    /// when the candidate buffer is empty.
+    pub learning_enabled: bool,
+    /// Sprint 1 — handle to the LearningScheduler that runs every
+    /// 60 ticks (~30 min). Built at AppState bootstrap with the
+    /// shared FacetStore + Buffer references.
+    pub learning_scheduler: Option<Arc<crate::learning::scheduler::LearningScheduler>>,
+    /// Sprint 1 — shared FacetCache the prompt builder reads
+    /// `## User Profile (Learned)` from. Updated after every
+    /// rebuild_now in the tick block.
+    pub facet_cache: Option<Arc<crate::learning::cache::FacetCache>>,
 }
 
 impl MemoryOsRuntimeConfig {
@@ -204,6 +216,9 @@ impl MemoryOsRuntimeConfig {
             lint_analyzer,
             tier_escalator_enabled: cfg.tier_escalator_enabled,
             tier_escalator_daily_cap: cfg.tier_escalator_daily_cap,
+            learning_enabled: cfg.learning_enabled,
+            learning_scheduler: None,  // wired in AppState bootstrap
+            facet_cache: None,         // wired in AppState bootstrap
         }
     }
 
@@ -221,6 +236,9 @@ impl MemoryOsRuntimeConfig {
                 as Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
             tier_escalator_enabled: true,
             tier_escalator_daily_cap: 10,
+            learning_enabled: false,  // off in tests by default — tests opt-in by setting handles
+            learning_scheduler: None,
+            facet_cache: None,
         }
     }
 }
@@ -236,6 +254,9 @@ impl Default for MemoryOsRuntimeConfig {
                 as Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
             tier_escalator_enabled: true,
             tier_escalator_daily_cap: 10,
+            learning_enabled: true,
+            learning_scheduler: None,
+            facet_cache: None,
         }
     }
 }
@@ -1234,6 +1255,49 @@ impl ProactiveService {
                     }
                 }
             });
+        }
+
+        // Memory OS Sprint 1.10 — stability_detector rebuild.
+        // Every 60 ticks (~30 min @ default 30s interval) — drain the
+        // candidate buffer, score with stability_detector, write back
+        // to user_profile_facets, refresh the in-memory FacetCache.
+        // Zero LLM cost; runs on tokio::task::spawn_blocking because
+        // FacetStore takes the rusqlite Mutex.
+        if refs.memory_os.learning_enabled && refs.tick_count.load(Ordering::SeqCst) % 60 == 0 {
+            if let (Some(scheduler), Some(cache)) = (
+                refs.memory_os.learning_scheduler.as_ref().cloned(),
+                refs.memory_os.facet_cache.as_ref().cloned(),
+            ) {
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                let result = tokio::task::spawn_blocking(move || -> Result<(), anyhow::Error> {
+                    let outcome = scheduler
+                        .rebuild_now(now_ms)
+                        .map_err(|e| anyhow::anyhow!("learning::rebuild_now: {}", e))?;
+                    // Refresh the cache from the just-written facets so
+                    // the next prompt build sees the new state without
+                    // a second tick wait.
+                    let store_handle = scheduler.store_handle();
+                    let n = cache
+                        .refresh_from(&store_handle, now_ms)
+                        .map_err(|e| anyhow::anyhow!("FacetCache::refresh_from: {}", e))?;
+                    tracing::debug!(
+                        promoted_active = outcome.promoted_to_active,
+                        promoted_provisional = outcome.promoted_to_provisional,
+                        demoted = outcome.demoted_for_budget,
+                        forgotten = outcome.forgotten,
+                        total = outcome.total,
+                        cache_size = n,
+                        "[ProactiveService] learning: stability rebuild + cache refresh"
+                    );
+                    Ok(())
+                })
+                .await;
+                if let Err(e) = result {
+                    tracing::warn!(error = %e, "[ProactiveService] learning rebuild spawn_blocking failed");
+                } else if let Ok(Err(e)) = result {
+                    tracing::warn!(error = %e, "[ProactiveService] learning rebuild errored (kept previous cache)");
+                }
+            }
         }
 
         // Memory OS Foundation Phase 3 — periodic wiki index regeneration.

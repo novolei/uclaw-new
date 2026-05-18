@@ -5465,6 +5465,119 @@ pub async fn memory_wiki_sync_from_disk(
     serde_json::to_value(&outcome).map_err(|e| format!("serialize outcome: {}", e))
 }
 
+// ─── Memory OS Sprint 1.10 — learning IPC ──────────────────────────────
+//
+// Three commands behind the learning pipeline:
+//
+//   memory_learning_rebuild_now      — manual trigger (default cadence
+//                                      is 30 min via ProactiveService)
+//   memory_learning_list_facets      — read endpoint with class/state
+//                                      filter for the Settings UI
+//   memory_learning_dismiss_facet    — user-driven 'forget this fact';
+//                                      flips state to Forgotten,
+//                                      doesn't delete (so next rebuild
+//                                      can resurface on new evidence)
+//
+// All three are no-ops when `memory_os.learning_enabled = false`,
+// returning a structured error so the UI can hide affordances.
+
+#[tauri::command]
+pub async fn memory_learning_rebuild_now(
+    state: State<'_, AppState>,
+    _input: LearningRebuildNowInput,
+) -> Result<serde_json::Value, String> {
+    let enabled = state.memubot_config.read().await.memory_os.learning_enabled;
+    if !enabled {
+        return Err(
+            "Learning pipeline disabled (memory_os.learning_enabled=false). \
+             Enable it and restart to use this command."
+                .into(),
+        );
+    }
+    let scheduler = state.learning_scheduler.clone();
+    let cache = state.facet_cache.clone();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let outcome = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let out = scheduler
+            .rebuild_now(now_ms)
+            .map_err(|e| format!("rebuild_now: {}", e))?;
+        let store = scheduler.store_handle();
+        cache
+            .refresh_from(&store, now_ms)
+            .map_err(|e| format!("FacetCache::refresh_from: {}", e))?;
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {}", e))??;
+    serde_json::to_value(&outcome).map_err(|e| format!("serialize: {}", e))
+}
+
+#[tauri::command]
+pub async fn memory_learning_list_facets(
+    state: State<'_, AppState>,
+    input: LearningListFacetsInput,
+) -> Result<Vec<FacetDto>, String> {
+    use crate::learning::stability_detector::FacetSnapshot;
+    let all: Vec<FacetSnapshot> = state.facet_cache.all();
+    let filtered: Vec<FacetDto> = all
+        .into_iter()
+        .filter(|s| match &input.class {
+            Some(c) => s.class.as_str() == c.as_str(),
+            None => true,
+        })
+        .filter(|s| match &input.state {
+            Some(st) => s.state.as_str() == st.as_str(),
+            None => true,
+        })
+        .map(|s| FacetDto {
+            facet_id: s.facet_id,
+            class: s.class.as_str().to_string(),
+            name: s.name,
+            value: s.value,
+            state: s.state.as_str().to_string(),
+            stability: s.stability,
+            evidence_count: s.evidence_count,
+            last_seen_at_ms: s.last_seen_ms,
+        })
+        .collect();
+    Ok(filtered)
+}
+
+#[tauri::command]
+pub async fn memory_learning_dismiss_facet(
+    state: State<'_, AppState>,
+    input: LearningDismissFacetInput,
+) -> Result<serde_json::Value, String> {
+    let db = state.db.clone();
+    let facet_id = input.facet_id.clone();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let rows = tokio::task::spawn_blocking(move || -> Result<usize, String> {
+        let conn = db.lock().map_err(|e| format!("DB lock: {}", e))?;
+        conn.execute(
+            "UPDATE user_profile_facets SET state = 'forgotten', updated_at = ?1 \
+             WHERE facet_id = ?2",
+            rusqlite::params![now_ms, facet_id],
+        )
+        .map_err(|e| format!("UPDATE: {}", e))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {}", e))??;
+    // Refresh the cache so the next prompt build doesn't show the
+    // dismissed facet.
+    let scheduler = state.learning_scheduler.clone();
+    let cache = state.facet_cache.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let store = scheduler.store_handle();
+        let _ = cache.refresh_from(&store, now_ms);
+    })
+    .await;
+    Ok(serde_json::json!({
+        "facet_id": input.facet_id,
+        "rows_updated": rows,
+        "new_state": "forgotten",
+    }))
+}
+
 // ─── Fragment / Daily Summary Commands ─────────────────────────────────────
 
 /// Parse an RFC-3339 / ISO-8601 timestamp string into epoch millis.
