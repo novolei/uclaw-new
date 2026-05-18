@@ -25,3 +25,4 @@
 //! - openhuman source: `/Users/ryanliu/Documents/openhuman/src/openhuman/learning/`
 
 pub mod candidate;
+pub mod stability_detector;
