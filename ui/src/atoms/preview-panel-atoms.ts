@@ -36,6 +36,8 @@ export interface PreviewFileTarget {
 
 export type PreviewTabSource = 'agent' | 'manual'
 
+export type PreviewTabType = 'file' | 'browser'
+
 export interface PreviewTabItem {
   /** Composite identity: two tabs with same (mountId, relPath) are merged. */
   mountId: string
@@ -50,6 +52,10 @@ export interface PreviewTabItem {
   source: PreviewTabSource
   /** Insertion epoch — tiebreaker within source group. */
   addedAt: number
+  /** Tab content type: file renderer or live browser panel. Default 'file'. */
+  type: PreviewTabType
+  /** Present only when type === 'browser'. */
+  browser?: { agentSessionId: string; initialUrl: string }
 }
 
 export const previewTabsAtom = atom<PreviewTabItem[]>([])
@@ -145,6 +151,7 @@ export const openPreviewTabAction = atom(
       sessionId: payload.target.sessionId,
       source: payload.source,
       addedAt: Date.now(),
+      type: 'file',
     }
     set(previewTabsAtom, sortPreviewTabs([...tabs, tab]))
     set(activePreviewTabKeyAtom, key)
@@ -307,3 +314,37 @@ export const closePreviewAction = atom(null, (get, set) => {
   set(previewTabsAtom, [])              // NEW
   set(activePreviewTabKeyAtom, null)    // NEW
 })
+
+/**
+ * Open a live browser panel tab for the given agent session.
+ * Re-focuses existing browser tab for the same session without duplication.
+ */
+export const openBrowserTabAction = atom(
+  null,
+  (get, set, payload: { agentSessionId: string; initialUrl?: string }) => {
+    const tabs = get(previewTabsAtom)
+    const tab: PreviewTabItem = {
+      mountId: 'browser',
+      relPath: payload.agentSessionId,
+      name: '浏览器',
+      absolutePath: '',
+      source: 'agent',
+      addedAt: Date.now(),
+      type: 'browser',
+      browser: {
+        agentSessionId: payload.agentSessionId,
+        initialUrl: payload.initialUrl ?? '',
+      },
+    }
+    const key = previewTabKey(tab)
+    const existing = tabs.find((t) => previewTabKey(t) === key)
+    if (existing) {
+      set(activePreviewTabKeyAtom, key)
+      set(previewPanelOpenAtom, true)
+      return
+    }
+    set(previewTabsAtom, sortPreviewTabs([...tabs, tab]))
+    set(activePreviewTabKeyAtom, key)
+    set(previewPanelOpenAtom, true)
+  },
+)
