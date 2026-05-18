@@ -395,58 +395,17 @@ fn main() {
                         // (which would require app_handle to outlive the
                         // task — easier to just clone the Arc once).
                         let db_for_mcp = state_ref.db.clone();
-                        // gbrain Sprint 2.1 — resolve bundled bun + gbrain
-                        // entry paths now (sync) so the spawn block doesn't
-                        // need AppState. mkdir -p the PGlite data dir before
-                        // gbrain ever spawns — the macOS .app resource dir
-                        // is read-only, so PGlite must write elsewhere.
-                        // All three values are Optional: if any is None
-                        // (paths missing on fresh checkout w/o setup scripts),
-                        // we just skip the seed and gbrain stays absent.
+                        // gbrain Sprint 2.1 init-fix — resolve bundled
+                        // artifacts. Returning Option lets the seed below
+                        // skip cleanly if the bundle is missing (fresh
+                        // checkout without scripts/setup-bun-runtime.sh +
+                        // scripts/setup-gbrain-source.sh).
                         let resource_dir_for_mcp: Option<std::path::PathBuf> =
                             app_handle.path().resource_dir().ok();
                         let bun_path = AppState::find_bun_path(resource_dir_for_mcp.as_deref());
                         let gbrain_entry =
                             AppState::find_gbrain_entry(resource_dir_for_mcp.as_deref());
-                        let pgdata_dir = state_ref
-                            .data_dir
-                            .join("gbrain")
-                            .join("pgdata");
-                        if bun_path.is_some() && gbrain_entry.is_some() {
-                            if let Err(e) = std::fs::create_dir_all(&pgdata_dir) {
-                                tracing::warn!(
-                                    path = %pgdata_dir.display(),
-                                    error = %e,
-                                    "[Stage 3] failed to create gbrain pgdata dir — gbrain may fail to spawn"
-                                );
-                            }
-                            // Write GBRAIN_HOME/.gbrain/config.json so gbrain's
-                            // PGlite engine persists to our writable data dir.
-                            // gbrain reads database_path from this file; the
-                            // GBRAIN_HOME env var (set in seed_bundled_gbrain)
-                            // tells it where to find the config.
-                            let gbrain_home = pgdata_dir.parent().unwrap_or(&pgdata_dir);
-                            let gbrain_config_dir = gbrain_home.join(".gbrain");
-                            if let Err(e) = std::fs::create_dir_all(&gbrain_config_dir) {
-                                tracing::warn!(error = %e, "[Stage 3] failed to create gbrain config dir");
-                            } else {
-                                let config_file = gbrain_config_dir.join("config.json");
-                                if !config_file.exists() {
-                                    let json = format!(
-                                        "{{\"database_path\":\"{}\"}}\n",
-                                        pgdata_dir.to_string_lossy().replace('\\', "/")
-                                    );
-                                    if let Err(e) = std::fs::write(&config_file, json) {
-                                        tracing::warn!(error = %e, "[Stage 3] failed to write gbrain config.json");
-                                    } else {
-                                        tracing::info!(
-                                            path = %config_file.display(),
-                                            "[Stage 3] wrote gbrain config.json (database_path → pgdata)"
-                                        );
-                                    }
-                                }
-                            }
-                        }
+                        let gbrain_home = state_ref.data_dir.join("gbrain");
                         let app_for_consumer = app_handle.clone();
                         tauri::async_runtime::spawn(async move {
                             let (tx, mut rx) =
@@ -512,17 +471,41 @@ fn main() {
                             // share the same SQLite connection AppState
                             // owns.
                             guard.set_db_handle(db_for_mcp);
-                            // gbrain Sprint 2.1 — seed the bundled gbrain
-                            // entry if not already present. Must happen
-                            // BEFORE connect_all_enabled so the new entry
-                            // is picked up by the same auto-connect pass.
-                            // Idempotent: existing 'gbrain' entries are
-                            // left alone so user enable/disable state is
-                            // preserved.
+                            // gbrain Sprint 2.1 init-fix — initialize the
+                            // bundled brain BEFORE seeding the MCP entry.
+                            // Without this, gbrain serve exits immediately
+                            // on every connect with "No brain configured".
+                            // Synchronous + blocking: first launch runs
+                            // ~63 migrations (~30-60s); subsequent
+                            // launches short-circuit via the PG_VERSION
+                            // probe.
                             if let (Some(bun), Some(entry)) =
                                 (bun_path.as_ref(), gbrain_entry.as_ref())
                             {
-                                match guard.seed_bundled_gbrain(bun, entry, &pgdata_dir) {
+                                match uclaw_core::mcp::ensure_bundled_gbrain_initialized(
+                                    bun, entry, &gbrain_home,
+                                ) {
+                                    Ok(true) => tracing::info!(
+                                        "[Stage 3] gbrain brain initialized (first launch)"
+                                    ),
+                                    Ok(false) => tracing::debug!(
+                                        "[Stage 3] gbrain brain already initialized"
+                                    ),
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            "[Stage 3] gbrain init failed — seeding the MCP entry anyway so it surfaces in the UI for debugging; gbrain will fail to connect until init succeeds (re-run scripts/setup-gbrain-source.sh or remove ~/.uclaw/gbrain/ to retry)"
+                                        );
+                                        // Intentional fall-through: still
+                                        // run the seed match below so the
+                                        // entry appears in the Integrations
+                                        // UI. The auto-connect pass will
+                                        // then surface a connect failure
+                                        // (more actionable than a silently
+                                        // missing entry).
+                                    }
+                                }
+                                match guard.seed_bundled_gbrain(bun, entry, &gbrain_home) {
                                     Ok(true) => tracing::info!(
                                         "[Stage 3] gbrain MCP entry seeded (first launch)"
                                     ),

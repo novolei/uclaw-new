@@ -1159,11 +1159,13 @@ impl McpManager {
     /// - `bun_path`: absolute path to `bunembed/bun` (resource or dev)
     /// - `entry_path`: absolute path to gbrain's CLI entry (resource
     ///   or dev `src/cli.ts`). Spawned via `bun <entry> serve`.
-    /// - `pgdata_dir`: writable directory for PGlite to persist into.
-    ///   Caller MUST create it (`std::fs::create_dir_all`) before
-    ///   gbrain spawns — the env var alone doesn't auto-create. The
-    ///   resource directory is read-only on macOS so this MUST point
-    ///   somewhere under `~/.uclaw/` or similar user-writable root.
+    /// - `gbrain_home`: writable directory that becomes `$GBRAIN_HOME`.
+    ///   gbrain reads its config from `$GBRAIN_HOME/.gbrain/config.json`
+    ///   (created by `ensure_bundled_gbrain_initialized`) and stores
+    ///   PGLite data under `$GBRAIN_HOME/.gbrain/brain.pglite/`.
+    ///   Caller MUST have invoked `ensure_bundled_gbrain_initialized`
+    ///   first — without an initialized brain, gbrain serve exits
+    ///   immediately on every connect attempt.
     ///
     /// Returns `Ok(true)` if seeded, `Ok(false)` if entry already
     /// existed (no-op). Errors propagate from `add_server`.
@@ -1171,7 +1173,7 @@ impl McpManager {
         &mut self,
         bun_path: &std::path::Path,
         entry_path: &std::path::Path,
-        pgdata_dir: &std::path::Path,
+        gbrain_home: &std::path::Path,
     ) -> Result<bool, String> {
         if self.servers.contains_key("gbrain") {
             tracing::debug!(
@@ -1180,12 +1182,6 @@ impl McpManager {
             return Ok(false);
         }
         let mut env = HashMap::new();
-        // gbrain reads its config (including database_path for PGlite)
-        // from $GBRAIN_HOME/.gbrain/config.json. The caller writes that
-        // file before seeding; we just tell gbrain where to look.
-        // GBRAIN_HOME is the *parent* of the .gbrain dir, i.e.
-        // ~/.uclaw/gbrain/ → ~/.uclaw/gbrain/.gbrain/config.json.
-        let gbrain_home = pgdata_dir.parent().unwrap_or(pgdata_dir);
         env.insert(
             "GBRAIN_HOME".to_string(),
             gbrain_home.to_string_lossy().to_string(),
@@ -1194,8 +1190,8 @@ impl McpManager {
             id: "gbrain".to_string(),
             name: "gbrain (bundled)".to_string(),
             description: "Local semantic-retrieval engine — wiki / entity-graph / dream-cycle. \
-                          Bundled via Bun + gbrain source. PGlite stores data under \
-                          ~/.uclaw/gbrain/pgdata/."
+                         Bundled via Bun + gbrain source. PGLite brain at \
+                         ~/.uclaw/gbrain/.gbrain/brain.pglite/."
                 .to_string(),
             transport_type: TransportType::Stdio,
             command: bun_path.to_string_lossy().to_string(),
@@ -1214,7 +1210,7 @@ impl McpManager {
         tracing::info!(
             bun = %bun_path.display(),
             entry = %entry_path.display(),
-            pgdata = %pgdata_dir.display(),
+            gbrain_home = %gbrain_home.display(),
             "gbrain Sprint 2.1: seeded bundled MCP entry"
         );
         Ok(true)
@@ -1810,6 +1806,105 @@ impl McpManager {
     }
 }
 
+/// gbrain Sprint 2.1 init-fix — probe whether `<gbrain_home>/.gbrain/brain.pglite/`
+/// has been initialized by `gbrain init --pglite`. The presence of
+/// `PG_VERSION` is the canonical Postgres-data-dir initialization marker
+/// (PGLite writes it as part of `initdb`).
+///
+/// Pure — no I/O beyond `Path::exists`. Used by
+/// `ensure_bundled_gbrain_initialized` to decide whether to spawn `gbrain
+/// init` or skip (idempotent). Safe to call repeatedly.
+pub fn is_brain_initialized(gbrain_home: &std::path::Path) -> bool {
+    gbrain_home
+        .join(".gbrain")
+        .join("brain.pglite")
+        .join("PG_VERSION")
+        .exists()
+}
+
+/// gbrain Sprint 2.1 init-fix — run `bun <cli.ts> init --pglite --yes` against
+/// `gbrain_home` if the brain isn't already initialized. Synchronous +
+/// blocking — first call cold-starts PGLite + runs ~63 migrations
+/// (~30-60s on Apple Silicon). Subsequent calls short-circuit via
+/// `is_brain_initialized` and return `Ok(false)` in O(1).
+///
+/// Returns:
+/// - `Ok(true)`  — freshly initialized
+/// - `Ok(false)` — already initialized, no work done
+/// - `Err(msg)`  — spawn failed OR `gbrain init` exited non-zero. Caller
+///   MUST NOT proceed to seed the MCP entry, otherwise gbrain will spawn
+///   and immediately exit with "No brain configured" on every connect.
+///
+/// `GBRAIN_HOME` is the only env var threaded through. `gbrain init`
+/// writes `<gbrain_home>/.gbrain/config.json` itself with the correct
+/// `database_path` — callers MUST NOT pre-write that file (the v0.35
+/// init path uses its own layout, not whatever the caller passes).
+pub fn ensure_bundled_gbrain_initialized(
+    bun_path: &std::path::Path,
+    entry_path: &std::path::Path,
+    gbrain_home: &std::path::Path,
+) -> Result<bool, String> {
+    if is_brain_initialized(gbrain_home) {
+        tracing::debug!(
+            gbrain_home = %gbrain_home.display(),
+            "ensure_bundled_gbrain_initialized: brain already initialized"
+        );
+        return Ok(false);
+    }
+    if let Err(e) = std::fs::create_dir_all(gbrain_home) {
+        return Err(format!(
+            "create gbrain_home {}: {}",
+            gbrain_home.display(),
+            e
+        ));
+    }
+    tracing::info!(
+        bun = %bun_path.display(),
+        entry = %entry_path.display(),
+        gbrain_home = %gbrain_home.display(),
+        "gbrain Sprint 2.1 init-fix: running 'gbrain init --pglite --yes' (first launch, may take 30-60s)"
+    );
+    let output = std::process::Command::new(bun_path)
+        .arg(entry_path)
+        .arg("init")
+        .arg("--pglite")
+        .arg("--yes")
+        .env("GBRAIN_HOME", gbrain_home)
+        .output()
+        .map_err(|e| format!("spawn 'bun gbrain init': {}", e))?;
+    if !output.status.success() {
+        let stderr_tail: String = String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .rev()
+            .take(20)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(format!(
+            "'gbrain init' exited {:?}\nstderr (last 20 lines):\n{}",
+            output.status.code(),
+            stderr_tail
+        ));
+    }
+    // Defense in depth: verify the marker really landed. Catches the case
+    // where gbrain init exits 0 but writes to an unexpected path (bug
+    // surface we are explicitly fixing in this PR).
+    if !is_brain_initialized(gbrain_home) {
+        return Err(format!(
+            "'gbrain init' exited 0 but {} did not appear — \
+             gbrain may have written to a different GBRAIN_HOME",
+            gbrain_home.join(".gbrain/brain.pglite/PG_VERSION").display()
+        ));
+    }
+    tracing::info!(
+        gbrain_home = %gbrain_home.display(),
+        "gbrain Sprint 2.1 init-fix: brain initialized successfully"
+    );
+    Ok(true)
+}
+
 /// Shared MCP manager for Tauri state
 pub type SharedMcpManager = Arc<RwLock<McpManager>>;
 
@@ -1974,5 +2069,55 @@ mod tests {
             untrusted_proxy.requires_approval(&v),
             ApprovalRequirement::UnlessAutoApproved
         );
+    }
+}
+
+#[cfg(test)]
+mod gbrain_init_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn is_brain_initialized_returns_false_for_empty_gbrain_home() {
+        let dir = tempdir().unwrap();
+        assert!(!is_brain_initialized(dir.path()));
+    }
+
+    #[test]
+    fn is_brain_initialized_returns_false_when_brain_dir_missing_pg_version() {
+        let dir = tempdir().unwrap();
+        // .gbrain/brain.pglite/ exists but no PG_VERSION inside
+        fs::create_dir_all(dir.path().join(".gbrain/brain.pglite")).unwrap();
+        assert!(!is_brain_initialized(dir.path()));
+    }
+
+    #[test]
+    fn is_brain_initialized_returns_true_when_pg_version_present() {
+        let dir = tempdir().unwrap();
+        let brain = dir.path().join(".gbrain/brain.pglite");
+        fs::create_dir_all(&brain).unwrap();
+        fs::write(brain.join("PG_VERSION"), "17\n").unwrap();
+        assert!(is_brain_initialized(dir.path()));
+    }
+
+    #[test]
+    fn ensure_bundled_gbrain_short_circuits_when_already_initialized() {
+        // Idempotency contract: when PG_VERSION already exists, the spawner
+        // MUST return Ok(false) without invoking bun. We prove this by passing
+        // bun/cli paths that don't exist on disk — if the function tried to
+        // spawn, we'd get Err(spawn failed). Instead we get Ok(false).
+        let dir = tempfile::tempdir().unwrap();
+        let brain = dir.path().join(".gbrain").join("brain.pglite");
+        std::fs::create_dir_all(&brain).unwrap();
+        std::fs::write(brain.join("PG_VERSION"), "17\n").unwrap();
+
+        let result = ensure_bundled_gbrain_initialized(
+            std::path::Path::new("/nonexistent/bun"),
+            std::path::Path::new("/nonexistent/cli.ts"),
+            dir.path(),
+        );
+
+        assert_eq!(result, Ok(false), "warm-path probe should short-circuit before spawn");
     }
 }
