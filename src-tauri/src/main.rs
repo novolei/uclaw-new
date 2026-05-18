@@ -494,12 +494,15 @@ fn main() {
                                     Err(e) => {
                                         tracing::warn!(
                                             error = %e,
-                                            "[Stage 3] gbrain init failed — skipping seed (gbrain will not be available this session)"
+                                            "[Stage 3] gbrain init failed — seeding the MCP entry anyway so it surfaces in the UI for debugging; gbrain will fail to connect until init succeeds (re-run scripts/setup-gbrain-source.sh or remove ~/.uclaw/gbrain/ to retry)"
                                         );
-                                        // Fall through to the auto-connect
-                                        // pass without seeding. Existing
-                                        // entries (manually seeded earlier)
-                                        // are left alone for user inspect.
+                                        // Intentional fall-through: still
+                                        // run the seed match below so the
+                                        // entry appears in the Integrations
+                                        // UI. The auto-connect pass will
+                                        // then surface a connect failure
+                                        // (more actionable than a silently
+                                        // missing entry).
                                     }
                                 }
                                 match guard.seed_bundled_gbrain(bun, entry, &gbrain_home) {
