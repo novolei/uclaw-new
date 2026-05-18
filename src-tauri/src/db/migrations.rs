@@ -2698,7 +2698,7 @@ mod tests {
     // ─── V34: Memory OS Foundation Phase 1 ────────────────────────────────
 
     #[test]
-    fn v34_creates_memory_os_phase_1_tables_and_indexes() {
+    fn v35_creates_memory_os_phase_1_tables_and_indexes() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         super::run(&conn).unwrap();
 
@@ -2736,7 +2736,7 @@ mod tests {
     }
 
     #[test]
-    fn v34_is_idempotent() {
+    fn v35_is_idempotent() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         super::run(&conn).expect("first run");
         super::run(&conn).expect("second run must not error");
@@ -2753,7 +2753,7 @@ mod tests {
     }
 
     #[test]
-    fn v34_edge_audit_cascades_on_edge_delete() {
+    fn v35_edge_audit_cascades_on_edge_delete() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         super::run(&conn).unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
@@ -2790,7 +2790,7 @@ mod tests {
     }
 
     #[test]
-    fn v34_health_findings_dismissible_with_indexes() {
+    fn v35_health_findings_dismissible_with_indexes() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         super::run(&conn).unwrap();
 

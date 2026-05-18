@@ -20,7 +20,7 @@
 //!
 //! This file implements all seven health checks listed in the Phase 1
 //! spec table. None of them call out to the LLM, all of them write
-//! into `memory_health_findings` (V34) and respect the existing
+//! into `memory_health_findings` (V35) and respect the existing
 //! dismissed-row contract (only re-create when the issue resurfaces
 //! after dismissal).
 //!
@@ -502,7 +502,7 @@ mod tests {
     fn fresh_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).unwrap();
-        conn.execute_batch(crate::db::migrations::V34_MEMORY_OS_PHASE_1).unwrap();
+        conn.execute_batch(crate::db::migrations::V35_MEMORY_OS_PHASE_1).unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").ok();
         conn
     }

@@ -609,7 +609,7 @@ impl MemoryGraphStore {
         // happened, and extracted_from_version_id=NULL because the
         // edge wasn't produced from a version's content.
         //
-        // Best-effort: a missing V34 table (e.g. on a downgraded binary
+        // Best-effort: a missing V35 table (e.g. on a downgraded binary
         // or partial migration) must not break the existing create_edge
         // contract. The audit insert is logged but errors are swallowed.
         let audit_id_for_log = edge.id.clone();
@@ -1601,7 +1601,7 @@ impl MemoryGraphStore {
 
             // Insert edge. memory_edges timestamps are TEXT (datetime
             // rfc3339), but memory_edge_audit.created_at is INTEGER ms
-            // — see V4 vs V34 in db/migrations.rs.
+            // — see V4 vs V35 in db/migrations.rs.
             conn.execute(
                 "INSERT INTO memory_edges \
                  (id, space_id, parent_node_id, child_node_id, relation_kind, visibility, priority, trigger_text, created_at, updated_at) \
@@ -1642,7 +1642,7 @@ impl MemoryGraphStore {
                 params![version_node_id, dst_id],
             )
             .map_err(crate::error::Error::Database)?;
-            // memory_edge_audit row cascades away via FK (V34).
+            // memory_edge_audit row cascades away via FK (V35).
         }
 
         Ok(())
@@ -1820,18 +1820,18 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     /// Spin up an in-memory SQLite store with the V4 graph schema +
-    /// V34 Memory OS Phase 1 tables applied. Phase 2 auto-link hook
-    /// writes to `memory_edge_audit` (V34), so all store tests need
+    /// V35 Memory OS Phase 1 tables applied. Phase 2 auto-link hook
+    /// writes to `memory_edge_audit` (V35), so all store tests need
     /// both migrations in scope.
     fn fresh_test_store() -> MemoryGraphStore {
         let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
         conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).expect("V4 schema");
-        // V34 statements are split by `;` and applied individually in the
+        // V35 statements are split by `;` and applied individually in the
         // real `run()` path. execute_batch handles the whole string in one
         // shot, which is fine for fresh in-memory dbs (no existing rows
         // to collide with).
-        conn.execute_batch(crate::db::migrations::V34_MEMORY_OS_PHASE_1)
-            .expect("V34 schema");
+        conn.execute_batch(crate::db::migrations::V35_MEMORY_OS_PHASE_1)
+            .expect("V35 schema");
         // FK enforcement is required for the audit-cascade test in Phase 2.
         conn.execute_batch("PRAGMA foreign_keys = ON;").ok();
         MemoryGraphStore::new(Arc::new(Mutex::new(conn)))

@@ -14,9 +14,9 @@
 //! Everything else — timeline (append-only evidence stream), aliases,
 //! contradictions, slug, subkind, enrichment tier — is a JSON convention
 //! on top of the existing `memory_nodes.metadata_json` column. **No schema
-//! migration is required for the metadata itself**; only the V34 tables
+//! migration is required for the metadata itself**; only the V35 tables
 //! created alongside Phase 1 (`memory_edge_audit`, `wiki_artifacts`,
-//! `memory_health_findings`) need V34 to be applied.
+//! `memory_health_findings`) need V35 to be applied.
 //!
 //! ## Forward-compatibility
 //!

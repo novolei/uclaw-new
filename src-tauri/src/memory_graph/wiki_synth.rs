@@ -552,7 +552,7 @@ mod tests {
     fn fresh_conn() -> Arc<std::sync::Mutex<Connection>> {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).unwrap();
-        conn.execute_batch(crate::db::migrations::V34_MEMORY_OS_PHASE_1).unwrap();
+        conn.execute_batch(crate::db::migrations::V35_MEMORY_OS_PHASE_1).unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").ok();
         Arc::new(std::sync::Mutex::new(conn))
     }

@@ -1873,7 +1873,7 @@ mod phase5_boost_tests {
     fn fresh_store() -> Arc<MemoryGraphStore> {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).unwrap();
-        conn.execute_batch(crate::db::migrations::V34_MEMORY_OS_PHASE_1).unwrap();
+        conn.execute_batch(crate::db::migrations::V35_MEMORY_OS_PHASE_1).unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").ok();
         Arc::new(MemoryGraphStore::new(Arc::new(Mutex::new(conn))))
     }
