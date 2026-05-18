@@ -459,7 +459,7 @@ impl BrowserContext {
         page.execute(
             StartScreencastParams::builder()
                 .format(StartScreencastFormat::Jpeg)
-                .quality(60_i64)
+                .quality(55_i64)
                 .max_width(1280_i64)
                 .max_height(800_i64)
                 .every_nth_frame(1_i64)
