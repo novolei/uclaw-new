@@ -179,6 +179,108 @@ impl WikiSynthesizer for StubSynthesizer {
     }
 }
 
+// ─── Real LLM synthesizer (Phase 6b) ───────────────────────────────────
+
+/// Production wiki overview synthesizer — turns the structured snapshot
+/// into a narrative paragraph or three by calling out to whichever LLM
+/// is configured via [`crate::memory_graph::memory_os_llm::MemoryOsLlm`].
+///
+/// Cost goes into `cost_records.model = "memory_wiki:<actual_model>"`
+/// — *not* matched by Phase 5's `LIKE 'memory_lint%'` cost guard, so
+/// wiki regen has no per-day budget cap of its own. The cap is the
+/// tick cadence (every ~5 min) + the upper bound on recent snapshots
+/// fed into the prompt (capped in `read_recent_snapshots` at 20).
+pub struct RealWikiSynthesizer {
+    llm: Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>,
+}
+
+impl RealWikiSynthesizer {
+    pub fn new(llm: Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>) -> Self {
+        Self { llm }
+    }
+
+    /// System prompt — small, deterministic, narrative-focused. Kept as
+    /// a method so test-mode `MockMemoryOsLlm` can assert on it if
+    /// needed.
+    pub(crate) fn system_prompt() -> &'static str {
+        "You are the overview narrator for a personal AI knowledge wiki. \
+         Your job is to summarize what the user currently knows about \
+         their world — the people, projects, concepts, and themes that \
+         show up across their entity pages. \
+         \n\n\
+         Write in a calm, observational voice. Aim for 2-4 short \
+         paragraphs of markdown (≤ 350 words total). Reference at most \
+         5-8 entity pages by **bold name**. End with a one-line \
+         observation about the wiki's current shape (e.g. \"Mostly \
+         people and projects so far; concepts will likely grow as \
+         topics deepen.\"). Do not invent facts not in the input."
+    }
+
+    pub(crate) fn build_user_prompt(input: &WikiSynthesisInput<'_>) -> String {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "Wiki space: `{}` (generated {}).\n\
+             Total entity pages: {} · Total edges: {}.\n\n",
+            input.space_id,
+            input.generated_at_iso,
+            input.total_entity_pages,
+            input.total_edges,
+        ));
+        out.push_str("## Recent entity pages\n\n");
+        if input.recent_entity_pages.is_empty() {
+            out.push_str("_(none yet — the wiki is empty)_\n");
+        } else {
+            for p in input.recent_entity_pages.iter().take(20) {
+                let slug = p.slug.as_deref().unwrap_or("");
+                let subkind = p.subkind.as_deref().unwrap_or("entity");
+                out.push_str(&format!(
+                    "- **{}** _(subkind: {}{})_ — {} _(updated {})_\n",
+                    p.title,
+                    subkind,
+                    if slug.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", slug `{}`", slug)
+                    },
+                    truncate_for_excerpt(&p.compiled_truth_excerpt, 200),
+                    p.updated_at,
+                ));
+            }
+        }
+        out.push_str(
+            "\n---\n\
+             Write the overview now. Output ONLY the markdown body — \
+             do not wrap in code fences, do not add a top-level header \
+             (the WikiView already renders one).\n",
+        );
+        out
+    }
+}
+
+#[async_trait]
+impl WikiSynthesizer for RealWikiSynthesizer {
+    async fn synthesize_overview(
+        &self,
+        input: WikiSynthesisInput<'_>,
+    ) -> Result<WikiSynthesisOutput, WikiSynthesisError> {
+        let user_prompt = Self::build_user_prompt(&input);
+        let out = self
+            .llm
+            .complete_text("memory_wiki", Self::system_prompt(), &user_prompt, 1500)
+            .await
+            .map_err(|e| WikiSynthesisError::Other(e.to_string()))?;
+        Ok(WikiSynthesisOutput {
+            markdown: out.text,
+            token_cost: out.input_tokens.saturating_add(out.output_tokens),
+            llm_model: Some(out.model),
+        })
+    }
+
+    fn descriptor(&self) -> &'static str {
+        "real:memory_os_llm"
+    }
+}
+
 fn truncate_for_excerpt(s: &str, max: usize) -> String {
     let trimmed = s.trim();
     if trimmed.is_empty() {
@@ -865,6 +967,149 @@ mod tests {
     fn regenerate_trigger_renders() {
         assert_eq!(RegenerateTrigger::Tick.as_str(), "tick");
         assert_eq!(RegenerateTrigger::Manual.as_str(), "manual");
+    }
+
+    // ─── RealWikiSynthesizer (Phase 6b) ───────────────────────────
+
+    /// The real synth's system prompt is intentionally narrow and
+    /// versioned with the codebase, so this test asserts the substrings
+    /// that guide both prompt review and downstream behaviour.
+    #[test]
+    fn real_wiki_system_prompt_includes_narrative_voice_cues() {
+        let sys = RealWikiSynthesizer::system_prompt();
+        assert!(
+            sys.contains("personal AI knowledge wiki"),
+            "system prompt missing wiki framing: {sys}"
+        );
+        assert!(
+            sys.contains("Do not invent facts"),
+            "system prompt missing anti-hallucination cue: {sys}"
+        );
+    }
+
+    /// The user prompt must surface stats + recent pages + an explicit
+    /// instruction to emit markdown WITHOUT the top-level header (the
+    /// WikiView renders one already).
+    #[test]
+    fn real_wiki_user_prompt_carries_snapshot_signals() {
+        let snaps = vec![
+            EntityPageSnapshot {
+                node_id: "n1".into(),
+                title: "Alice".into(),
+                slug: Some("alice".into()),
+                subkind: Some("person".into()),
+                compiled_truth_excerpt: "Senior engineer at Acme.".into(),
+                updated_at: "2026-05-15".into(),
+            },
+            EntityPageSnapshot {
+                node_id: "n2".into(),
+                title: "RAG".into(),
+                slug: Some("rag".into()),
+                subkind: Some("concept".into()),
+                compiled_truth_excerpt: "Retrieval-augmented generation.".into(),
+                updated_at: "2026-05-16".into(),
+            },
+        ];
+        let input = WikiSynthesisInput {
+            space_id: "default",
+            recent_entity_pages: &snaps,
+            total_entity_pages: 2,
+            total_edges: 1,
+            generated_at_iso: "2026-05-18T10:00:00Z",
+        };
+        let p = RealWikiSynthesizer::build_user_prompt(&input);
+        assert!(p.contains("Total entity pages: 2"));
+        assert!(p.contains("Total edges: 1"));
+        assert!(p.contains("**Alice**"));
+        assert!(p.contains("**RAG**"));
+        assert!(p.contains("slug `rag`"));
+        assert!(p.contains("subkind: concept"));
+        assert!(
+            p.contains("do not add a top-level header"),
+            "user prompt must avoid double H1: {p}"
+        );
+    }
+
+    #[test]
+    fn real_wiki_user_prompt_handles_empty_snapshots() {
+        let input = WikiSynthesisInput {
+            space_id: "default",
+            recent_entity_pages: &[],
+            total_entity_pages: 0,
+            total_edges: 0,
+            generated_at_iso: "2026-05-18T10:00:00Z",
+        };
+        let p = RealWikiSynthesizer::build_user_prompt(&input);
+        assert!(p.contains("(none yet"), "got: {p}");
+    }
+
+    #[tokio::test]
+    async fn real_wiki_returns_llm_text_and_token_cost() {
+        use crate::memory_graph::memory_os_llm::MockMemoryOsLlm;
+        let mock = Arc::new(MockMemoryOsLlm {
+            canned_text:
+                "## Recent activity\n\nAlice and Bob have been collaborating on the RAG project."
+                    .into(),
+            canned_input_tokens: 320,
+            canned_output_tokens: 80,
+            canned_model: "mock:claude-sonnet-4-test".into(),
+        });
+        let synth = RealWikiSynthesizer::new(mock);
+        let input = WikiSynthesisInput {
+            space_id: "default",
+            recent_entity_pages: &[],
+            total_entity_pages: 0,
+            total_edges: 0,
+            generated_at_iso: "2026-05-18T10:00:00Z",
+        };
+        let out = synth.synthesize_overview(input).await.unwrap();
+        assert!(out.markdown.contains("Alice and Bob"));
+        // token_cost = input + output, NOT the cost-tag prefixed string
+        assert_eq!(out.token_cost, 320 + 80);
+        assert_eq!(out.llm_model.as_deref(), Some("mock:claude-sonnet-4-test"));
+    }
+
+    #[tokio::test]
+    async fn real_wiki_descriptor_marks_as_real() {
+        use crate::memory_graph::memory_os_llm::MockMemoryOsLlm;
+        let mock = Arc::new(MockMemoryOsLlm::default());
+        let synth = RealWikiSynthesizer::new(mock);
+        assert_eq!(synth.descriptor(), "real:memory_os_llm");
+    }
+
+    /// Sanity-check the trait-object swap: `Arc<dyn WikiSynthesizer>`
+    /// holds either Stub or Real and dispatches correctly. This is the
+    /// exact shape `AppState.wiki_synthesizer` uses.
+    #[tokio::test]
+    async fn real_wiki_swappable_via_trait_object() {
+        use crate::memory_graph::memory_os_llm::MockMemoryOsLlm;
+        let stub: Arc<dyn WikiSynthesizer> = Arc::new(StubSynthesizer);
+        assert_eq!(stub.descriptor(), "stub:no-llm");
+
+        let real: Arc<dyn WikiSynthesizer> =
+            Arc::new(RealWikiSynthesizer::new(Arc::new(MockMemoryOsLlm::default())));
+        assert_eq!(real.descriptor(), "real:memory_os_llm");
+
+        let input = WikiSynthesisInput {
+            space_id: "default",
+            recent_entity_pages: &[],
+            total_entity_pages: 0,
+            total_edges: 0,
+            generated_at_iso: "2026-05-18T10:00:00Z",
+        };
+        // Stub returns deterministic markdown
+        let stub_out = stub.synthesize_overview(input).await.unwrap();
+        assert!(stub_out.markdown.contains("stub"));
+        // Real returns the mock's canned text
+        let input2 = WikiSynthesisInput {
+            space_id: "default",
+            recent_entity_pages: &[],
+            total_entity_pages: 0,
+            total_edges: 0,
+            generated_at_iso: "2026-05-18T10:00:00Z",
+        };
+        let real_out = real.synthesize_overview(input2).await.unwrap();
+        assert!(real_out.markdown.contains("[mock"));
     }
 }
 

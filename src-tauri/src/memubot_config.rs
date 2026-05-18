@@ -361,9 +361,35 @@ pub struct MemoryOsConfig {
     /// today (UTC) and stops calling the analyzer once consuming the
     /// next candidate would push past this cap.
     pub memory_lint_daily_token_budget: u32,
-    // (Future flags for Phase 6-7 will be added here, each pre-declared
-    //  with its default so existing configs deserialize against a stable
-    //  shape.)
+    /// Phase 6b: Swap Phase 3's `StubSynthesizer` for `RealWikiSynthesizer`
+    /// (which actually calls the configured LLM via `MemoryOsLlmClient`).
+    /// Default `false` to preserve the Phase 3 behaviour for users who
+    /// don't have an LLM provider configured — turn on once a provider
+    /// is set up. The flag is checked at `AppState::new` bootstrap so a
+    /// restart is needed after flipping it.
+    pub wiki_real_synthesizer_enabled: bool,
+    /// Phase 6c: Swap Phase 5's `StubAnalyzer` for `RealLintAnalyzer`.
+    /// Default `false` for the same reason as Phase 6b (stub keeps
+    /// working without provider credentials). The existing
+    /// `memory_lint_daily_token_budget` cap applies unchanged — the
+    /// real analyzer writes `cost_records.model = 'memory_lint:<actual>'`
+    /// which the `LIKE 'memory_lint%'` cost guard already sums.
+    pub lint_real_analyzer_enabled: bool,
+    /// Phase 6.1: Run the periodic tier_escalator (mention_count →
+    /// enrichment_tier). Zero LLM, so default ON. When off, EntityPages
+    /// stay at whatever tier they were assigned at creation.
+    pub tier_escalator_enabled: bool,
+    /// Phase 6.1: Daily cap on tier upgrades. Each upgrade eventually
+    /// makes a downstream synthesizer call eligible, so this is the
+    /// surface that bounds upgrade-driven LLM cost. Downgrades are
+    /// uncapped (they save tokens by demoting irrelevant pages).
+    pub tier_escalator_daily_cap: u32,
+    /// Phase 6.2: Swap the EntitySynthesizer from Stub (deterministic
+    /// placeholder) to Real (LLM via MemoryOsLlmClient). Default OFF
+    /// for the same reason as Phase 6b/6c — opt-in once a provider
+    /// is configured. The manual `memory_entity_page_synthesize_now`
+    /// IPC still works with the Stub, just produces placeholder text.
+    pub entity_synthesizer_enabled: bool,
 }
 
 impl Default for MemoryOsConfig {
@@ -378,6 +404,24 @@ impl Default for MemoryOsConfig {
             // even with the flag on.
             memory_lint_enabled: true,
             memory_lint_daily_token_budget: 50_000,
+            // Phase 6b default OFF. Stub remains the bootstrap state so
+            // users without an LLM provider keep getting deterministic
+            // overview markdown. Flip to `true` once a provider is set up.
+            wiki_real_synthesizer_enabled: false,
+            // Phase 6c default OFF for the same reason as 6b. The
+            // existing daily_token_budget cap will gate spend once
+            // turned on.
+            lint_real_analyzer_enabled: false,
+            // Phase 6.1 default ON (zero LLM). The daily cap (10) is
+            // the actual safety mechanism that bounds downstream
+            // synthesis cost when Phase 6.2 lands.
+            tier_escalator_enabled: true,
+            tier_escalator_daily_cap: 10,
+            // Phase 6.2 default OFF. The IPC works either way — with
+            // the flag off, the manual Synthesize button produces a
+            // clearly-labelled stub; with it on, runs through the
+            // configured LLM. Restart required to swap.
+            entity_synthesizer_enabled: false,
         }
     }
 }
@@ -812,5 +856,142 @@ mod tests {
         assert!(config.memory_os.memory_health_enabled);
         // Default budget still applies when only the flag is mentioned.
         assert_eq!(config.memory_os.memory_lint_daily_token_budget, 50_000);
+    }
+
+    #[test]
+    fn memory_os_phase6b_default_keeps_stub_synthesizer() {
+        // Real synth is opt-in — stub stays the default so first-boot
+        // users with no provider see deterministic markdown, not a
+        // structured error.
+        let c = MemoryOsConfig::default();
+        assert!(
+            !c.wiki_real_synthesizer_enabled,
+            "Phase 6b default must be OFF (stub remains baseline behaviour)"
+        );
+    }
+
+    #[test]
+    fn memory_os_phase6b_explicit_enable_preserved() {
+        let json = r#"{"memory_os":{"wiki_real_synthesizer_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(config.memory_os.wiki_real_synthesizer_enabled);
+        // Forward-compat: opting into Phase 6b must not change Phase 1-5 defaults.
+        assert!(config.memory_os.entity_page_enabled);
+        assert!(config.memory_os.auto_link_enabled);
+        assert!(config.memory_os.wiki_view_enabled);
+        assert!(config.memory_os.memory_health_enabled);
+        assert!(config.memory_os.memory_lint_enabled);
+    }
+
+    #[test]
+    fn memory_os_pre_phase6b_config_still_deserializes() {
+        // A config file written before Phase 6b shipped won't have
+        // `wiki_real_synthesizer_enabled` at all — `#[serde(default)]`
+        // must let it round-trip without rejection.
+        let json = r#"{"memory_os":{
+            "entity_page_enabled":true,
+            "auto_link_enabled":true,
+            "wiki_view_enabled":true,
+            "memory_health_enabled":true,
+            "memory_lint_enabled":true,
+            "memory_lint_daily_token_budget":50000
+        }}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(
+            !config.memory_os.wiki_real_synthesizer_enabled,
+            "missing flag must default to OFF"
+        );
+    }
+
+    #[test]
+    fn memory_os_phase6c_default_keeps_stub_analyzer() {
+        let c = MemoryOsConfig::default();
+        assert!(
+            !c.lint_real_analyzer_enabled,
+            "Phase 6c default must be OFF (stub stays baseline)"
+        );
+    }
+
+    #[test]
+    fn memory_os_phase6c_explicit_enable_preserved() {
+        let json = r#"{"memory_os":{"lint_real_analyzer_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(config.memory_os.lint_real_analyzer_enabled);
+        // Forward-compat: opting into Phase 6c doesn't change earlier flags
+        assert!(config.memory_os.entity_page_enabled);
+        assert!(config.memory_os.memory_lint_enabled);
+        assert!(!config.memory_os.wiki_real_synthesizer_enabled,
+                "6c alone must NOT flip 6b on");
+        assert_eq!(config.memory_os.memory_lint_daily_token_budget, 50_000);
+    }
+
+    #[test]
+    fn memory_os_phase6_both_flags_independent() {
+        // Real users will likely flip both 6b and 6c together once a
+        // provider is set up. Confirm the JSON shape supports that
+        // without surprising interactions.
+        let json = r#"{"memory_os":{
+            "wiki_real_synthesizer_enabled":true,
+            "lint_real_analyzer_enabled":true
+        }}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(config.memory_os.wiki_real_synthesizer_enabled);
+        assert!(config.memory_os.lint_real_analyzer_enabled);
+    }
+
+    #[test]
+    fn memory_os_phase61_defaults_are_sensible() {
+        let c = MemoryOsConfig::default();
+        assert!(
+            c.tier_escalator_enabled,
+            "tier_escalator is zero-LLM — default should be ON"
+        );
+        assert!(c.tier_escalator_daily_cap > 0);
+        assert!(
+            c.tier_escalator_daily_cap <= 100,
+            "cap should keep upgrade-driven LLM spend bounded; got {}",
+            c.tier_escalator_daily_cap
+        );
+    }
+
+    #[test]
+    fn memory_os_phase61_explicit_disable_preserved() {
+        let json = r#"{"memory_os":{"tier_escalator_enabled":false}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.memory_os.tier_escalator_enabled);
+        // The cap default still applies — disabling doesn't zero it out.
+        assert_eq!(config.memory_os.tier_escalator_daily_cap, 10);
+        // Forward-compat: turning off 6.1 must not flip earlier phases off.
+        assert!(config.memory_os.entity_page_enabled);
+        assert!(config.memory_os.memory_health_enabled);
+        assert!(config.memory_os.memory_lint_enabled);
+    }
+
+    #[test]
+    fn memory_os_phase61_explicit_cap_override_preserved() {
+        let json = r#"{"memory_os":{"tier_escalator_daily_cap":3}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.memory_os.tier_escalator_daily_cap, 3);
+        assert!(config.memory_os.tier_escalator_enabled, "flag default holds");
+    }
+
+    #[test]
+    fn memory_os_phase62_default_keeps_stub_synthesizer() {
+        let c = MemoryOsConfig::default();
+        assert!(
+            !c.entity_synthesizer_enabled,
+            "Phase 6.2 default must be OFF (stub stays baseline)"
+        );
+    }
+
+    #[test]
+    fn memory_os_phase62_explicit_enable_preserved() {
+        let json = r#"{"memory_os":{"entity_synthesizer_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(config.memory_os.entity_synthesizer_enabled);
+        // Forward-compat: 6.2 alone doesn't flip the related flags.
+        assert!(!config.memory_os.wiki_real_synthesizer_enabled);
+        assert!(!config.memory_os.lint_real_analyzer_enabled);
+        assert!(config.memory_os.tier_escalator_enabled);
     }
 }

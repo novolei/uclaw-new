@@ -14,6 +14,15 @@ pub mod memory_health;
 // Like memory_health, invoked directly by tick_inner (every 15
 // EntityPage writes, max 4/day) — does NOT implement ProactiveScenario.
 pub mod memory_lint;
+// Memory OS Foundation Phase 6.1 — zero-LLM tier escalator. Maps
+// EntityPage backlink count to `enrichment_tier` (1/2/3); upgrades
+// capped at 10/day. Invoked from tick_inner (~every 240 ticks).
+pub mod tier_escalator;
+// Memory OS Foundation Phase 6.2 — EntitySynthesizer: LLM rewrites
+// EntityPage compiled_truth from current timeline + old compiled_truth.
+// Trait-object behind AppState.entity_synthesizer; manually triggered
+// via IPC (Phase 6.3) — no automatic tick yet.
+pub mod entity_synthesizer;
 
 pub use types::*;
 

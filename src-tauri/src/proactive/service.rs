@@ -180,6 +180,12 @@ pub struct MemoryOsRuntimeConfig {
     /// a real Anthropic/OpenAI client is a single AppState field
     /// change — no proactive code path moves.
     pub lint_analyzer: Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
+    /// Phase 6.1 — gates the periodic tier_escalator scenario
+    /// (mention_count → enrichment_tier transitions). Zero LLM cost.
+    pub tier_escalator_enabled: bool,
+    /// Phase 6.1 — daily upgrade cap. Downgrades are uncapped because
+    /// they SAVE token spend on the next synthesis pass.
+    pub tier_escalator_daily_cap: u32,
 }
 
 impl MemoryOsRuntimeConfig {
@@ -196,6 +202,8 @@ impl MemoryOsRuntimeConfig {
             memory_lint_enabled: cfg.memory_lint_enabled,
             memory_lint_daily_token_budget: cfg.memory_lint_daily_token_budget,
             lint_analyzer,
+            tier_escalator_enabled: cfg.tier_escalator_enabled,
+            tier_escalator_daily_cap: cfg.tier_escalator_daily_cap,
         }
     }
 
@@ -211,6 +219,8 @@ impl MemoryOsRuntimeConfig {
             memory_lint_daily_token_budget: 50_000,
             lint_analyzer: Arc::new(crate::proactive::scenarios::memory_lint::StubAnalyzer)
                 as Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
+            tier_escalator_enabled: true,
+            tier_escalator_daily_cap: 10,
         }
     }
 }
@@ -224,6 +234,8 @@ impl Default for MemoryOsRuntimeConfig {
             memory_lint_daily_token_budget: 50_000,
             lint_analyzer: Arc::new(crate::proactive::scenarios::memory_lint::StubAnalyzer)
                 as Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
+            tier_escalator_enabled: true,
+            tier_escalator_daily_cap: 10,
         }
     }
 }
@@ -1168,6 +1180,57 @@ impl ProactiveService {
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "[ProactiveService] memory_lint failed");
+                    }
+                }
+            });
+        }
+
+        // Memory OS Foundation Phase 6.1 — tier escalator scan.
+        // Every 240 ticks (~2h @ default 30s interval). Zero LLM, but
+        // upgrades are capped at `tier_escalator_daily_cap` per UTC day
+        // because each upgrade may eventually trigger a Phase 6.2
+        // `EntitySynthesizer` LLM call. Downgrades are uncapped.
+        // Schedule offset from health (60) / lint (120) / wiki (10)
+        // helps avoid SQLite-lock collisions; gcd is 10, but with 240
+        // we land on the same tick as health & lint at most once every
+        // ~ 60min which is acceptable.
+        if refs.memory_os.tier_escalator_enabled
+            && refs.tick_count.load(Ordering::SeqCst) % 240 == 0
+        {
+            let space_id = refs.active_space_id.read().await.clone();
+            let store = refs.memory_graph_store.clone();
+            let db = refs.db.clone();
+            let cap = refs.memory_os.tier_escalator_daily_cap;
+            tokio::task::spawn_blocking(move || {
+                let today_spent = crate::proactive::scenarios::tier_escalator::count_todays_upgrades(&db)
+                    .unwrap_or(0);
+                let cfg = crate::proactive::scenarios::tier_escalator::TierEscalatorConfig {
+                    daily_upgrade_cap: cap,
+                    ..Default::default()
+                };
+                let outcome = crate::proactive::scenarios::tier_escalator::run_tier_escalator(
+                    store, db, &space_id, &cfg, today_spent,
+                );
+                match outcome {
+                    Ok(o) => {
+                        if o.upgraded > 0 || o.downgraded > 0 || o.daily_cap_hit {
+                            tracing::info!(
+                                upgraded = o.upgraded,
+                                downgraded = o.downgraded,
+                                skipped_due_to_cap = o.skipped_due_to_cap,
+                                cap_hit = o.daily_cap_hit,
+                                pages_scanned = o.pages_scanned,
+                                "[ProactiveService] tier_escalator: ran",
+                            );
+                        } else {
+                            tracing::debug!(
+                                pages_scanned = o.pages_scanned,
+                                "[ProactiveService] tier_escalator: no changes",
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "[ProactiveService] tier_escalator failed");
                     }
                 }
             });

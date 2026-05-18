@@ -1114,6 +1114,8 @@ export interface EntityPageMetadata {
   enrichment_tier?: number;
   last_synthesized_at?: string;
   synthesis_source_count?: number;
+  // Memory OS Phase 6.1: tier_escalator writes this when promoting/demoting.
+  last_escalated_at?: string;
   // Forward-compat: unknown fields are preserved by the JSON column.
   [key: string]: unknown;
 }
@@ -1264,6 +1266,25 @@ export interface LintRunOutcome {
   skipped_due_to_budget: number;
   duration_ms: number;
   analyzer_descriptor: string;
+}
+
+/** Memory OS Phase 6.3 — input for `memory_entity_page_synthesize_now`.
+ *  The IPC layer uses camelCase wire shape (see ipc.rs DTOs). */
+export interface EntityPageSynthesizeNowInput {
+  nodeId: string;
+}
+
+/** Result of `memory_entity_page_synthesize_now`. Mirrors Rust's
+ *  `SynthesisOutcome` which serializes as snake_case via serde's default.
+ *  `synthesizer_descriptor` is "stub:no-llm" before opt-in,
+ *  "real:memory_os_llm" after. */
+export interface EntitySynthesisOutcome {
+  new_version_id: string;
+  token_cost: number;
+  llm_model: string | null;
+  synthesizer_descriptor: string;
+  new_compiled_truth: string;
+  new_aliases: string[];
 }
 
 /**

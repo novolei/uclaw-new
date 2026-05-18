@@ -83,6 +83,14 @@ pub struct EntityPageMetadata {
     /// Surfaced in the UI as a confidence signal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub synthesis_source_count: Option<u32>,
+
+    /// ISO 8601 timestamp of the most recent tier transition (upgrade or
+    /// downgrade) recorded by the Phase 6.1 tier_escalator scenario.
+    /// Distinct from `last_synthesized_at` because tier promotion can
+    /// happen long before — or independently from — an actual LLM
+    /// re-synthesis pass. Surfaced in the UI as "Tier last reviewed".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_escalated_at: Option<String>,
 }
 
 /// One append-only event in an EntityPage's timeline.

@@ -641,6 +641,8 @@ fn main() {
             uclaw_core::tauri_commands::memory_health_run_now,
             // Lint scan (Memory OS Foundation Phase 5)
             uclaw_core::tauri_commands::memory_lint_run_now,
+            // EntityPage synthesis (Memory OS Foundation Phase 6.2/6.3)
+            uclaw_core::tauri_commands::memory_entity_page_synthesize_now,
             // Fragment / Daily Summary
             uclaw_core::tauri_commands::memory_graph_list_fragments,
             uclaw_core::tauri_commands::search_fragments,
