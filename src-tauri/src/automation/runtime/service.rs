@@ -357,12 +357,19 @@ impl AppRuntimeService {
             // Phase 2b cluster A: autonomous triggers (scheduled / file /
             // webhook / webpage / rss / wecom / custom) route into the spec
             // owner's "local" chat session instead of creating per-fire
-            // automation:scheduled sessions. The sub_id is preserved in
-            // logging but no longer passed as a per-fire identifier.
+            // automation:scheduled sessions.
+            //
+            // Operator-observability note: execute_run is now invoked with
+            // sub_id = None (the chat session is the unit of work, not the
+            // per-fire activity). As a result `automation_activities.subscription_id`
+            // is NULL for every new autonomous fire. We capture sub_id in the
+            // closure so it survives in tracing logs — that's the only place
+            // where "which subscription fired" can still be observed.
             let svc = self.weak_ref();
-            let _sub_id_for_log = sub_id.clone();
+            let sub_id_log = sub_id.clone();
             let cb: TriggerCallback = Arc::new(move |sid: String, _sub: String, payload: serde_json::Value| {
                 let svc = svc.clone();
+                let sub_id_log = sub_id_log.clone();
                 tokio::spawn(async move {
                     if let Some(svc) = svc.upgrade() {
                         let app = svc.app_handle.clone();
@@ -378,8 +385,9 @@ impl AppRuntimeService {
                             .await
                         {
                             tracing::warn!(
-                                "[AppRuntimeService] execute_run_in_chat_session error for spec {}: {}",
+                                "[AppRuntimeService] execute_run_in_chat_session error for spec {} (sub {}): {}",
                                 sid,
+                                sub_id_log,
                                 e
                             );
                         }
@@ -1379,55 +1387,6 @@ impl AppRuntimeService {
         map.entry(session_id.to_string())
             .or_insert_with(|| Arc::new(TokioMutex::new(())))
             .clone()
-    }
-
-    /// Legacy entry: an IM-triggered run that doesn't go through a chat
-    /// session. Re-implemented to derive identity_key from the trigger
-    /// payload and delegate to `execute_run_in_chat_session`.
-    ///
-    /// Callers that already know the chat session should call
-    /// `execute_run_in_chat_session` directly with the explicit identity_key.
-    pub async fn execute_run_with_reply(
-        &self,
-        spec_id: &str,
-        payload: serde_json::Value,
-        reply_handle: Option<Arc<crate::channels::types::ReplyHandle>>,
-        streaming_handle: Option<Arc<dyn crate::channels::types::StreamingHandle>>,
-    ) -> anyhow::Result<()> {
-        // Derive identity_key from the IM dispatcher's payload shape.
-        // Falls back to "local" if the shape isn't IM-like (preserves
-        // pre-existing fallback behavior for non-IM callers).
-        let identity_key = match (
-            payload.get("channel_instance_id").and_then(|v| v.as_str()),
-            payload.get("chat_id").and_then(|v| v.as_str()),
-            payload.get("trigger").and_then(|v| v.as_str()),
-        ) {
-            (Some(instance_id), Some(chat_id), Some("im")) => {
-                let channel_type = {
-                    let conn = self
-                        .db
-                        .lock()
-                        .map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
-                    conn.query_row(
-                        "SELECT channel_type FROM im_channel_instances WHERE id = ?1",
-                        rusqlite::params![instance_id],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .unwrap_or_else(|_| "unknown".to_string())
-                };
-                format!("{}:{}", channel_type, chat_id)
-            }
-            _ => "local".to_string(),
-        };
-        self.execute_run_in_chat_session(
-            spec_id,
-            &identity_key,
-            payload,
-            streaming_handle,
-            reply_handle,
-            None,
-        )
-        .await
     }
 
     /// Build the headless tool set for an automation run: the AppHandle-free
