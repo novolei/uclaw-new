@@ -5575,22 +5575,60 @@ pub async fn memory_learning_dismiss_facet(
     state: State<'_, AppState>,
     input: LearningDismissFacetInput,
 ) -> Result<serde_json::Value, String> {
+    set_facet_state(&state, &input.facet_id, "forgotten").await
+}
+
+/// Sprint 2.3 — promote a facet to Active. Symmetric to dismiss; sets
+/// state regardless of current value. The next rebuild re-evaluates
+/// based on stability so this is a transient override, not a pin.
+#[tauri::command]
+pub async fn memory_learning_promote_facet(
+    state: State<'_, AppState>,
+    input: LearningPromoteFacetInput,
+) -> Result<serde_json::Value, String> {
+    set_facet_state(&state, &input.facet_id, "active").await
+}
+
+/// Sprint 2.3 — demote a facet to Provisional. Used to push an
+/// active facet out of the system-prompt block without forgetting it
+/// entirely (so the UI still surfaces it and the next rebuild can
+/// re-promote on new evidence).
+#[tauri::command]
+pub async fn memory_learning_demote_facet(
+    state: State<'_, AppState>,
+    input: LearningDemoteFacetInput,
+) -> Result<serde_json::Value, String> {
+    set_facet_state(&state, &input.facet_id, "provisional").await
+}
+
+/// Shared helper for dismiss/promote/demote. Updates the facet's
+/// state column to `new_state` (must match a FacetState enum value
+/// — caller is trusted), bumps `updated_at`, and refreshes the
+/// FacetCache so the next prompt build sees the new state.
+///
+/// Returns `{ facet_id, rows_updated, new_state }` so the frontend
+/// can do optimistic local updates + reconcile if rows_updated == 0
+/// (facet was already gone, fall back to a full refresh).
+async fn set_facet_state(
+    state: &State<'_, AppState>,
+    facet_id: &str,
+    new_state: &'static str,
+) -> Result<serde_json::Value, String> {
     let db = state.db.clone();
-    let facet_id = input.facet_id.clone();
+    let id = facet_id.to_string();
     let now_ms = chrono::Utc::now().timestamp_millis();
+    let id_for_query = id.clone();
     let rows = tokio::task::spawn_blocking(move || -> Result<usize, String> {
         let conn = db.lock().map_err(|e| format!("DB lock: {}", e))?;
         conn.execute(
-            "UPDATE user_profile_facets SET state = 'forgotten', updated_at = ?1 \
-             WHERE facet_id = ?2",
-            rusqlite::params![now_ms, facet_id],
+            "UPDATE user_profile_facets SET state = ?1, updated_at = ?2 \
+             WHERE facet_id = ?3",
+            rusqlite::params![new_state, now_ms, id_for_query],
         )
         .map_err(|e| format!("UPDATE: {}", e))
     })
     .await
     .map_err(|e| format!("spawn_blocking: {}", e))??;
-    // Refresh the cache so the next prompt build doesn't show the
-    // dismissed facet.
     let scheduler = state.learning_scheduler.clone();
     let cache = state.facet_cache.clone();
     let _ = tokio::task::spawn_blocking(move || {
@@ -5599,9 +5637,9 @@ pub async fn memory_learning_dismiss_facet(
     })
     .await;
     Ok(serde_json::json!({
-        "facet_id": input.facet_id,
+        "facet_id": id,
         "rows_updated": rows,
-        "new_state": "forgotten",
+        "new_state": new_state,
     }))
 }
 
@@ -13393,5 +13431,116 @@ mod list_chat_sessions_for_spec_tests {
             .filter_map(|r| r.ok())
             .collect();
         assert!(rows.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod learning_set_state_sql_tests {
+    //! Sprint 2.3 — locks in the SQL contract behind dismiss / promote /
+    //! demote. The Tauri command takes `State<AppState>` which can't be
+    //! stubbed cheaply, but the `set_facet_state` helper's actual logic
+    //! is one UPDATE — this test pins down its semantics against an
+    //! in-memory V39 schema.
+
+    use rusqlite::Connection;
+
+    fn fresh() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V39_USER_PROFILE_FACETS).unwrap();
+        conn
+    }
+
+    fn insert(conn: &Connection, fid: &str, state: &str) {
+        conn.execute(
+            "INSERT INTO user_profile_facets
+             (facet_id, class, name, value, state, stability, evidence_count,
+              last_seen_at, created_at, updated_at)
+             VALUES (?1, 'identity', 'name', 'Alice', ?2, 1.0, 1, 0, 0, 0)",
+            rusqlite::params![fid, state],
+        ).unwrap();
+    }
+
+    fn state_of(conn: &Connection, fid: &str) -> String {
+        conn.query_row(
+            "SELECT state FROM user_profile_facets WHERE facet_id = ?1",
+            rusqlite::params![fid],
+            |r| r.get::<_, String>(0),
+        ).unwrap()
+    }
+
+    fn updated_at_of(conn: &Connection, fid: &str) -> i64 {
+        conn.query_row(
+            "SELECT updated_at FROM user_profile_facets WHERE facet_id = ?1",
+            rusqlite::params![fid],
+            |r| r.get::<_, i64>(0),
+        ).unwrap()
+    }
+
+    /// The dismiss / promote / demote paths all hit this UPDATE. We
+    /// drive it directly here because the helper signature requires
+    /// `State<AppState>` which the test harness can't build.
+    fn set_state(conn: &Connection, fid: &str, target: &str, now_ms: i64) -> usize {
+        conn.execute(
+            "UPDATE user_profile_facets SET state = ?1, updated_at = ?2 \
+             WHERE facet_id = ?3",
+            rusqlite::params![target, now_ms, fid],
+        ).unwrap()
+    }
+
+    #[test]
+    fn promote_lifts_provisional_to_active() {
+        let conn = fresh();
+        insert(&conn, "p1", "provisional");
+        let rows = set_state(&conn, "p1", "active", 999);
+        assert_eq!(rows, 1);
+        assert_eq!(state_of(&conn, "p1"), "active");
+        assert_eq!(updated_at_of(&conn, "p1"), 999);
+    }
+
+    #[test]
+    fn promote_lifts_forgotten_back_into_play() {
+        // Recovery path — user changed their mind after dismissing.
+        let conn = fresh();
+        insert(&conn, "f1", "forgotten");
+        let rows = set_state(&conn, "f1", "active", 1000);
+        assert_eq!(rows, 1);
+        assert_eq!(state_of(&conn, "f1"), "active");
+    }
+
+    #[test]
+    fn demote_drops_active_to_provisional() {
+        let conn = fresh();
+        insert(&conn, "a1", "active");
+        let rows = set_state(&conn, "a1", "provisional", 1234);
+        assert_eq!(rows, 1);
+        assert_eq!(state_of(&conn, "a1"), "provisional");
+    }
+
+    #[test]
+    fn dismiss_drops_anything_to_forgotten() {
+        let conn = fresh();
+        insert(&conn, "x1", "active");
+        let rows = set_state(&conn, "x1", "forgotten", 1);
+        assert_eq!(rows, 1);
+        assert_eq!(state_of(&conn, "x1"), "forgotten");
+    }
+
+    #[test]
+    fn missing_facet_returns_zero_rows_no_error() {
+        let conn = fresh();
+        let rows = set_state(&conn, "ghost", "active", 1);
+        assert_eq!(rows, 0);
+    }
+
+    #[test]
+    fn idempotent_on_same_target_state() {
+        // Promote-twice should be a no-op semantically but still bumps
+        // updated_at — that's expected (rows_updated still = 1).
+        let conn = fresh();
+        insert(&conn, "p1", "active");
+        let rows = set_state(&conn, "p1", "active", 42);
+        assert_eq!(rows, 1);
+        assert_eq!(state_of(&conn, "p1"), "active");
+        assert_eq!(updated_at_of(&conn, "p1"), 42);
     }
 }
