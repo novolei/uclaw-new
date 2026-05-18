@@ -24,7 +24,7 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::browser::dom_state::{dom_state_from_raw, DOM_QUERY_SCRIPT};
-use crate::browser::types::{DOMState, DomStateRaw, ScreencastFramePayload, TabInfo};
+use crate::browser::types::{DOMState, DomStateRaw, NavStatePayload, ScreencastFramePayload, TabInfo};
 
 // ── DOM cache ─────────────────────────────────────────────────────────────────
 

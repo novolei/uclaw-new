@@ -48,6 +48,18 @@ export const browserScreencastActiveAtom = atom(new Set<string>())
 /** Whether the DOM element bounding-box overlay is visible in BrowserPanel. */
 export const browserDOMOverlayVisibleAtom = atom(false)
 
+export interface NavStateEntry {
+  tabId: string
+  url: string
+  title: string
+  isLoading: boolean
+  canGoBack: boolean
+  canGoForward: boolean
+}
+
+/** Latest nav state per sessionId. Populated by BrowserPanel's listenNavState subscription. */
+export const browserNavStateAtom = atom(new Map<string, NavStateEntry>())
+
 // ── V1 compatibility shims (Sprint 2.2 hotfix) ────────────────────────
 //
 // PR #213 (Browser Agent v2) rewrote this file's atom surface from the

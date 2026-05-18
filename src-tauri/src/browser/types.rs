@@ -55,6 +55,18 @@ pub struct ScreencastFramePayload {
     pub page_height: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NavStatePayload {
+    pub session_id: String,
+    pub tab_id: String,
+    pub url: String,
+    pub title: String,
+    pub is_loading: bool,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+}
+
 // ── raw deserialization types (JS → Rust, before normalisation) ───────────────
 
 #[derive(Debug, Deserialize)]
@@ -174,5 +186,22 @@ mod tests {
         let json = serde_json::to_string(&payload).unwrap();
         assert!(json.contains("\"dataB64\":\"abc=\""), "expected camelCase dataB64, got: {json}");
         assert!(json.contains("\"sessionId\":\"s1\""), "expected camelCase sessionId, got: {json}");
+    }
+
+    #[test]
+    fn nav_state_payload_serializes_camelcase() {
+        let p = NavStatePayload {
+            session_id: "s1".to_string(),
+            tab_id: "t1".to_string(),
+            url: "https://example.com".to_string(),
+            title: "Example".to_string(),
+            is_loading: true,
+            can_go_back: false,
+            can_go_forward: false,
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"sessionId\":\"s1\""), "got: {json}");
+        assert!(json.contains("\"isLoading\":true"), "got: {json}");
+        assert!(json.contains("\"canGoBack\":false"), "got: {json}");
     }
 }

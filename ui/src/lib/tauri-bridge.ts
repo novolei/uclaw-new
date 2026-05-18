@@ -1759,6 +1759,22 @@ export const listenScreencastFrames = (
 ): Promise<UnlistenFn> =>
   listen<ScreencastFramePayload>('browser:screencast-frame', ({ payload }) => handler(payload))
 
+export interface NavStatePayload {
+  sessionId: string
+  tabId: string
+  url: string
+  title: string
+  isLoading: boolean
+  canGoBack: boolean
+  canGoForward: boolean
+}
+
+/** Subscribe to browser:nav-state events. Returns an unlisten function. */
+export const listenNavState = (
+  handler: (payload: NavStatePayload) => void,
+): Promise<UnlistenFn> =>
+  listen<NavStatePayload>('browser:nav-state', ({ payload }) => handler(payload))
+
 // ─── Automation (Phase 3) ─────────────────────────────────────────────
 export interface AutomationActivity {
   id: string
