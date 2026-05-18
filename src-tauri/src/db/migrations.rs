@@ -1638,6 +1638,29 @@ CREATE INDEX IF NOT EXISTS idx_aut_chat_sess_agent_id
 /// - UNIQUE(class, name)       enforces "one facet per (class, name)";
 ///                             repeated observation just bumps
 ///                             evidence_count and last_seen_at.
+/// V40 — MCP PR-5 audit table. One row per significant MCP lifecycle
+/// event: connect_attempt, connect_failed, health_failed, reconnect_attempt,
+/// reconnect_failed, tools_changed, disconnect. The `message_redacted`
+/// column always has env-value substrings replaced with `[REDACTED]`
+/// so the table is safe to ship if a user wants to share logs.
+///
+/// Indexes are tuned for the two read patterns: per-server timeline
+/// (server_id + created_at DESC, the "View logs" affordance) and
+/// global recent-activity (created_at DESC, future dashboard).
+pub const V40_MCP_AUDIT: &str = "
+CREATE TABLE IF NOT EXISTS mcp_audit (
+    id                 TEXT PRIMARY KEY,
+    server_id          TEXT NOT NULL,
+    event_kind         TEXT NOT NULL,
+    message_redacted   TEXT NOT NULL,
+    created_at         INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_server_time
+    ON mcp_audit(server_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_time
+    ON mcp_audit(created_at DESC);
+";
+
 pub const V39_USER_PROFILE_FACETS: &str = "
 CREATE TABLE IF NOT EXISTS user_profile_facets (
     facet_id           TEXT PRIMARY KEY,
@@ -1950,6 +1973,14 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V39_USER_PROFILE_FACETS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V39 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V40: MCP PR-5 — mcp_audit table for connection-attempt + lifecycle
+    // events. Persistence layer for the substantive audit hardening pass.
+    tracing::debug!("Running migration V40: mcp_audit");
+    for stmt in V40_MCP_AUDIT.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V40 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");

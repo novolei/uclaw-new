@@ -1019,6 +1019,34 @@ export const restartMcpServer = (id: string): Promise<boolean> =>
 export const listMcpTools = (): Promise<unknown[]> =>
   invoke('list_mcp_tools');
 
+// MCP PR-2 — explicit tools/list refetch for a connected server. The
+// notification-driven path isn't wired yet (PR-4); this button lets
+// users pull in tools that the server registered after initial connect.
+export const refreshMcpTools = (id: string): Promise<unknown[]> =>
+  invoke('refresh_mcp_tools', { id });
+
+// MCP PR-2 — JSON-RPC ping with elapsed-ms response. Used by the
+// "Test Connection" affordance in the detail drawer to verify a
+// server is alive without restarting it.
+export const pingMcpServer = (id: string): Promise<number> =>
+  invoke('ping_mcp_server', { id });
+
+// MCP PR-5 — read the audit log. `serverId=null` returns all servers'
+// rows, most recent first. Limit defaults to 100 server-side, capped
+// at 1000.
+export interface McpAuditEntry {
+  id: string;
+  serverId: string;
+  eventKind: string;
+  messageRedacted: string;
+  createdAt: number;
+}
+export const listMcpAudit = (
+  serverId: string | null,
+  limit?: number,
+): Promise<McpAuditEntry[]> =>
+  invoke('list_mcp_audit', { serverId, limit });
+
 // ─────────────────────────────────────────────────────────
 // Built-in Skills
 // ─────────────────────────────────────────────────────────
