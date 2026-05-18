@@ -68,6 +68,13 @@ pub struct MatchedSpec {
 }
 
 /// Persist new IM agent-chat messages into agent_messages starting at start_idx.
+///
+/// Skips user/system rows whose serialized text is empty — these are
+/// tool_result wrappers produced inside the agent loop. They have no
+/// displayable text for the UI history pane and aren't needed as LLM context
+/// on subsequent turns (each turn rebuilds its own tool-call sequence). Prior
+/// to this filter, they produced empty "User" rows that rendered as blank
+/// bubbles in the agent view.
 pub fn persist_im_messages(
     conn: &rusqlite::Connection,
     session_id: &str,
@@ -75,6 +82,7 @@ pub fn persist_im_messages(
     start_idx: usize,
 ) -> rusqlite::Result<()> {
     let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut persisted: i64 = 0;
     for (i, msg) in messages.iter().enumerate() {
         let idx = start_idx + i;
         let role = match msg.role {
@@ -96,16 +104,26 @@ pub fn persist_im_messages(
                 serde_json::to_string(&msg.content).unwrap_or_else(|_| "[]".into())
             }
         };
+
+        // Skip user/system rows whose text is empty (typically tool_result-only
+        // wrappers). Assistant rows always serialize to at least "[]" and stay.
+        if matches!(msg.role, MessageRole::User | MessageRole::System)
+            && content.trim().is_empty()
+        {
+            continue;
+        }
+
         let id = format!("{}-{}", session_id, idx);
         conn.execute(
             "INSERT OR IGNORE INTO agent_messages (id, session_id, role, content, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![id, session_id, role, content, now_ms + idx as i64],
         )?;
+        persisted += 1;
     }
     conn.execute(
         "UPDATE agent_sessions SET message_count = message_count + ?1, updated_at = ?2 WHERE id = ?3",
-        rusqlite::params![messages.len() as i64, now_ms, session_id],
+        rusqlite::params![persisted, now_ms, session_id],
     )?;
     Ok(())
 }
@@ -171,8 +189,21 @@ pub(super) fn row_to_chat_message(role: &str, content: String) -> Option<ChatMes
                     .collect::<Vec<_>>()
             })
             .unwrap_or_else(|_| vec![ContentBlock::Text { text: content }]),
-        _ => vec![ContentBlock::Text { text: content }],
+        _ => {
+            // Defensive: legacy rows from before the persist-side filter may have
+            // empty user/system content (tool_result wrappers). Drop them so
+            // the LLM context isn't polluted with empty messages.
+            if content.trim().is_empty() {
+                return None;
+            }
+            vec![ContentBlock::Text { text: content }]
+        }
     };
+    // Assistant rows whose blocks filter to empty (only tool_use was present)
+    // also drop out — the LLM API rejects empty assistant messages.
+    if blocks.is_empty() {
+        return None;
+    }
     Some(ChatMessage { role: r, content: blocks, compacted: false })
 }
 
@@ -684,5 +715,92 @@ mod tests {
             }
             other => panic!("expected Text, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn persist_skips_empty_user_rows_from_tool_results() {
+        // Regression: agent loop wraps tool_result blocks as User-role
+        // messages. persist_im_messages used to insert them as empty
+        // content="" rows, which surfaced as blank "User" bubbles in the
+        // agent view. Verify they are now skipped at persist time.
+        let conn = setup_db();
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO agent_sessions (id, space_id, title, metadata_json, message_count, pinned, archived, created_at, updated_at)
+             VALUES ('s2', 'default', 't', '{}', 0, 0, 0, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        let messages = vec![
+            ChatMessage::user("现在工作目录?"),
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![
+                    ContentBlock::Text { text: "我来看一下当前的工作目录！".into() },
+                    ContentBlock::ToolUse {
+                        id: "tu_1".into(),
+                        name: "bash".into(),
+                        input: serde_json::json!({ "command": "pwd" }),
+                    },
+                ],
+                compacted: false,
+            },
+            // Tool result wrapped as a user-role message — has no Text blocks.
+            ChatMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tu_1".into(),
+                    content: "/Users/ryanliu/Documents/workground".into(),
+                    is_error: Some(false),
+                }],
+                compacted: false,
+            },
+            ChatMessage::assistant("当前工作目录是 /Users/ryanliu/Documents/workground"),
+        ];
+        persist_im_messages(&conn, "s2", &messages, 0).unwrap();
+
+        // 4 messages in, but the tool-result wrapper is dropped → 3 rows.
+        let rows = load_session_messages(&conn, "s2").unwrap();
+        assert_eq!(rows.len(), 3, "tool_result-only user row should be skipped");
+
+        // Spot check: no row has empty content.
+        for (_role, content, _) in &rows {
+            assert!(!content.is_empty(), "no persisted row should have empty content");
+        }
+
+        // message_count should match the number of rows actually persisted.
+        let count: i64 = conn
+            .query_row(
+                "SELECT message_count FROM agent_sessions WHERE id='s2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn row_to_chat_message_drops_legacy_empty_user_rows() {
+        // Defensive: older sessions (pre-fix) already have empty user rows
+        // in the DB. The load path must drop them so the LLM context isn't
+        // polluted with empty user messages on the next turn.
+        assert!(row_to_chat_message("user", String::new()).is_none());
+        assert!(row_to_chat_message("user", "   ".into()).is_none());
+        assert!(row_to_chat_message("system", "\n\t".into()).is_none());
+    }
+
+    #[test]
+    fn row_to_chat_message_drops_assistant_with_only_tool_use() {
+        // An assistant row containing only tool_use serializes to a JSON
+        // array with no Text blocks. After filtering it would be empty —
+        // such messages are dropped because the LLM API rejects empty
+        // assistant content.
+        let stored = serde_json::to_string(&vec![ContentBlock::ToolUse {
+            id: "tu_x".into(),
+            name: "bash".into(),
+            input: serde_json::json!({}),
+        }])
+        .unwrap();
+        assert!(row_to_chat_message("assistant", stored).is_none());
     }
 }
