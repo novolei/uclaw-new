@@ -251,20 +251,20 @@ pub async fn patch_memory_recall_config(
     Ok(merged)
 }
 
-#[derive(Debug, serde::Serialize, Clone)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct MemUBridgeStatus {
     pub running: bool,
     pub pid: Option<u32>,
 }
 
-#[derive(Debug, serde::Serialize, Clone)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct GbrainStatus {
     pub connected: bool,
     pub tool_count: u32,
     pub pgdata_ready: bool,
 }
 
-#[derive(Debug, serde::Serialize, Clone)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct SystemDiagnosticsReport {
     pub app_version: String,
     pub platform: String,
@@ -317,7 +317,7 @@ pub async fn get_system_diagnostics(
     // Services
     let summary = state.service_manager.get_all_health().await;
     let consecutive_failures = summary.failed as u32;
-    let recovery_attempts = summary.failed as u32;
+    let recovery_attempts = 0u32; // placeholder — no restart-attempt counter yet
     let active_processes = summary.running as u32;
 
     // memU bridge status
@@ -353,7 +353,7 @@ pub async fn get_system_diagnostics(
         consecutive_failures,
         recovery_attempts,
         active_processes,
-        orphan_processes: 0,
+        orphan_processes: 0, // not yet measured — placeholder for future process-tree scan
         services: summary.services,
         memu,
         gbrain,
@@ -382,9 +382,7 @@ pub async fn restart_gbrain_mcp(
         .clone()
         .ok_or_else(|| "gbrain MCP entry not seeded (bundle missing?)".to_string())?;
     let mut mcp = state.mcp_manager.write().await;
-    mcp.disconnect_server(&id).await.map_err(|e| e.to_string())?;
-    mcp.connect_server(&id).await.map_err(|e| e.to_string())?;
-    Ok(())
+    mcp.restart_server(&id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -401,9 +399,8 @@ pub async fn reset_ai_engine(
 }
 
 #[tauri::command]
-pub async fn restart_app(app: tauri::AppHandle) -> Result<(), Error> {
+pub fn restart_app(app: tauri::AppHandle) {
     app.restart();
-    Ok(())
 }
 
 #[tauri::command]
