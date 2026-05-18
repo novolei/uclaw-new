@@ -73,6 +73,7 @@ impl BrowserContext {
         // Drive the CDP event loop in a background task.
         tokio::spawn(async move {
             while let Some(_event) = handler.next().await {}
+            tracing::warn!("CDP handler exited — browser subprocess may have crashed");
         });
 
         let browser = Arc::new(browser);
@@ -134,23 +135,29 @@ impl BrowserContext {
 
     /// Navigate to `url` in the given tab. Returns the resolved tab_id.
     pub async fn navigate(&self, tab_id: &str, url: &str) -> Result<String> {
-        if tab_id == "new" || !self.pages.read().await.contains_key(tab_id) {
-            let page = self
-                .browser
-                .new_page(url)
-                .await
-                .map_err(|e| anyhow!("Failed to open page: {}", e))?;
-            let new_id = Uuid::new_v4().to_string();
-            self.pages.write().await.insert(new_id.clone(), page);
-            Ok(new_id)
-        } else {
-            let page = self.get_page(tab_id).await?;
-            page.goto(url)
-                .await
-                .map_err(|e| anyhow!("Navigation failed: {}", e))?;
-            self.invalidate_dom_cache(tab_id).await;
-            Ok(tab_id.to_string())
+        let mut pages = self.pages.write().await;
+        if tab_id != "new" {
+            if let Some(page) = pages.get(tab_id) {
+                let page = page.clone();
+                drop(pages);
+                page.goto(url)
+                    .await
+                    .map_err(|e| anyhow!("navigate to {url}: {e}"))?;
+                self.invalidate_dom_cache(tab_id).await;
+                return Ok(tab_id.to_string());
+            }
         }
+        // New tab — open directly at the target URL.
+        drop(pages);
+        let page = self
+            .browser
+            .new_page(url)
+            .await
+            .map_err(|e| anyhow!("new_page: {e}"))?;
+        let new_id = Uuid::new_v4().to_string();
+        self.pages.write().await.insert(new_id.clone(), page);
+        self.invalidate_dom_cache(&new_id).await;
+        Ok(new_id)
     }
 
     pub async fn go_back(&self, tab_id: &str) -> Result<()> {
@@ -362,7 +369,7 @@ impl BrowserContext {
             .map_err(|e| anyhow!("execute_js: {}", e))?;
         let s = val
             .into_value::<serde_json::Value>()
-            .map(|v| serde_json::to_string_pretty(&v).unwrap_or_default())
+            .map(|v| serde_json::to_string_pretty(&v).unwrap_or_else(|e| e.to_string()))
             .unwrap_or_else(|_| "<no return value>".to_string());
         Ok(s)
     }
@@ -370,6 +377,7 @@ impl BrowserContext {
     // ── Tab management ────────────────────────────────────────────────────────
 
     pub async fn get_all_tabs(&self) -> Vec<TabInfo> {
+        // url/title not populated here; use get_dom_state() for full tab info.
         self.pages
             .read()
             .await
