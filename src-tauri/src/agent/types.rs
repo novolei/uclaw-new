@@ -685,6 +685,45 @@ mod mutation_tracking_tests {
 /// calling one? If yes, the loop nudges it to actually invoke the tool
 /// instead of terminating on text. Covers English + Chinese phrasings.
 ///
+/// Return true when the user message looks purely conversational — a short
+/// status/greeting question with no file, code, or task keywords.
+///
+/// Used to guard the tool_intent_nudge: when the FIRST user message in a
+/// turn is purely conversational, nudging the model to "call a tool NOW"
+/// converts a harmless "让我看看" preamble into spurious glob/ls/date calls.
+/// Examples that should return true: "你在干啥", "你好", "现在几点", "你叫什么名字"
+pub fn is_purely_conversational(user_msg: &str) -> bool {
+    let trimmed = user_msg.trim();
+    // Must be short — real tasks are rarely under 20 chars but greetings are
+    if trimmed.len() > 60 {
+        return false;
+    }
+    // Must not contain task-signalling keywords
+    let task_keywords = [
+        // English
+        "file", "code", "write", "read", "edit", "run", "build", "fix", "create",
+        "delete", "search", "find", "install", "update", "deploy", "test", "debug",
+        // Chinese task words
+        "文件", "代码", "写", "读", "编辑", "运行", "构建", "修复", "创建",
+        "删除", "搜索", "查找", "安装", "更新", "部署", "测试", "调试",
+        "实现", "添加", "生成", "执行", "调用", "配置", "设置",
+    ];
+    if task_keywords.iter().any(|k| trimmed.contains(k)) {
+        return false;
+    }
+    // Must contain at least one conversational signal
+    let conversational_signals = [
+        // Status questions
+        "在干啥", "在干嘛", "在做什么", "你好", "hi", "hello", "几点", "什么时间",
+        "你是谁", "你叫什么", "你能做什么", "你能干什么", "有什么可以",
+        // Generic short queries that are clearly conversational
+        "怎么了", "有什么事", "还好吗", "how are you", "what are you doing",
+        "what's up", "whats up",
+    ];
+    conversational_signals.iter().any(|s| trimmed.to_lowercase().contains(s))
+        || trimmed.ends_with('?') && trimmed.chars().count() < 20
+}
+
 /// The 600-char cap (was 200) is to filter out long completion summaries —
 /// "intent" phrases in long replies are usually post-hoc descriptions, not
 /// pre-action announcements. 600 chars accommodates short Chinese paragraph
@@ -764,5 +803,58 @@ mod tool_intent_tests {
     fn unrelated_text_does_not_match() {
         assert!(!llm_signals_tool_intent("The function returned successfully."));
         assert!(!llm_signals_tool_intent("代码已经写完了，测试通过。"));
+    }
+}
+
+#[cfg(test)]
+mod conversational_guard_tests {
+    use super::is_purely_conversational;
+
+    #[test]
+    fn status_questions_are_conversational() {
+        // The exact phrase that triggered the bug (2026-05-18 incident)
+        assert!(is_purely_conversational("你在干啥"));
+        assert!(is_purely_conversational("你在干嘛"));
+        assert!(is_purely_conversational("你在做什么"));
+        assert!(is_purely_conversational("what are you doing"));
+        assert!(is_purely_conversational("what's up"));
+    }
+
+    #[test]
+    fn greetings_are_conversational() {
+        assert!(is_purely_conversational("你好"));
+        assert!(is_purely_conversational("hi"));
+        assert!(is_purely_conversational("hello"));
+    }
+
+    #[test]
+    fn time_questions_are_conversational() {
+        assert!(is_purely_conversational("现在几点"));
+        assert!(is_purely_conversational("几点了?"));
+    }
+
+    #[test]
+    fn task_requests_are_not_conversational() {
+        // Task keywords must prevent the guard from firing
+        assert!(!is_purely_conversational("帮我写一个函数"));
+        assert!(!is_purely_conversational("查找 main.rs 里的问题"));
+        assert!(!is_purely_conversational("创建一个新文件"));
+        assert!(!is_purely_conversational("run the tests"));
+        assert!(!is_purely_conversational("fix the bug in file.rs"));
+    }
+
+    #[test]
+    fn long_messages_are_not_conversational() {
+        // Anything over 60 chars is assumed to have task intent
+        let long = "你好，我想让你帮我分析一下这段代码的性能问题，看看哪里可以优化";
+        assert!(long.len() > 60);
+        assert!(!is_purely_conversational(long));
+    }
+
+    #[test]
+    fn task_questions_without_keywords_are_not_conversational() {
+        // Should not match — no conversational signal keyword
+        assert!(!is_purely_conversational("这是什么意思"));
+        assert!(!is_purely_conversational("为什么会这样"));
     }
 }
