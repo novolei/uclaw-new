@@ -72,6 +72,58 @@ pub const NOTIFY_TOOLS_LIST_CHANGED: &str = "notifications/tools/list_changed";
 /// "something's wrong" feedback for users with truly stuck inits.
 pub const GBRAIN_INIT_TIMEOUT_SECS: u64 = 120;
 
+// ─── Sprint 2.2.5b — init status for diagnostics ───────────────────────
+
+/// Last-known outcome of the gbrain init step, persisted in `AppState`
+/// for the duration of the app process. Read by `get_system_diagnostics`
+/// and surfaced in the Settings → 系统 tab so users can see (and act on)
+/// init failures instead of only finding them in logs.
+///
+/// Lifecycle: starts at `NotAttempted`. Stage 3 boot moves it to
+/// `InProgress` before calling `ensure_bundled_gbrain_initialized`, then
+/// to one of `Succeeded` / `SkippedAlreadyInitialized` / `Failed` based
+/// on the result. Becomes `BundleMissing` if Stage 3 couldn't even find
+/// the bun + gbrain entry paths (resource bundle absent / dev scripts
+/// not run yet).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum GbrainInitStatus {
+    /// Stage 3 hasn't reached the gbrain init step yet, or the app
+    /// is mid-boot.
+    NotAttempted,
+    /// Init currently running (sub-second window since the seed step
+    /// is awaited inline, but exposed for completeness so UI doesn't
+    /// flicker between NotAttempted and Succeeded).
+    InProgress,
+    /// `gbrain init` completed cleanly. `duration_ms` = wall-clock cost
+    /// of the spawn; `at_ms` = unix-ms of completion.
+    Succeeded { duration_ms: u64, at_ms: i64 },
+    /// `PG_VERSION` was already present at boot; no spawn happened.
+    /// Most steady-state boots land here. `at_ms` = when the probe ran.
+    SkippedAlreadyInitialized { at_ms: i64 },
+    /// `gbrain init` exited non-zero OR timed out OR spawn failed.
+    /// `error` = short summary; `stderr_tail` = last 20 lines of stderr
+    /// when available (None for spawn failures that never ran a child).
+    /// `at_ms` = when the failure was observed.
+    Failed {
+        error: String,
+        stderr_tail: Option<String>,
+        at_ms: i64,
+    },
+    /// Stage 3 couldn't resolve `bun` and/or the gbrain entry path —
+    /// resource bundle missing on fresh checkout, or dev's
+    /// `setup-bun-runtime.sh` + `setup-gbrain-source.sh` not run yet.
+    /// Init isn't even attempted in this state; gbrain MCP entry is
+    /// skipped entirely.
+    BundleMissing,
+}
+
+impl Default for GbrainInitStatus {
+    fn default() -> Self {
+        Self::NotAttempted
+    }
+}
+
 // ─── PR-5 — env redaction + audit log ──────────────────────────────────
 
 /// Replace any substring matching one of `env`'s values with

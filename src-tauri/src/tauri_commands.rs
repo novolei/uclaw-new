@@ -279,6 +279,11 @@ pub struct SystemDiagnosticsReport {
     pub services: Vec<crate::services::ServiceHealth>,
     pub memu: MemUBridgeStatus,
     pub gbrain: GbrainStatus,
+    /// Sprint 2.2.5b — last-known gbrain init outcome surfaced from
+    /// AppState. UI uses this to show actionable guidance when init
+    /// failed (e.g. "Run scripts/init-gbrain.sh") instead of just a
+    /// red dot.
+    pub gbrain_init: crate::mcp::GbrainInitStatus,
 }
 
 #[tauri::command]
@@ -343,6 +348,13 @@ pub async fn get_system_diagnostics(
         GbrainStatus { connected, tool_count, pgdata_ready }
     };
 
+    // Sprint 2.2.5b — last-known init outcome from Stage 3 boot.
+    let gbrain_init = state
+        .gbrain_init_status
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or(crate::mcp::GbrainInitStatus::NotAttempted);
+
     Ok(SystemDiagnosticsReport {
         app_version: env!("CARGO_PKG_VERSION").into(),
         platform: std::env::consts::OS.into(),
@@ -357,6 +369,7 @@ pub async fn get_system_diagnostics(
         services: summary.services,
         memu,
         gbrain,
+        gbrain_init,
     })
 }
 
