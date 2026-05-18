@@ -1348,12 +1348,6 @@ impl McpManager {
         Ok(())
     }
 
-    /// Restart a server connection
-    pub async fn restart_server(&mut self, id: &str) -> Result<(), McpError> {
-        self.disconnect_server(id).await.ok();
-        self.connect_server(id).await
-    }
-
     // ── PR-3 — health loop management ───────────────────────────────
 
     /// Spawn (or replace) the per-server health/reconnect background
@@ -1827,6 +1821,31 @@ pub(crate) async fn reconnect_server_shared(
         }
     }
     connect_server_shared(shared, id).await
+}
+
+/// Restart a server connection. User-triggered (Tauri command) and
+/// distinct from the health loop's internal `reconnect_server_shared`
+/// in that it ALSO aborts the health loop so the loop's pending
+/// reconnect can't fight the user.
+pub async fn restart_server_shared(
+    shared: &SharedMcpManager,
+    id: &str,
+) -> Result<(), McpError> {
+    {
+        let mut guard = shared.write().await;
+        guard.stop_health_loop(id);
+        if let Some(state) = guard.servers.get_mut(id) {
+            if let Some(conn) = state.connection.take() {
+                let _ = conn.shutdown().await;
+            }
+            state.status = McpServerStatus::Disconnected;
+            state.tools.clear();
+            state.error = None;
+        }
+        guard.record_audit(id, McpAuditKind::Disconnect, "Disconnected (restart)");
+    }
+    connect_server_shared(shared, id).await?;
+    Ok(())
 }
 
 /// Connect all enabled servers. Each server's connect runs through
