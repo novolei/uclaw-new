@@ -29,6 +29,7 @@ pub mod safety;
 pub mod stt;
 pub mod memu;
 pub mod proactive;
+pub mod learning;
 
 // Re-export key types
 pub use error::Error;
