@@ -29,7 +29,7 @@ import {
   autoPreviewEnabledAtom,
   autoPreviewDismissedSessionsAtom,
   pendingWriteToolsAtom,
-  openPreviewAction,
+  openPreviewTabAction,
   type PreviewFileTarget,
 } from '@/atoms/preview-panel-atoms'
 import { workspaceSessionsAtom, updateSessionTitleAtom, type WorkspaceSession } from '@/atoms/workspace'
@@ -482,7 +482,7 @@ function startAgentListeners(store: Store): void {
             if (!r) return
             const resolved = buildResolvedTarget(r, sid)
             if (!resolved) return
-            store.set(openPreviewAction, resolved)
+            store.set(openPreviewTabAction, { target: resolved, source: 'agent' })
           })
           .catch(() => { /* silent — auto-preview is best-effort */ })
       }
