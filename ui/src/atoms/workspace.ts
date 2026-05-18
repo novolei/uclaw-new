@@ -27,6 +27,10 @@ export interface WorkspaceSession {
   metadataJson?: string
   /** True when the session has been archived by the user. */
   archived?: boolean
+  /** IM channel that originated this session ("wechat_ilink", "wecom_bot", …).
+   *  Sourced from the im_sessions JOIN in list_agent_sessions; absent for
+   *  in-app sessions. Drives the channel-icon override in SessionItem/TabBar. */
+  imChannelType?: string
 }
 
 // All workspaces from backend
@@ -241,6 +245,7 @@ export const syncWorkspaceSessionsAtom = atom(
         pinnedAt: typeof s.pinnedAt === 'number' ? s.pinnedAt : null,
         metadataJson: typeof s.metadataJson === 'string' ? s.metadataJson : undefined,
         archived: !!s.archived,
+        imChannelType: typeof s.imChannelType === 'string' ? s.imChannelType : undefined,
       })
     }
     set(workspaceSessionsAtom, grouped)

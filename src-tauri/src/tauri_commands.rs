@@ -7130,15 +7130,22 @@ pub async fn stop_agent_session(
 #[tauri::command]
 pub async fn list_agent_sessions(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, Error> {
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    // LEFT JOIN im_sessions so the frontend can mark IM-origin sessions
+    // (sidebar item + tab) without an extra round trip per session.
     let mut stmt = conn.prepare(
-        "SELECT id, space_id, title, metadata_json, message_count, pinned, archived,
-                attached_dirs, pinned_at, created_at, updated_at
-         FROM agent_sessions ORDER BY updated_at DESC"
+        "SELECT s.id, s.space_id, s.title, s.metadata_json, s.message_count, s.pinned, s.archived,
+                s.attached_dirs, s.pinned_at, s.created_at, s.updated_at,
+                im.channel_type, im.chat_id
+         FROM agent_sessions s
+         LEFT JOIN im_sessions im ON im.agent_session_id = s.id
+         ORDER BY s.updated_at DESC"
     ).map_err(|e| Error::Database(e))?;
     let rows = stmt.query_map([], |row| {
         let meta_str: String = row.get(3)?;
         let attached_dirs_json: String = row.get::<_, String>(7).unwrap_or_else(|_| "[]".into());
         let pinned_at: Option<i64> = row.get::<_, Option<i64>>(8).unwrap_or(None);
+        let im_channel_type: Option<String> = row.get::<_, Option<String>>(11).unwrap_or(None);
+        let im_chat_id: Option<String> = row.get::<_, Option<String>>(12).unwrap_or(None);
         Ok((
             row.get::<_, String>(0)?,    // id
             row.get::<_, String>(1)?,    // space_id
@@ -7148,14 +7155,17 @@ pub async fn list_agent_sessions(state: State<'_, AppState>) -> Result<Vec<serde
             row.get::<_, i64>(5)?,       // pinned (legacy, chat-only)
             row.get::<_, i64>(6)?,       // archived
             attached_dirs_json,
-            pinned_at,                    // NEW: pinned_at
+            pinned_at,
             row.get::<_, i64>(9)?,       // created_at
             row.get::<_, i64>(10)?,      // updated_at
+            im_channel_type,
+            im_chat_id,
         ))
     }).map_err(|e| Error::Database(e))?;
     let sessions: Vec<serde_json::Value> = rows.filter_map(|r| r.ok()).map(
         |(id, space_id, title, meta_str, msg_count, pinned, archived,
-          attached_dirs_json, pinned_at, created_at, updated_at)| {
+          attached_dirs_json, pinned_at, created_at, updated_at,
+          im_channel_type, im_chat_id)| {
         let meta: serde_json::Value = serde_json::from_str(&meta_str).unwrap_or(serde_json::Value::Object(Default::default()));
         let title_from_meta = meta.get("title").and_then(|v| v.as_str()).unwrap_or(&title).to_string();
         let title_emoji = meta.get("emoji").and_then(|v| v.as_str()).unwrap_or("💬").to_string();
@@ -7175,6 +7185,8 @@ pub async fn list_agent_sessions(state: State<'_, AppState>) -> Result<Vec<serde
             "pinnedAt": pinned_at,
             "createdAt": created_at,
             "updatedAt": updated_at,
+            "imChannelType": im_channel_type,
+            "imChatId": im_chat_id,
         })
     }).collect();
     Ok(sessions)

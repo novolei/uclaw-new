@@ -39,6 +39,12 @@ export interface AgentSessionMeta {
    *  (origin starts with "automation:"). Present whenever sessions are loaded
    *  from list_agent_sessions; may be absent on optimistically-created sessions. */
   metadataJson?: string
+  /** IM channel that originated this session (e.g. "wechat_ilink", "wecom_bot").
+   *  Present iff a matching row exists in im_sessions. When set, the sidebar
+   *  item and tab render a channel-specific icon instead of `titleEmoji`. */
+  imChannelType?: string
+  /** Chat ID on the IM side (e.g. WeChat user UIN). Companion to imChannelType. */
+  imChatId?: string
   messageCount: number
   createdAt: number
   updatedAt: number
