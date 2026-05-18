@@ -28,6 +28,7 @@ import { PermissionModeSelector } from './PermissionModeSelector'
 import { AgentStatusBar } from './AgentStatusBar'
 import { AskUserBanner } from './AskUserBanner'
 import { ExitPlanModeBanner } from './ExitPlanModeBanner'
+import { PlanModeSuggestBanner } from './PlanModeSuggestBanner'
 import { AutomationRunBanner } from './AutomationRunBanner'
 import { PlanModeDashedBorder } from './PlanModeDashedBorder'
 import { PetWidget } from './PetWidget'
@@ -1536,6 +1537,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
         {/* 权限请求横幅 */}
         <PermissionBanner sessionId={sessionId} />
+
+        {/* Plan 模式自动建议横幅 — advisory (not blocking) */}
+        <PlanModeSuggestBanner sessionId={sessionId} />
 
         {/* AskUserQuestion 交互式问答横幅 */}
         <AskUserBanner sessionId={sessionId} />

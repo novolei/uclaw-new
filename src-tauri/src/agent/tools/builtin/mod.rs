@@ -4,6 +4,7 @@ pub mod exit_plan_mode;
 pub mod file;
 pub mod load_skill;
 pub mod plan;
+pub mod plan_mode;
 pub mod search;
 pub mod self_eval;
 pub mod shell;

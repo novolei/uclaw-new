@@ -382,6 +382,11 @@ pub async fn send_message(
     ));
     tools.register(builtin::plan::PlanWriteTool::new(workspace.clone(), app_handle.clone()));
     tools.register(builtin::plan::PlanUpdateTool::new(workspace.clone(), app_handle.clone()));
+    tools.register(builtin::plan_mode::RequestPlanModeSwitchTool::new(
+        app_handle.clone(),
+        input.conversation_id.clone(),
+        Arc::clone(&state.db),
+    ));
     tools.register(
         builtin::self_eval::SelfEvalTool::new(
             input.conversation_id.clone(),
@@ -591,6 +596,8 @@ pub async fn send_message(
     if let Some(ref gene_repo) = gene_repo_opt {
         delegate.set_gene_repo(gene_repo.clone());
     }
+    // Inject DB for plan-suggest aggregate-rate GEP signal
+    delegate.set_db(Arc::clone(&state.db));
 
     // ── Memory Recall Integration ────────────────────────────────────
     // Build a recall plan and inject memory context into the system prompt.
@@ -4764,7 +4771,31 @@ pub async fn metrics_summary(
 pub async fn memubot_config_get(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    serde_json::to_value(&state.memubot_config).map_err(|e| e.to_string())
+    let cfg = state.memubot_config.read().await;
+    serde_json::to_value(&*cfg).map_err(|e| e.to_string())
+}
+
+/// 读取 Plan 模式自动建议开关
+#[tauri::command]
+pub async fn get_plan_mode_suggest_enabled(
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    Ok(state.memubot_config.read().await.plan_mode_suggest_enabled)
+}
+
+/// 设置 Plan 模式自动建议开关，并持久化到 memubot_config.json
+#[tauri::command]
+pub async fn set_plan_mode_suggest_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    {
+        let mut cfg = state.memubot_config.write().await;
+        cfg.plan_mode_suggest_enabled = enabled;
+        cfg.save(&state.data_dir).map_err(|e| e.to_string())?;
+    }
+    tracing::info!(enabled, "plan_mode_suggest_enabled updated and persisted");
+    Ok(())
 }
 
 /// 删除记忆节点
@@ -6926,6 +6957,60 @@ pub async fn send_agent_message(
         "send_agent_message ENTRY",
     );
 
+    // ── Plan-mode auto-suggest (high-recall keyword detector) ─────────
+    // Disabled patterns come from the calibration scenario (Task 10);
+    // stubbed to empty until then. Settings toggle lands in Task 11 —
+    // hardcoded true here for now.
+    {
+        // Read all async-protected state BEFORE acquiring any std::sync::Mutex.
+        // Tokio's RwLock must not be held across .await, and std::Mutex must
+        // not be held across .await either — so resolve both async reads first.
+        let suggest_enabled = state.memubot_config.read().await.plan_mode_suggest_enabled;
+        let current_mode = state.safety_manager.read().await.policy().global_mode.clone();
+        if suggest_enabled {
+            // Now safe to take the std::sync::Mutex — no .await below this point.
+            if let Ok(conn) = state.db.lock() {
+                let disabled = crate::agent::mode_suggest_store::query_disabled_patterns(&conn)
+                    .unwrap_or_default();
+                // Duplicate-banner suppression is handled on the frontend via a
+                // per-session Jotai atom (Task 9 reshape). No backend state needed.
+                let already_suggested = false;
+                if let Some(hint) = crate::agent::mode_suggest::suggest_plan_mode(
+                    &input.user_message, &current_mode, already_suggested, &disabled,
+                ) {
+                    let event_id = uuid::Uuid::new_v4().to_string();
+                    let pattern = hint.pattern;
+                    let display_reason = hint.display_reason;
+                    let _ = crate::agent::mode_suggest_store::record_fired(
+                        &conn,
+                        crate::agent::mode_suggest_store::FireRecord {
+                            id: &event_id,
+                            session_id: &input.session_id,
+                            message_id: "",  // user_msg_id not yet created at this point; updated post-insert by Task 9 if needed
+                            source: crate::agent::mode_suggest_store::SuggestSource::Keyword,
+                            matched_pattern: Some(pattern),
+                            reason: None,
+                            user_msg_preview: &input.user_message.chars().take(200).collect::<String>(),
+                            fired_at: chrono::Utc::now().timestamp_millis(),
+                        },
+                    );
+                    let _ = app_handle.emit("agent:plan_mode_suggest", serde_json::json!({
+                        "id": event_id,
+                        "session_id": input.session_id,
+                        "source": "keyword",
+                        "matched_pattern": pattern,
+                        "reason": display_reason,
+                        "fired_at_ms": chrono::Utc::now().timestamp_millis(),
+                    }));
+                    tracing::info!(
+                        pattern = %pattern, session_id = %input.session_id,
+                        "Plan-mode suggest banner fired (keyword)"
+                    );
+                }
+            }
+        }
+    }
+
     // ── /compact intercept (agent path) ─────────────────────────────
     // Same handling as the chat path: user typed `/compact` either via
     // the input box or the ContextUsageBadge button. Compact the agent
@@ -7184,6 +7269,11 @@ pub async fn send_agent_message(
     ));
     tools.register(builtin::plan::PlanWriteTool::new(workspace.clone(), app_handle.clone()));
     tools.register(builtin::plan::PlanUpdateTool::new(workspace.clone(), app_handle.clone()));
+    tools.register(builtin::plan_mode::RequestPlanModeSwitchTool::new(
+        app_handle.clone(),
+        input.session_id.clone(),
+        Arc::clone(&state.db),
+    ));
     tools.register(
         builtin::self_eval::SelfEvalTool::new(
             input.session_id.clone(),
@@ -7224,7 +7314,7 @@ pub async fn send_agent_message(
         sessions.insert(input.session_id.clone(), token.clone());
     }
 
-    let agent_loop_timeout_secs = state.memubot_config.agent_loop_timeout_secs;
+    let agent_loop_timeout_secs = state.memubot_config.read().await.agent_loop_timeout_secs;
 
     // Clone for spawn
     let session_id = input.session_id.clone();
@@ -7362,6 +7452,8 @@ pub async fn send_agent_message(
             if let Some(ref repo) = gene_repo_opt {
                 delegate.set_gene_repo(repo.clone());
             }
+            // Inject DB for plan-suggest aggregate-rate GEP signal
+            delegate.set_db(Arc::clone(&db));
         }
 
         let mut config = AgenticLoopConfig::default();
@@ -10004,6 +10096,7 @@ pub async fn start_agent_teams(
             }
         };
 
+        let db_for_factory = Arc::clone(&db);
         let orchestrator = crate::agent::teams::AgentTeamOrchestrator::new(
             llm_for_orchestrator,
             model_for_orchestrator,
@@ -10056,6 +10149,8 @@ pub async fn start_agent_teams(
                 if let Some(ref repo) = gene_repo_for_teams {
                     delegate.set_gene_repo(repo.clone());
                 }
+                // Inject DB for plan-suggest aggregate-rate GEP signal
+                delegate.set_db(Arc::clone(&db_for_factory));
                 Box::new(delegate)
             },
         );
@@ -12243,4 +12338,31 @@ pub async fn symphony_get_node_session_id(
         )
         .ok();
     Ok(sid)
+}
+
+/// Frontend → backend: user has decided on a plan-mode suggestion.
+/// Outcome is one of accepted | skipped | silenced | aborted.
+#[tauri::command]
+pub async fn respond_plan_mode_suggest(
+    state: State<'_, AppState>,
+    event_id: String,
+    outcome: String,
+    decline_reason: Option<String>,
+) -> Result<(), Error> {
+    use crate::agent::mode_suggest_store::Outcome as O;
+    let outcome_enum = match outcome.as_str() {
+        "accepted" => O::Accepted,
+        "skipped" => O::Skipped,
+        "silenced" => O::Silenced,
+        "aborted" => O::Aborted,
+        other => return Err(Error::InvalidInput(format!("invalid outcome: {}", other))),
+    };
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    crate::agent::mode_suggest_store::record_outcome(
+        &conn,
+        &event_id,
+        outcome_enum,
+        decline_reason.as_deref(),
+        chrono::Utc::now().timestamp_millis(),
+    ).map_err(|e| Error::Database(e))
 }

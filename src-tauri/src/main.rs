@@ -105,7 +105,7 @@ fn main() {
                 let state: tauri::State<'_, AppState> = app.state();
                 let service_manager = state.service_manager.clone();
                 let infra_service = state.infra_service.clone();
-                let memubot_config = state.memubot_config.clone();
+                let memubot_config_arc = state.memubot_config.clone();
                 let data_dir = state.data_dir.clone();
                 let memu_client = state.memu_client.clone();
                 let provider_service = state.provider_service.clone();
@@ -118,6 +118,8 @@ fn main() {
                 tauri::async_runtime::spawn(async move {
                     // Stage 3: 注册后台服务
                     tracing::info!("[Stage 3] Registering background services...");
+                    // Snapshot config at boot — services read their flags once at startup.
+                    let memubot_config = memubot_config_arc.read().await.clone();
 
                     // PowerService
                     if memubot_config.power.prevent_sleep {
@@ -202,6 +204,17 @@ fn main() {
                             );
                             scenario_manager.register(scenario);
                             tracing::info!("[Stage 3] MultimodalContextScenario registered");
+                        }
+
+                        // Scenario 4: Plan-mode calibration (no LLM; runs DB-only calibration)
+                        {
+                            let scenario = Arc::new(
+                                uclaw_core::proactive::scenarios::plan_mode_calibration::PlanModeCalibrationScenario::new(
+                                    db.clone(),
+                                )
+                            );
+                            scenario_manager.register(scenario);
+                            tracing::info!("[Stage 3] PlanModeCalibrationScenario registered");
                         }
 
                         tracing::info!("[Stage 3] {} proactive scenarios registered", scenario_manager.scenario_count());
@@ -580,6 +593,7 @@ fn main() {
             uclaw_core::tauri_commands::approve_tool_call,
             uclaw_core::tauri_commands::respond_ask_user,
             uclaw_core::tauri_commands::respond_exit_plan_mode,
+            uclaw_core::tauri_commands::respond_plan_mode_suggest,
             uclaw_core::tauri_commands::list_permission_rules,
             uclaw_core::tauri_commands::create_permission_rule,
             uclaw_core::tauri_commands::delete_permission_rule,
@@ -643,6 +657,8 @@ fn main() {
             uclaw_core::tauri_commands::proactive_stop,
             uclaw_core::tauri_commands::metrics_summary,
             uclaw_core::tauri_commands::memubot_config_get,
+            uclaw_core::tauri_commands::get_plan_mode_suggest_enabled,
+            uclaw_core::tauri_commands::set_plan_mode_suggest_enabled,
             // Dev / Testing
             uclaw_core::tauri_commands::trigger_proactive_scenario,
             // Agent Session Control

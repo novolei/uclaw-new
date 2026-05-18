@@ -3,8 +3,9 @@ pub mod types;
 pub mod conversation_learning;
 pub mod failure_signals;
 pub mod gene_evolution;
-pub mod skill_extraction;
 pub mod multimodal_context;
+pub mod plan_mode_calibration;
+pub mod skill_extraction;
 
 pub use types::*;
 

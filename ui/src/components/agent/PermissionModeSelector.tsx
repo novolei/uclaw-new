@@ -7,8 +7,9 @@
  */
 
 import * as React from 'react'
-import { useAtom } from 'jotai'
+import { useAtom, useSetAtom } from 'jotai'
 import { safetyModeAtom } from '@/atoms/safety-atoms'
+import { silencedPlanModeSessionsAtom } from '@/atoms/plan-mode-suggest-atoms'
 import { getSafetyPolicy, setSafetyMode, type SafetyModeWire } from '@/lib/tauri-bridge'
 import { PermissionModeMenu, MODE_ITEMS } from './PermissionModeMenu'
 
@@ -19,6 +20,7 @@ export interface PermissionModeSelectorProps {
 
 export function PermissionModeSelector(_: PermissionModeSelectorProps): React.ReactElement | null {
   const [mode, setMode] = useAtom(safetyModeAtom)
+  const setSilenced = useSetAtom(silencedPlanModeSessionsAtom)
   const [open, setOpen] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
 
@@ -48,6 +50,9 @@ export function PermissionModeSelector(_: PermissionModeSelectorProps): React.Re
     try {
       await setSafetyMode({ mode: next })
       setMode(next)
+      // User explicitly changed mode → clear silenced sessions so the
+      // banner can re-fire if the next message matches again.
+      setSilenced(new Set())
     } catch (err) {
       console.error('[PermissionModeSelector] setSafetyMode failed:', err)
     } finally {

@@ -87,6 +87,9 @@ pub struct ChatDelegate {
     gene_repo: Option<Arc<Mutex<GeneRepository>>>,
     /// Recent tool error messages for passing to GeneRetriever.match_genes.
     recent_tool_errors: Mutex<Vec<String>>,
+    /// SQLite connection shared from AppState — used for plan-suggest GEP signal.
+    /// None when dispatcher is constructed outside the main agent path (tests, harness).
+    db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
 }
 
 impl ChatDelegate {
@@ -123,6 +126,7 @@ impl ChatDelegate {
             last_gene_matches: Mutex::new(Vec::new()),
             gene_repo: None,
             recent_tool_errors: Mutex::new(Vec::new()),
+            db: None,
         }
     }
 
@@ -134,6 +138,12 @@ impl ChatDelegate {
     /// Set the GEP GeneRepository for Capsule persistence.
     pub fn set_gene_repo(&mut self, repo: Arc<Mutex<GeneRepository>>) {
         self.gene_repo = Some(repo);
+    }
+
+    /// Inject the shared SQLite connection for reading plan-suggest stats
+    /// (GEP aggregate-rate signal injected into system prompt).
+    pub fn set_db(&mut self, db: Arc<std::sync::Mutex<rusqlite::Connection>>) {
+        self.db = Some(db);
     }
 
     /// Generate and persist Capsules for the most recent Gene matches.
@@ -1044,6 +1054,35 @@ impl LoopDelegate for ChatDelegate {
                     // Store matches for Capsule generation after tool execution
                     if let Ok(mut stored) = self.last_gene_matches.lock() {
                         *stored = matches;
+                    }
+                }
+            }
+        }
+
+        // Aggregate plan-suggest accept-rate signal — when most suggestions
+        // are being rejected, ask the model to be more conservative about
+        // calling request_plan_mode_switch.
+        if let Some(ref db) = self.db {
+            if let Ok(conn) = db.lock() {
+                let window_start = chrono::Utc::now().timestamp_millis() - 7 * 24 * 60 * 60 * 1000;
+                if let Ok(stats) = crate::agent::mode_suggest_store::query_per_pattern_stats(&conn, window_start) {
+                    let total_decided: u32 = stats.iter().map(|s| s.accepted + s.skipped + s.silenced).sum();
+                    let total_accepted: u32 = stats.iter().map(|s| s.accepted).sum();
+                    if total_decided >= 10 {
+                        let agg_rate = total_accepted as f32 / total_decided as f32;
+                        if agg_rate < 0.20 {
+                            full_system_prompt.push_str(
+                                "\n\n[Plan-suggest signal] Your recent request_plan_mode_switch \
+                                 calls have been declined frequently. Be more conservative — \
+                                 only suggest Plan mode for clearly multi-step build/refactor \
+                                 work, not casual questions.\n",
+                            );
+                            tracing::debug!(
+                                agg_rate = agg_rate,
+                                total_decided = total_decided,
+                                "Plan-suggest aggregate hint injected into system prompt",
+                            );
+                        }
                     }
                 }
             }

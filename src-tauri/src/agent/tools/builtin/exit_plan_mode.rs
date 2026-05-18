@@ -69,6 +69,9 @@ impl Tool for ExitPlanModeTool {
         let request_id = uuid::Uuid::new_v4().to_string();
         let rx = self.pending.register(request_id.clone());
 
+        // Clone allowed_prompts before moving into payload so we can include
+        // them in the human-readable AcceptKeepPlan result text.
+        let allowed_prompts_for_result = allowed_prompts.clone();
         let payload = ExitPlanRequestPayload {
             request_id: request_id.clone(),
             session_id: self.session_id.clone(),
@@ -83,15 +86,25 @@ impl Tool for ExitPlanModeTool {
 
         match result.decision {
             crate::app::ExitPlanDecision::AcceptAndAuto => Ok(ToolOutput::success(
-                "Plan accepted; safety mode switched to Supervised. Proceeding with execution.",
+                "User accepted the plan and switched to Auto mode. Proceed with execution.",
                 start.elapsed().as_millis() as u64,
             )),
-            crate::app::ExitPlanDecision::AcceptKeepPlan => Ok(ToolOutput::success(
-                "Plan accepted; staying in Plan mode. The allowed_prompts you declared are now session-scoped allow rules.",
-                start.elapsed().as_millis() as u64,
-            )),
+            crate::app::ExitPlanDecision::AcceptKeepPlan => {
+                let allowed_text = if allowed_prompts_for_result.is_empty() {
+                    "(none declared)".to_string()
+                } else {
+                    allowed_prompts_for_result.join(", ")
+                };
+                Ok(ToolOutput::success(
+                    &format!(
+                        "User accepted the plan but kept Plan mode. Allowed commands: {}. Only those commands will auto-execute.",
+                        allowed_text,
+                    ),
+                    start.elapsed().as_millis() as u64,
+                ))
+            }
             crate::app::ExitPlanDecision::Reject { feedback } => Err(ToolError::Execution(
-                format!("User rejected the plan. Feedback: {}", feedback),
+                format!("User rejected the plan with feedback: \"{}\". Revise the plan and resubmit.", feedback),
             )),
         }
     }

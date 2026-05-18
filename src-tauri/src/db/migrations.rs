@@ -1437,6 +1437,34 @@ INSERT OR IGNORE INTO spaces (id, name, icon, path, created_at, updated_at)
 VALUES ('symphonies', 'Symphonies', '🎼', NULL, datetime('now'), datetime('now'));
 ";
 
+// V34: plan_suggest_events — telemetry for plan-mode auto-suggest.
+// Each row is one "we showed the banner" event with its eventual outcome.
+const SQL_V34_PLAN_SUGGEST_EVENTS: &str = "
+CREATE TABLE IF NOT EXISTS plan_suggest_events (
+    id              TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL,
+    message_id      TEXT NOT NULL,
+    source          TEXT NOT NULL,
+    matched_pattern TEXT,
+    reason          TEXT,
+    user_msg_preview TEXT NOT NULL,
+    outcome         TEXT NOT NULL DEFAULT 'pending',
+    decline_reason  TEXT,
+    fired_at        INTEGER NOT NULL,
+    decided_at      INTEGER,
+    FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_plan_suggest_session ON plan_suggest_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_plan_suggest_pattern ON plan_suggest_events(matched_pattern)
+    WHERE matched_pattern IS NOT NULL;
+CREATE TABLE IF NOT EXISTS mode_suggest_overrides (
+    pattern         TEXT PRIMARY KEY,
+    disabled_until  INTEGER NOT NULL,
+    reason          TEXT,
+    updated_at      INTEGER NOT NULL
+);
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -1690,6 +1718,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in SQL_V33_SYMPHONY.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V33 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V34: plan_suggest_events
+    tracing::debug!("Running migration V34: plan_suggest_events");
+    for stmt in SQL_V34_PLAN_SUGGEST_EVENTS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V34 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");

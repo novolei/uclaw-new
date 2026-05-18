@@ -15,8 +15,6 @@ import { MainArea } from '@/components/tabs/MainArea'
 import { AppShellProvider, type AppShellContextType } from '@/contexts/AppShellContext'
 import { ApprovalModal } from '@/components/ApprovalModal'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
-import { AskUserBanner } from '@/components/agent/AskUserBanner'
-import { ExitPlanModeBanner } from '@/components/agent/ExitPlanModeBanner'
 import { ModeBanner } from '@/components/agent/ModeBanner'
 import { appModeAtom } from '@/atoms/app-mode'
 import {
@@ -389,12 +387,6 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
             }}
           />
         )}
-
-        {/* Global ask_user banner — shows agent's question pending */}
-        {currentSessionId && <AskUserBanner sessionId={currentSessionId} />}
-
-        {/* Global exit_plan_mode banner — plan markdown + 3-decision modal */}
-        {currentSessionId && <ExitPlanModeBanner sessionId={currentSessionId} />}
 
         {/* Global voice memory capture — triggered by Cmd+Shift+M via
             uclaw:memory-voice-start event. Renders as right-bottom floating

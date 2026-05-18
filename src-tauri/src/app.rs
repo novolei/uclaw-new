@@ -196,8 +196,8 @@ pub struct AppState {
     pub service_manager: Arc<ServiceManager>,
     /// 指标采集服务
     pub metrics_service: Arc<MetricsService>,
-    /// memubot 功能配置
-    pub memubot_config: MemubotConfig,
+    /// memubot 功能配置（wrapped in RwLock so set_* Tauri commands can mutate + persist）
+    pub memubot_config: Arc<tokio::sync::RwLock<MemubotConfig>>,
 
     /// Active agentic session cancellation tokens, keyed by conversation_id.
     /// Used by stop_agent_session to cancel a running loop.
@@ -508,7 +508,7 @@ impl AppState {
             infra_service,
             service_manager,
             metrics_service,
-            memubot_config,
+            memubot_config: Arc::new(tokio::sync::RwLock::new(memubot_config)),
             running_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             browser_service: Arc::new(crate::browser::BrowserService::new()),
             trajectory_store,
