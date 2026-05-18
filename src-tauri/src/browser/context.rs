@@ -93,13 +93,16 @@ impl BrowserContext {
             .no_sandbox()
             .user_data_dir(&profile_dir)
             .launch_timeout(Duration::from_secs(60))
+            // chromiumoxide prepends `--` automatically — passing already-prefixed
+            // names produces `----foo` which Chrome silently ignores. Strip the
+            // prefix from each arg name.
             .args([
-                "--no-first-run",
-                "--disable-default-apps",
-                "--disable-infobars",
-                "--disable-notifications",
-                "--disable-translate",
-                "--disable-extensions",
+                "no-first-run",
+                "disable-default-apps",
+                "disable-infobars",
+                "disable-notifications",
+                "disable-translate",
+                "disable-extensions",
             ])
             .build()
             .map_err(|e| anyhow!("Browser config error: {}", e))?;
