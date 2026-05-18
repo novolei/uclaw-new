@@ -18,6 +18,7 @@ export type SettingsTab =
   | 'shortcuts'
   | 'pet'
   | 'proxy'
+  | 'system'         // 系统诊断
   | 'about'
 
 /** 当前设置标签页（不持久化，每次打开默认显示「服务商与用量」） */
