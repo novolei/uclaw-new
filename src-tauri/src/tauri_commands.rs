@@ -404,13 +404,14 @@ pub async fn get_embedding_config(
 }
 
 /// Apply embedding-endpoint settings:
-///   1. Persist the new values into `memubot_config.json`.
-///   2. Shell out to `~/.uclaw/gbrain/run.sh config set ...` for the
+///   1. Shell out to `~/.uclaw/gbrain/run.sh config set ...` for the
 ///      three gbrain keys (`embedding_model`, `embedding_dimensions`,
 ///      `base_urls.llama-server`). Each runs serially; first failure
-///      aborts + returns Err WITHOUT touching the remaining keys, so
-///      the user sees a precise "which key failed" error instead of a
-///      half-applied state.
+///      aborts + returns Err WITHOUT touching the remaining keys OR
+///      the on-disk `memubot_config.json`, so a half-applied state
+///      can't poison the next app restart.
+///   2. Persist the new values into `memubot_config.json` (only
+///      reached after all three gbrain keys land cleanly).
 ///   3. If `fastembed_model` changed, call `MemUClient::force_restart()` so
 ///      the bridge re-spawns with the new env. memU is degraded-mode-
 ///      tolerant — if restart fails the rest still applied (warn-and-
@@ -431,21 +432,10 @@ pub async fn set_embedding_config(
         cfg.embedding_endpoint.fastembed_model.clone()
     };
 
-    // 1. Persist.
-    {
-        let mut cfg = state.memubot_config.write().await;
-        cfg.embedding_endpoint = crate::memubot_config::EmbeddingEndpointConfig {
-            base_url: payload.base_url.clone(),
-            model: payload.model.clone(),
-            dimensions: payload.dimensions,
-            fastembed_model: payload.fastembed_model.clone(),
-        };
-        cfg.save(&state.data_dir).map_err(|e| {
-            Error::Internal(format!("failed to persist embedding config: {}", e))
-        })?;
-    }
-
-    // 2. Shell out to gbrain CLI to write the three keys.
+    // 1. Shell out to gbrain CLI FIRST (before persisting). If any key
+    //    fails, the on-disk memubot_config.json is left untouched so the
+    //    next app restart re-reads the OLD values — avoids a diverged
+    //    state where config says new but gbrain still has old.
     let gbrain_run_sh = state.data_dir.join("gbrain").join("run.sh");
     if !gbrain_run_sh.is_file() {
         return Err(Error::Internal(format!(
@@ -479,6 +469,21 @@ pub async fn set_embedding_config(
                 stderr.trim()
             )));
         }
+    }
+
+    // 2. Persist to memubot_config.json (only reached if all gbrain
+    //    keys applied cleanly).
+    {
+        let mut cfg = state.memubot_config.write().await;
+        cfg.embedding_endpoint = crate::memubot_config::EmbeddingEndpointConfig {
+            base_url: payload.base_url.clone(),
+            model: payload.model.clone(),
+            dimensions: payload.dimensions,
+            fastembed_model: payload.fastembed_model.clone(),
+        };
+        cfg.save(&state.data_dir).map_err(|e| {
+            Error::Internal(format!("failed to persist embedding config: {}", e))
+        })?;
     }
 
     // 3. Restart memU bridge if FASTEMBED_MODEL changed.
