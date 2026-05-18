@@ -38,10 +38,12 @@ interface MemoryHealthPanelProps {
   className?: string
 }
 
-// Display labels for the seven Phase 4 check kinds. Keys are intentionally
-// the wire strings so falling through to "Other" is automatic for any
-// future check_kind the backend introduces (Phase 5 lint kinds, etc.).
+// Display labels for the seven Phase 4 health checks + Phase 5 lint
+// kinds + Phase 7.3 sync conflict. Keys are intentionally the wire
+// strings so falling through to "Other" is automatic for any future
+// check_kind the backend introduces.
 const CHECK_KIND_LABEL: Record<string, string> = {
+  // Phase 4 — structural integrity
   orphan: 'Orphan node',
   stub: 'Stub EntityPage',
   dangling_fts: 'Dangling FTS row',
@@ -49,6 +51,13 @@ const CHECK_KIND_LABEL: Record<string, string> = {
   phantom_slug: 'Phantom slug',
   empty_versions: 'Empty version chain',
   missing_route: 'Missing primary route',
+  // Phase 5 — semantic lint
+  hub_stub: 'Hub stub (short)',
+  phantom_hub: 'Phantom hub',
+  stale_summary: 'Stale summary',
+  contradiction: 'Contradiction',
+  // Phase 7.3 — bidirectional sync conflict
+  sync_conflict: 'Sync conflict (disk won)',
 }
 
 const SEVERITY_ORDER: ReadonlyArray<'error' | 'warn' | 'info'> = [

@@ -683,6 +683,12 @@ pub fn sync_one_file(
         // Real disk-side change. Check for concurrent DB change.
         let conflict = detect_concurrent_db_change(store, node_id, state.as_ref())?;
 
+        // Snapshot the colliding DB version + last-synced version id
+        // BEFORE we overwrite, so the health finding payload tells the
+        // user exactly which two versions diverged.
+        let pre_disk_db_version = current_active_version_id(store, node_id)?;
+        let prior_sync_version_id = state.as_ref().and_then(|s| s.last_synced_version_id.clone());
+
         // Apply disk-wins: write new version + update metadata.
         write_new_version_from_disk(store, node_id, &fm, &body)?;
         // Update sync state to reflect what's now on disk + which DB
@@ -697,6 +703,22 @@ pub fn sync_one_file(
             current_mtime_ms,
             &current_sha,
         )?;
+
+        if conflict {
+            // Phase 7.3 — write a memory_health_findings row so the user
+            // sees the conflict in the Health tab. Disk-wins already
+            // applied; the finding is informational so the user can
+            // review what got overwritten.
+            let _ = write_sync_conflict_finding(
+                store,
+                &cfg.space_id,
+                node_id,
+                path,
+                prior_sync_version_id.as_deref(),
+                pre_disk_db_version.as_deref(),
+                new_active_version.as_deref(),
+            );
+        }
         Ok(SyncFileOutcome::Updated { conflict })
     } else if !fm.slug.trim().is_empty() {
         // No node_uuid → user created this file by hand. Create a new
@@ -717,6 +739,63 @@ pub fn sync_one_file(
         // Frontmatter exists but is unusable (no UUID + no slug). Skip.
         Ok(SyncFileOutcome::NoFrontmatter)
     }
+}
+
+/// Write a `memory_health_findings` row with `check_kind='sync_conflict'`
+/// when both disk and DB advanced since the last sync. Best-effort:
+/// errors logged + swallowed so a flaky finding write doesn't block
+/// the sync itself.
+///
+/// Payload includes the file path, the prior synced version id, the
+/// DB version id that got overwritten by disk-wins, and the new active
+/// version id produced from disk. That's enough for the Health UI to
+/// later show a diff between the lost DB version and the kept disk
+/// version (Phase 9 / 10 will add the actual diff view).
+fn write_sync_conflict_finding(
+    store: &MemoryGraphStore,
+    space_id: &str,
+    node_id: &str,
+    file_path: &Path,
+    prior_synced_version_id: Option<&str>,
+    overwritten_db_version_id: Option<&str>,
+    new_active_version_id: Option<&str>,
+) -> Result<(), crate::error::Error> {
+    let payload = serde_json::json!({
+        "file_path": file_path.to_string_lossy(),
+        "prior_synced_version_id": prior_synced_version_id,
+        "overwritten_db_version_id": overwritten_db_version_id,
+        "new_active_version_id": new_active_version_id,
+        "resolution": "disk_wins",
+    });
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let conn = store
+        .conn
+        .lock()
+        .map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+    // Reuse the same dedup contract as the Phase 4 health checks via
+    // memory_health::upsert_finding — same `(space_id, subject,
+    // check_kind)` key, with `subject = node_id` so each page gets at
+    // most one open conflict at a time.
+    let inserted = crate::proactive::scenarios::memory_health::upsert_finding(
+        &conn,
+        space_id,
+        "error",
+        "sync_conflict",
+        node_id,
+        Some(&payload),
+        now_ms,
+    )?;
+    if inserted > 0 {
+        tracing::warn!(
+            node_id,
+            file = %file_path.display(),
+            "brain_io: sync conflict — disk won, finding recorded"
+        );
+    }
+    Ok(())
 }
 
 /// Did the DB's active version advance since the last sync? Returns
@@ -1496,6 +1575,150 @@ mod tests {
         // Disk wins: active version content matches the disk edit.
         let active = store.get_active_version("n1").unwrap().unwrap();
         assert_eq!(active.content, "disk-side update");
+    }
+
+    #[test]
+    fn sync_from_disk_writes_sync_conflict_finding_when_conflict() {
+        // Same setup as the conflict test above, but assert that a
+        // memory_health_findings row was written.
+        let store = fresh_store();
+        insert_page(&store, "n1", "Alice", "alice", "person", "original.", vec![]);
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = BrainExportConfig {
+            brain_root: tmp.path().to_path_buf(),
+            space_id: "default".into(),
+        };
+        let path = match export_entity_page(&store, "n1", &cfg).unwrap() {
+            ExportPageOutcome::Written { path, .. } => path,
+            _ => panic!(),
+        };
+        // DB-side change.
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE memory_versions SET status = 'deprecated' \
+                 WHERE node_id = 'n1' AND status = 'active'",
+                [],
+            )
+            .unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO memory_versions \
+                 (id, node_id, supersedes_version_id, status, content, metadata_json, embedding_json, created_at) \
+                 VALUES (?1, 'n1', NULL, 'active', 'db-side', NULL, NULL, ?2)",
+                params![uuid::Uuid::new_v4().to_string(), now],
+            )
+            .unwrap();
+        }
+        // Disk-side change.
+        let raw = fs::read_to_string(&path).unwrap();
+        let (fm, _) = parse_file(&raw).unwrap();
+        let edited = render_file(&fm, "disk-side update");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(&path, edited).unwrap();
+
+        sync_from_disk(&store, &cfg).unwrap();
+
+        // Health finding row exists, severity=error, kind=sync_conflict.
+        let conn = store.conn.lock().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_health_findings \
+                 WHERE check_kind = 'sync_conflict' AND subject = 'n1' \
+                   AND severity = 'error' AND dismissed = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "exactly one open sync_conflict finding for n1");
+        // Payload mentions the resolution.
+        let payload: String = conn
+            .query_row(
+                "SELECT payload_json FROM memory_health_findings \
+                 WHERE check_kind = 'sync_conflict' AND subject = 'n1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(payload.contains("disk_wins"));
+        assert!(payload.contains("file_path"));
+    }
+
+    #[test]
+    fn sync_from_disk_does_not_duplicate_open_conflict_findings() {
+        // Two syncs in a row both detect the same conflict: the second
+        // should NOT insert a duplicate row (Phase 4 dedup contract).
+        let store = fresh_store();
+        insert_page(&store, "n1", "Alice", "alice", "person", "original.", vec![]);
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = BrainExportConfig {
+            brain_root: tmp.path().to_path_buf(),
+            space_id: "default".into(),
+        };
+        let path = match export_entity_page(&store, "n1", &cfg).unwrap() {
+            ExportPageOutcome::Written { path, .. } => path,
+            _ => panic!(),
+        };
+        // DB-side change.
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE memory_versions SET status = 'deprecated' \
+                 WHERE node_id = 'n1' AND status = 'active'",
+                [],
+            )
+            .unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO memory_versions \
+                 (id, node_id, supersedes_version_id, status, content, metadata_json, embedding_json, created_at) \
+                 VALUES (?1, 'n1', NULL, 'active', 'db-side', NULL, NULL, ?2)",
+                params![uuid::Uuid::new_v4().to_string(), now],
+            )
+            .unwrap();
+        }
+        // Disk-side change.
+        let raw = fs::read_to_string(&path).unwrap();
+        let (fm, _) = parse_file(&raw).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(&path, render_file(&fm, "disk-1")).unwrap();
+        sync_from_disk(&store, &cfg).unwrap();
+
+        // Second disk edit + DB also moves again.
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE memory_versions SET status = 'deprecated' \
+                 WHERE node_id = 'n1' AND status = 'active'",
+                [],
+            )
+            .unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO memory_versions \
+                 (id, node_id, supersedes_version_id, status, content, metadata_json, embedding_json, created_at) \
+                 VALUES (?1, 'n1', NULL, 'active', 'db-2', NULL, NULL, ?2)",
+                params![uuid::Uuid::new_v4().to_string(), now],
+            )
+            .unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(&path, render_file(&fm, "disk-2")).unwrap();
+        sync_from_disk(&store, &cfg).unwrap();
+
+        let conn = store.conn.lock().unwrap();
+        let open_findings: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_health_findings \
+                 WHERE check_kind = 'sync_conflict' AND subject = 'n1' AND dismissed = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            open_findings, 1,
+            "dedup contract: only one OPEN sync_conflict per (node, kind)"
+        );
     }
 
     #[test]
