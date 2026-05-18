@@ -1081,6 +1081,25 @@ pub struct EntityPageSynthesizeNowInput {
     pub node_id: String,
 }
 
+/// Phase 7.1 — `memory_wiki_export` input. `brainRoot` is optional;
+/// when absent the backend resolves the default
+/// `~/Documents/workground/brain/`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WikiExportInput {
+    pub space_id: Option<String>,
+    pub brain_root: Option<String>,
+}
+
+/// Phase 7.2 — `memory_wiki_sync_from_disk` input. Mirrors the export
+/// input shape; reuses the same brain_root resolution.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WikiSyncInput {
+    pub space_id: Option<String>,
+    pub brain_root: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthFindingDto {

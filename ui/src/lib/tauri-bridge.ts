@@ -126,6 +126,12 @@ import type {
   // EntityPage manual synth (Memory OS Foundation Phase 6.3)
   EntityPageSynthesizeNowInput,
   EntitySynthesisOutcome,
+  // Markdown export (Memory OS Foundation Phase 7.1)
+  WikiExportInput,
+  BrainExportOutcome,
+  // Markdown sync from disk (Memory OS Foundation Phase 7.2)
+  WikiSyncInput,
+  BrainSyncOutcome,
   // Cost dashboard
   DailyCostRollup,
   ModelCostRollup,
@@ -859,6 +865,29 @@ export const memoryEntityPageSynthesizeNow = (
   input: EntityPageSynthesizeNowInput,
 ): Promise<EntitySynthesisOutcome> =>
   invoke('memory_entity_page_synthesize_now', { input });
+
+// ─────────────────────────────────────────────────────────
+// Memory OS Phase 7.1 — Brain Markdown Export
+// ─────────────────────────────────────────────────────────
+// One-shot export of every EntityPage in the space to a markdown
+// mirror at `<brainRoot>/<subkind>/<slug>.md`, plus overview.md /
+// index.md. Idempotent: re-running on an unchanged page costs only
+// a SHA-256 comparison. `brainRoot` defaults to
+// `~/Documents/workground/brain/` on the backend when omitted.
+
+export const memoryWikiExport = (
+  input: WikiExportInput,
+): Promise<BrainExportOutcome> =>
+  invoke('memory_wiki_export', { input });
+
+// Phase 7.2 — walk the brain dir and reconcile each `.md` file with
+// its EntityPage row. Disk-wins on conflict; conflicts get counted in
+// the outcome so the UI can surface them (Phase 7.3 writes
+// memory_health_findings rows for each one).
+export const memoryWikiSyncFromDisk = (
+  input: WikiSyncInput,
+): Promise<BrainSyncOutcome> =>
+  invoke('memory_wiki_sync_from_disk', { input });
 
 // ─────────────────────────────────────────────────────────
 // Notifications
