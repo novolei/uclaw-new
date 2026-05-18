@@ -228,6 +228,20 @@ pub async fn patch_memory_recall_config(
             0,
             20,
         ),
+        // Memory OS Phase 5 — recall boost knobs. Clamped to sane
+        // ranges so a misguided patch can't make the score explode:
+        //   entity_page_boost: 0.5 (penalise) to 3.0 (heavy boost)
+        //   backlink_boost_weight: 0.0 (off) to 1.0 (strong)
+        entity_page_boost: clamp_opt_f32(
+            input.entity_page_boost.or(existing.entity_page_boost),
+            0.5,
+            3.0,
+        ),
+        backlink_boost_weight: clamp_opt_f32(
+            input.backlink_boost_weight.or(existing.backlink_boost_weight),
+            0.0,
+            1.0,
+        ),
     };
 
     settings.memory_recall_config = Some(merged.clone());

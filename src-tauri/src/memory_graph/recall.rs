@@ -119,17 +119,24 @@ pub struct MemoryRecallConfig {
     /// Multiplicative boost applied to RRF / Weighted score when the
     /// node's `kind == 'entity_page'`. Default 1.0 (no change).
     /// Spec recommends 1.2 for gradual rollout, 1.5 once stable.
-    #[serde(default = "default_entity_page_boost")]
+    ///
+    /// Note: MemoryRecallConfig itself has no serde derive — the wire
+    /// boundary is `MemoryRecallConfigDto` below, which IS serde-aware.
+    /// Default propagation goes through `Default::default()` on this
+    /// struct + the DTO's `unwrap_or` fallback in the `From` impl.
     pub entity_page_boost: f32,
     /// Additive weight on `log10(1 + backlink_count)` where
     /// `backlink_count` is `COUNT(memory_edges WHERE child_node_id = node)`.
     /// Default 0.0 (no change). Spec recommends 0.3 once Phase 2
     /// auto-link has populated enough edges for the signal to mean
     /// something.
-    #[serde(default = "default_backlink_boost_weight")]
     pub backlink_boost_weight: f32,
 }
 
+// Standalone default functions retained: used both by
+// `MemoryRecallConfig::default()` below AND (transitively) by the DTO's
+// `#[serde(default)]` Option<f32> fields, which deserialize to None when
+// absent and then `From<Dto>` falls back to the Default impl's value.
 fn default_entity_page_boost() -> f32 { 1.0 }
 fn default_backlink_boost_weight() -> f32 { 0.0 }
 
