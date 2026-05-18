@@ -1,3 +1,4 @@
+pub mod dom_state;
 pub mod tools;
 pub mod types;
 
