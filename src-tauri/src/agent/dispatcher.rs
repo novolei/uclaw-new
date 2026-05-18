@@ -114,6 +114,11 @@ pub struct ChatDelegate {
     /// layer still runs). Set via `set_learning_pipeline`; default 0
     /// = effectively disabled.
     learning_llm_daily_budget: u32,
+    /// FNV-style hash of the last tool definition list sent to the LLM.
+    /// When the list is identical across iterations within a single agent
+    /// turn, the Anthropic cache should cover it — this tracks whether the
+    /// list actually changed (e.g. after an MCP reconnect) so we can log it.
+    last_tool_defs_hash: Mutex<Option<u64>>,
 }
 
 impl ChatDelegate {
@@ -157,6 +162,7 @@ impl ChatDelegate {
             learning_enabled: false,
             learning_db: None,
             learning_llm_daily_budget: 0,
+            last_tool_defs_hash: Mutex::new(None),
         }
     }
 
@@ -495,32 +501,12 @@ impl ChatDelegate {
     /// Prepended to the LAST user message in each LLM call payload — NOT
     /// persisted to the session. Each new call gets a fresh timestamp.
     ///
-    /// Now focuses on workspace root only; time is injected into the
-    /// system prompt via `build_system_time_block()` for authority.
-    ///
-    /// Rationale: workspace path is metadata the agent can't infer where
-    /// it's "installed" via tool use. Time moved to system prompt because
-    /// user-message metadata is not treated as authoritative by LLMs.
+    /// Includes current time AND workspace root. Time was previously injected
+    /// into the system prompt (which caused Anthropic cache misses on every
+    /// minute boundary). Moving it here keeps the system prompt byte-stable
+    /// across all iterations in a session so cache_control: ephemeral hits
+    /// reliably from iteration 2 onward.
     fn build_dynamic_context(&self) -> String {
-        let mut lines = Vec::new();
-
-        if let Some(root) = &self.workspace_root {
-            lines.push(format!("**Workspace root:** {}", root.display()));
-        }
-
-        if lines.is_empty() {
-            return String::new();
-        }
-        lines.join("\n")
-    }
-
-    /// Build the system-level time metadata block.
-    ///
-    /// Injected into the system prompt ONCE per LLM call so the model
-    /// treats the time as authoritative context — no `bash date` roundtrip
-    /// needed. Uses Chinese weekdays for better UX with Chinese-speaking
-    /// users. Each call gets a fresh timestamp.
-    fn build_system_time_block(&self) -> String {
         use chrono::{Datelike, Local, Timelike};
         let now = Local::now();
         let weekday = match now.weekday() {
@@ -532,18 +518,13 @@ impl ChatDelegate {
             chrono::Weekday::Sat => "周六",
             chrono::Weekday::Sun => "周日",
         };
-        let time = format!(
+        let time_str = format!(
             "{}年{}月{}日 {} {:02}:{:02}",
-            now.year(),
-            now.month(),
-            now.day(),
-            weekday,
-            now.hour(),
-            now.minute(),
+            now.year(), now.month(), now.day(), weekday, now.hour(), now.minute(),
         );
         let mut block = format!(
             "<system_info>\n当前时间: {}\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。",
-            time
+            time_str
         );
         if let Some(root) = &self.workspace_root {
             block.push_str(&format!("\n工作区路径: {}", root.display()));
@@ -1159,11 +1140,10 @@ impl LoopDelegate for ChatDelegate {
         let effective_mode = self.resolve_effective_mode().await;
         let effective_prompt = self.effective_system_prompt(&effective_mode);
 
-        // Inject current time into the system prompt so the model treats it
-        // as authoritative context. This prevents unnecessary `bash date`
-        // roundtrips when the user asks time-related questions.
-        let time_block = self.build_system_time_block();
-        let mut full_system_prompt = format!("{}\n\n{}", effective_prompt, time_block);
+        // System prompt is kept stable (no per-iteration time injection) so
+        // Anthropic prompt cache can hit from iteration 2 onward. Time is now
+        // injected into the last user message via build_dynamic_context().
+        let mut full_system_prompt = effective_prompt;
 
         // Inject matched GEP Genes as control signals
         if let Some(ref retriever) = self.gene_retriever {
@@ -1244,8 +1224,8 @@ impl LoopDelegate for ChatDelegate {
         // confuse the back-and-forth structure. Anthropic / OpenAI both
         // require alternating user/assistant turns.
         //
-        // Note: time is now injected into the system prompt (above) for
-        // authority; only workspace root remains in user-message context.
+        // Time + workspace root are both injected here via build_dynamic_context().
+        // Keeping time out of the system prompt preserves byte-stability for caching.
         if let Some(last_user_idx) = messages.iter().rposition(|m| {
             matches!(m.role, crate::agent::types::MessageRole::User)
                 && m.content.iter().any(|b| matches!(b, crate::agent::types::ContentBlock::Text { .. }))
@@ -1265,7 +1245,30 @@ impl LoopDelegate for ChatDelegate {
         let tools = if reason_ctx.force_text {
             Vec::new()
         } else {
-            self.tools.list_definitions()
+            let defs = self.tools.list_definitions();
+            // Track tool list hash to detect unexpected changes mid-turn (e.g.
+            // MCP reconnect during a multi-iteration turn). Anthropic's prompt
+            // cache covers the tool list when it's byte-stable across iterations;
+            // this logging surfaces cache-busting events for observability.
+            let hash: u64 = {
+                use std::hash::{Hash, Hasher};
+                use std::collections::hash_map::DefaultHasher;
+                let mut h = DefaultHasher::new();
+                for d in &defs { d.name.hash(&mut h); }
+                h.finish()
+            };
+            if let Ok(mut prev) = self.last_tool_defs_hash.lock() {
+                if let Some(p) = *prev {
+                    if p != hash {
+                        tracing::warn!(
+                            prev_hash = p, new_hash = hash,
+                            "Tool list changed mid-turn — Anthropic cache miss likely"
+                        );
+                    }
+                }
+                *prev = Some(hash);
+            }
+            defs
         };
         let max_tokens = compute_max_tokens(&self.model, self.thinking_enabled);
         let config = crate::llm::CompletionConfig {

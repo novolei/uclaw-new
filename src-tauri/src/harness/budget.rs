@@ -18,6 +18,11 @@ impl ToolBudgetManager {
         per_tool.insert("shell".into(), 20_000);
         per_tool.insert("bash".into(), 20_000);
         per_tool.insert("read_file".into(), usize::MAX);
+        // browser_screenshot returns {"ok":true,"data":"<base64>","width":...}.
+        // anthropic.rs re-encodes this as a vision image block — truncating the
+        // base64 would produce an invalid image. Use usize::MAX to skip budget
+        // enforcement; Anthropic's API handles image size limits on their side.
+        per_tool.insert("browser_screenshot".into(), usize::MAX);
         Self {
             per_tool,
             default_limit: 8_000,

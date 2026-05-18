@@ -3153,6 +3153,7 @@ pub async fn add_mcp_server(state: State<'_, AppState>, input: McpServerInput) -
         url: input.url.clone(),
         enabled: true,
         auto_approve: input.auto_approve.unwrap_or(false),
+        tool_allowlist: None,
     };
     let mut mgr = state.mcp_manager.write().await;
     mgr.add_server(config.clone()).map_err(Error::InvalidInput)?;
@@ -3197,6 +3198,7 @@ pub async fn update_mcp_server(
         url: input.url.clone(),
         enabled,
         auto_approve: input.auto_approve.unwrap_or(false),
+        tool_allowlist: None,
     };
     mgr.update_server(&id, config.clone()).map_err(Error::InvalidInput)?;
     // update_server only rewrites config — read the actual in-memory status
@@ -8730,16 +8732,23 @@ pub async fn send_agent_message(
         );
     }
 
-    // Load conversation history for context
+    // Load conversation history for context — rolling window of last 40 messages.
+    // DESC + LIMIT fetches the most-recent 40; we reverse to restore ASC order.
+    // Older messages beyond 40 should already have been summarised into a
+    // compaction entry by the agentic loop's soft_compress_context; the LIMIT
+    // prevents unbounded linear growth in per-call input tokens on long sessions.
     let history: Vec<(String, String)> = {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
         let mut stmt = conn.prepare(
-            "SELECT role, content FROM agent_messages WHERE session_id = ?1 AND compacted = 0 ORDER BY created_at ASC"
+            "SELECT role, content FROM agent_messages \
+             WHERE session_id = ?1 AND compacted = 0 \
+             ORDER BY created_at DESC LIMIT 40"
         ).map_err(|e| Error::Database(e))?;
         let rows = stmt.query_map(rusqlite::params![input.session_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         }).map_err(|e| Error::Database(e))?;
-        let result: Vec<(String, String)> = rows.filter_map(|r| r.ok()).collect();
+        let mut result: Vec<(String, String)> = rows.filter_map(|r| r.ok()).collect();
+        result.reverse(); // restore chronological order
         result
     };
 

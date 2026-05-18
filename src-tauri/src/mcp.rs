@@ -371,6 +371,12 @@ pub struct McpServerConfig {
     pub url: Option<String>,
     pub enabled: bool,
     pub auto_approve: bool,
+    /// When Some, only tools whose names appear in this list are registered
+    /// into the agent ToolRegistry. Others remain accessible to the MCP
+    /// server internally but are hidden from the LLM — reducing tool
+    /// definition tokens per call. None = no filtering (expose all tools).
+    #[serde(default)]
+    pub tool_allowlist: Option<Vec<String>>,
 }
 
 /// MCP tool definition from a server
@@ -1230,6 +1236,20 @@ impl McpManager {
             url: None,
             enabled: true,
             auto_approve: true,
+            // Expose only the 8 conversational tools to the agent LLM.
+            // gbrain has 71 tools total; the remaining 63 (jobs, raw_data,
+            // file_upload, admin, doctor, etc.) are never needed in dialogue
+            // and cost ~12K tokens per LLM call in tool definitions alone.
+            tool_allowlist: Some(vec![
+                "search".to_string(),
+                "query".to_string(),
+                "think".to_string(),
+                "get_page".to_string(),
+                "put_page".to_string(),
+                "traverse_graph".to_string(),
+                "get_links".to_string(),
+                "get_backlinks".to_string(),
+            ]),
         };
         self.add_server(config)?;
         tracing::info!(
@@ -1636,18 +1656,29 @@ impl McpManager {
         manager: &SharedMcpManager,
         locked: &McpManager,
     ) -> Vec<McpToolProxy> {
-        let auto_approve_by_id: HashMap<String, bool> = locked
+        let server_meta: HashMap<String, (bool, Option<Vec<String>>)> = locked
             .all_servers()
             .iter()
-            .map(|c| (c.id.clone(), c.auto_approve))
+            .map(|c| (c.id.clone(), (c.auto_approve, c.tool_allowlist.clone())))
             .collect();
         locked
             .all_tools()
             .into_iter()
+            .filter(|tool| {
+                // Apply per-server tool_allowlist: when set, only whitelisted
+                // tool names are registered into the agent ToolRegistry.
+                // Reduces per-call tool definition tokens (71 → 8 for gbrain).
+                match server_meta.get(&tool.server_id) {
+                    Some((_, Some(allowlist))) if !allowlist.is_empty() => {
+                        allowlist.contains(&tool.name)
+                    }
+                    _ => true,
+                }
+            })
             .map(|tool| {
-                let auto_approve = auto_approve_by_id
+                let auto_approve = server_meta
                     .get(&tool.server_id)
-                    .copied()
+                    .map(|(a, _)| *a)
                     .unwrap_or(false);
                 let prefixed_name = prefixed_tool_name(&tool.server_id, &tool.name);
                 McpToolProxy {
@@ -2008,6 +2039,7 @@ mod tests {
             url: None,
             enabled: true,
             auto_approve: false,
+            tool_allowlist: None,
         }
     }
 

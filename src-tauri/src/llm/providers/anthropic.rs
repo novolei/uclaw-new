@@ -149,7 +149,30 @@ impl AnthropicProvider {
                     content,
                     is_error,
                 } => {
-                    let mut val = serde_json::json!({"type": "tool_result", "tool_use_id": tool_use_id, "content": content});
+                    // Detect browser_screenshot tool results: {"ok":true,"data":"<b64>","width":...}
+                    // Re-encode as a proper Anthropic vision image block so the LLM can actually
+                    // see the screenshot instead of receiving opaque base64 text.
+                    let content_val = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(content) {
+                        if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true)
+                            && parsed.get("width").is_some()
+                            && parsed.get("data").and_then(|d| d.as_str()).is_some()
+                        {
+                            let b64 = parsed["data"].as_str().unwrap_or("");
+                            serde_json::json!([{
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": b64
+                                }
+                            }])
+                        } else {
+                            serde_json::json!(content)
+                        }
+                    } else {
+                        serde_json::json!(content)
+                    };
+                    let mut val = serde_json::json!({"type": "tool_result", "tool_use_id": tool_use_id, "content": content_val});
                     if let Some(e) = is_error {
                         val["is_error"] = serde_json::json!(e);
                     }

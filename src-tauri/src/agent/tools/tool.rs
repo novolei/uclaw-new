@@ -188,13 +188,17 @@ impl ToolRegistry {
     }
 
     pub fn list_definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.iter().map(|(name, tool)| {
+        let mut defs: Vec<ToolDefinition> = self.tools.iter().map(|(name, tool)| {
             ToolDefinition {
                 name: name.clone(),
                 description: tool.description().to_string(),
                 parameters: tool.parameters_schema(),
             }
-        }).collect()
+        }).collect();
+        // Deterministic order ensures Anthropic prompt cache breakpoint lands
+        // on the same tool every iteration — random HashMap order breaks caching.
+        defs.sort_by(|a, b| a.name.cmp(&b.name));
+        defs
     }
 
     pub fn len(&self) -> usize { self.tools.len() }

@@ -3,6 +3,7 @@ import { WriteResultRenderer } from './write-result'
 import { EditResultRenderer } from './edit-result'
 import { ReadResultRenderer } from './read-result'
 import { BashResultRenderer } from './bash-result'
+import { ScreenshotResultRenderer } from './screenshot-result'
 import { DefaultResultRenderer } from './default-result'
 
 export interface ToolResultRendererProps {
@@ -34,6 +35,8 @@ export function ToolResultRenderer({
       return <ReadResultRenderer {...props} />
     case 'bash':
       return <BashResultRenderer {...props} />
+    case 'browser_screenshot':
+      return <ScreenshotResultRenderer result={result} isError={isError} />
     default:
       return <DefaultResultRenderer toolName={toolName} {...props} />
   }

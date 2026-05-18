@@ -99,6 +99,7 @@ pub fn build_mcp_config(
         url: None,
         enabled: true,
         auto_approve: false,
+        tool_allowlist: None,
     }
 }
 
