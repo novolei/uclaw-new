@@ -188,6 +188,220 @@ impl LintAnalyzer for StubAnalyzer {
     }
 }
 
+// ─── Real LLM analyzer (Phase 6c) ──────────────────────────────────────
+
+/// Production lint analyzer — routes each `LintCandidate` to the
+/// configured LLM via [`crate::memory_graph::memory_os_llm::MemoryOsLlm`].
+///
+/// Replies are constrained to a small JSON schema so we never depend
+/// on the LLM matching free-form English exactly. Any parse failure
+/// falls back to recording the raw text as a `warn` finding — that's
+/// better than dropping the candidate silently.
+///
+/// Cost lands in `cost_records.model = "memory_lint:<actual_model>"`
+/// — the existing daily-budget computation (`WHERE model LIKE
+/// 'memory_lint%'`) already consumes this prefix, so the Phase 5 cost
+/// guard keeps working unchanged.
+pub struct RealLintAnalyzer {
+    llm: Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>,
+}
+
+impl RealLintAnalyzer {
+    pub fn new(llm: Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>) -> Self {
+        Self { llm }
+    }
+
+    /// System prompt — pinned in source so test-mode mocks can verify
+    /// it, and so review during prompt tuning has one canonical home.
+    pub(crate) fn system_prompt() -> &'static str {
+        "You are the lint analyzer for a personal AI knowledge wiki. \
+         You receive ONE page-level concern at a time and decide whether \
+         it warrants surfacing to the user.\n\n\
+         Output ONLY a single JSON object on one line, no fences, no \
+         prose around it. Schema:\n\
+         {\"verdict\":\"report\"|\"skip\",\"severity\":\"error\"|\"warn\"|\"info\",\"message\":\"<≤200 chars>\",\"contradiction\":{\"claim_a\":\"...\",\"claim_b\":\"...\"}}\n\n\
+         - `verdict=\"skip\"` means the candidate is not actually a problem (drop it).\n\
+         - `message` describes the user-visible finding succinctly.\n\
+         - `contradiction` is REQUIRED only when check_kind=contradiction and verdict=report; otherwise omit.\n\
+         - Do not invent facts that are not in the input.\n\
+         - Do not output anything outside the JSON object."
+    }
+
+    pub(crate) fn build_user_prompt(candidate: &LintCandidate) -> String {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "check_kind: {}\n\
+             page_title: {}\n\
+             page_node_id: {}\n\
+             compiled_truth_excerpt: {}\n\n",
+            candidate.check_kind.as_str(),
+            candidate.title,
+            candidate.node_id,
+            truncate(&candidate.compiled_truth, 800),
+        ));
+        out.push_str("timeline_summary:\n");
+        if candidate.timeline_summary.is_empty() {
+            out.push_str("  (none)\n");
+        } else {
+            for line in candidate.timeline_summary.iter().take(20) {
+                out.push_str(&format!("  - {}\n", truncate(line, 240)));
+            }
+        }
+        out.push_str(&format!("aux: {}\n", candidate.aux_json));
+        out.push_str("\nReply with the JSON object now.\n");
+        out
+    }
+}
+
+#[async_trait]
+impl LintAnalyzer for RealLintAnalyzer {
+    async fn analyze(
+        &self,
+        candidate: LintCandidate,
+    ) -> Result<LintAnalysisOutput, LintAnalysisError> {
+        let check_kind = candidate.check_kind;
+        let user_prompt = Self::build_user_prompt(&candidate);
+        let out = self
+            .llm
+            .complete_text("memory_lint", Self::system_prompt(), &user_prompt, 600)
+            .await
+            .map_err(|e| LintAnalysisError::Other(e.to_string()))?;
+
+        let token_cost = out.input_tokens.saturating_add(out.output_tokens);
+        let llm_model = Some(out.model);
+
+        // Parse the structured response. We accept either a clean JSON
+        // line or "any JSON object somewhere in the text" — some models
+        // are stubborn about wrapping the object in commentary.
+        let parsed = parse_lint_response(&out.text);
+        let (severity, message, contradiction_pair) = match parsed {
+            LintResponseParse::Skip => {
+                return Err(LintAnalysisError::Disabled);
+            }
+            LintResponseParse::Report {
+                severity,
+                message,
+                contradiction,
+            } => (severity, message, contradiction),
+            LintResponseParse::Unparseable(raw) => {
+                tracing::warn!(
+                    "RealLintAnalyzer: failed to parse LLM reply, falling back to raw text"
+                );
+                ("warn".to_string(), truncate(&raw, 200), None)
+            }
+        };
+
+        let contradiction = if check_kind == LintCheckKind::Contradiction {
+            contradiction_pair.map(|(a, b)| Contradiction {
+                between_source_ids: vec![candidate.node_id.clone()],
+                claim_a: a,
+                claim_b: b,
+                noticed_at: chrono::Utc::now().to_rfc3339(),
+            })
+        } else {
+            None
+        };
+
+        Ok(LintAnalysisOutput {
+            message,
+            severity,
+            token_cost,
+            llm_model,
+            contradiction,
+        })
+    }
+
+    fn descriptor(&self) -> &'static str {
+        "real:memory_os_llm"
+    }
+}
+
+/// Outcome of parsing the LLM's structured reply.
+#[derive(Debug, PartialEq)]
+pub(crate) enum LintResponseParse {
+    /// LLM said this isn't actually a problem.
+    Skip,
+    /// LLM produced a finding.
+    Report {
+        severity: String,
+        message: String,
+        contradiction: Option<(String, String)>,
+    },
+    /// LLM reply didn't match our schema. Caller falls back to a raw warn.
+    Unparseable(String),
+}
+
+/// Pull the first JSON object out of `text` and try to interpret it as
+/// the lint schema. Tolerates surrounding prose, but not malformed JSON
+/// inside the braces.
+pub(crate) fn parse_lint_response(text: &str) -> LintResponseParse {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return LintResponseParse::Unparseable(String::new());
+    }
+
+    // Find the first '{' and the matching '}' (greedy — relies on the
+    // schema being one object, no nested objects with sibling braces).
+    let start = match trimmed.find('{') {
+        Some(s) => s,
+        None => return LintResponseParse::Unparseable(trimmed.to_string()),
+    };
+    let end = match trimmed.rfind('}') {
+        Some(e) => e,
+        None => return LintResponseParse::Unparseable(trimmed.to_string()),
+    };
+    if end <= start {
+        return LintResponseParse::Unparseable(trimmed.to_string());
+    }
+    let object_slice = &trimmed[start..=end];
+    let v: serde_json::Value = match serde_json::from_str(object_slice) {
+        Ok(v) => v,
+        Err(_) => return LintResponseParse::Unparseable(trimmed.to_string()),
+    };
+
+    let verdict = v.get("verdict").and_then(|x| x.as_str()).unwrap_or("");
+    if verdict == "skip" {
+        return LintResponseParse::Skip;
+    }
+
+    let severity = v
+        .get("severity")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+        .filter(|s| matches!(s.as_str(), "error" | "warn" | "info"))
+        .unwrap_or_else(|| "warn".to_string());
+    let message = v
+        .get("message")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "(no message)".to_string());
+
+    let contradiction = v.get("contradiction").and_then(|c| {
+        let a = c.get("claim_a")?.as_str()?.to_string();
+        let b = c.get("claim_b")?.as_str()?.to_string();
+        Some((a, b))
+    });
+
+    LintResponseParse::Report {
+        severity,
+        message,
+        contradiction,
+    }
+}
+
+/// Chop a string to at most `max` chars and append `…` if truncated.
+/// Char-aware so we don't slice in the middle of a multi-byte rune.
+pub(crate) fn truncate(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = chars.iter().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
 // ─── Run config + outcome ──────────────────────────────────────────────
 
 /// Knobs that the caller (ProactiveService / IPC) controls. The
@@ -1089,5 +1303,228 @@ mod tests {
         let outcome = run_lint_checks(store, stub, "default", &cfg, 100).await.unwrap();
         assert_eq!(outcome.total_inserted, 0);
         assert!(outcome.skipped_due_to_budget > 0);
+    }
+
+    // ─── RealLintAnalyzer (Phase 6c) ─────────────────────────────
+
+    #[test]
+    fn real_lint_system_prompt_pins_schema() {
+        let sys = RealLintAnalyzer::system_prompt();
+        // Schema fields the analyzer relies on
+        assert!(sys.contains("verdict"));
+        assert!(sys.contains("severity"));
+        assert!(sys.contains("message"));
+        assert!(sys.contains("contradiction"));
+        // Anti-hallucination cue
+        assert!(
+            sys.contains("Do not invent facts"),
+            "system prompt must include anti-hallucination cue"
+        );
+    }
+
+    #[test]
+    fn real_lint_user_prompt_carries_check_context() {
+        let candidate = LintCandidate {
+            check_kind: LintCheckKind::HubStub,
+            node_id: "n42".into(),
+            title: "Alice".into(),
+            compiled_truth: "Short bio.".into(),
+            timeline_summary: vec!["2026-05-01 — joined Acme".into()],
+            aux_json: serde_json::json!({"backlink_count": 7}),
+        };
+        let p = RealLintAnalyzer::build_user_prompt(&candidate);
+        assert!(p.contains("check_kind: hub_stub"));
+        assert!(p.contains("page_title: Alice"));
+        assert!(p.contains("page_node_id: n42"));
+        assert!(p.contains("Short bio."));
+        assert!(p.contains("joined Acme"));
+        assert!(p.contains("backlink_count"));
+    }
+
+    #[test]
+    fn parse_lint_response_handles_clean_json() {
+        let resp = r#"{"verdict":"report","severity":"warn","message":"Hub is stubby"}"#;
+        let parsed = parse_lint_response(resp);
+        match parsed {
+            LintResponseParse::Report { severity, message, contradiction } => {
+                assert_eq!(severity, "warn");
+                assert_eq!(message, "Hub is stubby");
+                assert!(contradiction.is_none());
+            }
+            _ => panic!("expected Report, got {:?}", parsed),
+        }
+    }
+
+    #[test]
+    fn parse_lint_response_handles_skip() {
+        let resp = r#"{"verdict":"skip","severity":"info","message":"actually fine"}"#;
+        assert_eq!(parse_lint_response(resp), LintResponseParse::Skip);
+    }
+
+    #[test]
+    fn parse_lint_response_extracts_contradiction_pair() {
+        let resp = r#"{"verdict":"report","severity":"warn","message":"Two conflicting claims about Acme.","contradiction":{"claim_a":"Alice works at Acme","claim_b":"Alice works at Beta"}}"#;
+        match parse_lint_response(resp) {
+            LintResponseParse::Report { contradiction: Some((a, b)), .. } => {
+                assert_eq!(a, "Alice works at Acme");
+                assert_eq!(b, "Alice works at Beta");
+            }
+            other => panic!("expected Report with contradiction, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_lint_response_tolerates_surrounding_prose() {
+        let resp = "Here's my analysis:\n{\"verdict\":\"report\",\"severity\":\"info\",\"message\":\"ok\"}\nDone.";
+        match parse_lint_response(resp) {
+            LintResponseParse::Report { severity, .. } => assert_eq!(severity, "info"),
+            other => panic!("expected Report through surrounding prose, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_lint_response_defaults_invalid_severity_to_warn() {
+        let resp = r#"{"verdict":"report","severity":"critical","message":"x"}"#;
+        match parse_lint_response(resp) {
+            LintResponseParse::Report { severity, .. } => assert_eq!(severity, "warn"),
+            other => panic!("expected Report with default severity, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_lint_response_handles_malformed_text() {
+        let parsed = parse_lint_response("not json at all");
+        match parsed {
+            LintResponseParse::Unparseable(s) => assert!(s.contains("not json")),
+            other => panic!("expected Unparseable, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn real_lint_returns_finding_with_token_cost() {
+        use crate::memory_graph::memory_os_llm::MockMemoryOsLlm;
+        let mock = Arc::new(MockMemoryOsLlm {
+            canned_text:
+                r#"{"verdict":"report","severity":"warn","message":"Hub 'Alice' needs enrichment."}"#
+                    .into(),
+            canned_input_tokens: 200,
+            canned_output_tokens: 60,
+            canned_model: "mock:claude-haiku-test".into(),
+        });
+        let analyzer = RealLintAnalyzer::new(mock);
+        let candidate = LintCandidate {
+            check_kind: LintCheckKind::HubStub,
+            node_id: "n1".into(),
+            title: "Alice".into(),
+            compiled_truth: "Short.".into(),
+            timeline_summary: vec![],
+            aux_json: serde_json::json!({"backlink_count": 6}),
+        };
+        let out = analyzer.analyze(candidate).await.unwrap();
+        assert_eq!(out.severity, "warn");
+        assert!(out.message.contains("Alice"));
+        assert_eq!(out.token_cost, 200 + 60);
+        assert!(out.contradiction.is_none(), "hub_stub doesn't carry contradiction");
+        assert_eq!(out.llm_model.as_deref(), Some("mock:claude-haiku-test"));
+    }
+
+    #[tokio::test]
+    async fn real_lint_populates_contradiction_for_contradiction_kind() {
+        use crate::memory_graph::memory_os_llm::MockMemoryOsLlm;
+        let mock = Arc::new(MockMemoryOsLlm {
+            canned_text: r#"{"verdict":"report","severity":"warn","message":"Conflicting employer claims.","contradiction":{"claim_a":"Alice at Acme","claim_b":"Alice at Beta"}}"#.into(),
+            canned_input_tokens: 250,
+            canned_output_tokens: 90,
+            canned_model: "mock:sonnet".into(),
+        });
+        let analyzer = RealLintAnalyzer::new(mock);
+        let candidate = LintCandidate {
+            check_kind: LintCheckKind::Contradiction,
+            node_id: "n-alice".into(),
+            title: "Alice".into(),
+            compiled_truth: "Senior engineer.".into(),
+            timeline_summary: vec![
+                "2026-05-01 — works at Acme".into(),
+                "2026-05-15 — works at Beta".into(),
+            ],
+            aux_json: serde_json::json!({"entries": 2}),
+        };
+        let out = analyzer.analyze(candidate).await.unwrap();
+        let c = out.contradiction.expect("contradiction kind must produce a Contradiction");
+        assert_eq!(c.claim_a, "Alice at Acme");
+        assert_eq!(c.claim_b, "Alice at Beta");
+        assert_eq!(c.between_source_ids, vec!["n-alice"]);
+        assert!(!c.noticed_at.is_empty());
+    }
+
+    #[tokio::test]
+    async fn real_lint_skips_when_llm_says_skip() {
+        use crate::memory_graph::memory_os_llm::MockMemoryOsLlm;
+        let mock = Arc::new(MockMemoryOsLlm {
+            canned_text: r#"{"verdict":"skip","severity":"info","message":"actually fine"}"#.into(),
+            canned_input_tokens: 100,
+            canned_output_tokens: 20,
+            canned_model: "mock".into(),
+        });
+        let analyzer = RealLintAnalyzer::new(mock);
+        let candidate = LintCandidate {
+            check_kind: LintCheckKind::StaleSummary,
+            node_id: "n1".into(),
+            title: "RAG".into(),
+            compiled_truth: "Retrieval-augmented generation.".into(),
+            timeline_summary: vec![],
+            aux_json: serde_json::json!({}),
+        };
+        // `skip` → caller receives `LintAnalysisError::Disabled`, which
+        // run_lint_checks interprets as "drop this candidate, do not
+        // insert a finding".
+        let err = analyzer.analyze(candidate).await.unwrap_err();
+        match err {
+            LintAnalysisError::Disabled => {}
+            other => panic!("expected Disabled for skip verdict, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn real_lint_falls_back_to_raw_text_on_parse_failure() {
+        use crate::memory_graph::memory_os_llm::MockMemoryOsLlm;
+        let mock = Arc::new(MockMemoryOsLlm {
+            canned_text: "I'm a bad LLM and I refuse to use JSON.".into(),
+            canned_input_tokens: 50,
+            canned_output_tokens: 30,
+            canned_model: "mock".into(),
+        });
+        let analyzer = RealLintAnalyzer::new(mock);
+        let candidate = LintCandidate {
+            check_kind: LintCheckKind::HubStub,
+            node_id: "n1".into(),
+            title: "X".into(),
+            compiled_truth: "x".into(),
+            timeline_summary: vec![],
+            aux_json: serde_json::json!({}),
+        };
+        let out = analyzer.analyze(candidate).await.unwrap();
+        assert_eq!(out.severity, "warn", "fallback uses warn severity");
+        assert!(
+            out.message.contains("bad LLM"),
+            "fallback surfaces raw text; got: {}",
+            out.message
+        );
+    }
+
+    #[tokio::test]
+    async fn real_lint_descriptor_marks_as_real() {
+        use crate::memory_graph::memory_os_llm::MockMemoryOsLlm;
+        let analyzer = RealLintAnalyzer::new(Arc::new(MockMemoryOsLlm::default()));
+        assert_eq!(analyzer.descriptor(), "real:memory_os_llm");
+    }
+
+    #[test]
+    fn truncate_helper_handles_unicode_safely() {
+        assert_eq!(truncate("hello", 10), "hello");
+        let cut = truncate("一二三四五六七八九十", 5);
+        // 5 chars including the ellipsis → 4 source chars + '…'
+        assert_eq!(cut.chars().count(), 5);
+        assert!(cut.ends_with('…'));
     }
 }

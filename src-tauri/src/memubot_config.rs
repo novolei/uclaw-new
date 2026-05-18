@@ -368,7 +368,14 @@ pub struct MemoryOsConfig {
     /// is set up. The flag is checked at `AppState::new` bootstrap so a
     /// restart is needed after flipping it.
     pub wiki_real_synthesizer_enabled: bool,
-    // (Future flags for Phase 6c, 6.1, 6.2 will be added here with their
+    /// Phase 6c: Swap Phase 5's `StubAnalyzer` for `RealLintAnalyzer`.
+    /// Default `false` for the same reason as Phase 6b (stub keeps
+    /// working without provider credentials). The existing
+    /// `memory_lint_daily_token_budget` cap applies unchanged — the
+    /// real analyzer writes `cost_records.model = 'memory_lint:<actual>'`
+    /// which the `LIKE 'memory_lint%'` cost guard already sums.
+    pub lint_real_analyzer_enabled: bool,
+    // (Future flags for Phase 6.1, 6.2 will be added here with their
     //  defaults so older configs deserialize cleanly.)
 }
 
@@ -388,6 +395,10 @@ impl Default for MemoryOsConfig {
             // users without an LLM provider keep getting deterministic
             // overview markdown. Flip to `true` once a provider is set up.
             wiki_real_synthesizer_enabled: false,
+            // Phase 6c default OFF for the same reason as 6b. The
+            // existing daily_token_budget cap will gate spend once
+            // turned on.
+            lint_real_analyzer_enabled: false,
         }
     }
 }
@@ -867,5 +878,41 @@ mod tests {
             !config.memory_os.wiki_real_synthesizer_enabled,
             "missing flag must default to OFF"
         );
+    }
+
+    #[test]
+    fn memory_os_phase6c_default_keeps_stub_analyzer() {
+        let c = MemoryOsConfig::default();
+        assert!(
+            !c.lint_real_analyzer_enabled,
+            "Phase 6c default must be OFF (stub stays baseline)"
+        );
+    }
+
+    #[test]
+    fn memory_os_phase6c_explicit_enable_preserved() {
+        let json = r#"{"memory_os":{"lint_real_analyzer_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(config.memory_os.lint_real_analyzer_enabled);
+        // Forward-compat: opting into Phase 6c doesn't change earlier flags
+        assert!(config.memory_os.entity_page_enabled);
+        assert!(config.memory_os.memory_lint_enabled);
+        assert!(!config.memory_os.wiki_real_synthesizer_enabled,
+                "6c alone must NOT flip 6b on");
+        assert_eq!(config.memory_os.memory_lint_daily_token_budget, 50_000);
+    }
+
+    #[test]
+    fn memory_os_phase6_both_flags_independent() {
+        // Real users will likely flip both 6b and 6c together once a
+        // provider is set up. Confirm the JSON shape supports that
+        // without surprising interactions.
+        let json = r#"{"memory_os":{
+            "wiki_real_synthesizer_enabled":true,
+            "lint_real_analyzer_enabled":true
+        }}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(config.memory_os.wiki_real_synthesizer_enabled);
+        assert!(config.memory_os.lint_real_analyzer_enabled);
     }
 }

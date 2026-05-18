@@ -524,6 +524,26 @@ impl AppState {
                 Arc::new(crate::memory_graph::wiki_synth::StubSynthesizer)
             };
 
+        // Memory OS Phase 6c — same pattern for the lint analyzer.
+        // Stub stays the safe default; real analyzer plus the existing
+        // Phase 5 daily-token cap (`memory_lint_daily_token_budget` +
+        // `cost_records.model LIKE 'memory_lint%'`) are the active
+        // safety mechanisms once flipped on.
+        let lint_analyzer: Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer> =
+            if memubot_config.memory_os.lint_real_analyzer_enabled {
+                use crate::memory_graph::memory_os_llm::MemoryOsLlmClient;
+                use crate::proactive::scenarios::memory_lint::RealLintAnalyzer;
+                let llm = Arc::new(MemoryOsLlmClient::new(
+                    provider_service.clone(),
+                    db.clone(),
+                ));
+                tracing::info!("Memory OS Phase 6c: RealLintAnalyzer installed");
+                Arc::new(RealLintAnalyzer::new(llm))
+            } else {
+                tracing::info!("Memory OS Phase 6c: StubAnalyzer (default — flip lint_real_analyzer_enabled to opt in)");
+                Arc::new(crate::proactive::scenarios::memory_lint::StubAnalyzer)
+            };
+
         tracing::info!("Application state initialized successfully (phased boot)");
 
         Ok(Self {
@@ -556,11 +576,10 @@ impl AppState {
             // (Phase 6b). Defaults to StubSynthesizer; flipping the flag
             // routes overview regen through the active LLM provider.
             wiki_synthesizer,
-            // Phase 5 ships the stub lint analyzer; the cost guard +
-            // memory_lint_enabled flag are the actual safety mechanism
-            // until a real LLM client lands.
-            lint_analyzer: Arc::new(crate::proactive::scenarios::memory_lint::StubAnalyzer)
-                as Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
+            // Picked above based on `memory_os.lint_real_analyzer_enabled`
+            // (Phase 6c). Defaults to StubAnalyzer; flipping the flag
+            // routes lint candidates through the active LLM provider.
+            lint_analyzer,
             infra_service,
             service_manager,
             metrics_service,
