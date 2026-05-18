@@ -803,6 +803,16 @@ impl AppState {
         // Default to auto FastEmbed mode (use local embedding when fastembed is available)
         llm_env.push(("MEMU_EMBED_MODE".to_string(), "auto".to_string()));
 
+        // Sprint 2.2 followon #4 — pin the FastEmbed model the bridge
+        // loads, configurable via set_embedding_config. Loaded from
+        // memubot_config.json if present; falls back to the schema
+        // default otherwise (matches what set_embedding_config writes
+        // on first save).
+        let fastembed_model = crate::memubot_config::MemubotConfig::load(data_dir)
+            .embedding_endpoint
+            .fastembed_model;
+        llm_env.push(("FASTEMBED_MODEL".to_string(), fastembed_model));
+
         let bridge = Arc::new(MemUBridge::new(python_path, script_path, data_dir.to_path_buf(), llm_env));
         let client = Arc::new(MemUClient::new(bridge));
         Some(client)

@@ -371,6 +371,137 @@ pub async fn restart_memu_bridge(
     client.force_restart().await.map_err(|e| e.to_string())
 }
 
+// ─── Embedding endpoint configuration (Sprint 2.2 followon #4) ───────────────
+
+/// Wire-shape mirror of `MemubotConfig.embedding_endpoint`. Kept as a
+/// separate type so the IPC payload is self-contained — frontend
+/// doesn't see the rest of the config.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddingEndpointPayload {
+    pub base_url: String,
+    pub model: String,
+    pub dimensions: u32,
+    pub fastembed_model: String,
+}
+
+impl From<&crate::memubot_config::EmbeddingEndpointConfig> for EmbeddingEndpointPayload {
+    fn from(c: &crate::memubot_config::EmbeddingEndpointConfig) -> Self {
+        Self {
+            base_url: c.base_url.clone(),
+            model: c.model.clone(),
+            dimensions: c.dimensions,
+            fastembed_model: c.fastembed_model.clone(),
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn get_embedding_config(
+    state: State<'_, AppState>,
+) -> Result<EmbeddingEndpointPayload, Error> {
+    let cfg = state.memubot_config.read().await;
+    Ok((&cfg.embedding_endpoint).into())
+}
+
+/// Apply embedding-endpoint settings:
+///   1. Persist the new values into `memubot_config.json`.
+///   2. Shell out to `~/.uclaw/gbrain/run.sh config set ...` for the
+///      three gbrain keys (`embedding_model`, `embedding_dimensions`,
+///      `base_urls.llama-server`). Each runs serially; first failure
+///      aborts + returns Err WITHOUT touching the remaining keys, so
+///      the user sees a precise "which key failed" error instead of a
+///      half-applied state.
+///   3. If `fastembed_model` changed, call `MemUClient::force_restart()` so
+///      the bridge re-spawns with the new env. memU is degraded-mode-
+///      tolerant — if restart fails the rest still applied (warn-and-
+///      continue, matches the existing memU failure posture in this
+///      codebase).
+///
+/// On total success, returns the new payload (so the frontend can
+/// update its form without a second `get_embedding_config` round-trip).
+#[tauri::command]
+pub async fn set_embedding_config(
+    state: State<'_, AppState>,
+    payload: EmbeddingEndpointPayload,
+) -> Result<EmbeddingEndpointPayload, Error> {
+    // Capture the OLD fastembed_model BEFORE we overwrite it, so we
+    // know whether a memU restart is needed.
+    let old_fastembed_model = {
+        let cfg = state.memubot_config.read().await;
+        cfg.embedding_endpoint.fastembed_model.clone()
+    };
+
+    // 1. Persist.
+    {
+        let mut cfg = state.memubot_config.write().await;
+        cfg.embedding_endpoint = crate::memubot_config::EmbeddingEndpointConfig {
+            base_url: payload.base_url.clone(),
+            model: payload.model.clone(),
+            dimensions: payload.dimensions,
+            fastembed_model: payload.fastembed_model.clone(),
+        };
+        cfg.save(&state.data_dir).map_err(|e| {
+            Error::Internal(format!("failed to persist embedding config: {}", e))
+        })?;
+    }
+
+    // 2. Shell out to gbrain CLI to write the three keys.
+    let gbrain_run_sh = state.data_dir.join("gbrain").join("run.sh");
+    if !gbrain_run_sh.is_file() {
+        return Err(Error::Internal(format!(
+            "gbrain launcher not found at {} — run uClaw at least once \
+             so Stage 3 writes it (see Sprint 2.2 launcher PR #207)",
+            gbrain_run_sh.display()
+        )));
+    }
+    for (key, value) in [
+        ("embedding_model", payload.model.clone()),
+        ("embedding_dimensions", payload.dimensions.to_string()),
+        ("base_urls.llama-server", payload.base_url.clone()),
+    ] {
+        let output = tokio::process::Command::new(&gbrain_run_sh)
+            .arg("config")
+            .arg("set")
+            .arg(key)
+            .arg(&value)
+            .output()
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("spawn gbrain config set {}: {}", key, e))
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Internal(format!(
+                "gbrain config set {} = {:?} exited {:?}: {}",
+                key,
+                value,
+                output.status.code(),
+                stderr.trim()
+            )));
+        }
+    }
+
+    // 3. Restart memU bridge if FASTEMBED_MODEL changed.
+    if old_fastembed_model != payload.fastembed_model {
+        if let Some(client) = state.memu_client.as_ref() {
+            // `force_restart` is async + bubbles errors; we log + continue so a
+            // bridge failure doesn't unwind the already-applied gbrain
+            // config (graceful degradation matches the rest of memU's
+            // failure posture in this codebase).
+            if let Err(e) = client.force_restart().await {
+                tracing::warn!(
+                    "memU bridge restart failed after FASTEMBED_MODEL change: {}; \
+                     bridge will continue on the old model until next manual \
+                     restart",
+                    e
+                );
+            }
+        }
+    }
+
+    Ok(payload)
+}
+
 #[tauri::command]
 pub async fn restart_gbrain_mcp(
     state: State<'_, AppState>,
