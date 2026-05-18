@@ -256,6 +256,17 @@ fn main() {
                                         // Phase 4: gate the periodic memory_health
                                         // scenario in tick_inner.
                                         memubot_config.memory_os.memory_health_enabled,
+                                        // Phase 5: gate + budget the periodic
+                                        // memory_lint scenario.
+                                        memubot_config.memory_os.memory_lint_enabled,
+                                        memubot_config.memory_os.memory_lint_daily_token_budget,
+                                        // LintAnalyzer trait object — read from
+                                        // AppState so a follow-up swapping in a real
+                                        // LLM client doesn't need to touch main.rs.
+                                        {
+                                            let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                                            state_ref.lint_analyzer.clone()
+                                        },
                                     )
                                 );
                                 // Inject into AppState for tauri_commands access
@@ -632,6 +643,8 @@ fn main() {
             uclaw_core::tauri_commands::memory_health_list_findings,
             uclaw_core::tauri_commands::memory_health_dismiss_finding,
             uclaw_core::tauri_commands::memory_health_run_now,
+            // Lint scan (Memory OS Foundation Phase 5)
+            uclaw_core::tauri_commands::memory_lint_run_now,
             // Fragment / Daily Summary
             uclaw_core::tauri_commands::memory_graph_list_fragments,
             uclaw_core::tauri_commands::search_fragments,

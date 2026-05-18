@@ -196,6 +196,13 @@ pub struct AppState {
     /// scenario code paths.
     pub wiki_synthesizer: Arc<dyn crate::memory_graph::wiki_synth::WikiSynthesizer>,
 
+    /// LLM lint analyzer — used by the Phase 5 memory_lint scenario
+    /// to judge whether candidate findings (hub stubs, stale summaries,
+    /// contradictions) are real. Phase 5 ships
+    /// `memory_lint::StubAnalyzer` as the default; swap with a real
+    /// client when Phase 5 has soaked in production.
+    pub lint_analyzer: Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
+
     // ─── Phased Boot: 新增服务 ───────────────────────────────────────
     /// 中央消息总线
     pub infra_service: Arc<InfraService>,
@@ -529,6 +536,11 @@ impl AppState {
             // hot-swapping at runtime stays trivial.
             wiki_synthesizer: Arc::new(crate::memory_graph::wiki_synth::StubSynthesizer)
                 as Arc<dyn crate::memory_graph::wiki_synth::WikiSynthesizer>,
+            // Phase 5 ships the stub lint analyzer; the cost guard +
+            // memory_lint_enabled flag are the actual safety mechanism
+            // until a real LLM client lands.
+            lint_analyzer: Arc::new(crate::proactive::scenarios::memory_lint::StubAnalyzer)
+                as Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
             infra_service,
             service_manager,
             metrics_service,

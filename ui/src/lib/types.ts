@@ -1245,6 +1245,27 @@ export interface HealthRunOutcome {
   duration_ms: number;
 }
 
+// ─── Lint (Memory OS Foundation Phase 5) ────────────────────────────────
+
+export interface LintRunNowInput {
+  spaceId?: string;
+}
+
+/** Result of `memory_lint_run_now` — mirrors Rust's LintRunOutcome
+ *  (snake_case via serde). `analyzer_descriptor` is "stub:no-llm" until
+ *  a real LLM client is wired into AppState. */
+export interface LintRunOutcome {
+  hub_stub: number;
+  phantom_hub: number;
+  stale_summary: number;
+  contradiction: number;
+  total_inserted: number;
+  total_tokens: number;
+  skipped_due_to_budget: number;
+  duration_ms: number;
+  analyzer_descriptor: string;
+}
+
 /**
  * Wire values for `memory_edges.relation_kind` after Memory OS Foundation
  * Phase 2 (auto-link). All four V1-V33 structural variants plus seven

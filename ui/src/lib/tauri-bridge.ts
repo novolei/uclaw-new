@@ -120,6 +120,9 @@ import type {
   HealthRunNowInput,
   HealthFindingDto,
   HealthRunOutcome,
+  // Lint (Memory OS Foundation Phase 5)
+  LintRunNowInput,
+  LintRunOutcome,
   // Cost dashboard
   DailyCostRollup,
   ModelCostRollup,
@@ -826,6 +829,19 @@ export const memoryHealthRunNow = (
   input: HealthRunNowInput,
 ): Promise<HealthRunOutcome> =>
   invoke('memory_health_run_now', { input });
+
+// ─────────────────────────────────────────────────────────
+// Lint scan (Memory OS Foundation Phase 5)
+// ─────────────────────────────────────────────────────────
+//
+// run_now respects the daily token budget — if today's spend already
+// meets/exceeds the cap the call still succeeds but returns
+// total_inserted = 0 and skipped_due_to_budget > 0.
+
+export const memoryLintRunNow = (
+  input: LintRunNowInput,
+): Promise<LintRunOutcome> =>
+  invoke('memory_lint_run_now', { input });
 
 // ─────────────────────────────────────────────────────────
 // Notifications

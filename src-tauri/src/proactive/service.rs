@@ -127,6 +127,19 @@ const CONTEXT_WINDOW_SIZE: usize = 20;
 /// 最多保留的 session 窗口数（超出时淘汰最久未活跃的）
 const MAX_SESSION_WINDOWS: usize = 10;
 
+/// Memory OS Phase 5 helper — start of today (UTC) in epoch ms.
+/// Used by the tick-side lint scan to sum today's already-spent
+/// `memory_lint:*` token cost from `cost_records` and stay under the
+/// daily budget.
+fn today_start_ms_utc() -> i64 {
+    use chrono::{Datelike, TimeZone, Utc};
+    let now = Utc::now();
+    Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
+        .single()
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(0)
+}
+
 // ─── 状态引用结构体 ───────────────────────────────────────────────────
 
 /// 辅助结构：持有所有需要跨 spawned task 共享的 Arc 引用
@@ -178,6 +191,18 @@ struct ProactiveStateRefs {
     /// check is skipped; the manual `memory_health_run_now` IPC is
     /// gated separately.
     memory_health_enabled: bool,
+    /// Memory OS Foundation Phase 5 — controls whether the tick loop
+    /// runs the LLM-driven lint scenario. The cost guard + daily token
+    /// budget are independent (set the budget to 0 to gate even when
+    /// this flag is on).
+    memory_lint_enabled: bool,
+    /// Phase 5 daily token cap. Sum of today's
+    /// `cost_records.model LIKE 'memory_lint%'` is checked before each
+    /// run; when crossing the cap the orchestrator bails out early.
+    memory_lint_daily_token_budget: u32,
+    /// Phase 5 LLM seam. Cloned into the spawn_blocking task so the
+    /// scan can call the analyzer outside the runtime.
+    lint_analyzer: Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
     /// Tauri AppHandle（用于发射 IPC 事件，测试时为 None）
     app_handle: Option<tauri::AppHandle>,
     /// 自上次触发以来的新消息数
@@ -303,6 +328,10 @@ pub struct ProactiveService {
     wiki_view_enabled: bool,
     /// Memory OS Foundation Phase 4 — periodic health-check gate.
     memory_health_enabled: bool,
+    /// Memory OS Foundation Phase 5 — periodic lint-check gate.
+    memory_lint_enabled: bool,
+    memory_lint_daily_token_budget: u32,
+    lint_analyzer: Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
     /// Tauri AppHandle（用于发射 IPC 事件，测试时为 None）
     app_handle: Option<tauri::AppHandle>,
 
@@ -408,6 +437,9 @@ impl ProactiveService {
         gene_evolution_config: GeneEvolutionConfig,
         wiki_view_enabled: bool,
         memory_health_enabled: bool,
+        memory_lint_enabled: bool,
+        memory_lint_daily_token_budget: u32,
+        lint_analyzer: Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
     ) -> Self {
         let task_memory_manager = Arc::new(TaskMemoryManager::new(memory_graph_store.clone()));
         let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(memory_graph_store.clone()));
@@ -453,6 +485,9 @@ impl ProactiveService {
             memory_graph_store,
             wiki_view_enabled,
             memory_health_enabled,
+            memory_lint_enabled,
+            memory_lint_daily_token_budget,
+            lint_analyzer,
             app_handle,
             tick_count: Arc::new(AtomicU64::new(0)),
             action_count: Arc::new(AtomicU64::new(0)),
@@ -506,6 +541,9 @@ impl ProactiveService {
             memory_graph_store: self.memory_graph_store.clone(),
             wiki_view_enabled: self.wiki_view_enabled,
             memory_health_enabled: self.memory_health_enabled,
+            memory_lint_enabled: self.memory_lint_enabled,
+            memory_lint_daily_token_budget: self.memory_lint_daily_token_budget,
+            lint_analyzer: self.lint_analyzer.clone(),
             app_handle: self.app_handle.clone(),
             new_message_count: self.new_message_count.clone(),
             new_execution_count: self.new_execution_count.clone(),
@@ -909,7 +947,9 @@ impl ProactiveService {
     /// 5. 处理 agent 返回结果
     /// 6. 切换状态回 Idle
     async fn tick_inner(refs: &ProactiveStateRefs) -> anyhow::Result<()> {
-        // 递增 tick 计数
+        // 递增 tick 计数 (also used by Phase 3/4/5 modulo-based dispatch
+        // below; we fetch_add first so the first tick is index 1 not 0,
+        // matching the "% N == 0" pattern used historically by this file).
         refs.tick_count.fetch_add(1, Ordering::SeqCst);
         *refs.last_tick_at.write().await = Some(chrono::Utc::now().to_rfc3339());
 
@@ -1004,6 +1044,76 @@ impl ProactiveService {
                     tracing::warn!(error = %e, "[ProactiveService] memory_health spawn_blocking failed");
                 }
             }
+        }
+
+        // Memory OS Foundation Phase 5 — LLM lint scan.
+        // Every 120 ticks (~60 min @ default 30s interval). The actual
+        // cost cap is enforced *inside* run_lint_checks via the daily
+        // token budget and today_spent computed from cost_records, so
+        // even if the tick rate were doubled the cost ceiling holds.
+        if refs.memory_lint_enabled && refs.tick_count.load(Ordering::SeqCst) % 120 == 0 {
+            let space_id = refs.active_space_id.read().await.clone();
+            let store = refs.memory_graph_store.clone();
+            let analyzer = refs.lint_analyzer.clone();
+            let budget = refs.memory_lint_daily_token_budget;
+            let db = refs.db.clone();
+            tokio::spawn(async move {
+                // Sum today's lint token spend on the blocking pool so we
+                // never hold the rusqlite lock across the analyzer call.
+                let today_start_ms = today_start_ms_utc();
+                let today_spent = tokio::task::spawn_blocking(move || {
+                    let c = match db.lock() {
+                        Ok(c) => c,
+                        Err(_) => return 0u32,
+                    };
+                    c.query_row(
+                        "SELECT COALESCE(SUM(input_tokens + output_tokens), 0) \
+                         FROM cost_records \
+                         WHERE model LIKE 'memory_lint%' AND created_at >= ?1",
+                        rusqlite::params![today_start_ms],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .unwrap_or(0) as u32
+                })
+                .await
+                .unwrap_or(0);
+
+                let cfg = crate::proactive::scenarios::memory_lint::LintRunConfig {
+                    daily_token_budget: budget,
+                    ..Default::default()
+                };
+                match crate::proactive::scenarios::memory_lint::run_lint_checks(
+                    store, analyzer, &space_id, &cfg, today_spent,
+                )
+                .await
+                {
+                    Ok(outcome) => {
+                        if outcome.total_inserted > 0 {
+                            tracing::info!(
+                                inserted = outcome.total_inserted,
+                                tokens = outcome.total_tokens,
+                                analyzer = %outcome.analyzer_descriptor,
+                                duration_ms = outcome.duration_ms,
+                                "[ProactiveService] memory_lint: new findings"
+                            );
+                        } else if outcome.skipped_due_to_budget > 0 {
+                            tracing::warn!(
+                                skipped = outcome.skipped_due_to_budget,
+                                today_spent,
+                                budget,
+                                "[ProactiveService] memory_lint: budget exhausted"
+                            );
+                        } else {
+                            tracing::debug!(
+                                "[ProactiveService] memory_lint: no new findings"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "[ProactiveService] memory_lint failed");
+                    }
+                }
+            });
         }
 
         // Memory OS Foundation Phase 3 — periodic wiki index regeneration.
@@ -2384,6 +2494,13 @@ mod tests {
             // Phase 4: tests default to memory_health_enabled=true
             // (matches MemoryOsConfig::default()).
             true,
+            // Phase 5: memory_lint enabled with default token budget,
+            // backed by the deterministic StubAnalyzer so unit tests
+            // don't need real LLM credentials.
+            true,
+            50_000,
+            std::sync::Arc::new(crate::proactive::scenarios::memory_lint::StubAnalyzer)
+                as std::sync::Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
         )
     }
 

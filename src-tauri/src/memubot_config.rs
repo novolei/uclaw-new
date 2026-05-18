@@ -350,7 +350,18 @@ pub struct MemoryOsConfig {
     /// untouched and the list/dismiss IPC commands keep working so the
     /// user can still triage findings discovered before flag was off.
     pub memory_health_enabled: bool,
-    // (Future flags for Phase 5-7 will be added here, each pre-declared
+    /// Phase 5: LLM-driven semantic lint. When `false`, ProactiveService
+    /// stops periodic scans and `memory_lint_run_now` IPC returns a
+    /// structured error. Existing `memory_health_findings` rows with
+    /// `is_lint=1` stay; the list/dismiss commands work the same as
+    /// for Phase 4 findings.
+    pub memory_lint_enabled: bool,
+    /// Phase 5: Daily token cap for the memory_lint scenario. The
+    /// orchestrator sums `cost_records.model LIKE 'memory_lint%'` for
+    /// today (UTC) and stops calling the analyzer once consuming the
+    /// next candidate would push past this cap.
+    pub memory_lint_daily_token_budget: u32,
+    // (Future flags for Phase 6-7 will be added here, each pre-declared
     //  with its default so existing configs deserialize against a stable
     //  shape.)
 }
@@ -362,6 +373,11 @@ impl Default for MemoryOsConfig {
             auto_link_enabled: true,
             wiki_view_enabled: true,
             memory_health_enabled: true,
+            // Phase 5 default ON. The cost cap is the actual safety
+            // mechanism: if the cap is zero the analyzer never runs
+            // even with the flag on.
+            memory_lint_enabled: true,
+            memory_lint_daily_token_budget: 50_000,
         }
     }
 }
@@ -771,5 +787,30 @@ mod tests {
         assert!(config.memory_os.entity_page_enabled);
         assert!(config.memory_os.auto_link_enabled);
         assert!(config.memory_os.wiki_view_enabled);
+    }
+
+    #[test]
+    fn memory_os_phase5_defaults_are_sensible() {
+        let c = MemoryOsConfig::default();
+        assert!(c.memory_lint_enabled, "Phase 5 default should be on");
+        assert!(c.memory_lint_daily_token_budget > 0, "budget must be > 0");
+        assert!(
+            c.memory_lint_daily_token_budget <= 200_000,
+            "budget should be capped at a reasonable value"
+        );
+    }
+
+    #[test]
+    fn memory_os_phase5_explicit_disable_preserved() {
+        let json = r#"{"memory_os":{"memory_lint_enabled":false}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.memory_os.memory_lint_enabled);
+        // Forward-compat: disabling Phase 5 must not flip earlier phases off.
+        assert!(config.memory_os.entity_page_enabled);
+        assert!(config.memory_os.auto_link_enabled);
+        assert!(config.memory_os.wiki_view_enabled);
+        assert!(config.memory_os.memory_health_enabled);
+        // Default budget still applies when only the flag is mentioned.
+        assert_eq!(config.memory_os.memory_lint_daily_token_budget, 50_000);
     }
 }

@@ -5258,6 +5258,69 @@ pub async fn memory_health_run_now(
     serde_json::to_value(&outcome).map_err(|e| format!("serialize: {}", e))
 }
 
+// ─── Lint command (Memory OS Foundation Phase 5) ───────────────────────
+
+/// Force a lint scan immediately. Honors the
+/// `memory_lint_daily_token_budget` config — if today's `memory_lint:*`
+/// cost already meets/exceeds the cap, the scan returns 0 inserts +
+/// skipped_due_to_budget > 0 rather than refusing outright (so the UI
+/// surfaces "budget exhausted" rather than a generic error).
+#[tauri::command]
+pub async fn memory_lint_run_now(
+    state: State<'_, AppState>,
+    input: LintRunNowInput,
+) -> Result<serde_json::Value, String> {
+    if !state.memubot_config.memory_os.memory_lint_enabled {
+        return Err(
+            "Memory lint is disabled (memory_os.memory_lint_enabled = false in \
+             memubot_config.json). Existing lint findings can still be listed/dismissed."
+                .into(),
+        );
+    }
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let store = state.memory_graph_store.clone();
+    let analyzer = state.lint_analyzer.clone();
+    let budget = state.memubot_config.memory_os.memory_lint_daily_token_budget;
+    let db = state.db.clone();
+
+    // Sum today's already-spent memory_lint tokens off the runtime.
+    let today_start_ms = {
+        use chrono::{Datelike, TimeZone, Utc};
+        let now = Utc::now();
+        Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
+            .single()
+            .map(|dt| dt.timestamp_millis())
+            .unwrap_or(0)
+    };
+    let today_spent = tokio::task::spawn_blocking(move || {
+        let c = match db.lock() {
+            Ok(c) => c,
+            Err(_) => return 0u32,
+        };
+        c.query_row(
+            "SELECT COALESCE(SUM(input_tokens + output_tokens), 0) \
+             FROM cost_records \
+             WHERE model LIKE 'memory_lint%' AND created_at >= ?1",
+            rusqlite::params![today_start_ms],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0) as u32
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking(today_spent): {}", e))?;
+
+    let cfg = crate::proactive::scenarios::memory_lint::LintRunConfig {
+        daily_token_budget: budget,
+        ..Default::default()
+    };
+    let outcome = crate::proactive::scenarios::memory_lint::run_lint_checks(
+        store, analyzer, &space_id, &cfg, today_spent,
+    )
+    .await
+    .map_err(|e| format!("run_lint_checks: {}", e))?;
+    serde_json::to_value(&outcome).map_err(|e| format!("serialize: {}", e))
+}
+
 // ─── Fragment / Daily Summary Commands ─────────────────────────────────────
 
 /// Parse an RFC-3339 / ISO-8601 timestamp string into epoch millis.
