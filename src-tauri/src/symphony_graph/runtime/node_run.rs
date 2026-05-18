@@ -357,7 +357,7 @@ fn extract_last_text(messages: &[ChatMessage]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symphony::protocol::types::{NodeKind, RetryPolicy};
+    use crate::symphony_graph::protocol::types::{NodeKind, RetryPolicy};
     use std::collections::HashMap;
 
     fn sample_node() -> SymphonyNode {

@@ -277,7 +277,7 @@ pub struct AppState {
     /// `None` until main.rs Stage 3 wires it (gated on
     /// `memubot_config.symphony.enabled`). Follows the same lazy-init shape
     /// as `proactive_service` so Tauri commands can borrow it via `RwLock`.
-    pub symphony_service: Arc<tokio::sync::RwLock<Option<Arc<crate::symphony::runtime::service::SymphonyService>>>>,
+    pub symphony_service: Arc<tokio::sync::RwLock<Option<Arc<crate::symphony_graph::runtime::service::SymphonyService>>>>,
 
     /// App launch instant — used to compute uptime_secs in diagnostics.
     pub boot_time: std::time::Instant,

@@ -203,7 +203,7 @@ mod integration_test {
         let conn = db_arc.lock().unwrap();
 
         // Insert a queued run.
-        crate::symphony::runtime::service::SymphonyService::create_run_row(
+        crate::symphony_graph::runtime::service::SymphonyService::create_run_row(
             &conn,
             "run-test",
             "wf-smoke",
@@ -258,7 +258,7 @@ mod integration_test {
         {
             let conn = db_arc.lock().unwrap();
             conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-            crate::symphony::runtime::service::SymphonyService::create_run_row(
+            crate::symphony_graph::runtime::service::SymphonyService::create_run_row(
                 &conn,
                 "r-cascade",
                 "wf-smoke",

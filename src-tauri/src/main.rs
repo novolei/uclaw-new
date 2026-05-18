@@ -344,7 +344,7 @@ fn main() {
                                 data_dir.join("symphony-memory"),
                             ),
                         );
-                        let symphony_svc = uclaw_core::symphony::runtime::service::SymphonyService::new(
+                        let symphony_svc = uclaw_core::symphony_graph::runtime::service::SymphonyService::new(
                             db.clone(),
                             infra_service.clone(),
                             provider_service.clone(),

@@ -732,7 +732,7 @@ fn descendants_of(workflow: &SymphonyWorkflowDef, start: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symphony::protocol::types::{NodeKind, RetryPolicy};
+    use crate::symphony_graph::protocol::types::{NodeKind, RetryPolicy};
 
     fn n(id: &str, deps: &[&str]) -> SymphonyNode {
         SymphonyNode {
@@ -897,10 +897,10 @@ mod integration {
     use crate::automation::memory::MemoryStore;
     use crate::infra::InfraService;
     use crate::llm::{CompletionConfig, LlmProvider};
-    use crate::symphony::manager::SymphonyManager;
-    use crate::symphony::protocol::types::{NodeKind, RetryPolicy};
-    use crate::symphony::runtime::node_run::NodeExecutionDeps;
-    use crate::symphony::runtime::stall::Heartbeat;
+    use crate::symphony_graph::manager::SymphonyManager;
+    use crate::symphony_graph::protocol::types::{NodeKind, RetryPolicy};
+    use crate::symphony_graph::runtime::node_run::NodeExecutionDeps;
+    use crate::symphony_graph::runtime::stall::Heartbeat;
     use async_trait::async_trait;
     use std::path::PathBuf;
     use std::sync::Mutex as StdMutex;

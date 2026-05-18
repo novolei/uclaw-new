@@ -50,7 +50,7 @@ pub mod browser;
 pub mod automation;
 
 // Phase 4: Symphony — DAG-of-agent-runs runtime (parallel to Chat/Agent/Automation).
-pub mod symphony;
+pub mod symphony_graph;
 
 // Phase 3: Files Rail
 pub mod files_rail;
