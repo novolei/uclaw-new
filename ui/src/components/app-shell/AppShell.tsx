@@ -53,6 +53,8 @@ import { topLevelViewAtom } from '@/atoms/top-level-view'
 import { KaleidoscopeShell } from '@/views/Kaleidoscope/KaleidoscopeShell'
 import { MemoryVoiceCapture } from '@/components/memory/MemoryVoiceCapture'
 import { QuickCaptureDialog } from '@/components/memory/QuickCaptureDialog'
+import { BottomDock } from '@/components/dock/BottomDock'
+import { bottomDockEnabledAtom } from '@/atoms/dock-atoms'
 
 export interface AppShellProps {
   /** Context 值，用于传递给子组件 */
@@ -67,6 +69,8 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const activeWorkspaceId = useAtomValue(activeWorkspaceIdAtom)
   const showRightPanel = appMode === 'agent' && !!currentSessionId
   const focusMode = useAtomValue(focusModeAtom)
+  const isDockEnabled = useAtomValue(bottomDockEnabledAtom)
+  const [dockRevealed, setDockRevealed] = React.useState(false)
   useFocusModeShortcut()  // global Alt+F binding
 
   // Escalation modal: subscribe to pending escalations and show one at a time.
@@ -396,6 +400,16 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         {/* Global text quick-capture dialog — triggered by Cmd+Shift+.
             via quickCaptureOpenAtom. Complementary to MemoryVoiceCapture. */}
         <QuickCaptureDialog />
+
+        {/* 底部 Dock 感应区：16px 不可见热区，鼠标触底时唤出 Dock */}
+        {isDockEnabled && (
+          <div
+            className="fixed bottom-0 inset-x-0 h-4 pointer-events-auto z-[70]"
+            onMouseEnter={() => setDockRevealed(true)}
+          />
+        )}
+        {/* macOS Dock 风格底部导航栏 — 触底滑出，离开后自动收回 */}
+        <BottomDock revealed={dockRevealed} onRevealChange={setDockRevealed} />
       </div>
     </AppShellProvider>
   )
