@@ -1810,6 +1810,22 @@ impl McpManager {
     }
 }
 
+/// gbrain Sprint 2.1 init-fix — probe whether `<gbrain_home>/.gbrain/brain.pglite/`
+/// has been initialized by `gbrain init --pglite`. The presence of
+/// `PG_VERSION` is the canonical Postgres-data-dir initialization marker
+/// (PGLite writes it as part of `initdb`).
+///
+/// Pure — no I/O beyond `Path::exists`. Used by
+/// `ensure_bundled_gbrain_initialized` to decide whether to spawn `gbrain
+/// init` or skip (idempotent). Safe to call repeatedly.
+pub fn is_brain_initialized(gbrain_home: &std::path::Path) -> bool {
+    gbrain_home
+        .join(".gbrain")
+        .join("brain.pglite")
+        .join("PG_VERSION")
+        .exists()
+}
+
 /// Shared MCP manager for Tauri state
 pub type SharedMcpManager = Arc<RwLock<McpManager>>;
 
@@ -1974,5 +1990,35 @@ mod tests {
             untrusted_proxy.requires_approval(&v),
             ApprovalRequirement::UnlessAutoApproved
         );
+    }
+}
+
+#[cfg(test)]
+mod gbrain_init_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn is_brain_initialized_returns_false_for_empty_gbrain_home() {
+        let dir = tempdir().unwrap();
+        assert!(!is_brain_initialized(dir.path()));
+    }
+
+    #[test]
+    fn is_brain_initialized_returns_false_when_brain_dir_missing_pg_version() {
+        let dir = tempdir().unwrap();
+        // .gbrain/brain.pglite/ exists but no PG_VERSION inside
+        fs::create_dir_all(dir.path().join(".gbrain/brain.pglite")).unwrap();
+        assert!(!is_brain_initialized(dir.path()));
+    }
+
+    #[test]
+    fn is_brain_initialized_returns_true_when_pg_version_present() {
+        let dir = tempdir().unwrap();
+        let brain = dir.path().join(".gbrain/brain.pglite");
+        fs::create_dir_all(&brain).unwrap();
+        fs::write(brain.join("PG_VERSION"), "17\n").unwrap();
+        assert!(is_brain_initialized(dir.path()));
     }
 }
