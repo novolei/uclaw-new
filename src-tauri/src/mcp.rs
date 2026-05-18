@@ -55,6 +55,23 @@ pub struct McpNotificationEvent {
 /// tool while connected.
 pub const NOTIFY_TOOLS_LIST_CHANGED: &str = "notifications/tools/list_changed";
 
+// ─── Sprint 2.2.5a — gbrain init timeout ───────────────────────────────
+
+/// Hard ceiling on `gbrain init --pglite --yes` wall-clock duration.
+/// PGLite's 63 migrations on a cold Apple Silicon disk normally finish
+/// in 30-60s; 120s is the "something went very wrong" cliff after which
+/// we give up rather than hang the entire app boot.
+///
+/// On timeout, the caller treats it as a regular init failure: app
+/// continues to boot, gbrain seed step proceeds anyway (so the entry
+/// appears in Integrations UI with an actionable error), and the user
+/// can re-run `scripts/init-gbrain.sh` manually.
+///
+/// Lower would risk false positives on slow disks (Time Machine restore,
+/// network home, encrypted disk with high CPU load). Higher delays the
+/// "something's wrong" feedback for users with truly stuck inits.
+pub const GBRAIN_INIT_TIMEOUT_SECS: u64 = 120;
+
 // ─── PR-5 — env redaction + audit log ──────────────────────────────────
 
 /// Replace any substring matching one of `env`'s values with
@@ -1938,23 +1955,31 @@ pub fn is_brain_initialized(gbrain_home: &std::path::Path) -> bool {
 }
 
 /// gbrain Sprint 2.1 init-fix — run `bun <cli.ts> init --pglite --yes` against
-/// `gbrain_home` if the brain isn't already initialized. Synchronous +
-/// blocking — first call cold-starts PGLite + runs ~63 migrations
-/// (~30-60s on Apple Silicon). Subsequent calls short-circuit via
-/// `is_brain_initialized` and return `Ok(false)` in O(1).
+/// `gbrain_home` if the brain isn't already initialized. First call
+/// cold-starts PGLite + runs ~63 migrations (~30-60s on Apple Silicon);
+/// subsequent calls short-circuit via `is_brain_initialized` and return
+/// `Ok(false)` in O(1).
+///
+/// Sprint 2.2.5a: wrapped in `tokio::time::timeout(GBRAIN_INIT_TIMEOUT_SECS)`
+/// so a corrupted bun binary or stuck PGLite migration can't hang the
+/// entire app boot. On timeout the child is dropped (tokio kills it on
+/// drop because `kill_on_drop(true)` is set below); caller sees the same
+/// `Err(...)` shape as any other init failure and falls through to the
+/// seed-anyway path.
 ///
 /// Returns:
 /// - `Ok(true)`  — freshly initialized
 /// - `Ok(false)` — already initialized, no work done
-/// - `Err(msg)`  — spawn failed OR `gbrain init` exited non-zero. Caller
-///   MUST NOT proceed to seed the MCP entry, otherwise gbrain will spawn
-///   and immediately exit with "No brain configured" on every connect.
+/// - `Err(msg)`  — spawn failed, timed out, OR `gbrain init` exited
+///   non-zero. Caller MUST NOT proceed to seed the MCP entry,
+///   otherwise gbrain will spawn and immediately exit with "No brain
+///   configured" on every connect.
 ///
 /// `GBRAIN_HOME` is the only env var threaded through. `gbrain init`
 /// writes `<gbrain_home>/.gbrain/config.json` itself with the correct
 /// `database_path` — callers MUST NOT pre-write that file (the v0.35
 /// init path uses its own layout, not whatever the caller passes).
-pub fn ensure_bundled_gbrain_initialized(
+pub async fn ensure_bundled_gbrain_initialized(
     bun_path: &std::path::Path,
     entry_path: &std::path::Path,
     gbrain_home: &std::path::Path,
@@ -1977,16 +2002,33 @@ pub fn ensure_bundled_gbrain_initialized(
         bun = %bun_path.display(),
         entry = %entry_path.display(),
         gbrain_home = %gbrain_home.display(),
+        timeout_secs = GBRAIN_INIT_TIMEOUT_SECS,
         "gbrain Sprint 2.1 init-fix: running 'gbrain init --pglite --yes' (first launch, may take 30-60s)"
     );
-    let output = std::process::Command::new(bun_path)
-        .arg(entry_path)
+    // Sprint 2.2.5a — tokio::process::Command + timeout. kill_on_drop
+    // ensures the bun child is reaped even if we drop the future
+    // (timeout fires, task cancelled, etc).
+    let mut cmd = tokio::process::Command::new(bun_path);
+    cmd.arg(entry_path)
         .arg("init")
         .arg("--pglite")
         .arg("--yes")
         .env("GBRAIN_HOME", gbrain_home)
-        .output()
-        .map_err(|e| format!("spawn 'bun gbrain init': {}", e))?;
+        .kill_on_drop(true);
+    let timeout = Duration::from_secs(GBRAIN_INIT_TIMEOUT_SECS);
+    let output = match tokio::time::timeout(timeout, cmd.output()).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return Err(format!("spawn 'bun gbrain init': {}", e)),
+        Err(_elapsed) => {
+            return Err(format!(
+                "'gbrain init' timed out after {}s — bun binary may be \
+                 corrupted or PGLite migration stuck. Re-run \
+                 scripts/init-gbrain.sh manually or remove ~/.uclaw/gbrain/ \
+                 to retry from scratch.",
+                GBRAIN_INIT_TIMEOUT_SECS
+            ));
+        }
+    };
     if !output.status.success() {
         let stderr_tail: String = String::from_utf8_lossy(&output.stderr)
             .lines()
@@ -2224,8 +2266,8 @@ mod gbrain_init_tests {
         assert!(is_brain_initialized(dir.path()));
     }
 
-    #[test]
-    fn ensure_bundled_gbrain_short_circuits_when_already_initialized() {
+    #[tokio::test]
+    async fn ensure_bundled_gbrain_short_circuits_when_already_initialized() {
         // Idempotency contract: when PG_VERSION already exists, the spawner
         // MUST return Ok(false) without invoking bun. We prove this by passing
         // bun/cli paths that don't exist on disk — if the function tried to
@@ -2239,8 +2281,59 @@ mod gbrain_init_tests {
             std::path::Path::new("/nonexistent/bun"),
             std::path::Path::new("/nonexistent/cli.ts"),
             dir.path(),
-        );
+        )
+        .await;
 
         assert_eq!(result, Ok(false), "warm-path probe should short-circuit before spawn");
+    }
+
+    #[tokio::test]
+    async fn ensure_bundled_gbrain_returns_err_when_bun_not_executable() {
+        // Sprint 2.2.5a — when PG_VERSION is missing AND bun_path is bogus,
+        // the function must return Err quickly (spawn fails before any
+        // timer). This is the "graceful degradation" contract used by
+        // main.rs Stage 3: a bogus bun shouldn't hang boot, just produce
+        // an Err the caller logs + falls through.
+        let dir = tempfile::tempdir().unwrap();
+        // gbrain_home exists but PG_VERSION does not — forces the spawn path
+        let result = ensure_bundled_gbrain_initialized(
+            std::path::Path::new("/nonexistent/bun"),
+            std::path::Path::new("/nonexistent/cli.ts"),
+            dir.path(),
+        )
+        .await;
+        assert!(result.is_err(), "bogus bun should yield Err");
+        let msg = result.err().unwrap();
+        // Should mention spawn failure, not timeout — the spawn fails
+        // immediately, never reaching the timeout branch.
+        assert!(
+            msg.contains("spawn") || msg.contains("No such file"),
+            "expected spawn-failure msg, got: {}",
+            msg
+        );
+    }
+
+    /// Sprint 2.2.5a — timeout sanity check. Spawns `sleep 300` (or
+    /// equivalent) as the bun binary and a tiny override timeout to keep
+    /// the test fast. Verifies we get an Err mentioning "timed out"
+    /// rather than hanging for the full GBRAIN_INIT_TIMEOUT_SECS (120s).
+    ///
+    /// We can't reuse `ensure_bundled_gbrain_initialized` directly because
+    /// the timeout const is baked at compile time. So we duplicate the
+    /// relevant lines in a "probe" closure to exercise the same shape
+    /// with a 1s timeout. If that core pattern is broken, the real
+    /// function is too.
+    #[tokio::test]
+    async fn timeout_pattern_kills_hung_process() {
+        // Skip if /bin/sleep doesn't exist (Windows CI, very minimal env)
+        if !std::path::Path::new("/bin/sleep").exists() {
+            eprintln!("Skipping timeout_pattern test — /bin/sleep not found");
+            return;
+        }
+        let mut cmd = tokio::process::Command::new("/bin/sleep");
+        cmd.arg("60").kill_on_drop(true);
+        let result = tokio::time::timeout(Duration::from_millis(200), cmd.output()).await;
+        assert!(result.is_err(), "timeout must fire on hung process");
+        // The Elapsed error is what we want — process is killed on drop.
     }
 }

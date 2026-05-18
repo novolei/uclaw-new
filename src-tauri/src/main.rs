@@ -501,7 +501,9 @@ fn main() {
                                 }
                                 match uclaw_core::mcp::ensure_bundled_gbrain_initialized(
                                     bun, entry, &gbrain_home,
-                                ) {
+                                )
+                                .await
+                                {
                                     Ok(true) => tracing::info!(
                                         "[Stage 3] gbrain brain initialized (first launch)"
                                     ),
@@ -511,7 +513,7 @@ fn main() {
                                     Err(e) => {
                                         tracing::warn!(
                                             error = %e,
-                                            "[Stage 3] gbrain init failed — seeding the MCP entry anyway so it surfaces in the UI for debugging; gbrain will fail to connect until init succeeds (re-run scripts/setup-gbrain-source.sh or remove ~/.uclaw/gbrain/ to retry)"
+                                            "[Stage 3] gbrain init failed — seeding the MCP entry anyway so it surfaces in the UI for debugging; gbrain will fail to connect until init succeeds (re-run scripts/init-gbrain.sh or remove ~/.uclaw/gbrain/ to retry)"
                                         );
                                         // Intentional fall-through: still
                                         // run the seed match below so the
