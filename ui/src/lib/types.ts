@@ -1306,6 +1306,27 @@ export interface BrainExportOutcome {
   errors: string[];
 }
 
+/** Memory OS Phase 7.2 — `memory_wiki_sync_from_disk` input. Same
+ *  brainRoot resolution as `WikiExportInput`. */
+export interface WikiSyncInput {
+  spaceId?: string;
+  brainRoot?: string;
+}
+
+/** Result of `memory_wiki_sync_from_disk`. */
+export interface BrainSyncOutcome {
+  files_scanned: number;
+  files_skipped_no_frontmatter: number;
+  files_unchanged: number;
+  new_pages_created: number;
+  pages_updated: number;
+  /** Number of files where DB and disk both moved since the last sync.
+   *  Phase 7.3 will record a `sync_conflict` health finding for each
+   *  one; Phase 7.2 just counts and continues with disk-wins. */
+  conflicts: number;
+  errors: string[];
+}
+
 /**
  * Wire values for `memory_edges.relation_kind` after Memory OS Foundation
  * Phase 2 (auto-link). All four V1-V33 structural variants plus seven

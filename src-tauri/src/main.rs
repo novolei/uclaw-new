@@ -645,6 +645,8 @@ fn main() {
             uclaw_core::tauri_commands::memory_entity_page_synthesize_now,
             // Markdown export (Memory OS Foundation Phase 7.1)
             uclaw_core::tauri_commands::memory_wiki_export,
+            // Markdown sync-from-disk (Memory OS Foundation Phase 7.2)
+            uclaw_core::tauri_commands::memory_wiki_sync_from_disk,
             // Fragment / Daily Summary
             uclaw_core::tauri_commands::memory_graph_list_fragments,
             uclaw_core::tauri_commands::search_fragments,

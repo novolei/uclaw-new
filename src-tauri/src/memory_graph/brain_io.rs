@@ -540,6 +540,409 @@ pub fn export_wiki_artifact(
     Ok(true)
 }
 
+// ─── Sync from disk (Phase 7.2) ────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct BrainSyncOutcome {
+    /// Total .md files visited under brain_root.
+    pub files_scanned: u32,
+    /// Files without frontmatter (skipped — not part of the sync flow).
+    pub files_skipped_no_frontmatter: u32,
+    /// Files unchanged since the last sync (mtime + sha both match).
+    pub files_unchanged: u32,
+    /// Files that prompted creating a new EntityPage (no node_uuid in
+    /// frontmatter and slug was available).
+    pub new_pages_created: u32,
+    /// Files that updated an existing EntityPage (new version inserted).
+    pub pages_updated: u32,
+    /// Conflicts detected — `Phase 7.3` actually writes the finding;
+    /// Phase 7.2 counts them and continues with "disk wins" semantics.
+    pub conflicts: u32,
+    /// Per-file errors (the outcome shape stays success so the UI can
+    /// surface a partial result).
+    pub errors: Vec<String>,
+}
+
+/// Walk `brain_root` recursively and reconcile each `.md` file with
+/// the EntityPage row referenced by its frontmatter. See module-level
+/// docs for the per-file algorithm.
+pub fn sync_from_disk(
+    store: &MemoryGraphStore,
+    cfg: &BrainExportConfig,
+) -> Result<BrainSyncOutcome, crate::error::Error> {
+    let mut outcome = BrainSyncOutcome::default();
+    if !cfg.brain_root.exists() {
+        return Ok(outcome);
+    }
+    let files = collect_md_files(&cfg.brain_root);
+    for path in files {
+        outcome.files_scanned += 1;
+        match sync_one_file(store, cfg, &path) {
+            Ok(SyncFileOutcome::Unchanged) => outcome.files_unchanged += 1,
+            Ok(SyncFileOutcome::NoFrontmatter) => outcome.files_skipped_no_frontmatter += 1,
+            Ok(SyncFileOutcome::Created { .. }) => outcome.new_pages_created += 1,
+            Ok(SyncFileOutcome::Updated { conflict }) => {
+                outcome.pages_updated += 1;
+                if conflict {
+                    outcome.conflicts += 1;
+                }
+            }
+            Err(e) => outcome.errors.push(format!("{}: {}", path.display(), e)),
+        }
+    }
+    Ok(outcome)
+}
+
+#[derive(Debug)]
+pub enum SyncFileOutcome {
+    Unchanged,
+    NoFrontmatter,
+    Created { node_id: String },
+    Updated { conflict: bool },
+}
+
+/// Recursive descent for `.md` files. Skips `overview.md` and
+/// `index.md` at the brain root — those are export-only artifacts.
+fn collect_md_files(root: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().and_then(|s| s.to_str()) == Some("md") {
+                // Skip the two "artifact" files at brain root.
+                let is_at_root = p.parent() == Some(root);
+                let stem = p
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                if is_at_root && (stem == "overview.md" || stem == "index.md") {
+                    continue;
+                }
+                out.push(p);
+            }
+        }
+    }
+    // Deterministic order helps tests + makes the conflict-counter
+    // stable across runs.
+    out.sort();
+    out
+}
+
+/// Single-file sync. The conflict flag in the `Updated` branch is
+/// pulled up so the caller can write a `memory_health_findings` row
+/// (Phase 7.3 does the actual write; Phase 7.2 just counts it).
+pub fn sync_one_file(
+    store: &MemoryGraphStore,
+    cfg: &BrainExportConfig,
+    path: &Path,
+) -> Result<SyncFileOutcome, crate::error::Error> {
+    let raw = fs::read_to_string(path).map_err(|e| {
+        crate::error::Error::Internal(format!("read {}: {}", path.display(), e))
+    })?;
+    let parsed = match parse_file(&raw) {
+        Some(p) => p,
+        None => return Ok(SyncFileOutcome::NoFrontmatter),
+    };
+    let (fm, body) = parsed;
+    let current_sha = sha256_hex(&raw);
+    let current_mtime_ms = file_mtime_ms(path);
+
+    // Branch on whether frontmatter carries a node_uuid.
+    if let Some(node_id) = fm.node_uuid.as_deref() {
+        // Existing-page path: figure out if disk advanced, DB advanced,
+        // or both (conflict).
+        let state = read_sync_state(store, node_id)?;
+        if let Some(s) = &state {
+            if s.last_synced_sha256 == current_sha
+                && s.file_mtime_at_last_sync_ms == current_mtime_ms
+            {
+                return Ok(SyncFileOutcome::Unchanged);
+            }
+            if s.last_synced_sha256 == current_sha {
+                // mtime changed but bytes didn't (touch / IDE save churn).
+                // Update the recorded mtime so the next pass short-circuits.
+                upsert_sync_state(
+                    store,
+                    node_id,
+                    &cfg.space_id,
+                    path,
+                    s.last_synced_version_id.as_deref(),
+                    current_mtime_ms,
+                    &current_sha,
+                )?;
+                return Ok(SyncFileOutcome::Unchanged);
+            }
+        }
+        // Real disk-side change. Check for concurrent DB change.
+        let conflict = detect_concurrent_db_change(store, node_id, state.as_ref())?;
+
+        // Apply disk-wins: write new version + update metadata.
+        write_new_version_from_disk(store, node_id, &fm, &body)?;
+        // Update sync state to reflect what's now on disk + which DB
+        // version we just produced.
+        let new_active_version = current_active_version_id(store, node_id)?;
+        upsert_sync_state(
+            store,
+            node_id,
+            &cfg.space_id,
+            path,
+            new_active_version.as_deref(),
+            current_mtime_ms,
+            &current_sha,
+        )?;
+        Ok(SyncFileOutcome::Updated { conflict })
+    } else if !fm.slug.trim().is_empty() {
+        // No node_uuid → user created this file by hand. Create a new
+        // EntityPage if the slug doesn't already exist.
+        let new_node_id = create_page_from_disk(store, cfg, &fm, &body)?;
+        let new_active_version = current_active_version_id(store, &new_node_id)?;
+        upsert_sync_state(
+            store,
+            &new_node_id,
+            &cfg.space_id,
+            path,
+            new_active_version.as_deref(),
+            current_mtime_ms,
+            &current_sha,
+        )?;
+        Ok(SyncFileOutcome::Created { node_id: new_node_id })
+    } else {
+        // Frontmatter exists but is unusable (no UUID + no slug). Skip.
+        Ok(SyncFileOutcome::NoFrontmatter)
+    }
+}
+
+/// Did the DB's active version advance since the last sync? Returns
+/// true when the page has a newer active version than the
+/// `brain_sync_state.last_synced_version_id` we recorded — meaning
+/// both sides moved and Phase 7.3 should record a conflict.
+fn detect_concurrent_db_change(
+    store: &MemoryGraphStore,
+    node_id: &str,
+    state: Option<&SyncStateRow>,
+) -> Result<bool, crate::error::Error> {
+    let recorded = match state {
+        Some(s) => s.last_synced_version_id.clone(),
+        // No prior sync state for this node → can't detect a conflict
+        // (we don't know what we had before). Treat as no-conflict.
+        None => return Ok(false),
+    };
+    let current = current_active_version_id(store, node_id)?;
+    Ok(current != recorded)
+}
+
+fn current_active_version_id(
+    store: &MemoryGraphStore,
+    node_id: &str,
+) -> Result<Option<String>, crate::error::Error> {
+    let conn = store
+        .conn
+        .lock()
+        .map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+    let id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM memory_versions \
+             WHERE node_id = ?1 AND status = 'active' \
+             ORDER BY created_at DESC LIMIT 1",
+            params![node_id],
+            |r| r.get(0),
+        )
+        .ok();
+    Ok(id)
+}
+
+/// Deprecate the prior active version + insert a new active one with
+/// `content = body`. The Phase 2 auto-link hook runs as a side effect.
+/// Frontmatter metadata (aliases, timeline, subkind, etc.) is merged
+/// into `memory_nodes.metadata_json` while we hold the lock so reads
+/// after this function see a consistent shape.
+fn write_new_version_from_disk(
+    store: &MemoryGraphStore,
+    node_id: &str,
+    fm: &BrainFrontmatter,
+    body: &str,
+) -> Result<(), crate::error::Error> {
+    // Deprecate the previous active version (if any) under one short lock.
+    let prev_id: Option<String> = {
+        let conn = store
+            .conn
+            .lock()
+            .map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        let id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM memory_versions \
+                 WHERE node_id = ?1 AND status = 'active' \
+                 ORDER BY created_at DESC LIMIT 1",
+                params![node_id],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(pid) = &id {
+            conn.execute(
+                "UPDATE memory_versions SET status = 'deprecated' WHERE id = ?1",
+                params![pid],
+            )
+            .map_err(crate::error::Error::Database)?;
+        }
+        id
+    };
+
+    // Insert the new active version via store.create_version (this is
+    // what runs the auto-link side-effect).
+    let new_version_id = uuid::Uuid::new_v4().to_string();
+    let now_iso = chrono::Utc::now().to_rfc3339();
+    let new_version = crate::memory_graph::models::MemoryVersion {
+        id: new_version_id,
+        node_id: node_id.to_string(),
+        supersedes_version_id: prev_id,
+        status: crate::memory_graph::models::MemoryVersionStatus::Active,
+        content: body.to_string(),
+        metadata: None,
+        embedding_json: None,
+        created_at: now_iso.clone(),
+    };
+    store
+        .create_version(&new_version)
+        .map_err(|e| crate::error::Error::Internal(format!("create_version: {}", e)))?;
+
+    // Merge frontmatter fields into memory_nodes.metadata_json.
+    merge_frontmatter_into_metadata(store, node_id, fm, &now_iso)?;
+    Ok(())
+}
+
+fn merge_frontmatter_into_metadata(
+    store: &MemoryGraphStore,
+    node_id: &str,
+    fm: &BrainFrontmatter,
+    now_iso: &str,
+) -> Result<(), crate::error::Error> {
+    let conn = store
+        .conn
+        .lock()
+        .map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT metadata_json FROM memory_nodes WHERE id = ?1",
+            params![node_id],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten();
+    let value: serde_json::Value = raw
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let mut meta = EntityPageMetadata::from_value(&value);
+    // Disk wins on every field the user can edit in markdown.
+    meta.slug = Some(fm.slug.clone());
+    meta.subkind = fm.subkind.clone();
+    meta.aliases = fm.aliases.clone();
+    if fm.enrichment_tier.is_some() {
+        meta.enrichment_tier = fm.enrichment_tier;
+    }
+    if !fm.timeline.is_empty() {
+        meta.timeline = fm.timeline.clone();
+    }
+    if fm.last_synthesized_at.is_some() {
+        meta.last_synthesized_at = fm.last_synthesized_at.clone();
+    }
+    let new_json = serde_json::to_string(&meta.to_value())
+        .map_err(crate::error::Error::Serde)?;
+    conn.execute(
+        "UPDATE memory_nodes \
+         SET metadata_json = ?1, title = ?2, updated_at = ?3 \
+         WHERE id = ?4",
+        params![new_json, fm.title, now_iso, node_id],
+    )
+    .map_err(crate::error::Error::Database)?;
+    Ok(())
+}
+
+/// Brand-new EntityPage from a user-created file. Returns the new
+/// node_id. If a page with the same slug already exists in the
+/// space, returns its id and writes a new version against it (treats
+/// the file as an "adopt this slug" gesture).
+fn create_page_from_disk(
+    store: &MemoryGraphStore,
+    cfg: &BrainExportConfig,
+    fm: &BrainFrontmatter,
+    body: &str,
+) -> Result<String, crate::error::Error> {
+    // Look for an existing page with the same slug in this space.
+    let existing_id: Option<String> = {
+        let conn = store
+            .conn
+            .lock()
+            .map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        conn.query_row(
+            "SELECT id FROM memory_nodes \
+             WHERE space_id = ?1 AND kind = 'entity_page' \
+               AND COALESCE(json_extract(metadata_json, '$.slug'), '') = ?2 \
+             LIMIT 1",
+            params![cfg.space_id, fm.slug],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    };
+
+    let node_id = match existing_id {
+        Some(id) => {
+            // Adopt the existing page; merge frontmatter + write new version.
+            write_new_version_from_disk(store, &id, fm, body)?;
+            id
+        }
+        None => {
+            // Insert a brand-new node + version under one lock.
+            let new_id = uuid::Uuid::new_v4().to_string();
+            let now_iso = chrono::Utc::now().to_rfc3339();
+            let mut meta = EntityPageMetadata::default();
+            meta.slug = Some(fm.slug.clone());
+            meta.subkind = fm.subkind.clone();
+            meta.aliases = fm.aliases.clone();
+            meta.enrichment_tier = fm.enrichment_tier;
+            meta.last_synthesized_at = fm.last_synthesized_at.clone();
+            meta.timeline = fm.timeline.clone();
+            let meta_json = serde_json::to_string(&meta.to_value())
+                .map_err(crate::error::Error::Serde)?;
+            let conn = store
+                .conn
+                .lock()
+                .map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+            conn.execute(
+                "INSERT INTO memory_nodes \
+                 (id, space_id, kind, title, metadata_json, created_at, updated_at) \
+                 VALUES (?1, ?2, 'entity_page', ?3, ?4, ?5, ?5)",
+                params![new_id, cfg.space_id, fm.title, meta_json, now_iso],
+            )
+            .map_err(crate::error::Error::Database)?;
+            drop(conn);
+            // Insert the active version via create_version so auto-link runs.
+            let new_version = crate::memory_graph::models::MemoryVersion {
+                id: uuid::Uuid::new_v4().to_string(),
+                node_id: new_id.clone(),
+                supersedes_version_id: None,
+                status: crate::memory_graph::models::MemoryVersionStatus::Active,
+                content: body.to_string(),
+                metadata: None,
+                embedding_json: None,
+                created_at: now_iso,
+            };
+            store.create_version(&new_version).map_err(|e| {
+                crate::error::Error::Internal(format!("create_version: {}", e))
+            })?;
+            new_id
+        }
+    };
+    Ok(node_id)
+}
+
 // ─── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -863,5 +1266,268 @@ mod tests {
         let wrote = export_wiki_artifact(&store, &cfg, "overview", "overview.md").unwrap();
         assert!(!wrote, "no artifact → no file");
         assert!(!tmp.path().join("overview.md").exists());
+    }
+
+    // ─── Sync (Phase 7.2) ──────────────────────────────────────────
+
+    #[test]
+    fn sync_from_disk_handles_empty_brain_root() {
+        let store = fresh_store();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = BrainExportConfig {
+            brain_root: tmp.path().to_path_buf(),
+            space_id: "default".into(),
+        };
+        let outcome = sync_from_disk(&store, &cfg).unwrap();
+        assert_eq!(outcome.files_scanned, 0);
+        assert!(outcome.errors.is_empty());
+    }
+
+    #[test]
+    fn sync_from_disk_skips_files_without_frontmatter() {
+        let store = fresh_store();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = BrainExportConfig {
+            brain_root: tmp.path().to_path_buf(),
+            space_id: "default".into(),
+        };
+        fs::create_dir_all(tmp.path().join("notes")).unwrap();
+        fs::write(
+            tmp.path().join("notes/random.md"),
+            "Just a random note, no frontmatter here.\n",
+        )
+        .unwrap();
+        let outcome = sync_from_disk(&store, &cfg).unwrap();
+        assert_eq!(outcome.files_scanned, 1);
+        assert_eq!(outcome.files_skipped_no_frontmatter, 1);
+        assert_eq!(outcome.pages_updated, 0);
+    }
+
+    #[test]
+    fn sync_from_disk_ignores_overview_and_index_at_root() {
+        let store = fresh_store();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = BrainExportConfig {
+            brain_root: tmp.path().to_path_buf(),
+            space_id: "default".into(),
+        };
+        fs::write(tmp.path().join("overview.md"), "# overview").unwrap();
+        fs::write(tmp.path().join("index.md"), "# index").unwrap();
+        let outcome = sync_from_disk(&store, &cfg).unwrap();
+        assert_eq!(outcome.files_scanned, 0, "artifact files must be skipped");
+    }
+
+    #[test]
+    fn sync_from_disk_marks_unchanged_when_neither_side_moved() {
+        let store = fresh_store();
+        insert_page(&store, "n1", "Alice", "alice", "person", "x", vec![]);
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = BrainExportConfig {
+            brain_root: tmp.path().to_path_buf(),
+            space_id: "default".into(),
+        };
+        // First export creates the file + brain_sync_state row.
+        let _ = export_entity_page(&store, "n1", &cfg).unwrap();
+        // Sync immediately — nothing changed on either side.
+        let outcome = sync_from_disk(&store, &cfg).unwrap();
+        assert_eq!(outcome.files_unchanged, 1);
+        assert_eq!(outcome.pages_updated, 0);
+        assert_eq!(outcome.conflicts, 0);
+    }
+
+    #[test]
+    fn sync_from_disk_writes_new_version_when_disk_changes() {
+        let store = fresh_store();
+        insert_page(&store, "n1", "Alice", "alice", "person", "old.", vec![]);
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = BrainExportConfig {
+            brain_root: tmp.path().to_path_buf(),
+            space_id: "default".into(),
+        };
+        let path = match export_entity_page(&store, "n1", &cfg).unwrap() {
+            ExportPageOutcome::Written { path, .. } => path,
+            _ => panic!(),
+        };
+        // Simulate the user editing the file in Obsidian: rewrite the
+        // body (preserve the frontmatter).
+        let raw = fs::read_to_string(&path).unwrap();
+        let (fm, _) = parse_file(&raw).unwrap();
+        let edited = render_file(&fm, "Alice is the new Acme staff engineer.");
+        // Sleep briefly so mtime ticks. Some filesystems have 1-second
+        // resolution; this is the safe lower bound.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(&path, edited).unwrap();
+
+        let outcome = sync_from_disk(&store, &cfg).unwrap();
+        assert_eq!(outcome.pages_updated, 1);
+        assert_eq!(outcome.files_unchanged, 0);
+
+        // DB now has a NEW active version with the edited body.
+        let active = store.get_active_version("n1").unwrap().unwrap();
+        assert!(active.content.contains("new Acme staff engineer"));
+
+        // The previous active version was deprecated.
+        let conn = store.conn.lock().unwrap();
+        let deprecated: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_versions \
+                 WHERE node_id = 'n1' AND status = 'deprecated'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(deprecated, 1);
+
+        // brain_sync_state was advanced to the new sha.
+        drop(conn);
+        let st = read_sync_state(&store, "n1").unwrap().unwrap();
+        assert_ne!(st.last_synced_sha256, sha256_hex(&raw));
+    }
+
+    #[test]
+    fn sync_from_disk_ignores_touch_without_content_change() {
+        let store = fresh_store();
+        insert_page(&store, "n1", "Alice", "alice", "person", "x", vec![]);
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = BrainExportConfig {
+            brain_root: tmp.path().to_path_buf(),
+            space_id: "default".into(),
+        };
+        let path = match export_entity_page(&store, "n1", &cfg).unwrap() {
+            ExportPageOutcome::Written { path, .. } => path,
+            _ => panic!(),
+        };
+        // Simulate IDE 'touch' — overwrite with the same bytes, mtime
+        // moves forward.
+        let raw = fs::read_to_string(&path).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(&path, &raw).unwrap();
+        let outcome = sync_from_disk(&store, &cfg).unwrap();
+        assert_eq!(
+            outcome.pages_updated, 0,
+            "touch with identical content must not create a new version"
+        );
+        assert_eq!(outcome.files_unchanged, 1);
+    }
+
+    #[test]
+    fn sync_from_disk_creates_new_entity_page_for_user_authored_file() {
+        let store = fresh_store();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = BrainExportConfig {
+            brain_root: tmp.path().to_path_buf(),
+            space_id: "default".into(),
+        };
+        // User creates a file by hand — no node_uuid in frontmatter.
+        fs::create_dir_all(tmp.path().join("person")).unwrap();
+        let body = "---\nslug: charlie\ntitle: Charlie\nsubkind: person\n---\n\nCharlie is a friend.\n";
+        fs::write(tmp.path().join("person/charlie.md"), body).unwrap();
+
+        let outcome = sync_from_disk(&store, &cfg).unwrap();
+        assert_eq!(outcome.new_pages_created, 1);
+
+        // Verify the page exists in DB.
+        let conn = store.conn.lock().unwrap();
+        let row: (String, String) = conn
+            .query_row(
+                "SELECT id, title FROM memory_nodes \
+                 WHERE kind = 'entity_page' \
+                   AND COALESCE(json_extract(metadata_json, '$.slug'), '') = 'charlie'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let (new_id, title) = row;
+        assert_eq!(title, "Charlie");
+        // And a brain_sync_state row was inserted for it.
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM brain_sync_state WHERE node_id = ?1",
+                params![new_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn sync_from_disk_detects_conflict_when_both_sides_moved() {
+        let store = fresh_store();
+        insert_page(&store, "n1", "Alice", "alice", "person", "original.", vec![]);
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = BrainExportConfig {
+            brain_root: tmp.path().to_path_buf(),
+            space_id: "default".into(),
+        };
+        let path = match export_entity_page(&store, "n1", &cfg).unwrap() {
+            ExportPageOutcome::Written { path, .. } => path,
+            _ => panic!(),
+        };
+        // DB-side update: insert a new active version (deprecating the
+        // old one). This simulates the user using the Agent to update
+        // the page while their Obsidian was also editing the file.
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE memory_versions SET status = 'deprecated' \
+                 WHERE node_id = 'n1' AND status = 'active'",
+                [],
+            )
+            .unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO memory_versions \
+                 (id, node_id, supersedes_version_id, status, content, metadata_json, embedding_json, created_at) \
+                 VALUES (?1, 'n1', NULL, 'active', 'db-side update', NULL, NULL, ?2)",
+                params![uuid::Uuid::new_v4().to_string(), now],
+            )
+            .unwrap();
+        }
+        // Disk-side update: edit the body.
+        let raw = fs::read_to_string(&path).unwrap();
+        let (fm, _) = parse_file(&raw).unwrap();
+        let edited = render_file(&fm, "disk-side update");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(&path, edited).unwrap();
+
+        let outcome = sync_from_disk(&store, &cfg).unwrap();
+        assert_eq!(outcome.pages_updated, 1);
+        assert_eq!(outcome.conflicts, 1, "both sides moved → conflict counted");
+        // Disk wins: active version content matches the disk edit.
+        let active = store.get_active_version("n1").unwrap().unwrap();
+        assert_eq!(active.content, "disk-side update");
+    }
+
+    #[test]
+    fn sync_from_disk_adopts_existing_slug_when_user_writes_duplicate() {
+        // User-authored file uses an existing slug → adopt that page
+        // rather than creating a duplicate.
+        let store = fresh_store();
+        insert_page(&store, "n1", "Alice", "alice", "person", "original.", vec![]);
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = BrainExportConfig {
+            brain_root: tmp.path().to_path_buf(),
+            space_id: "default".into(),
+        };
+        // The user writes a file with slug "alice" but no node_uuid.
+        fs::create_dir_all(tmp.path().join("person")).unwrap();
+        let body = "---\nslug: alice\ntitle: Alice\nsubkind: person\n---\n\nNew prose body.\n";
+        fs::write(tmp.path().join("person/alice.md"), body).unwrap();
+
+        let outcome = sync_from_disk(&store, &cfg).unwrap();
+        // Either accounting is correct ("new" or "updated") as long as
+        // the count of entity_page nodes hasn't doubled.
+        assert!(outcome.new_pages_created + outcome.pages_updated >= 1);
+        let conn = store.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_nodes \
+                 WHERE kind = 'entity_page' \
+                   AND COALESCE(json_extract(metadata_json, '$.slug'), '') = 'alice'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "must not create a duplicate page for the same slug");
     }
 }

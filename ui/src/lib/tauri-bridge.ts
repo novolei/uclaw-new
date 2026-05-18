@@ -129,6 +129,9 @@ import type {
   // Markdown export (Memory OS Foundation Phase 7.1)
   WikiExportInput,
   BrainExportOutcome,
+  // Markdown sync from disk (Memory OS Foundation Phase 7.2)
+  WikiSyncInput,
+  BrainSyncOutcome,
   // Cost dashboard
   DailyCostRollup,
   ModelCostRollup,
@@ -876,6 +879,15 @@ export const memoryWikiExport = (
   input: WikiExportInput,
 ): Promise<BrainExportOutcome> =>
   invoke('memory_wiki_export', { input });
+
+// Phase 7.2 — walk the brain dir and reconcile each `.md` file with
+// its EntityPage row. Disk-wins on conflict; conflicts get counted in
+// the outcome so the UI can surface them (Phase 7.3 writes
+// memory_health_findings rows for each one).
+export const memoryWikiSyncFromDisk = (
+  input: WikiSyncInput,
+): Promise<BrainSyncOutcome> =>
+  invoke('memory_wiki_sync_from_disk', { input });
 
 // ─────────────────────────────────────────────────────────
 // Notifications

@@ -1091,6 +1091,15 @@ pub struct WikiExportInput {
     pub brain_root: Option<String>,
 }
 
+/// Phase 7.2 — `memory_wiki_sync_from_disk` input. Mirrors the export
+/// input shape; reuses the same brain_root resolution.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WikiSyncInput {
+    pub space_id: Option<String>,
+    pub brain_root: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthFindingDto {
