@@ -503,6 +503,27 @@ impl AppState {
         // 这些注册操作需要 async，因此在 setup 中通过 spawn 完成。
         // 此处仅构建 AppState，实际注册和启动在 main.rs setup 中执行。
 
+        // Memory OS Phase 6b — pick wiki synthesizer impl based on
+        // `wiki_real_synthesizer_enabled`. Stub stays the safe default
+        // (no LLM calls, deterministic markdown); flipping the flag
+        // routes overview regen through the configured active provider
+        // via MemoryOsLlmClient. Restart is required for the swap to
+        // take effect because the trait object is held by AppState.
+        let wiki_synthesizer: Arc<dyn crate::memory_graph::wiki_synth::WikiSynthesizer> =
+            if memubot_config.memory_os.wiki_real_synthesizer_enabled {
+                use crate::memory_graph::memory_os_llm::MemoryOsLlmClient;
+                use crate::memory_graph::wiki_synth::RealWikiSynthesizer;
+                let llm = Arc::new(MemoryOsLlmClient::new(
+                    provider_service.clone(),
+                    db.clone(),
+                ));
+                tracing::info!("Memory OS Phase 6b: RealWikiSynthesizer installed");
+                Arc::new(RealWikiSynthesizer::new(llm))
+            } else {
+                tracing::info!("Memory OS Phase 6b: StubSynthesizer (default — flip wiki_real_synthesizer_enabled to opt in)");
+                Arc::new(crate::memory_graph::wiki_synth::StubSynthesizer)
+            };
+
         tracing::info!("Application state initialized successfully (phased boot)");
 
         Ok(Self {
@@ -531,11 +552,10 @@ impl AppState {
             pending_exit_plans,
             memu_client,
             memory_graph_store,
-            // Phase 3 ships the stub synthesizer — real LLM client lands
-            // in a follow-up. The synthesizer is shared as Arc<dyn …> so
-            // hot-swapping at runtime stays trivial.
-            wiki_synthesizer: Arc::new(crate::memory_graph::wiki_synth::StubSynthesizer)
-                as Arc<dyn crate::memory_graph::wiki_synth::WikiSynthesizer>,
+            // Picked above based on `memory_os.wiki_real_synthesizer_enabled`
+            // (Phase 6b). Defaults to StubSynthesizer; flipping the flag
+            // routes overview regen through the active LLM provider.
+            wiki_synthesizer,
             // Phase 5 ships the stub lint analyzer; the cost guard +
             // memory_lint_enabled flag are the actual safety mechanism
             // until a real LLM client lands.

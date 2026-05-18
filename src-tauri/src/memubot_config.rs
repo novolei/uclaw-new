@@ -361,9 +361,15 @@ pub struct MemoryOsConfig {
     /// today (UTC) and stops calling the analyzer once consuming the
     /// next candidate would push past this cap.
     pub memory_lint_daily_token_budget: u32,
-    // (Future flags for Phase 6-7 will be added here, each pre-declared
-    //  with its default so existing configs deserialize against a stable
-    //  shape.)
+    /// Phase 6b: Swap Phase 3's `StubSynthesizer` for `RealWikiSynthesizer`
+    /// (which actually calls the configured LLM via `MemoryOsLlmClient`).
+    /// Default `false` to preserve the Phase 3 behaviour for users who
+    /// don't have an LLM provider configured — turn on once a provider
+    /// is set up. The flag is checked at `AppState::new` bootstrap so a
+    /// restart is needed after flipping it.
+    pub wiki_real_synthesizer_enabled: bool,
+    // (Future flags for Phase 6c, 6.1, 6.2 will be added here with their
+    //  defaults so older configs deserialize cleanly.)
 }
 
 impl Default for MemoryOsConfig {
@@ -378,6 +384,10 @@ impl Default for MemoryOsConfig {
             // even with the flag on.
             memory_lint_enabled: true,
             memory_lint_daily_token_budget: 50_000,
+            // Phase 6b default OFF. Stub remains the bootstrap state so
+            // users without an LLM provider keep getting deterministic
+            // overview markdown. Flip to `true` once a provider is set up.
+            wiki_real_synthesizer_enabled: false,
         }
     }
 }
@@ -812,5 +822,50 @@ mod tests {
         assert!(config.memory_os.memory_health_enabled);
         // Default budget still applies when only the flag is mentioned.
         assert_eq!(config.memory_os.memory_lint_daily_token_budget, 50_000);
+    }
+
+    #[test]
+    fn memory_os_phase6b_default_keeps_stub_synthesizer() {
+        // Real synth is opt-in — stub stays the default so first-boot
+        // users with no provider see deterministic markdown, not a
+        // structured error.
+        let c = MemoryOsConfig::default();
+        assert!(
+            !c.wiki_real_synthesizer_enabled,
+            "Phase 6b default must be OFF (stub remains baseline behaviour)"
+        );
+    }
+
+    #[test]
+    fn memory_os_phase6b_explicit_enable_preserved() {
+        let json = r#"{"memory_os":{"wiki_real_synthesizer_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(config.memory_os.wiki_real_synthesizer_enabled);
+        // Forward-compat: opting into Phase 6b must not change Phase 1-5 defaults.
+        assert!(config.memory_os.entity_page_enabled);
+        assert!(config.memory_os.auto_link_enabled);
+        assert!(config.memory_os.wiki_view_enabled);
+        assert!(config.memory_os.memory_health_enabled);
+        assert!(config.memory_os.memory_lint_enabled);
+    }
+
+    #[test]
+    fn memory_os_pre_phase6b_config_still_deserializes() {
+        // A config file written before Phase 6b shipped won't have
+        // `wiki_real_synthesizer_enabled` at all — `#[serde(default)]`
+        // must let it round-trip without rejection.
+        let json = r#"{"memory_os":{
+            "entity_page_enabled":true,
+            "auto_link_enabled":true,
+            "wiki_view_enabled":true,
+            "memory_health_enabled":true,
+            "memory_lint_enabled":true,
+            "memory_lint_daily_token_budget":50000
+        }}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(
+            !config.memory_os.wiki_real_synthesizer_enabled,
+            "missing flag must default to OFF"
+        );
     }
 }
