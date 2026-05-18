@@ -2,6 +2,15 @@
 # 不带尾斜杠 — 同时捕获目录和误提交的 symlink（曾踩过自指 symlink 的坑）
 src-tauri/pyembed
 
+# Embedded Bun runtime (downloaded by setup-bun-runtime.sh)
+# gbrain Sprint 2.0 (Path C-2) — bundle Bun binary as Tauri resource.
+src-tauri/bunembed
+
+# gbrain source clone (downloaded by setup-gbrain-source.sh)
+# gbrain Sprint 2.0 — clone of github.com/garrytan/gbrain with bun-install'd
+# node_modules. Bundled as Tauri resource; spawned at runtime via bunembed/bun.
+src-tauri/gbrain-source
+
 # Rust build artifacts
 src-tauri/target/
 
