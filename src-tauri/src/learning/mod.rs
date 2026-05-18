@@ -29,3 +29,4 @@ pub mod stability_detector;
 pub mod scheduler;
 pub mod cache;
 pub mod prompt_section;
+pub mod extractor;
