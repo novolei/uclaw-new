@@ -1073,6 +1073,14 @@ pub struct LintRunNowInput {
     pub space_id: Option<String>,
 }
 
+/// Phase 6.3 — manual synth trigger from the WikiView "Synthesize now"
+/// button. Single required field is the EntityPage's node id.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageSynthesizeNowInput {
+    pub node_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthFindingDto {

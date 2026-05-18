@@ -123,6 +123,9 @@ import type {
   // Lint (Memory OS Foundation Phase 5)
   LintRunNowInput,
   LintRunOutcome,
+  // EntityPage manual synth (Memory OS Foundation Phase 6.3)
+  EntityPageSynthesizeNowInput,
+  EntitySynthesisOutcome,
   // Cost dashboard
   DailyCostRollup,
   ModelCostRollup,
@@ -842,6 +845,20 @@ export const memoryLintRunNow = (
   input: LintRunNowInput,
 ): Promise<LintRunOutcome> =>
   invoke('memory_lint_run_now', { input });
+
+// ─────────────────────────────────────────────────────────
+// Memory OS Phase 6.3 — Manual EntityPage Synthesis
+// ─────────────────────────────────────────────────────────
+// Re-compiles an EntityPage's compiled_truth via the configured
+// EntitySynthesizer (Stub or Real per the
+// `memory_os.entity_synthesizer_enabled` flag). Surfaces the produced
+// markdown + new aliases + cost in the response so the UI can refresh
+// the detail panel without a follow-up fetch.
+
+export const memoryEntityPageSynthesizeNow = (
+  input: EntityPageSynthesizeNowInput,
+): Promise<EntitySynthesisOutcome> =>
+  invoke('memory_entity_page_synthesize_now', { input });
 
 // ─────────────────────────────────────────────────────────
 // Notifications

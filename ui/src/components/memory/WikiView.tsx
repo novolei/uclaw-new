@@ -24,11 +24,12 @@
 
 import * as React from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Loader2, RefreshCw, ChevronRight, ChevronDown, FileText, Sparkles } from 'lucide-react'
+import { Loader2, RefreshCw, ChevronRight, ChevronDown, FileText, Sparkles, Wand2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
+import { toast } from 'sonner'
 import { cn, formatDateTime } from '@/lib/utils'
 import {
   memoryWikiGetOverview,
@@ -36,11 +37,13 @@ import {
   memoryWikiRegenerate,
   memoryEntityPageList,
   memoryEntityPageGet,
+  memoryEntityPageSynthesizeNow,
 } from '@/lib/tauri-bridge'
 import type {
   WikiArtifactDto,
   WikiRegenerateOutcome,
   EntityPageMetadata,
+  EntitySynthesisOutcome,
 } from '@/lib/types'
 
 // ─── Types ──────────────────────────────────────────────────────────────
@@ -416,12 +419,34 @@ function EntityPageDetail({ nodeId }: { nodeId: string }): React.ReactElement {
   const [data, setData] = React.useState<EntityPageDetailData | null>(null)
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
+  // Phase 6.3 — manual synthesis state. `synthesizing` blocks the
+  // button during the LLM call; `lastSynthOutcome` retains the most
+  // recent token cost / descriptor so the badge can show "real" vs
+  // "stub" after the call resolves.
+  const [synthesizing, setSynthesizing] = React.useState(false)
+  const [lastSynthOutcome, setLastSynthOutcome] =
+    React.useState<EntitySynthesisOutcome | null>(null)
+
+  const loadDetail = React.useCallback(async () => {
+    try {
+      const detail = (await memoryEntityPageGet({ nodeId })) as EntityPageDetailData | null
+      if (detail === null) {
+        setError('Entity page not found (or its kind changed).')
+        return
+      }
+      setData(detail)
+      setError(null)
+    } catch (e) {
+      setError(`Failed to load: ${String(e)}`)
+    }
+  }, [nodeId])
 
   React.useEffect(() => {
     let cancelled = false
     setLoading(true)
     setError(null)
     setData(null)
+    setLastSynthOutcome(null)
     void (async () => {
       try {
         const detail = (await memoryEntityPageGet({ nodeId })) as EntityPageDetailData | null
@@ -442,6 +467,27 @@ function EntityPageDetail({ nodeId }: { nodeId: string }): React.ReactElement {
       cancelled = true
     }
   }, [nodeId])
+
+  const handleSynthesize = React.useCallback(async () => {
+    if (synthesizing) return
+    setSynthesizing(true)
+    try {
+      const outcome = await memoryEntityPageSynthesizeNow({ nodeId })
+      setLastSynthOutcome(outcome)
+      const isStub = outcome.synthesizer_descriptor.startsWith('stub')
+      toast.success(
+        isStub
+          ? 'Synthesized (stub) — flip memory_os.entity_synthesizer_enabled to use a real LLM'
+          : `Synthesized via ${outcome.llm_model ?? 'LLM'} (${outcome.token_cost} tokens)`,
+      )
+      // Refresh the detail panel so the new compiled_truth + aliases show.
+      await loadDetail()
+    } catch (e) {
+      toast.error(`Synthesize failed: ${String(e)}`)
+    } finally {
+      setSynthesizing(false)
+    }
+  }, [nodeId, synthesizing, loadDetail])
 
   if (loading) {
     return (
@@ -464,27 +510,72 @@ function EntityPageDetail({ nodeId }: { nodeId: string }): React.ReactElement {
   return (
     <ScrollArea className="h-full">
       <div className="p-4 space-y-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          <h2 className="text-sm font-semibold">{data.node.title}</h2>
-          {meta?.slug && (
-            <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-              {meta.slug}
-            </Badge>
+        <div className="flex items-start justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap flex-1 min-w-0">
+            <h2 className="text-sm font-semibold">{data.node.title}</h2>
+            {meta?.slug && (
+              <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                {meta.slug}
+              </Badge>
+            )}
+            {meta?.subkind && (
+              <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                {meta.subkind}
+              </Badge>
+            )}
+            <TierBadge tier={meta?.enrichment_tier} />
+            {lastSynthOutcome && (
+              <Badge
+                variant={
+                  lastSynthOutcome.synthesizer_descriptor.startsWith('stub')
+                    ? 'outline'
+                    : 'default'
+                }
+                className="text-[10px] px-1.5 py-0"
+                title={`Synthesizer: ${lastSynthOutcome.synthesizer_descriptor}`}
+              >
+                {lastSynthOutcome.synthesizer_descriptor.startsWith('stub')
+                  ? 'stub synth'
+                  : `${lastSynthOutcome.llm_model ?? 'llm'} · ${lastSynthOutcome.token_cost}t`}
+              </Badge>
+            )}
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-[11px] gap-1.5 shrink-0"
+            onClick={handleSynthesize}
+            disabled={synthesizing}
+            title="Re-compile compiled_truth from the current timeline via the configured synthesizer (Stub or LLM)"
+          >
+            {synthesizing ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <Wand2 className="size-3" />
+            )}
+            Synthesize
+          </Button>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-[10px] text-muted-foreground">
+            updated {formatDateTime(data.node.updatedAt)}
+          </span>
+          {meta?.last_synthesized_at && (
+            <span className="text-[10px] text-muted-foreground">
+              synthesized {formatDateTime(meta.last_synthesized_at)}
+            </span>
           )}
-          {meta?.subkind && (
-            <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-              {meta.subkind}
-            </Badge>
+          {meta?.last_escalated_at && (
+            <span className="text-[10px] text-muted-foreground">
+              tier reviewed {formatDateTime(meta.last_escalated_at)}
+            </span>
           )}
-          {meta?.enrichment_tier !== undefined && (
-            <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-              tier {meta.enrichment_tier}
-            </Badge>
+          {meta?.aliases && meta.aliases.length > 0 && (
+            <span className="text-[10px] text-muted-foreground">
+              aliases: {meta.aliases.join(', ')}
+            </span>
           )}
         </div>
-        <span className="text-[10px] text-muted-foreground">
-          updated {formatDateTime(data.node.updatedAt)}
-        </span>
 
         <Separator />
 
@@ -565,20 +656,52 @@ function EntityPageDetail({ nodeId }: { nodeId: string }): React.ReactElement {
           </>
         )}
 
-        {meta?.aliases && meta.aliases.length > 0 && (
-          <>
-            <Separator />
-            <div className="flex flex-wrap gap-1">
-              <span className="text-[10px] text-muted-foreground">aliases:</span>
-              {meta.aliases.map((a, i) => (
-                <Badge key={i} variant="outline" className="text-[10px] px-1 py-0">
-                  {a}
-                </Badge>
-              ))}
-            </div>
-          </>
-        )}
+        {/* Aliases are now rendered inline in the header metadata strip
+            (Phase 6.3 layout) — the standalone bottom block is
+            redundant. Kept the conditional render in the header so the
+            visual treatment of aliases stays consistent with last_synthesized_at
+            and last_escalated_at. */}
       </div>
     </ScrollArea>
+  )
+}
+
+// ─── TierBadge ─────────────────────────────────────────────────────────
+//
+// Phase 6.3 — colour-coded enrichment_tier badge.
+// Tier 1 (full):  accent — important hub
+// Tier 2 (rich):  secondary — moderate enrichment
+// Tier 3 (stub):  outline — initial state
+// undefined:      no badge (page predates Phase 1 or tier_escalator
+//                 hasn't run yet)
+//
+// Colours go through theme tokens so all 11 uClaw themes render
+// consistently. The variant choice + a tiny title attribute give the
+// user a tooltip explaining what each tier means.
+
+function TierBadge({ tier }: { tier?: number }): React.ReactElement | null {
+  if (tier === undefined || tier === null) return null
+  const meta: Record<number, { variant: 'default' | 'secondary' | 'outline'; label: string; tooltip: string }> = {
+    1: {
+      variant: 'default',
+      label: 'Tier 1 (full)',
+      tooltip: '≥8 mentions — full LLM profile, frequent re-synthesis',
+    },
+    2: {
+      variant: 'secondary',
+      label: 'Tier 2 (rich)',
+      tooltip: '3-7 mentions — LLM-written 200-500 char summary',
+    },
+    3: {
+      variant: 'outline',
+      label: 'Tier 3 (stub)',
+      tooltip: '1-2 mentions — one-sentence stub, eligible for upgrade',
+    },
+  }
+  const cfg = meta[tier] ?? { variant: 'outline' as const, label: `Tier ${tier}`, tooltip: 'Unknown tier' }
+  return (
+    <Badge variant={cfg.variant} className="text-[10px] px-1.5 py-0" title={cfg.tooltip}>
+      {cfg.label}
+    </Badge>
   )
 }

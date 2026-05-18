@@ -5341,6 +5341,43 @@ pub async fn memory_lint_run_now(
     serde_json::to_value(&outcome).map_err(|e| format!("serialize: {}", e))
 }
 
+// ─── Memory OS Phase 6.2 / 6.3 — EntityPage synth IPC ──────────────────────
+//
+// `memory_entity_page_synthesize_now` is the manual trigger behind the
+// WikiView "Synthesize now" button. Reads the current page state, runs
+// the configured EntitySynthesizer (Stub or Real per the flag),
+// persists a new memory_version + updated metadata, and returns the
+// `SynthesisOutcome` shape verbatim so the UI can show "new version
+// id", token cost, and an LLM-vs-stub badge.
+//
+// The gate matches Phase 1 behaviour: entity_page_enabled must be on
+// (so the EntityPage subsystem is active at all). entity_synthesizer_enabled
+// gates Real-vs-Stub but does NOT gate the IPC itself — when the flag
+// is off the stub still works, so the user sees deterministic
+// placeholder text rather than an error.
+
+/// Manually re-synthesize an EntityPage's compiled_truth via the
+/// configured EntitySynthesizer. Returns the
+/// `SynthesisOutcome { newVersionId, tokenCost, llmModel, synthesizerDescriptor,
+/// newCompiledTruth, newAliases }`.
+#[tauri::command]
+pub async fn memory_entity_page_synthesize_now(
+    state: State<'_, AppState>,
+    input: EntityPageSynthesizeNowInput,
+) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state).await?;
+    let store = state.memory_graph_store.clone();
+    let synth = state.entity_synthesizer.clone();
+    let outcome = crate::proactive::scenarios::entity_synthesizer::synthesize_entity_now(
+        store,
+        synth,
+        &input.node_id,
+    )
+    .await
+    .map_err(|e| format!("synthesize_entity_now: {}", e))?;
+    serde_json::to_value(&outcome).map_err(|e| format!("serialize outcome: {}", e))
+}
+
 // ─── Fragment / Daily Summary Commands ─────────────────────────────────────
 
 /// Parse an RFC-3339 / ISO-8601 timestamp string into epoch millis.
