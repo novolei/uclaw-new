@@ -942,6 +942,152 @@ pub struct MemoryGraphDeleteNodeInput {
     pub node_id: String,
 }
 
+// ─── EntityPage IPC types (Memory OS Foundation Phase 1) ───────────────
+//
+// Wire shape for the `memory_entity_page_*` Tauri commands. The Rust-side
+// EntityPageMetadata schema is fully expressed by these DTOs, but for IPC
+// we keep `metadata` as a raw `serde_json::Value` to mirror the existing
+// Memory Graph command style (see MemoryGraphCreateNodeInput) and to keep
+// the frontend free to extend the schema without round-trip Rust changes.
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageCreateInput {
+    /// Workspace scope. Defaults to `"default"` if omitted.
+    pub space_id: Option<String>,
+    /// Stable handle; lowercased + trimmed before storage.
+    pub slug: String,
+    pub title: String,
+    /// Initial compiled_truth markdown body (lands in
+    /// `memory_versions.content` as the active version).
+    pub compiled_truth: String,
+    /// Optional EntityPageMetadata-shaped JSON. Unknown fields are
+    /// tolerated (forward-compat). Schema documented in
+    /// `memory_graph::entity_page::EntityPageMetadata`.
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageGetInput {
+    pub node_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageFindBySlugInput {
+    pub space_id: Option<String>,
+    pub slug: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageListInput {
+    pub space_id: Option<String>,
+    /// Optional metadata.subkind filter (`"entity"`, `"concept"`, ...).
+    pub subkind: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageAppendTimelineInput {
+    pub node_id: String,
+    /// One timeline entry; matches
+    /// `memory_graph::entity_page::TimelineEntry`. Date is `YYYY-MM-DD`.
+    pub date: String,
+    pub text: String,
+    pub source_node_id: Option<String>,
+    pub source_session_id: Option<String>,
+}
+
+// ─── Wiki Artifacts IPC types (Memory OS Foundation Phase 3) ───────────
+//
+// Wire types for the `memory_wiki_*` Tauri commands. Read shape is a
+// `WikiArtifactDto` mirroring the `wiki_artifacts` row; the frontend
+// renders `content` as markdown.
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WikiGetInput {
+    pub space_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WikiRegenerateInput {
+    pub space_id: Option<String>,
+    /// Which artifact to regenerate. `"index"` is free; `"overview"`
+    /// calls the configured `WikiSynthesizer` (stub in Phase 3, real
+    /// LLM in a follow-up). Default behaviour when omitted: regenerate
+    /// `"index"` only (the cheap path).
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WikiArtifactDto {
+    pub id: String,
+    pub space_id: String,
+    pub kind: String,
+    pub content: String,
+    pub generated_at: i64,
+    pub source_node_ids: Vec<String>,
+    pub llm_model: Option<String>,
+    pub token_cost: i64,
+}
+
+// ─── Health Findings IPC types (Memory OS Foundation Phase 4) ──────────
+//
+// Read DTO for `memory_health_findings` rows + input shapes for the
+// three new `memory_health_*` commands.
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthListInput {
+    pub space_id: Option<String>,
+    /// When true, include rows with `dismissed=1`. Default false —
+    /// the frontend usually only shows the active queue.
+    pub include_dismissed: Option<bool>,
+    /// Optional `check_kind` filter (e.g. `"orphan"`). When None,
+    /// returns every kind.
+    pub check_kind: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthDismissInput {
+    pub finding_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthRunNowInput {
+    pub space_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LintRunNowInput {
+    pub space_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthFindingDto {
+    pub id: String,
+    pub space_id: String,
+    pub severity: String,
+    pub check_kind: String,
+    pub subject: String,
+    pub payload_json: Option<String>,
+    pub is_lint: bool,
+    pub dismissed: bool,
+    pub discovered_at: i64,
+    pub dismissed_at: Option<i64>,
+}
+
 // ─── Cost dashboard ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

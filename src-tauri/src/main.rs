@@ -250,6 +250,19 @@ fn main() {
                                         db.clone(),
                                         gene_repo,
                                         memubot_config.gene_evolution.clone(),
+                                        // Phase 3/4/5 runtime knobs bundled into
+                                        // MemoryOsRuntimeConfig — replaces what used
+                                        // to be five trailing positional args.
+                                        // Future Memory OS phases just add fields
+                                        // to the struct without touching this call
+                                        // site.
+                                        {
+                                            let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                                            uclaw_core::proactive::MemoryOsRuntimeConfig::from_memubot_config(
+                                                &memubot_config.memory_os,
+                                                state_ref.lint_analyzer.clone(),
+                                            )
+                                        },
                                     )
                                 );
                                 // Inject into AppState for tauri_commands access
@@ -612,6 +625,22 @@ fn main() {
             uclaw_core::tauri_commands::memory_graph_quick_capture,
             uclaw_core::tauri_commands::memory_graph_update_node,
             uclaw_core::tauri_commands::memory_graph_delete_node,
+            // EntityPage (Memory OS Foundation Phase 1)
+            uclaw_core::tauri_commands::memory_entity_page_create,
+            uclaw_core::tauri_commands::memory_entity_page_get,
+            uclaw_core::tauri_commands::memory_entity_page_find_by_slug,
+            uclaw_core::tauri_commands::memory_entity_page_list,
+            uclaw_core::tauri_commands::memory_entity_page_append_timeline,
+            // Wiki artifacts (Memory OS Foundation Phase 3)
+            uclaw_core::tauri_commands::memory_wiki_get_overview,
+            uclaw_core::tauri_commands::memory_wiki_get_index,
+            uclaw_core::tauri_commands::memory_wiki_regenerate,
+            // Health findings (Memory OS Foundation Phase 4)
+            uclaw_core::tauri_commands::memory_health_list_findings,
+            uclaw_core::tauri_commands::memory_health_dismiss_finding,
+            uclaw_core::tauri_commands::memory_health_run_now,
+            // Lint scan (Memory OS Foundation Phase 5)
+            uclaw_core::tauri_commands::memory_lint_run_now,
             // Fragment / Daily Summary
             uclaw_core::tauri_commands::memory_graph_list_fragments,
             uclaw_core::tauri_commands::search_fragments,

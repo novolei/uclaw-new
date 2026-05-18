@@ -7,7 +7,7 @@
  */
 import * as React from 'react'
 import { useAtom } from 'jotai'
-import { Mic, ClipboardPaste, Loader2, Zap } from 'lucide-react'
+import { Mic, ClipboardPaste, Loader2, Zap, FileText } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   Dialog,
@@ -19,7 +19,32 @@ import {
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { quickCaptureOpenAtom } from '@/atoms/quick-capture-atoms'
-import { memoryGraphQuickCapture } from '@/lib/tauri-bridge'
+import {
+  memoryGraphQuickCapture,
+  memoryEntityPageCreate,
+} from '@/lib/tauri-bridge'
+
+// Memory OS Foundation Phase 3 — capture mode selector.
+//
+// "fragment" path goes through the existing memory_graph_quick_capture
+// (Episode subtype). "entity_page" path goes through the Phase 1
+// memory_entity_page_create command (creates an EntityPage node with
+// compiled_truth + auto-link side-effects via Phase 2 hook).
+type CaptureMode = 'fragment' | 'entity_page'
+
+// EntityPage subkinds available in the UI. Mirrors the canonical set
+// in `memory_graph::wiki_synth` so the wiki index can group correctly.
+const ENTITY_PAGE_SUBKINDS = [
+  { id: 'entity', label: 'Entity' },
+  { id: 'concept', label: 'Concept' },
+  { id: 'comparison', label: 'Comparison' },
+  { id: 'question', label: 'Question' },
+  { id: 'synthesis', label: 'Synthesis' },
+  { id: 'decision', label: 'Decision' },
+  { id: 'gap', label: 'Gap' },
+] as const
+
+type EntityPageSubkind = (typeof ENTITY_PAGE_SUBKINDS)[number]['id']
 
 // ─── 标签定义 ────────────────────────────────────────────────────────────────
 const FRAGMENT_SUBTYPES = [
@@ -35,8 +60,13 @@ type FragmentSubtype = (typeof FRAGMENT_SUBTYPES)[number]['id']
 
 export function QuickCaptureDialog(): React.ReactElement | null {
   const [open, setOpen] = useAtom(quickCaptureOpenAtom)
+  const [mode, setMode] = React.useState<CaptureMode>('fragment')
   const [content, setContent] = React.useState('')
   const [selectedTag, setSelectedTag] = React.useState<FragmentSubtype | null>(null)
+  // Memory OS Phase 3 — additional fields for EntityPage mode.
+  const [entitySlug, setEntitySlug] = React.useState('')
+  const [entityTitle, setEntityTitle] = React.useState('')
+  const [entitySubkind, setEntitySubkind] = React.useState<EntityPageSubkind>('entity')
   const [clipboardText, setClipboardText] = React.useState<string | null>(null)
   const [saving, setSaving] = React.useState(false)
   const textareaRef = React.useRef<HTMLTextAreaElement>(null)
@@ -46,8 +76,12 @@ export function QuickCaptureDialog(): React.ReactElement | null {
     if (!open) return
 
     // 重置状态
+    setMode('fragment')
     setContent('')
     setSelectedTag(null)
+    setEntitySlug('')
+    setEntityTitle('')
+    setEntitySubkind('entity')
     setClipboardText(null)
     setSaving(false)
 
@@ -83,8 +117,42 @@ export function QuickCaptureDialog(): React.ReactElement | null {
 
   // ── 保存逻辑 ──────────────────────────────────────────────────────────────
   const handleSave = async () => {
+    if (saving) return
+
+    if (mode === 'entity_page') {
+      // EntityPage mode — slug + title required, compiled_truth optional.
+      const slug = entitySlug.trim().toLowerCase()
+      const title = entityTitle.trim()
+      if (!slug || !title) {
+        toast.error('Slug and title are required for entity pages')
+        return
+      }
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
+        toast.error('Slug must be lowercase letters, digits, and dashes only')
+        return
+      }
+      setSaving(true)
+      try {
+        await memoryEntityPageCreate({
+          slug,
+          title,
+          compiledTruth: content.trim(),
+          metadata: { subkind: entitySubkind },
+        })
+        toast.success(`Created entity page ${slug} ✓`)
+        setOpen(false)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        toast.error(`Failed to create entity page: ${msg}`)
+      } finally {
+        setSaving(false)
+      }
+      return
+    }
+
+    // Fragment mode (existing behavior).
     const trimmed = content.trim()
-    if (!trimmed || saving) return
+    if (!trimmed) return
 
     setSaving(true)
     try {
@@ -146,6 +214,80 @@ export function QuickCaptureDialog(): React.ReactElement | null {
         </DialogHeader>
 
         <div className="px-5 pb-5 space-y-4">
+          {/* ── Mode toggle — Memory OS Phase 3 ──────────────────── */}
+          <div className="flex items-center gap-1 p-0.5 rounded-md border border-border/60 bg-muted/30">
+            <button
+              type="button"
+              onClick={() => setMode('fragment')}
+              className={cn(
+                'flex-1 px-3 py-1.5 text-xs rounded-sm transition-colors flex items-center justify-center gap-1.5',
+                mode === 'fragment'
+                  ? 'bg-popover text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              <Zap className="size-3" />
+              Fragment
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('entity_page')}
+              className={cn(
+                'flex-1 px-3 py-1.5 text-xs rounded-sm transition-colors flex items-center justify-center gap-1.5',
+                mode === 'entity_page'
+                  ? 'bg-popover text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              <FileText className="size-3" />
+              EntityPage
+            </button>
+          </div>
+
+          {/* ── EntityPage fields (only in entity_page mode) ────── */}
+          {mode === 'entity_page' && (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={entitySlug}
+                  onChange={(e) => setEntitySlug(e.target.value)}
+                  placeholder="slug (kebab-case)"
+                  className={cn(
+                    'flex-1 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 text-xs',
+                    'placeholder:text-muted-foreground/60',
+                    'focus:outline-none focus:ring-2 focus:ring-pink-500/40 focus:border-pink-500/50',
+                  )}
+                />
+                <input
+                  type="text"
+                  value={entityTitle}
+                  onChange={(e) => setEntityTitle(e.target.value)}
+                  placeholder="Title"
+                  className={cn(
+                    'flex-1 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 text-xs',
+                    'placeholder:text-muted-foreground/60',
+                    'focus:outline-none focus:ring-2 focus:ring-pink-500/40 focus:border-pink-500/50',
+                  )}
+                />
+              </div>
+              <select
+                value={entitySubkind}
+                onChange={(e) => setEntitySubkind(e.target.value as EntityPageSubkind)}
+                className={cn(
+                  'w-full rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 text-xs',
+                  'focus:outline-none focus:ring-2 focus:ring-pink-500/40 focus:border-pink-500/50',
+                )}
+              >
+                {ENTITY_PAGE_SUBKINDS.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {/* ── Textarea 区域 ──────────────────────────────────── */}
           <div className="relative">
             <textarea
@@ -153,7 +295,11 @@ export function QuickCaptureDialog(): React.ReactElement | null {
               value={content}
               onChange={(e) => setContent(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="输入或粘贴你想记住的内容…"
+              placeholder={
+                mode === 'entity_page'
+                  ? 'compiled_truth (markdown — initial synthesis for this entity)…'
+                  : '输入或粘贴你想记住的内容…'
+              }
               rows={4}
               className={cn(
                 'w-full resize-none rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-sm',

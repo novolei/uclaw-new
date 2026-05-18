@@ -34,6 +34,12 @@ pub struct MemubotConfig {
     /// per-run cap. See `docs/superpowers/specs/2026-05-17-symphony-runtime-design.md` §7.
     #[serde(default)]
     pub symphony: SymphonyConfig,
+    /// Memory OS feature flags — three-layer architecture (Foundation /
+    /// Cognitive / Engines, Phases 1-21). Each phase ships an additive
+    /// flag that lets the user gracefully disable a feature without
+    /// rolling back schema. See `docs/superpowers/specs/2026-05-18-agent-memory-os-design.md`.
+    #[serde(default)]
+    pub memory_os: MemoryOsConfig,
     /// Maximum wall-clock seconds the agent loop may run for a single
     /// user message before forcibly terminating. Default 600s (10 min).
     /// Override via settings → Advanced (or edit ~/.uclaw/memubot_config.json).
@@ -305,6 +311,77 @@ impl Default for SymphonyConfig {
 fn default_agent_loop_timeout_secs() -> u64 { 600 }
 fn default_true() -> bool { true }
 
+/// Memory OS feature flags — three-layer architecture.
+///
+/// Each phase ships ONE additive flag. Defaults are conservative:
+/// Foundation Phase 1 (EntityPage CRUD) is on by default because it's
+/// purely additive and read-side; subsequent phases that introduce
+/// behavior changes default to on once they're stable, and to off
+/// during ramp-up. New flags MUST default to a value that preserves the
+/// behavior of an older binary — this is the contract that lets users
+/// flip a flag, restart, and recover from a regression without rolling
+/// back the binary.
+///
+/// Spec: `docs/superpowers/specs/2026-05-18-agent-memory-os-design.md` §5.4.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryOsConfig {
+    // ─── Foundation Layer (Phase 1-7) ───────────────────────────────
+    /// Phase 1: EntityPage CRUD via `memory_entity_page_*` commands.
+    /// When `false`, every IPC handler returns a structured error so the
+    /// frontend can disable its EntityPage UI without crashing.
+    pub entity_page_enabled: bool,
+    /// Phase 2: Zero-LLM auto-link post-hook on `create_version` /
+    /// `create_entity_page`. When `false`, version writes still happen
+    /// normally but no auto_link edges are inserted and no stale-link
+    /// reconciliation runs (existing auto_link rows on disk are
+    /// untouched). Explicit `create_edge` calls are unaffected.
+    pub auto_link_enabled: bool,
+    /// Phase 3: AI Wiki view backing (`wiki_artifacts` table population).
+    /// When `false`, ProactiveService stops regenerating
+    /// `wiki_artifacts(kind='index')` automatically, and the manual
+    /// `memory_wiki_regenerate` IPC command returns a structured error.
+    /// Existing wiki_artifacts rows on disk are untouched.
+    pub wiki_view_enabled: bool,
+    /// Phase 4: Zero-LLM structural health checks. When `false`,
+    /// ProactiveService stops running `run_health_checks` on tick and
+    /// the manual `memory_health_run_now` IPC returns a structured
+    /// error. Existing `memory_health_findings` rows on disk are
+    /// untouched and the list/dismiss IPC commands keep working so the
+    /// user can still triage findings discovered before flag was off.
+    pub memory_health_enabled: bool,
+    /// Phase 5: LLM-driven semantic lint. When `false`, ProactiveService
+    /// stops periodic scans and `memory_lint_run_now` IPC returns a
+    /// structured error. Existing `memory_health_findings` rows with
+    /// `is_lint=1` stay; the list/dismiss commands work the same as
+    /// for Phase 4 findings.
+    pub memory_lint_enabled: bool,
+    /// Phase 5: Daily token cap for the memory_lint scenario. The
+    /// orchestrator sums `cost_records.model LIKE 'memory_lint%'` for
+    /// today (UTC) and stops calling the analyzer once consuming the
+    /// next candidate would push past this cap.
+    pub memory_lint_daily_token_budget: u32,
+    // (Future flags for Phase 6-7 will be added here, each pre-declared
+    //  with its default so existing configs deserialize against a stable
+    //  shape.)
+}
+
+impl Default for MemoryOsConfig {
+    fn default() -> Self {
+        Self {
+            entity_page_enabled: true,
+            auto_link_enabled: true,
+            wiki_view_enabled: true,
+            memory_health_enabled: true,
+            // Phase 5 default ON. The cost cap is the actual safety
+            // mechanism: if the cap is zero the analyzer never runs
+            // even with the flag on.
+            memory_lint_enabled: true,
+            memory_lint_daily_token_budget: 50_000,
+        }
+    }
+}
+
 // ─── Default 实现 ────────────────────────────────────────────────────────
 
 impl Default for MemubotConfig {
@@ -320,6 +397,7 @@ impl Default for MemubotConfig {
             automation: AutomationConfig::default(),
             gene_evolution: GeneEvolutionConfig::default(),
             symphony: SymphonyConfig::default(),
+            memory_os: MemoryOsConfig::default(),
             agent_loop_timeout_secs: 600,
             plan_mode_suggest_enabled: true,
         }
@@ -613,5 +691,126 @@ mod tests {
         assert_eq!(restored.per_day_cost_cap_usd, original.per_day_cost_cap_usd);
         assert_eq!(restored.stall_timeout_ms, original.stall_timeout_ms);
         assert_eq!(restored.max_retry_backoff_ms, original.max_retry_backoff_ms);
+    }
+
+    // ─── Memory OS Foundation Phase 1 ─────────────────────────────────
+
+    #[test]
+    fn memory_os_config_default_has_entity_page_enabled() {
+        let c = MemoryOsConfig::default();
+        assert!(c.entity_page_enabled, "Phase 1 default should be on");
+    }
+
+    #[test]
+    fn memory_os_config_default_has_auto_link_enabled() {
+        let c = MemoryOsConfig::default();
+        assert!(c.auto_link_enabled, "Phase 2 default should be on");
+    }
+
+    #[test]
+    fn memory_os_config_default_has_wiki_view_enabled() {
+        let c = MemoryOsConfig::default();
+        assert!(c.wiki_view_enabled, "Phase 3 default should be on");
+    }
+
+    #[test]
+    fn memory_os_phase3_explicit_disable_preserved() {
+        let json = r#"{"memory_os":{"wiki_view_enabled":false}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.memory_os.wiki_view_enabled);
+        // Forward-compat: disabling Phase 3 must not flip Phase 1/2 off.
+        assert!(config.memory_os.entity_page_enabled);
+        assert!(config.memory_os.auto_link_enabled);
+    }
+
+    #[test]
+    fn memory_os_config_phase2_round_trip_off() {
+        let json = r#"{"memory_os":{"auto_link_enabled":false}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        // Phase 2 off…
+        assert!(!config.memory_os.auto_link_enabled);
+        // …but Phase 1 default still applies (forward-compat: a config
+        // file that mentions only Phase 2 doesn't silently disable
+        // Phase 1).
+        assert!(config.memory_os.entity_page_enabled);
+        // Round-trip preserves both.
+        let re = serde_json::to_string(&config).unwrap();
+        let restored: MemubotConfig = serde_json::from_str(&re).unwrap();
+        assert!(!restored.memory_os.auto_link_enabled);
+        assert!(restored.memory_os.entity_page_enabled);
+    }
+
+    #[test]
+    fn memubot_config_includes_memory_os_section() {
+        let config: MemubotConfig = serde_json::from_str("{}").unwrap();
+        assert!(config.memory_os.entity_page_enabled);
+    }
+
+    #[test]
+    fn memory_os_config_respects_explicit_disable() {
+        // Forward-compat: a config file written today with the flag off
+        // must round-trip back to off, not silently re-enable.
+        let json = r#"{"memory_os":{"entity_page_enabled":false}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.memory_os.entity_page_enabled);
+        let re_serialized = serde_json::to_string(&config).unwrap();
+        let restored: MemubotConfig = serde_json::from_str(&re_serialized).unwrap();
+        assert!(!restored.memory_os.entity_page_enabled);
+    }
+
+    #[test]
+    fn memory_os_config_partial_json_keeps_defaults() {
+        // A config file from an older binary that doesn't know `memory_os`
+        // should still deserialize and supply defaults.
+        let json = r#"{"agentLoopTimeoutSecs": 900}"#;
+        // Note: top-level fields use serde defaults (not camelCase rename),
+        // so the snake_case form works too. Just verifying the section
+        // defaults populate when missing entirely.
+        let config: MemubotConfig =
+            serde_json::from_str(r#"{"agent_loop_timeout_secs": 900}"#).unwrap();
+        assert!(config.memory_os.entity_page_enabled);
+        let _ = json;
+    }
+
+    #[test]
+    fn memory_os_config_default_has_memory_health_enabled() {
+        let c = MemoryOsConfig::default();
+        assert!(c.memory_health_enabled, "Phase 4 default should be on");
+    }
+
+    #[test]
+    fn memory_os_phase4_explicit_disable_preserved() {
+        let json = r#"{"memory_os":{"memory_health_enabled":false}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.memory_os.memory_health_enabled);
+        // Forward-compat: disabling Phase 4 must not flip Phase 1/2/3 off.
+        assert!(config.memory_os.entity_page_enabled);
+        assert!(config.memory_os.auto_link_enabled);
+        assert!(config.memory_os.wiki_view_enabled);
+    }
+
+    #[test]
+    fn memory_os_phase5_defaults_are_sensible() {
+        let c = MemoryOsConfig::default();
+        assert!(c.memory_lint_enabled, "Phase 5 default should be on");
+        assert!(c.memory_lint_daily_token_budget > 0, "budget must be > 0");
+        assert!(
+            c.memory_lint_daily_token_budget <= 200_000,
+            "budget should be capped at a reasonable value"
+        );
+    }
+
+    #[test]
+    fn memory_os_phase5_explicit_disable_preserved() {
+        let json = r#"{"memory_os":{"memory_lint_enabled":false}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.memory_os.memory_lint_enabled);
+        // Forward-compat: disabling Phase 5 must not flip earlier phases off.
+        assert!(config.memory_os.entity_page_enabled);
+        assert!(config.memory_os.auto_link_enabled);
+        assert!(config.memory_os.wiki_view_enabled);
+        assert!(config.memory_os.memory_health_enabled);
+        // Default budget still applies when only the flag is mentioned.
+        assert_eq!(config.memory_os.memory_lint_daily_token_budget, 50_000);
     }
 }

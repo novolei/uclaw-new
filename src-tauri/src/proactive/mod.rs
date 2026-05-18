@@ -23,6 +23,6 @@ mod service;
 mod storage;
 mod types;
 
-pub use service::ProactiveService;
+pub use service::{MemoryOsRuntimeConfig, ProactiveService};
 pub use storage::ProactiveStorage;
 pub use types::*;

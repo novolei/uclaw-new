@@ -189,6 +189,20 @@ pub struct AppState {
     // Memory graph store for Steward memory system
     pub memory_graph_store: Arc<MemoryGraphStore>,
 
+    /// AI Wiki synthesizer — drives `wiki_artifacts(kind="overview")`
+    /// regeneration. Memory OS Foundation Phase 3 ships
+    /// `wiki_synth::StubSynthesizer` as the default; future PRs swap in
+    /// a real Anthropic / OpenAI client without touching the IPC or
+    /// scenario code paths.
+    pub wiki_synthesizer: Arc<dyn crate::memory_graph::wiki_synth::WikiSynthesizer>,
+
+    /// LLM lint analyzer — used by the Phase 5 memory_lint scenario
+    /// to judge whether candidate findings (hub stubs, stale summaries,
+    /// contradictions) are real. Phase 5 ships
+    /// `memory_lint::StubAnalyzer` as the default; swap with a real
+    /// client when Phase 5 has soaked in production.
+    pub lint_analyzer: Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
+
     // ─── Phased Boot: 新增服务 ───────────────────────────────────────
     /// 中央消息总线
     pub infra_service: Arc<InfraService>,
@@ -427,6 +441,18 @@ impl AppState {
             memubot_config.power.prevent_sleep,
         );
 
+        // Memory OS Foundation Phase 2 — apply the auto_link feature flag
+        // to the store now that we know what the user configured. The
+        // store defaults this to `true` in `MemoryGraphStore::new`; we
+        // override here so a user-set `false` in memubot_config.json takes
+        // effect from the very first create_version call.
+        memory_graph_store.set_auto_link_enabled(memubot_config.memory_os.auto_link_enabled);
+        tracing::info!(
+            "Memory OS flags applied: entity_page={}, auto_link={}",
+            memubot_config.memory_os.entity_page_enabled,
+            memubot_config.memory_os.auto_link_enabled,
+        );
+
         // Evaluation harness
         let trajectory_store = Arc::new(crate::harness::TrajectoryStore::new(db.clone()));
         let tool_budget = Arc::new(crate::harness::ToolBudgetManager::new(&data_dir));
@@ -505,6 +531,16 @@ impl AppState {
             pending_exit_plans,
             memu_client,
             memory_graph_store,
+            // Phase 3 ships the stub synthesizer — real LLM client lands
+            // in a follow-up. The synthesizer is shared as Arc<dyn …> so
+            // hot-swapping at runtime stays trivial.
+            wiki_synthesizer: Arc::new(crate::memory_graph::wiki_synth::StubSynthesizer)
+                as Arc<dyn crate::memory_graph::wiki_synth::WikiSynthesizer>,
+            // Phase 5 ships the stub lint analyzer; the cost guard +
+            // memory_lint_enabled flag are the actual safety mechanism
+            // until a real LLM client lands.
+            lint_analyzer: Arc::new(crate::proactive::scenarios::memory_lint::StubAnalyzer)
+                as Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
             infra_service,
             service_manager,
             metrics_service,

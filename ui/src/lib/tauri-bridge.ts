@@ -103,6 +103,26 @@ import type {
   MemoryGraphCreateNodeInput,
   MemoryGraphUpdateNodeInput,
   MemoryGraphDeleteNodeInput,
+  // EntityPage (Memory OS Foundation Phase 1)
+  EntityPageCreateInput,
+  EntityPageGetInput,
+  EntityPageFindBySlugInput,
+  EntityPageListInput,
+  EntityPageAppendTimelineInput,
+  // Wiki artifacts (Memory OS Foundation Phase 3)
+  WikiGetInput,
+  WikiRegenerateInput,
+  WikiArtifactDto,
+  WikiRegenerateOutcome,
+  // Health findings (Memory OS Foundation Phase 4)
+  HealthListInput,
+  HealthDismissInput,
+  HealthRunNowInput,
+  HealthFindingDto,
+  HealthRunOutcome,
+  // Lint (Memory OS Foundation Phase 5)
+  LintRunNowInput,
+  LintRunOutcome,
   // Cost dashboard
   DailyCostRollup,
   ModelCostRollup,
@@ -738,6 +758,90 @@ export const memoryGraphUpdateNode = (input: MemoryGraphUpdateNodeInput): Promis
 
 export const memoryGraphDeleteNode = (input: MemoryGraphDeleteNodeInput): Promise<unknown> =>
   invoke('memory_graph_delete_node', { input });
+
+// ─────────────────────────────────────────────────────────
+// EntityPage (Memory OS Foundation Phase 1)
+// ─────────────────────────────────────────────────────────
+//
+// Thin invoke wrappers for the `memory_entity_page_*` commands. All return
+// `unknown` (matching the existing Memory Graph wrapper style) — caller
+// code that wants typed access should narrow via the response shape from
+// the Rust side (`MemoryNodeDetail`).
+
+export const memoryEntityPageCreate = (input: EntityPageCreateInput): Promise<unknown> =>
+  invoke('memory_entity_page_create', { input });
+
+export const memoryEntityPageGet = (input: EntityPageGetInput): Promise<unknown> =>
+  invoke('memory_entity_page_get', { input });
+
+export const memoryEntityPageFindBySlug = (input: EntityPageFindBySlugInput): Promise<unknown> =>
+  invoke('memory_entity_page_find_by_slug', { input });
+
+export const memoryEntityPageList = (input: EntityPageListInput): Promise<unknown> =>
+  invoke('memory_entity_page_list', { input });
+
+export const memoryEntityPageAppendTimeline = (
+  input: EntityPageAppendTimelineInput,
+): Promise<unknown> =>
+  invoke('memory_entity_page_append_timeline', { input });
+
+// ─────────────────────────────────────────────────────────
+// Wiki artifacts (Memory OS Foundation Phase 3)
+// ─────────────────────────────────────────────────────────
+//
+// All three commands return `null` when no row exists (rather than
+// throwing) — the WikiView treats null as "empty state, prompt the
+// user to regenerate".
+
+export const memoryWikiGetOverview = (
+  input: WikiGetInput,
+): Promise<WikiArtifactDto | null> =>
+  invoke('memory_wiki_get_overview', { input });
+
+export const memoryWikiGetIndex = (
+  input: WikiGetInput,
+): Promise<WikiArtifactDto | null> =>
+  invoke('memory_wiki_get_index', { input });
+
+export const memoryWikiRegenerate = (
+  input: WikiRegenerateInput,
+): Promise<WikiRegenerateOutcome> =>
+  invoke('memory_wiki_regenerate', { input });
+
+// ─────────────────────────────────────────────────────────
+// Health findings (Memory OS Foundation Phase 4)
+// ─────────────────────────────────────────────────────────
+//
+// list/dismiss keep working when memory_health_enabled = false (so the
+// user can triage existing findings); only run_now refuses.
+
+export const memoryHealthListFindings = (
+  input: HealthListInput,
+): Promise<HealthFindingDto[]> =>
+  invoke('memory_health_list_findings', { input });
+
+export const memoryHealthDismissFinding = (
+  input: HealthDismissInput,
+): Promise<{ success: boolean; findingId: string; alreadyMissing: boolean }> =>
+  invoke('memory_health_dismiss_finding', { input });
+
+export const memoryHealthRunNow = (
+  input: HealthRunNowInput,
+): Promise<HealthRunOutcome> =>
+  invoke('memory_health_run_now', { input });
+
+// ─────────────────────────────────────────────────────────
+// Lint scan (Memory OS Foundation Phase 5)
+// ─────────────────────────────────────────────────────────
+//
+// run_now respects the daily token budget — if today's spend already
+// meets/exceeds the cap the call still succeeds but returns
+// total_inserted = 0 and skipped_due_to_budget > 0.
+
+export const memoryLintRunNow = (
+  input: LintRunNowInput,
+): Promise<LintRunOutcome> =>
+  invoke('memory_lint_run_now', { input });
 
 // ─────────────────────────────────────────────────────────
 // Notifications

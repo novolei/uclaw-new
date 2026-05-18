@@ -106,7 +106,39 @@ pub struct MemoryRecallConfig {
     /// channel (independent of boot_limit quota). Set to 0 to disable.
     /// Default: 5
     pub boot_user_profile_limit: usize,
+
+    // ─── Memory OS Foundation Phase 5 — recall boost ───────────────────
+    //
+    // Spec §4.5: EntityPage hits get a multiplicative boost so the
+    // pre-compiled compiled_truth surfaces preferentially over per-event
+    // Episode fragments at the same rank. Backlink count adds a
+    // logarithmic bump so well-connected entities rise above isolated
+    // ones. Both default to neutral (×1.0 / +0.0) for backward-compat;
+    // a memubot_config knob can dial them up after the user observes
+    // recall behavior in their workspace.
+    /// Multiplicative boost applied to RRF / Weighted score when the
+    /// node's `kind == 'entity_page'`. Default 1.0 (no change).
+    /// Spec recommends 1.2 for gradual rollout, 1.5 once stable.
+    ///
+    /// Note: MemoryRecallConfig itself has no serde derive — the wire
+    /// boundary is `MemoryRecallConfigDto` below, which IS serde-aware.
+    /// Default propagation goes through `Default::default()` on this
+    /// struct + the DTO's `unwrap_or` fallback in the `From` impl.
+    pub entity_page_boost: f32,
+    /// Additive weight on `log10(1 + backlink_count)` where
+    /// `backlink_count` is `COUNT(memory_edges WHERE child_node_id = node)`.
+    /// Default 0.0 (no change). Spec recommends 0.3 once Phase 2
+    /// auto-link has populated enough edges for the signal to mean
+    /// something.
+    pub backlink_boost_weight: f32,
 }
+
+// Standalone default functions retained: used both by
+// `MemoryRecallConfig::default()` below AND (transitively) by the DTO's
+// `#[serde(default)]` Option<f32> fields, which deserialize to None when
+// absent and then `From<Dto>` falls back to the Default impl's value.
+fn default_entity_page_boost() -> f32 { 1.0 }
+fn default_backlink_boost_weight() -> f32 { 0.0 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -134,6 +166,10 @@ impl Default for MemoryRecallConfig {
             time_decay_half_life_days: 7.0,
             fts_fallback_limit_multiplier: 2.0,
             boot_user_profile_limit: 5,
+            // Phase 5 boost — neutral defaults so the upgrade is a no-op
+            // until the user opts in via memory_recall_config IPC.
+            entity_page_boost: default_entity_page_boost(),
+            backlink_boost_weight: default_backlink_boost_weight(),
         }
     }
 }
@@ -177,6 +213,12 @@ pub struct MemoryRecallConfigDto {
     pub fts_fallback_limit_multiplier: Option<f32>,
     #[serde(default)]
     pub boot_user_profile_limit: Option<usize>,
+    /// Memory OS Phase 5 — EntityPage recall multiplier (default 1.0).
+    #[serde(default)]
+    pub entity_page_boost: Option<f32>,
+    /// Memory OS Phase 5 — backlink-count log-weight (default 0.0).
+    #[serde(default)]
+    pub backlink_boost_weight: Option<f32>,
 }
 
 impl From<MemoryRecallConfigDto> for MemoryRecallConfig {
@@ -199,6 +241,8 @@ impl From<MemoryRecallConfigDto> for MemoryRecallConfig {
             time_decay_half_life_days: dto.time_decay_half_life_days.unwrap_or(default.time_decay_half_life_days),
             fts_fallback_limit_multiplier: dto.fts_fallback_limit_multiplier.unwrap_or(default.fts_fallback_limit_multiplier),
             boot_user_profile_limit: dto.boot_user_profile_limit.unwrap_or(default.boot_user_profile_limit),
+            entity_page_boost: dto.entity_page_boost.unwrap_or(default.entity_page_boost),
+            backlink_boost_weight: dto.backlink_boost_weight.unwrap_or(default.backlink_boost_weight),
         }
     }
 }
@@ -222,6 +266,8 @@ impl From<MemoryRecallConfig> for MemoryRecallConfigDto {
             time_decay_half_life_days: Some(cfg.time_decay_half_life_days),
             fts_fallback_limit_multiplier: Some(cfg.fts_fallback_limit_multiplier),
             boot_user_profile_limit: Some(cfg.boot_user_profile_limit),
+            entity_page_boost: Some(cfg.entity_page_boost),
+            backlink_boost_weight: Some(cfg.backlink_boost_weight),
         }
     }
 }
@@ -997,6 +1043,58 @@ impl MemoryRecallEngine {
         Ok(candidates)
     }
 
+    /// Memory OS Phase 5 — batch fetch `(kind, backlink_count)` for the
+    /// given node ids. Single SQL round-trip via a `IN (?, ?, ...)`
+    /// LEFT JOIN, returning the partial map (ids missing from the
+    /// result map cleanly to "no boost" in `layer_relevant`).
+    ///
+    /// Backlink count counts edges where `child_node_id = id`. Edges
+    /// added by Phase 2 auto-link, by Phase 4 explicit create_edge,
+    /// and by older Procedure/Episode wiring all contribute.
+    fn fetch_boost_signals(
+        &self,
+        ids: &[String],
+    ) -> anyhow::Result<HashMap<String, (MemoryNodeKind, i64)>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let conn = self
+            .store
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        // ?1, ?2, ... placeholders for the IN-clause.
+        let placeholders = (1..=ids.len())
+            .map(|i| format!("?{}", i))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT n.id, n.kind, ( \
+               SELECT COUNT(*) FROM memory_edges e WHERE e.child_node_id = n.id \
+             ) AS backlinks \
+             FROM memory_nodes n \
+             WHERE n.id IN ({placeholders})"
+        );
+        // Phase 1 fix-up E0597 lifetime pattern: separate stmt + rows
+        // bindings so MappedRows drops before stmt does.
+        let mut stmt = conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            ids.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        let mut out = HashMap::with_capacity(ids.len());
+        for r in rows.flatten() {
+            let (id, kind_str, backlinks) = r;
+            out.insert(id, (MemoryNodeKind::from_str(&kind_str), backlinks));
+        }
+        Ok(out)
+    }
+
     // ── L3 Relevant (seed) ───────────────────────────────────────────────
 
     async fn layer_relevant(
@@ -1064,6 +1162,26 @@ impl MemoryRecallEngine {
             }
         }
 
+        // Memory OS Phase 5 — batch-fetch the (kind, backlink_count)
+        // signals we need to apply the EntityPage boost + backlink
+        // log-weight inside the fusion loop. One round-trip to SQLite
+        // instead of N round-trips inside the loop.
+        //
+        // backlink_count is `COUNT(memory_edges WHERE child_node_id = node)`.
+        // We deliberately don't filter by space_id here: cross-space
+        // citations remain rare in practice and including them avoids
+        // dropping the signal for nodes that get referenced by Shared
+        // memory in other workspaces.
+        let boost_signals: HashMap<String, (MemoryNodeKind, i64)> = if all_ids.is_empty()
+            || (self.config.entity_page_boost == 1.0
+                && self.config.backlink_boost_weight == 0.0)
+        {
+            // Both knobs neutral → no need to query.
+            HashMap::new()
+        } else {
+            self.fetch_boost_signals(&all_ids).unwrap_or_default()
+        };
+
         // Fuse scores
         let k = self.config.rrf_k;
         let mut scored: Vec<(String, f32, Option<u32>, Option<u32>)> = Vec::new();
@@ -1075,7 +1193,7 @@ impl MemoryRecallEngine {
             let fts_r = fts_rank_map.get(id).map(|(r, _)| *r);
             let vec_r = vector_rank_map.get(id).copied();
 
-            let score = match &self.config.fusion_strategy {
+            let base_score = match &self.config.fusion_strategy {
                 FusionStrategy::Rrf => {
                     let mut s = 0.0f32;
                     if let Some(r) = fts_r {
@@ -1093,6 +1211,24 @@ impl MemoryRecallEngine {
                     let vec_score = vec_r.map(|r| 1.0 / r as f32).unwrap_or(0.0);
                     self.config.fts_weight * fts_score + self.config.vector_weight * vec_score
                 }
+            };
+
+            // Apply Phase 5 boost layered on top of base score. When the
+            // config knobs are at their defaults (1.0 / 0.0), boost ==
+            // base_score and the upgrade is invisible. The HashMap miss
+            // case (boost_signals empty OR id absent) also degrades to
+            // no boost.
+            let score = if let Some((kind, backlinks)) = boost_signals.get(id) {
+                let mut s = base_score;
+                if *kind == MemoryNodeKind::EntityPage && self.config.entity_page_boost != 1.0 {
+                    s *= self.config.entity_page_boost;
+                }
+                if self.config.backlink_boost_weight > 0.0 {
+                    s += ((*backlinks as f32) + 1.0).log10() * self.config.backlink_boost_weight;
+                }
+                s
+            } else {
+                base_score
             };
 
             scored.push((id.clone(), score, fts_r, vec_r));
@@ -1635,6 +1771,7 @@ fn capitalize_kind(kind: &MemoryNodeKind) -> &'static str {
         MemoryNodeKind::Episode => "Episode",
         MemoryNodeKind::Procedure => "Procedure",
         MemoryNodeKind::Reference => "Reference",
+        MemoryNodeKind::EntityPage => "EntityPage",
     }
 }
 
@@ -1721,5 +1858,136 @@ mod recall_helpers_tests {
         plan.boot.push(skill_candidate("a", true, false));
         let ids = collect_emitted_skill_ids(&plan);
         assert!(ids.is_empty());
+    }
+}
+
+// ─── Phase 5 boost tests ────────────────────────────────────────────────
+
+#[cfg(test)]
+mod phase5_boost_tests {
+    use super::*;
+    use crate::memory_graph::store::MemoryGraphStore;
+    use rusqlite::{params, Connection};
+    use std::sync::Mutex;
+
+    fn fresh_store() -> Arc<MemoryGraphStore> {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).unwrap();
+        conn.execute_batch(crate::db::migrations::V35_MEMORY_OS_PHASE_1).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").ok();
+        Arc::new(MemoryGraphStore::new(Arc::new(Mutex::new(conn))))
+    }
+
+    fn engine_with_config(
+        store: Arc<MemoryGraphStore>,
+        entity_page_boost: f32,
+        backlink_boost_weight: f32,
+    ) -> MemoryRecallEngine {
+        let mut cfg = MemoryRecallConfig::default();
+        cfg.entity_page_boost = entity_page_boost;
+        cfg.backlink_boost_weight = backlink_boost_weight;
+        MemoryRecallEngine::new(store, None, cfg)
+    }
+
+    fn insert_node(store: &MemoryGraphStore, id: &str, kind: &str, title: &str) {
+        let conn = store.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO memory_nodes \
+             (id, space_id, kind, title, created_at, updated_at) \
+             VALUES (?1, 'default', ?2, ?3, ?4, ?4)",
+            params![id, kind, title, now],
+        )
+        .unwrap();
+    }
+
+    fn insert_edge(store: &MemoryGraphStore, edge_id: &str, parent: &str, child: &str) {
+        let conn = store.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO memory_edges \
+             (id, space_id, parent_node_id, child_node_id, relation_kind, visibility, priority, created_at, updated_at) \
+             VALUES (?1, 'default', ?2, ?3, 'relates_to', 'private', 0, ?4, ?4)",
+            params![edge_id, parent, child, now],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn fetch_boost_signals_returns_kind_and_backlinks() {
+        let store = fresh_store();
+        insert_node(&store, "page", "entity_page", "Page");
+        insert_node(&store, "ref1", "episode", "Ref 1");
+        insert_node(&store, "ref2", "episode", "Ref 2");
+        // Two episodes both reference page → page has backlink_count=2.
+        insert_edge(&store, "e1", "ref1", "page");
+        insert_edge(&store, "e2", "ref2", "page");
+
+        let engine = engine_with_config(store, 1.5, 0.3);
+        let ids = vec!["page".to_string(), "ref1".to_string()];
+        let signals = engine.fetch_boost_signals(&ids).unwrap();
+        assert_eq!(signals.len(), 2);
+        let (page_kind, page_backlinks) = signals.get("page").unwrap();
+        assert_eq!(*page_kind, MemoryNodeKind::EntityPage);
+        assert_eq!(*page_backlinks, 2);
+        let (ref_kind, ref_backlinks) = signals.get("ref1").unwrap();
+        assert_eq!(*ref_kind, MemoryNodeKind::Episode);
+        assert_eq!(*ref_backlinks, 0);
+    }
+
+    #[test]
+    fn fetch_boost_signals_empty_input_returns_empty_map() {
+        let store = fresh_store();
+        let engine = engine_with_config(store, 1.5, 0.3);
+        let signals = engine.fetch_boost_signals(&[]).unwrap();
+        assert!(signals.is_empty());
+    }
+
+    #[test]
+    fn fetch_boost_signals_missing_ids_excluded_from_map() {
+        let store = fresh_store();
+        insert_node(&store, "real", "entity_page", "Real");
+        let engine = engine_with_config(store, 1.5, 0.3);
+        let signals = engine
+            .fetch_boost_signals(&["real".into(), "ghost".into()])
+            .unwrap();
+        assert_eq!(signals.len(), 1);
+        assert!(signals.contains_key("real"));
+        assert!(!signals.contains_key("ghost"));
+    }
+
+    #[test]
+    fn boost_config_defaults_are_neutral() {
+        // Default config should leave existing recall behaviour unchanged
+        // (the upgrade is a no-op until the user dials up the knobs).
+        let cfg = MemoryRecallConfig::default();
+        assert_eq!(cfg.entity_page_boost, 1.0);
+        assert_eq!(cfg.backlink_boost_weight, 0.0);
+    }
+
+    #[test]
+    fn dto_round_trip_preserves_phase5_knobs() {
+        let mut cfg = MemoryRecallConfig::default();
+        cfg.entity_page_boost = 1.5;
+        cfg.backlink_boost_weight = 0.3;
+        let dto: MemoryRecallConfigDto = cfg.clone().into();
+        assert_eq!(dto.entity_page_boost, Some(1.5));
+        assert_eq!(dto.backlink_boost_weight, Some(0.3));
+        let restored: MemoryRecallConfig = dto.into();
+        assert_eq!(restored.entity_page_boost, 1.5);
+        assert_eq!(restored.backlink_boost_weight, 0.3);
+    }
+
+    #[test]
+    fn dto_partial_update_keeps_defaults_for_unspecified_knobs() {
+        // Forward-compat: a config DTO that doesn't mention the Phase 5
+        // knobs must keep the neutral defaults (not flip them to None or
+        // some sentinel).
+        let json = r#"{"bootLimit": 8}"#;
+        let dto: MemoryRecallConfigDto = serde_json::from_str(json).unwrap();
+        assert!(dto.entity_page_boost.is_none());
+        let cfg: MemoryRecallConfig = dto.into();
+        assert_eq!(cfg.entity_page_boost, 1.0);
+        assert_eq!(cfg.backlink_boost_weight, 0.0);
     }
 }

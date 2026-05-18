@@ -5,7 +5,7 @@
  * 星云图 / Boot / 时间线 / 搜索。数据一次性加载后传递给子组件。
  */
 import * as React from 'react'
-import { Network, Star, Clock, Search, Sparkles, BookOpen } from 'lucide-react'
+import { Network, Star, Clock, Search, Sparkles, BookOpen, FileText, ShieldCheck } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -23,10 +23,12 @@ import { MemorySearchPanel } from '@/components/memory/MemorySearchPanel'
 import { FragmentCardView } from '@/components/memory/FragmentCardView'
 import { DailySummaryView } from '@/components/memory/DailySummaryView'
 import { MemoryNodeCard } from '@/components/memory/MemoryNodeCard'
+import { WikiView } from '@/components/memory/WikiView'
+import { MemoryHealthPanel } from '@/components/memory/MemoryHealthPanel'
 
 // ─── Tab 定义 ───────────────────────────────────────────────────────────
 
-type MemoryTab = 'nebula' | 'boot' | 'timeline' | 'search' | 'fragments' | 'daily'
+type MemoryTab = 'nebula' | 'boot' | 'timeline' | 'search' | 'fragments' | 'daily' | 'wiki' | 'health'
 
 const TABS: { value: MemoryTab; label: string; icon: React.ElementType }[] = [
   { value: 'nebula', label: '星云图', icon: Network },
@@ -35,6 +37,10 @@ const TABS: { value: MemoryTab; label: string; icon: React.ElementType }[] = [
   { value: 'search', label: '搜索', icon: Search },
   { value: 'fragments', label: '碎片', icon: Sparkles },
   { value: 'daily', label: '日记', icon: BookOpen },
+  // Memory OS Foundation Phase 3 — AI Wiki view.
+  { value: 'wiki', label: 'Wiki', icon: FileText },
+  // Memory OS Foundation Phase 4 — Health findings panel.
+  { value: 'health', label: 'Health', icon: ShieldCheck },
 ]
 
 export function MemoryModule(): React.ReactElement {
@@ -139,6 +145,15 @@ export function MemoryModule(): React.ReactElement {
         )}
         {activeTab === 'daily' && (
           <DailySummaryView />
+        )}
+        {activeTab === 'wiki' && (
+          <WikiView className="h-full w-full rounded-xl overflow-hidden border border-border/40" />
+        )}
+        {activeTab === 'health' && (
+          <MemoryHealthPanel
+            onSelectSubject={handleSelectNode}
+            className="h-full w-full rounded-xl overflow-hidden border border-border/40"
+          />
         )}
       </div>
 

@@ -1072,6 +1072,242 @@ export interface MemoryGraphDeleteNodeInput {
   nodeId: string;
 }
 
+// ─── EntityPage (Memory OS Foundation Phase 1) ──────────────────────────
+//
+// Wire types for the `memory_entity_page_*` Tauri commands. Mirrors the
+// Rust IPC structs in `src-tauri/src/ipc.rs`. `metadata` is left as
+// `Record<string, unknown>` so the frontend can extend the schema without
+// a round-trip Rust change; full field list lives in
+// `src-tauri/src/memory_graph/entity_page.rs`.
+
+/** One append-only event on an EntityPage timeline.
+ *  Wire format is snake_case to match Rust's `TimelineEntry` struct
+ *  (`#[serde(rename_all = "snake_case")]`). */
+export interface EntityPageTimelineEntry {
+  date: string; // YYYY-MM-DD
+  text: string;
+  source_node_id?: string;
+  source_session_id?: string;
+}
+
+/** One contradiction recorded by memory_lint (Phase 5). Wire format
+ *  is snake_case because Rust's Contradiction struct uses
+ *  `#[serde(rename_all = "snake_case")]`. */
+export interface EntityPageContradiction {
+  between_source_ids: string[];
+  claim_a: string;
+  claim_b: string;
+  noticed_at: string;
+}
+
+/** Decoded view of `memory_nodes.metadata_json` for an EntityPage. The
+ *  surrounding EntityPageMetadata struct also uses snake_case in Rust
+ *  serde — fields without underscores (like `slug`, `aliases`) look the
+ *  same in both camelCase and snake_case; the ones below that DO have
+ *  underscores are spelled snake_case here to match the wire. */
+export interface EntityPageMetadata {
+  timeline?: EntityPageTimelineEntry[];
+  aliases?: string[];
+  contradictions?: EntityPageContradiction[];
+  slug?: string;
+  subkind?: string;
+  enrichment_tier?: number;
+  last_synthesized_at?: string;
+  synthesis_source_count?: number;
+  // Forward-compat: unknown fields are preserved by the JSON column.
+  [key: string]: unknown;
+}
+
+export interface EntityPageCreateInput {
+  spaceId?: string;
+  slug: string;
+  title: string;
+  compiledTruth: string;
+  metadata?: EntityPageMetadata;
+}
+
+export interface EntityPageGetInput {
+  nodeId: string;
+}
+
+export interface EntityPageFindBySlugInput {
+  spaceId?: string;
+  slug: string;
+}
+
+export interface EntityPageListInput {
+  spaceId?: string;
+  /** Filter by `metadata.subkind` (e.g. `"entity"`, `"concept"`). */
+  subkind?: string;
+  limit?: number;
+}
+
+export interface EntityPageAppendTimelineInput {
+  nodeId: string;
+  date: string; // YYYY-MM-DD
+  text: string;
+  sourceNodeId?: string;
+  sourceSessionId?: string;
+}
+
+// ─── Wiki Artifacts (Memory OS Foundation Phase 3) ──────────────────────
+
+export interface WikiGetInput {
+  spaceId?: string;
+}
+
+export interface WikiRegenerateInput {
+  spaceId?: string;
+  /** `"index"` (free, SQL-only) or `"overview"` (calls WikiSynthesizer).
+   * Omit to default to `"index"`. */
+  kind?: 'index' | 'overview';
+}
+
+/** Mirrors `wiki_artifacts` rows (Rust `ipc::WikiArtifactDto`). */
+export interface WikiArtifactDto {
+  id: string;
+  spaceId: string;
+  kind: string;
+  content: string;
+  generatedAt: number; // epoch millis
+  sourceNodeIds: string[];
+  llmModel: string | null;
+  tokenCost: number;
+}
+
+export interface WikiRegenerateOutcome {
+  kind: string;
+  artifactId: string;
+  bytesWritten: number;
+  tokenCost: number;
+  llmModel: string | null;
+  /** Set only when `kind === "overview"` — e.g. `"stub:no-llm"` until a
+   * real LLM client is wired into AppState. */
+  synthesizerDescriptor?: string;
+}
+
+// ─── Health Findings (Memory OS Foundation Phase 4) ─────────────────────
+
+export interface HealthListInput {
+  spaceId?: string;
+  /** Default false — only return un-dismissed rows. */
+  includeDismissed?: boolean;
+  /** Optional `check_kind` filter (orphan / stub / dangling_fts / ...). */
+  checkKind?: string;
+  limit?: number;
+}
+
+export interface HealthDismissInput {
+  findingId: string;
+}
+
+export interface HealthRunNowInput {
+  spaceId?: string;
+}
+
+export type HealthCheckKind =
+  | 'orphan'
+  | 'stub'
+  | 'dangling_fts'
+  | 'index_drift'
+  | 'phantom_slug'
+  | 'empty_versions'
+  | 'missing_route'
+  | string; // forward-compat for future check kinds
+
+export type HealthSeverity = 'error' | 'warn' | 'info' | string;
+
+export interface HealthFindingDto {
+  id: string;
+  spaceId: string;
+  severity: HealthSeverity;
+  checkKind: HealthCheckKind;
+  subject: string;
+  payloadJson: string | null;
+  isLint: boolean;
+  dismissed: boolean;
+  discoveredAt: number; // epoch millis
+  dismissedAt: number | null;
+}
+
+/** Result of `memory_health_run_now` — mirrors Rust's HealthRunOutcome
+ *  (which serializes snake_case via serde Serialize). */
+export interface HealthRunOutcome {
+  orphan: number;
+  stub: number;
+  dangling_fts: number;
+  index_drift: number;
+  phantom_slug: number;
+  empty_versions: number;
+  missing_route: number;
+  total_inserted: number;
+  active_total: number;
+  duration_ms: number;
+}
+
+// ─── Lint (Memory OS Foundation Phase 5) ────────────────────────────────
+
+export interface LintRunNowInput {
+  spaceId?: string;
+}
+
+/** Result of `memory_lint_run_now` — mirrors Rust's LintRunOutcome
+ *  (snake_case via serde). `analyzer_descriptor` is "stub:no-llm" until
+ *  a real LLM client is wired into AppState. */
+export interface LintRunOutcome {
+  hub_stub: number;
+  phantom_hub: number;
+  stale_summary: number;
+  contradiction: number;
+  total_inserted: number;
+  total_tokens: number;
+  skipped_due_to_budget: number;
+  duration_ms: number;
+  analyzer_descriptor: string;
+}
+
+/**
+ * Wire values for `memory_edges.relation_kind` after Memory OS Foundation
+ * Phase 2 (auto-link). All four V1-V33 structural variants plus seven
+ * Phase 2 typed entity-graph edges.
+ *
+ * Frontend code that wants to filter or colour-code edges should match
+ * against these literals instead of hard-coding strings.
+ *
+ * The detailed visual mapping (stroke patterns, palette) will land in
+ * Phase 3 when WikiView + MemoryGraphView get the typed-edge UI; for now
+ * the constant exists so any consumer can reference the canonical names.
+ */
+export const MEMORY_RELATION_KINDS = {
+  // Structural (V1-V33, untouched in Phase 2)
+  CONTAINS: 'contains',
+  RELATES_TO: 'relates_to',
+  TIMELINE: 'timeline',
+  TRIGGER: 'trigger',
+  // Typed entity-graph (Phase 2 auto-link)
+  WORKS_AT: 'works_at',
+  FOUNDED: 'founded',
+  INVESTED_IN: 'invested_in',
+  ADVISES: 'advises',
+  ATTENDED: 'attended',
+  SOURCE: 'source',
+  MENTIONS: 'mentions',
+} as const;
+
+export type MemoryRelationKind =
+  typeof MEMORY_RELATION_KINDS[keyof typeof MEMORY_RELATION_KINDS];
+
+/** Phase 2 typed-edge subset — useful for "show only graph-y edges" filters. */
+export const PHASE_2_TYPED_RELATION_KINDS: readonly MemoryRelationKind[] = [
+  MEMORY_RELATION_KINDS.WORKS_AT,
+  MEMORY_RELATION_KINDS.FOUNDED,
+  MEMORY_RELATION_KINDS.INVESTED_IN,
+  MEMORY_RELATION_KINDS.ADVISES,
+  MEMORY_RELATION_KINDS.ATTENDED,
+  MEMORY_RELATION_KINDS.SOURCE,
+  MEMORY_RELATION_KINDS.MENTIONS,
+];
+
 // ─── Learned Skills ─────────────────────────────────────────────────────
 
 export interface LearnedSkill {

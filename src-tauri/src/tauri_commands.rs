@@ -228,6 +228,20 @@ pub async fn patch_memory_recall_config(
             0,
             20,
         ),
+        // Memory OS Phase 5 — recall boost knobs. Clamped to sane
+        // ranges so a misguided patch can't make the score explode:
+        //   entity_page_boost: 0.5 (penalise) to 3.0 (heavy boost)
+        //   backlink_boost_weight: 0.0 (off) to 1.0 (strong)
+        entity_page_boost: clamp_opt_f32(
+            input.entity_page_boost.or(existing.entity_page_boost),
+            0.5,
+            3.0,
+        ),
+        backlink_boost_weight: clamp_opt_f32(
+            input.backlink_boost_weight.or(existing.backlink_boost_weight),
+            0.0,
+            1.0,
+        ),
     };
 
     settings.memory_recall_config = Some(merged.clone());
@@ -4808,6 +4822,523 @@ pub async fn memory_graph_delete_node(
     store.delete_node(&input.node_id).map_err(|e| format!("Failed to delete node: {}", e))?;
 
     Ok(serde_json::json!({ "success": true, "nodeId": input.node_id }))
+}
+
+// ─── EntityPage Commands (Memory OS Foundation Phase 1) ────────────────
+//
+// Five high-level IPC commands wrapping `memory_graph/store.rs` EntityPage
+// CRUD. All return `serde_json::Value` for wire compatibility with the
+// existing `memory_graph_*` family; the frontend `tauri-bridge.ts`
+// wrapper layers typed views on top.
+//
+// Each command is gated by `memubot_config.memory_os.entity_page_enabled`.
+// When disabled, the handler returns a clear error string instead of
+// silently no-oping — the frontend can use that signal to hide the UI
+// entry points without crashing.
+//
+// Reminder for future Phase commits (per CLAUDE.md): each new command
+// here MUST also be registered in `main.rs::invoke_handler!`.
+
+/// Returns `Err(msg)` when the EntityPage feature is disabled.
+/// Used at the top of every `memory_entity_page_*` command.
+async fn ensure_entity_page_enabled(state: &State<'_, AppState>) -> Result<(), String> {
+    if !state.memubot_config.read().await.memory_os.entity_page_enabled {
+        return Err(
+            "EntityPage feature is disabled (memory_os.entity_page_enabled = false in memubot_config.json). \
+             Enable it and restart to use EntityPage commands."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Create a new EntityPage with optional initial metadata + timeline.
+#[tauri::command]
+pub async fn memory_entity_page_create(
+    state: State<'_, AppState>,
+    input: EntityPageCreateInput,
+) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state).await?;
+    let store = &state.memory_graph_store;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+
+    // Decode optional caller-supplied metadata; unknown fields are tolerated.
+    let metadata = input
+        .metadata
+        .as_ref()
+        .map(crate::memory_graph::entity_page::EntityPageMetadata::from_value)
+        .unwrap_or_default();
+
+    let detail = store
+        .create_entity_page(&space_id, &input.slug, &input.title, &input.compiled_truth, metadata)
+        .map_err(|e| format!("Failed to create entity page: {}", e))?;
+
+    serde_json::to_value(&detail).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+/// Fetch an EntityPage by `node_id`. Returns `null` when not found
+/// (NOT an error — mirrors `memory_graph_get_node` semantics).
+#[tauri::command]
+pub async fn memory_entity_page_get(
+    state: State<'_, AppState>,
+    input: EntityPageGetInput,
+) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state).await?;
+    let store = &state.memory_graph_store;
+    let detail = store
+        .get_node_detail(&input.node_id)
+        .map_err(|e| format!("Failed to get entity page: {}", e))?;
+
+    // Guard against the caller fetching a non-EntityPage by mistake; this
+    // command is for EntityPage retrieval, and returning a Procedure here
+    // would be a footgun for callers writing back via the EntityPage write
+    // path. A `null` response is preferable to a confusing mixed type.
+    match detail {
+        Some(d) if d.node.kind == crate::memory_graph::models::MemoryNodeKind::EntityPage => {
+            serde_json::to_value(&d).map_err(|e| format!("Serialization failed: {}", e))
+        }
+        Some(_) | None => Ok(serde_json::Value::Null),
+    }
+}
+
+/// Look up an EntityPage by slug (case-insensitive) within a space.
+/// Returns `null` when no page matches.
+#[tauri::command]
+pub async fn memory_entity_page_find_by_slug(
+    state: State<'_, AppState>,
+    input: EntityPageFindBySlugInput,
+) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state).await?;
+    let store = &state.memory_graph_store;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let detail = store
+        .find_entity_page_by_slug(&space_id, &input.slug)
+        .map_err(|e| format!("Failed to find entity page: {}", e))?;
+    match detail {
+        Some(d) => serde_json::to_value(&d).map_err(|e| format!("Serialization failed: {}", e)),
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
+/// List EntityPage nodes in a space, optionally filtered by subkind.
+#[tauri::command]
+pub async fn memory_entity_page_list(
+    state: State<'_, AppState>,
+    input: EntityPageListInput,
+) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state).await?;
+    let store = &state.memory_graph_store;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let limit = input.limit.unwrap_or(50);
+    let pages = store
+        .list_entity_pages(&space_id, input.subkind.as_deref(), limit)
+        .map_err(|e| format!("Failed to list entity pages: {}", e))?;
+    serde_json::to_value(&pages).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+/// Append a single timeline entry to an EntityPage's metadata.
+#[tauri::command]
+pub async fn memory_entity_page_append_timeline(
+    state: State<'_, AppState>,
+    input: EntityPageAppendTimelineInput,
+) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state).await?;
+    let store = &state.memory_graph_store;
+    let entry = crate::memory_graph::entity_page::TimelineEntry {
+        date: input.date,
+        text: input.text,
+        source_node_id: input.source_node_id,
+        source_session_id: input.source_session_id,
+    };
+    store
+        .append_timeline_entry(&input.node_id, entry)
+        .map_err(|e| format!("Failed to append timeline entry: {}", e))?;
+    Ok(serde_json::json!({ "success": true, "nodeId": input.node_id }))
+}
+
+// ─── Wiki Artifact Commands (Memory OS Foundation Phase 3) ─────────────
+//
+// Three IPC commands powering the WikiView frontend:
+//   - memory_wiki_get_overview / memory_wiki_get_index: read the latest
+//     row of the corresponding `wiki_artifacts(kind=...)` for a space.
+//   - memory_wiki_regenerate: manual trigger; calls
+//     `wiki_synth::regenerate_index` (free) or
+//     `wiki_synth::regenerate_overview` (uses configured synthesizer).
+//
+// All three gate on `memubot_config.memory_os.wiki_view_enabled` — when
+// the flag is off, IPC returns a structured error so the frontend can
+// hide the Wiki tab without crashing.
+
+async fn ensure_wiki_view_enabled(state: &State<'_, AppState>) -> Result<(), String> {
+    if !state.memubot_config.read().await.memory_os.wiki_view_enabled {
+        return Err(
+            "Wiki view is disabled (memory_os.wiki_view_enabled = false in memubot_config.json). \
+             Enable it and restart to use memory_wiki_* commands."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Read the latest row of `wiki_artifacts(kind='overview')` for the
+/// given space. Returns null when no row exists yet (e.g. fresh DB or
+/// regenerate hasn't run).
+#[tauri::command]
+pub async fn memory_wiki_get_overview(
+    state: State<'_, AppState>,
+    input: WikiGetInput,
+) -> Result<serde_json::Value, String> {
+    ensure_wiki_view_enabled(&state).await?;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    read_latest_wiki_artifact(&state, &space_id, "overview")
+}
+
+/// Read the latest row of `wiki_artifacts(kind='index')` for the given
+/// space. The ProactiveService tick refreshes this every ~5 minutes,
+/// so on a running app the row is always reasonably current.
+#[tauri::command]
+pub async fn memory_wiki_get_index(
+    state: State<'_, AppState>,
+    input: WikiGetInput,
+) -> Result<serde_json::Value, String> {
+    ensure_wiki_view_enabled(&state).await?;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    read_latest_wiki_artifact(&state, &space_id, "index")
+}
+
+/// Force a regenerate of the index (SQL-only, free) or overview
+/// (synthesizer-driven, may call LLM). When `kind` is omitted defaults
+/// to "index" so accidental clicks don't burn tokens.
+#[tauri::command]
+pub async fn memory_wiki_regenerate(
+    state: State<'_, AppState>,
+    input: WikiRegenerateInput,
+) -> Result<serde_json::Value, String> {
+    ensure_wiki_view_enabled(&state).await?;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let kind = input.kind.unwrap_or_else(|| "index".to_string());
+
+    match kind.as_str() {
+        "index" => {
+            // Take the store conn lock, run sync regen, drop the lock.
+            // Same spawn_blocking pattern as the tick loop.
+            let store = state.memory_graph_store.clone();
+            let space_id_owned = space_id.clone();
+            let outcome = tokio::task::spawn_blocking(move || {
+                let conn = store
+                    .conn
+                    .lock()
+                    .map_err(|e| format!("DB lock: {}", e))?;
+                crate::memory_graph::wiki_synth::regenerate_index(
+                    &conn,
+                    &space_id_owned,
+                    crate::memory_graph::wiki_synth::RegenerateTrigger::Manual,
+                )
+                .map_err(|e| format!("regenerate_index: {}", e))
+            })
+            .await
+            .map_err(|e| format!("spawn_blocking: {}", e))??;
+            Ok(serde_json::json!({
+                "kind": "index",
+                "artifactId": outcome.artifact_id,
+                "bytesWritten": outcome.bytes_written,
+                "tokenCost": outcome.token_cost,
+                "llmModel": outcome.llm_model,
+            }))
+        }
+        "overview" => {
+            let store_conn = state.memory_graph_store.conn.clone();
+            let synthesizer = state.wiki_synthesizer.clone();
+            let outcome = crate::memory_graph::wiki_synth::regenerate_overview(
+                store_conn,
+                synthesizer,
+                &space_id,
+                crate::memory_graph::wiki_synth::RegenerateTrigger::Manual,
+            )
+            .await
+            .map_err(|e| format!("regenerate_overview: {}", e))?;
+            Ok(serde_json::json!({
+                "kind": "overview",
+                "artifactId": outcome.artifact_id,
+                "bytesWritten": outcome.bytes_written,
+                "tokenCost": outcome.token_cost,
+                "llmModel": outcome.llm_model,
+                "synthesizerDescriptor": state.wiki_synthesizer.descriptor(),
+            }))
+        }
+        other => Err(format!(
+            "Unknown wiki kind '{}'. Use 'index' or 'overview'.",
+            other
+        )),
+    }
+}
+
+/// Shared read path — fetches the row with the largest `generated_at`
+/// for (space_id, kind). Returns null on miss.
+fn read_latest_wiki_artifact(
+    state: &State<'_, AppState>,
+    space_id: &str,
+    kind: &str,
+) -> Result<serde_json::Value, String> {
+    let store = &state.memory_graph_store;
+    let conn = store
+        .conn
+        .lock()
+        .map_err(|e| format!("DB lock: {}", e))?;
+
+    // Phase 1 fix-up pattern: bind stmt + rows separately so the borrow
+    // ends before stmt drops.
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, space_id, kind, content, generated_at, source_node_ids, \
+                    llm_model, token_cost \
+             FROM wiki_artifacts \
+             WHERE space_id = ?1 AND kind = ?2 \
+             ORDER BY generated_at DESC \
+             LIMIT 1",
+        )
+        .map_err(|e| format!("prepare: {}", e))?;
+    let row: Option<WikiArtifactDto> = stmt
+        .query_row(rusqlite::params![space_id, kind], |r| {
+            let source_node_ids_json: String = r.get(5)?;
+            let source_node_ids: Vec<String> =
+                serde_json::from_str(&source_node_ids_json).unwrap_or_default();
+            Ok(WikiArtifactDto {
+                id: r.get(0)?,
+                space_id: r.get(1)?,
+                kind: r.get(2)?,
+                content: r.get(3)?,
+                generated_at: r.get(4)?,
+                source_node_ids,
+                llm_model: r.get(6)?,
+                token_cost: r.get(7)?,
+            })
+        })
+        .ok();
+
+    match row {
+        Some(dto) => serde_json::to_value(&dto).map_err(|e| format!("serialize: {}", e)),
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
+// ─── Health Findings Commands (Memory OS Foundation Phase 4) ────────────
+//
+// Three IPC commands powering the MemoryHealthPanel frontend:
+//   - memory_health_list_findings: read rows from memory_health_findings
+//     (default: open-only, paginated).
+//   - memory_health_dismiss_finding: flip dismissed=1 + dismissed_at on
+//     a specific finding.
+//   - memory_health_run_now: force a zero-LLM scan immediately and
+//     return the outcome (counts per check + duration).
+//
+// All three gate on `memubot_config.memory_os.memory_health_enabled`
+// EXCEPT list/dismiss — those keep working when the flag is off so the
+// user can still triage findings discovered before disabling. Only the
+// "run a fresh scan" command refuses.
+
+async fn ensure_memory_health_enabled(state: &State<'_, AppState>) -> Result<(), String> {
+    if !state.memubot_config.read().await.memory_os.memory_health_enabled {
+        return Err(
+            "Memory health is disabled (memory_os.memory_health_enabled = false in \
+             memubot_config.json). Enable it and restart to re-enable periodic checks. \
+             Existing findings can still be listed / dismissed."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// List health findings for the given space. By default returns active
+/// (un-dismissed) rows only, ordered severity DESC then discovered_at DESC
+/// (so errors float above warns, newest first within the same severity).
+#[tauri::command]
+pub async fn memory_health_list_findings(
+    state: State<'_, AppState>,
+    input: HealthListInput,
+) -> Result<Vec<HealthFindingDto>, String> {
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let include_dismissed = input.include_dismissed.unwrap_or(false);
+    let limit = input.limit.unwrap_or(200) as i64;
+
+    let store = &state.memory_graph_store;
+    let conn = store
+        .conn
+        .lock()
+        .map_err(|e| format!("DB lock: {}", e))?;
+
+    // severity is stored as a free-form string but our writer only uses
+    // 'error' / 'warn' / 'info'. Ordering 'error' > 'warn' > 'info' is
+    // achieved by mapping to a numeric weight in SQL — simpler than
+    // adding a new column and works for all three known values.
+    //
+    // Phase 1 fix-up E0597 pattern: separate stmt + rows bindings.
+    let select = "SELECT id, space_id, severity, check_kind, subject, payload_json, \
+                         is_lint, dismissed, discovered_at, dismissed_at \
+                  FROM memory_health_findings \
+                  WHERE space_id = ?1 \
+                    AND (?2 = 1 OR dismissed = 0) \
+                    AND (?3 = '' OR check_kind = ?3) \
+                  ORDER BY \
+                    CASE severity \
+                      WHEN 'error' THEN 0 \
+                      WHEN 'warn'  THEN 1 \
+                      WHEN 'info'  THEN 2 \
+                      ELSE 3 \
+                    END ASC, \
+                    discovered_at DESC \
+                  LIMIT ?4";
+    let mut stmt = conn.prepare(select).map_err(|e| format!("prepare: {}", e))?;
+    let include_flag: i64 = if include_dismissed { 1 } else { 0 };
+    let check_kind_filter = input.check_kind.unwrap_or_default();
+    let rows = stmt
+        .query_map(
+            rusqlite::params![space_id, include_flag, check_kind_filter, limit],
+            |r| {
+                Ok(HealthFindingDto {
+                    id: r.get(0)?,
+                    space_id: r.get(1)?,
+                    severity: r.get(2)?,
+                    check_kind: r.get(3)?,
+                    subject: r.get(4)?,
+                    payload_json: r.get(5)?,
+                    is_lint: {
+                        let v: i64 = r.get(6)?;
+                        v != 0
+                    },
+                    dismissed: {
+                        let v: i64 = r.get(7)?;
+                        v != 0
+                    },
+                    discovered_at: r.get(8)?,
+                    dismissed_at: r.get(9)?,
+                })
+            },
+        )
+        .map_err(|e| format!("query: {}", e))?;
+    Ok(rows.flatten().collect())
+}
+
+/// Flip `dismissed=1` + `dismissed_at` on a single finding. Idempotent
+/// — repeated calls on the same id update the timestamp but don't
+/// resurrect the row. Returns `{success: true, findingId}` on success.
+#[tauri::command]
+pub async fn memory_health_dismiss_finding(
+    state: State<'_, AppState>,
+    input: HealthDismissInput,
+) -> Result<serde_json::Value, String> {
+    let store = &state.memory_graph_store;
+    let conn = store
+        .conn
+        .lock()
+        .map_err(|e| format!("DB lock: {}", e))?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let affected = conn
+        .execute(
+            "UPDATE memory_health_findings \
+             SET dismissed = 1, dismissed_at = ?1 \
+             WHERE id = ?2",
+            rusqlite::params![now_ms, input.finding_id],
+        )
+        .map_err(|e| format!("dismiss: {}", e))?;
+    Ok(serde_json::json!({
+        "success": affected > 0,
+        "findingId": input.finding_id,
+        "alreadyMissing": affected == 0,
+    }))
+}
+
+/// Force a health scan immediately, bypassing the every-60-tick
+/// schedule. Returns the per-check counts so the UI can flash a
+/// "scan complete: X new" toast. Gated on `memory_health_enabled`.
+#[tauri::command]
+pub async fn memory_health_run_now(
+    state: State<'_, AppState>,
+    input: HealthRunNowInput,
+) -> Result<serde_json::Value, String> {
+    ensure_memory_health_enabled(&state).await?;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let store = state.memory_graph_store.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        let conn = store
+            .conn
+            .lock()
+            .map_err(|e| format!("DB lock: {}", e))?;
+        crate::proactive::scenarios::memory_health::run_health_checks(&conn, &space_id)
+            .map_err(|e| format!("run_health_checks: {}", e))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {}", e))??;
+    serde_json::to_value(&outcome).map_err(|e| format!("serialize: {}", e))
+}
+
+// ─── Lint command (Memory OS Foundation Phase 5) ───────────────────────
+
+/// Force a lint scan immediately. Honors the
+/// `memory_lint_daily_token_budget` config — if today's `memory_lint:*`
+/// cost already meets/exceeds the cap, the scan returns 0 inserts +
+/// skipped_due_to_budget > 0 rather than refusing outright (so the UI
+/// surfaces "budget exhausted" rather than a generic error).
+#[tauri::command]
+pub async fn memory_lint_run_now(
+    state: State<'_, AppState>,
+    input: LintRunNowInput,
+) -> Result<serde_json::Value, String> {
+    let (lint_enabled, budget) = {
+        let cfg = state.memubot_config.read().await;
+        (
+            cfg.memory_os.memory_lint_enabled,
+            cfg.memory_os.memory_lint_daily_token_budget,
+        )
+    };
+    if !lint_enabled {
+        return Err(
+            "Memory lint is disabled (memory_os.memory_lint_enabled = false in \
+             memubot_config.json). Existing lint findings can still be listed/dismissed."
+                .into(),
+        );
+    }
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let store = state.memory_graph_store.clone();
+    let analyzer = state.lint_analyzer.clone();
+    let db = state.db.clone();
+
+    // Sum today's already-spent memory_lint tokens off the runtime.
+    let today_start_ms = {
+        use chrono::{Datelike, TimeZone, Utc};
+        let now = Utc::now();
+        Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
+            .single()
+            .map(|dt| dt.timestamp_millis())
+            .unwrap_or(0)
+    };
+    let today_spent = tokio::task::spawn_blocking(move || {
+        let c = match db.lock() {
+            Ok(c) => c,
+            Err(_) => return 0u32,
+        };
+        c.query_row(
+            "SELECT COALESCE(SUM(input_tokens + output_tokens), 0) \
+             FROM cost_records \
+             WHERE model LIKE 'memory_lint%' AND created_at >= ?1",
+            rusqlite::params![today_start_ms],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0) as u32
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking(today_spent): {}", e))?;
+
+    let cfg = crate::proactive::scenarios::memory_lint::LintRunConfig {
+        daily_token_budget: budget,
+        ..Default::default()
+    };
+    let outcome = crate::proactive::scenarios::memory_lint::run_lint_checks(
+        store, analyzer, &space_id, &cfg, today_spent,
+    )
+    .await
+    .map_err(|e| format!("run_lint_checks: {}", e))?;
+    serde_json::to_value(&outcome).map_err(|e| format!("serialize: {}", e))
 }
 
 // ─── Fragment / Daily Summary Commands ─────────────────────────────────────
