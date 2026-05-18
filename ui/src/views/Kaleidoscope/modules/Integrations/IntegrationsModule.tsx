@@ -6,6 +6,7 @@
  */
 import * as React from 'react'
 import { toast } from 'sonner'
+import { listen } from '@tauri-apps/api/event'
 import {
   listMcpServers,
   listMcpTools,
@@ -66,6 +67,36 @@ export function IntegrationsModule(): React.ReactElement {
 
   React.useEffect(() => {
     void refetch()
+  }, [refetch])
+
+  // PR-4 — push-based refresh on tools/list_changed. Backend emits
+  // `mcp:tools-changed` from the per-server notification consumer
+  // whenever a connected server reports new/removed tools; we just
+  // re-call refetch (it's idempotent + cheap, no need to surgically
+  // patch the affected row). The listen() promise is `await`-driven
+  // so cleanup needs the unlisten handle, which we capture inside.
+  React.useEffect(() => {
+    let unlisten: (() => void) | null = null
+    let cancelled = false
+    listen<{ serverId: string; toolCount: number }>(
+      'mcp:tools-changed',
+      () => {
+        if (!cancelled) void refetch()
+      },
+    )
+      .then((fn) => {
+        if (cancelled) fn()
+        else unlisten = fn
+      })
+      .catch((e) => {
+        // Failure to subscribe just falls back to polling-on-action.
+        // Not a hard error.
+        console.warn('[integrations] mcp:tools-changed listen failed', e)
+      })
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
   }, [refetch])
 
   const toolsByServer = React.useMemo(() => {
@@ -193,6 +224,8 @@ export function IntegrationsModule(): React.ReactElement {
         onRestart={(s) => void onRestart(s)}
         onRemove={(s) => setPendingRemove(s)}
         onEdit={onEdit}
+        onToolsRefreshed={() => void refetch()}
+        onDisconnected={() => void refetch()}
       />
 
       <McpTemplateLibrary
