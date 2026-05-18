@@ -822,6 +822,9 @@ fn main() {
             uclaw_core::stt::commands::stt_get_settings,
             uclaw_core::stt::commands::stt_save_settings,
             uclaw_core::stt::commands::stt_list_microphones,
+            // Connection health (Bottom Dock)
+            uclaw_core::tauri_commands::get_app_health,
+            uclaw_core::tauri_commands::get_memu_status,
             // Global Shortcut
             update_global_shortcut,
         ]);
