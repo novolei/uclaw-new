@@ -1143,6 +1143,83 @@ impl McpManager {
         Ok(())
     }
 
+    /// gbrain Sprint 2.1 — seed the bundled gbrain stdio MCP entry if
+    /// no entry with id="gbrain" already exists. Called once at boot
+    /// from main.rs's Stage 3.
+    ///
+    /// Idempotent + non-destructive:
+    /// - If the entry exists (regardless of `enabled`), do nothing.
+    ///   That way users who explicitly disable / remove gbrain don't
+    ///   get it re-added on every restart.
+    /// - The entry is auto_approve=true because it's the bundled
+    ///   service we ship + sign — same trust level as the local
+    ///   user's filesystem (which builtin tools already get).
+    ///
+    /// Inputs:
+    /// - `bun_path`: absolute path to `bunembed/bun` (resource or dev)
+    /// - `entry_path`: absolute path to gbrain's CLI entry (resource
+    ///   or dev `src/cli.ts`). Spawned via `bun <entry> serve`.
+    /// - `pgdata_dir`: writable directory for PGlite to persist into.
+    ///   Caller MUST create it (`std::fs::create_dir_all`) before
+    ///   gbrain spawns — the env var alone doesn't auto-create. The
+    ///   resource directory is read-only on macOS so this MUST point
+    ///   somewhere under `~/.uclaw/` or similar user-writable root.
+    ///
+    /// Returns `Ok(true)` if seeded, `Ok(false)` if entry already
+    /// existed (no-op). Errors propagate from `add_server`.
+    pub fn seed_bundled_gbrain(
+        &mut self,
+        bun_path: &std::path::Path,
+        entry_path: &std::path::Path,
+        pgdata_dir: &std::path::Path,
+    ) -> Result<bool, String> {
+        if self.servers.contains_key("gbrain") {
+            tracing::debug!(
+                "seed_bundled_gbrain: 'gbrain' entry already in config (keeping user state)"
+            );
+            return Ok(false);
+        }
+        let mut env = HashMap::new();
+        // gbrain reads its config (including database_path for PGlite)
+        // from $GBRAIN_HOME/.gbrain/config.json. The caller writes that
+        // file before seeding; we just tell gbrain where to look.
+        // GBRAIN_HOME is the *parent* of the .gbrain dir, i.e.
+        // ~/.uclaw/gbrain/ → ~/.uclaw/gbrain/.gbrain/config.json.
+        let gbrain_home = pgdata_dir.parent().unwrap_or(pgdata_dir);
+        env.insert(
+            "GBRAIN_HOME".to_string(),
+            gbrain_home.to_string_lossy().to_string(),
+        );
+        let config = McpServerConfig {
+            id: "gbrain".to_string(),
+            name: "gbrain (bundled)".to_string(),
+            description: "Local semantic-retrieval engine — wiki / entity-graph / dream-cycle. \
+                          Bundled via Bun + gbrain source. PGlite stores data under \
+                          ~/.uclaw/gbrain/pgdata/."
+                .to_string(),
+            transport_type: TransportType::Stdio,
+            command: bun_path.to_string_lossy().to_string(),
+            // `bun <entry> serve` matches gbrain's stdio MCP CLI per
+            // Sprint 2.0 Mac-side verification.
+            args: vec![
+                entry_path.to_string_lossy().to_string(),
+                "serve".to_string(),
+            ],
+            env,
+            url: None,
+            enabled: true,
+            auto_approve: true,
+        };
+        self.add_server(config)?;
+        tracing::info!(
+            bun = %bun_path.display(),
+            entry = %entry_path.display(),
+            pgdata = %pgdata_dir.display(),
+            "gbrain Sprint 2.1: seeded bundled MCP entry"
+        );
+        Ok(true)
+    }
+
     pub fn remove_server(&mut self, id: &str) -> Option<McpServerConfig> {
         // PR-3 — abort any health loop for this server first so a
         // delayed reconnect attempt can't recreate the connection
