@@ -30,6 +30,20 @@ use crate::browser::types::{DOMState, DomStateRaw, ScreencastFramePayload, TabIn
 
 const DOM_CACHE_TTL: Duration = Duration::from_millis(500);
 
+// ── CookieInfo ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CookieInfo {
+    pub name: String,
+    pub value: String,
+    pub domain: String,
+    pub path: String,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: Option<String>,
+    pub expires: f64,
+}
+
 // ── BrowserContext ────────────────────────────────────────────────────────────
 
 pub struct BrowserContext {
@@ -486,6 +500,53 @@ impl BrowserContext {
             let _ = stop_tx.send(());
         }
     }
+
+    // ── Cookies ───────────────────────────────────────────────────────────────
+
+    pub async fn get_cookies(&self, tab_id: &str, url_filter: Option<&str>) -> Result<Vec<CookieInfo>> {
+        let page = self.get_page(tab_id).await?;
+        use chromiumoxide::cdp::browser_protocol::network::GetCookiesParams;
+        let cmd = GetCookiesParams {
+            urls: url_filter.map(|u| vec![u.to_string()]),
+        };
+        let result = page.execute(cmd).await
+            .map_err(|e| anyhow!("get_cookies CDP error: {e}"))?;
+        let cookies = result.result.cookies.into_iter().map(|c| CookieInfo {
+            name: c.name,
+            value: c.value,
+            domain: c.domain,
+            path: c.path,
+            secure: c.secure,
+            http_only: c.http_only,
+            same_site: c.same_site.map(|s| format!("{s:?}")),
+            expires: c.expires,
+        }).collect();
+        Ok(cookies)
+    }
+
+    pub async fn set_cookie(
+        &self,
+        tab_id: &str,
+        name: &str,
+        value: &str,
+        domain: &str,
+        path: Option<&str>,
+        secure: bool,
+        http_only: bool,
+    ) -> Result<bool> {
+        let page = self.get_page(tab_id).await?;
+        use chromiumoxide::cdp::browser_protocol::network::{CookieParam, SetCookiesParams};
+        let mut cookie = CookieParam::new(name, value);
+        cookie.domain = Some(domain.to_string());
+        cookie.path = path.map(|p| p.to_string());
+        cookie.secure = Some(secure);
+        cookie.http_only = Some(http_only);
+        let cmd = SetCookiesParams { cookies: vec![cookie] };
+        page.execute(cmd).await
+            .map_err(|e| anyhow!("set_cookie CDP error: {e}"))?;
+        Ok(true)
+    }
+
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
