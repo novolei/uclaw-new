@@ -90,6 +90,12 @@ pub struct ChatDelegate {
     /// SQLite connection shared from AppState — used for plan-suggest GEP signal.
     /// None when dispatcher is constructed outside the main agent path (tests, harness).
     db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
+    /// Memory OS Sprint 1.8 — pre-built '## User Profile (Learned)' block
+    /// from `learning::prompt_section::UserProfileSection::render`. Set
+    /// via `set_learned_profile_block` once per agent loop start.
+    /// Empty when memory_os.learning_enabled = false OR FacetCache is
+    /// empty — `effective_system_prompt` skips the append in that case.
+    learned_profile_block: String,
 }
 
 impl ChatDelegate {
@@ -127,6 +133,7 @@ impl ChatDelegate {
             gene_repo: None,
             recent_tool_errors: Mutex::new(Vec::new()),
             db: None,
+            learned_profile_block: String::new(),
         }
     }
 
@@ -383,6 +390,16 @@ impl ChatDelegate {
         self.skills_manifest_block = block;
     }
 
+    /// Set the '## User Profile (Learned)' block (Sprint 1.8).
+    ///
+    /// Caller builds via
+    /// `learning::prompt_section::UserProfileSection::render(&facet_cache)`
+    /// (returns `Option<String>` — caller passes empty when None).
+    /// Empty input → no append in `effective_system_prompt`.
+    pub fn set_learned_profile_block(&mut self, block: String) {
+        self.learned_profile_block = block;
+    }
+
     /// Build the effective system prompt including memory context, the user's
     /// uclaw.md (workspace-level), Karpathy baseline, and mode-specific
     /// guardrails. Reads uclaw.md on every call (small file, OS cache).
@@ -409,10 +426,20 @@ impl ChatDelegate {
         // The flag stays sticky for the remainder of the loop because the
         // agent loop reuses the same `ChatDelegate` across iterations.
         let suppress_manifest = self.skill_search_used.load(Ordering::Relaxed);
-        if self.skills_manifest_block.is_empty() || suppress_manifest {
+        let with_manifest = if self.skills_manifest_block.is_empty() || suppress_manifest {
             composed
         } else {
             format!("{}{}", composed, self.skills_manifest_block)
+        };
+        // Memory OS Sprint 1.8 — append learned user-profile block.
+        // Always-on (not suppressed across iterations) because facets
+        // change at the 30-min rebuild cadence, not at agent-loop
+        // granularity. Empty when memory_os.learning_enabled=false or
+        // FacetCache hasn't picked up any active facets yet.
+        if self.learned_profile_block.is_empty() {
+            with_manifest
+        } else {
+            format!("{}\n\n{}", with_manifest, self.learned_profile_block)
         }
     }
 
