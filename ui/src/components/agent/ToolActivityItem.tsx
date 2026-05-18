@@ -22,7 +22,7 @@ import {
 import { cn } from '@/lib/utils'
 import { getToolIcon, formatElapsed } from './tool-utils'
 import { getToolPhrase } from './tool-phrase'
-import { ToolResultRenderer } from './tool-result-renderers'
+import { ToolResultRenderer } from './tool-renderers'
 import {
   type ToolActivity,
   type ActivityGroup,
