@@ -482,6 +482,17 @@ fn main() {
                             if let (Some(bun), Some(entry)) =
                                 (bun_path.as_ref(), gbrain_entry.as_ref())
                             {
+                                // Sprint 2.2 — write self-describing launcher
+                                // files BEFORE init. Best-effort: a write
+                                // failure shouldn't abort the gbrain seed.
+                                if let Err(e) = uclaw_core::app::AppState::write_gbrain_launcher_files(
+                                    &state_ref.data_dir, bun, entry,
+                                ) {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "[Stage 3] failed to write ~/.uclaw/gbrain/{{run.sh,paths.json}}"
+                                    );
+                                }
                                 match uclaw_core::mcp::ensure_bundled_gbrain_initialized(
                                     bun, entry, &gbrain_home,
                                 ) {
