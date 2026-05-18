@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use async_trait::async_trait;
 use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
+use crate::browser::context::DevicePreset;
 use crate::browser::context_manager::BrowserContextManager;
 use crate::browser::dom_state::format_dom_state_for_llm;
 
@@ -30,6 +31,8 @@ browser_tool!(BrowserScrollTool);
 browser_tool!(BrowserSendKeysTool);
 browser_tool!(BrowserEvaluateTool);
 browser_tool!(BrowserManageTabsTool);
+browser_tool!(BrowserGetCookiesTool);
+browser_tool!(BrowserSetCookieTool);
 
 // ── 1. BrowserNavigateTool ────────────────────────────────────────────────────
 
@@ -39,7 +42,12 @@ impl Tool for BrowserNavigateTool {
 
     fn description(&self) -> &str {
         "Navigate to a URL in the browser. Launches the browser if not running. \
-         Returns the tab_id for subsequent operations."
+         Returns the tab_id for subsequent operations.\n\
+         \n\
+         **Parameters**\n\
+         - `url` (string, required): URL to navigate to.\n\
+         - `tab_id` (string, optional): Tab ID to reuse, or 'new' to open a new tab (default 'new').\n\
+         - `device` (string, optional): \"mobile\" sets 390\u{d7}844 + iPhone UA; \"desktop\" (default) sets 1280\u{d7}800."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -53,6 +61,11 @@ impl Tool for BrowserNavigateTool {
                 "tab_id": {
                     "type": "string",
                     "description": "Tab ID to reuse, or 'new' to open a new tab (default 'new')"
+                },
+                "device": {
+                    "type": "string",
+                    "enum": ["desktop", "mobile"],
+                    "description": "Device preset: 'mobile' sets 390x844 + iPhone UA; 'desktop' (default) sets 1280x800"
                 }
             },
             "required": ["url"]
@@ -64,12 +77,19 @@ impl Tool for BrowserNavigateTool {
         let url = params["url"].as_str()
             .ok_or_else(|| ToolError::Execution("url is required".to_string()))?;
         let tab_id = params["tab_id"].as_str().unwrap_or("new");
+        let device = params["device"].as_str()
+            .map(DevicePreset::from_str)
+            .unwrap_or(DevicePreset::Desktop);
 
         let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
         let resolved_id = ctx.navigate(tab_id, url).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        if let Err(e) = ctx.apply_device_emulation(&resolved_id, device).await {
+            tracing::warn!("device emulation failed (non-fatal): {e}");
+        }
 
         Ok(ToolOutput::success(
             &format!("Navigated to {}. tab_id={}", url, resolved_id),
@@ -651,6 +671,123 @@ impl Tool for BrowserManageTabsTool {
             _ => Err(ToolError::Execution(format!(
                 "Unknown action '{}'; expected 'list' or 'close'", action
             ))),
+        }
+    }
+}
+
+// ── 15. BrowserGetCookiesTool ─────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserGetCookiesTool {
+    fn name(&self) -> &str { "browser_get_cookies" }
+
+    fn description(&self) -> &str {
+        r#"Retrieve cookies from the current browser session.
+
+Returns all cookies visible to the specified tab. Use `url_filter` to scope
+to a specific origin.
+
+**Parameters**
+- `tab_id` (string, required): Tab ID from browser_navigate or browser_get_dom.
+- `url_filter` (string, optional): Only return cookies for this URL.
+
+**Returns** JSON array of cookie objects: name, value, domain, path, secure,
+http_only, same_site, expires.
+
+**Example**
+{"tab_id":"tab-1","url_filter":"https://example.com"}
+→ [{"name":"session","value":"abc123","domain":"example.com",...}]
+"#
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": { "type": "string", "description": "Tab ID from browser_navigate or browser_get_dom" },
+                "url_filter": { "type": "string", "description": "Only return cookies matching this URL" }
+            },
+            "required": ["tab_id"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let tab_id = params["tab_id"].as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
+        let url_filter = params["url_filter"].as_str();
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        match ctx.get_cookies(tab_id, url_filter).await {
+            Ok(cookies) => {
+                let json = serde_json::to_string_pretty(&cookies)
+                    .unwrap_or_else(|_| "[]".to_string());
+                Ok(ToolOutput::success(&json, start.elapsed().as_millis() as u64))
+            }
+            Err(e) => Ok(ToolOutput::error(&e.to_string(), start.elapsed().as_millis() as u64)),
+        }
+    }
+}
+
+// ── 16. BrowserSetCookieTool ──────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserSetCookieTool {
+    fn name(&self) -> &str { "browser_set_cookie" }
+
+    fn description(&self) -> &str {
+        r#"Set a single cookie in the current browser session.
+
+Use this to inject authentication cookies, bypass consent banners, or persist
+session tokens before navigating to a page that requires them.
+
+**Parameters**
+- `tab_id` (string, required): Tab ID from browser_navigate.
+- `name` (string, required): Cookie name.
+- `value` (string, required): Cookie value.
+- `domain` (string, required): Cookie domain, e.g. "example.com".
+- `path` (string, optional): Cookie path. Defaults to "/".
+- `secure` (boolean, optional): Set Secure flag. Default false.
+- `http_only` (boolean, optional): Set HttpOnly flag. Default false.
+
+**Returns** "Cookie set successfully." on success.
+"#
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": { "type": "string", "description": "Tab ID from browser_navigate" },
+                "name": { "type": "string", "description": "Cookie name" },
+                "value": { "type": "string", "description": "Cookie value" },
+                "domain": { "type": "string", "description": "Cookie domain, e.g. \"example.com\"" },
+                "path": { "type": "string", "description": "Cookie path (optional, defaults to '/')" },
+                "secure": { "type": "boolean", "description": "Set Secure flag (default false)" },
+                "http_only": { "type": "boolean", "description": "Set HttpOnly flag (default false)" }
+            },
+            "required": ["tab_id", "name", "value", "domain"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let tab_id = params["tab_id"].as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
+        let name = params["name"].as_str()
+            .ok_or_else(|| ToolError::Execution("name is required".to_string()))?;
+        let value = params["value"].as_str()
+            .ok_or_else(|| ToolError::Execution("value is required".to_string()))?;
+        let domain = params["domain"].as_str()
+            .ok_or_else(|| ToolError::Execution("domain is required".to_string()))?;
+        let path = params["path"].as_str();
+        let secure = params["secure"].as_bool().unwrap_or(false);
+        let http_only = params["http_only"].as_bool().unwrap_or(false);
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        match ctx.set_cookie(tab_id, name, value, domain, path, secure, http_only).await {
+            Ok(_) => Ok(ToolOutput::success("Cookie set successfully.", start.elapsed().as_millis() as u64)),
+            Err(e) => Ok(ToolOutput::error(&e.to_string(), start.elapsed().as_millis() as u64)),
         }
     }
 }

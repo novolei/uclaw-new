@@ -26,6 +26,7 @@ const AGENT_FOO: PreviewTabItem = {
   sessionId: 's1',
   source: 'agent',
   addedAt: 100,
+  type: 'file',
 }
 const MANUAL_BAR: PreviewTabItem = {
   mountId: 'workspace:default',
@@ -35,6 +36,7 @@ const MANUAL_BAR: PreviewTabItem = {
   sessionId: 's1',
   source: 'manual',
   addedAt: 200,
+  type: 'file',
 }
 
 function renderWith(

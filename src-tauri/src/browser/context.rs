@@ -30,6 +30,43 @@ use crate::browser::types::{DOMState, DomStateRaw, ScreencastFramePayload, TabIn
 
 const DOM_CACHE_TTL: Duration = Duration::from_millis(500);
 
+// ── CookieInfo ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CookieInfo {
+    pub name: String,
+    pub value: String,
+    pub domain: String,
+    pub path: String,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: Option<String>,
+    pub expires: f64,
+}
+
+// ── DevicePreset ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DevicePreset {
+    Desktop,
+    Mobile,
+}
+
+impl DevicePreset {
+    pub fn from_str(s: &str) -> Self {
+        if s.eq_ignore_ascii_case("mobile") { DevicePreset::Mobile } else { DevicePreset::Desktop }
+    }
+
+    pub fn viewport_width(self) -> u32 { match self { DevicePreset::Mobile => 390, DevicePreset::Desktop => 1280 } }
+    pub fn viewport_height(self) -> u32 { match self { DevicePreset::Mobile => 844, DevicePreset::Desktop => 800 } }
+    pub fn user_agent(self) -> &'static str {
+        match self {
+            DevicePreset::Mobile => "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            DevicePreset::Desktop => "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        }
+    }
+}
+
 // ── BrowserContext ────────────────────────────────────────────────────────────
 
 pub struct BrowserContext {
@@ -485,6 +522,86 @@ impl BrowserContext {
         if let Some(stop_tx) = self.screencast_stops.lock().await.remove(tab_id) {
             let _ = stop_tx.send(());
         }
+    }
+
+    // ── Cookies ───────────────────────────────────────────────────────────────
+
+    pub async fn get_cookies(&self, tab_id: &str, url_filter: Option<&str>) -> Result<Vec<CookieInfo>> {
+        let page = self.get_page(tab_id).await?;
+        use chromiumoxide::cdp::browser_protocol::network::GetCookiesParams;
+        let cmd = GetCookiesParams {
+            urls: url_filter.map(|u| vec![u.to_string()]),
+        };
+        let result = page.execute(cmd).await
+            .map_err(|e| anyhow!("get_cookies CDP error: {e}"))?;
+        let cookies = result.result.cookies.into_iter().map(|c| CookieInfo {
+            name: c.name,
+            value: c.value,
+            domain: c.domain,
+            path: c.path,
+            secure: c.secure,
+            http_only: c.http_only,
+            same_site: c.same_site.map(|s| format!("{s:?}")),
+            expires: c.expires,
+        }).collect();
+        Ok(cookies)
+    }
+
+    pub async fn set_cookie(
+        &self,
+        tab_id: &str,
+        name: &str,
+        value: &str,
+        domain: &str,
+        path: Option<&str>,
+        secure: bool,
+        http_only: bool,
+    ) -> Result<bool> {
+        let page = self.get_page(tab_id).await?;
+        use chromiumoxide::cdp::browser_protocol::network::{CookieParam, SetCookiesParams};
+        let mut cookie = CookieParam::new(name, value);
+        cookie.domain = Some(domain.to_string());
+        cookie.path = path.map(|p| p.to_string());
+        cookie.secure = Some(secure);
+        cookie.http_only = Some(http_only);
+        let cmd = SetCookiesParams { cookies: vec![cookie] };
+        page.execute(cmd).await
+            .map_err(|e| anyhow!("set_cookie CDP error: {e}"))?;
+        Ok(true)
+    }
+
+    // ── Device emulation ──────────────────────────────────────────────────────
+
+    pub async fn apply_device_emulation(&self, tab_id: &str, device: DevicePreset) -> Result<()> {
+        let page = self.get_page(tab_id).await?;
+        use chromiumoxide::cdp::browser_protocol::emulation::{
+            SetDeviceMetricsOverrideParams, SetUserAgentOverrideParams,
+        };
+        let metrics = SetDeviceMetricsOverrideParams {
+            width: device.viewport_width() as i64,
+            height: device.viewport_height() as i64,
+            device_scale_factor: if device == DevicePreset::Mobile { 3.0 } else { 1.0 },
+            mobile: device == DevicePreset::Mobile,
+            scale: None,
+            screen_width: None,
+            screen_height: None,
+            position_x: None,
+            position_y: None,
+            dont_set_visible_size: None,
+            screen_orientation: None,
+            viewport: None,
+        };
+        page.execute(metrics).await
+            .map_err(|e| anyhow!("set device metrics: {e}"))?;
+        let ua = SetUserAgentOverrideParams {
+            user_agent: device.user_agent().to_string(),
+            accept_language: None,
+            platform: None,
+            user_agent_metadata: None,
+        };
+        page.execute(ua).await
+            .map_err(|e| anyhow!("set UA: {e}"))?;
+        Ok(())
     }
 }
 

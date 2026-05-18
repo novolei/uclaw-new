@@ -30,13 +30,14 @@ import {
   autoPreviewDismissedSessionsAtom,
   pendingWriteToolsAtom,
   openPreviewTabAction,
+  openBrowserTabAction,
   type PreviewFileTarget,
 } from '@/atoms/preview-panel-atoms'
 import { workspaceSessionsAtom, updateSessionTitleAtom, type WorkspaceSession } from '@/atoms/workspace'
 import { tabsAtom } from '@/atoms/tab-atoms'
 import type { AgentSessionMeta } from '@/lib/agent-types'
 import type { TabItem } from '@/atoms/tab-atoms'
-import { browserTakeScreenshot } from '@/lib/tauri-bridge'
+import { browserStartScreencast } from '@/lib/tauri-bridge'
 
 /**
  * Per-session monotonic counter used to drop stale async path resolutions.
@@ -538,27 +539,17 @@ function startAgentListeners(store: Store): void {
         return map
       })
 
-      // After a successful navigate, auto-capture screenshots so the preview
-      // tracks the page without the agent needing to call browser_screenshot.
-      // Take two: one at 1.2 s (first paint) and one at 3.5 s (fully loaded).
+      // On first successful browser_navigate: open the browser panel tab and
+      // start the CDP screencast stream. Subsequent navigates are no-ops here
+      // (panel already open, screencast already running).
       if (toolName === 'browser_navigate' && !ev.isError && resolvedTabId) {
         const tabId = resolvedTabId
-        const updateScreenshot = (delay: number) =>
-          new Promise<void>((resolve) =>
-            setTimeout(() => {
-              browserTakeScreenshot(tabId).then((data) => {
-                store.set(sessionBrowserPreviewMapAtom, (prev) => {
-                  const existing = prev.get(sid)
-                  if (!existing) return prev
-                  const map = new Map(prev)
-                  map.set(sid, { ...existing, screenshotData: data })
-                  return map
-                })
-                resolve()
-              }).catch(() => resolve())
-            }, delay)
-          )
-        updateScreenshot(1200).then(() => updateScreenshot(3500))
+        const currentUrl = (() => {
+          const urlMatch = contentStr.match(/Navigated to (\S+?)\.?\s/)
+          return urlMatch ? urlMatch[1] : ''
+        })()
+        store.set(openBrowserTabAction, { agentSessionId: sid, initialUrl: currentUrl })
+        browserStartScreencast(sid, tabId).catch(console.error)
       }
     })
   )

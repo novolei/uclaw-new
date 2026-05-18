@@ -57,3 +57,4 @@ package-lock.json
 # Earlier `git add .` from uclaw root accidentally added it as a submodule
 # (596e2a8). 2fbe327 rm'd the gitlink; this ignore prevents recurrence.
 ulooi/
+.worktrees/
