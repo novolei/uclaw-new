@@ -13087,7 +13087,7 @@ pub async fn respond_plan_mode_suggest(
 
 /// Minimal liveness probe — frontend receiving Ok proves the Tauri backend is up.
 #[tauri::command]
-pub async fn get_app_health() -> Result<serde_json::Value, String> {
+pub fn get_app_health() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "backend": true }))
 }
 
@@ -13103,7 +13103,7 @@ pub async fn get_memu_status(
         None => Ok(serde_json::json!({ "online": false, "reason": "not_initialized" })),
         Some(c) => match c.health_check().await {
             Ok(true)  => Ok(serde_json::json!({ "online": true })),
-            Ok(false) | Err(_) => Ok(serde_json::json!({ "online": false })),
+            Ok(false) | Err(_) => Ok(serde_json::json!({ "online": false, "reason": "unhealthy" })),
         },
     }
 }
