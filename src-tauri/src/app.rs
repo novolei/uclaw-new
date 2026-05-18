@@ -1367,4 +1367,35 @@ mod gbrain_launcher_tests {
             run_sh_content
         );
     }
+
+    #[test]
+    fn write_gbrain_launcher_files_handles_paths_with_single_quote() {
+        // shell_quote_path's load-bearing branch: ' in input must
+        // become '\'' in output (close-quote, escaped-quote, open-quote).
+        // macOS filesystems allow single quotes in paths; if the escape
+        // were wrong the resulting run.sh would silently exec the wrong
+        // command or fail with a shell syntax error.
+        let data = tempdir().unwrap();
+        let nested = data.path().join("it's");
+        std::fs::create_dir_all(&nested).unwrap();
+        let bun = nested.join("bun");
+        let entry = nested.join("cli.ts");
+        std::fs::write(&bun, "").unwrap();
+        std::fs::write(&entry, "").unwrap();
+
+        AppState::write_gbrain_launcher_files(data.path(), &bun, &entry).unwrap();
+
+        let content = std::fs::read_to_string(
+            data.path().join("gbrain").join("run.sh")
+        ).unwrap();
+        // The path "it's" should be escaped in the shell as it'\''s
+        // (the single quote becomes: close-quote, backslash-escaped-quote, open-quote).
+        // This is the canonical POSIX way to include a literal single quote
+        // inside a single-quoted string. The pattern is: '\\'' (literal 3-char sequence).
+        assert!(
+            content.contains("'\\''"),
+            "single-quote in path must be escaped as '\\'' in the shell, got:\n{}",
+            content
+        );
+    }
 }
