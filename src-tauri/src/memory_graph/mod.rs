@@ -13,3 +13,5 @@ pub mod auto_link;
 pub mod wiki_synth;
 // Memory OS Foundation Phase 6a — shared LLM adapter for wiki/lint/entity-synth scenarios.
 pub mod memory_os_llm;
+// Memory OS Foundation Phase 7 — markdown frontmatter + disk-mirror sync state.
+pub mod brain_io;

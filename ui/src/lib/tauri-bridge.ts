@@ -126,6 +126,9 @@ import type {
   // EntityPage manual synth (Memory OS Foundation Phase 6.3)
   EntityPageSynthesizeNowInput,
   EntitySynthesisOutcome,
+  // Markdown export (Memory OS Foundation Phase 7.1)
+  WikiExportInput,
+  BrainExportOutcome,
   // Cost dashboard
   DailyCostRollup,
   ModelCostRollup,
@@ -859,6 +862,20 @@ export const memoryEntityPageSynthesizeNow = (
   input: EntityPageSynthesizeNowInput,
 ): Promise<EntitySynthesisOutcome> =>
   invoke('memory_entity_page_synthesize_now', { input });
+
+// ─────────────────────────────────────────────────────────
+// Memory OS Phase 7.1 — Brain Markdown Export
+// ─────────────────────────────────────────────────────────
+// One-shot export of every EntityPage in the space to a markdown
+// mirror at `<brainRoot>/<subkind>/<slug>.md`, plus overview.md /
+// index.md. Idempotent: re-running on an unchanged page costs only
+// a SHA-256 comparison. `brainRoot` defaults to
+// `~/Documents/workground/brain/` on the backend when omitted.
+
+export const memoryWikiExport = (
+  input: WikiExportInput,
+): Promise<BrainExportOutcome> =>
+  invoke('memory_wiki_export', { input });
 
 // ─────────────────────────────────────────────────────────
 // Notifications
