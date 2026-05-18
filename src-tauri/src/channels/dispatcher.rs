@@ -127,7 +127,11 @@ pub fn load_session_messages(
 }
 
 /// Collect all non-empty text blocks from Assistant messages, joined in order.
-/// Replaces the earlier find_map(rev()) approach that only returned the last block.
+///
+/// IMPORTANT: callers MUST pass the slice that contains only the current
+/// turn (e.g. `&reason_ctx.messages[start_idx..]`). Passing the full
+/// conversation causes every prior turn's assistant text to be re-sent on
+/// every reply.
 pub(super) fn extract_final_assistant_text(messages: &[ChatMessage]) -> String {
     messages
         .iter()
@@ -141,6 +145,35 @@ pub(super) fn extract_final_assistant_text(messages: &[ChatMessage]) -> String {
         .join("\n\n")
         .trim()
         .to_string()
+}
+
+/// Convert a persisted `(role, content)` row from `agent_messages` back into a
+/// `ChatMessage` for LLM context.
+///
+/// Mirror of `persist_im_messages`: assistant rows are stored as
+/// `serde_json::to_string(&content_blocks)` (JSON array of ContentBlock), so we
+/// must deserialize them and keep only Text blocks. Tool_use / tool_result
+/// pairs from prior turns require matching state we don't preserve in IM
+/// sessions, and thinking blocks are model-internal. User and system rows are
+/// stored as plain text.
+pub(super) fn row_to_chat_message(role: &str, content: String) -> Option<ChatMessage> {
+    let r = match role {
+        "user"      => MessageRole::User,
+        "assistant" => MessageRole::Assistant,
+        "system"    => MessageRole::System,
+        _           => return None,
+    };
+    let blocks = match r {
+        MessageRole::Assistant => serde_json::from_str::<Vec<ContentBlock>>(&content)
+            .map(|bs| {
+                bs.into_iter()
+                    .filter(|b| matches!(b, ContentBlock::Text { .. }))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|_| vec![ContentBlock::Text { text: content }]),
+        _ => vec![ContentBlock::Text { text: content }],
+    };
+    Some(ChatMessage { role: r, content: blocks, compacted: false })
 }
 
 /// Dispatch an inbound IM message to either the automation or agent-chat path.
@@ -241,19 +274,7 @@ async fn run_agent_chat_via_im(
         let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
         let rows = load_session_messages(&conn, &session_id)?;
         rows.into_iter()
-            .filter_map(|(role, content, _)| {
-                let r = match role.as_str() {
-                    "user"      => MessageRole::User,
-                    "assistant" => MessageRole::Assistant,
-                    "system"    => MessageRole::System,
-                    _           => return None,
-                };
-                Some(ChatMessage {
-                    role: r,
-                    content: vec![ContentBlock::Text { text: content }],
-                    compacted: false,
-                })
-            })
+            .filter_map(|(role, content, _)| row_to_chat_message(&role, content))
             .collect()
     };
 
@@ -348,7 +369,10 @@ async fn run_agent_chat_via_im(
         return Ok(());
     }
 
-    let final_assistant_text = extract_final_assistant_text(&reason_ctx.messages);
+    // Scope to the current turn only — prior assistant turns are persisted
+    // history, not part of this reply.
+    let final_assistant_text =
+        extract_final_assistant_text(&reason_ctx.messages[start_idx..]);
 
     if let Some(ref sh) = delegate.streaming_handle {
         if let Err(e) = sh.finish(&final_assistant_text).await {
@@ -530,5 +554,135 @@ mod tests {
             assert!(input.trim().is_empty(), "should be empty: {:?}", input);
         }
         assert!(!("hello".trim().is_empty()));
+    }
+
+    #[test]
+    fn row_to_chat_message_assistant_deserializes_json_and_keeps_text_only() {
+        // Mirror what persist_im_messages writes: a JSON array of ContentBlock.
+        let stored = serde_json::to_string(&vec![
+            ContentBlock::Thinking { thinking: "internal reasoning".into(), signature: None },
+            ContentBlock::Text { text: "hello user".into() },
+        ])
+        .unwrap();
+
+        let msg = row_to_chat_message("assistant", stored).expect("should parse");
+        assert_eq!(msg.role, MessageRole::Assistant);
+        // Thinking block stripped; only the text block survives.
+        assert_eq!(msg.content.len(), 1);
+        match &msg.content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "hello user"),
+            other => panic!("expected Text, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn row_to_chat_message_user_keeps_plain_text() {
+        let msg = row_to_chat_message("user", "hi there".into()).expect("should parse");
+        assert_eq!(msg.role, MessageRole::User);
+        match &msg.content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "hi there"),
+            other => panic!("expected Text, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn row_to_chat_message_assistant_falls_back_when_json_invalid() {
+        // Defensive: legacy or corrupted rows that aren't valid JSON fall back
+        // to a Text block holding the raw string, so the conversation still
+        // loads without panicking.
+        let msg = row_to_chat_message("assistant", "not-json".into()).expect("should parse");
+        match &msg.content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "not-json"),
+            other => panic!("expected Text fallback, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn row_to_chat_message_unknown_role_returns_none() {
+        assert!(row_to_chat_message("tool", "anything".into()).is_none());
+    }
+
+    #[test]
+    fn extract_final_text_scoped_to_current_turn_excludes_history() {
+        // Regression test: with the old (full-history) behaviour, this would
+        // include both historical_reply AND current_reply. With the slice
+        // pattern used at the call site, only current_reply is returned.
+        let messages = vec![
+            ChatMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::Text { text: "previous q".into() }],
+                compacted: false,
+            },
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::Text { text: "historical_reply".into() }],
+                compacted: false,
+            },
+            ChatMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::Text { text: "current q".into() }],
+                compacted: false,
+            },
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::Text { text: "current_reply".into() }],
+                compacted: false,
+            },
+        ];
+        // start_idx = 2 means "current turn begins at the second user message".
+        let result = extract_final_assistant_text(&messages[2..]);
+        assert_eq!(result, "current_reply");
+        assert!(!result.contains("historical_reply"));
+    }
+
+    #[test]
+    fn round_trip_persist_then_load_matches_uclaw_app_text() {
+        // End-to-end: persist what an agent turn produced, load it back via
+        // the same code path the IM dispatcher uses, and verify the user-facing
+        // text matches what the uClaw app would render (only Text blocks).
+        let conn = setup_db();
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO agent_sessions (id, space_id, title, metadata_json, message_count, pinned, archived, created_at, updated_at)
+             VALUES ('s1', 'default', 't', '{}', 0, 0, 0, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        // What the agent loop produces: thinking + text mixed.
+        let assistant_msg = ChatMessage {
+            role: MessageRole::Assistant,
+            content: vec![
+                ContentBlock::Thinking { thinking: "private".into(), signature: None },
+                ContentBlock::Text { text: "Hi! How can I help?".into() },
+            ],
+            compacted: false,
+        };
+        persist_im_messages(
+            &conn,
+            "s1",
+            &[ChatMessage::user("hi"), assistant_msg],
+            0,
+        )
+        .unwrap();
+
+        let rows = load_session_messages(&conn, "s1").unwrap();
+        let loaded: Vec<ChatMessage> = rows
+            .into_iter()
+            .filter_map(|(role, content, _)| row_to_chat_message(&role, content))
+            .collect();
+
+        assert_eq!(loaded.len(), 2);
+        // The assistant message must come back as a clean Text block, NOT a
+        // Text block whose body is `[{"type":"thinking",...},{"type":"text",...}]`.
+        match &loaded[1].content[0] {
+            ContentBlock::Text { text } => {
+                assert_eq!(text, "Hi! How can I help?");
+                assert!(
+                    !text.starts_with('['),
+                    "loaded text must not be JSON-encoded ContentBlock array: {text}"
+                );
+            }
+            other => panic!("expected Text, got {:?}", other),
+        }
     }
 }
