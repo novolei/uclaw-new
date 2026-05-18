@@ -887,6 +887,12 @@ fn main() {
             uclaw_core::tauri_commands::propose_skill_consolidation,
             uclaw_core::tauri_commands::cancel_skill_consolidation,
             uclaw_core::tauri_commands::apply_skill_consolidation,
+            // System Diagnostics
+            uclaw_core::tauri_commands::get_system_diagnostics,
+            uclaw_core::tauri_commands::restart_memu_bridge,
+            uclaw_core::tauri_commands::restart_gbrain_mcp,
+            uclaw_core::tauri_commands::reset_ai_engine,
+            uclaw_core::tauri_commands::restart_app,
             // MEMUBOT Services
             uclaw_core::tauri_commands::services_health,
             uclaw_core::tauri_commands::memorization_status,

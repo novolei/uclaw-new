@@ -251,6 +251,36 @@ pub async fn patch_memory_recall_config(
     Ok(merged)
 }
 
+#[derive(Debug, serde::Serialize, Clone)]
+pub struct MemUBridgeStatus {
+    pub running: bool,
+    pub pid: Option<u32>,
+}
+
+#[derive(Debug, serde::Serialize, Clone)]
+pub struct GbrainStatus {
+    pub connected: bool,
+    pub tool_count: u32,
+    pub pgdata_ready: bool,
+}
+
+#[derive(Debug, serde::Serialize, Clone)]
+pub struct SystemDiagnosticsReport {
+    pub app_version: String,
+    pub platform: String,
+    pub arch: String,
+    pub memory_used_mb: u64,
+    pub memory_total_mb: u64,
+    pub uptime_secs: u64,
+    pub consecutive_failures: u32,
+    pub recovery_attempts: u32,
+    pub active_processes: u32,
+    pub orphan_processes: u32,
+    pub services: Vec<crate::services::ServiceHealth>,
+    pub memu: MemUBridgeStatus,
+    pub gbrain: GbrainStatus,
+}
+
 #[tauri::command]
 pub async fn get_platform() -> Result<PlatformInfo, Error> {
     Ok(PlatformInfo {
@@ -267,6 +297,113 @@ pub async fn get_version() -> Result<VersionInfo, Error> {
         tauri_version: "2.0".into(),
         rust_version: "1.95.0".into(),
     })
+}
+
+#[tauri::command]
+pub async fn get_system_diagnostics(
+    state: State<'_, AppState>,
+) -> Result<SystemDiagnosticsReport, Error> {
+    // Memory via sysinfo
+    let sys = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::new()
+            .with_memory(sysinfo::MemoryRefreshKind::everything()),
+    );
+    let memory_used_mb = sys.used_memory() / 1_048_576;
+    let memory_total_mb = sys.total_memory() / 1_048_576;
+
+    // Uptime
+    let uptime_secs = state.boot_time.elapsed().as_secs();
+
+    // Services
+    let summary = state.service_manager.get_all_health().await;
+    let consecutive_failures = summary.failed as u32;
+    let recovery_attempts = summary.failed as u32;
+    let active_processes = summary.running as u32;
+
+    // memU bridge status
+    let memu = match state.memu_client.as_ref() {
+        Some(client) => MemUBridgeStatus { running: client.is_available(), pid: None },
+        None => MemUBridgeStatus { running: false, pid: None },
+    };
+
+    // gbrain status
+    let gbrain = {
+        let mcp = state.mcp_manager.read().await;
+        let connected = matches!(
+            mcp.status("gbrain"),
+            Some(crate::mcp::McpServerStatus::Connected)
+        );
+        let tool_count = mcp.server_tool_count("gbrain").unwrap_or(0) as u32;
+        let pgdata_ready = state
+            .data_dir
+            .join("gbrain")
+            .join("pgdata")
+            .join("PG_VERSION")
+            .exists();
+        GbrainStatus { connected, tool_count, pgdata_ready }
+    };
+
+    Ok(SystemDiagnosticsReport {
+        app_version: env!("CARGO_PKG_VERSION").into(),
+        platform: std::env::consts::OS.into(),
+        arch: std::env::consts::ARCH.into(),
+        memory_used_mb,
+        memory_total_mb,
+        uptime_secs,
+        consecutive_failures,
+        recovery_attempts,
+        active_processes,
+        orphan_processes: 0,
+        services: summary.services,
+        memu,
+        gbrain,
+    })
+}
+
+#[tauri::command]
+pub async fn restart_memu_bridge(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let client = state
+        .memu_client
+        .as_ref()
+        .ok_or_else(|| "memU client not initialized (Python bridge missing)".to_string())?;
+    client.force_restart().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn restart_gbrain_mcp(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let id = state
+        .gbrain_mcp_id
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "gbrain MCP entry not seeded (bundle missing?)".to_string())?;
+    let mut mcp = state.mcp_manager.write().await;
+    mcp.disconnect_server(&id).await.map_err(|e| e.to_string())?;
+    mcp.connect_server(&id).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reset_ai_engine(
+    state: State<'_, AppState>,
+) -> Result<(), Error> {
+    let mut sessions = state.running_sessions.lock().await;
+    let count = sessions.len();
+    for (_, token) in sessions.drain() {
+        token.cancel();
+    }
+    tracing::info!("reset_ai_engine: cancelled {} running session(s)", count);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn restart_app(app: tauri::AppHandle) -> Result<(), Error> {
+    app.restart();
+    Ok(())
 }
 
 #[tauri::command]
