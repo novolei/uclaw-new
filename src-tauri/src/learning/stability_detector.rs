@@ -239,7 +239,7 @@ pub struct FacetTransition {
 
 /// Summary of one rebuild pass — caller logs at info-level for
 /// telemetry. Mirrors openhuman's RebuildOutcome shape.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct RebuildOutcome {
     /// Facets newly entering Active state this pass.
     pub promoted_to_active: u32,

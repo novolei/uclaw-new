@@ -78,10 +78,10 @@ static PATTERNS: Lazy<Vec<ExplicitPattern>> = Lazy::new(|| {
     vec![
         // ── Identity (English) ───────────────────────────────────
         // "my name is Alice" / "I'm Alice"
-        p(FacetClass::Identity, "name", r"(?i)\bmy name is ([A-Za-z][A-Za-z .'-]{1,40})"),
-        p(FacetClass::Identity, "name", r"(?i)\bi(?:'m|am)?\s+called\s+([A-Za-z][A-Za-z .'-]{1,40})"),
+        p(FacetClass::Identity, "name", r"(?i)\bmy name is ([A-Za-z][A-Za-z'-]{0,40})"),
+        p(FacetClass::Identity, "name", r"(?i)\bi(?:'m|am)?\s+called\s+([A-Za-z][A-Za-z'-]{0,40})"),
         // "I am a senior engineer"
-        p(FacetClass::Identity, "role", r"(?i)\bi(?:'m|am)\s+a(?:n)?\s+([a-z][a-z -]{2,40}?)(?:\s+at|\.|$|,)"),
+        p(FacetClass::Identity, "role", r"(?i)\bi(?:'m|\s+am)\s+a(?:n)?\s+([a-z][a-z -]{2,40}?)(?:\s+at|\.|$|,)"),
         // "I work in Beijing" / "I live in PST"
         p(FacetClass::Identity, "location", r"(?i)\bi (?:work|live) in ([A-Z][A-Za-z /-]{1,40})"),
         // "my timezone is PST"
@@ -128,7 +128,10 @@ pub fn extract_regex(
     for pat in PATTERNS.iter() {
         for caps in pat.regex.captures_iter(text) {
             let value = match caps.get(pat.value_group) {
-                Some(m) => m.as_str().trim().to_string(),
+                Some(m) => m.as_str()
+                    .trim()
+                    .trim_end_matches(|c: char| matches!(c, '.' | ',' | '!' | '?' | ';' | ':'))
+                    .to_string(),
                 None => continue,
             };
             if value.is_empty() {

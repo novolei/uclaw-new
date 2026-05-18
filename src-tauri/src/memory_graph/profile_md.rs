@@ -124,6 +124,10 @@ pub fn parse(text: &str) -> ProfileMdContents {
     let mut prelude_done = false;
     let mut prelude = String::new();
     let mut postlude = String::new();
+    // Text between managed blocks is buffered here and discarded when the
+    // next block is found (it's the render-separator \n\n, which the
+    // renderer regenerates). Only flushed to postlude in the None arm.
+    let mut pending_between = String::new();
     let mut idx = 0usize;
     let bytes = text.as_bytes();
 
@@ -139,7 +143,12 @@ pub fn parse(text: &str) -> ProfileMdContents {
                 // managed block yet.
                 let tail = &text[idx..];
                 if prelude_done {
-                    postlude.push_str(tail);
+                    // pending_between held inter-block whitespace that is
+                    // discarded here (the renderer regenerates \n\n
+                    // separators). Strip the leading \n\n the renderer
+                    // placed before the postlude so round-trips are stable.
+                    let tail_strip = tail.strip_prefix("\n\n").unwrap_or(tail);
+                    postlude.push_str(tail_strip);
                 } else {
                     prelude.push_str(tail);
                 }
@@ -148,12 +157,13 @@ pub fn parse(text: &str) -> ProfileMdContents {
         };
 
         // Everything before the marker is "between-block" text. If we
-        // haven't entered any block yet, that's prelude; otherwise it
-        // gets attached to postlude (a deliberate simplification — we
-        // canonicalize on render to keep all managed blocks together).
+        // haven't entered any block yet, that's prelude; otherwise stage
+        // it in pending_between — it will be discarded if another block
+        // follows (it's just the render-separator \n\n) and flushed to
+        // postlude only in the None arm above.
         let between = &text[idx..marker_pos];
         if prelude_done {
-            postlude.push_str(between);
+            pending_between.push_str(between);
         } else {
             prelude.push_str(between);
         }
@@ -249,16 +259,14 @@ pub fn parse(text: &str) -> ProfileMdContents {
         let body = text[start_marker_end..body_end_pos].to_string();
         bodies.insert(class, body);
         prelude_done = true;
+        pending_between.clear(); // inter-block separator consumed by this block
         idx = body_end_pos + end_needle.len();
     }
 
-    // Trim a single trailing newline off prelude/postlude so re-render
-    // doesn't accumulate blank lines.
+    // Trim trailing newline from prelude so render's double-newline guard
+    // doesn't produce a triple blank line.
     if prelude.ends_with('\n') {
         prelude.pop();
-    }
-    if postlude.starts_with('\n') {
-        postlude.remove(0);
     }
 
     ProfileMdContents {
