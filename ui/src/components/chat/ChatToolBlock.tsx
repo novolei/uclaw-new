@@ -14,7 +14,7 @@ import { ChevronRight, AlertTriangle, Loader2, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getToolIcon } from '@/components/agent/tool-utils'
 import { getToolPhrase } from '@/components/agent/tool-phrase'
-import { ToolResultRenderer } from '@/components/agent/tool-result-renderers'
+import { ToolResultRenderer } from '@/components/agent/tool-renderers'
 
 export interface ChatToolBlockProps {
   toolName: string

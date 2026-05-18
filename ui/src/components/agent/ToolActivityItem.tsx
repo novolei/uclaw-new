@@ -19,10 +19,11 @@ import {
   MessageCircleDashed,
   Download,
 } from 'lucide-react'
+import { useSetAtom } from 'jotai'
 import { cn } from '@/lib/utils'
 import { getToolIcon, formatElapsed } from './tool-utils'
 import { getToolPhrase } from './tool-phrase'
-import { ToolResultRenderer } from './tool-result-renderers'
+import { ToolResultRenderer } from './tool-renderers'
 import {
   type ToolActivity,
   type ActivityGroup,
@@ -33,6 +34,20 @@ import {
 } from '@/atoms/agent-atoms'
 import { TaskProgressCard, TASK_TOOL_NAMES } from './TaskProgressCard'
 import { readAttachment, saveImageAs } from '@/lib/tauri-bridge'
+import { openPreviewTabAction } from '@/atoms/preview-panel-atoms'
+
+// ===== 预览按钮资格判断 =====
+
+const PREVIEW_ELIGIBLE_TOOLS = new Set(['write_file', 'edit', 'plan_write'])
+
+function shouldShowPreviewButton(
+  toolName: string,
+  input: Record<string, unknown>,
+): boolean {
+  if (!PREVIEW_ELIGIBLE_TOOLS.has(toolName)) return false
+  const path = (input.path ?? input.file_path) as string | undefined
+  return Boolean(path && path.length > 0)
+}
 
 // ===== 尺寸配置 =====
 
@@ -185,6 +200,27 @@ export function ActivityRow({ activity, index = 0, animate = false, onOpenDetail
 
   const canExpand = !!onOpenDetails && activity.done && !!(activity.result || Object.keys(activity.input).length > 0)
 
+  const openPreviewTab = useSetAtom(openPreviewTabAction)
+
+  const handlePreview = React.useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation()
+      const path = (activity.input.path ?? activity.input.file_path) as string | undefined
+      if (!path) return
+      openPreviewTab({
+        target: {
+          mountId: 'workspace:default',
+          relPath: path,
+          name: path.split('/').pop() ?? path,
+          absolutePath: path,
+          sessionId: undefined,
+        },
+        source: 'agent',
+      })
+    },
+    [activity.input, openPreviewTab],
+  )
+
   const rowContent = (
     <>
       <StatusIcon status={status} toolName={activity.toolName} />
@@ -201,6 +237,16 @@ export function ActivityRow({ activity, index = 0, animate = false, onOpenDetail
           {formatElapsed(activity.elapsedSeconds)}
         </span>
       )}
+      {shouldShowPreviewButton(activity.toolName, activity.input) && (
+        <button
+          type="button"
+          onClick={handlePreview}
+          className="shrink-0 px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted/60 rounded border border-border/40 transition-colors"
+          aria-label={`预览 ${(activity.input.path ?? activity.input.file_path) as string}`}
+        >
+          预览
+        </button>
+      )}
       {canExpand && (
         <ChevronRight className="size-2.5 shrink-0 text-muted-foreground/30 group-hover/row:text-muted-foreground/70 transition-all duration-150" />
       )}
@@ -215,16 +261,20 @@ export function ActivityRow({ activity, index = 0, animate = false, onOpenDetail
       style={animate ? { animationDelay: delay } : undefined}
     >
       {canExpand ? (
-        <button
-          type="button"
+        // Use div[role=button] instead of <button> so we never get a button-in-button
+        // when the 预览 button is also present in rowContent (invalid DOM per spec).
+        <div
+          role="button"
+          tabIndex={0}
           className={cn(
             'group/row w-full flex items-center gap-2 px-2.5 rounded-lg cursor-pointer transition-colors duration-100 hover:bg-muted/50',
             SIZE.row,
           )}
           onClick={(e) => { e.stopPropagation(); onOpenDetails(activity) }}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onOpenDetails(activity) } }}
         >
           {rowContent}
-        </button>
+        </div>
       ) : (
         <div className={cn('group/row flex items-center gap-2 px-2.5 rounded-lg', SIZE.row)}>
           {rowContent}
