@@ -899,4 +899,121 @@ mod tests {
         let key = format!("{}:{}", lookup_channel_type("nonexistent"), "UIN_z");
         assert_eq!(key, "unknown:UIN_z");
     }
+
+    // Phase 2b cluster A · Task 7 — end-to-end state contract.
+    //
+    // Verifies the data-layer contract that an IM-triggered automation
+    // run is supposed to produce, without spinning the full agent loop
+    // (which would require AppState + a configured LLM provider — out
+    // of scope for unit tests; covered by manual QA per the plan).
+    //
+    // The seam: when WeChat user A sends a trigger phrase that matches
+    // a spec, the dispatcher constructs identity_key="wechat_ilink:UIN_a"
+    // and calls execute_run_in_chat_session which calls
+    // get_or_create_chat_session. We exercise that same call chain at
+    // the DB level and assert the resulting agent_session + index row
+    // match what the UI consumes via list_chat_sessions_for_spec.
+
+    #[test]
+    fn task7_im_round_trip_state_contract() {
+        use crate::automation::runtime::chat_sessions::get_or_create_chat_session;
+        let conn = setup_db();
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // Canonical spec + IM channel + binding.
+        conn.execute(
+            "INSERT INTO automation_specs
+             (id, name, version, author, description, system_prompt,
+              spec_yaml, spec_json, enabled, created_at, updated_at)
+             VALUES ('spec_e2e','e2e','0.1.0','t','t','sys','type: automation','{}',1,?1,?1)",
+            rusqlite::params![now],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO im_channel_instances
+             (id, space_id, channel_type, name, config_json, credentials_json,
+              enabled, streaming, reply_scope, permission_enabled, owners_json,
+              created_at, updated_at)
+             VALUES ('chan_e2e','default','wechat_ilink','test','{}','{}',
+                     1, 0, 'all', 0, '[]', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO spec_channel_bindings (spec_id, channel_instance_id, enabled)
+             VALUES ('spec_e2e','chan_e2e', 1)",
+            [],
+        ).unwrap();
+
+        // Simulate the dispatcher's identity_key + chat-session resolution.
+        let channel_type: String = conn.query_row(
+            "SELECT channel_type FROM im_channel_instances WHERE id='chan_e2e'",
+            [], |r| r.get(0),
+        ).unwrap();
+        let identity_key = format!("{}:{}", channel_type, "UIN_e2e_user");
+        let chat_session_id = get_or_create_chat_session(
+            &conn, "spec_e2e", &identity_key, "default",
+        ).unwrap();
+
+        // Contract 1: chat session exists with origin=automation:chat.
+        let (origin, spec_id, ikey): (String, String, String) = conn.query_row(
+            "SELECT json_extract(metadata_json,'$.origin'),
+                    json_extract(metadata_json,'$.spec_id'),
+                    json_extract(metadata_json,'$.identity_key')
+             FROM agent_sessions WHERE id = ?1",
+            rusqlite::params![chat_session_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert_eq!(origin, "automation:chat");
+        assert_eq!(spec_id, "spec_e2e");
+        assert_eq!(ikey, "wechat_ilink:UIN_e2e_user");
+
+        // Contract 2: index row connects spec → identity → agent_session.
+        let mapped: String = conn.query_row(
+            "SELECT agent_session_id FROM automation_chat_sessions
+             WHERE spec_id='spec_e2e' AND identity_key='wechat_ilink:UIN_e2e_user'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(mapped, chat_session_id);
+
+        // Contract 3: list_chat_sessions_for_spec's exact query returns
+        // this row (so the UI tab will see it).
+        let mut stmt = conn.prepare(
+            "SELECT acs.identity_key, acs.agent_session_id, s.title
+             FROM automation_chat_sessions acs
+             JOIN agent_sessions s ON s.id = acs.agent_session_id
+             WHERE acs.spec_id = ?1
+             ORDER BY s.updated_at DESC"
+        ).unwrap();
+        let rows: Vec<(String, String, String)> = stmt
+            .query_map(rusqlite::params!["spec_e2e"], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap().filter_map(|r| r.ok()).collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "wechat_ilink:UIN_e2e_user");
+        assert_eq!(rows[0].1, chat_session_id);
+        // Title shape from get_or_create_chat_session.
+        assert!(rows[0].2.starts_with("Chat · spec_e2e · wechat_ilink:UIN_e2e_user"));
+
+        // Contract 4: a second message from the same user reuses the
+        // same session (the burst-serialization mutex from Task 2 will
+        // pick this up by session id).
+        let again = get_or_create_chat_session(
+            &conn, "spec_e2e", &identity_key, "default",
+        ).unwrap();
+        assert_eq!(again, chat_session_id);
+
+        // Contract 5: a DIFFERENT user gets a DIFFERENT session, even
+        // for the same spec.
+        let key_other = format!("{}:{}", channel_type, "UIN_other_user");
+        let session_other = get_or_create_chat_session(
+            &conn, "spec_e2e", &key_other, "default",
+        ).unwrap();
+        assert_ne!(session_other, chat_session_id);
+
+        // And both threads now show up for this spec.
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM automation_chat_sessions WHERE spec_id='spec_e2e'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 2);
+    }
 }
