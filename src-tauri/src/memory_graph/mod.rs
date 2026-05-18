@@ -11,3 +11,5 @@ pub mod entity_page;
 pub mod auto_link;
 // Memory OS Foundation Phase 3 — AI Wiki synthesis (index.md SQL-only, overview.md LLM-driven).
 pub mod wiki_synth;
+// Memory OS Foundation Phase 6a — shared LLM adapter for wiki/lint/entity-synth scenarios.
+pub mod memory_os_llm;
