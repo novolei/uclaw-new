@@ -1446,10 +1446,7 @@ impl McpManager {
                     }
                     tokio::time::sleep(Duration::from_secs(delay)).await;
 
-                    let reconnect_result = {
-                        let mut m = mgr.write().await;
-                        m.reconnect_server(&id).await
-                    };
+                    let reconnect_result = reconnect_server_shared(&mgr, &id).await;
                     match reconnect_result {
                         Ok(()) => {
                             tracing::info!(
@@ -1474,22 +1471,6 @@ impl McpManager {
         }
     }
 
-    /// Internal reconnect — like `restart_server` but doesn't abort
-    /// the health loop (we *are* the health loop). The user-facing
-    /// `restart_server` calls `disconnect_server` which aborts the
-    /// loop; we don't want to commit suicide here.
-    async fn reconnect_server(&mut self, id: &str) -> Result<(), McpError> {
-        // Mirror restart_server's shape but inline the disconnect so we
-        // can skip stop_health_loop.
-        if let Some(state) = self.servers.get_mut(id) {
-            if let Some(conn) = state.connection.take() {
-                conn.shutdown().await.ok();
-            }
-            state.status = McpServerStatus::Disconnected;
-        }
-        self.connect_server(id).await
-    }
-
     /// Snapshot the IDs of enabled servers. Cheap; takes only a `&self`
     /// borrow so callers can release the lock before doing async work.
     pub fn list_enabled_ids(&self) -> Vec<String> {
@@ -1498,22 +1479,6 @@ impl McpManager {
             .filter(|s| s.config.enabled)
             .map(|s| s.config.id.clone())
             .collect()
-    }
-
-    /// Connect all enabled servers
-    pub async fn connect_all_enabled(&mut self) {
-        let ids: Vec<String> = self
-            .servers
-            .values()
-            .filter(|s| s.config.enabled)
-            .map(|s| s.config.id.clone())
-            .collect();
-
-        for id in ids {
-            if let Err(e) = self.connect_server(&id).await {
-                tracing::error!("Failed to connect MCP server '{}': {}", id, e);
-            }
-        }
     }
 
     /// Disconnect all servers. Also aborts every health loop (PR-3) —
@@ -1678,6 +1643,7 @@ impl McpManager {
             })
             .collect()
     }
+
 }
 
 /// Connect to an MCP server without holding the manager's write lock
@@ -1833,6 +1799,49 @@ pub(crate) async fn connect_server_shared(
                 state.error = Some(e.to_string());
             }
             Err(e)
+        }
+    }
+}
+
+/// Internal reconnect for the health loop. Mirrors `restart_server`'s
+/// disconnect+connect shape but without aborting the health loop
+/// (we *are* the health loop).
+///
+/// Lock note: the `conn.shutdown().await` call is made while holding the
+/// write lock. For Stdio transports `shutdown()` only closes stdin and drops
+/// the child handle — it does not wait for the child to exit — so this is a
+/// very short non-IO critical section in practice. HTTP/SSE transports drop
+/// the reqwest connection handle. Neither involves 60s network IO, so
+/// holding the write lock across `shutdown()` is acceptable here.
+pub(crate) async fn reconnect_server_shared(
+    shared: &SharedMcpManager,
+    id: &str,
+) -> Result<(), McpError> {
+    {
+        let mut guard = shared.write().await;
+        if let Some(state) = guard.servers.get_mut(id) {
+            if let Some(conn) = state.connection.take() {
+                let _ = conn.shutdown().await;
+            }
+            state.status = McpServerStatus::Disconnected;
+        }
+    }
+    connect_server_shared(shared, id).await
+}
+
+/// Connect all enabled servers. Each server's connect runs through
+/// `connect_server_shared`, which releases the write lock during the
+/// slow initialize/discover IO. Sequential iteration is fine because
+/// the slow part no longer blocks readers — parallelizing would only
+/// help startup wall time, not user-perceived latency.
+pub async fn connect_all_enabled(shared: &SharedMcpManager) {
+    let ids: Vec<String> = {
+        let guard = shared.read().await;
+        guard.list_enabled_ids()
+    };
+    for id in ids {
+        if let Err(e) = connect_server_shared(shared, &id).await {
+            tracing::error!("Failed to connect MCP server '{}': {}", id, e);
         }
     }
 }
