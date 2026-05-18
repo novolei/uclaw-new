@@ -646,8 +646,11 @@ impl BrowserContext {
     pub async fn apply_device_emulation(&self, tab_id: &str, device: DevicePreset) -> Result<()> {
         let page = self.get_page(tab_id).await?;
         use chromiumoxide::cdp::browser_protocol::emulation::{
-            SetDeviceMetricsOverrideParams, SetUserAgentOverrideParams,
+            MediaFeature, SetDeviceMetricsOverrideParams, SetEmulatedMediaParams,
+            SetTouchEmulationEnabledParams, SetUserAgentOverrideParams,
         };
+
+        // 1. Viewport dimensions + mobile rendering mode.
         let metrics = SetDeviceMetricsOverrideParams {
             width: device.viewport_width() as i64,
             height: device.viewport_height() as i64,
@@ -664,6 +667,8 @@ impl BrowserContext {
         };
         page.execute(metrics).await
             .map_err(|e| anyhow!("set device metrics: {e}"))?;
+
+        // 2. User-agent.
         let ua = SetUserAgentOverrideParams {
             user_agent: device.user_agent().to_string(),
             accept_language: None,
@@ -672,6 +677,35 @@ impl BrowserContext {
         };
         page.execute(ua).await
             .map_err(|e| anyhow!("set UA: {e}"))?;
+
+        // 3. Touch emulation — mobile gets 5-point touch, desktop gets none.
+        let is_mobile = device == DevicePreset::Mobile;
+        let touch = SetTouchEmulationEnabledParams {
+            enabled: is_mobile,
+            max_touch_points: Some(if is_mobile { 5 } else { 0 }),
+        };
+        page.execute(touch).await
+            .map_err(|e| anyhow!("touch emulation: {e}"))?;
+
+        // 4. CSS media features — pointer:coarse + hover:none for mobile.
+        let features = if is_mobile {
+            vec![
+                MediaFeature { name: "hover".to_string(), value: "none".to_string() },
+                MediaFeature { name: "pointer".to_string(), value: "coarse".to_string() },
+            ]
+        } else {
+            vec![
+                MediaFeature { name: "hover".to_string(), value: "hover".to_string() },
+                MediaFeature { name: "pointer".to_string(), value: "fine".to_string() },
+            ]
+        };
+        page.execute(SetEmulatedMediaParams {
+            media: None,
+            features: Some(features),
+        })
+        .await
+        .map_err(|e| anyhow!("emulated media: {e}"))?;
+
         Ok(())
     }
 }
@@ -695,5 +729,19 @@ mod tests {
             past.elapsed() > Duration::from_millis(500),
             "600 ms old cache entry should be expired"
         );
+    }
+
+    #[test]
+    fn device_preset_mobile_fields() {
+        assert_eq!(DevicePreset::Mobile.viewport_width(), 390);
+        assert_eq!(DevicePreset::Mobile.viewport_height(), 844);
+        assert!(DevicePreset::Mobile.user_agent().contains("iPhone"));
+    }
+
+    #[test]
+    fn device_preset_desktop_fields() {
+        assert_eq!(DevicePreset::Desktop.viewport_width(), 1280);
+        assert_eq!(DevicePreset::Desktop.viewport_height(), 800);
+        assert!(DevicePreset::Desktop.user_agent().contains("Macintosh"));
     }
 }
