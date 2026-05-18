@@ -198,6 +198,14 @@ pub struct MemoryOsRuntimeConfig {
     /// `## User Profile (Learned)` from. Updated after every
     /// rebuild_now in the tick block.
     pub facet_cache: Option<Arc<crate::learning::cache::FacetCache>>,
+    /// Sprint 2.1a — absolute disk path of PROFILE.md. When `Some`,
+    /// the tick block writes the rendered profile to this path after
+    /// every stability rebuild so the user has a human-readable
+    /// snapshot they can inspect/diff/version-control. `None` skips
+    /// the disk write (covers the no-Documents-dir edge case).
+    /// Resolved at AppState bootstrap; default
+    /// `~/Documents/workground/brain/PROFILE.md`.
+    pub profile_md_path: Option<std::path::PathBuf>,
 }
 
 impl MemoryOsRuntimeConfig {
@@ -219,6 +227,7 @@ impl MemoryOsRuntimeConfig {
             learning_enabled: cfg.learning_enabled,
             learning_scheduler: None,  // wired in AppState bootstrap
             facet_cache: None,         // wired in AppState bootstrap
+            profile_md_path: None,     // wired in AppState bootstrap
         }
     }
 
@@ -239,6 +248,7 @@ impl MemoryOsRuntimeConfig {
             learning_enabled: false,  // off in tests by default — tests opt-in by setting handles
             learning_scheduler: None,
             facet_cache: None,
+            profile_md_path: None,
         }
     }
 }
@@ -257,6 +267,7 @@ impl Default for MemoryOsRuntimeConfig {
             learning_enabled: true,
             learning_scheduler: None,
             facet_cache: None,
+            profile_md_path: None,
         }
     }
 }
@@ -1263,12 +1274,22 @@ impl ProactiveService {
         // to user_profile_facets, refresh the in-memory FacetCache.
         // Zero LLM cost; runs on tokio::task::spawn_blocking because
         // FacetStore takes the rusqlite Mutex.
+        //
+        // Sprint 2.1a — after the cache refresh, render PROFILE.md from
+        // the just-refreshed snapshots and atomically write it to
+        // `profile_md_path`. The disk file is a human-readable mirror
+        // of the cache: the user can `cat` it, version-control it, or
+        // hand-edit the unmanaged prelude/postlude sections (managed
+        // blocks get overwritten on the next rebuild). The whole disk
+        // op is best-effort: failures log + leave the previous file
+        // untouched (we never poison the cache on IO trouble).
         if refs.memory_os.learning_enabled && refs.tick_count.load(Ordering::SeqCst) % 60 == 0 {
             if let (Some(scheduler), Some(cache)) = (
                 refs.memory_os.learning_scheduler.as_ref().cloned(),
                 refs.memory_os.facet_cache.as_ref().cloned(),
             ) {
                 let now_ms = chrono::Utc::now().timestamp_millis();
+                let profile_path = refs.memory_os.profile_md_path.clone();
                 let result = tokio::task::spawn_blocking(move || -> Result<(), anyhow::Error> {
                     let outcome = scheduler
                         .rebuild_now(now_ms)
@@ -1289,6 +1310,48 @@ impl ProactiveService {
                         cache_size = n,
                         "[ProactiveService] learning: stability rebuild + cache refresh"
                     );
+
+                    // Sprint 2.1a — render + write PROFILE.md from the
+                    // freshly-refreshed cache. If the path isn't set
+                    // (no Documents dir, or learning bootstrap couldn't
+                    // resolve a brain root) we skip silently — the
+                    // cache + system-prompt injection still work.
+                    if let Some(path) = profile_path.as_ref() {
+                        use std::collections::HashMap;
+                        // Read the existing file so we preserve the
+                        // user's prelude/postlude across overwrites.
+                        // Missing file ⇒ empty contents (default
+                        // header gets emitted by render).
+                        let prev = match crate::memory_graph::profile_md::read(path) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                tracing::warn!(
+                                    path = %path.display(),
+                                    error = %e,
+                                    "[ProactiveService] Sprint 2.1a: read failed, using empty contents"
+                                );
+                                crate::memory_graph::profile_md::ProfileMdContents::empty()
+                            }
+                        };
+                        let mut active: HashMap<_, _> = HashMap::new();
+                        for class in crate::memory_graph::profile_md::CLASS_RENDER_ORDER {
+                            active.insert(*class, cache.active_by_class(*class));
+                        }
+                        let text = crate::memory_graph::profile_md::render(&prev, &active);
+                        if let Err(e) = crate::memory_graph::profile_md::write(path, &text) {
+                            tracing::warn!(
+                                path = %path.display(),
+                                error = %e,
+                                "[ProactiveService] Sprint 2.1a: PROFILE.md write failed"
+                            );
+                        } else {
+                            tracing::debug!(
+                                path = %path.display(),
+                                bytes = text.len(),
+                                "[ProactiveService] Sprint 2.1a: PROFILE.md written"
+                            );
+                        }
+                    }
                     Ok(())
                 })
                 .await;

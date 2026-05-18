@@ -55,6 +55,46 @@ pub fn current_month_start_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Compute the start of the current day (UTC) in epoch ms.
+/// Used by per-day spend caps (Sprint 2.1b learning, Phase 5 lint).
+pub fn current_day_start_ms() -> i64 {
+    use chrono::{Datelike, TimeZone, Utc};
+    let now = Utc::now();
+    Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
+        .single()
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(0)
+}
+
+/// Memory OS Sprint 2.1b — SUM(input_tokens + output_tokens) for today's
+/// cost_records where `model LIKE 'memory_learning%'`. Used by the chat-turn
+/// extractor's daily-budget gate before invoking the LLM layer. Returns 0
+/// on any error (best-effort; falling back to 0 lets the producer continue
+/// running rather than blocking on transient DB issues).
+///
+/// Standalone function (not on AppState) so the agent dispatcher can call
+/// it given only the raw `Arc<Mutex<Connection>>` — `set_learning_pipeline`
+/// hands it the same db handle AppState owns.
+pub fn today_learning_tokens(
+    db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
+) -> u32 {
+    let since_ms = current_day_start_ms();
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    let n: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(input_tokens + output_tokens), 0)
+             FROM cost_records
+             WHERE model LIKE 'memory_learning%' AND created_at >= ?1",
+            params![since_ms],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
+    n.max(0) as u32
+}
+
 /// Pure helper: which threshold (if any) was crossed on this turn?
 /// Fires 100 OR 80 (preferring 100 when both crossed in one turn), or None.
 /// Never fires when budget <= 0.0.

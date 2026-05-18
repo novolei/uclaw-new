@@ -228,6 +228,14 @@ pub struct AppState {
     pub learning_buffer: Arc<crate::learning::candidate::Buffer>,
     pub learning_scheduler: Arc<crate::learning::scheduler::LearningScheduler>,
     pub facet_cache: Arc<crate::learning::cache::FacetCache>,
+    /// Sprint 2.0 — LLM adapter shared with the chat-turn extractor.
+    /// `Some` only when `memory_os.learning_enabled = true` AND
+    /// `learning_llm_daily_token_budget > 0`. Same `MemoryOsLlmClient`
+    /// type used by wiki/lint/entity — routes through the active
+    /// provider configured in `provider_service`. `None` makes the
+    /// dispatcher skip the LLM layer (regex still runs).
+    pub learning_llm:
+        Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
 
     // ─── Phased Boot: 新增服务 ───────────────────────────────────────
     /// 中央消息总线
@@ -660,6 +668,36 @@ impl AppState {
             "Memory OS Sprint 1: facet store + buffer + cache initialized"
         );
 
+        // Memory OS Sprint 2.0 — LLM adapter for the chat-turn extractor.
+        // Shares the same MemoryOsLlmClient used by wiki/lint/entity, so a
+        // single provider configuration covers all four Memory OS users.
+        // Built only when the learning flag is on AND the LLM budget is
+        // non-zero — both are necessary because:
+        // - flag off → extractor itself is skipped, no point holding a
+        //   client we won't call
+        // - budget 0 → regex-only operation, no LLM call ever happens
+        let learning_llm: Option<
+            Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>,
+        > = if memubot_config.memory_os.learning_enabled
+            && memubot_config.memory_os.learning_llm_daily_token_budget > 0
+        {
+            use crate::memory_graph::memory_os_llm::MemoryOsLlmClient;
+            let llm = Arc::new(MemoryOsLlmClient::new(
+                provider_service.clone(),
+                db.clone(),
+            ));
+            tracing::info!(
+                budget = memubot_config.memory_os.learning_llm_daily_token_budget,
+                "Memory OS Sprint 2.0: learning LLM extractor installed"
+            );
+            Some(llm)
+        } else {
+            tracing::info!(
+                "Memory OS Sprint 2.0: learning LLM extractor disabled (regex-only mode)"
+            );
+            None
+        };
+
         tracing::info!("Application state initialized successfully (phased boot)");
 
         Ok(Self {
@@ -704,6 +742,7 @@ impl AppState {
             learning_buffer,
             learning_scheduler,
             facet_cache,
+            learning_llm,
             infra_service,
             service_manager,
             metrics_service,

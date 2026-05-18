@@ -268,6 +268,16 @@ fn main() {
                                             cfg.learning_scheduler =
                                                 Some(state_ref.learning_scheduler.clone());
                                             cfg.facet_cache = Some(state_ref.facet_cache.clone());
+                                            // Sprint 2.1a — resolve PROFILE.md disk path
+                                            // (lives under the default brain root so it
+                                            // ships next to entity pages + can be hand-
+                                            // edited / version-controlled by the user).
+                                            // `None` when there's no Documents dir (CI,
+                                            // unusual setups); tick block skips the disk
+                                            // write but the cache + system prompt still
+                                            // work normally.
+                                            cfg.profile_md_path = uclaw_core::memory_graph::brain_io::BrainExportConfig::default_brain_root()
+                                                .map(|root| root.join("PROFILE.md"));
                                             cfg
                                         },
                                     )

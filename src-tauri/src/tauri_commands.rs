@@ -613,6 +613,33 @@ pub async fn send_message(
     // Inject DB for plan-suggest aggregate-rate GEP signal
     delegate.set_db(Arc::clone(&state.db));
 
+    // ── Memory OS Sprint 2.0 — Learning Pipeline Wiring ─────────────
+    // Hook the chat-turn extractor (producer) to `before_llm_call` and
+    // inject the rendered PROFILE block (consumer) into the system
+    // prompt. Both halves of Sprint 1 were dormant — Sprint 2.0 turns
+    // them on. Reads memory_os.learning_* fields fresh each call so a
+    // settings toggle takes effect on the next turn without restart.
+    {
+        let cfg = state.memubot_config.read().await;
+        let learning_enabled = cfg.memory_os.learning_enabled;
+        let llm_daily_budget = cfg.memory_os.learning_llm_daily_token_budget;
+        drop(cfg);
+        delegate.set_learning_pipeline(
+            state.learning_buffer.clone(),
+            state.learning_llm.clone(),
+            Arc::clone(&state.db),
+            learning_enabled,
+            llm_daily_budget,
+        );
+        if learning_enabled {
+            if let Some(block) =
+                crate::learning::prompt_section::UserProfileSection::render(&state.facet_cache)
+            {
+                delegate.set_learned_profile_block(block);
+            }
+        }
+    }
+
     // ── Memory Recall Integration ────────────────────────────────────
     // Build a recall plan and inject memory context into the system prompt.
     {
@@ -8145,7 +8172,15 @@ pub async fn send_agent_message(
         sessions.insert(input.session_id.clone(), token.clone());
     }
 
-    let agent_loop_timeout_secs = state.memubot_config.read().await.agent_loop_timeout_secs;
+    let cfg_snapshot = state.memubot_config.read().await;
+    let agent_loop_timeout_secs = cfg_snapshot.agent_loop_timeout_secs;
+    // Sprint 2.0 — snapshot learning flags into the spawn closure so the
+    // delegate sees the same values the IPC was called with (memubot_config
+    // is a RwLock guard we can't hold across .await inside the spawn).
+    let learning_enabled_for_spawn = cfg_snapshot.memory_os.learning_enabled;
+    let learning_llm_daily_budget_for_spawn =
+        cfg_snapshot.memory_os.learning_llm_daily_token_budget;
+    drop(cfg_snapshot);
 
     // Clone for spawn
     let session_id = input.session_id.clone();
@@ -8160,6 +8195,10 @@ pub async fn send_agent_message(
     let skills_registry_for_manifest = Arc::clone(&state.skills_registry);
     let memory_graph_store_for_manifest = Arc::clone(&state.memory_graph_store);
     let proactive_service_for_spawn = Arc::clone(&state.proactive_service);
+    // Sprint 2.0 — learning pipeline handles for the spawned delegate.
+    let learning_buffer_for_spawn = Arc::clone(&state.learning_buffer);
+    let learning_llm_for_spawn = state.learning_llm.clone();
+    let facet_cache_for_spawn = Arc::clone(&state.facet_cache);
     // Same rule as tool registration above: prefer the session's actual
     // workspace, fall back to the globally-active workspace only if the
     // session has no space binding.
@@ -8285,6 +8324,24 @@ pub async fn send_agent_message(
             }
             // Inject DB for plan-suggest aggregate-rate GEP signal
             delegate.set_db(Arc::clone(&db));
+        }
+
+        // ── Memory OS Sprint 2.0 — Learning Pipeline Wiring ─────────
+        delegate.set_learning_pipeline(
+            learning_buffer_for_spawn.clone(),
+            learning_llm_for_spawn.clone(),
+            Arc::clone(&db),
+            learning_enabled_for_spawn,
+            learning_llm_daily_budget_for_spawn,
+        );
+        if learning_enabled_for_spawn {
+            if let Some(block) =
+                crate::learning::prompt_section::UserProfileSection::render(
+                    &facet_cache_for_spawn,
+                )
+            {
+                delegate.set_learned_profile_block(block);
+            }
         }
 
         let mut config = AgenticLoopConfig::default();
@@ -10907,6 +10964,20 @@ pub async fn start_agent_teams(
     let safety_for_factory = Arc::clone(&safety_manager);
     let approvals_for_factory = Arc::clone(&pending_approvals);
     let proactive_service_for_teams = Arc::clone(&state.proactive_service);
+    // Sprint 2.0 — learning pipeline snapshot for the orchestrator's
+    // delegate_factory closure. Read config flags now so the captured
+    // values are stable for the whole team run; the buffer + cache are
+    // already shared via Arc.
+    let learning_buffer_for_factory = Arc::clone(&state.learning_buffer);
+    let learning_llm_for_factory = state.learning_llm.clone();
+    let facet_cache_for_factory = Arc::clone(&state.facet_cache);
+    let (learning_enabled_for_factory, learning_llm_daily_budget_for_factory) = {
+        let c = state.memubot_config.read().await;
+        (
+            c.memory_os.learning_enabled,
+            c.memory_os.learning_llm_daily_token_budget,
+        )
+    };
 
     // Spawn orchestration in background
     let handle = tokio::spawn(async move {
@@ -10982,6 +11053,23 @@ pub async fn start_agent_teams(
                 }
                 // Inject DB for plan-suggest aggregate-rate GEP signal
                 delegate.set_db(Arc::clone(&db_for_factory));
+                // ── Memory OS Sprint 2.0 — Learning Pipeline Wiring ─
+                delegate.set_learning_pipeline(
+                    Arc::clone(&learning_buffer_for_factory),
+                    learning_llm_for_factory.clone(),
+                    Arc::clone(&db_for_factory),
+                    learning_enabled_for_factory,
+                    learning_llm_daily_budget_for_factory,
+                );
+                if learning_enabled_for_factory {
+                    if let Some(block) =
+                        crate::learning::prompt_section::UserProfileSection::render(
+                            &facet_cache_for_factory,
+                        )
+                    {
+                        delegate.set_learned_profile_block(block);
+                    }
+                }
                 Box::new(delegate)
             },
         );
