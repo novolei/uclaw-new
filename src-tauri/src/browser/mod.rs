@@ -1,4 +1,5 @@
 pub mod context;
+pub mod context_manager;
 pub mod dom_state;
 pub mod tools;
 pub mod types;
