@@ -71,6 +71,9 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const focusMode = useAtomValue(focusModeAtom)
   const isDockEnabled = useAtomValue(bottomDockEnabledAtom)
   const [dockRevealed, setDockRevealed] = React.useState(false)
+  React.useEffect(() => {
+    if (!isDockEnabled) setDockRevealed(false)
+  }, [isDockEnabled])
   useFocusModeShortcut()  // global Alt+F binding
 
   // Escalation modal: subscribe to pending escalations and show one at a time.
