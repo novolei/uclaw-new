@@ -950,9 +950,15 @@ impl AppState {
     }
 
     /// Sprint 2.2 — write self-describing launcher script + paths manifest
-    /// to `<data_dir>/gbrain/`. Lets any tool (other Cowork sessions, debug
+    /// to `gbrain_home/`. Lets any tool (other Cowork sessions, debug
     /// scripts, CLI users) invoke the bundled gbrain without knowing
     /// whether uClaw is dev-mode or installed as a release `.app`.
+    ///
+    /// `gbrain_home` is the path you want gbrain's `GBRAIN_HOME` env var
+    /// to point at (typically `<data_dir>/gbrain` for uClaw — caller
+    /// resolves the `data_dir → gbrain_home` mapping). Passing it directly
+    /// lets the caller's owned `PathBuf` be captured into an async closure
+    /// without `state_ref` lifetime issues (see the main.rs Stage 3 spawn).
     ///
     /// Overwrites on every boot so paths always reflect the current install.
     /// Best-effort caller: returns `io::Result` so the boot path can log a
@@ -965,12 +971,11 @@ impl AppState {
     /// - `<gbrain_home>/paths.json` — machine-readable manifest with
     ///   uclaw_version, absolute paths, and a generation timestamp.
     pub fn write_gbrain_launcher_files(
-        data_dir: &std::path::Path,
+        gbrain_home: &std::path::Path,
         bun_path: &std::path::Path,
         entry_path: &std::path::Path,
     ) -> std::io::Result<()> {
-        let gbrain_home = data_dir.join("gbrain");
-        std::fs::create_dir_all(&gbrain_home)?;
+        std::fs::create_dir_all(gbrain_home)?;
 
         // run.sh — POSIX launcher. Bakes in absolute paths and sets
         // GBRAIN_HOME so the gbrain CLI resolves its layout
@@ -1280,16 +1285,15 @@ mod gbrain_launcher_tests {
     #[test]
     fn write_gbrain_launcher_files_creates_run_sh_and_paths_json() {
         let data = tempdir().unwrap();
+        let gbrain_home = data.path().join("gbrain");
         let bun = data.path().join("fake-bun");
         let entry = data.path().join("fake-cli.ts");
         // Write placeholder files so the canonicalized paths exist as files.
         fs::write(&bun, "").unwrap();
         fs::write(&entry, "").unwrap();
 
-        AppState::write_gbrain_launcher_files(data.path(), &bun, &entry)
+        AppState::write_gbrain_launcher_files(&gbrain_home, &bun, &entry)
             .expect("launcher write should succeed");
-
-        let gbrain_home = data.path().join("gbrain");
         let run_sh = gbrain_home.join("run.sh");
         let paths_json = gbrain_home.join("paths.json");
         assert!(run_sh.is_file(), "run.sh should exist");
@@ -1332,13 +1336,14 @@ mod gbrain_launcher_tests {
     fn write_gbrain_launcher_files_marks_run_sh_executable() {
         use std::os::unix::fs::PermissionsExt;
         let data = tempdir().unwrap();
+        let gbrain_home = data.path().join("gbrain");
         let bun = data.path().join("fake-bun");
         let entry = data.path().join("fake-cli.ts");
         std::fs::write(&bun, "").unwrap();
         std::fs::write(&entry, "").unwrap();
 
-        AppState::write_gbrain_launcher_files(data.path(), &bun, &entry).unwrap();
-        let run_sh = data.path().join("gbrain").join("run.sh");
+        AppState::write_gbrain_launcher_files(&gbrain_home, &bun, &entry).unwrap();
+        let run_sh = gbrain_home.join("run.sh");
         let mode = std::fs::metadata(&run_sh).unwrap().permissions().mode();
         // mode includes file-type bits; mask to permission bits (lowest 9).
         assert_eq!(mode & 0o777, 0o755, "run.sh should be chmod 0o755");
@@ -1347,6 +1352,7 @@ mod gbrain_launcher_tests {
     #[test]
     fn write_gbrain_launcher_files_handles_paths_with_spaces() {
         let data = tempdir().unwrap();
+        let gbrain_home = data.path().join("gbrain");
         // Create a sub-path with a space — exercises shell_quote_path
         let nested = data.path().join("with space");
         std::fs::create_dir_all(&nested).unwrap();
@@ -1355,10 +1361,10 @@ mod gbrain_launcher_tests {
         std::fs::write(&bun, "").unwrap();
         std::fs::write(&entry, "").unwrap();
 
-        AppState::write_gbrain_launcher_files(data.path(), &bun, &entry).unwrap();
+        AppState::write_gbrain_launcher_files(&gbrain_home, &bun, &entry).unwrap();
 
         let run_sh_content = std::fs::read_to_string(
-            data.path().join("gbrain").join("run.sh")
+            gbrain_home.join("run.sh")
         ).unwrap();
         // Path with space must be single-quoted so the shell treats it as one arg.
         assert!(
@@ -1376,6 +1382,7 @@ mod gbrain_launcher_tests {
         // were wrong the resulting run.sh would silently exec the wrong
         // command or fail with a shell syntax error.
         let data = tempdir().unwrap();
+        let gbrain_home = data.path().join("gbrain");
         let nested = data.path().join("it's");
         std::fs::create_dir_all(&nested).unwrap();
         let bun = nested.join("bun");
@@ -1383,10 +1390,10 @@ mod gbrain_launcher_tests {
         std::fs::write(&bun, "").unwrap();
         std::fs::write(&entry, "").unwrap();
 
-        AppState::write_gbrain_launcher_files(data.path(), &bun, &entry).unwrap();
+        AppState::write_gbrain_launcher_files(&gbrain_home, &bun, &entry).unwrap();
 
         let content = std::fs::read_to_string(
-            data.path().join("gbrain").join("run.sh")
+            gbrain_home.join("run.sh")
         ).unwrap();
         // The path "it's" should be escaped in the shell as it'\''s
         // (the single quote becomes: close-quote, backslash-escaped-quote, open-quote).

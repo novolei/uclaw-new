@@ -486,7 +486,7 @@ fn main() {
                                 // files BEFORE init. Best-effort: a write
                                 // failure shouldn't abort the gbrain seed.
                                 if let Err(e) = uclaw_core::app::AppState::write_gbrain_launcher_files(
-                                    &state_ref.data_dir, bun, entry,
+                                    &gbrain_home, bun, entry,
                                 ) {
                                     tracing::warn!(
                                         error = %e,
