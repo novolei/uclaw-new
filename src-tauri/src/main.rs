@@ -296,11 +296,16 @@ fn main() {
                         }
                     }
 
-                    // LocalApiService
+                    // LocalApiService — also surfaces `/v1/embeddings`
+                    // (OpenAI-compatible) backed by memU's FastEmbed when
+                    // memU is available, so external tools like gbrain
+                    // can reuse the bundled embedding stack without a
+                    // separate API key.
                     if memubot_config.local_api.enabled {
                         let local_api_svc = Arc::new(
                             uclaw_core::local_api::LocalApiService::new(
                                 memubot_config.local_api.clone(),
+                                memu_client.clone(),
                             )
                         );
                         service_manager.register(local_api_svc).await;

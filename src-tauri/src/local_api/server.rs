@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
+use crate::memu::client::MemUClient;
 use crate::memubot_config::LocalApiConfig;
 use crate::services::{ManagedService, ServiceHealth, ServiceStatus};
 
@@ -21,6 +22,10 @@ use super::routes::{self, ApiState};
 pub struct LocalApiService {
     /// 本地 API 配置（包含 enabled 开关和端口号）
     config: LocalApiConfig,
+    /// memU bridge client — surfaced as `/v1/embeddings` (OpenAI-compatible)
+    /// for external callers like gbrain. `None` when pyembed isn't set up;
+    /// the endpoint then returns 503 with a paste-ready setup hint.
+    memu_client: Option<Arc<MemUClient>>,
     /// HTTP 服务器的 tokio 任务句柄
     handle: RwLock<Option<JoinHandle<()>>>,
     /// 标识服务是否正在运行
@@ -33,9 +38,12 @@ impl LocalApiService {
     /// 创建 LocalApiService 实例
     ///
     /// - `config`: 从 MemubotConfig 中读取的 LocalApiConfig
-    pub fn new(config: LocalApiConfig) -> Self {
+    /// - `memu_client`: 可选的 memU bridge client（用于 `/v1/embeddings`
+    ///   OpenAI-compatible 路由）。None 时该路由返回 503。
+    pub fn new(config: LocalApiConfig, memu_client: Option<Arc<MemUClient>>) -> Self {
         Self {
             config,
+            memu_client,
             handle: RwLock::new(None),
             is_running: AtomicBool::new(false),
             start_time: RwLock::new(None),
@@ -66,6 +74,7 @@ impl ManagedService for LocalApiService {
         let addr = self.listen_addr();
         let state = Arc::new(ApiState {
             start_time: std::time::Instant::now(),
+            memu_client: self.memu_client.clone(),
         });
         let router = routes::create_router(state);
 

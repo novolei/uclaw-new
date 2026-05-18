@@ -437,7 +437,19 @@ impl StdioTransport {
             .envs(env)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped())
+            // Sprint 2.2 followon — kill the child when this StdioTransport
+            // drops. Without this, a connect timeout or any failure path
+            // that drops McpConnection leaves the child running, still
+            // holding any external resource (most painfully, gbrain's
+            // single-writer PGLite lock) so the next connect attempt's
+            // freshly spawned child can't acquire the same lock and times
+            // out with "Timed out waiting for PGLite lock." The original
+            // 60s connect timeouts compounded this — each timeout left a
+            // zombie that blocked the next connect. tokio defaults to
+            // NOT killing children on drop (matches std behavior); we
+            // opt in explicitly because we own the child's lifetime.
+            .kill_on_drop(true);
 
         let mut child = cmd.spawn().map_err(|e| {
             McpError::Transport(format!(
@@ -608,8 +620,21 @@ impl McpTransport for StdioTransport {
             }
         }
 
-        // Wait for response with timeout
-        match tokio::time::timeout(Duration::from_secs(60), rx).await {
+        // Wait for response with method-aware timeout.
+        //
+        // Sprint 2.2 followon: `tools/call` gets 5 minutes because a single
+        // tool call can legitimately do heavy work (gbrain's put_page chunks +
+        // embeds + writes — easily 30s on the first call, occasionally longer
+        // for large content). All other methods (initialize, tools/list, ping,
+        // notifications, etc.) keep the 60s default — they should never need
+        // more than a few seconds in a healthy server.
+        //
+        // The 60s health ping interval upstream then can't collide with an
+        // in-flight tool call within the same timeout window: tool call has
+        // 5min headroom, ping has 60s, so ping fires + completes (or fails
+        // quickly) without aborting the slower tool call.
+        let timeout_secs = if request.method == "tools/call" { 300 } else { 60 };
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), rx).await {
             Ok(Ok(response)) => Ok(response),
             Ok(Err(_)) => {
                 let mut map = self.pending.lock().await;
