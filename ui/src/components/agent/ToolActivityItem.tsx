@@ -261,16 +261,20 @@ export function ActivityRow({ activity, index = 0, animate = false, onOpenDetail
       style={animate ? { animationDelay: delay } : undefined}
     >
       {canExpand ? (
-        <button
-          type="button"
+        // Use div[role=button] instead of <button> so we never get a button-in-button
+        // when the 预览 button is also present in rowContent (invalid DOM per spec).
+        <div
+          role="button"
+          tabIndex={0}
           className={cn(
             'group/row w-full flex items-center gap-2 px-2.5 rounded-lg cursor-pointer transition-colors duration-100 hover:bg-muted/50',
             SIZE.row,
           )}
           onClick={(e) => { e.stopPropagation(); onOpenDetails(activity) }}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onOpenDetails(activity) } }}
         >
           {rowContent}
-        </button>
+        </div>
       ) : (
         <div className={cn('group/row flex items-center gap-2 px-2.5 rounded-lg', SIZE.row)}>
           {rowContent}
