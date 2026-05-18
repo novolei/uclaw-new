@@ -334,12 +334,11 @@ pub async fn get_system_diagnostics(
             Some(crate::mcp::McpServerStatus::Connected)
         );
         let tool_count = mcp.server_tool_count("gbrain").unwrap_or(0) as u32;
-        let pgdata_ready = state
-            .data_dir
-            .join("gbrain")
-            .join("pgdata")
-            .join("PG_VERSION")
-            .exists();
+        // Field name `pgdata_ready` predates PR #205. Post-PR-205 the actual
+        // PGLite layout lives under `<gbrain_home>/.gbrain/brain.pglite/` —
+        // route through the single source of truth `is_brain_initialized`
+        // probe so the diagnostic and the boot path can never drift again.
+        let pgdata_ready = crate::mcp::is_brain_initialized(&state.data_dir.join("gbrain"));
         GbrainStatus { connected, tool_count, pgdata_ready }
     };
 

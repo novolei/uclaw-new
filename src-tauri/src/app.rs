@@ -446,15 +446,33 @@ impl AppState {
         // resource dir was already resolved above for the Bundled skills tier.
         let memu_client = Self::try_init_memu(&data_dir, resource_dir.as_deref());
 
-        // Eagerly start the memU bridge in a background thread
+        // Eagerly start the memU bridge in a background thread.
+        // Pre-fix the call was `health_check()` which is a pure probe —
+        // it returns Ok(false) immediately when the subprocess isn't
+        // alive without triggering spawn. Result: "memU bridge health:
+        // false" 1ms after init, bridge stayed un-spawned until the
+        // first lazy memorize/recall request paid the ~3-5s cold-start
+        // cost, and the system-diagnostics panel mis-reported memu as
+        // not running indefinitely. `ensure_started` sends a real
+        // ping request which routes through `send_request_with_timeout`'s
+        // `!alive → try_restart` path, actually spawning Python +
+        // loading FastEmbed before returning. 30s timeout covers cold
+        // boot on Apple Silicon; failures degrade to lazy retry on
+        // first real request.
         if let Some(ref client) = memu_client {
             let eager_client = Arc::clone(client);
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async {
-                    match eager_client.health_check().await {
-                        Ok(status) => tracing::info!("memU bridge health: {}", status),
-                        Err(e) => tracing::warn!("memU bridge health check failed: {}; will retry later", e),
+                    match eager_client
+                        .ensure_started(std::time::Duration::from_secs(30))
+                        .await
+                    {
+                        Ok(()) => tracing::info!("memU bridge started successfully"),
+                        Err(e) => tracing::warn!(
+                            "memU bridge failed to start: {}; will retry lazily on first request",
+                            e
+                        ),
                     }
                 });
             });

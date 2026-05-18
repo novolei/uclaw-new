@@ -219,7 +219,9 @@ impl MemUClient {
 
     /// Perform a health check on the memU subprocess.
     ///
-    /// Returns `true` if the subprocess is responsive.
+    /// Returns `true` if the subprocess is responsive. Pure probe — does
+    /// NOT spawn the subprocess if it isn't already running. For eager
+    /// startup use `ensure_started`.
     pub async fn health_check(&self) -> Result<bool, BridgeError> {
         if !self.bridge.is_alive() {
             return Ok(false);
@@ -244,6 +246,33 @@ impl MemUClient {
             }
             Err(_) => Ok(false),
         }
+    }
+
+    /// Eagerly spawn the Python subprocess if it isn't already running and
+    /// wait for a `ping` response. Used at boot so the cost of Python startup
+    /// + FastEmbed model load (~3-5s on Apple Silicon) is paid up-front,
+    /// instead of being amortized onto the first user-facing memorize/recall
+    /// request.
+    ///
+    /// Distinct from `health_check` (a pure probe — returns `Ok(false)` if
+    /// the subprocess isn't alive without spawning it): `ensure_started`
+    /// sends a real request, which triggers `MemUBridge::try_restart` on
+    /// the `!alive` path and waits for the response.
+    ///
+    /// `timeout` should be generous enough to cover the cold spawn cost;
+    /// callers at boot typically pass 30s. Returns `Err` if spawn fails
+    /// (e.g. missing Python binary, memu module not installed) — the
+    /// caller logs the error and the bridge remains unavailable until a
+    /// later request retries lazily via `send_request_with_timeout`'s
+    /// own restart path.
+    pub async fn ensure_started(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<(), BridgeError> {
+        self.bridge
+            .send_request_with_timeout("ping", serde_json::Value::Null, timeout)
+            .await
+            .map(|_| ())
     }
 
     /// Embed a list of texts using the local FastEmbed model on the Python side.
