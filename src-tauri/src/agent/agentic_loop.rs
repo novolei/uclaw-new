@@ -136,10 +136,25 @@ pub async fn run_agentic_loop(
                 // user provides input, conversational wrap-up phrases like "let me
                 // recommend" or "我来推荐" are correct — forcing another tool call
                 // produces meta-acknowledgement nonsense.
+                //
+                // Also skip when the triggering user message is purely conversational
+                // (e.g. "你在干啥", "你好"). For those, "让我看看..." is a natural preamble
+                // to a text reply — nudging converts it into spurious glob/ls/date calls
+                // the user never requested (root cause: 2026-05-18 "你在干啥" incident).
+                let nudge_user_text = reason_ctx.messages.iter().rev()
+                    .find(|m| {
+                        matches!(m.role, MessageRole::User)
+                            && m.content.iter().any(|b| matches!(b, ContentBlock::Text { .. }))
+                    })
+                    .and_then(|m| m.content.iter().find_map(|b| {
+                        if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None }
+                    }))
+                    .unwrap_or("");
                 if config.enable_tool_intent_nudge
                     && consecutive_tool_intent_nudges < config.max_tool_intent_nudges
                     && !reason_ctx.force_text
                     && !last_tool_was_interactive(&reason_ctx.messages)
+                    && !is_purely_conversational(nudge_user_text)
                     && llm_signals_tool_intent(&text)
                 {
                     consecutive_tool_intent_nudges += 1;
