@@ -41,18 +41,17 @@ export function ScreenshotResultRenderer({
   }
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-1">
       <img
         src={`data:image/png;base64,${parsed.data}`}
         alt={`Screenshot ${parsed.width}×${parsed.height}`}
         className={cn(
-          'w-full rounded-md border border-border/40',
-          'object-contain max-h-[480px]',
+          'rounded border border-border/40 object-contain',
+          'max-h-[180px] max-w-[320px]',
         )}
-        style={{ aspectRatio: `${parsed.width} / ${parsed.height}` }}
       />
-      <p className="text-[11px] text-muted-foreground/60 text-right tabular-nums">
-        {parsed.width} × {parsed.height}
+      <p className="text-[10px] text-muted-foreground/50 tabular-nums">
+        {parsed.width}×{parsed.height}
       </p>
     </div>
   )

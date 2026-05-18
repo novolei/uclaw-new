@@ -207,9 +207,12 @@ export function ContextUsageBadge({
     ? Math.round((displayTokens / displayWindow) * 100)
     : undefined
 
-  // 缓存命中率 — 占总输入的比例（含本轮新增的缓存写入）。> 0 才显示。
+  // 总发送 token 数 = 新鲜输入 + 缓存读取 + 缓存写入
+  const totalSent = displayTokens + (displayCacheRead ?? 0) + (displayCacheCreation ?? 0)
+
+  // 缓存命中率 — cache_read / total_sent。> 0 才显示。
   const cacheHitRatio = (displayCacheRead ?? 0) > 0
-    ? Math.round(((displayCacheRead ?? 0) / displayTokens) * 100)
+    ? Math.round(((displayCacheRead ?? 0) / totalSent) * 100)
     : 0
 
   // 等效"省下的"输入 token 估算：缓存读取以 10% 输入价计费（Anthropic 当前
@@ -291,6 +294,49 @@ export function ContextUsageBadge({
               <DetailRow label="技能 manifest" value={displaySkills.toLocaleString()} />
             ) : null}
           </div>
+
+          {/* 缓存效率 — cache_read / total_sent */}
+          {(displayCacheRead ?? 0) > 0 && (
+            <>
+              <div className="h-px bg-border" />
+              <div className="flex flex-col gap-1">
+                <div className="text-[10px] uppercase tracking-widest text-muted-foreground/70 font-semibold">
+                  缓存效率
+                </div>
+                <DetailRow
+                  label="命中 / 总发送"
+                  value={
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="tabular-nums">
+                        {(displayCacheRead ?? 0).toLocaleString()} / {totalSent.toLocaleString()}
+                      </span>
+                      <span
+                        className={cn(
+                          'rounded-sm px-1 py-0 text-[9.5px] font-semibold tabular-nums',
+                          cacheHitRatio >= 50
+                            ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                            : 'bg-muted text-muted-foreground',
+                        )}
+                      >
+                        {cacheHitRatio}%
+                      </span>
+                    </span>
+                  }
+                  emphasized
+                />
+                {cacheSavedInput > 0 && (
+                  <DetailRow
+                    label="节省约"
+                    value={
+                      <span className="text-emerald-600 dark:text-emerald-400 tabular-nums">
+                        ~{cacheSavedInput.toLocaleString()} token
+                      </span>
+                    }
+                  />
+                )}
+              </div>
+            </>
+          )}
 
           {/* 上下文窗口 */}
           {displayWindow ? (
