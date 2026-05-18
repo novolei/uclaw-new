@@ -13,7 +13,7 @@ import {
   symphonyImportWorkflowMd,
   type SymphonyWorkflowDetailDto,
 } from '@/lib/tauri-bridge'
-import { symphonyWorkflowDetailsAtom } from '@/atoms/symphony'
+import { symphonyWorkflowDetailsAtom } from '@/atoms/symphony_graph'
 
 export interface WorkflowMarkdownEditorProps {
   workflowId: string

@@ -16,10 +16,10 @@ import { agentSessionsAtom, currentAgentSessionIdAtom } from '@/atoms/agent-atom
 import {
   currentSymphonyWorkflowIdAtom,
   symphonyWorkflowsAtom,
-} from '@/atoms/symphony'
+} from '@/atoms/symphony_graph'
 import { visibleTabsAtom } from '@/atoms/tab-atoms'
 import { useOpenSession } from '@/hooks/useOpenSession'
-import { SYMPHONY_NEW_TAB_SENTINEL } from '@/components/symphony/SymphonyCanvas'
+import { SYMPHONY_NEW_TAB_SENTINEL } from '@/components/symphony_graph/SymphonyCanvas'
 import { Bot, MessageSquare, Network } from 'lucide-react'
 import { cn } from '@/lib/utils'
 

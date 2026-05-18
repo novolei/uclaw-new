@@ -35,8 +35,8 @@ import {
   symphonyWorkflowDetailsAtom,
   symphonyWorkflowsAtom,
   upsertRunAtom,
-} from '@/atoms/symphony'
-import { symphonySubViewAtom } from '@/atoms/symphony-canvas'
+} from '@/atoms/symphony_graph'
+import { symphonySubViewAtom } from '@/atoms/symphony-graph-canvas'
 import { cn } from '@/lib/utils'
 import { Play, Square, FileCode, GitBranch, Activity } from 'lucide-react'
 

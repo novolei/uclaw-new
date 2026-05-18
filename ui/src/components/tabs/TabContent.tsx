@@ -11,7 +11,7 @@ import { visibleTabsAtom } from '@/atoms/tab-atoms'
 import { ChatView } from '@/components/chat/ChatView'
 import { AgentView } from '@/components/agent/AgentView'
 import { BrowserViewer } from '@/components/canvas/BrowserViewer'
-import { SymphonyCanvas } from '@/components/symphony'
+import { SymphonyCanvas } from '@/components/symphony_graph'
 import { TabErrorBoundary } from './TabErrorBoundary'
 
 export interface TabContentProps {

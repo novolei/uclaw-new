@@ -24,7 +24,7 @@ import {
   automationActiveTabAtom,
   automationActivityRunSessionIdAtom,
 } from '@/atoms/automation-ui'
-import { currentSymphonyWorkflowIdAtom } from '@/atoms/symphony'
+import { currentSymphonyWorkflowIdAtom } from '@/atoms/symphony_graph'
 type OpenSessionFn = (type: TabType, sessionId: string, title: string) => void
 
 export function useOpenSession(): OpenSessionFn {
