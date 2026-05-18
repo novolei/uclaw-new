@@ -6,11 +6,11 @@ import { cn } from '@/lib/utils'
 // ── Types (mirror Rust structs) ──────────────────────────────────────
 
 type ServiceStatus =
-  | 'Stopped'
-  | 'Starting'
-  | 'Running'
-  | 'Stopping'
-  | { Failed: { reason: string } }
+  | { status: 'Stopped' }
+  | { status: 'Starting' }
+  | { status: 'Running' }
+  | { status: 'Stopping' }
+  | { status: 'Failed'; reason: string }
 
 interface ServiceHealth {
   name: string
@@ -60,23 +60,19 @@ function formatMemory(mb: number): string {
 }
 
 function serviceStatusLabel(s: ServiceStatus): string {
-  if (typeof s === 'string') {
-    const map: Record<string, string> = {
-      Running: '运行中', Stopped: '未启动',
-      Starting: '启动中', Stopping: '停止中',
-    }
-    return map[s] ?? s
+  const map: Record<string, string> = {
+    Running: '运行中', Stopped: '未启动',
+    Starting: '启动中', Stopping: '停止中',
   }
-  return `失败: ${s.Failed.reason.slice(0, 40)}`
+  if (s.status === 'Failed') return `失败: ${(s as { status: 'Failed'; reason: string }).reason.slice(0, 40)}`
+  return map[s.status] ?? s.status
 }
 
 function serviceStatusDot(s: ServiceStatus): string {
-  if (typeof s === 'string') {
-    if (s === 'Running') return 'bg-green-500'
-    if (s === 'Stopped' || s === 'Stopping') return 'bg-muted-foreground/40'
-    return 'bg-yellow-400'
-  }
-  return 'bg-red-500'
+  if (s.status === 'Running') return 'bg-green-500'
+  if (s.status === 'Stopped' || s.status === 'Stopping') return 'bg-muted-foreground/40'
+  if (s.status === 'Failed') return 'bg-red-500'
+  return 'bg-yellow-400' // Starting
 }
 
 // ── Main component ───────────────────────────────────────────────────
@@ -107,14 +103,10 @@ export function SystemTab() {
   }, [])
 
   const isHealthy = report
-    ? report.consecutive_failures === 0 && !report.services.some(
-        s => typeof s.status !== 'string'
-      )
+    ? report.consecutive_failures === 0 && !report.services.some(s => s.status.status === 'Failed')
     : true
 
-  const failedServices = report?.services.filter(
-    s => typeof s.status !== 'string'
-  ) ?? []
+  const failedServices = report?.services.filter(s => s.status.status === 'Failed') ?? []
 
   async function handleBridgeAction(
     command: string,
