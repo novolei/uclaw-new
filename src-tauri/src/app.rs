@@ -275,6 +275,13 @@ pub struct AppState {
     /// `memubot_config.symphony.enabled`). Follows the same lazy-init shape
     /// as `proactive_service` so Tauri commands can borrow it via `RwLock`.
     pub symphony_service: Arc<tokio::sync::RwLock<Option<Arc<crate::symphony::runtime::service::SymphonyService>>>>,
+
+    /// App launch instant — used to compute uptime_secs in diagnostics.
+    pub boot_time: std::time::Instant,
+
+    /// gbrain MCP server ID stored after seed_bundled_gbrain succeeds.
+    /// "gbrain" when seeded; None when bun/gbrain binaries are missing.
+    pub gbrain_mcp_id: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl AppState {
@@ -755,6 +762,8 @@ impl AppState {
             runtime_service,
             proactive_service: Arc::new(tokio::sync::RwLock::new(None)),
             symphony_service: Arc::new(tokio::sync::RwLock::new(None)),
+            boot_time: std::time::Instant::now(),
+            gbrain_mcp_id: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
