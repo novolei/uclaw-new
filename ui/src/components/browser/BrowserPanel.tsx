@@ -7,12 +7,13 @@
 
 import * as React from 'react'
 import { useSetAtom, useAtomValue } from 'jotai'
-import { listenScreencastFrames, browserGetDOMState } from '@/lib/tauri-bridge'
+import { listenScreencastFrames, listenNavState, browserGetDOMState } from '@/lib/tauri-bridge'
 import {
   browserScreencastFrameAtom,
   browserDOMStateAtom,
   browserScreencastActiveAtom,
   browserDOMOverlayVisibleAtom,
+  browserNavStateAtom,
   type BrowserTabEntry,
   type ScreencastFrameEntry,
 } from '@/atoms/browser-atoms'
@@ -30,6 +31,7 @@ export function BrowserPanel({ agentSessionId }: BrowserPanelProps): React.React
   const setFrameMap = useSetAtom(browserScreencastFrameAtom)
   const setDomMap = useSetAtom(browserDOMStateAtom)
   const setActiveSet = useSetAtom(browserScreencastActiveAtom)
+  const setNavState = useSetAtom(browserNavStateAtom)
   const overlayVisible = useAtomValue(browserDOMOverlayVisibleAtom)
   const previewMap = useAtomValue(sessionBrowserPreviewMapAtom)
 
@@ -77,6 +79,27 @@ export function BrowserPanel({ agentSessionId }: BrowserPanelProps): React.React
       })
     }
   }, [agentSessionId, setFrameMap, setActiveSet])
+
+  // Subscribe to navigation state events for this session.
+  React.useEffect(() => {
+    let unlisten: (() => void) | null = null
+    listenNavState((payload) => {
+      if (payload.sessionId !== agentSessionId) return
+      setNavState((prev) => {
+        const next = new Map(prev)
+        next.set(agentSessionId, {
+          tabId: payload.tabId,
+          url: payload.url,
+          title: payload.title,
+          isLoading: payload.isLoading,
+          canGoBack: payload.canGoBack,
+          canGoForward: payload.canGoForward,
+        })
+        return next
+      })
+    }).then((fn) => { unlisten = fn })
+    return () => { if (unlisten) unlisten() }
+  }, [agentSessionId, setNavState])
 
   // Fetch DOM state when overlay is turned on.
   React.useEffect(() => {

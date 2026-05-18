@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { ArrowLeft, ArrowRight, RefreshCw, Globe } from 'lucide-react'
+import { useAtomValue } from 'jotai'
 import { cn } from '@/lib/utils'
 import {
   browserUIGoBack,
@@ -8,18 +9,29 @@ import {
   browserUINavigate,
   browserStartScreencast,
 } from '@/lib/tauri-bridge'
+import { browserNavStateAtom } from '@/atoms/browser-atoms'
 
 interface BrowserAddressBarProps {
   sessionId: string
   tabId: string | null
   url: string
-  isLoading?: boolean
 }
 
-export function BrowserAddressBar({ sessionId, tabId, url, isLoading }: BrowserAddressBarProps): React.ReactElement {
-  const [draft, setDraft] = React.useState(url)
+export function BrowserAddressBar({ sessionId, tabId, url }: BrowserAddressBarProps): React.ReactElement {
+  const navStateMap = useAtomValue(browserNavStateAtom)
+  const navState = navStateMap.get(sessionId)
 
-  React.useEffect(() => { setDraft(url) }, [url])
+  const liveUrl = navState?.url || url
+  const isLoading = navState?.isLoading ?? false
+  const canGoBack = navState?.canGoBack ?? false
+  const canGoForward = navState?.canGoForward ?? false
+
+  const [draft, setDraft] = React.useState(liveUrl)
+  const [focused, setFocused] = React.useState(false)
+
+  React.useEffect(() => {
+    if (!focused) setDraft(liveUrl)
+  }, [liveUrl, focused])
 
   const navigate = () => {
     if (!tabId) return
@@ -34,7 +46,7 @@ export function BrowserAddressBar({ sessionId, tabId, url, isLoading }: BrowserA
     <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border/50 bg-muted/20">
       <button
         onClick={() => tabId && browserUIGoBack(sessionId, tabId).catch(console.error)}
-        disabled={!tabId}
+        disabled={!canGoBack}
         className="p-1 rounded hover:bg-accent disabled:opacity-30 text-muted-foreground hover:text-foreground transition-colors"
         title="后退"
       >
@@ -42,14 +54,16 @@ export function BrowserAddressBar({ sessionId, tabId, url, isLoading }: BrowserA
       </button>
       <button
         onClick={() => tabId && browserUIGoForward(sessionId, tabId).catch(console.error)}
-        disabled={!tabId}
+        disabled={!canGoForward}
         className="p-1 rounded hover:bg-accent disabled:opacity-30 text-muted-foreground hover:text-foreground transition-colors"
         title="前进"
       >
         <ArrowRight size={13} />
       </button>
       <button
-        onClick={() => tabId && browserUIReload(sessionId, tabId).then(() => browserStartScreencast(sessionId, tabId!)).catch(console.error)}
+        onClick={() => tabId && browserUIReload(sessionId, tabId)
+          .then(() => browserStartScreencast(sessionId, tabId!))
+          .catch(console.error)}
         disabled={!tabId}
         className="p-1 rounded hover:bg-accent disabled:opacity-30 text-muted-foreground hover:text-foreground transition-colors"
         title="刷新"
@@ -63,7 +77,8 @@ export function BrowserAddressBar({ sessionId, tabId, url, isLoading }: BrowserA
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') navigate() }}
-          onBlur={() => setDraft(url)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => { setFocused(false); setDraft(liveUrl) }}
           className="flex-1 bg-transparent text-[12px] outline-none text-foreground placeholder:text-muted-foreground min-w-0"
           placeholder="输入网址…"
           spellCheck={false}
