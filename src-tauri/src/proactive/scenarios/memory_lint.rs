@@ -494,10 +494,26 @@ fn fetch_contradiction_candidates(
     store: &crate::memory_graph::store::MemoryGraphStore,
     space_id: &str,
 ) -> Result<Vec<LintCandidate>, crate::error::Error> {
-    // Candidates: EntityPages whose timeline has at least 2 entries.
-    // The LLM (or stub) decides whether any pair contradicts. This
-    // upper bound keeps the analyzer from being called on pages where
-    // contradiction is impossible (single-entry timeline).
+    // Per-page candidate. Any EntityPage with `timeline.len() >= 2` AND
+    // no already-recorded contradiction is a candidate; the analyzer
+    // (real LLM or stub) decides whether the entries actually disagree.
+    //
+    // Two consequences worth being aware of:
+    //
+    // 1. A page can simultaneously be a candidate for multiple checks
+    //    (e.g. a stale_summary page with 6 today-dated entries will
+    //    also show up here). That's by design — each check writes a
+    //    distinct finding with a distinct check_kind, and the stub
+    //    analyzer treats every candidate as a real issue. In
+    //    production, a real LLM analyzer will return zero findings
+    //    for pages whose entries don't actually contradict, so the
+    //    overlap fades out.
+    //
+    // 2. Tests that want each fixture page to surface in exactly one
+    //    check should either pre-seed `metadata.contradictions` so
+    //    this finder skips the page, or keep their timeline at length
+    //    1. The `run_lint_with_stub_writes_findings_for_each_kind`
+    //    test uses the former.
     let conn = store
         .conn
         .lock()
@@ -942,15 +958,36 @@ mod tests {
     async fn run_lint_with_stub_writes_findings_for_each_kind() {
         let store = fresh_store();
 
-        // Set up: one hub_stub candidate, one stale_summary, one
-        // contradiction.
+        // Set up: one fixture page per check kind. The contradiction
+        // finder operates per-page (any EntityPage with >= 2 timeline
+        // entries is a candidate unless it ALREADY has a recorded
+        // contradiction), so to keep this test single-purpose per
+        // fixture we pre-seed `metadata.contradictions` on the stale
+        // page — that's how a production page would look once a real
+        // LLM analyzer had previously flagged it.
+        //
+        // Without the pre-seeded contradiction the stale fixture would
+        // *also* show up as a contradiction candidate (6 timeline
+        // entries >= 2). The stub treats every candidate as a real
+        // contradiction, which would double-count. See the comment on
+        // `fetch_contradiction_candidates` for the by-design rationale.
+
+        // hub: hub_stub only — short content + 6 backlinks.
         insert_entity_page(&store, "hub", "Hub", "tiny", EntityPageMetadata::default());
         insert_backlinks(&store, "hub", 6);
 
+        // stale: stale_summary only — old synth + 6 recent entries +
+        // pre-seeded contradiction so the contradiction finder skips it.
         let old = (chrono::Utc::now() - chrono::Duration::days(20)).to_rfc3339();
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let mut stale_meta = EntityPageMetadata {
             last_synthesized_at: Some(old),
+            contradictions: vec![Contradiction {
+                between_source_ids: vec!["pre-existing".into(), "noted-earlier".into()],
+                claim_a: "(seeded so the contradiction finder skips this fixture)".into(),
+                claim_b: "(seeded so the contradiction finder skips this fixture)".into(),
+                noticed_at: "2026-01-01T00:00:00Z".into(),
+            }],
             ..Default::default()
         };
         for i in 0..6 {
@@ -963,6 +1000,9 @@ mod tests {
         }
         insert_entity_page(&store, "stale", "Stale", "x", stale_meta);
 
+        // contra: contradiction only — exactly 2 entries, no prior
+        // contradictions recorded, no last_synthesized_at so it's not
+        // a stale_summary candidate either.
         let mut contra_meta = EntityPageMetadata::default();
         for i in 0..2 {
             contra_meta.timeline.push(TimelineEntry {
@@ -984,6 +1024,52 @@ mod tests {
         assert_eq!(outcome.total_inserted, 3);
         assert_eq!(outcome.total_tokens, 0);
         assert_eq!(outcome.analyzer_descriptor, "stub:no-llm");
+    }
+
+    #[tokio::test]
+    async fn run_lint_overlapping_candidate_pages_get_one_finding_per_kind() {
+        // Positive coverage for the per-page-per-kind contract from
+        // `fetch_contradiction_candidates`'s doc: a single page that
+        // matches multiple finders produces one finding per matching
+        // kind (not deduplicated, not coalesced). When a real LLM
+        // analyzer concludes the candidate ISN'T actually a problem
+        // it would emit no finding for that kind; the stub assumes
+        // every candidate is real so this test captures the worst
+        // (loudest) case.
+        let store = fresh_store();
+        let old = (chrono::Utc::now() - chrono::Duration::days(20)).to_rfc3339();
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+
+        // One page that simultaneously:
+        //   - has short content (will NOT be hub_stub — 0 backlinks)
+        //   - is stale (6 recent entries, old last_synthesized_at)
+        //   - has >= 2 timeline entries AND no pre-recorded
+        //     contradictions → contradiction candidate
+        let mut meta = EntityPageMetadata {
+            last_synthesized_at: Some(old),
+            ..Default::default()
+        };
+        for i in 0..6 {
+            meta.timeline.push(TimelineEntry {
+                date: today.clone(),
+                text: format!("e{}", i),
+                source_node_id: None,
+                source_session_id: None,
+            });
+        }
+        insert_entity_page(&store, "double", "Double", "x", meta);
+
+        let stub = Arc::new(StubAnalyzer) as Arc<dyn LintAnalyzer>;
+        let outcome = run_lint_checks(store, stub, "default", &LintRunConfig::default(), 0)
+            .await
+            .unwrap();
+        // Same page produces 2 findings: one stale_summary, one
+        // contradiction. hub_stub does NOT fire because the page has
+        // 0 backlinks (below the threshold).
+        assert_eq!(outcome.hub_stub, 0, "no backlinks → no hub_stub");
+        assert_eq!(outcome.stale_summary, 1);
+        assert_eq!(outcome.contradiction, 1);
+        assert_eq!(outcome.total_inserted, 2);
     }
 
     #[tokio::test]
