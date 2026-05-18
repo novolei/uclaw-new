@@ -6,6 +6,7 @@ import {
   browserUIGoForward,
   browserUIReload,
   browserUINavigate,
+  browserStartScreencast,
 } from '@/lib/tauri-bridge'
 
 interface BrowserAddressBarProps {
@@ -24,7 +25,9 @@ export function BrowserAddressBar({ sessionId, tabId, url, isLoading }: BrowserA
     if (!tabId) return
     let target = draft.trim()
     if (target && !target.includes('://')) target = 'https://' + target
-    browserUINavigate(sessionId, tabId, target).catch(console.error)
+    browserUINavigate(sessionId, tabId, target)
+      .then(() => browserStartScreencast(sessionId, tabId!))
+      .catch(console.error)
   }
 
   return (
@@ -46,7 +49,7 @@ export function BrowserAddressBar({ sessionId, tabId, url, isLoading }: BrowserA
         <ArrowRight size={13} />
       </button>
       <button
-        onClick={() => tabId && browserUIReload(sessionId, tabId).catch(console.error)}
+        onClick={() => tabId && browserUIReload(sessionId, tabId).then(() => browserStartScreencast(sessionId, tabId!)).catch(console.error)}
         disabled={!tabId}
         className="p-1 rounded hover:bg-accent disabled:opacity-30 text-muted-foreground hover:text-foreground transition-colors"
         title="刷新"

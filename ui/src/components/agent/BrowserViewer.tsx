@@ -16,7 +16,11 @@ export function BrowserViewer(): React.ReactElement {
   const refresh = React.useCallback(async () => {
     try {
       const s = await browserGetState()
-      setState(s)
+      setState({
+        running: s.running,
+        activeTabId: s.activeTabId,
+        tabs: s.tabs.map((t) => ({ ...t, active: s.activeTabId === t.tabId })),
+      })
     } catch {
       // ignore
     }
