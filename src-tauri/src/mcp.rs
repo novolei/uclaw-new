@@ -2100,4 +2100,24 @@ mod gbrain_init_tests {
         fs::write(brain.join("PG_VERSION"), "17\n").unwrap();
         assert!(is_brain_initialized(dir.path()));
     }
+
+    #[test]
+    fn ensure_bundled_gbrain_short_circuits_when_already_initialized() {
+        // Idempotency contract: when PG_VERSION already exists, the spawner
+        // MUST return Ok(false) without invoking bun. We prove this by passing
+        // bun/cli paths that don't exist on disk — if the function tried to
+        // spawn, we'd get Err(spawn failed). Instead we get Ok(false).
+        let dir = tempfile::tempdir().unwrap();
+        let brain = dir.path().join(".gbrain").join("brain.pglite");
+        std::fs::create_dir_all(&brain).unwrap();
+        std::fs::write(brain.join("PG_VERSION"), "17\n").unwrap();
+
+        let result = ensure_bundled_gbrain_initialized(
+            std::path::Path::new("/nonexistent/bun"),
+            std::path::Path::new("/nonexistent/cli.ts"),
+            dir.path(),
+        );
+
+        assert_eq!(result, Ok(false), "warm-path probe should short-circuit before spawn");
+    }
 }
