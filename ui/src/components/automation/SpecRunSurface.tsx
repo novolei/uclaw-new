@@ -11,12 +11,14 @@ import type { HumaneSpecRow } from '@/lib/tauri-bridge'
 import { SpecRunHeader } from './SpecRunHeader'
 import { HomeThreadView } from './HomeThreadView'
 import { ActivityHistoryView } from './ActivityHistoryView'
+import { ChatThreadsTab } from './ChatThreadsTab'
 import { SpecSettingsView } from './SpecSettingsView'
 import { AutomationRightPanel } from './AutomationRightPanel'
 
 const TAB_LABELS: Record<AutomationTab, string> = {
   chat: '聊天',
   activity: '动态',
+  threads: '会话',
   settings: '设置',
 }
 
@@ -124,6 +126,7 @@ export function SpecRunSurface({ specId }: Props) {
               onCloseRunSession={() => setRunSessionId(null)}
             />
           )}
+          {activeTab === 'threads' && <ChatThreadsTab specId={specId} />}
           {activeTab === 'settings' && (
             <SpecSettingsView
               spec={spec}

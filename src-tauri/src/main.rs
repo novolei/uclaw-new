@@ -700,6 +700,7 @@ fn main() {
             uclaw_core::tauri_commands::toggle_archive_agent_session,
             uclaw_core::tauri_commands::toggle_archive_conversation,
             uclaw_core::tauri_commands::list_agent_sessions,
+            uclaw_core::tauri_commands::list_chat_sessions_for_spec,
             uclaw_core::tauri_commands::estimate_session_context,
             uclaw_core::tauri_commands::get_agent_session_messages,
             uclaw_core::tauri_commands::send_agent_message,
