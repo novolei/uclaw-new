@@ -13085,6 +13085,29 @@ pub async fn respond_plan_mode_suggest(
     ).map_err(|e| Error::Database(e))
 }
 
+/// Minimal liveness probe — frontend receiving Ok proves the Tauri backend is up.
+#[tauri::command]
+pub fn get_app_health() -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({ "backend": true }))
+}
+
+/// Check whether the memU Python bridge is healthy.
+/// Returns { "online": true/false }. Best-effort — always returns Ok so the
+/// agent loop is never affected by a failed health check.
+#[tauri::command]
+pub async fn get_memu_status(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let client = state.memu_client.clone();
+    match client {
+        None => Ok(serde_json::json!({ "online": false, "reason": "not_initialized" })),
+        Some(c) => match c.health_check().await {
+            Ok(true)  => Ok(serde_json::json!({ "online": true })),
+            Ok(false) | Err(_) => Ok(serde_json::json!({ "online": false, "reason": "unhealthy" })),
+        },
+    }
+}
+
 #[cfg(test)]
 mod list_chat_sessions_for_spec_tests {
     //! Phase 2b cluster A · §9 acceptance #3: owner can see all chat threads
