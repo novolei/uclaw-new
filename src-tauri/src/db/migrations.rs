@@ -1533,6 +1533,47 @@ CREATE INDEX IF NOT EXISTS idx_health_findings_subject
     ON memory_health_findings(subject);
 ";
 
+/// V37 — Memory OS Foundation Phase 7.
+///
+/// `brain_sync_state` tracks the on-disk mirror of each EntityPage in
+/// `~/Documents/workground/brain/<subkind>/<slug>.md`. One row per
+/// node, keyed by node_id. Lets the sync engine answer three questions
+/// without re-parsing every file:
+///
+/// 1. Has the DB version moved past what we last wrote to disk?
+///    → compare `last_synced_version_id` to the node's current
+///      active `memory_versions.id`.
+/// 2. Has the disk file been edited since we last read it?
+///    → compare current file mtime to `file_mtime_at_last_sync_ms`.
+/// 3. Is the edit actually content (vs `touch` / IDE save churn)?
+///    → SHA-256 the current bytes and compare to `last_synced_sha256`.
+///
+/// Conflict detection (Phase 7.3) flags rows where both 1 and 2 are
+/// true: DB and disk both diverged since the last sync. Default
+/// resolution writes disk into DB (gbrain's "human always wins"
+/// principle) and inserts a `memory_health_findings` row with
+/// `check_kind='sync_conflict'` so the user sees it in the Health tab.
+///
+/// V36 is claimed by the Automation Phase 2b Messaging design (see
+/// CLAUDE.md migration registry).
+///
+/// Nothing here is destructive: pure additive table + 3 indexes,
+/// guarded with IF NOT EXISTS so idempotent on re-run.
+pub const V37_MEMORY_OS_PHASE_7: &str = "
+CREATE TABLE IF NOT EXISTS brain_sync_state (
+    node_id                     TEXT PRIMARY KEY REFERENCES memory_nodes(id) ON DELETE CASCADE,
+    space_id                    TEXT NOT NULL,
+    file_path                   TEXT NOT NULL,
+    last_synced_version_id      TEXT REFERENCES memory_versions(id),
+    last_synced_at_ms           INTEGER NOT NULL,
+    file_mtime_at_last_sync_ms  INTEGER NOT NULL,
+    last_synced_sha256          TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_brain_sync_file_path ON brain_sync_state(file_path);
+CREATE INDEX IF NOT EXISTS idx_brain_sync_space ON brain_sync_state(space_id);
+CREATE INDEX IF NOT EXISTS idx_brain_sync_last_at ON brain_sync_state(last_synced_at_ms);
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -1800,6 +1841,16 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V35_MEMORY_OS_PHASE_1.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V35 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V36 is claimed by Automation Phase 2b Messaging schema (see
+    // CLAUDE.md). Phase 7 lands at V37 to avoid the collision.
+    // V37: Memory OS Foundation Phase 7 — brain_sync_state for the
+    // markdown bidirectional sync engine.
+    tracing::debug!("Running migration V37: Memory OS Phase 7");
+    for stmt in V37_MEMORY_OS_PHASE_7.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V37 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -2828,5 +2879,116 @@ mod tests {
             )
             .unwrap();
         assert_eq!(active_after, 1);
+    }
+
+    // ─── V37 — Memory OS Phase 7 (brain_sync_state) ──────────────
+
+    #[test]
+    fn v37_creates_brain_sync_state_table_and_indexes() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type='table' AND name='brain_sync_state'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "brain_sync_state table must exist after V37");
+
+        for index in [
+            "idx_brain_sync_file_path",
+            "idx_brain_sync_space",
+            "idx_brain_sync_last_at",
+        ] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                    [index],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "index {} must exist after V37", index);
+        }
+    }
+
+    #[test]
+    fn v37_is_idempotent() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error (IF NOT EXISTS)");
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='brain_sync_state'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn v37_brain_sync_cascades_on_node_delete() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute(
+            "INSERT INTO memory_nodes (id, space_id, kind, title) \
+             VALUES ('n1', 'default', 'entity_page', 'Alice')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO brain_sync_state \
+             (node_id, space_id, file_path, last_synced_version_id, \
+              last_synced_at_ms, file_mtime_at_last_sync_ms, last_synced_sha256) \
+             VALUES ('n1', 'default', '/tmp/x.md', NULL, 1, 1, 'abc')",
+            [],
+        )
+        .unwrap();
+
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM brain_sync_state", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before, 1);
+
+        conn.execute("DELETE FROM memory_nodes WHERE id = 'n1'", []).unwrap();
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM brain_sync_state", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, 0, "FK ON DELETE CASCADE must clear the row");
+    }
+
+    #[test]
+    fn v37_brain_sync_file_path_is_unique() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO memory_nodes (id, space_id, kind, title) \
+             VALUES ('n1', 'default', 'entity_page', 'A'), \
+                    ('n2', 'default', 'entity_page', 'B')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO brain_sync_state \
+             (node_id, space_id, file_path, last_synced_version_id, \
+              last_synced_at_ms, file_mtime_at_last_sync_ms, last_synced_sha256) \
+             VALUES ('n1', 'default', '/tmp/a.md', NULL, 1, 1, 'x')",
+            [],
+        )
+        .unwrap();
+        // Second node trying to reuse the same file_path → must fail
+        // (UNIQUE INDEX on file_path).
+        let err = conn.execute(
+            "INSERT INTO brain_sync_state \
+             (node_id, space_id, file_path, last_synced_version_id, \
+              last_synced_at_ms, file_mtime_at_last_sync_ms, last_synced_sha256) \
+             VALUES ('n2', 'default', '/tmp/a.md', NULL, 1, 1, 'y')",
+            [],
+        );
+        assert!(err.is_err(), "second insert with same file_path must fail");
     }
 }
