@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use async_trait::async_trait;
 use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
+use crate::browser::context::DevicePreset;
 use crate::browser::context_manager::BrowserContextManager;
 use crate::browser::dom_state::format_dom_state_for_llm;
 
@@ -41,7 +42,12 @@ impl Tool for BrowserNavigateTool {
 
     fn description(&self) -> &str {
         "Navigate to a URL in the browser. Launches the browser if not running. \
-         Returns the tab_id for subsequent operations."
+         Returns the tab_id for subsequent operations.\n\
+         \n\
+         **Parameters**\n\
+         - `url` (string, required): URL to navigate to.\n\
+         - `tab_id` (string, optional): Tab ID to reuse, or 'new' to open a new tab (default 'new').\n\
+         - `device` (string, optional): \"mobile\" sets 390\u{d7}844 + iPhone UA; \"desktop\" (default) sets 1280\u{d7}800."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -55,6 +61,11 @@ impl Tool for BrowserNavigateTool {
                 "tab_id": {
                     "type": "string",
                     "description": "Tab ID to reuse, or 'new' to open a new tab (default 'new')"
+                },
+                "device": {
+                    "type": "string",
+                    "enum": ["desktop", "mobile"],
+                    "description": "Device preset: 'mobile' sets 390x844 + iPhone UA; 'desktop' (default) sets 1280x800"
                 }
             },
             "required": ["url"]
@@ -66,12 +77,19 @@ impl Tool for BrowserNavigateTool {
         let url = params["url"].as_str()
             .ok_or_else(|| ToolError::Execution("url is required".to_string()))?;
         let tab_id = params["tab_id"].as_str().unwrap_or("new");
+        let device = params["device"].as_str()
+            .map(DevicePreset::from_str)
+            .unwrap_or(DevicePreset::Desktop);
 
         let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
         let resolved_id = ctx.navigate(tab_id, url).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        if let Err(e) = ctx.apply_device_emulation(&resolved_id, device).await {
+            tracing::warn!("device emulation failed (non-fatal): {e}");
+        }
 
         Ok(ToolOutput::success(
             &format!("Navigated to {}. tab_id={}", url, resolved_id),

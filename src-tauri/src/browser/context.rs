@@ -44,6 +44,29 @@ pub struct CookieInfo {
     pub expires: f64,
 }
 
+// ── DevicePreset ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DevicePreset {
+    Desktop,
+    Mobile,
+}
+
+impl DevicePreset {
+    pub fn from_str(s: &str) -> Self {
+        if s.eq_ignore_ascii_case("mobile") { DevicePreset::Mobile } else { DevicePreset::Desktop }
+    }
+
+    pub fn viewport_width(self) -> u32 { match self { DevicePreset::Mobile => 390, DevicePreset::Desktop => 1280 } }
+    pub fn viewport_height(self) -> u32 { match self { DevicePreset::Mobile => 844, DevicePreset::Desktop => 800 } }
+    pub fn user_agent(self) -> &'static str {
+        match self {
+            DevicePreset::Mobile => "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            DevicePreset::Desktop => "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        }
+    }
+}
+
 // ── BrowserContext ────────────────────────────────────────────────────────────
 
 pub struct BrowserContext {
@@ -547,6 +570,39 @@ impl BrowserContext {
         Ok(true)
     }
 
+    // ── Device emulation ──────────────────────────────────────────────────────
+
+    pub async fn apply_device_emulation(&self, tab_id: &str, device: DevicePreset) -> Result<()> {
+        let page = self.get_page(tab_id).await?;
+        use chromiumoxide::cdp::browser_protocol::emulation::{
+            SetDeviceMetricsOverrideParams, SetUserAgentOverrideParams,
+        };
+        let metrics = SetDeviceMetricsOverrideParams {
+            width: device.viewport_width() as i64,
+            height: device.viewport_height() as i64,
+            device_scale_factor: if device == DevicePreset::Mobile { 3.0 } else { 1.0 },
+            mobile: device == DevicePreset::Mobile,
+            scale: None,
+            screen_width: None,
+            screen_height: None,
+            position_x: None,
+            position_y: None,
+            dont_set_visible_size: None,
+            screen_orientation: None,
+            viewport: None,
+        };
+        page.execute(metrics).await
+            .map_err(|e| anyhow!("set device metrics: {e}"))?;
+        let ua = SetUserAgentOverrideParams {
+            user_agent: device.user_agent().to_string(),
+            accept_language: None,
+            platform: None,
+            user_agent_metadata: None,
+        };
+        page.execute(ua).await
+            .map_err(|e| anyhow!("set UA: {e}"))?;
+        Ok(())
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
