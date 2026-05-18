@@ -301,12 +301,23 @@ export const closePreviewAction = atom(null, (get, set) => {
     next.delete(currentPath)
     set(dirtyBuffersAtom, next)
   }
-  const sid = currentTarget?.sessionId ?? null
+  let sid = currentTarget?.sessionId ?? null
+  if (!sid) {
+    // Fallback: active tab is a browser tab — selectedPreviewFileAtom only maps
+    // type === 'file' tabs, so derive the session id from the browser payload.
+    const activeKey = get(activePreviewTabKeyAtom)
+    const activeTab = activeKey
+      ? get(previewTabsAtom).find((t) => previewTabKey(t) === activeKey)
+      : undefined
+    if (activeTab?.type === 'browser' && activeTab.browser) {
+      sid = activeTab.browser.agentSessionId
+    }
+  }
   if (sid) {
     set(autoPreviewDismissedSessionsAtom, (prev: Set<string>) => {
-      if (prev.has(sid)) return prev
+      if (prev.has(sid!)) return prev
       const next = new Set(prev)
-      next.add(sid)
+      next.add(sid!)
       return next
     })
   }
