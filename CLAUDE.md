@@ -88,6 +88,11 @@ Bootstrap of the embedded Python (required before first run if `src-tauri/pyembe
 - `./scripts/setup-python-env.sh --optimize` — same, then strips `__pycache__`, tests, idle/turtle to shrink the bundle.
 - `./scripts/setup-python-env.sh --clean` — wipes `pyembed/`.
 
+Bootstrap of the embedded Bun + gbrain (gbrain Sprint 2.0, Path C-2 — runtime spawns Bun as a stdio MCP subprocess driving gbrain for semantic retrieval / Entity Graph / Dream Cycle):
+- `./scripts/setup-bun-runtime.sh` — downloads the Bun static binary (~50MB per platform) to `src-tauri/bunembed/bun`. Honors `BUN_VERSION` env var; falls back to a pinned default if GitHub API is unreachable.
+- `./scripts/setup-gbrain-source.sh` — clones `garrytan/gbrain` (override with `GBRAIN_REPO` / `GBRAIN_REF`) to `src-tauri/gbrain-source/`, runs `bun install --production` against the bundled Bun, strips `.git` to shrink the bundle. Prereq: `setup-bun-runtime.sh` must have run first.
+- Both directories (`bunembed/` + `gbrain-source/`) are gitignored. Add `--clean` to wipe.
+
 ## Runtime Layout
 
 On first launch the Rust side creates:
@@ -182,3 +187,4 @@ The registration mechanics for Tauri commands, background services, and built-in
 - **FTS backfill.** When adding FTS coverage of a new table, don't forget `INSERT INTO …_fts(rowid, …) SELECT … FROM source WHERE rowid NOT IN (SELECT rowid FROM …_fts)`. Without it, search misses everything that pre-dates the migration.
 - **CSP + providers.** Adding a new LLM provider requires updating both `providers/registry.rs` and the `connect-src` allow-list in `tauri.conf.json`'s CSP.
 - **Embedded Python is gitignored.** Assume `src-tauri/pyembed/` is missing on a fresh checkout — run `scripts/setup-python-env.sh` before `cargo tauri dev`. If `MemUClient` fails to start, `AppState.memu_client` is `None` and memU-dependent features degrade gracefully rather than aborting boot.
+- **Embedded Bun + gbrain are gitignored.** Same shape as pyembed: `src-tauri/bunembed/` + `src-tauri/gbrain-source/` are absent on fresh checkout. Run `scripts/setup-bun-runtime.sh` then `scripts/setup-gbrain-source.sh` before `cargo tauri dev`. Both are declared as Tauri resources in `tauri.conf.json` (`bunembed/bun` → `bun`, `gbrain-source` → `gbrain`); Sprint 2.1 will spawn `bun gbrain/<entry> --stdio` as the default MCP server. Until then, the gbrain MCP entry is dormant — missing directories don't break boot.

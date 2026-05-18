@@ -52,7 +52,9 @@
         "resources": {
             "pyembed/python": "python",
             "src/memu/memu_bridge.py": "memu_bridge.py",
-            "../skills": "skills"
+            "../skills": "skills",
+            "bunembed/bun": "bun",
+            "gbrain-source": "gbrain"
         },
         "macOS": {
             "infoPlist": "Info.plist"
