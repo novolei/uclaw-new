@@ -96,6 +96,14 @@ pub struct ChatDelegate {
     /// Empty when memory_os.learning_enabled = false OR FacetCache is
     /// empty — `effective_system_prompt` skips the append in that case.
     learned_profile_block: String,
+    /// gbrain Sprint 2.3 — pre-built '## Long-term Knowledge (gbrain)'
+    /// instruction block from `gbrain_prompt::GbrainKnowledgeSection::render`.
+    /// Set via `set_gbrain_knowledge_block` once per agent loop start.
+    /// Empty when no `mcp__gbrain__*` tools are visible (server
+    /// disconnected, bundle missing, init failed) — `effective_system_prompt`
+    /// skips the append so the LLM never sees instructions for tools
+    /// that don't exist.
+    gbrain_knowledge_block: String,
     /// Memory OS Sprint 2.0 — producer-side handles for the learning
     /// pipeline. When `learning_enabled = true` AND both handles are
     /// `Some`, `before_llm_call` at iteration=0 spawns the chat-turn
@@ -157,6 +165,7 @@ impl ChatDelegate {
             recent_tool_errors: Mutex::new(Vec::new()),
             db: None,
             learned_profile_block: String::new(),
+            gbrain_knowledge_block: String::new(),
             learning_buffer: None,
             learning_llm: None,
             learning_enabled: false,
@@ -429,6 +438,17 @@ impl ChatDelegate {
         self.learned_profile_block = block;
     }
 
+    /// Set the '## Long-term Knowledge (gbrain)' instruction block
+    /// (Sprint 2.3). Caller builds via
+    /// `crate::agent::gbrain_prompt::GbrainKnowledgeSection::render(&mcp_mgr)`
+    /// (returns `Option<String>` — caller passes empty when None). Empty
+    /// input → no append in `effective_system_prompt`, so the LLM
+    /// never sees instructions for `mcp__gbrain__*` tools when those
+    /// tools aren't actually registered.
+    pub fn set_gbrain_knowledge_block(&mut self, block: String) {
+        self.gbrain_knowledge_block = block;
+    }
+
     /// Memory OS Sprint 2.0 — wire the learning producer pipeline.
     ///
     /// Once set, `before_llm_call` at iteration=0 spawns the chat-turn
@@ -536,6 +556,18 @@ impl ChatDelegate {
         if !self.learned_profile_block.is_empty() {
             block.push_str("\n\n");
             block.push_str(&self.learned_profile_block);
+        }
+
+        // gbrain Sprint 2.3 — instructions for when to call
+        // `mcp__gbrain__*` tools. Only present when gbrain is connected
+        // and exposes tools; absent otherwise so we don't promise the
+        // LLM tools that won't actually be callable. Lives in the
+        // dynamic context block alongside memory_context + profile so
+        // tool-presence changes (gbrain reconnects mid-session) take
+        // effect on the next prompt build without restarting the agent.
+        if !self.gbrain_knowledge_block.is_empty() {
+            block.push_str("\n\n");
+            block.push_str(&self.gbrain_knowledge_block);
         }
 
         block

@@ -1431,6 +1431,19 @@ impl McpManager {
         self.servers.get(id).map(|s| s.tools.len())
     }
 
+    #[cfg(test)]
+    pub fn test_set_server_tools(
+        &mut self,
+        id: &str,
+        status: McpServerStatus,
+        tools: Vec<McpToolDef>,
+    ) {
+        if let Some(state) = self.servers.get_mut(id) {
+            state.status = status;
+            state.tools = tools;
+        }
+    }
+
     /// Get detailed status for all servers (for IPC)
     pub fn all_server_statuses(&self) -> Vec<(String, McpServerStatus, Option<String>)> {
         self.servers
