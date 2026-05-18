@@ -73,7 +73,7 @@ function serviceStatusLabel(s: ServiceStatus): string {
 function serviceStatusDot(s: ServiceStatus): string {
   if (typeof s === 'string') {
     if (s === 'Running') return 'bg-green-500'
-    if (s === 'Stopped' || s === 'Stopping') return 'bg-gray-400'
+    if (s === 'Stopped' || s === 'Stopping') return 'bg-muted-foreground/40'
     return 'bg-yellow-400'
   }
   return 'bg-red-500'
@@ -108,7 +108,7 @@ export function SystemTab() {
 
   const isHealthy = report
     ? report.consecutive_failures === 0 && !report.services.some(
-        s => typeof s.status !== 'string' || s.status === ('Failed' as unknown)
+        s => typeof s.status !== 'string'
       )
     : true
 
@@ -364,7 +364,7 @@ function BridgeCard({ name, subtitle, running, detail }: {
   return (
     <div className="rounded-lg bg-muted/40 px-3 py-2.5 flex items-center justify-between">
       <div className="flex items-center gap-2">
-        <span className={cn('size-2 rounded-full flex-shrink-0', running ? 'bg-green-500' : 'bg-gray-500')} />
+        <span className={cn('size-2 rounded-full flex-shrink-0', running ? 'bg-green-500' : 'bg-muted-foreground/40')} />
         <span className="text-sm font-medium text-foreground">{name}</span>
         <span className="text-xs text-muted-foreground">({subtitle})</span>
       </div>
