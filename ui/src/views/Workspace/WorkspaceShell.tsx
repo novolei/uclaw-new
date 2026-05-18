@@ -17,7 +17,7 @@ import { visibleTabsAtom, activeTabIdAtom } from '@/atoms/tab-atoms'
 import {
   previewPanelOpenAtom,
   previewPanelSplitRatioAtom,
-  selectedPreviewFileAtom,
+  clearAllPreviewTabsAction,
 } from '@/atoms/preview-panel-atoms'
 import { currentAgentWorkspaceIdAtom } from '@/atoms/agent-atoms'
 import { PreviewPanel } from '@/components/preview/PreviewPanel'
@@ -35,8 +35,7 @@ export function WorkspaceShell(): React.ReactElement {
   const activeTabId = useAtomValue(activeTabIdAtom)
   const setActiveTabId = useSetAtom(activeTabIdAtom)
   const previewOpen = useAtomValue(previewPanelOpenAtom)
-  const setPreviewOpen = useSetAtom(previewPanelOpenAtom)
-  const setSelectedPreviewFile = useSetAtom(selectedPreviewFileAtom)
+  const clearAllPreviewTabs = useSetAtom(clearAllPreviewTabsAction)
   const currentWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
   const [splitRatio, setSplitRatio] = useAtom(previewPanelSplitRatioAtom)
   const [homeOfficeOpen, setHomeOfficeOpen] = useAtom(homeOfficePanelOpenAtom)
@@ -51,9 +50,8 @@ export function WorkspaceShell(): React.ReactElement {
   React.useEffect(() => {
     if (prevWorkspaceRef.current === currentWorkspaceId) return
     prevWorkspaceRef.current = currentWorkspaceId
-    setPreviewOpen(false)
-    setSelectedPreviewFile(null)
-  }, [currentWorkspaceId, setPreviewOpen, setSelectedPreviewFile])
+    clearAllPreviewTabs()
+  }, [currentWorkspaceId, clearAllPreviewTabs])
 
   // [FLASH-DEBUG] 监控 tabs 变化，如果 tabs.length 变为 0 说明所有标签被卸载
   React.useEffect(() => {

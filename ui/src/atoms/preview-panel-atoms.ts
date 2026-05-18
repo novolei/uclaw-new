@@ -26,8 +26,193 @@ export interface PreviewFileTarget {
   absolutePath?: string
 }
 
-export const selectedPreviewFileAtom = atom<PreviewFileTarget | null>(null)
+// ── Multi-tab pool ─────────────────────────────────────────────────────
+//
+// Multi-file preview: the panel keeps a tab pool keyed by mountId:relPath.
+// Agent-source tabs cluster left with a ✨ marker (the agent's outputs are
+// what the user wants to inspect first); manual-source tabs cluster right.
+// Re-opening the same file focuses the existing tab — never duplicates.
+// In-memory only — matches the chat-session tabsAtom convention.
+
+export type PreviewTabSource = 'agent' | 'manual'
+
+export interface PreviewTabItem {
+  /** Composite identity: two tabs with same (mountId, relPath) are merged. */
+  mountId: string
+  relPath: string
+  /** Display name (last path segment, mirror of PreviewFileTarget.name). */
+  name: string
+  /** Absolute path; undefined if unresolved (renderer handles that case). */
+  absolutePath?: string
+  /** Session that owns the mount, when relevant. */
+  sessionId?: string | null
+  /** Determines sort cluster + visual marker. */
+  source: PreviewTabSource
+  /** Insertion epoch — tiebreaker within source group. */
+  addedAt: number
+}
+
+export const previewTabsAtom = atom<PreviewTabItem[]>([])
+
+/** `${mountId}:${relPath}` for the currently active tab, or null. */
+export const activePreviewTabKeyAtom = atom<string | null>(null)
+
+/** Stable composite key used everywhere the tab list is indexed. */
+export function previewTabKey(
+  t: Pick<PreviewTabItem, 'mountId' | 'relPath'>,
+): string {
+  return `${t.mountId}:${t.relPath}`
+}
+
+/** Agent tabs first (by addedAt asc), then manual (by addedAt asc). */
+function sortPreviewTabs(tabs: PreviewTabItem[]): PreviewTabItem[] {
+  return [...tabs].sort((a, b) => {
+    if (a.source !== b.source) return a.source === 'agent' ? -1 : 1
+    return a.addedAt - b.addedAt
+  })
+}
+
+// ── selectedPreviewFileAtom — derived from active tab ──────────────────
+//
+// All existing readers of this atom (PreviewPanel, PreviewHeader,
+// usePreviewState) continue to work; they see PreviewFileTarget | null
+// just like before, but the source of truth is now the tab pool.
+
+export const selectedPreviewFileAtom = atom<PreviewFileTarget | null>((get) => {
+  const key = get(activePreviewTabKeyAtom)
+  if (!key) return null
+  const tab = get(previewTabsAtom).find((t) => previewTabKey(t) === key)
+  if (!tab) return null
+  return {
+    mountId: tab.mountId,
+    relPath: tab.relPath,
+    name: tab.name,
+    absolutePath: tab.absolutePath,
+    sessionId: tab.sessionId,
+  }
+})
+
 export const previewPanelOpenAtom = atom<boolean>(false)
+
+// ── Actions ────────────────────────────────────────────────────────────
+
+/**
+ * Open a file in a new tab, or focus the existing tab if already open.
+ *
+ * Source semantics:
+ *  - 'agent'  → tab clusters left, carries ✨ marker. If a manual tab for
+ *               the same file already exists, it gets promoted to 'agent'
+ *               and migrates left.
+ *  - 'manual' → tab clusters right. Re-opening an existing agent tab does
+ *               NOT demote it (agent priority is sticky).
+ *
+ * Always sets the tab active and opens the panel.
+ *
+ * Note: the dirty-buffer confirm prompt that the legacy single-file
+ * openPreviewAction used now lives on closePreviewTabAction (where it
+ * belongs — switching tabs in a multi-tab pane should NOT discard buffers).
+ */
+export const openPreviewTabAction = atom(
+  null,
+  (
+    get,
+    set,
+    payload: { target: PreviewFileTarget; source: PreviewTabSource },
+  ) => {
+    const tabs = get(previewTabsAtom)
+    const key = previewTabKey(payload.target)
+    const existing = tabs.find((t) => previewTabKey(t) === key)
+    if (existing) {
+      set(activePreviewTabKeyAtom, key)
+      if (payload.source === 'agent' && existing.source === 'manual') {
+        set(
+          previewTabsAtom,
+          sortPreviewTabs(
+            tabs.map((t) =>
+              previewTabKey(t) === key ? { ...t, source: 'agent' as const } : t,
+            ),
+          ),
+        )
+      }
+      set(previewPanelOpenAtom, true)
+      return
+    }
+    const tab: PreviewTabItem = {
+      mountId: payload.target.mountId,
+      relPath: payload.target.relPath,
+      name: payload.target.name,
+      absolutePath: payload.target.absolutePath,
+      sessionId: payload.target.sessionId,
+      source: payload.source,
+      addedAt: Date.now(),
+    }
+    set(previewTabsAtom, sortPreviewTabs([...tabs, tab]))
+    set(activePreviewTabKeyAtom, key)
+    set(previewPanelOpenAtom, true)
+  },
+)
+
+/**
+ * Close a tab by its composite key.
+ *  - If closing the active tab, activates the right neighbor (or left, or null)
+ *  - If closing the last tab, also closes the panel
+ *  - If the closing tab has a dirty editor buffer, prompts the user;
+ *    on cancel, leaves the tab open
+ *
+ * No-op if the key isn't found.
+ */
+export const closePreviewTabAction = atom(
+  null,
+  (get, set, key: string) => {
+    const tabs = get(previewTabsAtom)
+    const idx = tabs.findIndex((t) => previewTabKey(t) === key)
+    if (idx === -1) return
+    const closingTab = tabs[idx]
+
+    // Dirty-buffer confirmation (only when CLOSING this tab — switching
+    // active tab between still-open tabs leaves buffers untouched).
+    const buffers = get(dirtyBuffersAtom)
+    const path = closingTab.absolutePath ?? null
+    if (path && buffers.has(path)) {
+      const proceed = window.confirm(
+        '该文件有未保存的修改 — 关闭这个标签将丢弃这些修改。是否继续？',
+      )
+      if (!proceed) return
+      const nextBuffers = new Map(buffers)
+      nextBuffers.delete(path)
+      set(dirtyBuffersAtom, nextBuffers)
+    }
+
+    const next = tabs.filter((t) => previewTabKey(t) !== key)
+    set(previewTabsAtom, next)
+    if (get(activePreviewTabKeyAtom) === key) {
+      const neighbor = next[idx] ?? next[idx - 1] ?? null
+      set(activePreviewTabKeyAtom, neighbor ? previewTabKey(neighbor) : null)
+      if (next.length === 0) {
+        set(previewPanelOpenAtom, false)
+      }
+    }
+  },
+)
+
+/** Close every tab + collapse the panel. Used on workspace switch. */
+export const clearAllPreviewTabsAction = atom(null, (_get, set) => {
+  set(previewTabsAtom, [])
+  set(activePreviewTabKeyAtom, null)
+  set(previewPanelOpenAtom, false)
+})
+
+// ── Compatibility wrapper ──────────────────────────────────────────────
+//
+// Legacy callers do `set(openPreviewAction, target)`. They still work —
+// new tabs default to source: 'manual'. New callers should use
+// openPreviewTabAction explicitly with the right source.
+export const openPreviewAction = atom(
+  null,
+  (_get, set, target: PreviewFileTarget) => {
+    set(openPreviewTabAction, { target, source: 'manual' })
+  },
+)
 
 /**
  * Persisted width in CSS pixels. Default 540; clamped to [380, 1100] by the UI.
@@ -54,31 +239,6 @@ export const previewPanelSplitRatioAtom = atomWithStorage<number>(
   'uclaw-preview-panel-split-ratio',
   0.55,
 )
-
-/** Write-only action: select a file AND open the panel in one update. */
-export const openPreviewAction = atom(null, (get, set, payload: PreviewFileTarget) => {
-  const currentTarget = get(selectedPreviewFileAtom)
-  const buffers = get(dirtyBuffersAtom)
-  const currentPath = currentTarget?.absolutePath ?? null
-  // Switching FROM a dirty file → confirm
-  if (
-    currentPath &&
-    currentPath !== payload.absolutePath &&
-    buffers.has(currentPath)
-  ) {
-    const proceed = window.confirm(
-      '当前文件有未保存的修改 — 切换将丢弃这些修改。是否继续？',
-    )
-    if (!proceed) return
-    // User chose to discard — clear the dirty entry so the next mount
-    // doesn't see stale state.
-    const next = new Map(buffers)
-    next.delete(currentPath)
-    set(dirtyBuffersAtom, next)
-  }
-  set(selectedPreviewFileAtom, payload)
-  set(previewPanelOpenAtom, true)
-})
 
 /**
  * Auto-preview toggle — when true, the preview panel opens automatically
@@ -144,4 +304,6 @@ export const closePreviewAction = atom(null, (get, set) => {
     })
   }
   set(previewPanelOpenAtom, false)
+  set(previewTabsAtom, [])              // NEW
+  set(activePreviewTabKeyAtom, null)    // NEW
 })
