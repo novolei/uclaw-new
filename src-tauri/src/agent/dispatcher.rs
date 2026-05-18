@@ -542,7 +542,7 @@ impl ChatDelegate {
             now.minute(),
         );
         let mut block = format!(
-            "<system_info>\n当前时间: {}\n注意: 以上时间由系统提供，你不需要使用工具（如 bash date）获取时间，直接使用此信息回答即可。",
+            "<system_info>\n当前时间: {}\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。",
             time
         );
         if let Some(root) = &self.workspace_root {
