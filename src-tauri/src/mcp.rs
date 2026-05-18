@@ -1327,148 +1327,6 @@ impl McpManager {
 
     // ── Connection Lifecycle ────────────────────────────────────────
 
-    /// Connect to an MCP server: spawn transport, initialize, discover tools
-    pub async fn connect_server(&mut self, id: &str) -> Result<(), McpError> {
-        let config = {
-            let state = self.servers.get(id).ok_or_else(|| {
-                McpError::Server(format!("Server {} not found", id))
-            })?;
-            state.config.clone()
-        };
-
-        // Update status to connecting
-        if let Some(state) = self.servers.get_mut(id) {
-            state.status = McpServerStatus::Connecting;
-            state.error = None;
-        }
-        // PR-5 — log the attempt so audits show "tried then failed" not
-        // just the failure (helps distinguish boot races from later
-        // user actions).
-        self.record_audit(
-            id,
-            McpAuditKind::ConnectAttempt,
-            &format!("Connecting to {}", config.name),
-        );
-
-        tracing::info!("Connecting to MCP server '{}' ({})", config.name, id);
-
-        // Create transport based on type
-        let transport: Arc<dyn McpTransport> = match config.transport_type {
-            TransportType::Stdio => {
-                let t = StdioTransport::spawn(
-                    &config.name,
-                    &config.command,
-                    &config.args,
-                    &config.env,
-                    // PR-4 — server id + (optional) notification sender
-                    // get wired into the reader task so server-pushed
-                    // events route through the manager-level consumer.
-                    id,
-                    self.notification_tx.clone(),
-                )
-                .await
-                .map_err(|e| {
-                    if let Some(state) = self.servers.get_mut(id) {
-                        state.status = McpServerStatus::Error;
-                        state.error = Some(e.to_string());
-                    }
-                    e
-                })?;
-                Arc::new(t)
-            }
-            TransportType::Http => {
-                let url = config.url.clone().unwrap_or_default();
-                if url.is_empty() {
-                    let err = McpError::Server("HTTP transport requires a URL".into());
-                    if let Some(state) = self.servers.get_mut(id) {
-                        state.status = McpServerStatus::Error;
-                        state.error = Some(err.to_string());
-                    }
-                    return Err(err);
-                }
-                Arc::new(HttpTransport::new(&config.name, &url))
-            }
-        };
-
-        let mut conn = McpConnection {
-            transport,
-            next_id: AtomicU64::new(1),
-            initialized: false,
-            tools: Vec::new(),
-            server_info: None,
-        };
-
-        // Initialize
-        match conn.initialize().await {
-            Ok(init_result) => {
-                tracing::info!(
-                    "MCP server '{}' initialized (protocol: {:?}, server: {:?})",
-                    config.name,
-                    init_result.protocol_version,
-                    init_result.server_info.as_ref().map(|s| &s.name),
-                );
-            }
-            Err(e) => {
-                tracing::error!("MCP server '{}' initialize failed: {}", config.name, e);
-                let _ = conn.shutdown().await;
-                if let Some(state) = self.servers.get_mut(id) {
-                    state.status = McpServerStatus::Error;
-                    state.error = Some(e.to_string());
-                }
-                return Err(e);
-            }
-        }
-
-        // Discover tools
-        match conn.discover_tools().await {
-            Ok(remote_tools) => {
-                let tool_defs: Vec<McpToolDef> = remote_tools
-                    .iter()
-                    .map(|t| McpToolDef {
-                        server_id: id.to_string(),
-                        name: t.name.clone(),
-                        description: t.description.clone(),
-                        parameters: t.input_schema.clone(),
-                    })
-                    .collect();
-                tracing::info!(
-                    "MCP server '{}' has {} tool(s): [{}]",
-                    config.name,
-                    tool_defs.len(),
-                    tool_defs.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")
-                );
-                if let Some(state) = self.servers.get_mut(id) {
-                    state.tools = tool_defs;
-                }
-            }
-            Err(e) => {
-                tracing::warn!("MCP server '{}' tools/list failed: {}", config.name, e);
-                // Non-fatal: server may not support tools
-            }
-        }
-
-        // Mark connected
-        let tool_count = self
-            .servers
-            .get(id)
-            .map(|s| s.tools.len())
-            .unwrap_or(0);
-        if let Some(state) = self.servers.get_mut(id) {
-            state.status = McpServerStatus::Connected;
-            state.error = None;
-            state.connection = Some(conn);
-        }
-        // PR-5 — successful connect lands an audit row with the tool
-        // count so the table doubles as a "what was visible when" log.
-        self.record_audit(
-            id,
-            McpAuditKind::ConnectSucceeded,
-            &format!("Connected ({} tool(s) discovered)", tool_count),
-        );
-
-        Ok(())
-    }
-
     /// Disconnect from an MCP server. Also aborts the health loop
     /// (PR-3) so a pending reconnect can't fight a user-initiated
     /// disconnect. Caller is expected to call `start_health_loop`
@@ -1488,12 +1346,6 @@ impl McpManager {
         // when the server isn't in the map (e.g. removed mid-flight).
         self.record_audit(id, McpAuditKind::Disconnect, "Disconnected");
         Ok(())
-    }
-
-    /// Restart a server connection
-    pub async fn restart_server(&mut self, id: &str) -> Result<(), McpError> {
-        self.disconnect_server(id).await.ok();
-        self.connect_server(id).await
     }
 
     // ── PR-3 — health loop management ───────────────────────────────
@@ -1588,10 +1440,7 @@ impl McpManager {
                     }
                     tokio::time::sleep(Duration::from_secs(delay)).await;
 
-                    let reconnect_result = {
-                        let mut m = mgr.write().await;
-                        m.reconnect_server(&id).await
-                    };
+                    let reconnect_result = reconnect_server_shared(&mgr, &id).await;
                     match reconnect_result {
                         Ok(()) => {
                             tracing::info!(
@@ -1616,36 +1465,14 @@ impl McpManager {
         }
     }
 
-    /// Internal reconnect — like `restart_server` but doesn't abort
-    /// the health loop (we *are* the health loop). The user-facing
-    /// `restart_server` calls `disconnect_server` which aborts the
-    /// loop; we don't want to commit suicide here.
-    async fn reconnect_server(&mut self, id: &str) -> Result<(), McpError> {
-        // Mirror restart_server's shape but inline the disconnect so we
-        // can skip stop_health_loop.
-        if let Some(state) = self.servers.get_mut(id) {
-            if let Some(conn) = state.connection.take() {
-                conn.shutdown().await.ok();
-            }
-            state.status = McpServerStatus::Disconnected;
-        }
-        self.connect_server(id).await
-    }
-
-    /// Connect all enabled servers
-    pub async fn connect_all_enabled(&mut self) {
-        let ids: Vec<String> = self
-            .servers
+    /// Snapshot the IDs of enabled servers. Cheap; takes only a `&self`
+    /// borrow so callers can release the lock before doing async work.
+    pub fn list_enabled_ids(&self) -> Vec<String> {
+        self.servers
             .values()
             .filter(|s| s.config.enabled)
             .map(|s| s.config.id.clone())
-            .collect();
-
-        for id in ids {
-            if let Err(e) = self.connect_server(&id).await {
-                tracing::error!("Failed to connect MCP server '{}': {}", id, e);
-            }
-        }
+            .collect()
     }
 
     /// Disconnect all servers. Also aborts every health loop (PR-3) —
@@ -1809,6 +1636,232 @@ impl McpManager {
                 }
             })
             .collect()
+    }
+
+}
+
+/// Connect to an MCP server without holding the manager's write lock
+/// across the slow network IO. Three phases:
+///   1. Prepare (short write lock): clone config, snapshot
+///      `notification_tx`, mark `Connecting`, audit `ConnectAttempt`.
+///   2. IO (no lock held): spawn transport, run `initialize` and
+///      `discover_tools`.
+///   3. Commit (short write lock): install the connection + tool defs +
+///      `Connected` status, OR mark `Error` and audit appropriately.
+///
+/// This is the lock-discipline fix for the "first message after app
+/// launch hangs for 60s" bug — the bundled gbrain server's initialize
+/// can take up to a full 60s to time out, and prior to this refactor
+/// the manager-wide write lock was held the entire time, blocking
+/// `send_agent_message`'s `mcp_manager.read().await`.
+///
+/// Note on `discover_tools` mutation semantics: `McpConnection::discover_tools`
+/// both populates `conn.tools` in-place (via `self.tools = result.tools.clone()`)
+/// AND returns `Result<Vec<McpRemoteTool>>`. The commit phase reads `conn.tools`
+/// directly since the in-place mutation is already done before we re-acquire the lock.
+pub(crate) async fn connect_server_shared(
+    shared: &SharedMcpManager,
+    id: &str,
+) -> Result<(), McpError> {
+    // ── Phase 1: prepare ────────────────────────────────────────────
+    let (config, notification_tx) = {
+        let mut guard = shared.write().await;
+        let state = guard.servers.get(id).ok_or_else(|| {
+            McpError::Server(format!("Server {} not found", id))
+        })?;
+        let config = state.config.clone();
+        let notification_tx = guard.notification_tx.clone();
+        if let Some(state) = guard.servers.get_mut(id) {
+            state.status = McpServerStatus::Connecting;
+            state.error = None;
+        }
+        guard.record_audit(
+            id,
+            McpAuditKind::ConnectAttempt,
+            &format!("Connecting to {}", config.name),
+        );
+        (config, notification_tx)
+    };
+
+    tracing::info!("Connecting to MCP server '{}' ({})", config.name, id);
+
+    // ── Phase 2: IO (no lock held) ──────────────────────────────────
+    let io_result: Result<McpConnection, McpError> = async {
+        let transport: Arc<dyn McpTransport> = match config.transport_type {
+            TransportType::Stdio => {
+                let t = StdioTransport::spawn(
+                    &config.name,
+                    &config.command,
+                    &config.args,
+                    &config.env,
+                    id,
+                    notification_tx.clone(),
+                )
+                .await?;
+                Arc::new(t)
+            }
+            TransportType::Http => {
+                let url = config.url.clone().unwrap_or_default();
+                if url.is_empty() {
+                    return Err(McpError::Server(
+                        "HTTP transport requires a URL".into(),
+                    ));
+                }
+                Arc::new(HttpTransport::new(&config.name, &url))
+            }
+        };
+
+        let mut conn = McpConnection {
+            transport,
+            next_id: AtomicU64::new(1),
+            initialized: false,
+            tools: Vec::new(),
+            server_info: None,
+        };
+
+        // initialize is the expensive call (up to ~60s on a hung
+        // stdio server). Critically, no lock is held here.
+        let init_result = conn.initialize().await?;
+        tracing::info!(
+            "MCP server '{}' initialized (protocol: {:?}, server: {:?})",
+            config.name,
+            init_result.protocol_version,
+            init_result.server_info.as_ref().map(|s| &s.name),
+        );
+
+        // discover_tools failure is non-fatal — the server may simply
+        // not implement tools/list. We still keep the connection.
+        // discover_tools also populates conn.tools in-place, so the
+        // commit phase reads conn.tools directly.
+        if let Err(e) = conn.discover_tools().await {
+            tracing::warn!(
+                "MCP server '{}' tools/list failed: {}",
+                config.name,
+                e
+            );
+        }
+
+        Ok(conn)
+    }
+    .await;
+
+    // ── Phase 3: commit ─────────────────────────────────────────────
+    let mut guard = shared.write().await;
+    match io_result {
+        Ok(conn) => {
+            // discover_tools populates conn.tools in-place (conn.tools =
+            // result.tools.clone() inside McpConnection::discover_tools).
+            // Mirror those into ServerState.tools as McpToolDef entries.
+            let tool_defs: Vec<McpToolDef> = conn
+                .tools
+                .iter()
+                .map(|t| McpToolDef {
+                    server_id: id.to_string(),
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                    parameters: t.input_schema.clone(),
+                })
+                .collect();
+            let tool_count = tool_defs.len();
+            tracing::info!(
+                "MCP server '{}' has {} tool(s): [{}]",
+                config.name,
+                tool_count,
+                tool_defs.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")
+            );
+            if let Some(state) = guard.servers.get_mut(id) {
+                state.status = McpServerStatus::Connected;
+                state.error = None;
+                state.tools = tool_defs;
+                state.connection = Some(conn);
+            }
+            guard.record_audit(
+                id,
+                McpAuditKind::ConnectSucceeded,
+                &format!("Connected ({} tool(s) discovered)", tool_count),
+            );
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!(
+                "MCP server '{}' connect failed: {}",
+                config.name,
+                e
+            );
+            if let Some(state) = guard.servers.get_mut(id) {
+                state.status = McpServerStatus::Error;
+                state.error = Some(e.to_string());
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Internal reconnect for the health loop. Mirrors `restart_server`'s
+/// disconnect+connect shape but without aborting the health loop
+/// (we *are* the health loop).
+///
+/// Lock note: the `conn.shutdown().await` call is made while holding the
+/// write lock. For Stdio transports `shutdown()` only closes stdin and drops
+/// the child handle — it does not wait for the child to exit — so this is a
+/// very short non-IO critical section in practice. HTTP/SSE transports drop
+/// the reqwest connection handle. Neither involves 60s network IO, so
+/// holding the write lock across `shutdown()` is acceptable here.
+pub(crate) async fn reconnect_server_shared(
+    shared: &SharedMcpManager,
+    id: &str,
+) -> Result<(), McpError> {
+    {
+        let mut guard = shared.write().await;
+        if let Some(state) = guard.servers.get_mut(id) {
+            if let Some(conn) = state.connection.take() {
+                let _ = conn.shutdown().await;
+            }
+            state.status = McpServerStatus::Disconnected;
+        }
+    }
+    connect_server_shared(shared, id).await
+}
+
+/// Restart a server connection. User-triggered (Tauri command) and
+/// distinct from the health loop's internal `reconnect_server_shared`
+/// in that it ALSO aborts the health loop so the loop's pending
+/// reconnect can't fight the user.
+pub async fn restart_server_shared(
+    shared: &SharedMcpManager,
+    id: &str,
+) -> Result<(), McpError> {
+    {
+        let mut guard = shared.write().await;
+        guard.stop_health_loop(id);
+        if let Some(state) = guard.servers.get_mut(id) {
+            if let Some(conn) = state.connection.take() {
+                let _ = conn.shutdown().await;
+            }
+            state.status = McpServerStatus::Disconnected;
+            state.tools.clear();
+            state.error = None;
+        }
+        guard.record_audit(id, McpAuditKind::Disconnect, "Disconnected (restart)");
+    }
+    connect_server_shared(shared, id).await?;
+    Ok(())
+}
+
+/// Connect all enabled servers. Each server's connect runs through
+/// `connect_server_shared`, which releases the write lock during the
+/// slow initialize/discover IO. Sequential iteration is fine because
+/// the slow part no longer blocks readers — parallelizing would only
+/// help startup wall time, not user-perceived latency.
+pub async fn connect_all_enabled(shared: &SharedMcpManager) {
+    let ids: Vec<String> = {
+        let guard = shared.read().await;
+        guard.list_enabled_ids()
+    };
+    for id in ids {
+        if let Err(e) = connect_server_shared(shared, &id).await {
+            tracing::error!("Failed to connect MCP server '{}': {}", id, e);
+        }
     }
 }
 

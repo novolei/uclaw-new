@@ -381,8 +381,9 @@ pub async fn restart_gbrain_mcp(
         .unwrap()
         .clone()
         .ok_or_else(|| "gbrain MCP entry not seeded (bundle missing?)".to_string())?;
-    let mut mcp = state.mcp_manager.write().await;
-    mcp.restart_server(&id).await.map_err(|e| e.to_string())
+    crate::mcp::restart_server_shared(&state.mcp_manager, &id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2895,12 +2896,13 @@ pub async fn toggle_mcp_server(state: State<'_, AppState>, id: String, enabled: 
 #[tauri::command]
 pub async fn connect_mcp_server(state: State<'_, AppState>, id: String) -> Result<bool, Error> {
     let shared = state.mcp_manager.clone();
-    let mut mgr = state.mcp_manager.write().await;
-    mgr.connect_server(&id).await.map_err(|e| Error::Internal(e.to_string()))?;
+    crate::mcp::connect_server_shared(&state.mcp_manager, &id)
+        .await
+        .map_err(|e| Error::Internal(e.to_string()))?;
     // PR-3 — spawn the per-server health loop now that we're
     // connected. The loop is idempotent: if one's already running for
     // this id (e.g. restart path) it gets aborted first.
-    mgr.start_health_loop(shared, &id);
+    state.mcp_manager.write().await.start_health_loop(shared, &id);
     Ok(true)
 }
 
@@ -2914,11 +2916,12 @@ pub async fn disconnect_mcp_server(state: State<'_, AppState>, id: String) -> Re
 #[tauri::command]
 pub async fn restart_mcp_server(state: State<'_, AppState>, id: String) -> Result<bool, Error> {
     let shared = state.mcp_manager.clone();
-    let mut mgr = state.mcp_manager.write().await;
-    mgr.restart_server(&id).await.map_err(|e| Error::Internal(e.to_string()))?;
-    // PR-3 — restart_server's inner disconnect aborted the old loop;
+    crate::mcp::restart_server_shared(&state.mcp_manager, &id)
+        .await
+        .map_err(|e| Error::Internal(e.to_string()))?;
+    // PR-3 — restart_server_shared's inner disconnect aborted the old loop;
     // start a fresh one now that we're connected again.
-    mgr.start_health_loop(shared, &id);
+    state.mcp_manager.write().await.start_health_loop(shared, &id);
     Ok(true)
 }
 

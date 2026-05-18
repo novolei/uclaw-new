@@ -542,7 +542,11 @@ fn main() {
                                     "[Stage 3] gbrain MCP seed skipped (bundle artifacts missing — run setup-bun-runtime.sh + setup-gbrain-source.sh)"
                                 );
                             }
-                            guard.connect_all_enabled().await;
+                            // Drop the write lock before the slow
+                            // connect pass so readers aren't blocked.
+                            drop(guard);
+                            uclaw_core::mcp::connect_all_enabled(&shared).await;
+                            let mut guard = shared.write().await;
                             let ids: Vec<String> = guard
                                 .all_server_statuses()
                                 .into_iter()
