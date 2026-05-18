@@ -295,48 +295,58 @@ export function ContextUsageBadge({
             ) : null}
           </div>
 
-          {/* 缓存效率 — cache_read / total_sent */}
-          {(displayCacheRead ?? 0) > 0 && (
-            <>
-              <div className="h-px bg-border" />
-              <div className="flex flex-col gap-1">
-                <div className="text-[10px] uppercase tracking-widest text-muted-foreground/70 font-semibold">
-                  缓存效率
-                </div>
+          {/* 缓存效率 — 始终显示，冷启动为 0% 方便监控 */}
+          <>
+            <div className="h-px bg-border" />
+            <div className="flex flex-col gap-1">
+              <div className="text-[10px] uppercase tracking-widest text-muted-foreground/70 font-semibold">
+                缓存效率
+              </div>
+              <DetailRow
+                label="命中 / 总发送"
+                value={
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="tabular-nums">
+                      {(displayCacheRead ?? 0).toLocaleString()} / {totalSent.toLocaleString()}
+                    </span>
+                    <span
+                      className={cn(
+                        'rounded-sm px-1 py-0 text-[9.5px] font-semibold tabular-nums',
+                        cacheHitRatio >= 50
+                          ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                          : cacheHitRatio > 0
+                          ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                          : 'bg-muted text-muted-foreground/60',
+                      )}
+                    >
+                      {cacheHitRatio}%
+                    </span>
+                  </span>
+                }
+                emphasized
+              />
+              {(displayCacheCreation ?? 0) > 0 && (
                 <DetailRow
-                  label="命中 / 总发送"
+                  label="缓存写入"
                   value={
-                    <span className="inline-flex items-center gap-1.5">
-                      <span className="tabular-nums">
-                        {(displayCacheRead ?? 0).toLocaleString()} / {totalSent.toLocaleString()}
-                      </span>
-                      <span
-                        className={cn(
-                          'rounded-sm px-1 py-0 text-[9.5px] font-semibold tabular-nums',
-                          cacheHitRatio >= 50
-                            ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                            : 'bg-muted text-muted-foreground',
-                        )}
-                      >
-                        {cacheHitRatio}%
-                      </span>
+                    <span className="text-muted-foreground/80 tabular-nums">
+                      {(displayCacheCreation ?? 0).toLocaleString()}
                     </span>
                   }
-                  emphasized
                 />
-                {cacheSavedInput > 0 && (
-                  <DetailRow
-                    label="节省约"
-                    value={
-                      <span className="text-emerald-600 dark:text-emerald-400 tabular-nums">
-                        ~{cacheSavedInput.toLocaleString()} token
-                      </span>
-                    }
-                  />
-                )}
-              </div>
-            </>
-          )}
+              )}
+              {cacheSavedInput > 0 && (
+                <DetailRow
+                  label="节省约"
+                  value={
+                    <span className="text-emerald-600 dark:text-emerald-400 tabular-nums">
+                      ~{cacheSavedInput.toLocaleString()} token
+                    </span>
+                  }
+                />
+              )}
+            </div>
+          </>
 
           {/* 上下文窗口 */}
           {displayWindow ? (
