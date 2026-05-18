@@ -896,6 +896,58 @@ impl AppState {
         }
         None
     }
+
+    /// gbrain Sprint 2.1 — find the bundled `bun` binary.
+    /// Same find-resource-then-fall-back-to-dev shape as `find_python`.
+    /// Returns `None` if neither location has the binary; caller (Stage
+    /// 3 seed step in main.rs) treats `None` as "skip gbrain seed".
+    pub fn find_bun_path(resource_dir: Option<&std::path::Path>) -> Option<PathBuf> {
+        // 1. Bundled — Tauri resource dir contains `bun` (per tauri.conf.json
+        //    "bunembed/bun": "bun" mapping)
+        if let Some(res_dir) = resource_dir {
+            let bundled = res_dir.join("bun");
+            if bundled.exists() {
+                tracing::info!("Found bundled Bun at {}", bundled.display());
+                return Some(bundled);
+            }
+        }
+        // 2. Dev — repo's bunembed/bun (after running setup-bun-runtime.sh)
+        let dev_bun = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("bunembed")
+            .join("bun");
+        if dev_bun.exists() {
+            tracing::debug!("Found dev Bun at {}", dev_bun.display());
+            return Some(dev_bun);
+        }
+        tracing::warn!("Bun binary not found in bundle or dev location");
+        None
+    }
+
+    /// gbrain Sprint 2.1 — find the gbrain CLI entry point.
+    /// Mac-side Sprint 2.0 verification confirmed `src/cli.ts` is the
+    /// stdio MCP entry; `bun src/cli.ts serve` is the spawn command.
+    /// Same fallback shape as `find_bun_path`.
+    pub fn find_gbrain_entry(resource_dir: Option<&std::path::Path>) -> Option<PathBuf> {
+        // 1. Bundled — Tauri resource maps `gbrain-source` → `gbrain`
+        if let Some(res_dir) = resource_dir {
+            let bundled = res_dir.join("gbrain").join("src").join("cli.ts");
+            if bundled.exists() {
+                tracing::info!("Found bundled gbrain CLI at {}", bundled.display());
+                return Some(bundled);
+            }
+        }
+        // 2. Dev — repo's gbrain-source/src/cli.ts
+        let dev_entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("gbrain-source")
+            .join("src")
+            .join("cli.ts");
+        if dev_entry.exists() {
+            tracing::debug!("Found dev gbrain CLI at {}", dev_entry.display());
+            return Some(dev_entry);
+        }
+        tracing::warn!("gbrain CLI entry not found in bundle or dev location");
+        None
+    }
 }
 
 // ─── Files Rail Helpers ────────────────────────────────────────────────────
