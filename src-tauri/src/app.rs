@@ -1000,7 +1000,7 @@ impl AppState {
              #   ~/.uclaw/gbrain/run.sh recall \"some query\"\n\
              export GBRAIN_HOME={home_q}\n\
              exec {bun_q} {entry_q} \"$@\"\n",
-            home_q = shell_quote_path(&gbrain_home),
+            home_q = shell_quote_path(gbrain_home),
             bun_q = shell_quote_path(bun_path),
             entry_q = shell_quote_path(entry_path),
         );
@@ -1032,7 +1032,7 @@ impl AppState {
             "generated_at_ms": chrono::Utc::now().timestamp_millis(),
         });
         let manifest_str = serde_json::to_string_pretty(&manifest)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         std::fs::write(gbrain_home.join("paths.json"), manifest_str)?;
         Ok(())
     }
