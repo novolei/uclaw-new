@@ -140,6 +140,94 @@ fn today_start_ms_utc() -> i64 {
         .unwrap_or(0)
 }
 
+// ─── Memory OS runtime config ─────────────────────────────────────────
+//
+// Phase 3, 4, and 5 each added new positional parameters to
+// `ProactiveService::new` — first one bool, then another bool, then a
+// (bool, u32, Arc<dyn …>) triple. By Phase 5 the signature had grown
+// 5 trailing positional args and Phase 6+ would extend it further.
+//
+// This struct bundles every Memory OS knob that the proactive runtime
+// needs into a single Clone container, so the constructor signature
+// stops growing and future phases just add another field with a
+// sensible default. The struct is cloned into `ProactiveStateRefs`
+// once per spawned tick task — cheap because the bools are Copy and
+// the Arc<dyn LintAnalyzer> is a refcount bump.
+
+/// Runtime-side Memory OS feature flags + analyzer trait objects
+/// consumed by ProactiveService's tick loop. Constructed once at
+/// AppState bootstrap from `MemubotConfig::memory_os` plus the
+/// AppState-owned analyzer trait objects, then handed to
+/// `ProactiveService::new` as a single argument.
+///
+/// **Forward compatibility**: when a Phase 6+ feature needs a new
+/// proactive-runtime knob, add a field here with a sensible default
+/// in the `Default` impl. The constructor signature does NOT change.
+#[derive(Clone)]
+pub struct MemoryOsRuntimeConfig {
+    /// Phase 3 — gates the periodic wiki_artifacts(kind="index") regen.
+    pub wiki_view_enabled: bool,
+    /// Phase 4 — gates the periodic memory_health scenario.
+    pub memory_health_enabled: bool,
+    /// Phase 5 — gates the periodic memory_lint scenario.
+    pub memory_lint_enabled: bool,
+    /// Phase 5 — daily token cap; lint orchestrator bails out before
+    /// consuming a candidate that would push today's
+    /// `cost_records WHERE model LIKE 'memory_lint%'` past this.
+    pub memory_lint_daily_token_budget: u32,
+    /// Phase 5 — LLM seam for the memory_lint scenario. Phase 5 ships
+    /// `memory_lint::StubAnalyzer` as the default; a follow-up swap to
+    /// a real Anthropic/OpenAI client is a single AppState field
+    /// change — no proactive code path moves.
+    pub lint_analyzer: Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
+}
+
+impl MemoryOsRuntimeConfig {
+    /// Build from a parsed `MemubotConfig` + the trait-object analyzer
+    /// owned by AppState. Centralises the wiring so call sites stay
+    /// short and future flags don't leak into main.rs.
+    pub fn from_memubot_config(
+        cfg: &crate::memubot_config::MemoryOsConfig,
+        lint_analyzer: Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
+    ) -> Self {
+        Self {
+            wiki_view_enabled: cfg.wiki_view_enabled,
+            memory_health_enabled: cfg.memory_health_enabled,
+            memory_lint_enabled: cfg.memory_lint_enabled,
+            memory_lint_daily_token_budget: cfg.memory_lint_daily_token_budget,
+            lint_analyzer,
+        }
+    }
+
+    /// Test-friendly default. Mirrors `MemoryOsConfig::default()`
+    /// (every flag on, neutral budget) and installs the deterministic
+    /// `StubAnalyzer` so unit tests don't need LLM credentials.
+    #[cfg(test)]
+    pub fn for_tests() -> Self {
+        Self {
+            wiki_view_enabled: true,
+            memory_health_enabled: true,
+            memory_lint_enabled: true,
+            memory_lint_daily_token_budget: 50_000,
+            lint_analyzer: Arc::new(crate::proactive::scenarios::memory_lint::StubAnalyzer)
+                as Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
+        }
+    }
+}
+
+impl Default for MemoryOsRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            wiki_view_enabled: true,
+            memory_health_enabled: true,
+            memory_lint_enabled: true,
+            memory_lint_daily_token_budget: 50_000,
+            lint_analyzer: Arc::new(crate::proactive::scenarios::memory_lint::StubAnalyzer)
+                as Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
+        }
+    }
+}
+
 // ─── 状态引用结构体 ───────────────────────────────────────────────────
 
 /// 辅助结构：持有所有需要跨 spawned task 共享的 Arc 引用
@@ -181,28 +269,10 @@ struct ProactiveStateRefs {
     memu_client: Option<Arc<MemUClient>>,
     /// Memory Graph 存储
     memory_graph_store: Arc<MemoryGraphStore>,
-    /// Memory OS Foundation Phase 3 — controls whether the tick loop
-    /// auto-regenerates `wiki_artifacts(kind='index')`. When `false`
-    /// the periodic index refresh is skipped; manual regen via
-    /// `memory_wiki_regenerate` is gated separately at the IPC layer.
-    wiki_view_enabled: bool,
-    /// Memory OS Foundation Phase 4 — controls whether the tick loop
-    /// runs the zero-LLM health scenario. When `false` the periodic
-    /// check is skipped; the manual `memory_health_run_now` IPC is
-    /// gated separately.
-    memory_health_enabled: bool,
-    /// Memory OS Foundation Phase 5 — controls whether the tick loop
-    /// runs the LLM-driven lint scenario. The cost guard + daily token
-    /// budget are independent (set the budget to 0 to gate even when
-    /// this flag is on).
-    memory_lint_enabled: bool,
-    /// Phase 5 daily token cap. Sum of today's
-    /// `cost_records.model LIKE 'memory_lint%'` is checked before each
-    /// run; when crossing the cap the orchestrator bails out early.
-    memory_lint_daily_token_budget: u32,
-    /// Phase 5 LLM seam. Cloned into the spawn_blocking task so the
-    /// scan can call the analyzer outside the runtime.
-    lint_analyzer: Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
+    /// Memory OS Phase 3/4/5 runtime knobs — bundled into one struct
+    /// to stop the constructor signature from growing per phase. See
+    /// `MemoryOsRuntimeConfig` for the layout + per-field semantics.
+    memory_os: MemoryOsRuntimeConfig,
     /// Tauri AppHandle（用于发射 IPC 事件，测试时为 None）
     app_handle: Option<tauri::AppHandle>,
     /// 自上次触发以来的新消息数
@@ -324,14 +394,8 @@ pub struct ProactiveService {
     memu_client: Option<Arc<MemUClient>>,
     /// Memory Graph 存储
     memory_graph_store: Arc<MemoryGraphStore>,
-    /// Memory OS Foundation Phase 3 — periodic wiki index regen gate.
-    wiki_view_enabled: bool,
-    /// Memory OS Foundation Phase 4 — periodic health-check gate.
-    memory_health_enabled: bool,
-    /// Memory OS Foundation Phase 5 — periodic lint-check gate.
-    memory_lint_enabled: bool,
-    memory_lint_daily_token_budget: u32,
-    lint_analyzer: Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
+    /// Memory OS Phase 3/4/5 runtime knobs.
+    memory_os: MemoryOsRuntimeConfig,
     /// Tauri AppHandle（用于发射 IPC 事件，测试时为 None）
     app_handle: Option<tauri::AppHandle>,
 
@@ -421,6 +485,11 @@ impl ProactiveService {
     /// - `config`: 主动服务配置（来自 MemubotConfig）
     /// - `infra`: 消息总线（用于订阅对话事件、发布主动消息事件）
     /// - `storage`: 消息持久化存储
+    /// - `memory_os`: Memory OS runtime knobs. Replaces five trailing positional
+    ///   args (wiki_view_enabled / memory_health_enabled / memory_lint_enabled /
+    ///   memory_lint_daily_token_budget / lint_analyzer) that accumulated over
+    ///   Phase 3-5. Build with `MemoryOsRuntimeConfig::from_memubot_config(...)`
+    ///   or `Default::default()`.
     pub fn new(
         config: ProactiveConfig,
         infra: Arc<InfraService>,
@@ -435,11 +504,7 @@ impl ProactiveService {
         db: Arc<Mutex<Connection>>,
         gene_repo: Arc<Mutex<GeneRepository>>,
         gene_evolution_config: GeneEvolutionConfig,
-        wiki_view_enabled: bool,
-        memory_health_enabled: bool,
-        memory_lint_enabled: bool,
-        memory_lint_daily_token_budget: u32,
-        lint_analyzer: Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
+        memory_os: MemoryOsRuntimeConfig,
     ) -> Self {
         let task_memory_manager = Arc::new(TaskMemoryManager::new(memory_graph_store.clone()));
         let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(memory_graph_store.clone()));
@@ -483,11 +548,7 @@ impl ProactiveService {
             provider_service,
             memu_client,
             memory_graph_store,
-            wiki_view_enabled,
-            memory_health_enabled,
-            memory_lint_enabled,
-            memory_lint_daily_token_budget,
-            lint_analyzer,
+            memory_os,
             app_handle,
             tick_count: Arc::new(AtomicU64::new(0)),
             action_count: Arc::new(AtomicU64::new(0)),
@@ -539,11 +600,7 @@ impl ProactiveService {
             provider_service: self.provider_service.clone(),
             memu_client: self.memu_client.clone(),
             memory_graph_store: self.memory_graph_store.clone(),
-            wiki_view_enabled: self.wiki_view_enabled,
-            memory_health_enabled: self.memory_health_enabled,
-            memory_lint_enabled: self.memory_lint_enabled,
-            memory_lint_daily_token_budget: self.memory_lint_daily_token_budget,
-            lint_analyzer: self.lint_analyzer.clone(),
+            memory_os: self.memory_os.clone(),
             app_handle: self.app_handle.clone(),
             new_message_count: self.new_message_count.clone(),
             new_execution_count: self.new_execution_count.clone(),
@@ -1008,7 +1065,7 @@ impl ProactiveService {
         // index regen (every 10 ticks) so the two scans don't collide
         // on the SQLite lock more often than necessary — when both fire
         // on the same tick the wiki regen runs first by source order.
-        if refs.memory_health_enabled && refs.tick_count.load(Ordering::SeqCst) % 60 == 0 {
+        if refs.memory_os.memory_health_enabled && refs.tick_count.load(Ordering::SeqCst) % 60 == 0 {
             let space_id = refs.active_space_id.read().await.clone();
             let store = refs.memory_graph_store.clone();
             let result = tokio::task::spawn_blocking(move || {
@@ -1051,11 +1108,11 @@ impl ProactiveService {
         // cost cap is enforced *inside* run_lint_checks via the daily
         // token budget and today_spent computed from cost_records, so
         // even if the tick rate were doubled the cost ceiling holds.
-        if refs.memory_lint_enabled && refs.tick_count.load(Ordering::SeqCst) % 120 == 0 {
+        if refs.memory_os.memory_lint_enabled && refs.tick_count.load(Ordering::SeqCst) % 120 == 0 {
             let space_id = refs.active_space_id.read().await.clone();
             let store = refs.memory_graph_store.clone();
-            let analyzer = refs.lint_analyzer.clone();
-            let budget = refs.memory_lint_daily_token_budget;
+            let analyzer = refs.memory_os.lint_analyzer.clone();
+            let budget = refs.memory_os.memory_lint_daily_token_budget;
             let db = refs.db.clone();
             tokio::spawn(async move {
                 // Sum today's lint token spend on the blocking pool so we
@@ -1121,7 +1178,7 @@ impl ProactiveService {
         // `wiki_artifacts(kind="index")` from the current EntityPage set.
         // SQL-only, never calls LLM; the overview is regenerated only on
         // explicit `memory_wiki_regenerate` IPC calls (see Task 3.3).
-        if refs.wiki_view_enabled && refs.tick_count.load(Ordering::SeqCst) % 10 == 0 {
+        if refs.memory_os.wiki_view_enabled && refs.tick_count.load(Ordering::SeqCst) % 10 == 0 {
             let space_id = refs.active_space_id.read().await.clone();
             let store = refs.memory_graph_store.clone();
             // Run on the blocking pool — rusqlite lock acquisition is
@@ -2488,19 +2545,11 @@ mod tests {
                 ).expect("GeneRepository for test")
             )),
             crate::memubot_config::GeneEvolutionConfig::default(),
-            // Phase 3: tests default to wiki_view_enabled=true (matches
-            // MemoryOsConfig::default()).
-            true,
-            // Phase 4: tests default to memory_health_enabled=true
-            // (matches MemoryOsConfig::default()).
-            true,
-            // Phase 5: memory_lint enabled with default token budget,
-            // backed by the deterministic StubAnalyzer so unit tests
-            // don't need real LLM credentials.
-            true,
-            50_000,
-            std::sync::Arc::new(crate::proactive::scenarios::memory_lint::StubAnalyzer)
-                as std::sync::Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
+            // Phase 3/4/5 runtime knobs bundled — every flag on,
+            // StubAnalyzer installed, default budget. Matches
+            // MemoryOsConfig::default() so tests reflect production
+            // happy-path behavior.
+            MemoryOsRuntimeConfig::for_tests(),
         )
     }
 

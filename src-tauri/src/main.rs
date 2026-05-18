@@ -250,22 +250,18 @@ fn main() {
                                         db.clone(),
                                         gene_repo,
                                         memubot_config.gene_evolution.clone(),
-                                        // Phase 3: wiki view feature flag for the
-                                        // periodic index regen in tick_inner.
-                                        memubot_config.memory_os.wiki_view_enabled,
-                                        // Phase 4: gate the periodic memory_health
-                                        // scenario in tick_inner.
-                                        memubot_config.memory_os.memory_health_enabled,
-                                        // Phase 5: gate + budget the periodic
-                                        // memory_lint scenario.
-                                        memubot_config.memory_os.memory_lint_enabled,
-                                        memubot_config.memory_os.memory_lint_daily_token_budget,
-                                        // LintAnalyzer trait object — read from
-                                        // AppState so a follow-up swapping in a real
-                                        // LLM client doesn't need to touch main.rs.
+                                        // Phase 3/4/5 runtime knobs bundled into
+                                        // MemoryOsRuntimeConfig — replaces what used
+                                        // to be five trailing positional args.
+                                        // Future Memory OS phases just add fields
+                                        // to the struct without touching this call
+                                        // site.
                                         {
                                             let state_ref: tauri::State<'_, AppState> = app_handle.state();
-                                            state_ref.lint_analyzer.clone()
+                                            uclaw_core::proactive::MemoryOsRuntimeConfig::from_memubot_config(
+                                                &memubot_config.memory_os,
+                                                state_ref.lint_analyzer.clone(),
+                                            )
                                         },
                                     )
                                 );

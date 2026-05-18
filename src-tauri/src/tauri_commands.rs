@@ -4841,8 +4841,8 @@ pub async fn memory_graph_delete_node(
 
 /// Returns `Err(msg)` when the EntityPage feature is disabled.
 /// Used at the top of every `memory_entity_page_*` command.
-fn ensure_entity_page_enabled(state: &State<'_, AppState>) -> Result<(), String> {
-    if !state.memubot_config.memory_os.entity_page_enabled {
+async fn ensure_entity_page_enabled(state: &State<'_, AppState>) -> Result<(), String> {
+    if !state.memubot_config.read().await.memory_os.entity_page_enabled {
         return Err(
             "EntityPage feature is disabled (memory_os.entity_page_enabled = false in memubot_config.json). \
              Enable it and restart to use EntityPage commands."
@@ -4858,7 +4858,7 @@ pub async fn memory_entity_page_create(
     state: State<'_, AppState>,
     input: EntityPageCreateInput,
 ) -> Result<serde_json::Value, String> {
-    ensure_entity_page_enabled(&state)?;
+    ensure_entity_page_enabled(&state).await?;
     let store = &state.memory_graph_store;
     let space_id = input.space_id.unwrap_or_else(|| "default".into());
 
@@ -4883,7 +4883,7 @@ pub async fn memory_entity_page_get(
     state: State<'_, AppState>,
     input: EntityPageGetInput,
 ) -> Result<serde_json::Value, String> {
-    ensure_entity_page_enabled(&state)?;
+    ensure_entity_page_enabled(&state).await?;
     let store = &state.memory_graph_store;
     let detail = store
         .get_node_detail(&input.node_id)
@@ -4908,7 +4908,7 @@ pub async fn memory_entity_page_find_by_slug(
     state: State<'_, AppState>,
     input: EntityPageFindBySlugInput,
 ) -> Result<serde_json::Value, String> {
-    ensure_entity_page_enabled(&state)?;
+    ensure_entity_page_enabled(&state).await?;
     let store = &state.memory_graph_store;
     let space_id = input.space_id.unwrap_or_else(|| "default".into());
     let detail = store
@@ -4926,7 +4926,7 @@ pub async fn memory_entity_page_list(
     state: State<'_, AppState>,
     input: EntityPageListInput,
 ) -> Result<serde_json::Value, String> {
-    ensure_entity_page_enabled(&state)?;
+    ensure_entity_page_enabled(&state).await?;
     let store = &state.memory_graph_store;
     let space_id = input.space_id.unwrap_or_else(|| "default".into());
     let limit = input.limit.unwrap_or(50);
@@ -4942,7 +4942,7 @@ pub async fn memory_entity_page_append_timeline(
     state: State<'_, AppState>,
     input: EntityPageAppendTimelineInput,
 ) -> Result<serde_json::Value, String> {
-    ensure_entity_page_enabled(&state)?;
+    ensure_entity_page_enabled(&state).await?;
     let store = &state.memory_graph_store;
     let entry = crate::memory_graph::entity_page::TimelineEntry {
         date: input.date,
@@ -4969,8 +4969,8 @@ pub async fn memory_entity_page_append_timeline(
 // the flag is off, IPC returns a structured error so the frontend can
 // hide the Wiki tab without crashing.
 
-fn ensure_wiki_view_enabled(state: &State<'_, AppState>) -> Result<(), String> {
-    if !state.memubot_config.memory_os.wiki_view_enabled {
+async fn ensure_wiki_view_enabled(state: &State<'_, AppState>) -> Result<(), String> {
+    if !state.memubot_config.read().await.memory_os.wiki_view_enabled {
         return Err(
             "Wiki view is disabled (memory_os.wiki_view_enabled = false in memubot_config.json). \
              Enable it and restart to use memory_wiki_* commands."
@@ -4988,7 +4988,7 @@ pub async fn memory_wiki_get_overview(
     state: State<'_, AppState>,
     input: WikiGetInput,
 ) -> Result<serde_json::Value, String> {
-    ensure_wiki_view_enabled(&state)?;
+    ensure_wiki_view_enabled(&state).await?;
     let space_id = input.space_id.unwrap_or_else(|| "default".into());
     read_latest_wiki_artifact(&state, &space_id, "overview")
 }
@@ -5001,7 +5001,7 @@ pub async fn memory_wiki_get_index(
     state: State<'_, AppState>,
     input: WikiGetInput,
 ) -> Result<serde_json::Value, String> {
-    ensure_wiki_view_enabled(&state)?;
+    ensure_wiki_view_enabled(&state).await?;
     let space_id = input.space_id.unwrap_or_else(|| "default".into());
     read_latest_wiki_artifact(&state, &space_id, "index")
 }
@@ -5014,7 +5014,7 @@ pub async fn memory_wiki_regenerate(
     state: State<'_, AppState>,
     input: WikiRegenerateInput,
 ) -> Result<serde_json::Value, String> {
-    ensure_wiki_view_enabled(&state)?;
+    ensure_wiki_view_enabled(&state).await?;
     let space_id = input.space_id.unwrap_or_else(|| "default".into());
     let kind = input.kind.unwrap_or_else(|| "index".to_string());
 
@@ -5137,8 +5137,8 @@ fn read_latest_wiki_artifact(
 // user can still triage findings discovered before disabling. Only the
 // "run a fresh scan" command refuses.
 
-fn ensure_memory_health_enabled(state: &State<'_, AppState>) -> Result<(), String> {
-    if !state.memubot_config.memory_os.memory_health_enabled {
+async fn ensure_memory_health_enabled(state: &State<'_, AppState>) -> Result<(), String> {
+    if !state.memubot_config.read().await.memory_os.memory_health_enabled {
         return Err(
             "Memory health is disabled (memory_os.memory_health_enabled = false in \
              memubot_config.json). Enable it and restart to re-enable periodic checks. \
@@ -5256,7 +5256,7 @@ pub async fn memory_health_run_now(
     state: State<'_, AppState>,
     input: HealthRunNowInput,
 ) -> Result<serde_json::Value, String> {
-    ensure_memory_health_enabled(&state)?;
+    ensure_memory_health_enabled(&state).await?;
     let space_id = input.space_id.unwrap_or_else(|| "default".into());
     let store = state.memory_graph_store.clone();
     let outcome = tokio::task::spawn_blocking(move || {
@@ -5284,7 +5284,14 @@ pub async fn memory_lint_run_now(
     state: State<'_, AppState>,
     input: LintRunNowInput,
 ) -> Result<serde_json::Value, String> {
-    if !state.memubot_config.memory_os.memory_lint_enabled {
+    let (lint_enabled, budget) = {
+        let cfg = state.memubot_config.read().await;
+        (
+            cfg.memory_os.memory_lint_enabled,
+            cfg.memory_os.memory_lint_daily_token_budget,
+        )
+    };
+    if !lint_enabled {
         return Err(
             "Memory lint is disabled (memory_os.memory_lint_enabled = false in \
              memubot_config.json). Existing lint findings can still be listed/dismissed."
@@ -5294,7 +5301,6 @@ pub async fn memory_lint_run_now(
     let space_id = input.space_id.unwrap_or_else(|| "default".into());
     let store = state.memory_graph_store.clone();
     let analyzer = state.lint_analyzer.clone();
-    let budget = state.memubot_config.memory_os.memory_lint_daily_token_budget;
     let db = state.db.clone();
 
     // Sum today's already-spent memory_lint tokens off the runtime.
