@@ -37,7 +37,6 @@ import { workspaceSessionsAtom, updateSessionTitleAtom, type WorkspaceSession } 
 import { tabsAtom } from '@/atoms/tab-atoms'
 import type { AgentSessionMeta } from '@/lib/agent-types'
 import type { TabItem } from '@/atoms/tab-atoms'
-import { browserStartScreencast } from '@/lib/tauri-bridge'
 
 /**
  * Per-session monotonic counter used to drop stale async path resolutions.
@@ -539,17 +538,16 @@ function startAgentListeners(store: Store): void {
         return map
       })
 
-      // On first successful browser_navigate: open the browser panel tab and
-      // start the CDP screencast stream. Subsequent navigates are no-ops here
-      // (panel already open, screencast already running).
+      // On first successful browser_navigate: open the browser panel tab.
+      // The actual screencast lifecycle (subscribe-then-start) is owned by
+      // BrowserPanel's mount effect — it guarantees the frontend listener
+      // is attached before the backend emits the first frame.
       if (toolName === 'browser_navigate' && !ev.isError && resolvedTabId) {
-        const tabId = resolvedTabId
         const currentUrl = (() => {
           const urlMatch = contentStr.match(/Navigated to (\S+?)\.?\s/)
           return urlMatch ? urlMatch[1] : ''
         })()
         store.set(openBrowserTabAction, { agentSessionId: sid, initialUrl: currentUrl })
-        browserStartScreencast(sid, tabId).catch(console.error)
       }
     })
   )

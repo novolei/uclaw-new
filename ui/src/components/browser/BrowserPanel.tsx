@@ -7,7 +7,13 @@
 
 import * as React from 'react'
 import { useSetAtom, useAtomValue } from 'jotai'
-import { listenScreencastFrames, listenNavState, browserGetDOMState } from '@/lib/tauri-bridge'
+import {
+  listenScreencastFrames,
+  listenNavState,
+  browserGetDOMState,
+  browserStartScreencast,
+  browserStopScreencast,
+} from '@/lib/tauri-bridge'
 import {
   browserScreencastFrameAtom,
   browserDOMStateAtom,
@@ -44,9 +50,17 @@ export function BrowserPanel({ agentSessionId }: BrowserPanelProps): React.React
   const tabs: BrowserTabEntry[] = domEntry?.tabs ?? []
   const displayUrl = domEntry?.url ?? currentUrl
 
-  // Subscribe to CDP screencast frames for this session.
+  // CDP screencast lifecycle: subscribe to the frame stream FIRST, then
+  // tell the backend to start emitting. Tauri's `listen()` is async — the
+  // listener isn't registered until its Promise resolves. If we call
+  // `browserStartScreencast` before that, Chrome may emit its initial frame
+  // into the void: for a static page (e.g. after the first paint) Chrome
+  // only emits another frame on the next paint, so the UI sits at
+  // "等待浏览器画面..." forever.
   React.useEffect(() => {
+    if (!activeTabId) return
     let unlisten: (() => void) | null = null
+    let cancelled = false
     listenScreencastFrames((payload) => {
       if (payload.sessionId !== agentSessionId) return
       setFrameMap((prev) => {
@@ -62,23 +76,27 @@ export function BrowserPanel({ agentSessionId }: BrowserPanelProps): React.React
         return next
       })
     }).then((fn) => {
+      if (cancelled) { fn(); return }
       unlisten = fn
       setActiveSet((prev) => {
         const next = new Set(prev)
         next.add(agentSessionId)
         return next
       })
+      browserStartScreencast(agentSessionId, activeTabId).catch(console.error)
     })
 
     return () => {
+      cancelled = true
       if (unlisten) unlisten()
       setActiveSet((prev) => {
         const next = new Set(prev)
         next.delete(agentSessionId)
         return next
       })
+      browserStopScreencast(agentSessionId, activeTabId).catch(() => {})
     }
-  }, [agentSessionId, setFrameMap, setActiveSet])
+  }, [agentSessionId, activeTabId, setFrameMap, setActiveSet])
 
   // Subscribe to navigation state events for this session.
   React.useEffect(() => {
