@@ -12,7 +12,7 @@
 //! stability(class, name) = base × cue_mult
 //!
 //! base      = Σ(cue_family.weight × exp(-Δt / half_life(class)) × ln(1 + evidence_count))
-//! cue_mult  = 2.0 if any contributing evidence was CueFamily::Explicit
+//! cue_mult  = 3.0 if any contributing evidence was CueFamily::Explicit
 //!             else 1.0
 //! ```
 //!
@@ -58,9 +58,11 @@ pub const TAU_PROVISIONAL: f64 = 0.7;
 pub const TAU_EVICT: f64 = 0.4;
 
 /// Multiplier applied when any contributing evidence row has
-/// `CueFamily::Explicit`. Doubles the score so a single explicit
-/// "I prefer X" beats many weaker structural / behavioral signals.
-pub const EXPLICIT_BOOST: f64 = 2.0;
+/// `CueFamily::Explicit`. Triples the score so a single explicit
+/// "I prefer X" beats many weaker structural / behavioral signals,
+/// and a single explicit candidate (n=1) crosses TAU_PROMOTE directly:
+/// ln(2) × 3.0 ≈ 2.08 ≥ 1.5.
+pub const EXPLICIT_BOOST: f64 = 3.0;
 
 // ─── FacetState ────────────────────────────────────────────────────────
 
@@ -569,8 +571,8 @@ mod tests {
         let s_explicit = stability(FacetClass::Tooling, &explicit, 1, 0, now);
         let s_structural = stability(FacetClass::Tooling, &structural, 1, 0, now);
         assert!(
-            (s_explicit - 2.0 * s_structural).abs() < 1e-9,
-            "explicit boost should be 2.0×: expl={}, struct={}",
+            (s_explicit - 3.0 * s_structural).abs() < 1e-9,
+            "explicit boost should be 3.0×: expl={}, struct={}",
             s_explicit,
             s_structural
         );
