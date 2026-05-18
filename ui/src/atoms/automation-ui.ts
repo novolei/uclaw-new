@@ -1,6 +1,6 @@
 import { atom } from 'jotai'
 
-export type AutomationTab = 'chat' | 'activity' | 'settings'
+export type AutomationTab = 'chat' | 'activity' | 'threads' | 'settings'
 
 // Which spec is selected in SpecList (persists across module switches)
 export const automationSelectedSpecIdAtom = atom<string | null>(null)

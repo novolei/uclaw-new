@@ -156,8 +156,9 @@ Track which V-number is claimed by which open PR before starting schema work:
 | V33 | symphony_workflows + symphony_workflow_versions + symphony_runs + symphony_node_runs + seed 'symphonies' space | merged (Symphony runtime) |
 | V34 | plan_suggest_events + mode_suggest_overrides (plan-mode auto-suggest telemetry) | merged (PR #185) |
 | V35 | memory_edge_audit + wiki_artifacts + memory_health_findings | merged (Memory OS Foundation Phase 1) |
-| V36 | Automation Phase 2b Messaging schema (TBD — claimed in design spec `2026-05-18-automation-phase2b-messaging-design.md`) | claimed (Automation Phase 2b) |
-| V37 | brain_sync_state — disk-mirror metadata for Memory OS Phase 7 markdown sync | **in progress (Memory OS Foundation Phase 7)** |
+| V36 | (skipped — renumbered to V38 when Phase 7 claimed V37; no migration exists at this number) | — |
+| V37 | brain_sync_state — disk-mirror metadata for Memory OS Phase 7 markdown sync | merged (PR #193) |
+| V38 | automation_chat_sessions(spec_id, identity_key, agent_session_id) — per-(spec, identity) long-lived chat threads | merged (PR #194) |
 
 If you're adding a migration: pick the next number after both merged AND open PRs to avoid conflicts. Update this table in your PR.
 

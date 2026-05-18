@@ -130,6 +130,15 @@ pub struct EscalationRow {
 
 // ─── AppRuntimeService ────────────────────────────────────────────────────────
 
+/// Bundle of I/O handles attached to a chat-session run. Stashed in
+/// `AppRuntimeService.pending_chat_handles` when `execute_run_in_chat_session`
+/// is called, and consumed by `execute_run` when building the HeadlessDelegate.
+struct ChatHandleBundle {
+    streaming: Option<Arc<dyn crate::channels::types::StreamingHandle>>,
+    reply: Option<Arc<crate::channels::types::ReplyHandle>>,
+    app: Option<tauri::AppHandle>,
+}
+
 pub struct AppRuntimeService {
     pub db: Arc<StdMutex<rusqlite::Connection>>,
     pub schedule: Arc<ScheduleSource>,
@@ -150,6 +159,17 @@ pub struct AppRuntimeService {
 
     /// Tracks (sub_id, source_type_tag) per spec for clean `deactivate`.
     attached: Arc<TokioMutex<HashMap<String, Vec<(String, String)>>>>,
+
+    /// Per-chat-session mutex map. Serializes burst messages on the same
+    /// (spec, identity) chat thread — the agent loop is not interruptible,
+    /// so concurrent calls would race. Entries are created lazily; never
+    /// cleaned up (bounded by #sessions, ~tens of KB).
+    chat_session_locks: Arc<TokioMutex<HashMap<String, Arc<TokioMutex<()>>>>>,
+
+    /// Stash of I/O handles awaiting consumption by the next `execute_run`
+    /// for this chat session. Set by `execute_run_in_chat_session`; drained
+    /// by `execute_run` when it builds the HeadlessDelegate.
+    pending_chat_handles: Arc<TokioMutex<HashMap<String, ChatHandleBundle>>>,
 
     status: Arc<StdMutex<ServiceStatus>>,
     started_at: Arc<StdMutex<Option<Instant>>>,
@@ -194,6 +214,8 @@ impl AppRuntimeService {
             provider_service,
             semaphores: Arc::new(RwLock::new(HashMap::new())),
             attached: Arc::new(TokioMutex::new(HashMap::new())),
+            chat_session_locks: Arc::new(TokioMutex::new(HashMap::new())),
+            pending_chat_handles: Arc::new(TokioMutex::new(HashMap::new())),
             status: Arc::new(StdMutex::new(ServiceStatus::Stopped)),
             started_at: Arc::new(StdMutex::new(None)),
             self_weak: OnceLock::new(),
@@ -332,16 +354,42 @@ impl AppRuntimeService {
             let sub_id = format!("{}-sub-{}", spec_id, idx);
             let tag = Self::source_tag(sub).to_string();
 
-            // Build the callback that funnels fire events into execute_run.
+            // Phase 2b cluster A: autonomous triggers (scheduled / file /
+            // webhook / webpage / rss / wecom / custom) route into the spec
+            // owner's "local" chat session instead of creating per-fire
+            // automation:scheduled sessions.
+            //
+            // Operator-observability note: execute_run is now invoked with
+            // sub_id = None (the chat session is the unit of work, not the
+            // per-fire activity). As a result `automation_activities.subscription_id`
+            // is NULL for every new autonomous fire. We capture sub_id in the
+            // closure so it survives in tracing logs — that's the only place
+            // where "which subscription fired" can still be observed.
             let svc = self.weak_ref();
-            let sub_id_cb = sub_id.clone();
+            let sub_id_log = sub_id.clone();
             let cb: TriggerCallback = Arc::new(move |sid: String, _sub: String, payload: serde_json::Value| {
                 let svc = svc.clone();
-                let sub_id_inner = sub_id_cb.clone();
+                let sub_id_log = sub_id_log.clone();
                 tokio::spawn(async move {
                     if let Some(svc) = svc.upgrade() {
-                        if let Err(e) = svc.execute_run(&sid, Some(&sub_id_inner), payload).await {
-                            tracing::warn!("[AppRuntimeService] execute_run error for spec {}: {}", sid, e);
+                        let app = svc.app_handle.clone();
+                        if let Err(e) = svc
+                            .execute_run_in_chat_session(
+                                &sid,
+                                "local",
+                                payload,
+                                None, // no UI streaming on autonomous fire
+                                None, // no IM reply target for autonomous fire
+                                app,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                "[AppRuntimeService] execute_run_in_chat_session error for spec {} (sub {}): {}",
+                                sid,
+                                sub_id_log,
+                                e
+                            );
                         }
                     }
                 });
@@ -527,20 +575,34 @@ impl AppRuntimeService {
         // Done EARLY (before provider resolution) so a provider failure still
         // leaves a linked run-session behind — the run is observable either way.
         let started_ms = chrono::Utc::now().timestamp_millis();
+
+        // Phase 2b cluster A: if execute_run_in_chat_session routed us here,
+        // it stashed the chat session id under `_chat_session_id` in the
+        // payload so we reuse that session instead of creating a per-fire
+        // automation:scheduled record. Legacy callers (no hint) keep the
+        // pre-existing per-fire behavior unchanged.
+        let chat_session_id_hint: Option<String> = payload
+            .get("_chat_session_id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
         let (session_id, workspace_root) = {
             let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
             run_session::ensure_automations_space(&conn)
                 .map_err(|e| anyhow::anyhow!("ensure automations space: {}", e))?;
             let space_id = run_session::resolve_home_space(&conn, spec_id)
                 .map_err(|e| anyhow::anyhow!("resolve home space: {}", e))?;
-            let session_id = run_session::create_run_session(
-                &conn,
-                spec_id,
-                &space_id,
-                trigger_source.as_db_str(),
-                &activity_id,
-            )
-            .map_err(|e| anyhow::anyhow!("create run session: {}", e))?;
+            let session_id = match chat_session_id_hint.clone() {
+                Some(id) => id,
+                None => run_session::create_run_session(
+                    &conn,
+                    spec_id,
+                    &space_id,
+                    trigger_source.as_db_str(),
+                    &activity_id,
+                )
+                .map_err(|e| anyhow::anyhow!("create run session: {}", e))?,
+            };
             conn.execute(
                 "UPDATE automation_activities
                  SET session_id = ?2, status = 'running', started_at = ?3
@@ -628,6 +690,17 @@ impl AppRuntimeService {
         reason_ctx.messages.push(ChatMessage::user(&initial_message));
 
         let tools = self.build_automation_tool_registry(&workspace_root);
+
+        // Phase 2b cluster A: if we're in a chat-session run, drain the
+        // I/O handles stashed for us by execute_run_in_chat_session. None
+        // for legacy per-fire runs.
+        let chat_handles = if let Some(ref sid) = chat_session_id_hint {
+            let mut slot = self.pending_chat_handles.lock().await;
+            slot.remove(sid)
+        } else {
+            None
+        };
+
         let delegate = HeadlessDelegate {
             spec_id: spec_id.to_string(),
             activity_id: activity_id.clone(),
@@ -642,10 +715,13 @@ impl AppRuntimeService {
             tools,
             cost: Arc::new(CostCapState::new(cost_cap)),
             workspace_root,
-            app_handle: self.app_handle.clone(),
+            app_handle: chat_handles
+                .as_ref()
+                .and_then(|b| b.app.clone())
+                .or_else(|| self.app_handle.clone()),
             channel_manager: self.channel_manager.clone(),
-            reply_handle: None,
-            streaming_handle: None,
+            reply_handle: chat_handles.as_ref().and_then(|b| b.reply.clone()),
+            streaming_handle: chat_handles.as_ref().and_then(|b| b.streaming.clone()),
             system_prompt_override: None,
         };
 
@@ -1231,15 +1307,86 @@ impl AppRuntimeService {
     /// For now: calls `execute_run` with the reply handles unused — the IM close-loop
     /// for automation specs will be wired in a follow-up PR. The agent-chat path
     /// (`run_agent_chat_via_im` in `channels/dispatcher.rs`) is fully wired.
-    pub async fn execute_run_with_reply(
+    /// Run a spec inside its per-(spec, identity) chat session.
+    ///
+    /// Phase 2b cluster A entry point. Replaces per-fire `automation:scheduled`
+    /// sessions for autonomous triggers and consolidates IM-triggered runs
+    /// into per-user threads.
+    ///
+    /// Resolves the chat session id via `get_or_create_chat_session`, acquires
+    /// a per-session mutex so burst messages serialize (the agent loop is not
+    /// interruptible), then stashes the I/O handles for `execute_run` to drain
+    /// when building the `HeadlessDelegate`. Returns when `execute_run` finishes.
+    pub async fn execute_run_in_chat_session(
         &self,
         spec_id: &str,
+        identity_key: &str,
         payload: serde_json::Value,
-        _reply_handle: Option<Arc<crate::channels::types::ReplyHandle>>,
-        _streaming_handle: Option<Arc<dyn crate::channels::types::StreamingHandle>>,
+        streaming_handle: Option<Arc<dyn crate::channels::types::StreamingHandle>>,
+        reply_handle: Option<Arc<crate::channels::types::ReplyHandle>>,
+        app_handle: Option<tauri::AppHandle>,
     ) -> anyhow::Result<()> {
-        // TODO: inject handles properly in a follow-up PR.
-        self.execute_run(spec_id, None, payload).await
+        // Resolve the chat session id (or create one). Look up the spec's
+        // space so the agent_session is filed under it.
+        let session_id = {
+            let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+            let space_id = run_session::resolve_home_space(&conn, spec_id)
+                .map_err(|e| anyhow::anyhow!("resolve home space: {e}"))?;
+            crate::automation::runtime::chat_sessions::get_or_create_chat_session(
+                &conn,
+                spec_id,
+                identity_key,
+                &space_id,
+            )?
+        };
+
+        // Acquire per-session mutex so burst messages queue rather than race
+        // the agent loop.
+        let lock = self.get_or_create_chat_lock(&session_id).await;
+        let _guard = lock.lock().await;
+
+        // Stash handles for execute_run to drain when building the delegate.
+        {
+            let mut slot = self.pending_chat_handles.lock().await;
+            slot.insert(
+                session_id.clone(),
+                ChatHandleBundle {
+                    streaming: streaming_handle,
+                    reply: reply_handle,
+                    app: app_handle,
+                },
+            );
+        }
+
+        // Pin the chat session via payload hint. execute_run reads
+        // `_chat_session_id` to skip create_run_session and reuse this id.
+        let mut payload_with_chat = payload;
+        if let Some(obj) = payload_with_chat.as_object_mut() {
+            obj.insert(
+                "_chat_session_id".to_string(),
+                serde_json::Value::String(session_id.clone()),
+            );
+        }
+
+        let result = self.execute_run(spec_id, None, payload_with_chat).await;
+
+        // Clean up any leftover stash in case execute_run failed before
+        // draining (e.g., very early error).
+        {
+            let mut slot = self.pending_chat_handles.lock().await;
+            slot.remove(&session_id);
+        }
+
+        result
+    }
+
+    /// Get or lazily create the per-chat-session mutex used by
+    /// `execute_run_in_chat_session` to serialize burst messages.
+    async fn get_or_create_chat_lock(&self, session_id: &str) -> Arc<TokioMutex<()>> {
+        let mut map = self.chat_session_locks.lock().await;
+        map.entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(TokioMutex::new(())))
+            .clone()
     }
 
     /// Build the headless tool set for an automation run: the AppHandle-free
@@ -1909,5 +2056,62 @@ mod tests {
         assert_eq!(status, "resolved");
         assert_eq!(choice, "yes");
         assert_eq!(note, "looks good");
+    }
+
+    // ── Phase 2b cluster A · chat session lock map ──────────────────────────
+
+    #[tokio::test]
+    async fn chat_session_locks_returns_same_arc_for_same_session() {
+        let svc = make_service(open_test_db());
+        let a = svc.get_or_create_chat_lock("sess-x").await;
+        let b = svc.get_or_create_chat_lock("sess-x").await;
+        // Same session id → same Arc<Mutex<()>>.
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "second call for same session id must return the same Arc"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_session_locks_returns_distinct_arcs_for_different_sessions() {
+        let svc = make_service(open_test_db());
+        let a = svc.get_or_create_chat_lock("sess-1").await;
+        let b = svc.get_or_create_chat_lock("sess-2").await;
+        assert!(
+            !Arc::ptr_eq(&a, &b),
+            "different session ids must get distinct Arcs"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_session_locks_serialize_concurrent_holders() {
+        // Two tasks try to hold the same session's lock. Verify second
+        // blocks until first releases. Loose lower bound on serialized
+        // wall time vs. the parallel case.
+        let svc = make_service(open_test_db());
+        let lock = svc.get_or_create_chat_lock("sess-burst").await;
+        let lock_clone = lock.clone();
+
+        let start = std::time::Instant::now();
+        let t1 = tokio::spawn(async move {
+            let _g = lock.lock().await;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        });
+        let t2 = tokio::spawn(async move {
+            // Brief yield so t1 grabs the lock first.
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let _g = lock_clone.lock().await;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        });
+        t1.await.unwrap();
+        t2.await.unwrap();
+        let elapsed = start.elapsed();
+
+        // Serialized: ≥ 100 + 100 = 200ms. Parallel would be ~110ms.
+        assert!(
+            elapsed.as_millis() >= 190,
+            "expected serialized execution (>=190ms), got {:?}",
+            elapsed
+        );
     }
 }

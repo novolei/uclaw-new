@@ -7316,6 +7316,57 @@ pub async fn list_agent_sessions(state: State<'_, AppState>) -> Result<Vec<serde
     Ok(sessions)
 }
 
+/// Summary row for one chat thread bound to a spec.
+///
+/// Phase 2b cluster A: returned by `list_chat_sessions_for_spec` so the
+/// frontend's spec-detail page can render a "Chat threads" tab listing
+/// every (spec, identity) thread that exists.
+#[derive(serde::Serialize)]
+pub struct ChatSessionSummary {
+    /// "local" for the owner thread; "{channel_type}:{chat_id}" for IM-user threads.
+    pub identity_key: String,
+    pub agent_session_id: String,
+    /// `agent_sessions.title` — used by the sidebar / tab strip today.
+    pub title: String,
+    pub message_count: i64,
+    pub updated_at: i64,
+}
+
+/// List all chat threads for the given spec, sorted most-recent-first.
+///
+/// Phase 2b cluster A entry point for the spec-detail "Chat threads" tab.
+/// JOINs `automation_chat_sessions` with `agent_sessions` so each row
+/// carries the title / message_count / updated_at the UI needs to render
+/// the row without an extra round trip.
+#[tauri::command]
+pub async fn list_chat_sessions_for_spec(
+    state: State<'_, AppState>,
+    spec_id: String,
+) -> Result<Vec<ChatSessionSummary>, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT acs.identity_key, acs.agent_session_id, s.title, s.message_count, s.updated_at
+             FROM automation_chat_sessions acs
+             JOIN agent_sessions s ON s.id = acs.agent_session_id
+             WHERE acs.spec_id = ?1
+             ORDER BY s.updated_at DESC",
+        )
+        .map_err(Error::Database)?;
+    let rows = stmt
+        .query_map(rusqlite::params![spec_id], |row| {
+            Ok(ChatSessionSummary {
+                identity_key: row.get(0)?,
+                agent_session_id: row.get(1)?,
+                title: row.get(2)?,
+                message_count: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        })
+        .map_err(Error::Database)?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 #[tauri::command]
 pub async fn create_agent_session(
     state: State<'_, AppState>,
@@ -13032,4 +13083,91 @@ pub async fn respond_plan_mode_suggest(
         decline_reason.as_deref(),
         chrono::Utc::now().timestamp_millis(),
     ).map_err(|e| Error::Database(e))
+}
+
+#[cfg(test)]
+mod list_chat_sessions_for_spec_tests {
+    //! Phase 2b cluster A · §9 acceptance #3: owner can see all chat threads
+    //! for a spec in one place. The Tauri command itself takes
+    //! State<AppState> which can't be stubbed in unit tests; this exercises
+    //! the SQL shape against an in-memory DB so the JOIN / ordering /
+    //! filtering contract stays locked in.
+
+    use rusqlite::Connection;
+
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn list_chat_sessions_for_spec_returns_all_identities_sorted_by_recency() {
+        let conn = setup();
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // Three chat sessions for spec_x — local, IM-A, IM-B — and one
+        // for an unrelated spec to confirm the WHERE clause filters it out.
+        for (i, (sid, ikey, agent_sid, title)) in [
+            ("spec_x", "local",                  "sess_local", "Local owner"),
+            ("spec_x", "wechat_ilink:UIN_a",     "sess_a",     "IM user A"),
+            ("spec_x", "wechat_ilink:UIN_b",     "sess_b",     "IM user B"),
+            ("spec_other", "local",              "sess_other", "Other spec"),
+        ].iter().enumerate() {
+            conn.execute(
+                "INSERT INTO agent_sessions
+                 (id, space_id, title, metadata_json, message_count, pinned, archived, created_at, updated_at)
+                 VALUES (?1, 'default', ?2, '{}', ?3, 0, 0, ?4, ?4)",
+                rusqlite::params![agent_sid, title, (i as i64) * 10, now + (i as i64) * 1000],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO automation_chat_sessions
+                 (spec_id, identity_key, agent_session_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?4)",
+                rusqlite::params![sid, ikey, agent_sid, now + (i as i64) * 1000],
+            ).unwrap();
+        }
+
+        // Exercise the exact query the Tauri command runs.
+        let rows: Vec<(String, String, String, i64, i64)> = {
+            let mut stmt = conn.prepare(
+                "SELECT acs.identity_key, acs.agent_session_id, s.title, s.message_count, s.updated_at
+                 FROM automation_chat_sessions acs
+                 JOIN agent_sessions s ON s.id = acs.agent_session_id
+                 WHERE acs.spec_id = ?1
+                 ORDER BY s.updated_at DESC"
+            ).unwrap();
+            stmt.query_map(rusqlite::params!["spec_x"], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            }).unwrap().filter_map(|r| r.ok()).collect()
+        };
+
+        assert_eq!(rows.len(), 3, "must filter out the unrelated spec");
+
+        // Sorted most-recent first: IM-B (updated_at = now + 2000) came last
+        // in the insert loop, so it should be first in the result.
+        assert_eq!(rows[0].0, "wechat_ilink:UIN_b");
+        assert_eq!(rows[1].0, "wechat_ilink:UIN_a");
+        assert_eq!(rows[2].0, "local");
+
+        // JOIN brought the title + message_count over.
+        assert_eq!(rows[0].2, "IM user B");
+        assert_eq!(rows[0].3, 20); // i=2 in the loop → 20
+        assert_eq!(rows[2].2, "Local owner");
+        assert_eq!(rows[2].3, 0);
+    }
+
+    #[test]
+    fn list_chat_sessions_for_spec_returns_empty_when_no_threads() {
+        let conn = setup();
+        let mut stmt = conn.prepare(
+            "SELECT acs.identity_key FROM automation_chat_sessions acs WHERE acs.spec_id = ?1",
+        ).unwrap();
+        let rows: Vec<String> = stmt
+            .query_map(rusqlite::params!["never_existed"], |r| r.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(rows.is_empty());
+    }
 }

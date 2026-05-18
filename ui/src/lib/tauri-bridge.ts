@@ -1262,6 +1262,39 @@ export const openFileDialog = (): Promise<{ files: any[] }> =>
 export const listAgentSessions = (): Promise<any[]> =>
   invoke<any[]>('list_agent_sessions').catch(() => [])
 
+/**
+ * One chat thread bound to a spec (Phase 2b cluster A).
+ *
+ * `identityKey` shape:
+ *   - "local"                    → spec owner's local chat thread
+ *   - "{channelType}:{chatId}"   → per-IM-user thread (e.g. "wechat_ilink:UIN_a")
+ */
+export interface ChatSessionSummary {
+  identityKey: string
+  agentSessionId: string
+  title: string
+  messageCount: number
+  updatedAt: number
+}
+
+/** List all chat threads for the given spec. Sorted most-recent-first. */
+export const listChatSessionsForSpec = (specId: string): Promise<ChatSessionSummary[]> =>
+  invoke<Array<{
+    identity_key: string
+    agent_session_id: string
+    title: string
+    message_count: number
+    updated_at: number
+  }>>('list_chat_sessions_for_spec', { specId })
+    .then((rows) => rows.map((r) => ({
+      identityKey: r.identity_key,
+      agentSessionId: r.agent_session_id,
+      title: r.title,
+      messageCount: r.message_count,
+      updatedAt: r.updated_at,
+    })))
+    .catch(() => [])
+
 export const createAgentSession = (title?: string, channelId?: string, workspaceId?: string): Promise<any> =>
   invoke('create_agent_session', { title: title ?? null, channelId: channelId ?? null, workspaceId: workspaceId ?? null })
     .catch(() => ({ id: crypto.randomUUID(), title: title || '新会话', createdAt: Date.now(), updatedAt: Date.now() }))

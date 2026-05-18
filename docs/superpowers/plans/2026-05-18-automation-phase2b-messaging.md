@@ -4,7 +4,7 @@
 
 **Goal:** 为每个 spec 引入 per-(spec, identity) 长期 `automation:chat` session；scheduled/file/webhook 触发结果写入 owner chat 线；IM dispatcher 路由到对应身份的 chat 线并通过已修稳的 reply 链路推回 IM。完成 Phase 2a 推迟的"真实触达"承诺。
 
-**Architecture:** V36 migration 加 `automation_chat_sessions(spec_id, identity_key) → agent_session_id` 索引；新模块 `automation/runtime/chat_sessions.rs` 提供 `get_or_create_chat_session`；`AppRuntimeService` 加 `execute_run_in_chat_session` 入口，per-session `tokio::sync::Mutex` 排队 burst。**复用现有 `HeadlessDelegate`**（已具备 `reply_handle` / `streaming_handle` `Option<>` 字段），不新建 delegate 类型 —— spec §2.1 命名是过度保守，实际不需要新 struct。
+**Architecture:** V38 migration 加 `automation_chat_sessions(spec_id, identity_key) → agent_session_id` 索引；新模块 `automation/runtime/chat_sessions.rs` 提供 `get_or_create_chat_session`；`AppRuntimeService` 加 `execute_run_in_chat_session` 入口，per-session `tokio::sync::Mutex` 排队 burst。**复用现有 `HeadlessDelegate`**（已具备 `reply_handle` / `streaming_handle` `Option<>` 字段），不新建 delegate 类型 —— spec §2.1 命名是过度保守，实际不需要新 struct。
 
 **Tech Stack:** Rust (rusqlite, tokio sync primitives)，Tauri AppHandle emit，复用 PR #182/#186/#189 的 IM channels 基础设施。
 
@@ -16,7 +16,7 @@
 
 | 文件 | 性质 | 责任 |
 |---|---|---|
-| `src-tauri/src/db/migrations.rs` | 修改 | 加 V36 `automation_chat_sessions` 表 + 索引 |
+| `src-tauri/src/db/migrations.rs` | 修改 | 加 V38 `automation_chat_sessions` 表 + 索引 |
 | `src-tauri/src/automation/runtime/chat_sessions.rs` | **新建** | `get_or_create_chat_session(conn, spec_id, identity_key)` + 单元测试 |
 | `src-tauri/src/automation/runtime/mod.rs` | 修改 | `pub mod chat_sessions;` |
 | `src-tauri/src/automation/runtime/service.rs` | 修改 | 新增 `execute_run_in_chat_session` 入口 + per-session mutex 字段 + 重写 `execute_run_with_reply` 调用它 |
@@ -30,19 +30,19 @@
 
 ---
 
-## Task 1: V36 migration + chat_sessions module
+## Task 1: V38 migration + chat_sessions module
 
 **Files:**
-- Modify: `src-tauri/src/db/migrations.rs` (add V36 constant + dispatch block at end of migration list)
+- Modify: `src-tauri/src/db/migrations.rs` (add V38 constant + dispatch block at end of migration list)
 - Create: `src-tauri/src/automation/runtime/chat_sessions.rs`
 - Modify: `src-tauri/src/automation/runtime/mod.rs` (add `pub mod chat_sessions;`)
 
-- [ ] **Step 1: Add V36 SQL constant in migrations.rs**
+- [ ] **Step 1: Add V38 SQL constant in migrations.rs**
 
 Append after the V35 constant (`V35_MEMORY_OS_PHASE_1`) in `src-tauri/src/db/migrations.rs`:
 
 ```rust
-/// V36 — Automation Phase 2b cluster A · per-(spec, identity) chat session index.
+/// V38 — Automation Phase 2b cluster A · per-(spec, identity) chat session index.
 ///
 /// `automation_chat_sessions` maps a (spec_id, identity_key) pair to the
 /// agent_sessions row that hosts the long-lived chat thread for that pair.
@@ -53,7 +53,7 @@ Append after the V35 constant (`V35_MEMORY_OS_PHASE_1`) in `src-tauri/src/db/mig
 ///
 /// UNIQUE(spec_id, identity_key) guarantees idempotent get-or-create.
 /// FK CASCADE on agent_sessions deletion keeps the index clean.
-pub const V36_AUTOMATION_CHAT_SESSIONS: &str = "
+pub const V38_AUTOMATION_CHAT_SESSIONS: &str = "
 CREATE TABLE IF NOT EXISTS automation_chat_sessions (
     spec_id          TEXT NOT NULL,
     identity_key     TEXT NOT NULL,
@@ -68,16 +68,16 @@ CREATE INDEX IF NOT EXISTS idx_aut_chat_sess_agent_id
 ";
 ```
 
-- [ ] **Step 2: Add V36 dispatch block in `run()`**
+- [ ] **Step 2: Add V38 dispatch block in `run()`**
 
 In `src-tauri/src/db/migrations.rs`, find the V35 dispatch block (around line 1798-1804). Add IMMEDIATELY AFTER it:
 
 ```rust
-// V36: Automation Phase 2b cluster A — per-(spec, identity) chat session index.
-tracing::debug!("Running migration V36: automation_chat_sessions");
-for stmt in V36_AUTOMATION_CHAT_SESSIONS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+// V38: Automation Phase 2b cluster A — per-(spec, identity) chat session index.
+tracing::debug!("Running migration V38: automation_chat_sessions");
+for stmt in V38_AUTOMATION_CHAT_SESSIONS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
     if let Err(e) = conn.execute(stmt, []) {
-        tracing::warn!("V36 stmt skipped: {} :: {}", e, stmt);
+        tracing::warn!("V38 stmt skipped: {} :: {}", e, stmt);
     }
 }
 ```
@@ -288,9 +288,9 @@ Expected: `test result: ok.` with all tests passing.
 
 ```bash
 git add src-tauri/src/db/migrations.rs src-tauri/src/automation/runtime/chat_sessions.rs src-tauri/src/automation/runtime/mod.rs
-git commit -m "feat(automation): V36 migration + chat_sessions index for per-(spec, identity) threads
+git commit -m "feat(automation): V38 migration + chat_sessions index for per-(spec, identity) threads
 
-V36 creates automation_chat_sessions(spec_id, identity_key, agent_session_id)
+V38 creates automation_chat_sessions(spec_id, identity_key, agent_session_id)
 with UNIQUE constraint for idempotent get-or-create. FK CASCADE on
 agent_sessions delete keeps the index clean.
 
@@ -1575,7 +1575,7 @@ Completes Phase 2b cluster A — Messaging 基座."
 | §2.3 Autonomous triggers route to owner chat | Task 3 |
 | §2.4 Single-message IM reply per turn | Pre-existing (PR #182/#186/#189); not modified |
 | §2.5 notify_user origin-aware routing | Task 5 |
-| §3.1 V36 migration | Task 1 |
+| §3.1 V38 migration | Task 1 |
 | §3.2 `agent_sessions.metadata.origin = 'automation:chat'` | Task 1 (helper writes it) |
 | §3.3 im_sessions unchanged for generic path | Not touched — only run_automation_via_im (spec path) changes |
 | §3.4 No data migration (forward-only) | Tasks 3 + 4 only affect new fires |

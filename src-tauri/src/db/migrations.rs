@@ -1574,6 +1574,7 @@ CREATE INDEX IF NOT EXISTS idx_brain_sync_space ON brain_sync_state(space_id);
 CREATE INDEX IF NOT EXISTS idx_brain_sync_last_at ON brain_sync_state(last_synced_at_ms);
 ";
 
+
 /// V38 — Automation Phase 2b cluster A · per-(spec, identity) chat session index.
 ///
 /// `automation_chat_sessions` maps a (spec_id, identity_key) pair to the
@@ -1868,8 +1869,6 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             tracing::warn!("V35 stmt skipped: {} :: {}", e, stmt);
         }
     }
-    // V36 is claimed by Automation Phase 2b Messaging schema (see
-    // CLAUDE.md). Phase 7 lands at V37 to avoid the collision.
     // V37: Memory OS Foundation Phase 7 — brain_sync_state for the
     // markdown bidirectional sync engine.
     tracing::debug!("Running migration V37: Memory OS Phase 7");
