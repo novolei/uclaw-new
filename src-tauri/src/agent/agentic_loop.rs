@@ -2,6 +2,40 @@ use crate::agent::types::*;
 use crate::agent::context::{LayeredContextBuilder, LayeredContextConfig};
 use tracing;
 
+/// Tools that pause the agent for synchronous user interaction. After
+/// these resolve, the agent's natural next step is conversational
+/// wrap-up — phrases like "让我推荐" / "let me also tell you" are CORRECT
+/// responses, NOT missed tool calls. The tool_intent nudge must skip
+/// after these or the agent gets force-retried into meta-acknowledgement
+/// (see 2026-05-18 ask_user session c2fc9739).
+const INTERACTIVE_TOOLS: &[&str] = &[
+    "ask_user",
+    "exit_plan_mode",
+    "request_plan_mode_switch",
+];
+
+/// Walk message history backward; return the name of the most recent
+/// `ContentBlock::ToolUse` (Some) or None if no tool has been called yet.
+fn last_tool_use_name(messages: &[ChatMessage]) -> Option<&str> {
+    for msg in messages.iter().rev() {
+        for block in msg.content.iter().rev() {
+            if let ContentBlock::ToolUse { name, .. } = block {
+                return Some(name.as_str());
+            }
+        }
+    }
+    None
+}
+
+/// True if the most recent tool was an interactive (user-blocking) tool.
+/// Used by the tool_intent nudge gate to avoid forcing a useless retry
+/// after the user has just provided input via ask_user / exit_plan_mode.
+fn last_tool_was_interactive(messages: &[ChatMessage]) -> bool {
+    last_tool_use_name(messages)
+        .map(|n| INTERACTIVE_TOOLS.contains(&n))
+        .unwrap_or(false)
+}
+
 /// The main Think-Act-Observe loop implementing the React pattern.
 ///
 /// Flow:
@@ -96,10 +130,16 @@ pub async fn run_agentic_loop(
                     delegate.on_usage(usage, reason_ctx).await;
                 }
 
-                // Tool intent nudge: LLM talks about using a tool but doesn't actually call one
+                // Tool intent nudge: LLM talks about using a tool but doesn't actually call one.
+                // Skip the nudge if the most recent tool was an interactive one
+                // (ask_user / exit_plan_mode / request_plan_mode_switch). After the
+                // user provides input, conversational wrap-up phrases like "let me
+                // recommend" or "我来推荐" are correct — forcing another tool call
+                // produces meta-acknowledgement nonsense.
                 if config.enable_tool_intent_nudge
                     && consecutive_tool_intent_nudges < config.max_tool_intent_nudges
                     && !reason_ctx.force_text
+                    && !last_tool_was_interactive(&reason_ctx.messages)
                     && llm_signals_tool_intent(&text)
                 {
                     consecutive_tool_intent_nudges += 1;
@@ -716,3 +756,112 @@ fn hard_truncate_context(reason_ctx: &mut ReasoningContext, target_tokens: usize
 pub const TRUNCATED_TOOL_CALL_NOTICE: &str =
     "Your previous response was truncated and tool calls were discarded. \
      Please try a different approach or break down your work into smaller steps.";
+
+#[cfg(test)]
+mod interactive_tool_gate_tests {
+    use super::*;
+    use crate::agent::types::{ChatMessage, ContentBlock, MessageRole};
+    use serde_json::json;
+
+    fn assistant_tool_use(id: &str, name: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: id.to_string(),
+                name: name.to_string(),
+                input: json!({}),
+            }],
+            compacted: false,
+        }
+    }
+
+    fn user_tool_result(id: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: "result text".to_string(),
+                is_error: Some(false),
+            }],
+            compacted: false,
+        }
+    }
+
+    #[test]
+    fn last_tool_use_name_returns_most_recent() {
+        let msgs = vec![
+            assistant_tool_use("c1", "read_file"),
+            user_tool_result("c1"),
+            assistant_tool_use("c2", "ask_user"),
+            user_tool_result("c2"),
+        ];
+        assert_eq!(last_tool_use_name(&msgs), Some("ask_user"));
+    }
+
+    #[test]
+    fn last_tool_use_name_none_when_no_tool_use() {
+        let msgs = vec![
+            ChatMessage::user("hi"),
+            ChatMessage::assistant("hello"),
+        ];
+        assert_eq!(last_tool_use_name(&msgs), None);
+    }
+
+    #[test]
+    fn last_tool_was_interactive_true_for_ask_user() {
+        let msgs = vec![
+            assistant_tool_use("c1", "ask_user"),
+            user_tool_result("c1"),
+        ];
+        assert!(last_tool_was_interactive(&msgs));
+    }
+
+    #[test]
+    fn last_tool_was_interactive_true_for_exit_plan_mode() {
+        let msgs = vec![
+            assistant_tool_use("c1", "exit_plan_mode"),
+            user_tool_result("c1"),
+        ];
+        assert!(last_tool_was_interactive(&msgs));
+    }
+
+    #[test]
+    fn last_tool_was_interactive_true_for_request_plan_mode_switch() {
+        let msgs = vec![
+            assistant_tool_use("c1", "request_plan_mode_switch"),
+            user_tool_result("c1"),
+        ];
+        assert!(last_tool_was_interactive(&msgs));
+    }
+
+    #[test]
+    fn last_tool_was_interactive_false_for_non_interactive_tools() {
+        for name in &["read_file", "write_file", "edit", "bash", "grep", "glob", "plan_write", "plan_update"] {
+            let msgs = vec![
+                assistant_tool_use("c1", name),
+                user_tool_result("c1"),
+            ];
+            assert!(!last_tool_was_interactive(&msgs),
+                "non-interactive tool {} should not gate the nudge", name);
+        }
+    }
+
+    #[test]
+    fn last_tool_was_interactive_false_for_empty_history() {
+        assert!(!last_tool_was_interactive(&[]));
+    }
+
+    #[test]
+    fn last_tool_was_interactive_walks_backward_through_recent_messages() {
+        // ask_user is older; the most recent ToolUse is read_file → gate should
+        // NOT fire (gate only triggers on the LATEST tool, not any in history).
+        let msgs = vec![
+            assistant_tool_use("c1", "ask_user"),
+            user_tool_result("c1"),
+            ChatMessage::assistant("ok let me continue"),
+            assistant_tool_use("c2", "read_file"),
+            user_tool_result("c2"),
+        ];
+        assert!(!last_tool_was_interactive(&msgs));
+    }
+}
