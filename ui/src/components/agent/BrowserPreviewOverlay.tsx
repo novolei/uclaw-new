@@ -55,7 +55,7 @@ export function BrowserPreviewOverlay({ sessionId }: BrowserPreviewOverlayProps)
   return (
     <div
       className={cn(
-        'absolute top-3 right-3 z-20',
+        'absolute top-3 right-14 z-20',
         'flex flex-col rounded-xl overflow-hidden',
         'shadow-[0_8px_32px_rgba(0,0,0,0.18)] border border-border/60',
         'bg-popover backdrop-blur-sm',

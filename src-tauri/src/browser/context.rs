@@ -89,6 +89,7 @@ impl BrowserContext {
         }
 
         let config = BrowserConfig::builder()
+            .new_headless_mode()
             .no_sandbox()
             .user_data_dir(&profile_dir)
             .launch_timeout(Duration::from_secs(60))
