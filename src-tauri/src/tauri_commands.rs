@@ -419,6 +419,26 @@ pub async fn send_message(
         tools.register(BrowserTypeTool::new(Arc::clone(&b)));
         tools.register(BrowserWaitTool::new(Arc::clone(&b)));
     }
+    // MCP tool proxies — agents see tools from any currently-connected
+    // MCP server as `mcp__{server_id}__{tool_name}`. Sourced from
+    // `state.mcp_manager`'s live state, so a server connected mid-
+    // session won't appear until the next user turn. Without this
+    // block the entire MCP subsystem is invisible to the LLM (MCP
+    // PR-1 — 2026-05-18 audit).
+    {
+        let mgr = state.mcp_manager.read().await;
+        let proxies = crate::mcp::McpManager::create_tool_proxies(
+            &state.mcp_manager,
+            &*mgr,
+        );
+        let n = proxies.len();
+        for p in proxies {
+            tools.register(p);
+        }
+        if n > 0 {
+            tracing::info!(mcp_tools = n, "Registered MCP tools for agent loop");
+        }
+    }
     let tools = Arc::new(tools);
 
     // Create LLM provider
@@ -2740,8 +2760,13 @@ pub async fn toggle_mcp_server(state: State<'_, AppState>, id: String, enabled: 
 
 #[tauri::command]
 pub async fn connect_mcp_server(state: State<'_, AppState>, id: String) -> Result<bool, Error> {
+    let shared = state.mcp_manager.clone();
     let mut mgr = state.mcp_manager.write().await;
     mgr.connect_server(&id).await.map_err(|e| Error::Internal(e.to_string()))?;
+    // PR-3 — spawn the per-server health loop now that we're
+    // connected. The loop is idempotent: if one's already running for
+    // this id (e.g. restart path) it gets aborted first.
+    mgr.start_health_loop(shared, &id);
     Ok(true)
 }
 
@@ -2754,9 +2779,108 @@ pub async fn disconnect_mcp_server(state: State<'_, AppState>, id: String) -> Re
 
 #[tauri::command]
 pub async fn restart_mcp_server(state: State<'_, AppState>, id: String) -> Result<bool, Error> {
+    let shared = state.mcp_manager.clone();
     let mut mgr = state.mcp_manager.write().await;
     mgr.restart_server(&id).await.map_err(|e| Error::Internal(e.to_string()))?;
+    // PR-3 — restart_server's inner disconnect aborted the old loop;
+    // start a fresh one now that we're connected again.
+    mgr.start_health_loop(shared, &id);
     Ok(true)
+}
+
+/// MCP PR-2 — manually re-fetch the tools/list from a connected server.
+/// Useful when an MCP server adds a tool while uClaw is running (the
+/// notification path is not yet wired — see PR-4). Returns the fresh
+/// tool defs so the UI can re-render without a follow-up list call.
+#[tauri::command]
+pub async fn refresh_mcp_tools(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<serde_json::Value>, Error> {
+    let mut mgr = state.mcp_manager.write().await;
+    let tools = mgr
+        .refresh_tools(&id)
+        .await
+        .map_err(|e| Error::Internal(e.to_string()))?;
+    Ok(tools
+        .into_iter()
+        .map(|t| {
+            serde_json::json!({
+                "serverId": t.server_id,
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.parameters,
+            })
+        })
+        .collect())
+}
+
+/// MCP PR-2 — JSON-RPC ping a connected server. Returns the elapsed
+/// time in milliseconds so the UI can show a "round-trip 23ms ✓"
+/// success state. Distinct from `restart_mcp_server` because it
+/// doesn't tear down the transport — just verifies the connection is
+/// alive end-to-end.
+#[tauri::command]
+pub async fn ping_mcp_server(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<u64, Error> {
+    let start = std::time::Instant::now();
+    let mgr = state.mcp_manager.read().await;
+    mgr.ping_server(&id)
+        .await
+        .map_err(|e| Error::Internal(e.to_string()))?;
+    Ok(start.elapsed().as_millis() as u64)
+}
+
+/// MCP PR-5 — read the audit log. `server_id=None` returns all rows,
+/// most recent first, capped at `limit` (default 100, ceiling 1000 to
+/// keep IPC payloads bounded). Values are always env-redacted.
+#[tauri::command]
+pub async fn list_mcp_audit(
+    state: State<'_, AppState>,
+    server_id: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<crate::mcp::McpAuditEntry>, Error> {
+    let cap = limit.unwrap_or(100).clamp(1, 1000) as i64;
+    let db = state.db.clone();
+    let rows = tokio::task::spawn_blocking(move || -> Result<Vec<crate::mcp::McpAuditEntry>, String> {
+        let conn = db.lock().map_err(|e| format!("DB lock: {}", e))?;
+        let (sql, params): (&str, Vec<Box<dyn rusqlite::ToSql>>) = match server_id.as_deref() {
+            Some(id) => (
+                "SELECT id, server_id, event_kind, message_redacted, created_at \
+                 FROM mcp_audit WHERE server_id = ?1 \
+                 ORDER BY created_at DESC LIMIT ?2",
+                vec![Box::new(id.to_string()), Box::new(cap)],
+            ),
+            None => (
+                "SELECT id, server_id, event_kind, message_redacted, created_at \
+                 FROM mcp_audit ORDER BY created_at DESC LIMIT ?1",
+                vec![Box::new(cap)],
+            ),
+        };
+        let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare: {}", e))?;
+        let params_ref: Vec<&dyn rusqlite::ToSql> =
+            params.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt
+            .query_map(params_ref.as_slice(), |r| {
+                Ok(crate::mcp::McpAuditEntry {
+                    id: r.get(0)?,
+                    server_id: r.get(1)?,
+                    event_kind: r.get(2)?,
+                    message_redacted: r.get(3)?,
+                    created_at: r.get(4)?,
+                })
+            })
+            .map_err(|e| format!("query: {}", e))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    })
+    .await
+    .map_err(|e| Error::Internal(format!("spawn_blocking: {}", e)))?
+    .map_err(Error::Internal)?;
+    Ok(rows)
 }
 
 #[tauri::command]
@@ -8201,6 +8325,21 @@ pub async fn send_agent_message(
         tools.register(BrowserTypeTool::new(Arc::clone(&b)));
         tools.register(BrowserWaitTool::new(Arc::clone(&b)));
     }
+    // MCP tool proxies — see send_message above for the rationale (PR-1).
+    {
+        let mgr = state.mcp_manager.read().await;
+        let proxies = crate::mcp::McpManager::create_tool_proxies(
+            &state.mcp_manager,
+            &*mgr,
+        );
+        let n = proxies.len();
+        for p in proxies {
+            tools.register(p);
+        }
+        if n > 0 {
+            tracing::info!(mcp_tools = n, "Registered MCP tools for agent (agent-IPC path)");
+        }
+    }
     let tools = Arc::new(tools);
 
     // Setup stop token
@@ -11016,6 +11155,22 @@ pub async fn start_agent_teams(
             c.memory_os.learning_llm_daily_token_budget,
         )
     };
+    // PR-1 — snapshot MCP proxies once for the whole team run. The
+    // factory closure is sync (it implements Fn) so it can't .await
+    // an mcp_manager.read() per delegate. We build the proxies here
+    // and clone them per-delegate inside the closure. Snapshot
+    // semantics match the chat/agent IPC paths (a server connected
+    // mid-team-run won't be visible until the next run).
+    let mcp_proxies_for_factory: Vec<crate::mcp::McpToolProxy> = {
+        let mgr = state.mcp_manager.read().await;
+        crate::mcp::McpManager::create_tool_proxies(&state.mcp_manager, &*mgr)
+    };
+    if !mcp_proxies_for_factory.is_empty() {
+        tracing::info!(
+            mcp_tools = mcp_proxies_for_factory.len(),
+            "Registered MCP tools for agent_teams run"
+        );
+    }
 
     // Spawn orchestration in background
     let handle = tokio::spawn(async move {
@@ -11062,6 +11217,11 @@ pub async fn start_agent_teams(
                     Arc::clone(&pending_exit_plans),
                     session_id_for_tools.clone(),
                 ));
+                // PR-1 — register cloned MCP proxies. Sync context, so
+                // we use the snapshot built outside the spawn above.
+                for p in mcp_proxies_for_factory.iter().cloned() {
+                    tool_reg.register(p);
+                }
                 let tools = Arc::new(tool_reg);
                 let mut delegate = crate::agent::dispatcher::ChatDelegate::new(
                     Arc::clone(&llm_for_factory),

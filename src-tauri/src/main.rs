@@ -373,6 +373,112 @@ fn main() {
                         });
                     }
 
+                    // MCP PR-1 — auto-connect every server marked enabled
+                    // in mcp_servers.json. Without this, every app launch
+                    // requires the user to manually click "重启" on each
+                    // server in the Integrations module before any agent
+                    // can use MCP tools.
+                    //
+                    // PR-3 — also start the per-server health/reconnect
+                    // background loop for each successful connect.
+                    //
+                    // PR-4 — wire the notification channel BEFORE the
+                    // connect pass so any tools/list_changed fired during
+                    // the initial handshake is captured. Consumer task is
+                    // spawned alongside; it dispatches by method and
+                    // emits Tauri events the frontend listens for.
+                    {
+                        let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                        let mcp_mgr = state_ref.mcp_manager.clone();
+                        // PR-5 — pull the DB handle out here so the
+                        // spawned task doesn't need to re-acquire State<AppState>
+                        // (which would require app_handle to outlive the
+                        // task — easier to just clone the Arc once).
+                        let db_for_mcp = state_ref.db.clone();
+                        let app_for_consumer = app_handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let (tx, mut rx) =
+                                tokio::sync::mpsc::unbounded_channel::<
+                                    uclaw_core::mcp::McpNotificationEvent,
+                                >();
+                            // Consumer task — drains the channel for the
+                            // lifetime of the app. tools/list_changed
+                            // refreshes the manifest + emits a Tauri
+                            // event the Integrations module listens for.
+                            let consumer_mgr = mcp_mgr.clone();
+                            let consumer_app = app_for_consumer.clone();
+                            tauri::async_runtime::spawn(async move {
+                                while let Some(event) = rx.recv().await {
+                                    if event.method
+                                        == uclaw_core::mcp::NOTIFY_TOOLS_LIST_CHANGED
+                                    {
+                                        let id = event.server_id.clone();
+                                        let refresh_result = {
+                                            let mut m = consumer_mgr.write().await;
+                                            m.refresh_tools(&id).await
+                                        };
+                                        match refresh_result {
+                                            Ok(tools) => {
+                                                use tauri::Emitter;
+                                                let _ = consumer_app.emit(
+                                                    "mcp:tools-changed",
+                                                    serde_json::json!({
+                                                        "serverId": id,
+                                                        "toolCount": tools.len(),
+                                                    }),
+                                                );
+                                                tracing::info!(
+                                                    "[mcp-notif] {} tools/list_changed → {} tools",
+                                                    id,
+                                                    tools.len()
+                                                );
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    "[mcp-notif] {} refresh failed: {}",
+                                                    id,
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        tracing::debug!(
+                                            "[mcp-notif] {} {}",
+                                            event.server_id,
+                                            event.method
+                                        );
+                                    }
+                                }
+                                tracing::debug!("[mcp-notif] consumer task ended");
+                            });
+
+                            let shared = mcp_mgr.clone();
+                            let mut guard = mcp_mgr.write().await;
+                            guard.set_notification_tx(tx);
+                            // PR-5 — install the DB handle pulled out
+                            // before spawning so the audit-log writes
+                            // share the same SQLite connection AppState
+                            // owns.
+                            guard.set_db_handle(db_for_mcp);
+                            guard.connect_all_enabled().await;
+                            let ids: Vec<String> = guard
+                                .all_server_statuses()
+                                .into_iter()
+                                .filter(|(_, status, _)| {
+                                    matches!(status, uclaw_core::mcp::McpServerStatus::Connected)
+                                })
+                                .map(|(id, _, _)| id)
+                                .collect();
+                            for id in &ids {
+                                guard.start_health_loop(shared.clone(), id);
+                            }
+                            tracing::info!(
+                                "[Stage 3] MCP servers auto-connect pass complete ({} health loops spawned)",
+                                ids.len()
+                            );
+                        });
+                    }
+
                     // Stage 4: 启动所有已注册服务
                     tracing::info!("[Stage 4] Starting all registered services...");
                     let results = service_manager.start_all().await;
@@ -557,6 +663,9 @@ fn main() {
             uclaw_core::tauri_commands::disconnect_mcp_server,
             uclaw_core::tauri_commands::restart_mcp_server,
             uclaw_core::tauri_commands::list_mcp_tools,
+            uclaw_core::tauri_commands::refresh_mcp_tools,
+            uclaw_core::tauri_commands::ping_mcp_server,
+            uclaw_core::tauri_commands::list_mcp_audit,
             // Skills
             uclaw_core::tauri_commands::list_skills,
             uclaw_core::tauri_commands::get_workspace_capabilities,

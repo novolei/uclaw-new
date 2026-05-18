@@ -17,6 +17,133 @@ use tokio::task::JoinHandle;
 
 pub const PROTOCOL_VERSION: &str = "2024-11-05";
 
+// ─── PR-3 — auto-reconnect / health loop tunables ──────────────────────
+
+/// How often the per-server health loop pings the MCP server. 30s is
+/// chosen as the smallest interval that's clearly "background" rather
+/// than "spammy"; users with multiple servers won't see noisy logs.
+pub const HEALTH_PING_INTERVAL_SECS: u64 = 30;
+
+/// First reconnect attempt fires this long after a ping failure.
+/// Subsequent attempts double the delay up to `RECONNECT_MAX_DELAY_SECS`.
+pub const RECONNECT_INITIAL_DELAY_SECS: u64 = 10;
+
+/// Hard ceiling on the per-attempt reconnect wait. 5 minutes matches
+/// the spirit of "don't hammer a dead server" without making recovery
+/// feel hopeless if it comes back later.
+pub const RECONNECT_MAX_DELAY_SECS: u64 = 300;
+
+// ─── PR-4 — server notification routing ────────────────────────────────
+
+/// Event surfaced by the stdio reader task whenever an MCP server
+/// pushes a notification (JSON-RPC frame with `method` set, no `id`).
+/// The manager-side consumer dispatches by method: today we only
+/// special-case `notifications/tools/list_changed` (auto-refresh +
+/// frontend event). Other methods log at debug for forward-compat —
+/// future spec additions surface here without code changes.
+#[derive(Debug, Clone)]
+pub struct McpNotificationEvent {
+    pub server_id: String,
+    pub method: String,
+    pub params: serde_json::Value,
+}
+
+/// Method string for the canonical "tools list changed" notification
+/// defined by the MCP spec. uClaw declares
+/// `capabilities.tools.listChanged = true` in `initialize` (line 56)
+/// so well-behaved servers will fire this whenever they add/remove a
+/// tool while connected.
+pub const NOTIFY_TOOLS_LIST_CHANGED: &str = "notifications/tools/list_changed";
+
+// ─── PR-5 — env redaction + audit log ──────────────────────────────────
+
+/// Replace any substring matching one of `env`'s values with
+/// `[REDACTED]`. Used on every error message that goes to the UI / audit
+/// log so a subprocess spawn failure can't leak `GITHUB_TOKEN=ghp_xxx`
+/// in a screenshot or shared log.
+///
+/// We only redact values longer than 4 chars (avoids false positives on
+/// boolean-ish env values like `1` or `true` that often appear in
+/// general error strings). Empty values are skipped for the same
+/// reason — `str::replace("", _)` infinite-loops on some allocators
+/// and isn't useful anyway.
+pub fn redact_env_values(s: &str, env: &HashMap<String, String>) -> String {
+    let mut out = s.to_string();
+    for v in env.values() {
+        if v.len() >= 5 {
+            out = out.replace(v, "[REDACTED]");
+        }
+    }
+    out
+}
+
+/// Kinds of events written to `mcp_audit`. Stored as the literal
+/// string in the `event_kind` column; new variants are append-only so
+/// historical rows stay parseable.
+#[derive(Debug, Clone, Copy)]
+pub enum McpAuditKind {
+    ConnectAttempt,
+    ConnectSucceeded,
+    ConnectFailed,
+    HealthFailed,
+    Reconnected,
+    Disconnect,
+    Removed,
+    ToolsChanged,
+}
+
+impl McpAuditKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            McpAuditKind::ConnectAttempt => "connect_attempt",
+            McpAuditKind::ConnectSucceeded => "connect_succeeded",
+            McpAuditKind::ConnectFailed => "connect_failed",
+            McpAuditKind::HealthFailed => "health_failed",
+            McpAuditKind::Reconnected => "reconnected",
+            McpAuditKind::Disconnect => "disconnect",
+            McpAuditKind::Removed => "removed",
+            McpAuditKind::ToolsChanged => "tools_changed",
+        }
+    }
+}
+
+/// Single audit-log row as exposed to the frontend / list IPC.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpAuditEntry {
+    pub id: String,
+    pub server_id: String,
+    pub event_kind: String,
+    pub message_redacted: String,
+    pub created_at: i64,
+}
+
+/// Append one row to `mcp_audit`. Best-effort: a DB lock failure logs
+/// + swallows. Caller passes a pre-redacted message (use
+/// `redact_env_values` first).
+pub fn append_audit_row(
+    db: &Arc<std::sync::Mutex<rusqlite::Connection>>,
+    server_id: &str,
+    kind: McpAuditKind,
+    message: &str,
+) {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp_millis();
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("[mcp_audit] DB lock failed: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = conn.execute(
+        "INSERT INTO mcp_audit (id, server_id, event_kind, message_redacted, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![id, server_id, kind.as_str(), message, now],
+    ) {
+        tracing::warn!("[mcp_audit] INSERT failed: {}", e);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
@@ -295,8 +422,15 @@ impl StdioTransport {
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
+        // PR-4 — when `Some`, the stdout reader publishes JSON-RPC
+        // notifications (frames with `method` but no `id`) onto this
+        // sender keyed by the supplied `server_id`. `None` matches the
+        // pre-PR-4 behaviour: notifications are logged + discarded.
+        server_id: impl Into<String>,
+        notification_tx: Option<tokio::sync::mpsc::UnboundedSender<McpNotificationEvent>>,
     ) -> Result<Self, McpError> {
         let server_name = name.into();
+        let server_id = server_id.into();
 
         let mut cmd = tokio::process::Command::new(command);
         cmd.args(args)
@@ -330,6 +464,8 @@ impl StdioTransport {
         // Spawn stdout reader
         let reader_pending = pending.clone();
         let reader_name = server_name.clone();
+        let reader_server_id = server_id.clone();
+        let reader_notify = notification_tx.clone();
         let reader_handle = tokio::spawn(async move {
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
@@ -343,13 +479,39 @@ impl StdioTransport {
                 };
 
                 // Check if it's a response (has result or error, no method)
-                if value.get("method").is_some() {
-                    // Server notification/request — log and skip
+                if let Some(method) = value.get("method").and_then(|m| m.as_str()) {
+                    // PR-4 — route via the notification channel when wired.
+                    // Notifications have `method` and no `id`; the same
+                    // frame shape technically encodes server-side
+                    // requests (with `id`) but uClaw doesn't expose any
+                    // `sampling/createMessage`-style handler today, so
+                    // we treat both as fire-and-forget events.
                     tracing::debug!(
                         "[{}] Received server notification: {}",
                         reader_name,
-                        value.get("method").and_then(|m| m.as_str()).unwrap_or("?")
+                        method
                     );
+                    if let Some(tx) = reader_notify.as_ref() {
+                        let event = McpNotificationEvent {
+                            server_id: reader_server_id.clone(),
+                            method: method.to_string(),
+                            params: value
+                                .get("params")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null),
+                        };
+                        // send() returns Err only when every receiver
+                        // is dropped — log + continue (the consumer
+                        // task died for some reason, but the reader
+                        // should keep up its end of the protocol).
+                        if let Err(e) = tx.send(event) {
+                            tracing::warn!(
+                                "[{}] Failed to forward notification: {}",
+                                reader_name,
+                                e
+                            );
+                        }
+                    }
                     continue;
                 }
 
@@ -709,18 +871,68 @@ pub struct McpServerState {
 
 // ─── MCP Tool Proxy (exposes MCP tools as Tool trait) ───────────────────
 
+/// Prefix applied to every agent-facing MCP tool name. Lets the rest of
+/// uClaw — SafetyManager, telemetry, the prompt manifest — distinguish
+/// MCP-sourced tool calls from builtins at a glance via the tool name
+/// alone (no need to consult a separate registry).
+pub const MCP_TOOL_PREFIX: &str = "mcp__";
+
+/// Build the agent-facing tool name for an MCP-proxied tool. The
+/// format `mcp__{server_id}__{tool_name}` matches the convention used
+/// by Cline / Roo / Claude Desktop and is what users will recognize.
+pub fn prefixed_tool_name(server_id: &str, tool_name: &str) -> String {
+    format!("{}{}__{}", MCP_TOOL_PREFIX, server_id, tool_name)
+}
+
+/// Inverse of `prefixed_tool_name`. Returns `Some((server_id, tool_name))`
+/// when `name` matches the expected `mcp__SERVER__TOOL` shape, `None`
+/// otherwise (so callers can fast-path non-MCP tool names without
+/// expensive checks). The split is on the first `__` AFTER the prefix
+/// so server ids containing single underscores are preserved.
+pub fn parse_mcp_tool_name(name: &str) -> Option<(&str, &str)> {
+    let rest = name.strip_prefix(MCP_TOOL_PREFIX)?;
+    let idx = rest.find("__")?;
+    let (server_id, tail) = rest.split_at(idx);
+    let tool_name = &tail[2..]; // strip the "__" separator
+    if server_id.is_empty() || tool_name.is_empty() {
+        return None;
+    }
+    Some((server_id, tool_name))
+}
+
+#[derive(Clone)]
 pub struct McpToolProxy {
+    /// Source server id — used to route the JSON-RPC call back through
+    /// the right transport, and (with `tool_name`) to identify which
+    /// MCP server a proxied call originated from when auditing.
     server_id: String,
+    /// Raw MCP tool name as the server reported it (e.g. "create_issue").
+    /// Used in the JSON-RPC `tools/call` request — must NOT include the
+    /// uClaw-side `mcp__{server_id}__` prefix or the server won't know
+    /// what to invoke.
     tool_name: String,
+    /// Agent-facing tool name = `mcp__{server_id}__{tool_name}`. This is
+    /// what `name()` returns to `ToolRegistry`, what shows up in the LLM
+    /// tool manifest, and what `SafetyManager` keys on. The prefix
+    /// guarantees uniqueness across servers (two MCP servers can ship
+    /// identically-named tools without colliding).
+    prefixed_name: String,
     description: String,
     input_schema: serde_json::Value,
     manager: SharedMcpManager,
+    /// Snapshotted from `McpServerConfig.auto_approve` at proxy
+    /// construction time. Drives `requires_approval` so SafetyManager
+    /// can grant `Never` (no approval prompt) for tools sourced from
+    /// servers the user marked as trusted in the Integrations UI.
+    /// Snapshot is OK because changing the flag triggers a manager
+    /// refresh which rebuilds proxies for the next agent turn.
+    auto_approve: bool,
 }
 
 #[async_trait]
 impl crate::agent::tools::tool::Tool for McpToolProxy {
     fn name(&self) -> &str {
-        &self.tool_name
+        &self.prefixed_name
     }
 
     fn description(&self) -> &str {
@@ -729,6 +941,23 @@ impl crate::agent::tools::tool::Tool for McpToolProxy {
 
     fn parameters_schema(&self) -> serde_json::Value {
         self.input_schema.clone()
+    }
+
+    /// Soft-honor the server's `auto_approve` flag. `Never` lets
+    /// SafetyManager short-circuit straight to AutoApprove regardless
+    /// of the active SafetyMode (see safety/mod.rs:221-224).
+    /// `UnlessAutoApproved` keeps the normal Supervised-mode gating
+    /// in place: the user can still allow specific tools via the
+    /// auto-approved whitelist, but unknown calls require confirmation.
+    fn requires_approval(
+        &self,
+        _params: &serde_json::Value,
+    ) -> crate::agent::tools::tool::ApprovalRequirement {
+        if self.auto_approve {
+            crate::agent::tools::tool::ApprovalRequirement::Never
+        } else {
+            crate::agent::tools::tool::ApprovalRequirement::UnlessAutoApproved
+        }
     }
 
     async fn execute(
@@ -799,6 +1028,20 @@ impl crate::agent::tools::tool::Tool for McpToolProxy {
 pub struct McpManager {
     servers: HashMap<String, McpServerState>,
     config_path: std::path::PathBuf,
+    /// PR-3 — per-server health/reconnect task handles. Keyed by server
+    /// id. Inserted by `start_health_loop`, aborted + removed by
+    /// `stop_health_loop` (called on disconnect/remove). The handle is
+    /// `pub(crate)` only — outside callers can't poke at the loops.
+    health_tasks: HashMap<String, JoinHandle<()>>,
+    /// PR-4 — shared sender pushed into every stdio transport at
+    /// `connect_server` time. `None` until `set_notification_tx` is
+    /// called (main.rs wires it once at boot). When None the reader
+    /// tasks fall back to log-and-discard behaviour.
+    notification_tx: Option<tokio::sync::mpsc::UnboundedSender<McpNotificationEvent>>,
+    /// PR-5 — main app DB handle for writing `mcp_audit` rows. `None`
+    /// until `set_db_handle` is called at boot. When None, audit writes
+    /// silently no-op so unit tests don't need DB setup.
+    db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
 }
 
 impl McpManager {
@@ -807,9 +1050,48 @@ impl McpManager {
         let mut manager = Self {
             servers: HashMap::new(),
             config_path,
+            health_tasks: HashMap::new(),
+            notification_tx: None,
+            db: None,
         };
         manager.load_config();
         manager
+    }
+
+    /// PR-4 — install the channel sender that every stdio transport
+    /// will forward notifications onto. Called once at app boot from
+    /// `main.rs`; the matching receiver lives in a tokio task that
+    /// dispatches by method (today only `tools/list_changed` is
+    /// special-cased).
+    pub fn set_notification_tx(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<McpNotificationEvent>,
+    ) {
+        self.notification_tx = Some(tx);
+    }
+
+    /// PR-5 — install the app DB handle so lifecycle events get
+    /// persisted to the `mcp_audit` table. Called once at boot.
+    pub fn set_db_handle(
+        &mut self,
+        db: Arc<std::sync::Mutex<rusqlite::Connection>>,
+    ) {
+        self.db = Some(db);
+    }
+
+    /// PR-5 — helper that pairs `redact_env_values` with `append_audit_row`.
+    /// Looks up the server's env (if known) for redaction; if the
+    /// server doesn't exist (e.g. the audit row is for `Removed`) the
+    /// message goes in verbatim. No-op when `db` isn't installed.
+    fn record_audit(&self, server_id: &str, kind: McpAuditKind, message: &str) {
+        let redacted = self
+            .servers
+            .get(server_id)
+            .map(|s| redact_env_values(message, &s.config.env))
+            .unwrap_or_else(|| message.to_string());
+        if let Some(db) = self.db.as_ref() {
+            append_audit_row(db, server_id, kind, &redacted);
+        }
     }
 
     // ── Config Persistence ──────────────────────────────────────────
@@ -862,6 +1144,13 @@ impl McpManager {
     }
 
     pub fn remove_server(&mut self, id: &str) -> Option<McpServerConfig> {
+        // PR-3 — abort any health loop for this server first so a
+        // delayed reconnect attempt can't recreate the connection
+        // after removal.
+        self.stop_health_loop(id);
+        // PR-5 — audit BEFORE the state is dropped so we have access
+        // to the env for redaction (record_audit looks up the server).
+        self.record_audit(id, McpAuditKind::Removed, "Server removed by user");
         let state = self.servers.remove(id)?;
         self.save_config();
         Some(state.config)
@@ -910,10 +1199,15 @@ impl McpManager {
         }
     }
 
+    /// Set or clear the error message for a server. PR-5: redact env
+    /// values from the message before storing so a screenshot of the
+    /// detail drawer can't leak `GITHUB_TOKEN=ghp_xxxx`. Clearing
+    /// (passing `None`) is unchanged.
     pub fn set_error(&mut self, id: &str, error: Option<String>) {
         if let Some(state) = self.servers.get_mut(id) {
-            let is_err = error.is_some();
-            state.error = error;
+            let redacted = error.map(|e| redact_env_values(&e, &state.config.env));
+            let is_err = redacted.is_some();
+            state.error = redacted;
             if is_err {
                 state.status = McpServerStatus::Error;
             }
@@ -968,21 +1262,39 @@ impl McpManager {
             state.status = McpServerStatus::Connecting;
             state.error = None;
         }
+        // PR-5 — log the attempt so audits show "tried then failed" not
+        // just the failure (helps distinguish boot races from later
+        // user actions).
+        self.record_audit(
+            id,
+            McpAuditKind::ConnectAttempt,
+            &format!("Connecting to {}", config.name),
+        );
 
         tracing::info!("Connecting to MCP server '{}' ({})", config.name, id);
 
         // Create transport based on type
         let transport: Arc<dyn McpTransport> = match config.transport_type {
             TransportType::Stdio => {
-                let t = StdioTransport::spawn(&config.name, &config.command, &config.args, &config.env)
-                    .await
-                    .map_err(|e| {
-                        if let Some(state) = self.servers.get_mut(id) {
-                            state.status = McpServerStatus::Error;
-                            state.error = Some(e.to_string());
-                        }
-                        e
-                    })?;
+                let t = StdioTransport::spawn(
+                    &config.name,
+                    &config.command,
+                    &config.args,
+                    &config.env,
+                    // PR-4 — server id + (optional) notification sender
+                    // get wired into the reader task so server-pushed
+                    // events route through the manager-level consumer.
+                    id,
+                    self.notification_tx.clone(),
+                )
+                .await
+                .map_err(|e| {
+                    if let Some(state) = self.servers.get_mut(id) {
+                        state.status = McpServerStatus::Error;
+                        state.error = Some(e.to_string());
+                    }
+                    e
+                })?;
                 Arc::new(t)
             }
             TransportType::Http => {
@@ -1057,17 +1369,33 @@ impl McpManager {
         }
 
         // Mark connected
+        let tool_count = self
+            .servers
+            .get(id)
+            .map(|s| s.tools.len())
+            .unwrap_or(0);
         if let Some(state) = self.servers.get_mut(id) {
             state.status = McpServerStatus::Connected;
             state.error = None;
             state.connection = Some(conn);
         }
+        // PR-5 — successful connect lands an audit row with the tool
+        // count so the table doubles as a "what was visible when" log.
+        self.record_audit(
+            id,
+            McpAuditKind::ConnectSucceeded,
+            &format!("Connected ({} tool(s) discovered)", tool_count),
+        );
 
         Ok(())
     }
 
-    /// Disconnect from an MCP server
+    /// Disconnect from an MCP server. Also aborts the health loop
+    /// (PR-3) so a pending reconnect can't fight a user-initiated
+    /// disconnect. Caller is expected to call `start_health_loop`
+    /// again after the next successful connect.
     pub async fn disconnect_server(&mut self, id: &str) -> Result<(), McpError> {
+        self.stop_health_loop(id);
         if let Some(state) = self.servers.get_mut(id) {
             if let Some(conn) = state.connection.take() {
                 conn.shutdown().await?;
@@ -1077,12 +1405,151 @@ impl McpManager {
             state.error = None;
             tracing::info!("Disconnected from MCP server '{}'", state.config.name);
         }
+        // PR-5 — outside the `if let` so we still audit the call even
+        // when the server isn't in the map (e.g. removed mid-flight).
+        self.record_audit(id, McpAuditKind::Disconnect, "Disconnected");
         Ok(())
     }
 
     /// Restart a server connection
     pub async fn restart_server(&mut self, id: &str) -> Result<(), McpError> {
         self.disconnect_server(id).await.ok();
+        self.connect_server(id).await
+    }
+
+    // ── PR-3 — health loop management ───────────────────────────────
+
+    /// Spawn (or replace) the per-server health/reconnect background
+    /// task. Idempotent: if a loop is already running for this id it's
+    /// aborted before the new one starts. Caller passes the shared
+    /// manager arc so the spawned task can re-acquire the lock for
+    /// ping + reconnect without holding a borrow across the spawn.
+    pub fn start_health_loop(&mut self, mgr: SharedMcpManager, id: &str) {
+        if let Some(h) = self.health_tasks.remove(id) {
+            h.abort();
+        }
+        let id_owned = id.to_string();
+        let handle = tokio::spawn(async move {
+            Self::run_health_loop(mgr, id_owned).await;
+        });
+        self.health_tasks.insert(id.to_string(), handle);
+    }
+
+    /// Abort the loop for `id` if any. Caller invokes this from
+    /// `disconnect_server` / `remove_server`.
+    pub fn stop_health_loop(&mut self, id: &str) {
+        if let Some(h) = self.health_tasks.remove(id) {
+            h.abort();
+            tracing::debug!("[{}] health loop aborted", id);
+        }
+    }
+
+    /// The actual loop body. Lives outside the impl block conceptually
+    /// (it doesn't take &self) so the spawn closure isn't required to
+    /// hold a borrow back into the manager.
+    ///
+    /// Two phases per iteration:
+    /// 1. Sleep `HEALTH_PING_INTERVAL_SECS`, then ping. On success
+    ///    reset the backoff and loop.
+    /// 2. On failure, flip the server's status to Error with a
+    ///    descriptive message, sleep `min(INITIAL * 2^attempt, MAX)`,
+    ///    then call `reconnect_server`. Success resets attempt; failure
+    ///    bumps attempt and loops back to phase 2's sleep.
+    ///
+    /// The loop is cancellation-aware: `tokio::spawn`-ed tasks die when
+    /// the JoinHandle is aborted, which is what `stop_health_loop`
+    /// does. No explicit shutdown signal needed.
+    async fn run_health_loop(mgr: SharedMcpManager, id: String) {
+        let mut attempt: u32 = 0;
+        loop {
+            tokio::time::sleep(Duration::from_secs(HEALTH_PING_INTERVAL_SECS)).await;
+
+            // Ping under a read lock — short critical section.
+            let ping_result = {
+                let m = mgr.read().await;
+                m.ping_server(&id).await
+            };
+
+            match ping_result {
+                Ok(()) => {
+                    // Healthy: reset attempt counter and continue the
+                    // outer loop. If the server was in Error from a
+                    // previous failure-then-recovery cycle, the
+                    // reconnect path below already cleared it.
+                    attempt = 0;
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[{}] health ping failed: {} (attempt {})",
+                        id,
+                        e,
+                        attempt + 1
+                    );
+                    // Compute backoff *before* messaging so the UI
+                    // shows "next attempt in 80s" rather than the
+                    // misleading current attempt's delay.
+                    let delay = std::cmp::min(
+                        RECONNECT_INITIAL_DELAY_SECS
+                            .saturating_mul(2u64.saturating_pow(attempt)),
+                        RECONNECT_MAX_DELAY_SECS,
+                    );
+                    {
+                        let msg = format!(
+                            "Health check failed: {} — reconnecting in {}s (attempt {})",
+                            e,
+                            delay,
+                            attempt + 1
+                        );
+                        let mut m = mgr.write().await;
+                        m.set_error(&id, Some(msg.clone()));
+                        // PR-5 — also persist to the audit table so the
+                        // user can review history across restarts.
+                        m.record_audit(&id, McpAuditKind::HealthFailed, &msg);
+                    }
+                    tokio::time::sleep(Duration::from_secs(delay)).await;
+
+                    let reconnect_result = {
+                        let mut m = mgr.write().await;
+                        m.reconnect_server(&id).await
+                    };
+                    match reconnect_result {
+                        Ok(()) => {
+                            tracing::info!(
+                                "[{}] reconnect succeeded after {} attempt(s)",
+                                id,
+                                attempt + 1
+                            );
+                            attempt = 0;
+                        }
+                        Err(rc_err) => {
+                            tracing::warn!(
+                                "[{}] reconnect attempt {} failed: {}",
+                                id,
+                                attempt + 1,
+                                rc_err
+                            );
+                            attempt = attempt.saturating_add(1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Internal reconnect — like `restart_server` but doesn't abort
+    /// the health loop (we *are* the health loop). The user-facing
+    /// `restart_server` calls `disconnect_server` which aborts the
+    /// loop; we don't want to commit suicide here.
+    async fn reconnect_server(&mut self, id: &str) -> Result<(), McpError> {
+        // Mirror restart_server's shape but inline the disconnect so we
+        // can skip stop_health_loop.
+        if let Some(state) = self.servers.get_mut(id) {
+            if let Some(conn) = state.connection.take() {
+                conn.shutdown().await.ok();
+            }
+            state.status = McpServerStatus::Disconnected;
+        }
         self.connect_server(id).await
     }
 
@@ -1102,8 +1569,14 @@ impl McpManager {
         }
     }
 
-    /// Disconnect all servers
+    /// Disconnect all servers. Also aborts every health loop (PR-3) —
+    /// `disconnect_server` does it per id but iterating that way is
+    /// `O(n)` ops on the health_tasks map; doing it in one drain is
+    /// cleaner and matches the "we're shutting down" intent.
     pub async fn disconnect_all(&mut self) {
+        for (_id, h) in self.health_tasks.drain() {
+            h.abort();
+        }
         let ids: Vec<String> = self.servers.keys().cloned().collect();
         for id in ids {
             self.disconnect_server(&id).await.ok();
@@ -1212,17 +1685,49 @@ impl McpManager {
         conn.read_resource(uri).await
     }
 
-    /// Create McpToolProxy instances for all tools from connected servers.
-    /// These can be registered in the ToolRegistry for the agent loop.
-    pub fn create_tool_proxies(manager: &SharedMcpManager, tools: &[McpToolDef]) -> Vec<McpToolProxy> {
-        tools
+    /// Create McpToolProxy instances for every tool exposed by the
+    /// currently-connected servers. These wrap the MCP transport in the
+    /// agent's `Tool` trait so the dispatcher can call MCP tools the
+    /// same way it calls builtins.
+    ///
+    /// `locked` is the already-acquired read guard on the manager — by
+    /// taking it explicitly we (a) avoid re-locking inside this method
+    /// and (b) make the snapshot semantics obvious at the call site.
+    /// `manager` is the shared handle each proxy keeps so it can run
+    /// the actual `tools/call` JSON-RPC without re-borrowing.
+    ///
+    /// Names are emitted in the prefixed form
+    /// `mcp__{server_id}__{tool_name}` so they're unambiguous in the
+    /// LLM's tool manifest and in SafetyManager logs. `auto_approve` is
+    /// snapshotted per-proxy so `Tool::requires_approval` short-circuits
+    /// approval prompts for trusted servers.
+    pub fn create_tool_proxies(
+        manager: &SharedMcpManager,
+        locked: &McpManager,
+    ) -> Vec<McpToolProxy> {
+        let auto_approve_by_id: HashMap<String, bool> = locked
+            .all_servers()
             .iter()
-            .map(|tool| McpToolProxy {
-                server_id: tool.server_id.clone(),
-                tool_name: tool.name.clone(),
-                description: tool.description.clone(),
-                input_schema: tool.parameters.clone(),
-                manager: manager.clone(),
+            .map(|c| (c.id.clone(), c.auto_approve))
+            .collect();
+        locked
+            .all_tools()
+            .into_iter()
+            .map(|tool| {
+                let auto_approve = auto_approve_by_id
+                    .get(&tool.server_id)
+                    .copied()
+                    .unwrap_or(false);
+                let prefixed_name = prefixed_tool_name(&tool.server_id, &tool.name);
+                McpToolProxy {
+                    server_id: tool.server_id.clone(),
+                    tool_name: tool.name.clone(),
+                    prefixed_name,
+                    description: tool.description.clone(),
+                    input_schema: tool.parameters.clone(),
+                    manager: manager.clone(),
+                    auto_approve,
+                }
             })
             .collect()
     }
@@ -1289,5 +1794,108 @@ mod tests {
             .update_server("nope", cfg("nope", TransportType::Stdio))
             .unwrap_err();
         assert!(err.contains("not found"));
+    }
+
+    // ─── PR-1 — prefix helpers + auto_approve plumbing ──────────────
+
+    #[test]
+    fn prefixed_tool_name_format_matches_convention() {
+        // The mcp__{server}__{tool} shape is the Cline / Roo / Claude
+        // Desktop convention; consumers (SafetyManager, UI badges,
+        // telemetry) rely on it to recognize MCP-sourced calls without
+        // a separate registry lookup.
+        let n = prefixed_tool_name("github", "create_issue");
+        assert_eq!(n, "mcp__github__create_issue");
+    }
+
+    #[test]
+    fn parse_mcp_tool_name_round_trips() {
+        let name = prefixed_tool_name("github", "create_issue");
+        let parsed = parse_mcp_tool_name(&name).unwrap();
+        assert_eq!(parsed.0, "github");
+        assert_eq!(parsed.1, "create_issue");
+    }
+
+    #[test]
+    fn parse_mcp_tool_name_handles_underscore_in_server_id() {
+        // Server ids commonly contain single underscores ("my_team_search").
+        // The split must be on the FIRST "__" (double-underscore)
+        // boundary, not any single underscore, or those ids round-trip
+        // wrong.
+        let name = "mcp__my_team_search__do_thing";
+        let parsed = parse_mcp_tool_name(name).unwrap();
+        assert_eq!(parsed.0, "my_team_search");
+        assert_eq!(parsed.1, "do_thing");
+    }
+
+    #[test]
+    fn parse_mcp_tool_name_rejects_non_mcp_names() {
+        // Builtins (read_file, edit, plan_update, …) must fast-path
+        // through the parser as `None` so SafetyManager doesn't waste
+        // cycles searching for a non-existent MCP server.
+        assert!(parse_mcp_tool_name("read_file").is_none());
+        assert!(parse_mcp_tool_name("mcp__").is_none()); // no server / tool
+        assert!(parse_mcp_tool_name("mcp__github__").is_none()); // empty tool
+        assert!(parse_mcp_tool_name("mcp____tool").is_none()); // empty server
+    }
+
+    #[test]
+    fn create_tool_proxies_emits_prefixed_names_and_honors_auto_approve() {
+        // Build a manager with two configured servers, one auto-approved
+        // and one not, both with a single discovered tool. Verify the
+        // returned proxies carry the right prefix and the auto_approve
+        // flag is snapshotted onto each.
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = McpManager::new(dir.path());
+
+        let mut trusted = cfg("trusted", TransportType::Stdio);
+        trusted.auto_approve = true;
+        mgr.add_server(trusted).unwrap();
+
+        let untrusted = cfg("untrusted", TransportType::Stdio);
+        mgr.add_server(untrusted).unwrap();
+
+        // Simulate the post-connect state: tools discovered, status =
+        // Connected. We bypass the actual transport here — all_tools()
+        // filters on `status == Connected` so we have to set it.
+        for id in ["trusted", "untrusted"] {
+            if let Some(state) = mgr.servers.get_mut(id) {
+                state.status = McpServerStatus::Connected;
+                state.tools.push(McpToolDef {
+                    server_id: id.to_string(),
+                    name: "do_thing".to_string(),
+                    description: format!("thing on {id}"),
+                    parameters: serde_json::json!({}),
+                });
+            }
+        }
+
+        let shared: SharedMcpManager = Arc::new(RwLock::new(mgr));
+        // Re-acquire a borrow for create_tool_proxies — we can't both
+        // pass shared+locked in one statement so split the borrow.
+        let proxies = {
+            let locked = shared.try_read().unwrap();
+            McpManager::create_tool_proxies(&shared, &*locked)
+        };
+
+        let names: Vec<&str> = proxies.iter().map(|p| p.name()).collect();
+        assert!(names.contains(&"mcp__trusted__do_thing"));
+        assert!(names.contains(&"mcp__untrusted__do_thing"));
+
+        let trusted_proxy = proxies.iter().find(|p| p.server_id == "trusted").unwrap();
+        let untrusted_proxy = proxies.iter().find(|p| p.server_id == "untrusted").unwrap();
+        assert!(trusted_proxy.auto_approve);
+        assert!(!untrusted_proxy.auto_approve);
+
+        use crate::agent::tools::tool::{ApprovalRequirement, Tool};
+        let v = serde_json::json!({});
+        assert_eq!(
+            trusted_proxy.requires_approval(&v),
+            ApprovalRequirement::Never
+        );
+        assert_eq!(
+            untrusted_proxy.requires_approval(&v),
+            ApprovalRequirement::UnlessAutoApproved
+        );
     }
 }
