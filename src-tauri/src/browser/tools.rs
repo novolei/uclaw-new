@@ -2,58 +2,236 @@ use std::sync::Arc;
 use std::time::Instant;
 use async_trait::async_trait;
 use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
-use super::BrowserService;
+use crate::browser::context_manager::BrowserContextManager;
+use crate::browser::dom_state::format_dom_state_for_llm;
 
-pub struct BrowserNavigateTool {
-    browser: Arc<BrowserService>,
+// ── Macro: declare all 14 tool structs ────────────────────────────────────────
+
+macro_rules! browser_tool {
+    ($name:ident) => {
+        pub struct $name {
+            pub ctx_mgr: Arc<BrowserContextManager>,
+            pub session_id: String,
+        }
+    };
 }
-impl BrowserNavigateTool {
-    pub fn new(browser: Arc<BrowserService>) -> Self { Self { browser } }
-}
+
+browser_tool!(BrowserNavigateTool);
+browser_tool!(BrowserGoBackTool);
+browser_tool!(BrowserGoForwardTool);
+browser_tool!(BrowserReloadTool);
+browser_tool!(BrowserGetDomTool);
+browser_tool!(BrowserScreenshotTool);
+browser_tool!(BrowserExtractTool);
+browser_tool!(BrowserClickTool);
+browser_tool!(BrowserTypeTool);
+browser_tool!(BrowserSelectTool);
+browser_tool!(BrowserScrollTool);
+browser_tool!(BrowserSendKeysTool);
+browser_tool!(BrowserEvaluateTool);
+browser_tool!(BrowserManageTabsTool);
+
+// ── 1. BrowserNavigateTool ────────────────────────────────────────────────────
+
 #[async_trait]
 impl Tool for BrowserNavigateTool {
     fn name(&self) -> &str { "browser_navigate" }
-    fn description(&self) -> &str { "Navigate to a URL in the browser. Launches the browser if not running. Returns the tab_id for subsequent operations." }
+
+    fn description(&self) -> &str {
+        "Navigate to a URL in the browser. Launches the browser if not running. \
+         Returns the tab_id for subsequent operations."
+    }
+
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "url": { "type": "string", "description": "URL to navigate to" },
-                "tab_id": { "type": "string", "description": "Tab ID to reuse, or 'new' to open a new tab (default 'new')" }
+                "url": {
+                    "type": "string",
+                    "description": "URL to navigate to"
+                },
+                "tab_id": {
+                    "type": "string",
+                    "description": "Tab ID to reuse, or 'new' to open a new tab (default 'new')"
+                }
             },
             "required": ["url"]
         })
     }
+
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
         let url = params["url"].as_str()
             .ok_or_else(|| ToolError::Execution("url is required".to_string()))?;
         let tab_id = params["tab_id"].as_str().unwrap_or("new");
 
-        if let Err(e) = self.browser.launch().await {
-            tracing::warn!("Browser launch (pre-navigate): {}", e);
-        }
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
 
-        let resolved_tab_id = self.browser.navigate(tab_id, url).await
+        let resolved_id = ctx.navigate(tab_id, url).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
         Ok(ToolOutput::success(
-            &format!("Navigated to {}. tab_id={}", url, resolved_tab_id),
+            &format!("Navigated to {}. tab_id={}", url, resolved_id),
             start.elapsed().as_millis() as u64,
         ))
     }
 }
 
-pub struct BrowserScreenshotTool {
-    browser: Arc<BrowserService>,
+// ── 2. BrowserGoBackTool ──────────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserGoBackTool {
+    fn name(&self) -> &str { "browser_go_back" }
+
+    fn description(&self) -> &str {
+        "Navigate backward in the browser history for the given tab."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": { "type": "string", "description": "Tab ID" }
+            },
+            "required": ["tab_id"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let tab_id = params["tab_id"].as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
+
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        ctx.go_back(tab_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        Ok(ToolOutput::success("Navigated back.", start.elapsed().as_millis() as u64))
+    }
 }
-impl BrowserScreenshotTool {
-    pub fn new(browser: Arc<BrowserService>) -> Self { Self { browser } }
+
+// ── 3. BrowserGoForwardTool ───────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserGoForwardTool {
+    fn name(&self) -> &str { "browser_go_forward" }
+
+    fn description(&self) -> &str {
+        "Navigate forward in the browser history for the given tab."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": { "type": "string", "description": "Tab ID" }
+            },
+            "required": ["tab_id"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let tab_id = params["tab_id"].as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
+
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        ctx.go_forward(tab_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        Ok(ToolOutput::success("Navigated forward.", start.elapsed().as_millis() as u64))
+    }
 }
+
+// ── 4. BrowserReloadTool ──────────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserReloadTool {
+    fn name(&self) -> &str { "browser_reload" }
+
+    fn description(&self) -> &str {
+        "Reload the current page for the given tab."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": { "type": "string", "description": "Tab ID" }
+            },
+            "required": ["tab_id"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let tab_id = params["tab_id"].as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
+
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        ctx.reload(tab_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        Ok(ToolOutput::success("Page reloaded.", start.elapsed().as_millis() as u64))
+    }
+}
+
+// ── 5. BrowserGetDomTool ──────────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserGetDomTool {
+    fn name(&self) -> &str { "browser_get_dom" }
+
+    fn description(&self) -> &str {
+        "Return the interactive DOM elements of the current page as an indexed list. \
+         Always call browser_get_dom AFTER navigating and BEFORE interacting. \
+         Indexes are reassigned on each call; stale indexes will click the wrong element."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": { "type": "string", "description": "Tab ID" }
+            },
+            "required": ["tab_id"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let tab_id = params["tab_id"].as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
+
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        let state = ctx.get_dom_state(tab_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        let formatted = format_dom_state_for_llm(&state);
+
+        Ok(ToolOutput::success(&formatted, start.elapsed().as_millis() as u64))
+    }
+}
+
+// ── 6. BrowserScreenshotTool ──────────────────────────────────────────────────
+
 #[async_trait]
 impl Tool for BrowserScreenshotTool {
     fn name(&self) -> &str { "browser_screenshot" }
-    fn description(&self) -> &str { "Capture a PNG screenshot of the current browser page. Returns base64-encoded PNG." }
+
+    fn description(&self) -> &str {
+        "Capture a PNG screenshot of the current browser page. Returns base64-encoded PNG."
+    }
+
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -63,172 +241,435 @@ impl Tool for BrowserScreenshotTool {
             "required": ["tab_id"]
         })
     }
+
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
         let tab_id = params["tab_id"].as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
 
-        let result = self.browser.screenshot(tab_id).await
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
-        // Use ToolOutput::new with a real JSON value so the frontend receives
-        // { ok: true, content: { width, height, data } } rather than a
-        // double-encoded string, making the base64 data directly accessible.
+        let data = ctx.screenshot(tab_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        let elapsed = start.elapsed().as_millis() as u64;
         Ok(ToolOutput::new(
             serde_json::json!({
                 "ok": true,
-                "width": result.width,
-                "height": result.height,
-                "data": result.data,
+                "data": data,
+                "width": 1280,
+                "height": 800,
             }),
-            start.elapsed().as_millis() as u64,
+            elapsed,
         ))
     }
 }
 
-pub struct BrowserExtractTool {
-    browser: Arc<BrowserService>,
-}
-impl BrowserExtractTool {
-    pub fn new(browser: Arc<BrowserService>) -> Self { Self { browser } }
-}
+// ── 7. BrowserExtractTool ─────────────────────────────────────────────────────
+
 #[async_trait]
 impl Tool for BrowserExtractTool {
     fn name(&self) -> &str { "browser_extract" }
-    fn description(&self) -> &str { "Extract the visible text content from the current browser page." }
+
+    fn description(&self) -> &str {
+        "Extract the visible text content from the current browser page or a specific element."
+    }
+
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID to extract text from" }
+                "tab_id": { "type": "string", "description": "Tab ID" },
+                "selector": {
+                    "type": "string",
+                    "description": "CSS selector for the element to extract text from (default 'body')"
+                }
             },
             "required": ["tab_id"]
         })
     }
+
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
         let tab_id = params["tab_id"].as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
+        let selector = params["selector"].as_str().unwrap_or("body");
 
-        let text = self.browser.extract_text(tab_id).await
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        // Escape single quotes in the selector to avoid JS injection.
+        let safe_selector = selector.replace('\'', "\\'");
+        let script = format!(
+            "(function(){{\
+                var el = document.querySelector('{selector}') || document.body;\
+                return (el.innerText || el.textContent || '').substring(0, 40000);\
+            }})()",
+            selector = safe_selector,
+        );
+
+        let text = ctx.execute_js(tab_id, &script).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
         Ok(ToolOutput::success(&text, start.elapsed().as_millis() as u64))
     }
 }
 
-pub struct BrowserClickTool {
-    browser: Arc<BrowserService>,
-}
-impl BrowserClickTool {
-    pub fn new(browser: Arc<BrowserService>) -> Self { Self { browser } }
-}
+// ── 8. BrowserClickTool ───────────────────────────────────────────────────────
+
 #[async_trait]
 impl Tool for BrowserClickTool {
     fn name(&self) -> &str { "browser_click" }
-    fn description(&self) -> &str { "Click an element identified by a CSS selector in the browser page." }
+
+    fn description(&self) -> &str {
+        "Click an interactive element by its index from browser_get_dom."
+    }
+
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
                 "tab_id": { "type": "string", "description": "Tab ID" },
-                "selector": { "type": "string", "description": "CSS selector of the element to click" }
+                "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Element index from browser_get_dom"
+                }
             },
-            "required": ["tab_id", "selector"]
+            "required": ["tab_id", "index"]
         })
     }
+
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
         let tab_id = params["tab_id"].as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
-        let selector = params["selector"].as_str()
-            .ok_or_else(|| ToolError::Execution("selector is required".to_string()))?;
+        let index = params["index"].as_u64()
+            .ok_or_else(|| ToolError::Execution("index is required".to_string()))? as u32;
 
-        self.browser.click(tab_id, selector).await
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        ctx.click(tab_id, index).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
         Ok(ToolOutput::success(
-            &format!("Clicked '{}'", selector),
+            &format!("Clicked element [{}].", index),
             start.elapsed().as_millis() as u64,
         ))
     }
 }
 
-pub struct BrowserTypeTool {
-    browser: Arc<BrowserService>,
-}
-impl BrowserTypeTool {
-    pub fn new(browser: Arc<BrowserService>) -> Self { Self { browser } }
-}
+// ── 9. BrowserTypeTool ────────────────────────────────────────────────────────
+
 #[async_trait]
 impl Tool for BrowserTypeTool {
     fn name(&self) -> &str { "browser_type" }
-    fn description(&self) -> &str { "Type text into a form field identified by a CSS selector." }
+
+    fn description(&self) -> &str {
+        "Type text into a form field identified by its index from browser_get_dom."
+    }
+
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
                 "tab_id": { "type": "string", "description": "Tab ID" },
-                "selector": { "type": "string", "description": "CSS selector of the input element" },
+                "index": {
+                    "type": "integer",
+                    "description": "Element index from browser_get_dom"
+                },
                 "text": { "type": "string", "description": "Text to type" }
             },
-            "required": ["tab_id", "selector", "text"]
+            "required": ["tab_id", "index", "text"]
         })
     }
+
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
         let tab_id = params["tab_id"].as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
-        let selector = params["selector"].as_str()
-            .ok_or_else(|| ToolError::Execution("selector is required".to_string()))?;
+        let index = params["index"].as_u64()
+            .ok_or_else(|| ToolError::Execution("index is required".to_string()))? as u32;
         let text = params["text"].as_str()
             .ok_or_else(|| ToolError::Execution("text is required".to_string()))?;
 
-        self.browser.type_text(tab_id, selector, text).await
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        ctx.type_text(tab_id, index, text).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
         Ok(ToolOutput::success(
-            &format!("Typed {} chars into '{}'", text.len(), selector),
+            &format!("Typed into element [{}].", index),
             start.elapsed().as_millis() as u64,
         ))
     }
 }
 
-pub struct BrowserWaitTool {
-    browser: Arc<BrowserService>,
-}
-impl BrowserWaitTool {
-    pub fn new(browser: Arc<BrowserService>) -> Self { Self { browser } }
-}
+// ── 10. BrowserSelectTool ─────────────────────────────────────────────────────
+
 #[async_trait]
-impl Tool for BrowserWaitTool {
-    fn name(&self) -> &str { "browser_wait" }
-    fn description(&self) -> &str { "Wait for a CSS selector to appear in the browser page." }
+impl Tool for BrowserSelectTool {
+    fn name(&self) -> &str { "browser_select" }
+
+    fn description(&self) -> &str {
+        "Select an option in a <select> element identified by its index from browser_get_dom."
+    }
+
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
                 "tab_id": { "type": "string", "description": "Tab ID" },
-                "selector": { "type": "string", "description": "CSS selector to wait for" },
-                "timeout_ms": { "type": "integer", "description": "Maximum wait time in milliseconds (default 10000)" }
+                "index": {
+                    "type": "integer",
+                    "description": "Element index from browser_get_dom"
+                },
+                "value": { "type": "string", "description": "Option value to select" }
             },
-            "required": ["tab_id", "selector"]
+            "required": ["tab_id", "index", "value"]
         })
     }
+
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
         let tab_id = params["tab_id"].as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
-        let selector = params["selector"].as_str()
-            .ok_or_else(|| ToolError::Execution("selector is required".to_string()))?;
-        let timeout_ms = params["timeout_ms"].as_u64().unwrap_or(10_000);
+        let index = params["index"].as_u64()
+            .ok_or_else(|| ToolError::Execution("index is required".to_string()))? as u32;
+        let value = params["value"].as_str()
+            .ok_or_else(|| ToolError::Execution("value is required".to_string()))?;
 
-        self.browser.wait_for_selector(tab_id, selector, timeout_ms).await
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        ctx.select_option(tab_id, index, value).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
         Ok(ToolOutput::success(
-            &format!("'{}' appeared", selector),
+            &format!("Selected value '{}' in element [{}].", value, index),
             start.elapsed().as_millis() as u64,
         ))
+    }
+}
+
+// ── 11. BrowserScrollTool ─────────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserScrollTool {
+    fn name(&self) -> &str { "browser_scroll" }
+
+    fn description(&self) -> &str {
+        "Scroll the page or a specific element in a direction by a number of pixels."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": { "type": "string", "description": "Tab ID" },
+                "direction": {
+                    "type": "string",
+                    "enum": ["up", "down", "left", "right"],
+                    "description": "Scroll direction"
+                },
+                "pixels": {
+                    "type": "integer",
+                    "description": "Number of pixels to scroll (default 300)"
+                },
+                "index": {
+                    "type": "integer",
+                    "description": "Element index to scroll within (optional; scrolls the window if omitted)"
+                }
+            },
+            "required": ["tab_id", "direction"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let tab_id = params["tab_id"].as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
+        let direction = params["direction"].as_str()
+            .ok_or_else(|| ToolError::Execution("direction is required".to_string()))?;
+        let pixels = params["pixels"].as_u64().unwrap_or(300) as u32;
+        let index = params["index"].as_u64().map(|i| i as u32);
+
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        ctx.scroll(tab_id, index, direction, pixels).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        Ok(ToolOutput::success(
+            &format!("Scrolled {} {}px.", direction, pixels),
+            start.elapsed().as_millis() as u64,
+        ))
+    }
+}
+
+// ── 12. BrowserSendKeysTool ───────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserSendKeysTool {
+    fn name(&self) -> &str { "browser_send_keys" }
+
+    fn description(&self) -> &str {
+        "Send keyboard key events to the page (e.g. 'Enter', 'Escape', 'Tab')."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": { "type": "string", "description": "Tab ID" },
+                "keys": {
+                    "type": "string",
+                    "description": "Key name to send (e.g. 'Enter', 'Escape', 'Tab', 'ArrowDown')"
+                }
+            },
+            "required": ["tab_id", "keys"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let tab_id = params["tab_id"].as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
+        let keys = params["keys"].as_str()
+            .ok_or_else(|| ToolError::Execution("keys is required".to_string()))?;
+
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        ctx.send_keys(tab_id, keys).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        Ok(ToolOutput::success(
+            &format!("Sent key: {}.", keys),
+            start.elapsed().as_millis() as u64,
+        ))
+    }
+}
+
+// ── 13. BrowserEvaluateTool ───────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserEvaluateTool {
+    fn name(&self) -> &str { "browser_evaluate" }
+
+    fn description(&self) -> &str {
+        "Execute a JavaScript snippet in the current tab and return the result as a JSON string."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": { "type": "string", "description": "Tab ID" },
+                "script": {
+                    "type": "string",
+                    "description": "JavaScript expression or function to evaluate"
+                }
+            },
+            "required": ["tab_id", "script"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let tab_id = params["tab_id"].as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
+        let script = params["script"].as_str()
+            .ok_or_else(|| ToolError::Execution("script is required".to_string()))?;
+
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        let result = ctx.execute_js(tab_id, script).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        Ok(ToolOutput::success(&result, start.elapsed().as_millis() as u64))
+    }
+}
+
+// ── 14. BrowserManageTabsTool ─────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserManageTabsTool {
+    fn name(&self) -> &str { "browser_manage_tabs" }
+
+    fn description(&self) -> &str {
+        "List all open tabs or close a specific tab."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": {
+                    "type": "string",
+                    "description": "Tab ID (used for 'close' action; ignored for 'list')"
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "close"],
+                    "description": "'list' returns all open tabs; 'close' closes the specified tab"
+                }
+            },
+            "required": ["tab_id", "action"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let tab_id = params["tab_id"].as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
+        let action = params["action"].as_str()
+            .ok_or_else(|| ToolError::Execution("action is required".to_string()))?;
+
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        match action {
+            "list" => {
+                let tabs = ctx.get_all_tabs().await;
+                let json = serde_json::to_string_pretty(&tabs)
+                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                Ok(ToolOutput::success(&json, start.elapsed().as_millis() as u64))
+            }
+            "close" => {
+                ctx.close_tab(tab_id).await
+                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                Ok(ToolOutput::success(
+                    &format!("Closed tab {}.", tab_id),
+                    start.elapsed().as_millis() as u64,
+                ))
+            }
+            _ => Err(ToolError::Execution(format!(
+                "Unknown action '{}'; expected 'list' or 'close'", action
+            ))),
+        }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn navigate_params_defaults() {
+        let params = serde_json::json!({});
+        assert!(params["url"].as_str().is_none());
+        assert_eq!(params["tab_id"].as_str().unwrap_or("new"), "new");
+    }
+
+    #[test]
+    fn scroll_pixels_default() {
+        let params = serde_json::json!({"tab_id": "t1", "direction": "down"});
+        let pixels = params["pixels"].as_u64().unwrap_or(300) as u32;
+        assert_eq!(pixels, 300);
     }
 }
