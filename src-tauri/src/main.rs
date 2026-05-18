@@ -942,6 +942,16 @@ fn main() {
             uclaw_core::tauri_commands::browser_launch,
             uclaw_core::tauri_commands::browser_shutdown,
             uclaw_core::tauri_commands::browser_take_screenshot,
+            uclaw_core::tauri_commands::browser_list_sessions,
+            uclaw_core::tauri_commands::browser_destroy_session,
+            uclaw_core::tauri_commands::browser_start_screencast,
+            uclaw_core::tauri_commands::browser_stop_screencast,
+            uclaw_core::tauri_commands::browser_get_dom_state,
+            uclaw_core::tauri_commands::browser_ui_navigate,
+            uclaw_core::tauri_commands::browser_ui_go_back,
+            uclaw_core::tauri_commands::browser_ui_go_forward,
+            uclaw_core::tauri_commands::browser_ui_reload,
+            uclaw_core::tauri_commands::browser_ui_close_tab,
             // System Tray / Badge Commands (Phase 3)
             uclaw_core::tauri_commands::update_badge_count,
             // Automation Commands (Phase 3)

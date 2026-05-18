@@ -9113,6 +9113,115 @@ pub async fn browser_take_screenshot(
     Ok(result.data)
 }
 
+#[tauri::command]
+pub async fn browser_list_sessions(
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    Ok(state.browser_context_manager.list_active_sessions().await)
+}
+
+#[tauri::command]
+pub async fn browser_destroy_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.browser_context_manager.destroy(&session_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn browser_start_screencast(
+    session_id: String,
+    tab_id: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    ctx.start_screencast(&tab_id, app_handle).await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn browser_stop_screencast(
+    session_id: String,
+    tab_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if let Ok(ctx) = state.browser_context_manager.get_or_create(&session_id).await {
+        ctx.stop_screencast(&tab_id).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn browser_get_dom_state(
+    session_id: String,
+    tab_id: String,
+    state: State<'_, AppState>,
+) -> Result<crate::browser::types::DOMState, String> {
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    ctx.get_dom_state(&tab_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn browser_ui_navigate(
+    session_id: String,
+    tab_id: String,
+    url: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    ctx.navigate(&tab_id, &url).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn browser_ui_go_back(
+    session_id: String,
+    tab_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    ctx.go_back(&tab_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn browser_ui_go_forward(
+    session_id: String,
+    tab_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    ctx.go_forward(&tab_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn browser_ui_reload(
+    session_id: String,
+    tab_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    ctx.reload(&tab_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn browser_ui_close_tab(
+    session_id: String,
+    tab_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if let Ok(ctx) = state.browser_context_manager.get_or_create(&session_id).await {
+        let _ = ctx.close_tab(&tab_id).await;
+    }
+    Ok(())
+}
+
 // ─── System Tray / Badge Commands (Phase 3) ─────────────────────────────────
 
 #[tauri::command]
