@@ -4,7 +4,7 @@
 
 **Goal:** 在已稳定的 IM dispatcher 之上，让每个 spec 拥有 per-identity 的长期 chat session（`automation:chat`），并把 spec 的产出（自主触发结果、IM 回复、UI streaming）统一接到这条 chat 线上 —— 完成 Phase 2a 明确推迟的"真实触达"承诺。
 
-**Architecture:** 引入混合 `ChatlikeAutomationDelegate` 取代 automation 路径中的 `HeadlessDelegate`，I/O handle 全部 `Option<>` 化按触发上下文装配；新增 `automation_chat_sessions(spec_id, identity_key) → agent_session_id` 索引表（V36 migration）；scheduled/file/webhook 路由改为追加 owner chat 线（不再创建 per-fire run session）；IM dispatcher 路径复用同一索引拿到 per-(spec, IM 身份) chat session。
+**Architecture:** 引入混合 `ChatlikeAutomationDelegate` 取代 automation 路径中的 `HeadlessDelegate`，I/O handle 全部 `Option<>` 化按触发上下文装配；新增 `automation_chat_sessions(spec_id, identity_key) → agent_session_id` 索引表（V38 migration）；scheduled/file/webhook 路由改为追加 owner chat 线（不再创建 per-fire run session）；IM dispatcher 路径复用同一索引拿到 per-(spec, IM 身份) chat session。
 
 **Tech Stack:** Rust + SQLite (rusqlite, MIGRATIONS array)，Tauri AppHandle emit，复用 PR #182/#186/#189 的 IM channels 基础设施。
 
@@ -98,7 +98,12 @@ spec 调用 `notify_user` 工具时按触发上下文路由：
 
 ## 3 · 数据模型
 
-### 3.1 新 migration V36
+### 3.1 新 migration V38
+
+> **V-number history**: This spec originally claimed V36. During implementation
+> kickoff two parallel sessions claimed V36 and V37 first; this work moved
+> to V38 to avoid the collision. The Active migration registry in `CLAUDE.md`
+> reflects the final assignment.
 
 `automation_chat_sessions` 索引表，键 `(spec_id, identity_key)` 映射到 agent_session：
 
@@ -215,7 +220,7 @@ agent loop 跑，streaming_handle 持续 emit token / tool activity
 
 | 文件 | 性质 | 改什么 |
 |---|---|---|
-| `src-tauri/src/db/migrations.rs` | 新 V36 | `automation_chat_sessions` 表 + 索引 |
+| `src-tauri/src/db/migrations.rs` | 新 V38 | `automation_chat_sessions` 表 + 索引 |
 | `src-tauri/src/automation/runtime/chat_sessions.rs` | **新文件** | `get_or_create_chat_session(spec_id, identity_key) → session_id` 实现 + 单元测试 |
 | `src-tauri/src/automation/runtime/service.rs` | 重构 | `execute_run_with_reply` 不再用 `_` 忽略 handles；新增 `execute_run_in_chat_session(spec_id, identity_key, payload, handles...)` 入口 |
 | `src-tauri/src/agent/chatlike_automation_delegate.rs` | **新文件** | `ChatlikeAutomationDelegate` 实现 `HeadlessDelegate` 当前的 trait surface，所有 I/O handle 字段改 `Option<>` |
@@ -230,7 +235,7 @@ agent loop 跑，streaming_handle 持续 emit token / tool activity
 | `ui/src/lib/tauri-bridge.ts` | 新调用 | `listChatSessionsForSpec(specId)` wrapper |
 | `ui/src/components/automation/SpecDetailView.tsx`（或同等位置） | 新 tab | "Chat threads" 列出所有 identity threads，点击进入 AgentView 复用 |
 | `ui/src/atoms/automation-atoms.ts`（或同等位置） | 新 atom | 缓存 per-spec chat session 列表 |
-| `CLAUDE.md` | 更新 | 在 Active migration registry 增加 V36 行 |
+| `CLAUDE.md` | 更新 | 在 Active migration registry 增加 V38 行 |
 
 **估算**：6-8 commits、约 1 周。
 
