@@ -78,6 +78,13 @@ impl BrowserContextManager {
         }
     }
 
+    /// Returns true if `session_id` has a live Chrome context.
+    /// Used to gate lazy browser-tool registration (saves ~6 500 tokens/turn
+    /// for non-browser sessions).
+    pub async fn has_context(&self, session_id: &str) -> bool {
+        self.contexts.read().await.contains_key(session_id)
+    }
+
     /// List session IDs that currently have a live Chrome context.
     pub async fn list_active_sessions(&self) -> Vec<String> {
         self.contexts.read().await.keys().cloned().collect()

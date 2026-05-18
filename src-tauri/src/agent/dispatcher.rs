@@ -1278,12 +1278,29 @@ impl LoopDelegate for ChatDelegate {
             thinking_enabled: self.thinking_enabled,
         };
 
+        // Token cost breakdown — helps diagnose context bloat.
+        let sys_tok = estimate_tokens(&full_system_prompt);
+        let tool_tok: u32 = tools.iter().map(|t| {
+            estimate_tokens(&t.name) + estimate_tokens(&t.description) + estimate_tokens(&t.parameters.to_string())
+        }).sum();
+        let msg_tok: u32 = messages.iter().skip(1 /* skip system */).map(|m| {
+            m.content.iter().map(|b| match b {
+                ContentBlock::Text { text } => estimate_tokens(text),
+                ContentBlock::ToolResult { content, .. } => estimate_tokens(content) + 5,
+                ContentBlock::ToolUse { name, input, .. } => estimate_tokens(name) + estimate_tokens(&input.to_string()) + 10,
+                _ => 5,
+            }).sum::<u32>()
+        }).sum();
         tracing::info!(
             model = %self.model,
             message_count = messages.len(),
             tool_count = tools.len(),
             force_text = reason_ctx.force_text,
             max_tokens,
+            system_prompt_tokens = sys_tok,
+            tool_def_tokens = tool_tok,
+            message_tokens = msg_tok,
+            estimated_total = sys_tok + tool_tok + msg_tok,
             "Calling LLM"
         );
 

@@ -8815,6 +8815,11 @@ pub async fn send_agent_message(
         "default".into(),
     ));
     // Browser tools (v2 — BrowserContextManager)
+    // Lazy registration: when no active browser context exists for this session,
+    // only register browser_navigate as the entry-point tool (~380 tokens vs ~7 000
+    // for all 19). The remaining interaction tools are registered only once a context
+    // is live, so conversational sessions (coding, Q&A) don't pay 7K tokens/turn for
+    // tools they never use.
     {
         use crate::browser::tools::*;
         let ctx_mgr = Arc::clone(&state.browser_context_manager);
@@ -8822,25 +8827,35 @@ pub async fn send_agent_message(
         macro_rules! bt {
             ($T:ident) => { $T { ctx_mgr: Arc::clone(&ctx_mgr), session_id: sid.clone() } };
         }
+        let browser_active = ctx_mgr.has_context(&sid).await;
+        // Always register the navigation entry-point so the LLM can open a browser
+        // on demand even when none is currently running.
         tools.register(bt!(BrowserNavigateTool));
-        tools.register(bt!(BrowserGoBackTool));
-        tools.register(bt!(BrowserGoForwardTool));
-        tools.register(bt!(BrowserReloadTool));
-        tools.register(bt!(BrowserGetDomTool));
-        tools.register(bt!(BrowserScreenshotTool));
-        tools.register(bt!(BrowserExtractTool));
-        tools.register(bt!(BrowserClickTool));
-        tools.register(bt!(BrowserTypeTool));
-        tools.register(bt!(BrowserSelectTool));
-        tools.register(bt!(BrowserScrollTool));
-        tools.register(bt!(BrowserSendKeysTool));
-        tools.register(bt!(BrowserEvaluateTool));
-        tools.register(bt!(BrowserManageTabsTool));
-        tools.register(bt!(BrowserGetCookiesTool));
-        tools.register(bt!(BrowserSetCookieTool));
-        tools.register(bt!(BrowserWaitTool));
-        tools.register(bt!(BrowserHoverTool));
-        tools.register(bt!(BrowserUploadFileTool));
+        if browser_active {
+            tools.register(bt!(BrowserGoBackTool));
+            tools.register(bt!(BrowserGoForwardTool));
+            tools.register(bt!(BrowserReloadTool));
+            tools.register(bt!(BrowserGetDomTool));
+            tools.register(bt!(BrowserScreenshotTool));
+            tools.register(bt!(BrowserExtractTool));
+            tools.register(bt!(BrowserClickTool));
+            tools.register(bt!(BrowserTypeTool));
+            tools.register(bt!(BrowserSelectTool));
+            tools.register(bt!(BrowserScrollTool));
+            tools.register(bt!(BrowserSendKeysTool));
+            tools.register(bt!(BrowserEvaluateTool));
+            tools.register(bt!(BrowserManageTabsTool));
+            tools.register(bt!(BrowserGetCookiesTool));
+            tools.register(bt!(BrowserSetCookieTool));
+            tools.register(bt!(BrowserWaitTool));
+            tools.register(bt!(BrowserHoverTool));
+            tools.register(bt!(BrowserUploadFileTool));
+        }
+        tracing::info!(
+            browser_active,
+            browser_tools = if browser_active { 19 } else { 1 },
+            "Browser tools registered (lazy: full set only when context is live)"
+        );
     }
     // MCP tool proxies — see send_message above for the rationale (PR-1).
     {
