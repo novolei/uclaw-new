@@ -2,6 +2,8 @@ import * as React from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { ChevronDown, ChevronUp, RefreshCw, RotateCcw, Power } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { EmbeddingEndpointSection } from './EmbeddingEndpointSection'
+import { DeveloperOptionsSection } from './DeveloperOptionsSection'
 
 // ── Types (mirror Rust structs) ──────────────────────────────────────
 
@@ -298,6 +300,12 @@ export function SystemTab() {
           </Section>
         </>
       )}
+
+      {/* Sprint 2.2 followon #4 — embedding endpoint configuration */}
+      <EmbeddingEndpointSection />
+
+      {/* Sprint 2.2 followon #4 — developer options (collapsed by default) */}
+      <DeveloperOptionsSection />
 
       {/* Footer */}
       {report && (

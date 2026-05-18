@@ -910,6 +910,9 @@ fn main() {
             // System Diagnostics
             uclaw_core::tauri_commands::get_system_diagnostics,
             uclaw_core::tauri_commands::restart_memu_bridge,
+            uclaw_core::tauri_commands::get_embedding_config,
+            uclaw_core::tauri_commands::set_embedding_config,
+            uclaw_core::tauri_commands::run_setup_script,
             uclaw_core::tauri_commands::restart_gbrain_mcp,
             uclaw_core::tauri_commands::reset_ai_engine,
             uclaw_core::tauri_commands::restart_app,

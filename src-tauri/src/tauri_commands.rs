@@ -371,6 +371,342 @@ pub async fn restart_memu_bridge(
     client.force_restart().await.map_err(|e| e.to_string())
 }
 
+// ─── Embedding endpoint configuration (Sprint 2.2 followon #4) ───────────────
+
+/// Wire-shape mirror of `MemubotConfig.embedding_endpoint`. Kept as a
+/// separate type so the IPC payload is self-contained — frontend
+/// doesn't see the rest of the config.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddingEndpointPayload {
+    pub base_url: String,
+    pub model: String,
+    pub dimensions: u32,
+    pub fastembed_model: String,
+}
+
+impl From<&crate::memubot_config::EmbeddingEndpointConfig> for EmbeddingEndpointPayload {
+    fn from(c: &crate::memubot_config::EmbeddingEndpointConfig) -> Self {
+        Self {
+            base_url: c.base_url.clone(),
+            model: c.model.clone(),
+            dimensions: c.dimensions,
+            fastembed_model: c.fastembed_model.clone(),
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn get_embedding_config(
+    state: State<'_, AppState>,
+) -> Result<EmbeddingEndpointPayload, Error> {
+    let cfg = state.memubot_config.read().await;
+    Ok((&cfg.embedding_endpoint).into())
+}
+
+/// Apply embedding-endpoint settings:
+///   1. Shell out to `~/.uclaw/gbrain/run.sh config set ...` for the
+///      three gbrain keys (`embedding_model`, `embedding_dimensions`,
+///      `base_urls.llama-server`). Each runs serially; first failure
+///      aborts + returns Err WITHOUT touching the remaining keys OR
+///      the on-disk `memubot_config.json`, so a half-applied state
+///      can't poison the next app restart.
+///   2. Persist the new values into `memubot_config.json` (only
+///      reached after all three gbrain keys land cleanly).
+///   3. If `fastembed_model` changed, call `MemUClient::force_restart()` so
+///      the bridge re-spawns with the new env. memU is degraded-mode-
+///      tolerant — if restart fails the rest still applied (warn-and-
+///      continue, matches the existing memU failure posture in this
+///      codebase).
+///
+/// On total success, returns the new payload (so the frontend can
+/// update its form without a second `get_embedding_config` round-trip).
+#[tauri::command]
+pub async fn set_embedding_config(
+    state: State<'_, AppState>,
+    payload: EmbeddingEndpointPayload,
+) -> Result<EmbeddingEndpointPayload, Error> {
+    // Capture the OLD fastembed_model BEFORE we overwrite it, so we
+    // know whether a memU restart is needed.
+    let old_fastembed_model = {
+        let cfg = state.memubot_config.read().await;
+        cfg.embedding_endpoint.fastembed_model.clone()
+    };
+
+    // 1. Shell out to gbrain CLI FIRST (before persisting). If any key
+    //    fails, the on-disk memubot_config.json is left untouched so the
+    //    next app restart re-reads the OLD values — avoids a diverged
+    //    state where config says new but gbrain still has old.
+    let gbrain_run_sh = state.data_dir.join("gbrain").join("run.sh");
+    if !gbrain_run_sh.is_file() {
+        return Err(Error::Internal(format!(
+            "gbrain launcher not found at {} — run uClaw at least once \
+             so Stage 3 writes it (see Sprint 2.2 launcher PR #207)",
+            gbrain_run_sh.display()
+        )));
+    }
+    // Apply dimensions BEFORE model so a model→dimension upgrade
+    // (bge-small 384 → bge-m3 1024) never lands a model that's wider
+    // than the active dimensions count, in case gbrain ever
+    // cross-validates the two keys.
+    for (key, value) in [
+        ("embedding_dimensions", payload.dimensions.to_string()),
+        ("embedding_model", payload.model.clone()),
+        ("base_urls.llama-server", payload.base_url.clone()),
+    ] {
+        let output = tokio::process::Command::new(&gbrain_run_sh)
+            .arg("config")
+            .arg("set")
+            .arg(key)
+            .arg(&value)
+            .output()
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("spawn gbrain config set {}: {}", key, e))
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Internal(format!(
+                "gbrain config set {} = {:?} exited {:?}: {}",
+                key,
+                value,
+                output.status.code(),
+                stderr.trim()
+            )));
+        }
+    }
+
+    // 2. Persist to memubot_config.json (only reached if all gbrain
+    //    keys applied cleanly).
+    {
+        let mut cfg = state.memubot_config.write().await;
+        cfg.embedding_endpoint = crate::memubot_config::EmbeddingEndpointConfig {
+            base_url: payload.base_url.clone(),
+            model: payload.model.clone(),
+            dimensions: payload.dimensions,
+            fastembed_model: payload.fastembed_model.clone(),
+        };
+        cfg.save(&state.data_dir).map_err(|e| {
+            Error::Internal(format!("failed to persist embedding config: {}", e))
+        })?;
+    }
+
+    // 3. Restart memU bridge if FASTEMBED_MODEL changed.
+    if old_fastembed_model != payload.fastembed_model {
+        if let Some(client) = state.memu_client.as_ref() {
+            // `force_restart` is async + bubbles errors; we log + continue so a
+            // bridge failure doesn't unwind the already-applied gbrain
+            // config (graceful degradation matches the rest of memU's
+            // failure posture in this codebase).
+            if let Err(e) = client.force_restart().await {
+                tracing::warn!(
+                    "memU bridge restart failed after FASTEMBED_MODEL change: {}; \
+                     bridge will continue on the old model until next manual \
+                     restart",
+                    e
+                );
+            }
+        }
+    }
+
+    Ok(payload)
+}
+
+// ─── Setup-script runner with allowlist (Sprint 2.2 followon #4) ─────
+
+/// Hardcoded allowlist of setup scripts the UI is allowed to run. Index
+/// in this array is the public API; anything not here is rejected.
+/// Adding a script is an explicit code change — there is intentionally
+/// no way to extend this from configuration.
+const SETUP_SCRIPT_ALLOWLIST: &[&str] = &[
+    "setup-bun-runtime",   // scripts/setup-bun-runtime.sh
+    "setup-gbrain-source", // scripts/setup-gbrain-source.sh
+    "setup-python-env",    // scripts/setup-python-env.sh
+    "init-gbrain",         // scripts/init-gbrain.sh
+];
+
+/// Each script's argv shape. The script_name is the allowlist entry
+/// above; supports a small set of well-known flags for the scripts
+/// that take them (init-gbrain accepts --force; everything else gets
+/// just --yes for CI-style non-interactive runs).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct RunSetupScriptArgs {
+    pub script_name: String,
+    /// Currently only honored by `init-gbrain`. Default false.
+    #[serde(default)]
+    pub force: bool,
+    /// Optional caller-supplied correlation id. When `None`, the
+    /// backend generates one. The frontend supplies its own id so it
+    /// can route incoming `system-setup-script:output` / `:end`
+    /// events to the right card BEFORE this invoke promise resolves
+    /// (which only happens at child exit — without a pre-known id,
+    /// every output line would be dropped during the run).
+    #[serde(default)]
+    pub run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RunSetupScriptResult {
+    pub run_id: String,
+    pub exit_code: Option<i32>,
+    pub success: bool,
+}
+
+/// Spawn the script + stream stdout/stderr lines as Tauri events:
+///   "system-setup-script:output" with payload
+///   {run_id, stream: "stdout"|"stderr", line: "..."}
+///
+/// When the process exits, fire:
+///   "system-setup-script:end" with payload
+///   {run_id, exit_code, success}
+///
+/// Returns once the process has exited (not at spawn) so the frontend's
+/// promise resolves with the final exit code AND the in-process event
+/// stream is fully drained.
+#[tauri::command]
+pub async fn run_setup_script(
+    app: tauri::AppHandle,
+    args: RunSetupScriptArgs,
+) -> Result<RunSetupScriptResult, Error> {
+    use tauri::Emitter;
+
+    // 1. Allowlist enforcement — rejects compile-time-unknown names.
+    if !SETUP_SCRIPT_ALLOWLIST.contains(&args.script_name.as_str()) {
+        return Err(Error::Internal(format!(
+            "script '{}' is not in the allowlist; permitted: {:?}",
+            args.script_name, SETUP_SCRIPT_ALLOWLIST
+        )));
+    }
+
+    // 2. Resolve script path. Scripts live under <project_root>/scripts/.
+    // In dev builds, the project root is the parent of CARGO_MANIFEST_DIR;
+    // in release the scripts are NOT bundled (they are dev-only). So this
+    // command is dev-mode only by design — fail loud if scripts/ isn't
+    // reachable.
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let project_root = manifest_dir.parent().ok_or_else(|| {
+        Error::Internal("CARGO_MANIFEST_DIR has no parent — unexpected layout".into())
+    })?;
+    let script_path = project_root
+        .join("scripts")
+        .join(format!("{}.sh", args.script_name));
+    if !script_path.is_file() {
+        return Err(Error::Internal(format!(
+            "script not found at {} (dev-only command — bundle does not ship scripts/)",
+            script_path.display()
+        )));
+    }
+
+    // 3. Build argv. Only init-gbrain honors --force; all four accept --yes
+    // for non-interactive runs (matches scripts/setup-*.sh convention).
+    let mut argv: Vec<String> = vec![script_path.to_string_lossy().into_owned()];
+    argv.push("--yes".to_string());
+    if args.script_name == "init-gbrain" && args.force {
+        argv.push("--force".to_string());
+    }
+
+    // 4. Honor caller-supplied run_id; fall back to a backend-generated
+    // one when the caller didn't pass one (e.g. CLI / test harness).
+    let run_id = args.run_id.clone().unwrap_or_else(|| {
+        format!(
+            "setup-{}-{}",
+            args.script_name,
+            chrono::Utc::now().timestamp_millis()
+        )
+    });
+
+    // 5. Spawn + drain.
+    tracing::info!(
+        run_id = %run_id,
+        script = %script_path.display(),
+        force = args.force,
+        "[setup-script] starting"
+    );
+    let mut child = tokio::process::Command::new("bash")
+        .args(&argv)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| Error::Internal(format!("spawn {}: {}", args.script_name, e)))?;
+
+    let stdout = child.stdout.take().ok_or_else(|| {
+        Error::Internal("failed to capture stdout".into())
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        Error::Internal("failed to capture stderr".into())
+    })?;
+
+    // Spawn line readers for both streams in parallel — without this,
+    // a script that writes a lot to one stream can block the other
+    // (pipe buffer fills, write() blocks).
+    use tokio::io::AsyncBufReadExt;
+    let app_for_stdout = app.clone();
+    let run_id_for_stdout = run_id.clone();
+    let stdout_task = tokio::spawn(async move {
+        let mut reader = tokio::io::BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            let _ = app_for_stdout.emit(
+                "system-setup-script:output",
+                serde_json::json!({
+                    "run_id": run_id_for_stdout,
+                    "stream": "stdout",
+                    "line": line,
+                }),
+            );
+        }
+    });
+
+    let app_for_stderr = app.clone();
+    let run_id_for_stderr = run_id.clone();
+    let stderr_task = tokio::spawn(async move {
+        let mut reader = tokio::io::BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            let _ = app_for_stderr.emit(
+                "system-setup-script:output",
+                serde_json::json!({
+                    "run_id": run_id_for_stderr,
+                    "stream": "stderr",
+                    "line": line,
+                }),
+            );
+        }
+    });
+
+    let status = child.wait().await.map_err(|e| {
+        Error::Internal(format!("wait on {}: {}", args.script_name, e))
+    })?;
+    // Drain the line readers — they finish naturally on EOF; the await
+    // here just guarantees we don't fire the `end` event before the
+    // last `output` event lands.
+    let _ = stdout_task.await;
+    let _ = stderr_task.await;
+
+    let exit_code = status.code();
+    let success = status.success();
+    let _ = app.emit(
+        "system-setup-script:end",
+        serde_json::json!({
+            "run_id": run_id,
+            "exit_code": exit_code,
+            "success": success,
+        }),
+    );
+
+    tracing::info!(
+        run_id = %run_id,
+        exit_code = ?exit_code,
+        success = success,
+        "[setup-script] finished"
+    );
+
+    Ok(RunSetupScriptResult {
+        run_id,
+        exit_code,
+        success,
+    })
+}
+
 #[tauri::command]
 pub async fn restart_gbrain_mcp(
     state: State<'_, AppState>,
@@ -13973,5 +14309,35 @@ mod learning_set_state_sql_tests {
         assert_eq!(rows, 1);
         assert_eq!(state_of(&conn, "p1"), "active");
         assert_eq!(updated_at_of(&conn, "p1"), 42);
+    }
+}
+
+#[cfg(test)]
+mod setup_script_tests {
+    use super::*;
+
+    #[test]
+    fn allowlist_contains_exactly_the_four_documented_scripts() {
+        // Pin the contract — extending the allowlist is a deliberate
+        // code change, not a config tweak.
+        assert_eq!(
+            SETUP_SCRIPT_ALLOWLIST,
+            &[
+                "setup-bun-runtime",
+                "setup-gbrain-source",
+                "setup-python-env",
+                "init-gbrain",
+            ]
+        );
+    }
+
+    #[test]
+    fn allowlist_rejects_arbitrary_names_at_membership_check() {
+        // Direct test of the contains() guard so a future rewrite of
+        // run_setup_script can't quietly drop the check.
+        assert!(!SETUP_SCRIPT_ALLOWLIST.contains(&"rm-rf-slash"));
+        assert!(!SETUP_SCRIPT_ALLOWLIST.contains(&"setup-bun-runtime.sh"), "name must NOT include the .sh extension");
+        assert!(!SETUP_SCRIPT_ALLOWLIST.contains(&"../scripts/setup-bun-runtime"));
+        assert!(SETUP_SCRIPT_ALLOWLIST.contains(&"setup-bun-runtime"));
     }
 }
