@@ -33,6 +33,7 @@ pub enum BrowserTaskStatus {
     Failed,
     Stopped,
     NeedsUserIntervention,
+    PausedCheckpointed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -48,6 +48,7 @@ export function BrowserTaskMonitor({ sessionId }: BrowserTaskMonitorProps): Reac
   const done = run.status === 'completed'
   const failed = run.status === 'failed' || run.status === 'stopped'
   const needsUser = run.status === 'needs_user_intervention'
+  const checkpointed = run.status === 'paused_checkpointed'
 
   return (
     <div className="border-t border-border/50 bg-background/95">
@@ -63,7 +64,8 @@ export function BrowserTaskMonitor({ sessionId }: BrowserTaskMonitorProps): Reac
           done && 'bg-emerald-500/10 text-emerald-600',
           failed && 'bg-destructive/10 text-destructive',
           needsUser && 'bg-amber-500/10 text-amber-600',
-          !done && !failed && !needsUser && 'bg-blue-500/10 text-blue-600',
+          checkpointed && 'bg-violet-500/10 text-violet-600',
+          !done && !failed && !needsUser && !checkpointed && 'bg-blue-500/10 text-blue-600',
         )}>
           {run.status}
         </span>
