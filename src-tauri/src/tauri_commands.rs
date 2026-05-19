@@ -897,9 +897,11 @@ pub async fn send_message(
     // Browser tools (v2 — BrowserContextManager)
     {
         use crate::browser::decision::LlmBrowserDecisionAdapter;
+        use crate::browser::task_store::BrowserTaskStore;
         use crate::browser::tools::*;
         let ctx_mgr = Arc::clone(&state.browser_context_manager);
         let sid = input.conversation_id.clone();
+        let task_store = Arc::new(BrowserTaskStore::new(Arc::clone(&state.db)));
         let decision_adapter = Arc::new(LlmBrowserDecisionAdapter::new(
             Arc::clone(&llm),
             model.clone(),
@@ -937,11 +939,13 @@ pub async fn send_message(
             ctx_mgr: Arc::clone(&ctx_mgr),
             session_id: sid.clone(),
             decision_adapter: decision_adapter.clone(),
+            task_store: Some(Arc::clone(&task_store)),
         });
         tools.register(RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
             session_id: sid.clone(),
             decision_adapter,
+            task_store: Some(task_store),
         });
     }
     // MCP tool proxies — agents see tools from any currently-connected
@@ -8872,9 +8876,11 @@ pub async fn send_agent_message(
     // tools they never use.
     {
         use crate::browser::decision::LlmBrowserDecisionAdapter;
+        use crate::browser::task_store::BrowserTaskStore;
         use crate::browser::tools::*;
         let ctx_mgr = Arc::clone(&state.browser_context_manager);
         let sid = input.session_id.clone();
+        let task_store = Arc::new(BrowserTaskStore::new(Arc::clone(&state.db)));
         let decision_adapter = Arc::new(LlmBrowserDecisionAdapter::new(
             Arc::clone(&llm),
             model.clone(),
@@ -8890,11 +8896,13 @@ pub async fn send_agent_message(
             ctx_mgr: Arc::clone(&ctx_mgr),
             session_id: sid.clone(),
             decision_adapter: decision_adapter.clone(),
+            task_store: Some(Arc::clone(&task_store)),
         });
         tools.register(RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
             session_id: sid.clone(),
             decision_adapter,
+            task_store: Some(task_store),
         });
         if browser_active {
             tools.register(bt!(BrowserGoBackTool));

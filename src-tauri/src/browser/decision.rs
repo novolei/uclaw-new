@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::types::{ChatMessage, RespondOutput};
 use crate::browser::action::BrowserAction;
 use crate::browser::session_state::BrowserTaskStep;
+use crate::browser::task_store::BrowserTaskMemory;
 use crate::llm::{CompletionConfig, LlmProvider};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,12 +30,16 @@ pub struct BrowserDecision {
 pub fn build_browser_decision_prompt(
     task: &str,
     observation_json: &serde_json::Value,
+    memory: Option<&BrowserTaskMemory>,
     previous_steps: &[BrowserTaskStep],
 ) -> String {
     let steps_json = serde_json::to_string_pretty(previous_steps)
         .unwrap_or_else(|_| "[]".to_string());
     let observation_json = serde_json::to_string_pretty(observation_json)
         .unwrap_or_else(|_| "{}".to_string());
+    let memory_json = memory
+        .and_then(|m| serde_json::to_string_pretty(m).ok())
+        .unwrap_or_else(|| "{}".to_string());
     format!(
         "You are the browser decision adapter for an AI browser agent.\n\
          Return exactly one JSON object matching this schema and no markdown:\n\
@@ -59,6 +64,7 @@ pub fn build_browser_decision_prompt(
          - Prefer DOM element indexes from the latest observation; do not invent indexes.\n\
          - Keep reasoning concise.\n\n\
          Task:\n{task}\n\n\
+         Browser task memory JSON:\n{memory_json}\n\n\
          Latest observation JSON:\n{observation_json}\n\n\
          Previous browser steps:\n{steps_json}\n"
     )
@@ -94,6 +100,7 @@ pub trait BrowserDecisionAdapter: Send + Sync {
         &self,
         task: &str,
         observation_json: &serde_json::Value,
+        memory: Option<&BrowserTaskMemory>,
         previous_steps: &[BrowserTaskStep],
     ) -> Result<BrowserDecision>;
 }
@@ -115,9 +122,10 @@ impl BrowserDecisionAdapter for LlmBrowserDecisionAdapter {
         &self,
         task: &str,
         observation_json: &serde_json::Value,
+        memory: Option<&BrowserTaskMemory>,
         previous_steps: &[BrowserTaskStep],
     ) -> Result<BrowserDecision> {
-        let prompt = build_browser_decision_prompt(task, observation_json, previous_steps);
+        let prompt = build_browser_decision_prompt(task, observation_json, memory, previous_steps);
         let config = CompletionConfig {
             model: self.model.clone(),
             max_tokens: 1024,
@@ -161,6 +169,7 @@ mod tests {
         let prompt = build_browser_decision_prompt(
             "Search for rust crates",
             &serde_json::json!({"url": "https://example.test", "elements": []}),
+            None,
             &[],
         );
         assert!(prompt.contains("Return exactly one JSON object"));

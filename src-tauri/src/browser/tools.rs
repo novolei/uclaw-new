@@ -7,6 +7,7 @@ use crate::browser::context::DevicePreset;
 use crate::browser::context_manager::BrowserContextManager;
 use crate::browser::decision::BrowserDecisionAdapter;
 use crate::browser::dom_state::format_dom_state_for_llm;
+use crate::browser::task_store::BrowserTaskStore;
 
 // ── Macro: declare all 14 tool structs ────────────────────────────────────────
 
@@ -50,12 +51,14 @@ pub struct BrowserTaskTool {
     pub ctx_mgr: Arc<BrowserContextManager>,
     pub session_id: String,
     pub decision_adapter: Arc<dyn BrowserDecisionAdapter>,
+    pub task_store: Option<Arc<BrowserTaskStore>>,
 }
 
 pub struct RetryWithBrowserAgentTool {
     pub ctx_mgr: Arc<BrowserContextManager>,
     pub session_id: String,
     pub decision_adapter: Arc<dyn BrowserDecisionAdapter>,
+    pub task_store: Option<Arc<BrowserTaskStore>>,
 }
 
 // ── 1. BrowserNavigateTool ────────────────────────────────────────────────────
@@ -1334,7 +1337,7 @@ impl Tool for BrowserTaskTool {
         let runner = BrowserAgentLoop::new(
             Arc::clone(&self.ctx_mgr),
             Arc::clone(&self.decision_adapter),
-        );
+        ).with_task_store(self.task_store.clone());
         let run = runner.run(BrowserTaskRequest {
             session_id: self.session_id.clone(),
             task,
@@ -1367,6 +1370,7 @@ impl Tool for RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&self.ctx_mgr),
             session_id: self.session_id.clone(),
             decision_adapter: Arc::clone(&self.decision_adapter),
+            task_store: self.task_store.clone(),
         }.parameters_schema()
     }
 
@@ -1375,6 +1379,7 @@ impl Tool for RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&self.ctx_mgr),
             session_id: self.session_id.clone(),
             decision_adapter: Arc::clone(&self.decision_adapter),
+            task_store: self.task_store.clone(),
         }.execute(params).await
     }
 }
