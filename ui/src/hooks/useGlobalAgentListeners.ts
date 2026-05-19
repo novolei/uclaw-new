@@ -538,6 +538,21 @@ function startAgentListeners(store: Store): void {
         (toolName === 'browser_task' || toolName === 'retry_with_browser_agent')
       ) {
         const initialUrl = typeof ev.input?.start_url === 'string' ? ev.input.start_url : ''
+        const task = typeof ev.input?.task === 'string' ? ev.input.task : ''
+        const runId = typeof ev.toolCallId === 'string' && ev.toolCallId.length > 0
+          ? ev.toolCallId
+          : `pending-${Date.now()}`
+        store.set(browserTaskRunAtom, (prev) => {
+          const next = new Map(prev)
+          next.set(sid, {
+            runId,
+            sessionId: sid,
+            task,
+            status: 'running',
+            steps: [],
+          })
+          return next
+        })
         store.set(openBrowserTabAction, { agentSessionId: sid, initialUrl })
         return
       }

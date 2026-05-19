@@ -326,8 +326,8 @@ enum RecoveryOutcome {
 
 fn summarize_observation(observation: &BrowserObservation) -> String {
     let mut text = observation.page_text.trim().replace('\n', " ");
-    if text.len() > 240 {
-        text.truncate(240);
+    if text.chars().count() > 240 {
+        text = text.chars().take(240).collect();
         text.push_str("...");
     }
     format!(
@@ -365,6 +365,28 @@ fn action_name(action: &BrowserAction) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn summarize_observation_truncates_non_ascii_safely() {
+        let observation = BrowserObservation {
+            session_id: "s1".into(),
+            tab_id: "t1".into(),
+            url: "https://example.com".into(),
+            title: "中文页面".into(),
+            page_text: "苹果官网".repeat(100),
+            elements: vec![],
+            tabs: vec![],
+            screenshot_b64: None,
+            timestamp_ms: 123,
+        };
+
+        let summary = summarize_observation(&observation);
+
+        assert!(summary.contains("中文页面"));
+        assert!(summary.ends_with("..."));
+    }
+
     #[test]
     fn max_steps_bounds_task_loop() {
         assert_eq!(super::clamp_max_steps(Some(0)), 1);
