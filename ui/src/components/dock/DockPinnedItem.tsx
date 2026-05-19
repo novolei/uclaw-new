@@ -8,7 +8,16 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { pinIdColorSeed } from '@/atoms/dock-atoms'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu'
+import { useSetAtom, useAtomValue } from 'jotai'
+import { pinIdColorSeed, dockOrderAtom, removeDockPin } from '@/atoms/dock-atoms'
+import { toast } from 'sonner'
+import { PinOff } from 'lucide-react'
 
 /**
  * Renders a pinned dock entry (conversation / workspace / automation) as
@@ -58,6 +67,16 @@ export function DockPinnedItem({
   // DockPinnedItem always has a sortableId (required prop), so we pass it
   // directly — no dummy-fallback pattern needed (unlike DockItem).
   const sortable = useSortable({ id: sortableId })
+
+  const dockOrder = useAtomValue(dockOrderAtom)
+  const setDockOrder = useSetAtom(dockOrderAtom)
+
+  const handleUnpin = React.useCallback(() => {
+    const next = removeDockPin(dockOrder, sortableId)
+    if (next === dockOrder) return // safety: already gone
+    setDockOrder(next)
+    toast.success('已从 Dock 取消固定')
+  }, [dockOrder, setDockOrder, sortableId])
 
   React.useEffect(() => {
     // While dragging, suppress magnification — the lifted item carries its
@@ -109,46 +128,58 @@ export function DockPinnedItem({
   const glyph = emoji ?? label.charAt(0).toUpperCase()
 
   return (
-    <TooltipProvider delayDuration={140} skipDelayDuration={80}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <motion.button
-            ref={sortable.setNodeRef}
-            type="button"
-            data-sortable-id={sortableId}
-            data-dragging={sortable.isDragging ? 'true' : undefined}
-            data-dock-pin
-            className="relative flex items-end justify-center select-none outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-0 rounded-[14px]"
-            style={motionStyle}
-            {...sortable.attributes}
-            {...sortable.listeners}
-            onMouseEnter={() => onHoverIndexChange(index)}
-            onMouseLeave={() => onHoverIndexChange(null)}
-            onClick={onClick}
-            aria-label={label}
-          >
-            <span
-              data-dock-pin-tile
-              aria-hidden="true"
-              className="flex items-center justify-center rounded-[11px] text-white font-semibold text-[18px] shadow-[inset_0_-1px_2px_rgba(0,0,0,0.15),inset_0_1px_1px_rgba(255,255,255,0.18)]"
-              style={{
-                width: ICON_BOX,
-                height: ICON_BOX,
-                background: tileBackground,
-              }}
-            >
-              <span data-dock-pin-glyph>{glyph}</span>
-            </span>
-          </motion.button>
-        </TooltipTrigger>
-        <TooltipContent
-          side="top"
-          sideOffset={10}
-          className="text-[11px] font-medium px-2 py-1 rounded-md bg-popover/95 text-popover-foreground border border-border/60 shadow-md"
-        >
-          {label}
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <span className="contents">
+          <TooltipProvider delayDuration={140} skipDelayDuration={80}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <motion.button
+                  ref={sortable.setNodeRef}
+                  type="button"
+                  data-sortable-id={sortableId}
+                  data-dragging={sortable.isDragging ? 'true' : undefined}
+                  data-dock-pin
+                  className="relative flex items-end justify-center select-none outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-0 rounded-[14px]"
+                  style={motionStyle}
+                  {...sortable.attributes}
+                  {...sortable.listeners}
+                  onMouseEnter={() => onHoverIndexChange(index)}
+                  onMouseLeave={() => onHoverIndexChange(null)}
+                  onClick={onClick}
+                  aria-label={label}
+                >
+                  <span
+                    data-dock-pin-tile
+                    aria-hidden="true"
+                    className="flex items-center justify-center rounded-[11px] text-white font-semibold text-[18px] shadow-[inset_0_-1px_2px_rgba(0,0,0,0.15),inset_0_1px_1px_rgba(255,255,255,0.18)]"
+                    style={{
+                      width: ICON_BOX,
+                      height: ICON_BOX,
+                      background: tileBackground,
+                    }}
+                  >
+                    <span data-dock-pin-glyph>{glyph}</span>
+                  </span>
+                </motion.button>
+              </TooltipTrigger>
+              <TooltipContent
+                side="top"
+                sideOffset={10}
+                className="text-[11px] font-medium px-2 py-1 rounded-md bg-popover/95 text-popover-foreground border border-border/60 shadow-md"
+              >
+                {label}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </span>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={handleUnpin}>
+          <PinOff size={14} className="mr-2" />
+          从 Dock 取消固定
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
