@@ -15,6 +15,8 @@ import { MainArea } from '@/components/tabs/MainArea'
 import { AppShellProvider, type AppShellContextType } from '@/contexts/AppShellContext'
 import { ApprovalModal } from '@/components/ApprovalModal'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
+import { ConnectionsPanel } from '@/components/dock/ConnectionsPanel'
+import { AlertPanel } from '@/components/dock/AlertPanel'
 import { ModeBanner } from '@/components/agent/ModeBanner'
 import { appModeAtom } from '@/atoms/app-mode'
 import {
@@ -378,6 +380,13 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
             switch) so it's reachable from BOTH the workspace surface AND the
             Kaleidoscope surface (KaleidoscopeRail has a settings button). */}
         <SettingsDialog />
+
+        {/* Dock placeholder panels — Connections + Alert. Real views are
+            scheduled later; these dialogs keep the dock icons functional
+            today and live alongside SettingsDialog so they're reachable
+            regardless of the current surface. */}
+        <ConnectionsPanel />
+        <AlertPanel />
 
         {/* Global escalation modal — shows when a humane spec requests a
             human decision. Dequeues one at a time; resolves via

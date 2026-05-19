@@ -7,6 +7,8 @@ import {
   memuOnlineAtom,
   dockOrderAtom,
   applyDockReorder,
+  ensureCanonicalModes,
+  CANONICAL_DOCK_MODES,
   type DockItemSpec,
 } from './dock-atoms'
 
@@ -39,7 +41,7 @@ describe('dock-atoms', () => {
 })
 
 describe('dockOrderAtom', () => {
-  it('seeds with the 4 mode entries in chat/agent/memory/kaleidoscope order', () => {
+  it('seeds with all 8 canonical mode entries in canonical order', () => {
     const store = createStore()
     const order = store.get(dockOrderAtom)
     expect(order).toEqual([
@@ -47,6 +49,10 @@ describe('dockOrderAtom', () => {
       { kind: 'mode', mode: 'agent' },
       { kind: 'mode', mode: 'memory' },
       { kind: 'mode', mode: 'kaleidoscope' },
+      { kind: 'mode', mode: 'home' },
+      { kind: 'mode', mode: 'connections' },
+      { kind: 'mode', mode: 'alert' },
+      { kind: 'mode', mode: 'settings' },
     ])
   })
 
@@ -74,6 +80,47 @@ describe('dockOrderAtom', () => {
     ]
     store.set(dockOrderAtom, next)
     expect(store.get(dockOrderAtom)).toEqual(next)
+  })
+})
+
+describe('ensureCanonicalModes', () => {
+  it('returns the same reference when every canonical mode is already present', () => {
+    const current: DockItemSpec[] = CANONICAL_DOCK_MODES.map((mode) => ({
+      kind: 'mode' as const,
+      mode,
+    }))
+    expect(ensureCanonicalModes(current)).toBe(current)
+  })
+
+  it('appends missing canonical modes while preserving existing order + pins', () => {
+    // Simulates a localStorage from before home/connections/alert/settings landed.
+    const legacy: DockItemSpec[] = [
+      { kind: 'mode', mode: 'chat' },
+      { kind: 'mode', mode: 'agent' },
+      { kind: 'pinned-conversation', sessionId: 's1', type: 'agent' },
+      { kind: 'mode', mode: 'memory' },
+      { kind: 'mode', mode: 'kaleidoscope' },
+    ]
+    const next = ensureCanonicalModes(legacy)
+    expect(next).not.toBe(legacy)
+    // Original entries preserved in original positions
+    expect(next.slice(0, 5)).toEqual(legacy)
+    // Missing modes appended in canonical order
+    expect(next.slice(5)).toEqual([
+      { kind: 'mode', mode: 'home' },
+      { kind: 'mode', mode: 'connections' },
+      { kind: 'mode', mode: 'alert' },
+      { kind: 'mode', mode: 'settings' },
+    ])
+  })
+
+  it('appends just the missing one when only a single mode is absent', () => {
+    const current: DockItemSpec[] = CANONICAL_DOCK_MODES
+      .filter((m) => m !== 'alert')
+      .map((mode) => ({ kind: 'mode' as const, mode }))
+    const next = ensureCanonicalModes(current)
+    expect(next).toHaveLength(CANONICAL_DOCK_MODES.length)
+    expect(next[next.length - 1]).toEqual({ kind: 'mode', mode: 'alert' })
   })
 })
 

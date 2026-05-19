@@ -17,11 +17,14 @@ import { DockPinnedItem } from './DockPinnedItem'
 import { ConnectionIndicator } from './ConnectionIndicator'
 import { DockDragHandle } from './DockDragHandle'
 import { useConnectionStatus } from './useConnectionStatus'
-import { bottomDockEnabledAtom, dockOrderAtom, applyDockReorder, dockBounceKeysAtom, type DockItemSpec } from '@/atoms/dock-atoms'
+import { bottomDockEnabledAtom, dockOrderAtom, applyDockReorder, dockBounceKeysAtom, ensureCanonicalModes, type DockItemSpec } from '@/atoms/dock-atoms'
 import { useDockLiveness } from '@/hooks/useDockLiveness'
 import { appModeAtom, type AppMode } from '@/atoms/app-mode'
 import { topLevelViewAtom, type TopLevelView } from '@/atoms/top-level-view'
 import { kaleidoscopeModuleAtom, type KaleidoscopeModuleId } from '@/atoms/kaleidoscope'
+import { homeOfficePanelOpenAtom } from '@/atoms/home-office-atoms'
+import { settingsOpenAtom } from '@/atoms/settings-tab'
+import { connectionsPanelOpenAtom, alertPanelOpenAtom } from '@/atoms/dock-placeholder-atoms'
 import { conversationsAtom } from '@/atoms/chat-atoms'
 import { agentSessionsAtom } from '@/atoms/agent-atoms'
 import { workspacesAtom, activeWorkspaceIdAtom } from '@/atoms/workspace'
@@ -32,6 +35,10 @@ import chatIcon from '@/assets/dock-icons/chat.webp'
 import agentIcon from '@/assets/dock-icons/agent.webp'
 import memoryIcon from '@/assets/dock-icons/memory.webp'
 import kaleidoscopeIcon from '@/assets/dock-icons/kaleidoscope.webp'
+import homeIcon from '@/assets/dock-icons/home-office.webp'
+import connectionsIcon from '@/assets/dock-icons/connections.webp'
+import alertIcon from '@/assets/dock-icons/alert.webp'
+import settingsIcon from '@/assets/dock-icons/settings.webp'
 
 interface BottomDockProps {
   /** Controlled from BottomDockHoverRegion. Drives slide animation. */
@@ -42,15 +49,23 @@ interface NavCtx {
   appMode: AppMode
   topLevelView: TopLevelView
   kaleidoscopeModule: KaleidoscopeModuleId
+  homeOfficeOpen: boolean
+  settingsOpen: boolean
+  connectionsOpen: boolean
+  alertOpen: boolean
 }
 
 interface ActionCtx {
   setAppMode: (m: AppMode) => void
   setTopLevelView: (v: TopLevelView) => void
   setKaleidoscopeModule: (m: KaleidoscopeModuleId) => void
+  setHomeOfficeOpen: (v: boolean) => void
+  setSettingsOpen: (v: boolean) => void
+  setConnectionsOpen: (v: boolean) => void
+  setAlertOpen: (v: boolean) => void
 }
 
-type ModeId = 'chat' | 'agent' | 'memory' | 'kaleidoscope'
+type ModeId = 'chat' | 'agent' | 'memory' | 'kaleidoscope' | 'home' | 'connections' | 'alert' | 'settings'
 
 interface ModeMeta {
   iconSrc: string
@@ -98,6 +113,36 @@ const MODE_REGISTRY: Record<ModeId, ModeMeta> = {
     onClick: ({ setTopLevelView }) => {
       setTopLevelView('kaleidoscope')
     },
+  },
+  home: {
+    iconSrc: homeIcon,
+    label: '家',
+    // HomeOfficeView renders inside WorkspaceShell when its atom is true,
+    // so isActive requires both surface=workspace AND the panel toggle.
+    isActive: ({ topLevelView, homeOfficeOpen }) =>
+      topLevelView === 'workspace' && homeOfficeOpen,
+    onClick: ({ setTopLevelView, setHomeOfficeOpen }) => {
+      setTopLevelView('workspace')
+      setHomeOfficeOpen(true)
+    },
+  },
+  connections: {
+    iconSrc: connectionsIcon,
+    label: '连接',
+    isActive: ({ connectionsOpen }) => connectionsOpen,
+    onClick: ({ setConnectionsOpen }) => setConnectionsOpen(true),
+  },
+  alert: {
+    iconSrc: alertIcon,
+    label: '通知',
+    isActive: ({ alertOpen }) => alertOpen,
+    onClick: ({ setAlertOpen }) => setAlertOpen(true),
+  },
+  settings: {
+    iconSrc: settingsIcon,
+    label: '设置',
+    isActive: ({ settingsOpen }) => settingsOpen,
+    onClick: ({ setSettingsOpen }) => setSettingsOpen(true),
   },
 }
 
@@ -149,6 +194,14 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
   const setTopLevelView = useSetAtom(topLevelViewAtom)
   const setKaleidoscopeModule = useSetAtom(kaleidoscopeModuleAtom)
   const setDockOrder = useSetAtom(dockOrderAtom)
+  const homeOfficeOpen = useAtomValue(homeOfficePanelOpenAtom)
+  const settingsOpen = useAtomValue(settingsOpenAtom)
+  const connectionsOpen = useAtomValue(connectionsPanelOpenAtom)
+  const alertOpen = useAtomValue(alertPanelOpenAtom)
+  const setHomeOfficeOpen = useSetAtom(homeOfficePanelOpenAtom)
+  const setSettingsOpen = useSetAtom(settingsOpenAtom)
+  const setConnectionsOpen = useSetAtom(connectionsPanelOpenAtom)
+  const setAlertOpen = useSetAtom(alertPanelOpenAtom)
   const conversations = useAtomValue(conversationsAtom)
   const agentSessions = useAtomValue(agentSessionsAtom)
   const workspaces = useAtomValue(workspacesAtom)
@@ -189,13 +242,33 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
     if (!revealed) setHoveredIndex(null)
   }, [revealed])
 
+  // One-shot migration: existing localStorage orders predate home/
+  // connections/alert/settings — append any canonical mode missing from
+  // the persisted list. The helper is referentially stable when nothing
+  // is missing, so this is a no-op after the first apply.
+  React.useEffect(() => {
+    setDockOrder((current) => ensureCanonicalModes(current))
+  }, [setDockOrder])
+
   if (!isDockEnabled) return null
 
-  const navCtx: NavCtx = { appMode, topLevelView, kaleidoscopeModule }
+  const navCtx: NavCtx = {
+    appMode,
+    topLevelView,
+    kaleidoscopeModule,
+    homeOfficeOpen,
+    settingsOpen,
+    connectionsOpen,
+    alertOpen,
+  }
   const actionCtx: ActionCtx = {
     setAppMode,
     setTopLevelView,
     setKaleidoscopeModule,
+    setHomeOfficeOpen,
+    setSettingsOpen,
+    setConnectionsOpen,
+    setAlertOpen,
   }
 
   return (

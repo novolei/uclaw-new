@@ -28,18 +28,66 @@ export const memuOnlineAtom = atom<boolean | null>(null)
  * Seeded with the 4 modes in the original Phase 1 order; reorder + pin
  * mutations write back through `atomWithStorage`, surviving app restarts.
  */
+export type DockMode =
+  | 'chat'
+  | 'agent'
+  | 'memory'
+  | 'kaleidoscope'
+  | 'home'
+  | 'connections'
+  | 'alert'
+  | 'settings'
+
 export type DockItemSpec =
-  | { kind: 'mode'; mode: 'chat' | 'agent' | 'memory' | 'kaleidoscope' }
+  | { kind: 'mode'; mode: DockMode }
   | { kind: 'pinned-conversation'; sessionId: string; type: 'chat' | 'agent' }
   | { kind: 'pinned-workspace'; spaceId: string }
   | { kind: 'pinned-automation'; specId: string }
 
-export const dockOrderAtom = atomWithStorage<DockItemSpec[]>('dock:order', [
-  { kind: 'mode', mode: 'chat' },
-  { kind: 'mode', mode: 'agent' },
-  { kind: 'mode', mode: 'memory' },
-  { kind: 'mode', mode: 'kaleidoscope' },
-])
+/**
+ * Canonical mode order. Default seed for new installs; also the source of
+ * truth for `ensureCanonicalModes` which patches existing localStorage
+ * orders that pre-date the introduction of a mode (chat/agent/memory/
+ * kaleidoscope were the only modes for Phase 1 — home/connections/alert/
+ * settings were added later and need to be appended on existing installs).
+ */
+export const CANONICAL_DOCK_MODES: DockMode[] = [
+  'chat',
+  'agent',
+  'memory',
+  'kaleidoscope',
+  'home',
+  'connections',
+  'alert',
+  'settings',
+]
+
+export const dockOrderAtom = atomWithStorage<DockItemSpec[]>(
+  'dock:order',
+  CANONICAL_DOCK_MODES.map((mode) => ({ kind: 'mode' as const, mode })),
+)
+
+/**
+ * Append any canonical mode that's not yet present in the persisted dock
+ * order. Returns the same array (referential equality) when nothing is
+ * missing. Pure helper — callers decide when to run it (typically once
+ * after mount, before any reorder writes).
+ */
+export function ensureCanonicalModes(
+  current: DockItemSpec[],
+): DockItemSpec[] {
+  const presentModes = new Set(
+    current
+      .filter((s): s is Extract<DockItemSpec, { kind: 'mode' }> => s.kind === 'mode')
+      .map((s) => s.mode),
+  )
+  const missing = CANONICAL_DOCK_MODES.filter((m) => !presentModes.has(m))
+  if (missing.length === 0) return current
+  return [
+    ...current,
+    ...missing.map((mode) => ({ kind: 'mode' as const, mode })),
+  ]
+}
 
 /**
  * Pure reorder helper. Given the current dock order, the stable id list
