@@ -81,6 +81,16 @@ pub enum BrowserInterventionDecision {
 }
 
 impl BrowserInterventionDecision {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Continue => "I handled it, continue",
+            Self::ContinueWithSteps(8) => "Continue 8 steps",
+            Self::ContinueWithSteps(25) => "Continue 25 steps",
+            Self::ContinueWithSteps(_) => "Continue",
+            Self::Stop => "Stop task",
+        }
+    }
+
     pub fn from_result(result: &AskUserResult) -> Self {
         let Some(answer) = result.answers.get(BROWSER_INTERVENTION_QUESTION) else {
             return Self::Stop;
@@ -123,14 +133,17 @@ impl BrowserAskUserBridge {
         &self,
         prompt: BrowserInterventionPrompt,
     ) -> Result<BrowserInterventionDecision> {
+        let start = std::time::Instant::now();
         let request_id = uuid::Uuid::new_v4().to_string();
         let rx = self.pending.register(request_id.clone());
+        let questions = vec![prompt.question];
         let payload = AskUserRequestPayload {
-            request_id,
+            request_id: request_id.clone(),
             session_id: self.session_id.clone(),
-            questions: vec![prompt.question],
+            questions,
         };
 
+        self.emit_tool_start(&request_id, &payload);
         self.app_handle
             .emit("agent:ask_user_request", &payload)
             .map_err(|e| anyhow!("failed to emit browser ask_user request: {e}"))?;
@@ -138,7 +151,47 @@ impl BrowserAskUserBridge {
         let result = rx
             .await
             .map_err(|_| anyhow!("browser ask_user response channel closed"))?;
-        Ok(BrowserInterventionDecision::from_result(&result))
+        let decision = BrowserInterventionDecision::from_result(&result);
+        self.emit_tool_result(&request_id, decision, start.elapsed().as_millis() as u64);
+        Ok(decision)
+    }
+
+    fn emit_tool_start(&self, request_id: &str, payload: &AskUserRequestPayload) {
+        let input = serde_json::json!({ "questions": payload.questions });
+        let _ = self.app_handle.emit("chat:stream-tool-activity", serde_json::json!({
+            "conversationId": self.session_id,
+            "activity": {
+                "type": "tool_start",
+                "toolName": "ask_user",
+                "toolCallId": request_id,
+                "input": input,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }
+        }));
+    }
+
+    fn emit_tool_result(
+        &self,
+        request_id: &str,
+        decision: BrowserInterventionDecision,
+        duration_ms: u64,
+    ) {
+        let result = format!(
+            "User has answered your browser intervention prompt: {}. You can now continue with the user's answer in mind.",
+            decision.label(),
+        );
+        let _ = self.app_handle.emit("chat:stream-tool-activity", serde_json::json!({
+            "conversationId": self.session_id,
+            "activity": {
+                "type": "tool_result",
+                "toolName": "ask_user",
+                "toolCallId": request_id,
+                "result": result,
+                "durationMs": duration_ms,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "isError": false,
+            }
+        }));
     }
 }
 

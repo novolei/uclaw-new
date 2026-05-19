@@ -1938,6 +1938,7 @@ fn extract_process_meta_from_messages(
             "status": if is_error { "failed" } else { "completed" },
             "isError": is_error,
         }));
+        append_browser_task_intervention_activities(&mut activities, &id, &name, output.as_deref());
     }
 
     crate::agent::session::MessageMeta {
@@ -1949,6 +1950,80 @@ fn extract_process_meta_from_messages(
         },
         model: Some(model),
         attachments_json: None,
+    }
+}
+
+fn append_browser_task_intervention_activities(
+    activities: &mut Vec<serde_json::Value>,
+    browser_tool_call_id: &str,
+    tool_name: &str,
+    output: Option<&str>,
+) {
+    if tool_name != "browser_task" && tool_name != "browser_task_resume" {
+        return;
+    }
+    let Some(output) = output else { return };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(output) else { return };
+    let Some(steps) = parsed
+        .get("run")
+        .and_then(|run| run.get("steps"))
+        .and_then(|steps| steps.as_array())
+    else {
+        return;
+    };
+
+    for step in steps {
+        let action_name = step
+            .get("actionName")
+            .or_else(|| step.get("action_name"))
+            .and_then(|value| value.as_str());
+        if action_name != Some("ask_user_response") {
+            continue;
+        }
+
+        let step_index = step
+            .get("stepIndex")
+            .or_else(|| step.get("step_index"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(activities.len() as u64);
+        let decision = step
+            .get("actionArgs")
+            .or_else(|| step.get("action_args"))
+            .and_then(|args| args.get("decision"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("Answered");
+        let question = step
+            .get("reasoning")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| step.get("message").and_then(|value| value.as_str()))
+            .unwrap_or("Browser task requested user intervention.");
+        let tool_call_id = format!("{browser_tool_call_id}:ask_user:{step_index}");
+        let input = serde_json::json!({
+            "questions": [{
+                "question": question,
+                "header": "Browser intervention"
+            }]
+        });
+        let result = format!(
+            "User has answered your browser intervention prompt: {decision}. You can now continue with the user's answer in mind.",
+        );
+
+        activities.push(serde_json::json!({
+            "toolCallId": tool_call_id,
+            "type": "start",
+            "toolName": "ask_user",
+            "input": input,
+        }));
+        activities.push(serde_json::json!({
+            "toolCallId": tool_call_id,
+            "type": "result",
+            "toolName": "ask_user",
+            "input": input,
+            "result": result,
+            "status": "completed",
+            "isError": false,
+        }));
     }
 }
 
@@ -13601,6 +13676,59 @@ mod process_meta_tests {
         assert!(meta.reasoning.is_none(),
             "no Thinking blocks should produce None, not Some(empty); got: {:?}",
             meta.reasoning);
+    }
+
+    #[test]
+    fn browser_task_intervention_answer_persists_as_ask_user_activity() {
+        let browser_result = serde_json::json!({
+            "ok": false,
+            "run": {
+                "runId": "run-1",
+                "sessionId": "session-1",
+                "task": "login test",
+                "status": "needs_user_intervention",
+                "steps": [{
+                    "stepIndex": 3,
+                    "phase": "user_intervention",
+                    "observationSummary": "",
+                    "reasoning": "Browser decision-intervention prompt was answered.",
+                    "actionName": "ask_user_response",
+                    "actionArgs": { "decision": "Continue 8 steps" },
+                    "ok": true,
+                    "message": "User answered: Continue 8 steps",
+                    "error": null,
+                    "timestampMs": 1
+                }]
+            }
+        })
+        .to_string();
+        let messages = vec![
+            ChatMessage::assistant_with_tool_use(
+                "browser-call-1",
+                "browser_task",
+                serde_json::json!({ "task": "login test" }),
+            ),
+            ChatMessage::user_tool_result("browser-call-1", &browser_result, true),
+        ];
+
+        let meta = extract_process_meta_from_messages(&messages, String::new());
+        let activities: serde_json::Value = serde_json::from_str(
+            meta.tool_activities_json
+                .as_deref()
+                .expect("browser_task activity should persist"),
+        )
+        .expect("tool activities should be valid JSON");
+        let tool_names = activities
+            .as_array()
+            .expect("activities should be an array")
+            .iter()
+            .filter_map(|activity| activity.get("toolName").and_then(|value| value.as_str()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            tool_names,
+            vec!["browser_task", "browser_task", "ask_user", "ask_user"]
+        );
     }
 }
 

@@ -15,6 +15,7 @@ import { sessionBrowserPreviewMapAtom } from '@/atoms/agent-atoms'
 import { browserScreencastFrameAtom } from '@/atoms/browser-atoms'
 import { activePreviewTabKeyAtom, previewTabKey } from '@/atoms/preview-panel-atoms'
 import { useBrowserScreencast } from '@/hooks/useBrowserScreencast'
+import { openExternal } from '@/lib/tauri-bridge'
 
 interface BrowserPreviewOverlayProps {
   sessionId: string
@@ -71,6 +72,11 @@ export function BrowserPreviewOverlay({ sessionId }: BrowserPreviewOverlayProps)
     })
   }
 
+  const stopButtonEvent = (event: React.MouseEvent<HTMLButtonElement>): void => {
+    event.preventDefault()
+    event.stopPropagation()
+  }
+
   const hostname = (() => {
     if (!url) return null
     try { return new URL(url).hostname } catch { return url }
@@ -81,7 +87,7 @@ export function BrowserPreviewOverlay({ sessionId }: BrowserPreviewOverlayProps)
   return (
     <div
       className={cn(
-        'absolute top-3 right-14 z-20',
+        'titlebar-no-drag absolute top-3 right-14 z-[70]',
         'flex flex-col rounded-xl overflow-hidden',
         'shadow-[0_8px_32px_rgba(0,0,0,0.18)] border border-border/60',
         'bg-popover backdrop-blur-sm',
@@ -106,26 +112,38 @@ export function BrowserPreviewOverlay({ sessionId }: BrowserPreviewOverlayProps)
         )}
         {url && !panelActive && (
           <button
-            onClick={() => window.open(url, '_blank')}
-            className="p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+            onClick={(event) => {
+              stopButtonEvent(event)
+              openExternal(url).catch(() => {})
+            }}
+            className="titlebar-no-drag p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
             title="在系统浏览器中打开"
+            type="button"
           >
             <ExternalLink size={11} />
           </button>
         )}
         {!panelActive && (
           <button
-            onClick={() => update({ minimized: !minimized })}
-            className="p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+            onClick={(event) => {
+              stopButtonEvent(event)
+              update({ minimized: !minimized })
+            }}
+            className="titlebar-no-drag p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
             title={minimized ? '展开' : '最小化'}
+            type="button"
           >
             {minimized ? <Maximize2 size={11} /> : <Minimize2 size={11} />}
           </button>
         )}
         <button
-          onClick={() => update({ visible: false })}
-          className="p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+          onClick={(event) => {
+            stopButtonEvent(event)
+            update({ visible: false })
+          }}
+          className="titlebar-no-drag p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
           title="关闭预览"
+          type="button"
         >
           <X size={11} />
         </button>

@@ -188,15 +188,13 @@ function TabBarInner({
   }, [])
 
   return (
-    // The TabBar row IS the OS title-bar drag region — `app-region: drag`
-    // is set on this flex container directly (was previously an absolute
-    // overlay that the inner `titlebar-no-drag` content layer blocked).
-    // Each child element (chip, tab buttons, close icon) carries
-    // `titlebar-no-drag` itself so clicks land on them, while empty
-    // space between/after tabs falls through to the OS for window drag.
-    <div className="flex items-end h-[34px] tabbar-bg relative titlebar-drag-region">
+    // The TabBar row IS the OS title-bar drag region. The animated strip
+    // inside it also carries the drag region because it visually covers the
+    // parent row; individual tab buttons opt out with titlebar-no-drag.
+    <div data-tauri-drag-region className="flex items-end h-[34px] tabbar-bg relative titlebar-drag-region">
       <AnimatePresence mode="wait" custom={switchDirection} initial={false}>
         <motion.div
+          data-tauri-drag-region
           key={workspaceKey}
           custom={switchDirection}
           variants={tabStripSlideVariants}
@@ -204,9 +202,9 @@ function TabBarInner({
           animate="center"
           exit="exit"
           transition={{ duration: 0.26, ease: [0.32, 0.72, 0, 1] }}
-          className="relative flex items-end flex-1 min-w-0 overflow-x-clip"
+          className="relative flex items-end flex-1 min-w-0 overflow-x-clip titlebar-drag-region"
         >
-        <div className="flex items-center px-1 py-1 shrink-0 self-stretch">
+        <div data-tauri-drag-region className="flex items-center px-1 py-1 shrink-0 self-stretch titlebar-drag-region">
           <TabBarWorkspaceChip />
         </div>
         {tabs.map((tab) => {

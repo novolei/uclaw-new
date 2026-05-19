@@ -99,14 +99,42 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
   const fadeTimerRef = React.useRef<ReturnType<typeof setTimeout>>()
   const searchInputRef = React.useRef<HTMLInputElement>(null)
   const trackRef = React.useRef<HTMLDivElement>(null)
+  const panelRef = React.useRef<HTMLDivElement>(null)
   const listRef = React.useRef<HTMLDivElement>(null)
+
+  const clearCloseTimers = React.useCallback(() => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current)
+      closeTimerRef.current = undefined
+    }
+    if (fadeTimerRef.current) {
+      clearTimeout(fadeTimerRef.current)
+      fadeTimerRef.current = undefined
+    }
+  }, [])
+
+  const openPanel = React.useCallback(() => {
+    clearCloseTimers()
+    setIsLeaving(false)
+    setHovered(true)
+  }, [clearCloseTimers])
+
+  const closePanel = React.useCallback((delay = 60) => {
+    clearCloseTimers()
+    closeTimerRef.current = setTimeout(() => {
+      setIsLeaving(true)
+      fadeTimerRef.current = setTimeout(() => {
+        setHovered(false)
+        setIsLeaving(false)
+      }, 140)
+    }, delay)
+  }, [clearCloseTimers])
 
   React.useEffect(() => {
     return () => {
-      if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
-      if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
+      clearCloseTimers()
     }
-  }, [])
+  }, [clearCloseTimers])
 
   // 可见消息 + 滚动指标追踪
   React.useEffect(() => {
@@ -176,22 +204,41 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
     return () => cancelAnimationFrame(raf)
   }, [hovered, searchQuery, visibleIds])
 
-  const handleMouseEnter = (): void => {
-    if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
-    if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
-    setIsLeaving(false)
-    setHovered(true)
-  }
+  React.useEffect(() => {
+    if (!hovered) return
 
-  const handleMouseLeave = (): void => {
-    closeTimerRef.current = setTimeout(() => {
-      setIsLeaving(true)
-      fadeTimerRef.current = setTimeout(() => {
-        setHovered(false)
-        setIsLeaving(false)
-      }, 80)
-    }, 40)
-  }
+    const isInsideMinimap = (target: EventTarget | null): boolean => {
+      if (!(target instanceof Node)) return false
+      return Boolean(panelRef.current?.contains(target) || trackRef.current?.contains(target))
+    }
+
+    const handlePointerMove = (event: PointerEvent): void => {
+      if (isInsideMinimap(event.target)) {
+        openPanel()
+      } else {
+        closePanel(80)
+      }
+    }
+
+    const handleWindowExit = (event: MouseEvent): void => {
+      if (event.relatedTarget === null) closePanel(0)
+    }
+    const handleWindowBlur = (): void => closePanel(0)
+
+    document.addEventListener('pointermove', handlePointerMove, { passive: true })
+    window.addEventListener('mouseout', handleWindowExit)
+    window.addEventListener('blur', handleWindowBlur)
+
+    return () => {
+      document.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('mouseout', handleWindowExit)
+      window.removeEventListener('blur', handleWindowBlur)
+    }
+  }, [closePanel, hovered, openPanel])
+
+  const handleMouseEnter = (): void => openPanel()
+
+  const handleMouseLeave = (): void => closePanel(80)
 
   const scrollToMessage = React.useCallback((id: string) => {
     const el = scrollRef.current
@@ -289,12 +336,13 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
         {/* 展开面板 */}
         {hovered && (
           <div
+            ref={panelRef}
             className={cn(
               'mr-2 w-[300px] rounded-xl border border-border/40 bg-popover/95 backdrop-blur-xl',
               'shadow-[0_8px_32px_-8px_rgba(0,0,0,0.18)] dark:shadow-[0_8px_32px_-4px_rgba(0,0,0,0.5)]',
               'origin-top-right flex flex-col overflow-hidden pointer-events-auto',
               isLeaving
-                ? 'animate-out fade-out-0 zoom-out-95 duration-100'
+                ? 'animate-out fade-out-0 zoom-out-95 slide-out-to-right-1 duration-150'
                 : 'animate-in fade-in-0 zoom-in-95 slide-in-from-right-1 duration-150',
             )}
             style={{ maxHeight: 'min(440px, 60vh)', marginTop: 8 }}
@@ -310,11 +358,7 @@ function ScrollMinimapInner({ items, scrollRef }: InnerProps): React.ReactElemen
                   placeholder="搜索消息"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  onFocus={() => {
-                    if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
-                    if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
-                    setIsLeaving(false)
-                  }}
+                  onFocus={openPanel}
                   className="h-8 text-xs pl-8 bg-muted/40 border-0 focus-visible:ring-1 focus-visible:ring-primary/30"
                 />
                 <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] tabular-nums text-muted-foreground/60 select-none pointer-events-none">

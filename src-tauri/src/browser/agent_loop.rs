@@ -139,15 +139,24 @@ impl BrowserAgentLoop {
                 self.emit_run(&run);
                 self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
                 if let Some(decision) = self.ask_for_intervention(&run, &reason).await? {
+                    self.push_intervention_answer_step(
+                        &mut run,
+                        step_index + 1,
+                        decision,
+                        "Browser user-intervention prompt was answered.",
+                    );
                     match decision {
                         BrowserInterventionDecision::Continue
                         | BrowserInterventionDecision::ContinueWithSteps(_) => {
                             run.status = BrowserTaskStatus::Running;
                             self.emit_run(&run);
-                            step_index += 1;
+                            step_index += 2;
                             continue;
                         }
-                        BrowserInterventionDecision::Stop => {}
+                        BrowserInterventionDecision::Stop => {
+                            run.status = BrowserTaskStatus::Stopped;
+                            self.emit_run(&run);
+                        }
                     }
                 }
                 return Ok(run);
@@ -233,15 +242,24 @@ impl BrowserAgentLoop {
                     self.emit_run(&run);
                     self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
                     if let Some(user_decision) = self.ask_for_intervention(&run, &reason).await? {
+                        self.push_intervention_answer_step(
+                            &mut run,
+                            step_index + 1,
+                            user_decision,
+                            "Browser decision-intervention prompt was answered.",
+                        );
                         match user_decision {
                             BrowserInterventionDecision::Continue
                             | BrowserInterventionDecision::ContinueWithSteps(_) => {
                                 run.status = BrowserTaskStatus::Running;
                                 self.emit_run(&run);
-                                step_index += 1;
+                                step_index += 2;
                                 continue;
                             }
-                            BrowserInterventionDecision::Stop => {}
+                            BrowserInterventionDecision::Stop => {
+                                run.status = BrowserTaskStatus::Stopped;
+                                self.emit_run(&run);
+                            }
                         }
                     }
                     return Ok(run);
@@ -361,19 +379,25 @@ impl BrowserAgentLoop {
         self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
         self.emit_run(&run);
         if let Some(decision) = self.ask_for_checkpoint(&run).await? {
+            self.push_intervention_answer_step(
+                &mut run,
+                step_index + 1,
+                decision,
+                "Browser checkpoint prompt was answered.",
+            );
             match decision {
                 BrowserInterventionDecision::Continue => {
                     segment_steps = clamp_max_steps(Some(8));
                     run.status = BrowserTaskStatus::Running;
                     self.emit_run(&run);
-                    step_index += 1;
+                    step_index += 2;
                     continue 'segments;
                 }
                 BrowserInterventionDecision::ContinueWithSteps(steps) => {
                     segment_steps = clamp_max_steps(Some(steps));
                     run.status = BrowserTaskStatus::Running;
                     self.emit_run(&run);
-                    step_index += 1;
+                    step_index += 2;
                     continue 'segments;
                 }
                 BrowserInterventionDecision::Stop => {}
@@ -381,6 +405,31 @@ impl BrowserAgentLoop {
         }
         return Ok(run);
         }
+    }
+
+    fn push_intervention_answer_step(
+        &self,
+        run: &mut BrowserTaskRun,
+        step_index: u32,
+        decision: BrowserInterventionDecision,
+        reasoning: &str,
+    ) {
+        self.push_step(run, BrowserTaskStep {
+            step_index,
+            phase: BrowserTaskStepPhase::UserIntervention,
+            observation_summary: String::new(),
+            reasoning: reasoning.to_string(),
+            action_name: "ask_user_response".to_string(),
+            action_args: serde_json::json!({ "decision": decision.label() }),
+            ok: !matches!(decision, BrowserInterventionDecision::Stop),
+            message: Some(format!("User answered: {}", decision.label())),
+            error: if matches!(decision, BrowserInterventionDecision::Stop) {
+                Some("User chose to stop the browser task.".to_string())
+            } else {
+                None
+            },
+            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+        });
     }
 
     async fn ask_for_intervention(

@@ -32,6 +32,7 @@ import { AgentTeamsPanel } from '@/components/agent/AgentTeamsPanel'
 import { PlanViewer } from '@/components/agent/PlanViewer'
 import { TrajectoryReel } from '@/components/agent/TrajectoryReel'
 import { BrowserViewer } from '@/components/agent/BrowserViewer'
+import { useWindowDragOnMove } from '@/hooks/useWindowDragOnMove'
 
 export type ActiveTab = 'files' | 'teams' | 'plan' | 'trajectory' | 'browser'
 
@@ -55,14 +56,24 @@ interface TabButtonProps {
 }
 
 function TabButton({ isActive, onClick, icon, label }: TabButtonProps): React.ReactElement {
+  const windowDrag = useWindowDragOnMove()
+
   return (
     <button
-      onClick={onClick}
+      onClick={(e) => {
+        if (windowDrag.consumeClickIfDragged(e)) return
+        onClick()
+      }}
+      onPointerDown={windowDrag.onPointerDown}
+      onPointerMove={windowDrag.onPointerMove}
+      onPointerUp={windowDrag.onPointerUp}
+      onPointerCancel={windowDrag.onPointerCancel}
       className={[
-        // titlebar-no-drag is required because the panel container is
-        // a Tauri drag region — without this, clicks become window drags.
-        'titlebar-no-drag flex items-center gap-1.5 px-2.5 py-1.5 rounded-md',
+        // Individual tab buttons opt out because the surrounding tab row is
+        // a Tauri drag region.
+        'titlebar-no-drag window-drag-tab flex items-center gap-1.5 px-2.5 py-1.5 rounded-md',
         'text-[11px] font-medium transition-colors',
+        windowDrag.isDragging ? 'is-window-dragging' : '',
         isActive
           ? 'bg-primary/10 text-foreground shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.2)]'
           : 'text-muted-foreground hover:text-foreground hover:bg-foreground/[0.04]',
@@ -149,11 +160,11 @@ export function RightSidePanel(): React.ReactElement | null {
   const sessionPath = sessionPathMap.get(currentSessionId) ?? null
 
   return (
-    <div className="relative h-full w-[400px] flex-shrink-0 overflow-hidden titlebar-drag-region bg-content-area rounded-2xl shadow-xl flex flex-col">
+    <div className="relative h-full w-[400px] flex-shrink-0 overflow-hidden bg-content-area rounded-2xl shadow-xl flex flex-col">
       {/* Tab bar — sits at the top with a small drag-only strip above
           so users can still drag the window from the panel's top edge. */}
       <div data-tauri-drag-region className="h-[8px] flex-shrink-0 titlebar-drag-region" />
-      <div className="titlebar-no-drag flex items-center gap-1 px-2 pb-1.5 border-b border-border/40 flex-shrink-0">
+      <div data-tauri-drag-region className="titlebar-drag-region flex items-center gap-1 px-2 pb-1.5 border-b border-border/40 flex-shrink-0">
         {tabs.includes('files') && (
           <TabButton
             isActive={effectiveTab === 'files'}

@@ -607,6 +607,11 @@
   cursor: default;
 }
 
+.titlebar-drag-region:active,
+.sidebar-window-drag-strip:active {
+  cursor: grabbing;
+}
+
 /* 深色特殊主题 dialog 光晕效果 */
 .theme-ocean-dark [data-radix-dialog-content],
 .theme-forest-dark [data-radix-dialog-content],
@@ -1309,6 +1314,19 @@ html.theme-the-finals body::after {
 .titlebar-no-drag {
   -webkit-app-region: no-drag;
   app-region: no-drag;
+  -webkit-user-select: auto;
+  user-select: auto;
+  cursor: auto;
+}
+
+.window-drag-tab {
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: pointer;
+}
+
+.window-drag-tab.is-window-dragging {
+  cursor: grabbing;
 }
 
 /* 细腻卡片阴影 */
