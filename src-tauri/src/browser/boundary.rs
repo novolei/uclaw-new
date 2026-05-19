@@ -209,21 +209,7 @@ pub fn detect_intervention_boundary(
         ));
     }
 
-    if let Some(evidence) = keyword_evidence(
-        &haystack,
-        "payment",
-        &[
-            "credit card",
-            "card number",
-            "billing address",
-            "payment",
-            "checkout",
-            "purchase",
-            "subscribe to continue",
-            "paywall",
-            "subscription required",
-        ],
-    ) {
+    if let Some(evidence) = payment_boundary_evidence(observation_json, &haystack) {
         return Some(boundary(
             session_id,
             tab_id,
@@ -263,6 +249,32 @@ pub fn detect_intervention_boundary(
     }
 
     None
+}
+
+fn payment_boundary_evidence(
+    observation_json: &serde_json::Value,
+    haystack: &str,
+) -> Option<BrowserBoundaryEvidence> {
+    if let Some(evidence) = payment_form_evidence(observation_json) {
+        return Some(evidence);
+    }
+    keyword_evidence(
+        haystack,
+        "payment",
+        &[
+            "/checkout",
+            " checkout",
+            "complete purchase",
+            "enter payment",
+            "payment information",
+            "payment method required",
+            "billing information",
+            "billing details",
+            "subscribe to continue",
+            "paywall",
+            "subscription required",
+        ],
+    )
 }
 
 fn boundary(
@@ -355,6 +367,59 @@ fn password_evidence(observation_json: &serde_json::Value) -> BrowserBoundaryEvi
     }
 }
 
+fn payment_form_evidence(observation_json: &serde_json::Value) -> Option<BrowserBoundaryEvidence> {
+    observation_json
+        .get("elements")
+        .and_then(|v| v.as_array())
+        .and_then(|elements| {
+            elements.iter().find_map(|element| {
+                let attrs = element.get("attributes");
+                let field_text = [
+                    "name",
+                    "id",
+                    "autocomplete",
+                    "placeholder",
+                    "aria-label",
+                    "type",
+                ]
+                .iter()
+                .filter_map(|key| {
+                    attrs
+                        .and_then(|a| a.get(*key))
+                        .and_then(|value| value.as_str())
+                })
+                .chain(element.get("text").and_then(|value| value.as_str()))
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase();
+                let is_payment_field = [
+                    "cc-number",
+                    "cc-csc",
+                    "cc-exp",
+                    "credit card",
+                    "card number",
+                    "security code",
+                    "cvv",
+                    "cvc",
+                    "billing address",
+                ]
+                .iter()
+                .any(|needle| field_text.contains(needle));
+                if !is_payment_field {
+                    return None;
+                }
+                Some(BrowserBoundaryEvidence {
+                    source: "payment_form".to_string(),
+                    text: field_text,
+                    element_index: element
+                        .get("index")
+                        .and_then(|v| v.as_u64())
+                        .map(|index| index as u32),
+                })
+            })
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,5 +504,51 @@ mod tests {
             boundary.recommended_action,
             BrowserBoundaryRecommendedAction::UseAuthorizedProfile
         );
+    }
+
+    #[test]
+    fn public_marketing_payment_mentions_are_not_boundaries() {
+        let boundary = detect_intervention_boundary(&serde_json::json!({
+            "sessionId": "s1",
+            "tabId": "t1",
+            "url": "https://www.apple.com/",
+            "title": "Apple",
+            "pageText": "Apple Pay is an easy and secure way to make payments. Shop iPhone, Mac, iPad, and Watch.",
+            "elements": []
+        }));
+        assert!(boundary.is_none());
+    }
+
+    #[test]
+    fn detects_payment_boundary_from_checkout_context() {
+        let boundary = detect_intervention_boundary(&serde_json::json!({
+            "sessionId": "s1",
+            "tabId": "t1",
+            "url": "https://shop.example.test/checkout",
+            "title": "Checkout",
+            "pageText": "Enter payment information to complete purchase",
+            "elements": []
+        }))
+        .expect("payment boundary");
+        assert_eq!(boundary.kind, BrowserBoundaryKind::Payment);
+    }
+
+    #[test]
+    fn detects_payment_boundary_from_card_form() {
+        let boundary = detect_intervention_boundary(&serde_json::json!({
+            "sessionId": "s1",
+            "tabId": "t1",
+            "url": "https://shop.example.test",
+            "title": "Payment",
+            "pageText": "",
+            "elements": [{
+                "index": 7,
+                "tag": "input",
+                "attributes": {"autocomplete": "cc-number", "placeholder": "Card number"}
+            }]
+        }))
+        .expect("payment boundary");
+        assert_eq!(boundary.kind, BrowserBoundaryKind::Payment);
+        assert_eq!(boundary.evidence[0].element_index, Some(7));
     }
 }

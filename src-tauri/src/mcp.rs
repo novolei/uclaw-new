@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -448,6 +448,57 @@ pub struct McpServerConfig {
     pub tool_allowlist: Option<Vec<String>>,
 }
 
+fn bundled_gbrain_tool_allowlist() -> Vec<String> {
+    vec![
+        "search".to_string(),
+        "query".to_string(),
+        "think".to_string(),
+        "get_page".to_string(),
+        "put_page".to_string(),
+        "traverse_graph".to_string(),
+        "get_links".to_string(),
+        "get_backlinks".to_string(),
+    ]
+}
+
+fn bundled_gbrain_config(
+    bun_path: &std::path::Path,
+    entry_path: &std::path::Path,
+    gbrain_home: &std::path::Path,
+) -> McpServerConfig {
+    let mut env = HashMap::new();
+    env.insert(
+        "GBRAIN_HOME".to_string(),
+        gbrain_home.to_string_lossy().to_string(),
+    );
+    McpServerConfig {
+        id: "gbrain".to_string(),
+        name: "gbrain (bundled)".to_string(),
+        description: "Local semantic-retrieval engine — wiki / entity-graph / dream-cycle. \
+                     Bundled via Bun + gbrain source. PGLite brain at \
+                     ~/.uclaw/gbrain/.gbrain/brain.pglite/."
+            .to_string(),
+        transport_type: TransportType::Stdio,
+        command: bun_path.to_string_lossy().to_string(),
+        args: vec![entry_path.to_string_lossy().to_string(), "serve".to_string()],
+        env,
+        url: None,
+        enabled: true,
+        auto_approve: true,
+        tool_allowlist: Some(bundled_gbrain_tool_allowlist()),
+    }
+}
+
+fn is_legacy_bundled_gbrain_script_wrapper(config: &McpServerConfig) -> bool {
+    config.id == "gbrain"
+        && config.transport_type == TransportType::Stdio
+        && config.command.ends_with("/script")
+        && config.args.iter().any(|arg| {
+            arg.ends_with("gbrain/src/cli.ts") || arg.ends_with("gbrain-source/src/cli.ts")
+        })
+        && config.args.iter().any(|arg| arg == "serve")
+}
+
 /// MCP tool definition from a server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -489,6 +540,7 @@ struct StdioTransport {
     reader_handle: Mutex<Option<JoinHandle<()>>>,
     stderr_handle: Mutex<Option<JoinHandle<()>>>,
     child: Arc<Mutex<tokio::process::Child>>,
+    stderr_tail: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl StdioTransport {
@@ -547,6 +599,7 @@ impl StdioTransport {
 
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let stderr_tail = Arc::new(Mutex::new(VecDeque::with_capacity(40)));
 
         // Spawn stdout reader
         let reader_pending = pending.clone();
@@ -624,11 +677,17 @@ impl StdioTransport {
 
         // Spawn stderr reader
         let stderr_name = server_name.clone();
+        let stderr_tail_reader = stderr_tail.clone();
         let stderr_handle = tokio::spawn(async move {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 tracing::debug!("[{}] stderr: {}", stderr_name, line);
+                let mut tail = stderr_tail_reader.lock().await;
+                if tail.len() >= 40 {
+                    tail.pop_front();
+                }
+                tail.push_back(line);
             }
         });
 
@@ -639,7 +698,29 @@ impl StdioTransport {
             reader_handle: Mutex::new(Some(reader_handle)),
             stderr_handle: Mutex::new(Some(stderr_handle)),
             child: Arc::new(Mutex::new(child)),
+            stderr_tail,
         })
+    }
+
+    async fn stderr_tail_message(&self) -> Option<String> {
+        let tail = self.stderr_tail.lock().await;
+        if tail.is_empty() {
+            None
+        } else {
+            Some(tail.iter().cloned().collect::<Vec<_>>().join("\n"))
+        }
+    }
+
+    async fn error_with_stderr_tail(&self, prefix: String, timeout: bool) -> McpError {
+        let msg = match self.stderr_tail_message().await {
+            Some(tail) => format!("{}\nstderr tail:\n{}", prefix, tail),
+            None => prefix,
+        };
+        if timeout {
+            McpError::Timeout(msg)
+        } else {
+            McpError::Transport(msg)
+        }
     }
 }
 
@@ -689,9 +770,11 @@ impl McpTransport for StdioTransport {
             }.await {
                 let mut map = self.pending.lock().await;
                 map.remove(&id);
-                return Err(McpError::Transport(format!(
-                    "[{}] Write failed: {}", self.server_name, e
-                )));
+                return Err(self.error_with_stderr_tail(
+                    format!("[{}] Write failed: {}", self.server_name, e),
+                    false,
+                )
+                .await);
             }
         }
 
@@ -714,18 +797,26 @@ impl McpTransport for StdioTransport {
             Ok(Err(_)) => {
                 let mut map = self.pending.lock().await;
                 map.remove(&id);
-                Err(McpError::Transport(format!(
-                    "[{}] Server closed connection before responding",
-                    self.server_name
-                )))
+                Err(self.error_with_stderr_tail(
+                    format!(
+                        "[{}] Server closed connection before responding",
+                        self.server_name
+                    ),
+                    false,
+                )
+                .await)
             }
             Err(_) => {
                 let mut map = self.pending.lock().await;
                 map.remove(&id);
-                Err(McpError::Timeout(format!(
-                    "[{}] Timeout waiting for response to request {}",
-                    self.server_name, id
-                )))
+                Err(self.error_with_stderr_tail(
+                    format!(
+                        "[{}] Timeout waiting for response to request {}",
+                        self.server_name, id
+                    ),
+                    true,
+                )
+                .await)
             }
         }
     }
@@ -1267,59 +1358,38 @@ impl McpManager {
     ///   first — without an initialized brain, gbrain serve exits
     ///   immediately on every connect attempt.
     ///
-    /// Returns `Ok(true)` if seeded, `Ok(false)` if entry already
-    /// existed (no-op). Errors propagate from `add_server`.
+    /// Returns `Ok(true)` if seeded or a legacy bundled entry was
+    /// migrated, `Ok(false)` if a non-legacy entry already existed
+    /// (no-op). Errors propagate from `add_server`.
     pub fn seed_bundled_gbrain(
         &mut self,
         bun_path: &std::path::Path,
         entry_path: &std::path::Path,
         gbrain_home: &std::path::Path,
     ) -> Result<bool, String> {
-        if self.servers.contains_key("gbrain") {
+        if let Some(state) = self.servers.get_mut("gbrain") {
+            if is_legacy_bundled_gbrain_script_wrapper(&state.config) {
+                let enabled = state.config.enabled;
+                let auto_approve = state.config.auto_approve;
+                let mut config = bundled_gbrain_config(bun_path, entry_path, gbrain_home);
+                config.enabled = enabled;
+                config.auto_approve = auto_approve;
+                state.config = config;
+                self.save_config();
+                tracing::warn!(
+                    bun = %bun_path.display(),
+                    entry = %entry_path.display(),
+                    gbrain_home = %gbrain_home.display(),
+                    "gbrain Sprint 2.1: migrated legacy /usr/bin/script MCP wrapper to direct Bun stdio"
+                );
+                return Ok(true);
+            }
             tracing::debug!(
                 "seed_bundled_gbrain: 'gbrain' entry already in config (keeping user state)"
             );
             return Ok(false);
         }
-        let mut env = HashMap::new();
-        env.insert(
-            "GBRAIN_HOME".to_string(),
-            gbrain_home.to_string_lossy().to_string(),
-        );
-        let config = McpServerConfig {
-            id: "gbrain".to_string(),
-            name: "gbrain (bundled)".to_string(),
-            description: "Local semantic-retrieval engine — wiki / entity-graph / dream-cycle. \
-                         Bundled via Bun + gbrain source. PGLite brain at \
-                         ~/.uclaw/gbrain/.gbrain/brain.pglite/."
-                .to_string(),
-            transport_type: TransportType::Stdio,
-            command: bun_path.to_string_lossy().to_string(),
-            // `bun <entry> serve` matches gbrain's stdio MCP CLI per
-            // Sprint 2.0 Mac-side verification.
-            args: vec![
-                entry_path.to_string_lossy().to_string(),
-                "serve".to_string(),
-            ],
-            env,
-            url: None,
-            enabled: true,
-            auto_approve: true,
-            // Expose only the 8 conversational tools to the agent LLM.
-            // gbrain has 71 tools total; the remaining 63 (jobs, raw_data,
-            // file_upload, admin, doctor, etc.) are never needed in dialogue
-            // and cost ~12K tokens per LLM call in tool definitions alone.
-            tool_allowlist: Some(vec![
-                "search".to_string(),
-                "query".to_string(),
-                "think".to_string(),
-                "get_page".to_string(),
-                "put_page".to_string(),
-                "traverse_graph".to_string(),
-                "get_links".to_string(),
-                "get_backlinks".to_string(),
-            ]),
-        };
+        let config = bundled_gbrain_config(bun_path, entry_path, gbrain_home);
         self.add_server(config)?;
         tracing::info!(
             bun = %bun_path.display(),
@@ -1507,8 +1577,8 @@ impl McpManager {
     /// hold a borrow back into the manager.
     ///
     /// Two phases per iteration:
-    /// 1. Sleep `HEALTH_PING_INTERVAL_SECS`, then ping. On success
-    ///    reset the backoff and loop.
+    /// 1. Ping immediately. On success, reset the backoff and wait for
+    ///    the next regular health interval.
     /// 2. On failure, flip the server's status to Error with a
     ///    descriptive message, sleep `min(INITIAL * 2^attempt, MAX)`,
     ///    then call `reconnect_server`. Success resets attempt; failure
@@ -1520,8 +1590,6 @@ impl McpManager {
     async fn run_health_loop(mgr: SharedMcpManager, id: String) {
         let mut attempt: u32 = 0;
         loop {
-            tokio::time::sleep(Duration::from_secs(HEALTH_PING_INTERVAL_SECS)).await;
-
             // Ping under a read lock — short critical section.
             let ping_result = {
                 let m = mgr.read().await;
@@ -1535,6 +1603,7 @@ impl McpManager {
                     // previous failure-then-recovery cycle, the
                     // reconnect path below already cleared it.
                     attempt = 0;
+                    tokio::time::sleep(Duration::from_secs(HEALTH_PING_INTERVAL_SECS)).await;
                     continue;
                 }
                 Err(e) => {
@@ -1576,6 +1645,10 @@ impl McpManager {
                                 attempt + 1
                             );
                             attempt = 0;
+                            tokio::time::sleep(Duration::from_secs(
+                                HEALTH_PING_INTERVAL_SECS,
+                            ))
+                            .await;
                         }
                         Err(rc_err) => {
                             tracing::warn!(
@@ -1926,6 +1999,7 @@ pub(crate) async fn connect_server_shared(
                 config.name,
                 e
             );
+            guard.record_audit(id, McpAuditKind::ConnectFailed, &e.to_string());
             if let Some(state) = guard.servers.get_mut(id) {
                 state.status = McpServerStatus::Error;
                 state.error = Some(e.to_string());
@@ -1983,6 +2057,10 @@ pub async fn restart_server_shared(
         guard.record_audit(id, McpAuditKind::Disconnect, "Disconnected (restart)");
     }
     connect_server_shared(shared, id).await?;
+    {
+        let mut guard = shared.write().await;
+        guard.start_health_loop(shared.clone(), id);
+    }
     Ok(())
 }
 
@@ -2189,6 +2267,88 @@ mod tests {
             .update_server("nope", cfg("nope", TransportType::Stdio))
             .unwrap_err();
         assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn seed_bundled_gbrain_migrates_legacy_script_wrapper() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut mgr = McpManager::new(dir.path());
+            let mut legacy = cfg("gbrain", TransportType::Stdio);
+            legacy.name = "gbrain (bundled)".into();
+            legacy.description =
+                "Wrapped via macOS BSD `script` to defeat bun stdout buffering".into();
+            legacy.command = "/usr/bin/script".into();
+            legacy.args = vec![
+                "-q".into(),
+                "/dev/null".into(),
+                "/tmp/uclaw/bun".into(),
+                "/tmp/uclaw/gbrain/src/cli.ts".into(),
+                "serve".into(),
+            ];
+            legacy.env.insert("GBRAIN_HOME".into(), "/old/home".into());
+            legacy.enabled = false;
+            legacy.auto_approve = false;
+            mgr.add_server(legacy).unwrap();
+
+            let changed = mgr
+                .seed_bundled_gbrain(
+                    std::path::Path::new("/new/bun"),
+                    std::path::Path::new("/new/gbrain/src/cli.ts"),
+                    std::path::Path::new("/new/home"),
+                )
+                .unwrap();
+            assert!(changed);
+        }
+
+        let mgr = McpManager::new(dir.path());
+        let stored = mgr
+            .all_servers()
+            .into_iter()
+            .find(|config| config.id == "gbrain")
+            .unwrap();
+        assert_eq!(stored.command, "/new/bun");
+        assert_eq!(
+            stored.args,
+            vec!["/new/gbrain/src/cli.ts".to_string(), "serve".to_string()]
+        );
+        assert_eq!(stored.env.get("GBRAIN_HOME").map(String::as_str), Some("/new/home"));
+        assert!(!stored.enabled);
+        assert!(!stored.auto_approve);
+        assert_eq!(
+            stored.tool_allowlist.as_deref(),
+            Some(bundled_gbrain_tool_allowlist().as_slice())
+        );
+    }
+
+    #[test]
+    fn seed_bundled_gbrain_preserves_non_legacy_existing_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut mgr = McpManager::new(dir.path());
+            let mut custom = cfg("gbrain", TransportType::Stdio);
+            custom.command = "/custom/gbrain".into();
+            custom.args = vec!["serve".into()];
+            mgr.add_server(custom).unwrap();
+
+            let changed = mgr
+                .seed_bundled_gbrain(
+                    std::path::Path::new("/new/bun"),
+                    std::path::Path::new("/new/gbrain/src/cli.ts"),
+                    std::path::Path::new("/new/home"),
+                )
+                .unwrap();
+            assert!(!changed);
+        }
+
+        let mgr = McpManager::new(dir.path());
+        let stored = mgr
+            .all_servers()
+            .into_iter()
+            .find(|config| config.id == "gbrain")
+            .unwrap();
+        assert_eq!(stored.command, "/custom/gbrain");
+        assert_eq!(stored.args, vec!["serve".to_string()]);
     }
 
     // ─── PR-1 — prefix helpers + auto_approve plumbing ──────────────

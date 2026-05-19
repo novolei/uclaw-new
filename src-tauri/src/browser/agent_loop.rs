@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use tokio::time::{sleep, Duration};
 
 use crate::browser::action::BrowserAction;
 use crate::browser::action_registry::BrowserActionRegistry;
-use crate::browser::boundary::detect_intervention_boundary;
+use crate::browser::boundary::{detect_intervention_boundary, BrowserBoundaryEvent};
 use crate::browser::context_manager::BrowserContextManager;
 use crate::browser::decision::{BrowserDecisionAdapter, BrowserDecisionStatus};
 use crate::browser::identity::{
@@ -17,6 +17,7 @@ use crate::browser::intervention_bridge::{
     BrowserAskUserBridge, BrowserInterventionDecision, BrowserInterventionPrompt,
 };
 use crate::browser::loop_detector::{make_fingerprint, LoopDetector};
+use crate::browser::memory_adapter::BrowserLongTermMemoryAdapter;
 use crate::browser::observation::BrowserObservation;
 use crate::browser::recovery::{classify_browser_error, BrowserRecoveryKind};
 use crate::browser::session_state::{
@@ -49,6 +50,7 @@ pub struct BrowserAgentLoop {
     task_store: Option<Arc<BrowserTaskStore>>,
     ask_user_bridge: Option<Arc<BrowserAskUserBridge>>,
     auth_profile_broker: Option<Arc<BrowserAuthProfileBroker>>,
+    long_term_memory: Option<Arc<BrowserLongTermMemoryAdapter>>,
 }
 
 impl BrowserAgentLoop {
@@ -64,6 +66,7 @@ impl BrowserAgentLoop {
             task_store: None,
             ask_user_bridge: None,
             auth_profile_broker: BrowserAuthProfileBroker::system_default().ok().map(Arc::new),
+            long_term_memory: None,
         }
     }
 
@@ -85,6 +88,14 @@ impl BrowserAgentLoop {
         self
     }
 
+    pub fn with_long_term_memory(
+        mut self,
+        long_term_memory: Option<Arc<BrowserLongTermMemoryAdapter>>,
+    ) -> Self {
+        self.long_term_memory = long_term_memory;
+        self
+    }
+
     pub async fn run(&self, request: BrowserTaskRequest) -> Result<BrowserTaskRun> {
         let mut segment_steps = clamp_max_steps(request.max_steps);
         let mut run = self
@@ -101,9 +112,29 @@ impl BrowserAgentLoop {
 
         let mut step_index = run.steps.last().map(|step| step.step_index + 1).unwrap_or(0);
         let auth_profile = self.resolve_auth_profile(&request)?;
+        let auth_profile_requested = request.auth_profile_id.is_some() || request.auth_origin.is_some();
         let identity_profile_id = auth_profile
             .as_ref()
             .map(|(profile, _)| profile.id.as_str());
+        if auth_profile_requested && auth_profile.is_none() && request.resume_run_id.is_none() {
+            self.push_step(&mut run, BrowserTaskStep {
+                step_index,
+                phase: BrowserTaskStepPhase::Act,
+                observation_summary: String::new(),
+                reasoning: "No matching authorized browser auth profile was found for this task.".to_string(),
+                action_name: "browser_auth_profile_missing".to_string(),
+                action_args: serde_json::json!({
+                    "authProfileId": request.auth_profile_id.as_deref(),
+                    "authOrigin": request.auth_origin.as_deref(),
+                    "startUrl": request.start_url.as_deref(),
+                }),
+                ok: false,
+                message: None,
+                error: Some("No matching authorized browser auth profile was found; continuing without injected auth state.".to_string()),
+                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            });
+            step_index += 1;
+        }
         let ctx = self
             .ctx_mgr
             .get_or_create_with_identity(&request.session_id, identity_profile_id)
@@ -143,6 +174,7 @@ impl BrowserAgentLoop {
                     error: None,
                     timestamp_ms: chrono::Utc::now().timestamp_millis(),
                 });
+                self.record_auth_profile_applied(&run, profile, &active_tab_id).await;
                 step_index += 1;
                 if let Some(start_url) = request.start_url.as_deref() {
                     active_tab_id = ctx
@@ -153,13 +185,51 @@ impl BrowserAgentLoop {
         }
         let mut loop_detector = LoopDetector::default();
         let mut latest_memory = resume_checkpoint.and_then(|checkpoint| checkpoint.memory);
+        let mut acknowledged_boundaries: HashSet<String> = HashSet::new();
 
         'segments: loop {
         for _ in 0..segment_steps {
-            let observation = ctx.observe(&active_tab_id, false).await?;
-            let observation_json = serde_json::to_value(&observation)?;
+            let mut observation = match ctx.observe_with_visual(&active_tab_id, false, true).await {
+                Ok(observation) => observation,
+                Err(error) => {
+                    let err = error.to_string();
+                    match self
+                        .recover_after_error(
+                            &mut run,
+                            &mut active_tab_id,
+                            step_index,
+                            &err,
+                            &None,
+                            identity_profile_id,
+                        )
+                        .await?
+                    {
+                        RecoveryOutcome::Continue(next_step_index) => {
+                            step_index = next_step_index;
+                            continue;
+                        }
+                        RecoveryOutcome::Stop => {
+                            run.status = BrowserTaskStatus::Failed;
+                            self.emit_run(&run);
+                            self.persist_checkpoint(
+                                &run,
+                                step_index,
+                                Some(&active_tab_id),
+                                latest_memory.as_ref(),
+                                "observation failed",
+                            );
+                            self.record_final_state(&run).await;
+                            return Ok(run);
+                        }
+                    }
+                }
+            };
+            observation.screenshot_b64 = None;
+            let mut observation_json = serde_json::to_value(&observation)?;
+            strip_raw_screenshot(&mut observation_json);
             let memory = self.update_memory(&request, &observation_json);
             latest_memory = memory.clone().or(latest_memory);
+            self.record_visual_observation(&run, &observation_json).await;
             self.push_step(&mut run, BrowserTaskStep {
                 step_index,
                 phase: BrowserTaskStepPhase::Observe,
@@ -178,8 +248,37 @@ impl BrowserAgentLoop {
             step_index += 1;
 
             if let Some(boundary) = detect_intervention_boundary(&observation_json) {
+                let boundary_fingerprint = boundary_fingerprint(&boundary);
+                if acknowledged_boundaries.contains(&boundary_fingerprint) {
+                    run.status = BrowserTaskStatus::NeedsUserIntervention;
+                    self.push_step(&mut run, BrowserTaskStep {
+                        step_index,
+                        phase: BrowserTaskStepPhase::UserIntervention,
+                        observation_summary: summarize_observation(&observation),
+                        reasoning: "The same browser boundary is still present after the user chose to continue.".to_string(),
+                        action_name: "boundary_still_present_after_continue".to_string(),
+                        action_args: serde_json::to_value(&boundary)?,
+                        ok: false,
+                        message: Some(boundary.reason.clone()),
+                        error: Some(
+                            "Manual intervention was marked as handled, but the same boundary is still visible; stopping to avoid an ask_user loop.".to_string(),
+                        ),
+                        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                    });
+                    self.emit_run(&run);
+                    self.persist_checkpoint(
+                        &run,
+                        step_index,
+                        Some(&active_tab_id),
+                        latest_memory.as_ref(),
+                        "human boundary still present after continue",
+                    );
+                    self.record_final_state(&run).await;
+                    return Ok(run);
+                }
                 let reason = boundary.reason.clone();
                 run.status = BrowserTaskStatus::NeedsUserIntervention;
+                self.record_boundary(&run, &boundary).await;
                 self.push_step(&mut run, BrowserTaskStep {
                     step_index,
                     phase: BrowserTaskStepPhase::UserIntervention,
@@ -193,7 +292,7 @@ impl BrowserAgentLoop {
                     timestamp_ms: chrono::Utc::now().timestamp_millis(),
                 });
                 self.emit_run(&run);
-                self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
+                self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref(), "human boundary");
                 if let Some(decision) = self.ask_for_intervention(&run, &reason).await? {
                     self.push_intervention_answer_step(
                         &mut run,
@@ -204,6 +303,7 @@ impl BrowserAgentLoop {
                     match decision {
                         BrowserInterventionDecision::Continue
                         | BrowserInterventionDecision::ContinueWithSteps(_) => {
+                            acknowledged_boundaries.insert(boundary_fingerprint);
                             run.status = BrowserTaskStatus::Running;
                             self.emit_run(&run);
                             step_index += 2;
@@ -268,13 +368,15 @@ impl BrowserAgentLoop {
                         timestamp_ms: chrono::Utc::now().timestamp_millis(),
                     });
                     self.emit_run(&run);
-                    self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
+                    self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref(), "completed");
+                    self.record_final_state(&run).await;
                     return Ok(run);
                 }
                 BrowserDecisionStatus::Failed => {
                     run.status = BrowserTaskStatus::Failed;
                     self.emit_run(&run);
-                    self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
+                    self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref(), "failed");
+                    self.record_final_state(&run).await;
                     return Ok(run);
                 }
                 BrowserDecisionStatus::NeedsUserIntervention => {
@@ -296,7 +398,7 @@ impl BrowserAgentLoop {
                         timestamp_ms: chrono::Utc::now().timestamp_millis(),
                     });
                     self.emit_run(&run);
-                    self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
+                    self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref(), "decision requested intervention");
                     if let Some(user_decision) = self.ask_for_intervention(&run, &reason).await? {
                         self.push_intervention_answer_step(
                             &mut run,
@@ -349,7 +451,8 @@ impl BrowserAgentLoop {
                     timestamp_ms: chrono::Utc::now().timestamp_millis(),
                 });
                     self.emit_run(&run);
-                    self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
+                    self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref(), "loop detected");
+                    self.record_final_state(&run).await;
                     return Ok(run);
                 }
 
@@ -416,7 +519,8 @@ impl BrowserAgentLoop {
                         RecoveryOutcome::Stop => {
                             run.status = BrowserTaskStatus::Failed;
                             self.emit_run(&run);
-                            self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
+                            self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref(), "recovery stopped");
+                            self.record_final_state(&run).await;
                             return Ok(run);
                         }
                     }
@@ -437,7 +541,7 @@ impl BrowserAgentLoop {
             error: Some("Browser task reached max_steps and saved a resumable checkpoint.".to_string()),
             timestamp_ms: chrono::Utc::now().timestamp_millis(),
         });
-        self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
+        self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref(), "max steps reached");
         self.emit_run(&run);
         if let Some(decision) = self.ask_for_checkpoint(&run).await? {
             self.push_intervention_answer_step(
@@ -624,6 +728,43 @@ impl BrowserAgentLoop {
         })
     }
 
+    async fn record_auth_profile_applied(
+        &self,
+        run: &BrowserTaskRun,
+        profile: &BrowserIdentityProfile,
+        tab_id: &str,
+    ) {
+        if let Some(adapter) = self.long_term_memory.as_ref() {
+            adapter.record_auth_profile_applied(run, profile, tab_id).await;
+        }
+    }
+
+    async fn record_visual_observation(
+        &self,
+        run: &BrowserTaskRun,
+        observation_json: &serde_json::Value,
+    ) {
+        if let Some(adapter) = self.long_term_memory.as_ref() {
+            adapter.record_visual_observation(run, observation_json).await;
+        }
+    }
+
+    async fn record_boundary(
+        &self,
+        run: &BrowserTaskRun,
+        boundary: &crate::browser::boundary::BrowserBoundaryEvent,
+    ) {
+        if let Some(adapter) = self.long_term_memory.as_ref() {
+            adapter.record_boundary(run, boundary).await;
+        }
+    }
+
+    async fn record_final_state(&self, run: &BrowserTaskRun) {
+        if let Some(adapter) = self.long_term_memory.as_ref() {
+            adapter.record_final_state(run).await;
+        }
+    }
+
     fn load_resume_run(&self, request: &BrowserTaskRequest) -> Result<Option<BrowserTaskRun>> {
         let Some(run_id) = request.resume_run_id.as_deref() else {
             return Ok(None);
@@ -653,15 +794,34 @@ impl BrowserAgentLoop {
         step_index: u32,
         active_tab_id: Option<&str>,
         memory: Option<&BrowserTaskMemory>,
+        reason: &str,
     ) {
         if let Some(store) = self.task_store.as_ref() {
             let loop_state = serde_json::json!({
                 "status": run.status,
                 "stepCount": run.steps.len(),
+                "reason": reason,
             });
             if let Err(e) = store.persist_checkpoint(run, step_index, active_tab_id, memory, loop_state) {
                 tracing::warn!(run_id = %run.run_id, error = %e, "failed to persist browser task checkpoint");
             }
+        }
+        if let Some(adapter) = self.long_term_memory.clone() {
+            let run = run.clone();
+            let active_tab_id = active_tab_id.map(str::to_string);
+            let memory = memory.cloned();
+            let reason = reason.to_string();
+            tauri::async_runtime::spawn(async move {
+                adapter
+                    .record_checkpoint(
+                        &run,
+                        step_index,
+                        active_tab_id.as_deref(),
+                        memory.as_ref(),
+                        &reason,
+                    )
+                    .await;
+            });
         }
     }
 
@@ -750,6 +910,21 @@ fn action_name(action: &BrowserAction) -> &'static str {
         BrowserAction::CloseTab { .. } => "browser_close_tab",
         BrowserAction::UploadFile { .. } => "browser_upload_file",
     }
+}
+
+fn strip_raw_screenshot(value: &mut serde_json::Value) {
+    if let Some(object) = value.as_object_mut() {
+        object.remove("screenshotB64");
+    }
+}
+
+fn boundary_fingerprint(boundary: &BrowserBoundaryEvent) -> String {
+    format!(
+        "{:?}|{}|{}",
+        boundary.kind,
+        normalize_origin_for_lookup(&boundary.url).unwrap_or_else(|| boundary.url.clone()),
+        boundary.reason
+    )
 }
 
 fn normalize_origin_for_lookup(input: &str) -> Option<String> {

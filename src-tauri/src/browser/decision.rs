@@ -69,7 +69,8 @@ pub fn build_browser_decision_prompt(
          - Use status=continue only when action is non-null.\n\
          - Use status=done when the task is complete and finalAnswer explains the result.\n\
          - Use status=failed when the task cannot proceed and finalAnswer explains why.\n\
-         - Use status=needs_user_intervention for CAPTCHA, 2FA, login credentials, paywalls, or other boundaries requiring the user.\n\
+         - Use status=needs_user_intervention only when the current task must cross a CAPTCHA, 2FA, login credential, paywall, checkout, or other boundary requiring the user.\n\
+         - Public product or marketing pages may mention buying, payment, subscriptions, or checkout. Do not request user intervention unless the next action would actually submit payment, enter billing data, bypass a paywall, or provide private credentials.\n\
          - When multiple tabs are open, inspect tabs and switch to the tab that best matches the next subtask before clicking or typing.\n\
          - For upload_file, file_path must exactly match one of the available files listed below; do not invent file paths.\n\
          - Prefer DOM element indexes from the latest observation; do not invent indexes.\n\

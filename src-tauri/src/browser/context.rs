@@ -22,6 +22,7 @@ use chromiumoxide::{Browser, Page};
 use futures::StreamExt;
 use tauri::Emitter;
 use tokio::sync::{oneshot, Mutex, RwLock};
+use tokio::time::sleep;
 use uuid::Uuid;
 
 use crate::browser::dom_state::{dom_state_from_raw, DOM_QUERY_SCRIPT};
@@ -341,10 +342,21 @@ impl BrowserContext {
 
         // Cache is stale — re-evaluate the DOM query script.
         let page = self.get_page(tab_id).await?;
-        let result = page
-            .evaluate(DOM_QUERY_SCRIPT)
-            .await
-            .map_err(|e| anyhow!("DOM query failed: {}", e))?;
+        let result = match page.evaluate(DOM_QUERY_SCRIPT).await {
+            Ok(result) => result,
+            Err(first_error) if is_transient_cdp_context_error(&first_error.to_string()) => {
+                sleep(Duration::from_millis(250)).await;
+                let page = self.get_page(tab_id).await?;
+                page.evaluate(DOM_QUERY_SCRIPT).await.map_err(|second_error| {
+                    anyhow!(
+                        "DOM query failed after retry: {}; first error: {}",
+                        second_error,
+                        first_error
+                    )
+                })?
+            }
+            Err(error) => return Err(anyhow!("DOM query failed: {}", error)),
+        };
 
         let json_str: String = result
             .into_value()
@@ -931,6 +943,13 @@ impl BrowserContext {
 
         Ok(())
     }
+}
+
+fn is_transient_cdp_context_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("cannot find context with specified id")
+        || lower.contains("cannot find execution context")
+        || lower.contains("execution context was destroyed")
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ pub mod dom_state;
 pub mod identity;
 pub mod intervention_bridge;
 pub mod loop_detector; // stub — full implementation in Plan 2 Task 15
+pub mod memory_adapter;
 pub mod observation;
 pub mod perception;
 pub mod recovery;

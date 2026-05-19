@@ -221,10 +221,6 @@ impl MemUClient {
     ///
     /// Returns `true` if the subprocess is responsive.
     pub async fn health_check(&self) -> Result<bool, BridgeError> {
-        if !self.bridge.is_alive() {
-            return Ok(false);
-        }
-
         match self
             .bridge
             .send_request_with_timeout(
