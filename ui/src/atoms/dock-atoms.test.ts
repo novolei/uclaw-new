@@ -222,3 +222,20 @@ describe('dockBounceKeysAtom', () => {
     expect(store.get(dockBounceKeysAtom)).toEqual({ 'mode-agent': 2 })
   })
 })
+
+import { memuConsolidatingAtom } from './dock-atoms'
+
+describe('memuConsolidatingAtom', () => {
+  it('starts false', () => {
+    const store = createStore()
+    expect(store.get(memuConsolidatingAtom)).toBe(false)
+  })
+
+  it('can be toggled', () => {
+    const store = createStore()
+    store.set(memuConsolidatingAtom, true)
+    expect(store.get(memuConsolidatingAtom)).toBe(true)
+    store.set(memuConsolidatingAtom, false)
+    expect(store.get(memuConsolidatingAtom)).toBe(false)
+  })
+})

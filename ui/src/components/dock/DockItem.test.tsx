@@ -237,4 +237,86 @@ describe('DockItem', () => {
     // After bounceKey bump, the data-bouncing attr is set for the bounce window.
     expect(btn.getAttribute('data-bouncing')).toBe('true')
   })
+
+  it('renders breathing halo when liveness.breathing is true', () => {
+    const { container } = render(
+      <DockItem
+        icon={<Bot size={18} />}
+        label="Agent"
+        isActive={false}
+        index={0}
+        hoveredIndex={null}
+        onHoverIndexChange={vi.fn()}
+        onClick={vi.fn()}
+        liveness={{ breathing: true, streaming: false, pulsing: false }}
+      />,
+    )
+    expect(container.querySelector('[data-dock-halo]')).not.toBeNull()
+  })
+
+  it('does NOT render halo when liveness.breathing is false', () => {
+    const { container } = render(
+      <DockItem
+        icon={<Bot size={18} />}
+        label="Agent"
+        isActive={false}
+        index={0}
+        hoveredIndex={null}
+        onHoverIndexChange={vi.fn()}
+        onClick={vi.fn()}
+        liveness={{ breathing: false, streaming: false, pulsing: false }}
+      />,
+    )
+    expect(container.querySelector('[data-dock-halo]')).toBeNull()
+  })
+
+  it('renders streaming particle container when liveness.streaming is true', () => {
+    const { container } = render(
+      <DockItem
+        icon={<Bot size={18} />}
+        label="Agent"
+        isActive={false}
+        index={0}
+        hoveredIndex={null}
+        onHoverIndexChange={vi.fn()}
+        onClick={vi.fn()}
+        liveness={{ breathing: false, streaming: true, pulsing: false }}
+      />,
+    )
+    expect(container.querySelector('[data-dock-particles]')).not.toBeNull()
+  })
+
+  it('sets data-pulsing when liveness.pulsing is true', () => {
+    render(
+      <DockItem
+        icon={<Bot size={18} />}
+        label="Memory"
+        isActive={false}
+        index={0}
+        hoveredIndex={null}
+        onHoverIndexChange={vi.fn()}
+        onClick={vi.fn()}
+        liveness={{ breathing: false, streaming: false, pulsing: true }}
+      />,
+    )
+    const btn = screen.getByRole('button', { name: 'Memory' })
+    expect(btn.getAttribute('data-pulsing')).toBe('true')
+  })
+
+  it('omits all liveness visuals when liveness prop is undefined', () => {
+    const { container } = render(
+      <DockItem
+        icon={<Bot size={18} />}
+        label="Chat"
+        isActive={false}
+        index={0}
+        hoveredIndex={null}
+        onHoverIndexChange={vi.fn()}
+        onClick={vi.fn()}
+      />,
+    )
+    expect(container.querySelector('[data-dock-halo]')).toBeNull()
+    expect(container.querySelector('[data-dock-particles]')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Chat' }).getAttribute('data-pulsing')).toBeNull()
+  })
 })
