@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -540,6 +540,7 @@ struct StdioTransport {
     reader_handle: Mutex<Option<JoinHandle<()>>>,
     stderr_handle: Mutex<Option<JoinHandle<()>>>,
     child: Arc<Mutex<tokio::process::Child>>,
+    stderr_tail: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl StdioTransport {
@@ -598,6 +599,7 @@ impl StdioTransport {
 
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let stderr_tail = Arc::new(Mutex::new(VecDeque::with_capacity(40)));
 
         // Spawn stdout reader
         let reader_pending = pending.clone();
@@ -675,11 +677,17 @@ impl StdioTransport {
 
         // Spawn stderr reader
         let stderr_name = server_name.clone();
+        let stderr_tail_reader = stderr_tail.clone();
         let stderr_handle = tokio::spawn(async move {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 tracing::debug!("[{}] stderr: {}", stderr_name, line);
+                let mut tail = stderr_tail_reader.lock().await;
+                if tail.len() >= 40 {
+                    tail.pop_front();
+                }
+                tail.push_back(line);
             }
         });
 
@@ -690,7 +698,29 @@ impl StdioTransport {
             reader_handle: Mutex::new(Some(reader_handle)),
             stderr_handle: Mutex::new(Some(stderr_handle)),
             child: Arc::new(Mutex::new(child)),
+            stderr_tail,
         })
+    }
+
+    async fn stderr_tail_message(&self) -> Option<String> {
+        let tail = self.stderr_tail.lock().await;
+        if tail.is_empty() {
+            None
+        } else {
+            Some(tail.iter().cloned().collect::<Vec<_>>().join("\n"))
+        }
+    }
+
+    async fn error_with_stderr_tail(&self, prefix: String, timeout: bool) -> McpError {
+        let msg = match self.stderr_tail_message().await {
+            Some(tail) => format!("{}\nstderr tail:\n{}", prefix, tail),
+            None => prefix,
+        };
+        if timeout {
+            McpError::Timeout(msg)
+        } else {
+            McpError::Transport(msg)
+        }
     }
 }
 
@@ -740,9 +770,11 @@ impl McpTransport for StdioTransport {
             }.await {
                 let mut map = self.pending.lock().await;
                 map.remove(&id);
-                return Err(McpError::Transport(format!(
-                    "[{}] Write failed: {}", self.server_name, e
-                )));
+                return Err(self.error_with_stderr_tail(
+                    format!("[{}] Write failed: {}", self.server_name, e),
+                    false,
+                )
+                .await);
             }
         }
 
@@ -765,18 +797,26 @@ impl McpTransport for StdioTransport {
             Ok(Err(_)) => {
                 let mut map = self.pending.lock().await;
                 map.remove(&id);
-                Err(McpError::Transport(format!(
-                    "[{}] Server closed connection before responding",
-                    self.server_name
-                )))
+                Err(self.error_with_stderr_tail(
+                    format!(
+                        "[{}] Server closed connection before responding",
+                        self.server_name
+                    ),
+                    false,
+                )
+                .await)
             }
             Err(_) => {
                 let mut map = self.pending.lock().await;
                 map.remove(&id);
-                Err(McpError::Timeout(format!(
-                    "[{}] Timeout waiting for response to request {}",
-                    self.server_name, id
-                )))
+                Err(self.error_with_stderr_tail(
+                    format!(
+                        "[{}] Timeout waiting for response to request {}",
+                        self.server_name, id
+                    ),
+                    true,
+                )
+                .await)
             }
         }
     }
@@ -1537,8 +1577,8 @@ impl McpManager {
     /// hold a borrow back into the manager.
     ///
     /// Two phases per iteration:
-    /// 1. Sleep `HEALTH_PING_INTERVAL_SECS`, then ping. On success
-    ///    reset the backoff and loop.
+    /// 1. Ping immediately. On success, reset the backoff and wait for
+    ///    the next regular health interval.
     /// 2. On failure, flip the server's status to Error with a
     ///    descriptive message, sleep `min(INITIAL * 2^attempt, MAX)`,
     ///    then call `reconnect_server`. Success resets attempt; failure
@@ -1550,8 +1590,6 @@ impl McpManager {
     async fn run_health_loop(mgr: SharedMcpManager, id: String) {
         let mut attempt: u32 = 0;
         loop {
-            tokio::time::sleep(Duration::from_secs(HEALTH_PING_INTERVAL_SECS)).await;
-
             // Ping under a read lock — short critical section.
             let ping_result = {
                 let m = mgr.read().await;
@@ -1565,6 +1603,7 @@ impl McpManager {
                     // previous failure-then-recovery cycle, the
                     // reconnect path below already cleared it.
                     attempt = 0;
+                    tokio::time::sleep(Duration::from_secs(HEALTH_PING_INTERVAL_SECS)).await;
                     continue;
                 }
                 Err(e) => {
@@ -1606,6 +1645,10 @@ impl McpManager {
                                 attempt + 1
                             );
                             attempt = 0;
+                            tokio::time::sleep(Duration::from_secs(
+                                HEALTH_PING_INTERVAL_SECS,
+                            ))
+                            .await;
                         }
                         Err(rc_err) => {
                             tracing::warn!(
@@ -2014,6 +2057,10 @@ pub async fn restart_server_shared(
         guard.record_audit(id, McpAuditKind::Disconnect, "Disconnected (restart)");
     }
     connect_server_shared(shared, id).await?;
+    {
+        let mut guard = shared.write().await;
+        guard.start_health_loop(shared.clone(), id);
+    }
     Ok(())
 }
 

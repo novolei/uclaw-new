@@ -327,7 +327,10 @@ pub async fn get_system_diagnostics(
 
     // memU bridge status
     let memu = match state.memu_client.as_ref() {
-        Some(client) => MemUBridgeStatus { running: client.is_available(), pid: None },
+        Some(client) => MemUBridgeStatus {
+            running: client.health_check().await.unwrap_or(false),
+            pid: None,
+        },
         None => MemUBridgeStatus { running: false, pid: None },
     };
 
