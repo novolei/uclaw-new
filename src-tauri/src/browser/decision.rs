@@ -60,7 +60,7 @@ pub fn build_browser_decision_prompt(
          {{\"kind\":\"scroll\",\"tab_id\":string,\"direction\":\"up\"|\"down\"|\"left\"|\"right\",\"pixels\"?:number,\"index\"?:number}}\n\
          {{\"kind\":\"send_keys\",\"tab_id\":string,\"keys\":string}}\n\
          {{\"kind\":\"evaluate\",\"tab_id\":string,\"script\":string}}\n\
-         {{\"kind\":\"get_state\",\"tab_id\":string,\"include_screenshot\":boolean}}\n\
+         {{\"kind\":\"get_state\",\"tab_id\":string,\"include_screenshot\":boolean,\"include_visual\"?:boolean}}\n\
          {{\"kind\":\"list_tabs\"}}\n\
          {{\"kind\":\"switch_tab\",\"tab_id\":string}}\n\
          {{\"kind\":\"close_tab\",\"tab_id\":string}}\n\

@@ -9,7 +9,12 @@ pub enum BrowserAction {
     Scroll { tab_id: String, direction: String, pixels: Option<u32>, index: Option<u32> },
     SendKeys { tab_id: String, keys: String },
     Evaluate { tab_id: String, script: String },
-    GetState { tab_id: String, include_screenshot: bool },
+    GetState {
+        tab_id: String,
+        include_screenshot: bool,
+        #[serde(default)]
+        include_visual: bool,
+    },
     ListTabs,
     SwitchTab { tab_id: String },
     CloseTab { tab_id: String },

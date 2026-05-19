@@ -783,6 +783,7 @@ mod tests {
             elements: vec![],
             tabs: vec![],
             screenshot_b64: None,
+            visual_observation: None,
             timestamp_ms: 123,
         };
 
