@@ -11,8 +11,8 @@ import { topLevelViewAtom, type TopLevelView } from '@/atoms/top-level-view'
 import { kaleidoscopeModuleAtom, type KaleidoscopeModuleId } from '@/atoms/kaleidoscope'
 
 interface BottomDockProps {
+  /** Controlled from BottomDockHoverRegion. Drives slide animation. */
   revealed: boolean
-  onRevealChange: (revealed: boolean) => void
 }
 
 interface NavCtx {
@@ -38,7 +38,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   {
     id: 'chat',
-    icon: <MessageSquare size={18} className="text-white/80" />,
+    icon: <MessageSquare size={18} strokeWidth={1.75} />,
     label: '聊天',
     isActive: ({ appMode, topLevelView }) =>
       appMode === 'chat' && topLevelView === 'workspace',
@@ -49,7 +49,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     id: 'agent',
-    icon: <Bot size={18} className="text-white/80" />,
+    icon: <Bot size={18} strokeWidth={1.75} />,
     label: 'Agent',
     isActive: ({ appMode, topLevelView }) =>
       appMode === 'agent' && topLevelView === 'workspace',
@@ -60,7 +60,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     id: 'memory',
-    icon: <Brain size={18} className="text-white/80" />,
+    icon: <Brain size={18} strokeWidth={1.75} />,
     label: '记忆',
     isActive: ({ topLevelView, kaleidoscopeModule }) =>
       topLevelView === 'kaleidoscope' && kaleidoscopeModule === 'memory',
@@ -71,7 +71,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     id: 'kaleidoscope',
-    icon: <Sparkles size={18} className="text-white/80" />,
+    icon: <Sparkles size={18} strokeWidth={1.75} />,
     label: '万花筒',
     isActive: ({ topLevelView, kaleidoscopeModule }) =>
       topLevelView === 'kaleidoscope' && kaleidoscopeModule !== 'memory',
@@ -81,7 +81,9 @@ const NAV_ITEMS: NavItem[] = [
   },
 ]
 
-export function BottomDock({ revealed, onRevealChange }: BottomDockProps) {
+const SLIDE_HIDDEN_Y = 96 // px; large enough to clear dock height in any theme
+
+export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | null {
   const isDockEnabled = useAtomValue(bottomDockEnabledAtom)
   const appMode = useAtomValue(appModeAtom)
   const topLevelView = useAtomValue(topLevelViewAtom)
@@ -91,58 +93,53 @@ export function BottomDock({ revealed, onRevealChange }: BottomDockProps) {
   const setKaleidoscopeModule = useSetAtom(kaleidoscopeModuleAtom)
 
   const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null)
-  const hideTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // NOTE: useConnectionStatus must be called before the early-return guard below
-  // to comply with the Rules of Hooks (no conditional hook calls).
+  // Rules of Hooks: keep before any early return.
   useConnectionStatus()
 
-  // Clean up any pending hide timer on unmount.
+  // Reset magnification when collapsed so reopening doesn't briefly show
+  // a stale hovered icon before mouse lands somewhere new.
   React.useEffect(() => {
-    return () => {
-      if (hideTimerRef.current !== null) clearTimeout(hideTimerRef.current)
-    }
-  }, [])
+    if (!revealed) setHoveredIndex(null)
+  }, [revealed])
 
   if (!isDockEnabled) return null
 
   const navCtx: NavCtx = { appMode, topLevelView, kaleidoscopeModule }
-  const actionCtx: ActionCtx = { setAppMode, setTopLevelView, setKaleidoscopeModule }
-
-  const handleDockMouseEnter = () => {
-    if (hideTimerRef.current !== null) clearTimeout(hideTimerRef.current)
-  }
-
-  const handleDockMouseLeave = () => {
-    setHoveredIndex(null)
-    hideTimerRef.current = setTimeout(() => onRevealChange(false), 200)
+  const actionCtx: ActionCtx = {
+    setAppMode,
+    setTopLevelView,
+    setKaleidoscopeModule,
   }
 
   return (
     <motion.div
-      className="fixed bottom-0 left-1/2 -translate-x-1/2 z-[70] pointer-events-auto"
-      animate={{ y: revealed ? 0 : 'calc(100% + 8px)' }}
-      initial={{ y: 'calc(100% + 8px)' }}
-      transition={{ type: 'spring', stiffness: 300, damping: 28 }}
-      onMouseEnter={handleDockMouseEnter}
-      onMouseLeave={handleDockMouseLeave}
+      role="navigation"
+      aria-label="底部导航"
+      className="flex items-end gap-1 px-3 pt-3 pb-2 rounded-t-2xl bg-popover/85 backdrop-blur-xl border-t border-x border-border/40 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.35)] supports-[backdrop-filter]:bg-popover/70"
+      initial={false}
+      animate={{ y: revealed ? 0 : SLIDE_HIDDEN_Y }}
+      transition={{ type: 'spring', stiffness: 360, damping: 32, mass: 0.7 }}
+      onMouseLeave={() => setHoveredIndex(null)}
     >
-      <div className="flex items-end gap-2 px-4 pt-3 pb-2 rounded-t-2xl bg-black/70 backdrop-blur-xl border-t border-x border-white/[0.08] shadow-[0_-4px_24px_rgba(0,0,0,0.4)]">
-        {NAV_ITEMS.map((item, i) => (
-          <DockItem
-            key={item.id}
-            icon={item.icon}
-            label={item.label}
-            isActive={item.isActive(navCtx)}
-            index={i}
-            hoveredIndex={hoveredIndex}
-            onHoverIndexChange={(idx) => setHoveredIndex(idx)}
-            onClick={() => item.onClick(actionCtx)}
-          />
-        ))}
-        <div className="ml-3 mb-1 flex items-center self-center">
-          <ConnectionIndicator />
-        </div>
+      {NAV_ITEMS.map((item, i) => (
+        <DockItem
+          key={item.id}
+          icon={item.icon}
+          label={item.label}
+          isActive={item.isActive(navCtx)}
+          index={i}
+          hoveredIndex={hoveredIndex}
+          onHoverIndexChange={setHoveredIndex}
+          onClick={() => item.onClick(actionCtx)}
+        />
+      ))}
+      <div
+        className="mx-2 h-7 w-px self-center bg-border/50"
+        aria-hidden="true"
+      />
+      <div className="flex items-center self-center pb-1 pr-1">
+        <ConnectionIndicator />
       </div>
     </motion.div>
   )
