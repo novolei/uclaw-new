@@ -19,3 +19,8 @@ pub mod brain_io;
 pub mod brain_watcher;
 // Memory OS Sprint 1.7 — PROFILE.md managed-block parser/renderer.
 pub mod profile_md;
+// Memory OS L3 §4.12.1 (RETAINED per ADR 2026-05-20 §8) — Importance-Aware
+// Decay: Ebbinghaus forgetting + importance weighting. Writes to V44's
+// `memory_importance_scores` table. Algorithm-only in this PR; scheduler
+// wiring deferred to a follow-up.
+pub mod importance_decay;
