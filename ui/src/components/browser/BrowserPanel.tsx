@@ -8,22 +8,17 @@
 import * as React from 'react'
 import { useSetAtom, useAtomValue } from 'jotai'
 import {
-  listenScreencastFrames,
   listenNavState,
   browserGetDOMState,
-  browserStartScreencast,
-  browserStopScreencast,
 } from '@/lib/tauri-bridge'
 import {
-  browserScreencastFrameAtom,
   browserDOMStateAtom,
-  browserScreencastActiveAtom,
   browserDOMOverlayVisibleAtom,
   browserNavStateAtom,
   type BrowserTabEntry,
-  type ScreencastFrameEntry,
 } from '@/atoms/browser-atoms'
 import { sessionBrowserPreviewMapAtom, type BrowserPreviewState } from '@/atoms/agent-atoms'
+import { useBrowserScreencast } from '@/hooks/useBrowserScreencast'
 import { BrowserAddressBar } from './BrowserAddressBar'
 import { BrowserTabBar } from './BrowserTabBar'
 import { BrowserScreencastView } from './BrowserScreencastView'
@@ -34,9 +29,7 @@ interface BrowserPanelProps {
 }
 
 export function BrowserPanel({ agentSessionId }: BrowserPanelProps): React.ReactElement {
-  const setFrameMap = useSetAtom(browserScreencastFrameAtom)
   const setDomMap = useSetAtom(browserDOMStateAtom)
-  const setActiveSet = useSetAtom(browserScreencastActiveAtom)
   const setNavState = useSetAtom(browserNavStateAtom)
   const setPreviewMap = useSetAtom(sessionBrowserPreviewMapAtom)
   const overlayVisible = useAtomValue(browserDOMOverlayVisibleAtom)
@@ -51,53 +44,7 @@ export function BrowserPanel({ agentSessionId }: BrowserPanelProps): React.React
   const tabs: BrowserTabEntry[] = domEntry?.tabs ?? []
   const displayUrl = domEntry?.url ?? currentUrl
 
-  // CDP screencast lifecycle: subscribe to the frame stream FIRST, then
-  // tell the backend to start emitting. Tauri's `listen()` is async — the
-  // listener isn't registered until its Promise resolves. If we call
-  // `browserStartScreencast` before that, Chrome may emit its initial frame
-  // into the void: for a static page (e.g. after the first paint) Chrome
-  // only emits another frame on the next paint, so the UI sits at
-  // "等待浏览器画面..." forever.
-  React.useEffect(() => {
-    if (!activeTabId) return
-    let unlisten: (() => void) | null = null
-    let cancelled = false
-    listenScreencastFrames((payload) => {
-      if (payload.sessionId !== agentSessionId) return
-      setFrameMap((prev) => {
-        const next = new Map(prev)
-        const entry: ScreencastFrameEntry = {
-          tabId: payload.tabId,
-          dataB64: payload.dataB64,
-          pageWidth: payload.pageWidth,
-          pageHeight: payload.pageHeight,
-          timestamp: Date.now(),
-        }
-        next.set(agentSessionId, entry)
-        return next
-      })
-    }).then((fn) => {
-      if (cancelled) { fn(); return }
-      unlisten = fn
-      setActiveSet((prev) => {
-        const next = new Set(prev)
-        next.add(agentSessionId)
-        return next
-      })
-      browserStartScreencast(agentSessionId, activeTabId).catch(console.error)
-    })
-
-    return () => {
-      cancelled = true
-      if (unlisten) unlisten()
-      setActiveSet((prev) => {
-        const next = new Set(prev)
-        next.delete(agentSessionId)
-        return next
-      })
-      browserStopScreencast(agentSessionId, activeTabId).catch(() => {})
-    }
-  }, [agentSessionId, activeTabId, setFrameMap, setActiveSet])
+  useBrowserScreencast(agentSessionId, activeTabId)
 
   // Subscribe to navigation state events for this session.
   //

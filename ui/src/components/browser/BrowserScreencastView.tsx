@@ -44,7 +44,7 @@ export function BrowserScreencastView({ sessionId }: BrowserScreencastViewProps)
     const binary = atob(frame.dataB64)
     const bytes = new Uint8Array(binary.length)
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-    const blob = new Blob([bytes], { type: 'image/jpeg' })
+    const blob = new Blob([bytes], { type: frame.mimeType ?? 'image/jpeg' })
 
     let cancelled = false
     createImageBitmap(blob).then((bitmap) => {

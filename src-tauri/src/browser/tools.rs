@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use async_trait::async_trait;
 use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
+use crate::browser::agent_loop::{BrowserAgentLoop, BrowserTaskRequest};
 use crate::browser::context::DevicePreset;
 use crate::browser::context_manager::BrowserContextManager;
 use crate::browser::dom_state::format_dom_state_for_llm;
@@ -36,6 +37,15 @@ browser_tool!(BrowserSetCookieTool);
 browser_tool!(BrowserWaitTool);
 browser_tool!(BrowserHoverTool);
 browser_tool!(BrowserUploadFileTool);
+browser_tool!(BrowserGetStateTool);
+browser_tool!(BrowserListTabsTool);
+browser_tool!(BrowserSwitchTabTool);
+browser_tool!(BrowserCloseTabTool);
+browser_tool!(BrowserListSessionsTool);
+browser_tool!(BrowserCloseSessionTool);
+browser_tool!(BrowserCloseAllTool);
+browser_tool!(BrowserTaskTool);
+browser_tool!(RetryWithBrowserAgentTool);
 
 // ── 1. BrowserNavigateTool ────────────────────────────────────────────────────
 
@@ -1059,6 +1069,297 @@ impl Tool for BrowserUploadFileTool {
             &format!("File '{}' set on input element at index {}", file_path, index),
             start.elapsed().as_millis() as u64,
         ))
+    }
+}
+
+// ── 20. BrowserGetStateTool ──────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserGetStateTool {
+    fn name(&self) -> &str { "browser_get_state" }
+
+    fn description(&self) -> &str {
+        "Return structured browser state for the current tab: URL, title, tabs, page text, interactive DOM elements, and optionally screenshot data."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": { "type": "string", "description": "Tab ID to observe" },
+                "include_screenshot": { "type": "boolean", "description": "Include base64 PNG screenshot data (default false)" }
+            },
+            "required": ["tab_id"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let tab_id = params["tab_id"].as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
+        let include_screenshot = params["include_screenshot"].as_bool().unwrap_or(false);
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let observation = ctx.observe(tab_id, include_screenshot).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        Ok(ToolOutput::new(
+            serde_json::json!({ "ok": true, "observation": observation }),
+            start.elapsed().as_millis() as u64,
+        ))
+    }
+}
+
+// ── 21. BrowserListTabsTool ──────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserListTabsTool {
+    fn name(&self) -> &str { "browser_list_tabs" }
+
+    fn description(&self) -> &str {
+        "List all open tabs in the current browser session with tab_id, URL, title, and active status."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {} })
+    }
+
+    async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let tabs = ctx.get_all_tabs().await;
+        Ok(ToolOutput::new(
+            serde_json::json!({ "ok": true, "tabs": tabs }),
+            start.elapsed().as_millis() as u64,
+        ))
+    }
+}
+
+// ── 22. BrowserSwitchTabTool ─────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserSwitchTabTool {
+    fn name(&self) -> &str { "browser_switch_tab" }
+
+    fn description(&self) -> &str {
+        "Switch the active browser tab for this agent session."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": { "type": "string", "description": "Tab ID to make active" }
+            },
+            "required": ["tab_id"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let tab_id = params["tab_id"].as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        ctx.switch_tab(tab_id, self.ctx_mgr.app_handle()).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        Ok(ToolOutput::success(
+            &format!("Switched to tab {}.", tab_id),
+            start.elapsed().as_millis() as u64,
+        ))
+    }
+}
+
+// ── 23. BrowserCloseTabTool ──────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserCloseTabTool {
+    fn name(&self) -> &str { "browser_close_tab" }
+
+    fn description(&self) -> &str {
+        "Close a specific tab in the current browser session."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tab_id": { "type": "string", "description": "Tab ID to close" }
+            },
+            "required": ["tab_id"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let tab_id = params["tab_id"].as_str()
+            .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
+        let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        ctx.close_tab(tab_id).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        Ok(ToolOutput::success(
+            &format!("Closed tab {}.", tab_id),
+            start.elapsed().as_millis() as u64,
+        ))
+    }
+}
+
+// ── 24. BrowserListSessionsTool ──────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserListSessionsTool {
+    fn name(&self) -> &str { "browser_list_sessions" }
+
+    fn description(&self) -> &str {
+        "List agent session IDs that currently have live browser contexts."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {} })
+    }
+
+    async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let sessions = self.ctx_mgr.list_active_sessions().await;
+        Ok(ToolOutput::new(
+            serde_json::json!({ "ok": true, "sessions": sessions }),
+            start.elapsed().as_millis() as u64,
+        ))
+    }
+}
+
+// ── 25. BrowserCloseSessionTool ──────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserCloseSessionTool {
+    fn name(&self) -> &str { "browser_close_session" }
+
+    fn description(&self) -> &str {
+        "Close a browser context by session_id. Defaults to the current agent session."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "session_id": { "type": "string", "description": "Session ID to close; defaults to current session" }
+            }
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let session_id = params["session_id"].as_str().unwrap_or(&self.session_id);
+        self.ctx_mgr.destroy(session_id).await;
+        Ok(ToolOutput::success(
+            &format!("Closed browser session {}.", session_id),
+            start.elapsed().as_millis() as u64,
+        ))
+    }
+}
+
+// ── 26. BrowserCloseAllTool ──────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserCloseAllTool {
+    fn name(&self) -> &str { "browser_close_all" }
+
+    fn description(&self) -> &str {
+        "Close all live browser contexts."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {} })
+    }
+
+    async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let count = self.ctx_mgr.destroy_all().await;
+        Ok(ToolOutput::success(
+            &format!("Closed {} browser session(s).", count),
+            start.elapsed().as_millis() as u64,
+        ))
+    }
+}
+
+// ── 27. BrowserTaskTool ──────────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserTaskTool {
+    fn name(&self) -> &str { "browser_task" }
+
+    fn description(&self) -> &str {
+        "Run an autonomous browser task loop. Current implementation opens/observes the browser and records structured task-step events; the LLM planner adapter is wired in the next stage."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "task": { "type": "string", "description": "Natural-language browser task to perform" },
+                "max_steps": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 25,
+                    "description": "Maximum autonomous browser steps (default 8, capped at 25)"
+                },
+                "start_url": {
+                    "type": "string",
+                    "description": "Optional URL to open before the first observation"
+                }
+            },
+            "required": ["task"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let task = params["task"].as_str()
+            .ok_or_else(|| ToolError::Execution("task is required".to_string()))?
+            .to_string();
+        let max_steps = params["max_steps"].as_u64().map(|v| v as u32);
+        let start_url = params["start_url"].as_str().map(|s| s.to_string());
+        let runner = BrowserAgentLoop::new(Arc::clone(&self.ctx_mgr));
+        let run = runner.run(BrowserTaskRequest {
+            session_id: self.session_id.clone(),
+            task,
+            max_steps,
+            start_url,
+        }).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        Ok(ToolOutput::new(
+            serde_json::json!({
+                "ok": run.status != crate::browser::session_state::BrowserTaskStatus::Failed,
+                "run": run,
+            }),
+            start.elapsed().as_millis() as u64,
+        ))
+    }
+}
+
+// ── 28. RetryWithBrowserAgentTool ────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for RetryWithBrowserAgentTool {
+    fn name(&self) -> &str { "retry_with_browser_agent" }
+
+    fn description(&self) -> &str {
+        "Fallback after direct browser tools fail: run a structured browser-agent task with observation and recovery-friendly step events."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        BrowserTaskTool {
+            ctx_mgr: Arc::clone(&self.ctx_mgr),
+            session_id: self.session_id.clone(),
+        }.parameters_schema()
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        BrowserTaskTool {
+            ctx_mgr: Arc::clone(&self.ctx_mgr),
+            session_id: self.session_id.clone(),
+        }.execute(params).await
     }
 }
 

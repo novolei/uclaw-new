@@ -5,6 +5,7 @@ import { atom } from 'jotai'
 export interface ScreencastFrameEntry {
   tabId: string
   dataB64: string
+  mimeType?: string
   pageWidth: number
   pageHeight: number
   timestamp: number

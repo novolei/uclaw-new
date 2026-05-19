@@ -1,7 +1,14 @@
+pub mod action;
+pub mod action_registry;
+pub mod agent_loop;
 pub mod context;
 pub mod context_manager;
+pub mod decision;
 pub mod dom_state;
 pub mod loop_detector; // stub — full implementation in Plan 2 Task 15
+pub mod observation;
+pub mod recovery;
+pub mod session_state;
 pub mod tools;
 pub mod types;
 

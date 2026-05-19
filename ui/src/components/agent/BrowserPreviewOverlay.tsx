@@ -13,7 +13,8 @@ import { Globe, Minimize2, Maximize2, X, ExternalLink, MonitorPlay } from 'lucid
 import { cn } from '@/lib/utils'
 import { sessionBrowserPreviewMapAtom } from '@/atoms/agent-atoms'
 import { browserScreencastFrameAtom } from '@/atoms/browser-atoms'
-import { previewTabsAtom, activePreviewTabKeyAtom, previewTabKey } from '@/atoms/preview-panel-atoms'
+import { activePreviewTabKeyAtom, previewTabKey } from '@/atoms/preview-panel-atoms'
+import { useBrowserScreencast } from '@/hooks/useBrowserScreencast'
 
 interface BrowserPreviewOverlayProps {
   sessionId: string
@@ -24,12 +25,15 @@ export function BrowserPreviewOverlay({ sessionId }: BrowserPreviewOverlayProps)
   const frameMap = useAtomValue(browserScreencastFrameAtom)
   const activeKey = useAtomValue(activePreviewTabKeyAtom)
   const preview = previewMap.get(sessionId)
+  const tabId = preview?.visible ? (preview.tabId ?? null) : null
+  useBrowserScreencast(sessionId, tabId)
 
   if (!preview?.visible) return null
 
   const { url, minimized } = preview
 
-  // Compact mode: browser panel tab for this session is currently active.
+  // The full Browser panel may be open too, but this overlay remains a live
+  // visual confirmation instead of collapsing into a status-only chip.
   const panelKey = previewTabKey({ mountId: 'browser', relPath: sessionId })
   const panelActive = activeKey === panelKey
 
@@ -47,7 +51,7 @@ export function BrowserPreviewOverlay({ sessionId }: BrowserPreviewOverlayProps)
     const binary = atob(frame.dataB64)
     const bytes = new Uint8Array(binary.length)
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-    const blob = new Blob([bytes], { type: 'image/jpeg' })
+    const blob = new Blob([bytes], { type: frame.mimeType ?? 'image/jpeg' })
     let cancelled = false
     createImageBitmap(blob).then((bitmap) => {
       if (cancelled) { bitmap.close(); return }
@@ -75,7 +79,7 @@ export function BrowserPreviewOverlay({ sessionId }: BrowserPreviewOverlayProps)
     try { return new URL(url).hostname } catch { return url }
   })()
 
-  const isCollapsed = minimized || panelActive
+  const isCollapsed = minimized
 
   return (
     <div
