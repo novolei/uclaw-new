@@ -1341,6 +1341,14 @@ impl Tool for BrowserTaskTool {
                 "resume_run_id": {
                     "type": "string",
                     "description": "Optional previous browser task run_id to resume from its latest checkpoint"
+                },
+                "auth_profile_id": {
+                    "type": "string",
+                    "description": "Optional authorized browser auth profile id to use for this task. The profile's cookies/localStorage are injected before the first observation."
+                },
+                "auth_origin": {
+                    "type": "string",
+                    "description": "Optional origin/URL used to resolve an authorized auth profile when auth_profile_id is omitted. Defaults to start_url."
                 }
             },
             "required": ["task"]
@@ -1364,6 +1372,8 @@ impl Tool for BrowserTaskTool {
             })
             .unwrap_or_default();
         let resume_run_id = params["resume_run_id"].as_str().map(|s| s.to_string());
+        let auth_profile_id = params["auth_profile_id"].as_str().map(|s| s.to_string());
+        let auth_origin = params["auth_origin"].as_str().map(|s| s.to_string());
         let runner = BrowserAgentLoop::new(
             Arc::clone(&self.ctx_mgr),
             Arc::clone(&self.decision_adapter),
@@ -1377,6 +1387,8 @@ impl Tool for BrowserTaskTool {
             start_url,
             available_file_paths,
             resume_run_id,
+            auth_profile_id,
+            auth_origin,
         }).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
         Ok(ToolOutput::new(
@@ -1407,6 +1419,14 @@ impl Tool for BrowserTaskResumeTool {
                     "minimum": 1,
                     "maximum": 25,
                     "description": "Maximum additional autonomous browser steps"
+                },
+                "auth_profile_id": {
+                    "type": "string",
+                    "description": "Optional authorized browser auth profile id to use while resuming."
+                },
+                "auth_origin": {
+                    "type": "string",
+                    "description": "Optional origin/URL used to resolve an authorized auth profile while resuming."
                 }
             },
             "required": ["run_id"]
@@ -1419,6 +1439,8 @@ impl Tool for BrowserTaskResumeTool {
             .ok_or_else(|| ToolError::Execution("run_id is required".to_string()))?
             .to_string();
         let max_steps = params["max_steps"].as_u64().map(|v| v as u32);
+        let auth_profile_id = params["auth_profile_id"].as_str().map(|s| s.to_string());
+        let auth_origin = params["auth_origin"].as_str().map(|s| s.to_string());
         let store = self.task_store.as_ref()
             .ok_or_else(|| ToolError::Execution("browser task store is not available".to_string()))?;
         let prior = store.load_run(&run_id)
@@ -1437,6 +1459,8 @@ impl Tool for BrowserTaskResumeTool {
             start_url: None,
             available_file_paths: Vec::new(),
             resume_run_id: Some(run_id),
+            auth_profile_id,
+            auth_origin,
         }).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
         Ok(ToolOutput::new(

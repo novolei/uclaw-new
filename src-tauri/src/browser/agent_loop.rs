@@ -10,6 +10,9 @@ use crate::browser::action_registry::BrowserActionRegistry;
 use crate::browser::boundary::detect_intervention_boundary;
 use crate::browser::context_manager::BrowserContextManager;
 use crate::browser::decision::{BrowserDecisionAdapter, BrowserDecisionStatus};
+use crate::browser::identity::{
+    BrowserAuthProfileBroker, BrowserIdentityProfile, PlaywrightStorageState,
+};
 use crate::browser::intervention_bridge::{
     BrowserAskUserBridge, BrowserInterventionDecision, BrowserInterventionPrompt,
 };
@@ -35,6 +38,8 @@ pub struct BrowserTaskRequest {
     #[serde(default)]
     pub available_file_paths: Vec<String>,
     pub resume_run_id: Option<String>,
+    pub auth_profile_id: Option<String>,
+    pub auth_origin: Option<String>,
 }
 
 pub struct BrowserAgentLoop {
@@ -43,6 +48,7 @@ pub struct BrowserAgentLoop {
     action_registry: BrowserActionRegistry,
     task_store: Option<Arc<BrowserTaskStore>>,
     ask_user_bridge: Option<Arc<BrowserAskUserBridge>>,
+    auth_profile_broker: Option<Arc<BrowserAuthProfileBroker>>,
 }
 
 impl BrowserAgentLoop {
@@ -51,7 +57,14 @@ impl BrowserAgentLoop {
         decision_adapter: Arc<dyn BrowserDecisionAdapter>,
     ) -> Self {
         let action_registry = BrowserActionRegistry::new(Arc::clone(&ctx_mgr));
-        Self { ctx_mgr, decision_adapter, action_registry, task_store: None, ask_user_bridge: None }
+        Self {
+            ctx_mgr,
+            decision_adapter,
+            action_registry,
+            task_store: None,
+            ask_user_bridge: None,
+            auth_profile_broker: BrowserAuthProfileBroker::system_default().ok().map(Arc::new),
+        }
     }
 
     pub fn with_task_store(mut self, task_store: Option<Arc<BrowserTaskStore>>) -> Self {
@@ -61,6 +74,14 @@ impl BrowserAgentLoop {
 
     pub fn with_ask_user_bridge(mut self, ask_user_bridge: Option<Arc<BrowserAskUserBridge>>) -> Self {
         self.ask_user_bridge = ask_user_bridge;
+        self
+    }
+
+    pub fn with_auth_profile_broker(
+        mut self,
+        auth_profile_broker: Option<Arc<BrowserAuthProfileBroker>>,
+    ) -> Self {
+        self.auth_profile_broker = auth_profile_broker;
         self
     }
 
@@ -78,7 +99,15 @@ impl BrowserAgentLoop {
         run.status = BrowserTaskStatus::Running;
         self.emit_run(&run);
 
-        let ctx = self.ctx_mgr.get_or_create(&request.session_id).await?;
+        let mut step_index = run.steps.last().map(|step| step.step_index + 1).unwrap_or(0);
+        let auth_profile = self.resolve_auth_profile(&request)?;
+        let identity_profile_id = auth_profile
+            .as_ref()
+            .map(|(profile, _)| profile.id.as_str());
+        let ctx = self
+            .ctx_mgr
+            .get_or_create_with_identity(&request.session_id, identity_profile_id)
+            .await?;
         let resume_checkpoint = self.latest_checkpoint(&request);
         let tab_id = if let Some(tab_id) = resume_checkpoint
             .as_ref()
@@ -94,7 +123,34 @@ impl BrowserAgentLoop {
         };
 
         let mut active_tab_id = tab_id;
-        let mut step_index = run.steps.last().map(|step| step.step_index + 1).unwrap_or(0);
+        if request.resume_run_id.is_none() {
+            if let Some((profile, state)) = auth_profile.as_ref() {
+                ctx.apply_storage_state(&active_tab_id, state, self.ctx_mgr.app_handle())
+                    .await?;
+                self.push_step(&mut run, BrowserTaskStep {
+                    step_index,
+                    phase: BrowserTaskStepPhase::Act,
+                    observation_summary: String::new(),
+                    reasoning: "Applied authorized browser auth profile before task startup.".to_string(),
+                    action_name: "browser_auth_profile_apply".to_string(),
+                    action_args: serde_json::json!({
+                        "profileId": profile.id.clone(),
+                        "label": profile.label.clone(),
+                        "originPattern": profile.origin_pattern.clone(),
+                    }),
+                    ok: true,
+                    message: Some(format!("Applied auth profile '{}' for browser task.", profile.label)),
+                    error: None,
+                    timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                });
+                step_index += 1;
+                if let Some(start_url) = request.start_url.as_deref() {
+                    active_tab_id = ctx
+                        .navigate(&active_tab_id, start_url, self.ctx_mgr.app_handle())
+                        .await?;
+                }
+            }
+        }
         let mut loop_detector = LoopDetector::default();
         let mut latest_memory = resume_checkpoint.and_then(|checkpoint| checkpoint.memory);
 
@@ -299,7 +355,11 @@ impl BrowserAgentLoop {
 
             match self
                 .action_registry
-                .execute(&request.session_id, action.clone())
+                .execute_with_identity(
+                    &request.session_id,
+                    identity_profile_id,
+                    action.clone(),
+                )
                 .await
             {
                 Ok(result) => {
@@ -345,6 +405,7 @@ impl BrowserAgentLoop {
                             step_index,
                             &err,
                             &Some(action.clone()),
+                            identity_profile_id,
                         )
                         .await?
                     {
@@ -465,11 +526,14 @@ impl BrowserAgentLoop {
         step_index: u32,
         error: &str,
         failed_action: &Option<BrowserAction>,
+        identity_profile_id: Option<&str>,
     ) -> Result<RecoveryOutcome> {
         let kind = classify_browser_error(error);
         let (ok, message) = match kind {
             BrowserRecoveryKind::RefreshTabsAndRetry => {
-                let ctx = self.ctx_mgr.get_or_create(&run.session_id).await?;
+                let ctx = self.ctx_mgr
+                    .get_or_create_with_identity(&run.session_id, identity_profile_id)
+                    .await?;
                 if let Some(tab_id) = ctx.active_or_first_tab_id().await {
                     *active_tab_id = tab_id;
                     (true, "Refreshed active tab id; retrying with a fresh observation.".to_string())
@@ -478,7 +542,9 @@ impl BrowserAgentLoop {
                 }
             }
             BrowserRecoveryKind::RefreshDomAndRetry => {
-                let ctx = self.ctx_mgr.get_or_create(&run.session_id).await?;
+                let ctx = self.ctx_mgr
+                    .get_or_create_with_identity(&run.session_id, identity_profile_id)
+                    .await?;
                 ctx.invalidate_dom_cache(active_tab_id).await;
                 (true, "Invalidated DOM cache; retrying with a fresh observation.".to_string())
             }
@@ -598,6 +664,41 @@ impl BrowserAgentLoop {
             }
         }
     }
+
+    fn resolve_auth_profile(
+        &self,
+        request: &BrowserTaskRequest,
+    ) -> Result<Option<(BrowserIdentityProfile, PlaywrightStorageState)>> {
+        let Some(broker) = self.auth_profile_broker.as_ref() else {
+            if request.auth_profile_id.is_some() || request.auth_origin.is_some() {
+                tracing::warn!(
+                    session_id = %request.session_id,
+                    "browser auth profile requested but broker is unavailable"
+                );
+            }
+            return Ok(None);
+        };
+
+        if let Some(profile_id) = request.auth_profile_id.as_deref() {
+            return broker
+                .load_storage_state_for_profile(profile_id)
+                .map(Some)
+                .map_err(|e| anyhow!("load browser auth profile '{profile_id}': {e}"));
+        }
+
+        let lookup_origin = request
+            .auth_origin
+            .as_deref()
+            .or(request.start_url.as_deref())
+            .and_then(normalize_origin_for_lookup);
+        let Some(origin) = lookup_origin else {
+            return Ok(None);
+        };
+
+        broker
+            .resolve_storage_state_for_origin(&origin)
+            .map_err(|e| anyhow!("resolve browser auth profile for '{origin}': {e}"))
+    }
 }
 
 enum RecoveryOutcome {
@@ -651,6 +752,22 @@ fn action_name(action: &BrowserAction) -> &'static str {
     }
 }
 
+fn normalize_origin_for_lookup(input: &str) -> Option<String> {
+    if input.trim().is_empty() {
+        return None;
+    }
+    if let Ok(url) = url::Url::parse(input) {
+        let host = url.host_str()?;
+        let mut origin = format!("{}://{}", url.scheme(), host);
+        if let Some(port) = url.port() {
+            origin.push(':');
+            origin.push_str(&port.to_string());
+        }
+        return Some(origin);
+    }
+    Some(input.trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -680,5 +797,17 @@ mod tests {
         assert_eq!(super::clamp_max_steps(Some(0)), 1);
         assert_eq!(super::clamp_max_steps(Some(8)), 8);
         assert_eq!(super::clamp_max_steps(Some(100)), 25);
+    }
+
+    #[test]
+    fn normalize_origin_strips_url_path_for_profile_lookup() {
+        assert_eq!(
+            normalize_origin_for_lookup("https://app.example.com/login?x=1").as_deref(),
+            Some("https://app.example.com")
+        );
+        assert_eq!(
+            normalize_origin_for_lookup("http://localhost:3000/path").as_deref(),
+            Some("http://localhost:3000")
+        );
     }
 }

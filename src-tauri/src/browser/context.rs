@@ -25,6 +25,7 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::browser::dom_state::{dom_state_from_raw, DOM_QUERY_SCRIPT};
+use crate::browser::identity::{PlaywrightOrigin, PlaywrightStorageState};
 use crate::browser::types::{DOMState, DomStateRaw, NavStatePayload, ScreencastFramePayload, TabInfo};
 
 // ── DOM cache ─────────────────────────────────────────────────────────────────
@@ -737,6 +738,79 @@ impl BrowserContext {
         page.execute(cmd).await
             .map_err(|e| anyhow!("set_cookie CDP error: {e}"))?;
         Ok(true)
+    }
+
+    pub async fn apply_storage_state(
+        &self,
+        tab_id: &str,
+        state: &PlaywrightStorageState,
+        app_handle: &tauri::AppHandle,
+    ) -> Result<()> {
+        self.apply_storage_state_cookies(tab_id, state).await?;
+        for origin in &state.origins {
+            self.apply_local_storage_origin(tab_id, origin, app_handle).await?;
+        }
+        self.invalidate_dom_cache(tab_id).await;
+        Ok(())
+    }
+
+    async fn apply_storage_state_cookies(
+        &self,
+        tab_id: &str,
+        state: &PlaywrightStorageState,
+    ) -> Result<()> {
+        if state.cookies.is_empty() {
+            return Ok(());
+        }
+        let page = self.get_page(tab_id).await?;
+        use chromiumoxide::cdp::browser_protocol::network::{
+            CookieParam, CookieSameSite, SetCookiesParams, TimeSinceEpoch,
+        };
+        let mut cookies = Vec::with_capacity(state.cookies.len());
+        for source in &state.cookies {
+            let mut cookie = CookieParam::new(&source.name, &source.value);
+            cookie.domain = Some(source.domain.clone());
+            cookie.path = Some(source.path.clone());
+            cookie.secure = Some(source.secure);
+            cookie.http_only = Some(source.http_only);
+            cookie.same_site = source
+                .same_site
+                .as_deref()
+                .and_then(|value| value.parse::<CookieSameSite>().ok());
+            cookie.expires = source.expires.map(TimeSinceEpoch::new);
+            cookies.push(cookie);
+        }
+        page.execute(SetCookiesParams { cookies })
+            .await
+            .map_err(|e| anyhow!("apply storageState cookies failed: {e}"))?;
+        Ok(())
+    }
+
+    async fn apply_local_storage_origin(
+        &self,
+        tab_id: &str,
+        origin: &PlaywrightOrigin,
+        app_handle: &tauri::AppHandle,
+    ) -> Result<()> {
+        if origin.local_storage.is_empty() {
+            return Ok(());
+        }
+        self.navigate(tab_id, &origin.origin, app_handle).await?;
+        let page = self.get_page(tab_id).await?;
+        let entries = serde_json::to_string(&origin.local_storage)?;
+        let script = format!(
+            r#"(function() {{
+                const entries = {entries};
+                for (const item of entries) {{
+                    window.localStorage.setItem(item.name, item.value);
+                }}
+                return entries.length;
+            }})()"#
+        );
+        page.evaluate(script)
+            .await
+            .map_err(|e| anyhow!("apply storageState localStorage failed: {e}"))?;
+        Ok(())
     }
 
     // ── Device emulation ──────────────────────────────────────────────────────
