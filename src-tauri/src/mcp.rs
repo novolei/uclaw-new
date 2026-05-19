@@ -1059,6 +1059,7 @@ impl GbrainCliTransport {
         self.cleanup_stale_pglite_lock();
 
         let mut argv = self.base_args.clone();
+        let mut requested_slug: Option<String> = None;
         match tool {
             "search" => {
                 let query = required_string(&arguments, "query")?;
@@ -1101,6 +1102,7 @@ impl GbrainCliTransport {
             }
             "get_page" => {
                 let slug = required_string(&arguments, "slug")?;
+                requested_slug = Some(slug.clone());
                 argv.push("get".to_string());
                 argv.push(slug);
                 push_bool_flag(&mut argv, &arguments, "fuzzy", "--fuzzy");
@@ -1138,6 +1140,22 @@ impl GbrainCliTransport {
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if !output.status.success() {
+            if tool == "get_page" && stderr.contains("page_not_found") {
+                if let Some(slug) = requested_slug.as_deref() {
+                    let suggestions = self.suggest_page_slugs(slug).await;
+                    if !suggestions.is_empty() {
+                        return Err(McpError::Server(format!(
+                            "[{}] gbrain CLI '{}' failed: {}{}{}\nnearest slugs: {}",
+                            self.server_name,
+                            tool,
+                            output.status,
+                            if stderr.is_empty() { "" } else { "\nstderr: " },
+                            stderr,
+                            suggestions.join(", ")
+                        )));
+                    }
+                }
+            }
             return Err(McpError::Server(format!(
                 "[{}] gbrain CLI '{}' failed: {}{}{}",
                 self.server_name,
@@ -1152,6 +1170,42 @@ impl GbrainCliTransport {
         } else {
             Ok(stdout)
         }
+    }
+
+    async fn suggest_page_slugs(&self, missing_slug: &str) -> Vec<String> {
+        let mut argv = self.base_args.clone();
+        argv.push("list".to_string());
+        argv.push("--limit".to_string());
+        argv.push("200".to_string());
+
+        let mut cmd = tokio::process::Command::new(&self.command);
+        cmd.args(&argv)
+            .envs(&self.env)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+
+        let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(10), cmd.output()).await else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut candidates: Vec<(usize, String)> = stdout
+            .lines()
+            .filter_map(|line| line.split('\t').next())
+            .filter(|slug| !slug.trim().is_empty())
+            .map(|slug| (slug_distance(missing_slug, slug), slug.to_string()))
+            .collect();
+        candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        candidates
+            .into_iter()
+            .take(3)
+            .map(|(_, slug)| slug)
+            .collect()
     }
 
     fn cleanup_stale_pglite_lock(&self) {
@@ -1261,6 +1315,26 @@ fn required_string(args: &serde_json::Value, key: &str) -> Result<String, McpErr
     optional_string(args, key)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| McpError::Protocol(format!("missing required argument '{}'", key)))
+}
+
+fn slug_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr = vec![0; b.len() + 1];
+
+    for (i, ca) in a.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let substitution = prev[j] + usize::from(ca != cb);
+            let insertion = curr[j] + 1;
+            let deletion = prev[j + 1] + 1;
+            curr[j + 1] = substitution.min(insertion).min(deletion);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    prev[b.len()]
 }
 
 fn optional_string(args: &serde_json::Value, key: &str) -> Option<String> {
@@ -2816,6 +2890,14 @@ mod tests {
         );
         assert!(!stored.enabled);
         assert!(!stored.auto_approve);
+    }
+
+    #[test]
+    fn slug_distance_ranks_one_character_slug_typo_close() {
+        assert!(
+            slug_distance("aknowledge/openai-gpt5", "knowledge/openai-gpt5")
+                < slug_distance("aknowledge/openai-gpt5", "ai-models/gpt-5")
+        );
     }
 
     #[test]
