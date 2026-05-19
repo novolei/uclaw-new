@@ -10,6 +10,9 @@ use crate::browser::action_registry::BrowserActionRegistry;
 use crate::browser::boundary::detect_intervention_boundary;
 use crate::browser::context_manager::BrowserContextManager;
 use crate::browser::decision::{BrowserDecisionAdapter, BrowserDecisionStatus};
+use crate::browser::intervention_bridge::{
+    BrowserAskUserBridge, BrowserInterventionDecision, BrowserInterventionPrompt,
+};
 use crate::browser::loop_detector::{make_fingerprint, LoopDetector};
 use crate::browser::observation::BrowserObservation;
 use crate::browser::recovery::{classify_browser_error, BrowserRecoveryKind};
@@ -39,6 +42,7 @@ pub struct BrowserAgentLoop {
     decision_adapter: Arc<dyn BrowserDecisionAdapter>,
     action_registry: BrowserActionRegistry,
     task_store: Option<Arc<BrowserTaskStore>>,
+    ask_user_bridge: Option<Arc<BrowserAskUserBridge>>,
 }
 
 impl BrowserAgentLoop {
@@ -47,7 +51,7 @@ impl BrowserAgentLoop {
         decision_adapter: Arc<dyn BrowserDecisionAdapter>,
     ) -> Self {
         let action_registry = BrowserActionRegistry::new(Arc::clone(&ctx_mgr));
-        Self { ctx_mgr, decision_adapter, action_registry, task_store: None }
+        Self { ctx_mgr, decision_adapter, action_registry, task_store: None, ask_user_bridge: None }
     }
 
     pub fn with_task_store(mut self, task_store: Option<Arc<BrowserTaskStore>>) -> Self {
@@ -55,8 +59,13 @@ impl BrowserAgentLoop {
         self
     }
 
+    pub fn with_ask_user_bridge(mut self, ask_user_bridge: Option<Arc<BrowserAskUserBridge>>) -> Self {
+        self.ask_user_bridge = ask_user_bridge;
+        self
+    }
+
     pub async fn run(&self, request: BrowserTaskRequest) -> Result<BrowserTaskRun> {
-        let max_steps = clamp_max_steps(request.max_steps);
+        let mut segment_steps = clamp_max_steps(request.max_steps);
         let mut run = self
             .load_resume_run(&request)?
             .unwrap_or_else(|| BrowserTaskRun {
@@ -89,7 +98,8 @@ impl BrowserAgentLoop {
         let mut loop_detector = LoopDetector::default();
         let mut latest_memory = resume_checkpoint.and_then(|checkpoint| checkpoint.memory);
 
-        for _ in 0..max_steps {
+        'segments: loop {
+        for _ in 0..segment_steps {
             let observation = ctx.observe(&active_tab_id, false).await?;
             let observation_json = serde_json::to_value(&observation)?;
             let memory = self.update_memory(&request, &observation_json);
@@ -112,6 +122,7 @@ impl BrowserAgentLoop {
             step_index += 1;
 
             if let Some(boundary) = detect_intervention_boundary(&observation_json) {
+                let reason = boundary.reason.clone();
                 run.status = BrowserTaskStatus::NeedsUserIntervention;
                 self.push_step(&mut run, BrowserTaskStep {
                     step_index,
@@ -121,11 +132,24 @@ impl BrowserAgentLoop {
                     action_name: "needs_user_intervention".to_string(),
                     action_args: serde_json::to_value(&boundary)?,
                     ok: false,
-                    message: Some(boundary.reason),
+                    message: Some(reason.clone()),
                     error: None,
                     timestamp_ms: chrono::Utc::now().timestamp_millis(),
                 });
                 self.emit_run(&run);
+                self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
+                if let Some(decision) = self.ask_for_intervention(&run, &reason).await? {
+                    match decision {
+                        BrowserInterventionDecision::Continue
+                        | BrowserInterventionDecision::ContinueWithSteps(_) => {
+                            run.status = BrowserTaskStatus::Running;
+                            self.emit_run(&run);
+                            step_index += 1;
+                            continue;
+                        }
+                        BrowserInterventionDecision::Stop => {}
+                    }
+                }
                 return Ok(run);
             }
 
@@ -189,6 +213,10 @@ impl BrowserAgentLoop {
                     return Ok(run);
                 }
                 BrowserDecisionStatus::NeedsUserIntervention => {
+                    let reason = decision
+                        .final_answer
+                        .clone()
+                        .unwrap_or_else(|| "Browser decision requested user intervention.".to_string());
                     run.status = BrowserTaskStatus::NeedsUserIntervention;
                     self.push_step(&mut run, BrowserTaskStep {
                         step_index,
@@ -198,12 +226,24 @@ impl BrowserAgentLoop {
                         action_name: "needs_user_intervention".to_string(),
                         action_args: serde_json::json!({ "task": request.task }),
                         ok: false,
-                        message: decision.final_answer,
+                        message: Some(reason.clone()),
                         error: None,
                         timestamp_ms: chrono::Utc::now().timestamp_millis(),
                     });
                     self.emit_run(&run);
                     self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
+                    if let Some(user_decision) = self.ask_for_intervention(&run, &reason).await? {
+                        match user_decision {
+                            BrowserInterventionDecision::Continue
+                            | BrowserInterventionDecision::ContinueWithSteps(_) => {
+                                run.status = BrowserTaskStatus::Running;
+                                self.emit_run(&run);
+                                step_index += 1;
+                                continue;
+                            }
+                            BrowserInterventionDecision::Stop => {}
+                        }
+                    }
                     return Ok(run);
                 }
                 BrowserDecisionStatus::Continue => {}
@@ -310,9 +350,9 @@ impl BrowserAgentLoop {
             step_index,
             phase: BrowserTaskStepPhase::Done,
             observation_summary: String::new(),
-            reasoning: format!("Paused at checkpoint after reaching max_steps={max_steps}."),
+            reasoning: format!("Paused at checkpoint after reaching max_steps={segment_steps}."),
             action_name: "checkpoint_pause".to_string(),
-            action_args: serde_json::json!({ "maxSteps": max_steps }),
+            action_args: serde_json::json!({ "maxSteps": segment_steps }),
             ok: false,
             message: None,
             error: Some("Browser task reached max_steps and saved a resumable checkpoint.".to_string()),
@@ -320,7 +360,53 @@ impl BrowserAgentLoop {
         });
         self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
         self.emit_run(&run);
-        Ok(run)
+        if let Some(decision) = self.ask_for_checkpoint(&run).await? {
+            match decision {
+                BrowserInterventionDecision::Continue => {
+                    segment_steps = clamp_max_steps(Some(8));
+                    run.status = BrowserTaskStatus::Running;
+                    self.emit_run(&run);
+                    step_index += 1;
+                    continue 'segments;
+                }
+                BrowserInterventionDecision::ContinueWithSteps(steps) => {
+                    segment_steps = clamp_max_steps(Some(steps));
+                    run.status = BrowserTaskStatus::Running;
+                    self.emit_run(&run);
+                    step_index += 1;
+                    continue 'segments;
+                }
+                BrowserInterventionDecision::Stop => {}
+            }
+        }
+        return Ok(run);
+        }
+    }
+
+    async fn ask_for_intervention(
+        &self,
+        run: &BrowserTaskRun,
+        reason: &str,
+    ) -> Result<Option<BrowserInterventionDecision>> {
+        let Some(bridge) = self.ask_user_bridge.as_ref() else {
+            return Ok(None);
+        };
+        Ok(Some(
+            bridge
+                .ask(BrowserInterventionPrompt::human_boundary(&run.run_id, reason))
+                .await?,
+        ))
+    }
+
+    async fn ask_for_checkpoint(&self, run: &BrowserTaskRun) -> Result<Option<BrowserInterventionDecision>> {
+        let Some(bridge) = self.ask_user_bridge.as_ref() else {
+            return Ok(None);
+        };
+        Ok(Some(
+            bridge
+                .ask(BrowserInterventionPrompt::checkpoint(&run.run_id))
+                .await?,
+        ))
     }
 
     async fn recover_after_error(

@@ -897,11 +897,17 @@ pub async fn send_message(
     // Browser tools (v2 — BrowserContextManager)
     {
         use crate::browser::decision::LlmBrowserDecisionAdapter;
+        use crate::browser::intervention_bridge::BrowserAskUserBridge;
         use crate::browser::task_store::BrowserTaskStore;
         use crate::browser::tools::*;
         let ctx_mgr = Arc::clone(&state.browser_context_manager);
         let sid = input.conversation_id.clone();
         let task_store = Arc::new(BrowserTaskStore::new(Arc::clone(&state.db)));
+        let ask_user_bridge = Arc::new(BrowserAskUserBridge::new(
+            app_handle.clone(),
+            Arc::clone(&state.pending_ask_users),
+            sid.clone(),
+        ));
         let decision_adapter = Arc::new(LlmBrowserDecisionAdapter::new(
             Arc::clone(&llm),
             model.clone(),
@@ -940,18 +946,21 @@ pub async fn send_message(
             session_id: sid.clone(),
             decision_adapter: decision_adapter.clone(),
             task_store: Some(Arc::clone(&task_store)),
+            ask_user_bridge: Some(Arc::clone(&ask_user_bridge)),
         });
         tools.register(BrowserTaskResumeTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
             session_id: sid.clone(),
             decision_adapter: decision_adapter.clone(),
             task_store: Some(Arc::clone(&task_store)),
+            ask_user_bridge: Some(Arc::clone(&ask_user_bridge)),
         });
         tools.register(RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
             session_id: sid.clone(),
             decision_adapter,
             task_store: Some(task_store),
+            ask_user_bridge: Some(ask_user_bridge),
         });
     }
     // MCP tool proxies — agents see tools from any currently-connected
@@ -8882,11 +8891,17 @@ pub async fn send_agent_message(
     // tools they never use.
     {
         use crate::browser::decision::LlmBrowserDecisionAdapter;
+        use crate::browser::intervention_bridge::BrowserAskUserBridge;
         use crate::browser::task_store::BrowserTaskStore;
         use crate::browser::tools::*;
         let ctx_mgr = Arc::clone(&state.browser_context_manager);
         let sid = input.session_id.clone();
         let task_store = Arc::new(BrowserTaskStore::new(Arc::clone(&state.db)));
+        let ask_user_bridge = Arc::new(BrowserAskUserBridge::new(
+            app_handle.clone(),
+            Arc::clone(&state.pending_ask_users),
+            sid.clone(),
+        ));
         let decision_adapter = Arc::new(LlmBrowserDecisionAdapter::new(
             Arc::clone(&llm),
             model.clone(),
@@ -8903,18 +8918,21 @@ pub async fn send_agent_message(
             session_id: sid.clone(),
             decision_adapter: decision_adapter.clone(),
             task_store: Some(Arc::clone(&task_store)),
+            ask_user_bridge: Some(Arc::clone(&ask_user_bridge)),
         });
         tools.register(BrowserTaskResumeTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
             session_id: sid.clone(),
             decision_adapter: decision_adapter.clone(),
             task_store: Some(Arc::clone(&task_store)),
+            ask_user_bridge: Some(Arc::clone(&ask_user_bridge)),
         });
         tools.register(RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
             session_id: sid.clone(),
             decision_adapter,
             task_store: Some(task_store),
+            ask_user_bridge: Some(ask_user_bridge),
         });
         if browser_active {
             tools.register(bt!(BrowserGoBackTool));
