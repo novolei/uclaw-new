@@ -405,6 +405,130 @@ pub fn collect_node_importance_inputs(
     }))
 }
 
+/// Node kinds that the Importance Decay batch loop considers "worth
+/// scoring" by default. Boot / Identity / Value / Directive carry the
+/// agent's long-term self-model; Curated / EntityPage are user-curated
+/// knowledge. UserProfile / Episode / Procedure / Reference are kept
+/// OUT of the default batch because they're either high-volume
+/// (Reference, Episode), already managed elsewhere (UserProfile via
+/// the facets store), or have a different durability semantics
+/// (Procedure). Callers wanting to override this can pass their own
+/// kind filter to `batch_recompute_importance`.
+pub const DEFAULT_BATCH_KINDS: &[&str] = &[
+    "boot",
+    "identity",
+    "value",
+    "directive",
+    "curated",
+    "entity_page",
+];
+
+/// Result of one batch run. Cheap to serialize; logged + persisted by
+/// the scheduler hook (Q1c) so the user can see "decay ran today,
+/// touched N nodes, skipped M".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BatchRecomputeOutcome {
+    /// Nodes that successfully went through compute + upsert.
+    pub recomputed: usize,
+    /// Nodes returned from the SELECT but collect/upsert errored.
+    /// Logged at warn; loop continues.
+    pub errored: usize,
+}
+
+/// Q1b — recompute importance for up to `limit` nodes, preferring
+/// those that haven't been computed yet (NULL `last_computed_at`) or
+/// were computed longest ago. Designed to be called periodically by
+/// the scheduler hook (Q1c).
+///
+/// `kinds` filters which `memory_nodes.kind` values are eligible.
+/// Pass [`DEFAULT_BATCH_KINDS`] for the standard recipe (see its
+/// doc for rationale).
+///
+/// `limit` bounds work per call; a value around 100-500 keeps the
+/// daily batch cheap on machines with 10k+ memory_nodes. Set to 0
+/// to disable without flipping the config flag.
+///
+/// `computed_at_ms` is the unix-ms timestamp written into every
+/// upserted row's `last_computed_at`. Pass `chrono::Utc::now().timestamp_millis()`
+/// at the call site.
+///
+/// Per-node errors are logged + counted but don't abort the batch —
+/// one corrupt metadata_json shouldn't poison the run.
+pub fn batch_recompute_importance(
+    conn: &Connection,
+    kinds: &[&str],
+    limit: usize,
+    computed_at_ms: i64,
+) -> rusqlite::Result<BatchRecomputeOutcome> {
+    if limit == 0 || kinds.is_empty() {
+        return Ok(BatchRecomputeOutcome { recomputed: 0, errored: 0 });
+    }
+
+    // Build the `kind IN (?, ?, ...)` clause dynamically. SQLite
+    // doesn't support array bind so we expand placeholders manually;
+    // safe because `kinds` is callsite-controlled (no user input).
+    let placeholders = std::iter::repeat("?").take(kinds.len()).collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT n.id
+         FROM memory_nodes n
+         LEFT JOIN memory_importance_scores s ON s.node_id = n.id
+         WHERE n.kind IN ({})
+         ORDER BY (s.last_computed_at IS NULL) DESC, s.last_computed_at ASC, n.id
+         LIMIT ?",
+        placeholders
+    );
+
+    // Collect node IDs first (so we don't hold the statement open
+    // while doing per-node work).
+    let mut stmt = conn.prepare(&sql)?;
+    let mut params: Vec<rusqlite::types::Value> = kinds
+        .iter()
+        .map(|k| rusqlite::types::Value::from((*k).to_string()))
+        .collect();
+    params.push(rusqlite::types::Value::from(limit as i64));
+    let node_ids: Vec<String> = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |r| r.get::<_, String>(0))?
+        .filter_map(Result::ok)
+        .collect();
+    drop(stmt);
+
+    let mut recomputed = 0usize;
+    let mut errored = 0usize;
+    for node_id in node_ids {
+        match collect_node_importance_inputs(conn, &node_id) {
+            Ok(Some(inputs)) => {
+                let score = compute_importance(&inputs);
+                match upsert_importance_score(conn, &node_id, &score, computed_at_ms) {
+                    Ok(_) => recomputed += 1,
+                    Err(e) => {
+                        tracing::warn!(
+                            node_id = %node_id,
+                            error = %e,
+                            "importance_decay: upsert failed; skipping node"
+                        );
+                        errored += 1;
+                    }
+                }
+            }
+            Ok(None) => {
+                // Node disappeared between SELECT and collect — race
+                // with a concurrent delete. Not an error, but not
+                // counted as recomputed either.
+            }
+            Err(e) => {
+                tracing::warn!(
+                    node_id = %node_id,
+                    error = %e,
+                    "importance_decay: collect failed; skipping node"
+                );
+                errored += 1;
+            }
+        }
+    }
+
+    Ok(BatchRecomputeOutcome { recomputed, errored })
+}
+
 /// Pull `status` + `enrichment_tier` out of a node's `metadata_json`.
 /// Tolerant of missing keys, missing object, malformed JSON.
 fn parse_status_and_tier(metadata_json: &str) -> (NodeStatus, u8) {
@@ -833,6 +957,155 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(inputs.content_chars, 0);
+    }
+
+    // ─── Q1b — batch_recompute_importance loop ─────────────────────
+
+    #[test]
+    fn batch_recompute_no_op_with_zero_limit_or_empty_kinds() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        seed_node(&conn, "n", "entity_page", "{}");
+        seed_version(&conn, "n", "x");
+
+        let r1 = batch_recompute_importance(&conn, DEFAULT_BATCH_KINDS, 0, 1_700_000_000_000)
+            .unwrap();
+        assert_eq!(r1, BatchRecomputeOutcome { recomputed: 0, errored: 0 });
+
+        let r2 = batch_recompute_importance(&conn, &[], 100, 1_700_000_000_000).unwrap();
+        assert_eq!(r2, BatchRecomputeOutcome { recomputed: 0, errored: 0 });
+    }
+
+    #[test]
+    fn batch_recompute_picks_only_eligible_kinds() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        // 3 eligible (entity_page, boot, curated) + 2 ineligible (reference, episode).
+        seed_node(&conn, "n-page", "entity_page", "{}");
+        seed_version(&conn, "n-page", "page");
+        seed_node(&conn, "n-boot", "boot", "{}");
+        seed_version(&conn, "n-boot", "boot identity");
+        seed_node(&conn, "n-curated", "curated", "{}");
+        seed_version(&conn, "n-curated", "curated note");
+        seed_node(&conn, "n-ref", "reference", "{}");
+        seed_version(&conn, "n-ref", "ref content");
+        seed_node(&conn, "n-episode", "episode", "{}");
+        seed_version(&conn, "n-episode", "ep content");
+
+        let outcome =
+            batch_recompute_importance(&conn, DEFAULT_BATCH_KINDS, 100, 1_700_000_000_000)
+                .unwrap();
+        assert_eq!(outcome.recomputed, 3, "exactly 3 eligible kinds");
+        assert_eq!(outcome.errored, 0);
+
+        // Verify the right rows are in memory_importance_scores.
+        for eligible in ["n-page", "n-boot", "n-curated"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memory_importance_scores WHERE node_id = ?1",
+                    [eligible],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{} should have a score row", eligible);
+        }
+        for ineligible in ["n-ref", "n-episode"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memory_importance_scores WHERE node_id = ?1",
+                    [ineligible],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "{} should NOT have a score row", ineligible);
+        }
+    }
+
+    #[test]
+    fn batch_recompute_respects_limit() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        for i in 0..10 {
+            let id = format!("n-{}", i);
+            seed_node(&conn, &id, "entity_page", "{}");
+            seed_version(&conn, &id, "content");
+        }
+        let outcome =
+            batch_recompute_importance(&conn, DEFAULT_BATCH_KINDS, 4, 1_700_000_000_000)
+                .unwrap();
+        assert_eq!(outcome.recomputed, 4, "limit must be respected");
+    }
+
+    #[test]
+    fn batch_recompute_prefers_never_computed_nodes() {
+        // Seed 2 nodes; pre-populate score for one (mimicking a prior
+        // run) and leave the other untouched. The next batch with
+        // limit=1 should pick the untouched one (NULL last_computed_at).
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        seed_node(&conn, "n-done", "entity_page", "{}");
+        seed_version(&conn, "n-done", "done content");
+        seed_node(&conn, "n-fresh", "entity_page", "{}");
+        seed_version(&conn, "n-fresh", "fresh content");
+
+        // Pre-populate n-done's score row.
+        let inputs = collect_node_importance_inputs(&conn, "n-done")
+            .unwrap()
+            .unwrap();
+        let score = compute_importance(&inputs);
+        upsert_importance_score(&conn, "n-done", &score, 1_600_000_000_000).unwrap();
+
+        // Batch with limit=1 should pick n-fresh.
+        let outcome = batch_recompute_importance(&conn, DEFAULT_BATCH_KINDS, 1, 1_700_000_000_000)
+            .unwrap();
+        assert_eq!(outcome.recomputed, 1);
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_importance_scores WHERE node_id = 'n-fresh'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "n-fresh should have been recomputed");
+    }
+
+    #[test]
+    fn batch_recompute_orders_by_oldest_computed_first() {
+        // Among already-scored nodes, prefer the one computed longest ago.
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        seed_node(&conn, "n-old", "entity_page", "{}");
+        seed_version(&conn, "n-old", "old");
+        seed_node(&conn, "n-recent", "entity_page", "{}");
+        seed_version(&conn, "n-recent", "recent");
+
+        // n-old computed at t=100, n-recent at t=200.
+        for (id, ts) in [("n-old", 100_i64), ("n-recent", 200_i64)] {
+            let inputs = collect_node_importance_inputs(&conn, id).unwrap().unwrap();
+            let score = compute_importance(&inputs);
+            upsert_importance_score(&conn, id, &score, ts).unwrap();
+        }
+
+        // Batch with limit=1 should pick n-old (oldest last_computed_at).
+        let outcome = batch_recompute_importance(&conn, DEFAULT_BATCH_KINDS, 1, 300).unwrap();
+        assert_eq!(outcome.recomputed, 1);
+        // After the batch, n-old's last_computed_at should be 300; n-recent's 200.
+        let old_ts: i64 = conn
+            .query_row(
+                "SELECT last_computed_at FROM memory_importance_scores WHERE node_id = 'n-old'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let recent_ts: i64 = conn
+            .query_row(
+                "SELECT last_computed_at FROM memory_importance_scores WHERE node_id = 'n-recent'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_ts, 300, "n-old should have been recomputed");
+        assert_eq!(recent_ts, 200, "n-recent should NOT have been touched");
     }
 
     #[test]
