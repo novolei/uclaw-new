@@ -18,10 +18,10 @@
 **Architecture summary:**
 
 - Foundation Phase 1-7 完成后,uClaw 已有 EntityPage 节点 + Auto-link + WikiView + Health/Lint + Tier escalator + Markdown sync。
-- Cognitive Phase 8-14 在此基础上**纯叠加**:扩 metadata schema、新增 5 张表(V35)、新建 4 个 scenarios、上 2 个新模块(wiki_compile.rs / query_classifier.rs)。**零 schema 破坏,零现有功能影响**。
+- Cognitive Phase 8-14 在此基础上**纯叠加**:扩 metadata schema、新增 5 张表(V43)、新建 4 个 scenarios、上 2 个新模块(wiki_compile.rs / query_classifier.rs)。**零 schema 破坏,零现有功能影响**。
 - 每个 Phase 对应 Tommy 7-role framing 中的一个或两个角色(LLM=Compiler / Schema=OS / Wiki=Product / Review=Brake / Chat=Entry / Graph=Nav / Log=Audit)。
 
-**Migration claim:** Cognitive layer 占用 **V35**(单一迁移,内含 5 张新表的 CREATE)。Foundation plan 占 V34,Cognitive 占 V35,无冲突。
+**Migration claim:** Cognitive layer 占用 **V43**(单一迁移,内含 5 张新表的 CREATE)。 V35-V42 已被 Foundation Phase 1-7 + browser-task + MCP audit 占用(详见 CLAUDE.md 的 Active migration registry);V43 是当前下一个空闲号。
 
 ---
 
@@ -33,7 +33,7 @@
 cd /Users/ryanliu/Documents/uclaw
 git log --oneline main | grep -E "feat\((memory|memory-os)\)" | head -30
 ```
-Expected:至少能看到 `feat(memory): add MemoryNodeKind::EntityPage` 和 `feat(db): V34` 的提交。如果没有,**先回去把 Foundation plan 跑完**,本 plan 强依赖那些基础。
+Expected:至少能看到 `feat(memory): add MemoryNodeKind::EntityPage` 和 `feat(db): V35 — memory_os_phase_1` 的提交(Foundation Phase 1 在 main 上的真实合并点)。如果没有,**先回去把 Foundation plan 跑完**,本 plan 强依赖那些基础。
 
 - [ ] **Step 0.2: Branch off latest main**
 
@@ -56,7 +56,7 @@ echo "=== ui tests ==="    && (cd ui && npm test -- --run 2>&1 | tail -10)
 ```bash
 grep -nE "^pub const V[0-9]+|^const V[0-9]+|^/// V[0-9]+ —|^// V[0-9]+ —" src-tauri/src/db/migrations.rs | tail -10
 ```
-Expected:看到 V33 和 V34(本 cognitive layer 之前 Foundation Phase 1 加的)。**V35 应该未占用**。如有其它 PR 抢先,顺延到 V36,所有引用同步改。
+Expected:看到 V35-V42 已被 Foundation Phase 1-7 + browser-task + MCP audit 占用(见 CLAUDE.md Active migration registry)。**V43 应该未占用**(本 cognitive layer 第一次着陆时的下一个空闲号)。如有其它 PR 抢先把 V43 也占了,顺延到下一个空闲号,所有引用同步改。
 
 ---
 
@@ -67,15 +67,15 @@ Expected:看到 V33 和 V34(本 cognitive layer 之前 Foundation Phase 1 加的
 **Depends on:** Foundation Phase 1 merged
 **Spec ref:** Cognitive §2
 
-### Task 8.1: V35 migration —— 5 张新表 + wiki_page_templates seed
+### Task 8.1: V43 migration —— 5 张新表 + wiki_page_templates seed
 
 **Files:**
-- Modify: `src-tauri/src/db/migrations.rs`(add `V35_COGNITIVE_LAYER`)
+- Modify: `src-tauri/src/db/migrations.rs`(add `V43_COGNITIVE_LAYER`)
 
-- [ ] **Step 8.1.1** 新增常量(完整 SQL 见 Cognitive Spec §7.1)。在 `SQL_V33_SYMPHONY` 和已有 V34 之后:
+- [ ] **Step 8.1.1** 新增常量(完整 SQL 见 Cognitive Spec §7.1)。在最后一个 Foundation 迁移(V42_BROWSER_TASK_CHECKPOINTS)之后:
 
 ```rust
-/// V35: Cognitive Layer.
+/// V43: Cognitive Layer.
 ///
 /// - wiki_log_events: wiki-level audit trail
 /// - page_content_hashes: SHA-256 incremental compile cache
@@ -84,7 +84,7 @@ Expected:看到 V33 和 V34(本 cognitive layer 之前 Foundation Phase 1 加的
 /// - analysis_cache: Step 1 (Analyze) LLM result cache
 ///
 /// 全部纯 additive,无任何 ALTER TABLE。
-pub const V35_COGNITIVE_LAYER: &str = "
+pub const V43_COGNITIVE_LAYER: &str = "
 CREATE TABLE IF NOT EXISTS wiki_log_events (
     id          TEXT PRIMARY KEY,
     space_id    TEXT NOT NULL,
@@ -150,18 +150,18 @@ CREATE TABLE IF NOT EXISTS analysis_cache (
 ";
 ```
 
-- [ ] **Step 8.1.2** 在 `run()` 函数挂载(V34 应用之后):
+- [ ] **Step 8.1.2** 在 `run()` 函数挂载(最后一个 Foundation 迁移 V42 应用之后):
 
 ```rust
-tracing::debug!("Running migration V35: cognitive layer");
-for stmt in V35_COGNITIVE_LAYER.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+tracing::debug!("Running migration V43: cognitive layer");
+for stmt in V43_COGNITIVE_LAYER.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
     if let Err(e) = conn.execute(stmt, []) {
-        tracing::warn!("V35 stmt skipped: {} :: {}", e, stmt);
+        tracing::warn!("V43 stmt skipped: {} :: {}", e, stmt);
     }
 }
 ```
 
-- [ ] **Step 8.1.3** 更新 `CLAUDE.md` Active migration registry 加 V35 行,status = "in progress (Memory OS Cognitive Layer)"。
+- [ ] **Step 8.1.3** 更新 `CLAUDE.md` Active migration registry 加 V43 行,status = "in progress (Memory OS Cognitive Layer)"。
 
 **验证:**
 
@@ -172,13 +172,13 @@ sqlite3 ~/.uclaw/uclaw.db ".tables" | tr ' ' '\n' | grep -E "wiki_log_events|pag
 # 应输出 5 行
 ```
 
-**Commit:** `feat(db): V35 — cognitive layer schema (5 new tables)`
+**Commit:** `feat(db): V43 — cognitive layer schema (5 new tables)`
 
 ### Task 8.2: subkind 概念 + 7 个内置模板 seed
 
 **Files:**
 - Create: `src-tauri/src/memory_graph/subkind.rs`
-- Modify: `src-tauri/src/db/migrations.rs`(在 V35 后增加 seed)
+- Modify: `src-tauri/src/db/migrations.rs`(在 V43 后增加 seed)
 
 - [ ] **Step 8.2.1** 定义 subkind enum:
 
@@ -229,10 +229,10 @@ impl WikiSubkind {
 }
 ```
 
-- [ ] **Step 8.2.2** Seed 7 行 `wiki_page_templates`,内含每种 subkind 的 compile prompt + sections。在 V35 之后增加常量:
+- [ ] **Step 8.2.2** Seed 7 行 `wiki_page_templates`,内含每种 subkind 的 compile prompt + sections。在 V43 之后增加常量:
 
 ```rust
-pub const V35_SEED_TEMPLATES: &str = r#"
+pub const V43_SEED_TEMPLATES: &str = r#"
 INSERT OR IGNORE INTO wiki_page_templates 
     (subkind, display_name, compile_prompt, sections_json, ui_card_layout, updated_at)
 VALUES
@@ -251,7 +251,7 @@ VALUES
 
 - [ ] **Step 8.2.3** 单测:
   - `WikiSubkind::from_str` round-trip
-  - V35 + seed 跑完后 `SELECT COUNT(*) FROM wiki_page_templates` == 7
+  - V43 + seed 跑完后 `SELECT COUNT(*) FROM wiki_page_templates` == 7
 
 **验证:**
 
@@ -344,7 +344,7 @@ pub async fn wiki_get_template(subkind: String) -> Result<Option<TemplateDto>, S
 
 | # | Subject |
 |---|---|
-| 1 | feat(db): V35 — cognitive layer schema (5 new tables) |
+| 1 | feat(db): V43 — cognitive layer schema (5 new tables) |
 | 2 | feat(memory): WikiSubkind enum + 7 builtin page templates |
 | 3 | feat(memory): EntityPage metadata adopts WikiSubkind + 8-keys frontmatter |
 | 4 | feat(ipc): wiki_list_templates + wiki_get_template + subkind in create |
@@ -946,7 +946,7 @@ echo "=== rust tests ==="  && (cd src-tauri && cargo test --lib 2>&1 | tail -10)
 echo "=== ts ==="          && (cd ui && npx tsc --noEmit 2>&1 | head -10)
 echo "=== ui tests ==="    && (cd ui && npm test -- --run 2>&1 | tail -10)
 
-# V35 表存在性
+# V43 表存在性
 sqlite3 ~/.uclaw/uclaw.db "SELECT name FROM sqlite_master WHERE type='table' AND name IN (
   'wiki_log_events','page_content_hashes','review_queue_items','wiki_page_templates','analysis_cache'
 )"
@@ -979,7 +979,7 @@ pub struct MemubotConfig {
 }
 ```
 
-最坏情况:把所有 cognitive flags 关掉,uClaw 回退到 Foundation Phase 1-7 的行为(EntityPage + Wiki view + Auto-link + Health,无段落 provenance / 无两步 compile / 无 review queue / 无 adaptive RAG)。**V35 表是 additive,**不删除**——空的 review_queue_items 不影响 Foundation 跑。
+最坏情况:把所有 cognitive flags 关掉,uClaw 回退到 Foundation Phase 1-7 的行为(EntityPage + Wiki view + Auto-link + Health,无段落 provenance / 无两步 compile / 无 review queue / 无 adaptive RAG)。**V43 表是 additive,**不删除**——空的 review_queue_items 不影响 Foundation 跑。
 
 ---
 
@@ -1040,5 +1040,5 @@ Cognitive Spec: `docs/superpowers/specs/2026-05-18-agent-memory-os-cognitive-des
 - 注册 N 个新 scenarios 到 ProactiveService
 
 ### Rollback
-关 `memubot_config.<flag>` flag。V35 表是 additive,空表无影响。
+关 `memubot_config.<flag>` flag。V43 表是 additive,空表无影响。
 ```

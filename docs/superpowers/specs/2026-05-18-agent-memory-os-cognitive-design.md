@@ -50,7 +50,7 @@ Foundation Spec(`2026-05-18-agent-memory-os-design.md`)已经覆盖:
 
 设计承诺继续:**对 Foundation Spec 全部向后兼容,不替换、不破坏**。Cognitive layer 通过两条途径叠加:
 1. **元数据约定**(零 schema 变化):大部分新字段是 `metadata_json` 的新 key,旧解析器忽略
-2. **新表(V35 migration)**:仅添加 3 张新表,绝不修改 V1-V34 现有任何表
+2. **新表(V43 migration)**:仅添加 5 张新表,绝不修改 V1-V42 现有任何表(V35-V42 是 Foundation Phase 1-7 + browser-task + MCP audit;V43 是当前下一个空闲号)
 
 ---
 
@@ -128,7 +128,7 @@ CREATE TABLE IF NOT EXISTS wiki_page_templates (
 );
 ```
 
-预置 7 行(6 种知识页 + 兜底 default),用户可手动调 prompt(放在 V35 一次性 seed)。**这给用户/Agent 改变 wiki 形态的自由度——后续要加新 subkind 不需要改 Rust 代码。**
+预置 7 行(6 种知识页 + 兜底 default),用户可手动调 prompt(放在 V43 一次性 seed)。**这给用户/Agent 改变 wiki 形态的自由度——后续要加新 subkind 不需要改 Rust 代码。**
 
 ---
 
@@ -678,23 +678,23 @@ pub async fn adaptive_recall(query: &str, ctx: &RecallContext) -> RecallResult {
 | `MemoryNodeKind::EntityPage` | Foundation Phase 1 | **不动**,本 spec 通过 `metadata.subkind` 扩展语义 |
 | EntityPage `metadata_json` 的 `compiled_truth` + `timeline` + `aliases` + `contradictions` | Foundation Phase 1 | **不动**,本 spec 新增 `confidence` / `status` / `provenanceState` / `contradictedBy` / `inferredParagraphs` / `paragraphSourceMap` / `subkind` / `tags` / `summary` 字段 |
 | `MemoryRelationKind` 7 个新 typed-edge | Foundation Phase 2 | **不动** |
-| `memory_edge_audit` 表 | Foundation Phase 1(V34) | **不动**,Cognitive 不引入新 audit 类型 |
-| `wiki_artifacts` 表 | Foundation Phase 1(V34) | **复用**:新 kinds (`hot`, `purpose`, `log_index`) 加进去,无 schema 变化 |
-| `memory_health_findings` 表 | Foundation Phase 1(V34) | **不动**,但 review_queue_items 是它的更高一级抽象(health findings 是问题清单,review queue 是带工作流的待办) |
-| **`wiki_log_events`** | 本 spec 新表 | V35 |
-| **`page_content_hashes`** | 本 spec 新表 | V35 |
-| **`review_queue_items`** | 本 spec 新表 | V35 |
-| **`wiki_page_templates`** | 本 spec 新表 + seed 数据 | V35 |
-| **`analysis_cache`** | 本 spec 新表(Step 1 缓存) | V35 |
+| `memory_edge_audit` 表 | Foundation Phase 1(V35) | **不动**,Cognitive 不引入新 audit 类型 |
+| `wiki_artifacts` 表 | Foundation Phase 1(V35) | **复用**:新 kinds (`hot`, `purpose`, `log_index`) 加进去,无 schema 变化 |
+| `memory_health_findings` 表 | Foundation Phase 1(V35) | **不动**,但 review_queue_items 是它的更高一级抽象(health findings 是问题清单,review queue 是带工作流的待办) |
+| **`wiki_log_events`** | 本 spec 新表 | V43 |
+| **`page_content_hashes`** | 本 spec 新表 | V43 |
+| **`review_queue_items`** | 本 spec 新表 | V43 |
+| **`wiki_page_templates`** | 本 spec 新表 + seed 数据 | V43 |
+| **`analysis_cache`** | 本 spec 新表(Step 1 缓存) | V43 |
 | `recall.rs` | Foundation Phase 5 | **扩展**:在现有 score 公式上叠加 `status_mult` + `confidence` + `provenanceState` penalty |
 | `wiki_overview` scenario | Foundation Phase 3 | **不动**,但本 spec 加 `wiki_hot` 兄弟 scenario |
 | `wiki_compile.rs` | 本 spec 新模块 | 替换 Foundation Phase 3 的"直接调 LLM 重写 compiled_truth"路径,改走两步 compile + 增量缓存 |
 | `query_classifier.rs` | 本 spec 新模块 | 包在 `recall.rs` 之上,可灰度 |
 
-### 7.1 数据模型变更总览(V35)
+### 7.1 数据模型变更总览(V43)
 
 ```sql
--- V35: Cognitive Layer
+-- V43: Cognitive Layer
 
 -- 5.1 Wiki-level event ledger
 CREATE TABLE IF NOT EXISTS wiki_log_events (
@@ -762,9 +762,9 @@ CREATE TABLE IF NOT EXISTS analysis_cache (
 );
 ```
 
-### 7.2 与现有 V1-V34 的兼容性
+### 7.2 与现有 V1-V42 的兼容性
 
-完全 additive,无任何 ALTER TABLE。所有 V35 新表用 `IF NOT EXISTS`。Foundation Spec 的 V34 表(memory_edge_audit / wiki_artifacts / memory_health_findings)被 Cognitive 复用,不修改其 schema(只是写入更多 kinds)。
+完全 additive,无任何 ALTER TABLE。所有 V43 新表用 `IF NOT EXISTS`。Foundation Spec 的 V35 表(memory_edge_audit / wiki_artifacts / memory_health_findings)被 Cognitive 复用,不修改其 schema(只是写入更多 kinds)。
 
 ---
 
@@ -772,12 +772,12 @@ CREATE TABLE IF NOT EXISTS analysis_cache (
 
 | Phase | 角色 | 内容 | 涉及迁移 |
 |---|---|---|---|
-| Phase 8 | Schema(OS) | 9 种 subkind + frontmatter 8 keys 硬约束 + wiki_page_templates seed | V35(部分) |
+| Phase 8 | Schema(OS) | 9 种 subkind + frontmatter 8 keys 硬约束 + wiki_page_templates seed | V43(部分) |
 | Phase 9 | Schema(OS) | Page-level provenance(confidence / status / provenanceState / contradictedBy / inferredParagraphs / paragraphSourceMap)+ 召回排序权重接入 | — |
-| Phase 10 | LLM(Compiler) | wiki_compile.rs 两步 compile pipeline + analysis_cache + paragraph map | V35(部分) |
-| Phase 11 | LLM(Compiler) | SHA-256 incremental compile + page_content_hashes | V35(部分) |
-| Phase 12 | Wiki(Product) | hot.md + purpose.md + log.md 三个控制面文件 + WikiLogView | V35(部分) |
-| Phase 13 | Review(Brake) | review_queue_items + ReviewQueuePanel + 召回打折 + Agent propose resolution | V35(部分) |
+| Phase 10 | LLM(Compiler) | wiki_compile.rs 两步 compile pipeline + analysis_cache + paragraph map | V43(部分) |
+| Phase 11 | LLM(Compiler) | SHA-256 incremental compile + page_content_hashes | V43(部分) |
+| Phase 12 | Wiki(Product) | hot.md + purpose.md + log.md 三个控制面文件 + WikiLogView | V43(部分) |
+| Phase 13 | Review(Brake) | review_queue_items + ReviewQueuePanel + 召回打折 + Agent propose resolution | V43(部分) |
 | Phase 14 | Chat(Entry) / Graph(Nav) | Adaptive RAG + Query Classifier + 多管线路由 | — |
 
 每个 Phase 是一个独立可合并 PR,bisectable commits,匹配 `superpowers:subagent-driven-development` 范式。
