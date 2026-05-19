@@ -144,3 +144,14 @@ export function pinIdColorSeed(id: string): { from: string; to: string } {
  * state to remember across reloads.
  */
 export const dockBounceKeysAtom = atom<Record<string, number>>({})
+
+/**
+ * Phase 3 liveness signal — true while the memU memory bridge is performing
+ * a consolidation pass (e.g. fragment merge, daily summary generation).
+ *
+ * Drives the Memory icon's pulse animation in `useDockLiveness`. The Rust
+ * memU bridge does not currently emit consolidation events — this atom
+ * stays `false` until a follow-up adds `memu_consolidation_started` /
+ * `_finished` events. Graceful degradation per spec §3.3.
+ */
+export const memuConsolidatingAtom = atom<boolean>(false)
