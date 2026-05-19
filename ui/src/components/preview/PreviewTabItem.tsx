@@ -37,7 +37,7 @@ export function PreviewTabItem({
         }
       }}
       className={cn(
-        'group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer select-none',
+        'titlebar-no-drag group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer select-none',
         'border-r border-border/40 min-w-[80px] max-w-[200px] shrink-0',
         isActive
           ? 'bg-background text-foreground border-b-2 border-b-primary'
@@ -64,7 +64,7 @@ export function PreviewTabItem({
           onClose()
         }}
         className={cn(
-          'size-4 flex items-center justify-center rounded shrink-0',
+          'titlebar-no-drag size-4 flex items-center justify-center rounded shrink-0',
           'opacity-0 group-hover:opacity-100',
           isActive && 'opacity-100',
           'hover:bg-muted/60 transition-opacity',

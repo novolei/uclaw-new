@@ -35,12 +35,13 @@ export function TabBarWorkspaceChip(): React.ReactElement | null {
 
   return (
     // The chip is a purely passive label — no click target, no menu.
-    // Leaving it WITHOUT titlebar-no-drag so its area participates in
-    // the TabBar's window-drag region (parent: titlebar-drag-region).
-    <div className="relative shrink-0">
+    // It must explicitly stay in the drag region because it sits inside the
+    // animated strip that covers the TabBar parent.
+    <div data-tauri-drag-region className="relative shrink-0 titlebar-drag-region">
       <div
+        data-tauri-drag-region
         className="flex items-center gap-1.5 px-2 py-1 rounded-md
-                   text-[12px] text-foreground/75"
+                   text-[12px] text-foreground/75 titlebar-drag-region"
         title={`工作区: ${active.name}`}
       >
         <span

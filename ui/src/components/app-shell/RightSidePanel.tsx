@@ -59,8 +59,8 @@ function TabButton({ isActive, onClick, icon, label }: TabButtonProps): React.Re
     <button
       onClick={onClick}
       className={[
-        // titlebar-no-drag is required because the panel container is
-        // a Tauri drag region — without this, clicks become window drags.
+        // Individual tab buttons opt out because the surrounding tab row is
+        // a Tauri drag region.
         'titlebar-no-drag flex items-center gap-1.5 px-2.5 py-1.5 rounded-md',
         'text-[11px] font-medium transition-colors',
         isActive
@@ -149,11 +149,11 @@ export function RightSidePanel(): React.ReactElement | null {
   const sessionPath = sessionPathMap.get(currentSessionId) ?? null
 
   return (
-    <div className="relative h-full w-[400px] flex-shrink-0 overflow-hidden titlebar-drag-region bg-content-area rounded-2xl shadow-xl flex flex-col">
+    <div className="relative h-full w-[400px] flex-shrink-0 overflow-hidden bg-content-area rounded-2xl shadow-xl flex flex-col">
       {/* Tab bar — sits at the top with a small drag-only strip above
           so users can still drag the window from the panel's top edge. */}
       <div data-tauri-drag-region className="h-[8px] flex-shrink-0 titlebar-drag-region" />
-      <div className="titlebar-no-drag flex items-center gap-1 px-2 pb-1.5 border-b border-border/40 flex-shrink-0">
+      <div data-tauri-drag-region className="titlebar-drag-region flex items-center gap-1 px-2 pb-1.5 border-b border-border/40 flex-shrink-0">
         {tabs.includes('files') && (
           <TabButton
             isActive={effectiveTab === 'files'}

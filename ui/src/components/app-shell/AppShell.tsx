@@ -324,15 +324,13 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
               </div>
             )}
 
-            {/* 中间容器：主内容区域。Wrapper 自身可拖拽 (8px padding 区域)，
-                TabBar 行也在 drag 区域内 (空白处可拖动窗口)。Click targets
-                (TabBarItem, TabContent, WelcomeView) 各自带 titlebar-no-drag
-                在子层退出 drag 区域 — 不再用一个 broad 的 no-drag wrapper,
-                因为 WKWebView 的 drag-region 几何在父-no-drag/子-drag 的
-                嵌套下不可靠 (子的 drag 区域被父的 no-drag 吞掉)。 */}
-            <div data-tauri-drag-region className="main-panel titlebar-drag-region flex-1 min-w-0 p-2 relative z-[60]">
+            {/* 中间容器：只让顶部窄边和 TabBar/header 拖动窗口。
+                不把整个 panel 标成 drag-region，否则 WKWebView 会把
+                user-select:none / window-drag 语义扩散到聊天内容和浮层按钮。 */}
+            <div className="main-panel flex-1 min-w-0 p-2 relative z-[60]">
               {/* 主题背景图层（仅特殊主题如 THE FINALS 使用，其他主题下为空） */}
               <div aria-hidden="true" className="main-panel-bg pointer-events-none absolute inset-0 z-0" />
+              <div data-tauri-drag-region aria-hidden="true" className="absolute top-0 left-0 right-0 h-2 z-10 titlebar-drag-region" />
               {/* 主内容区域（ModeBanner + MainArea — 没有 titlebar-no-drag 包裹,
                   让 TabBar 的 drag 区域不被父级 no-drag 吞掉) */}
               <div className="relative z-10 flex flex-col h-full min-h-0 min-w-0">

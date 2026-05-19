@@ -18,9 +18,10 @@ export function PreviewTabBar(): React.ReactElement | null {
 
   return (
     <div
+      data-tauri-drag-region
       role="tablist"
       aria-label="预览文件标签页"
-      className="flex items-stretch border-b border-border bg-card overflow-x-auto"
+      className="titlebar-drag-region flex items-stretch border-b border-border bg-card overflow-x-auto"
     >
       {tabs.map((tab) => {
         const key = previewTabKey(tab)

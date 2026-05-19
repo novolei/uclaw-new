@@ -1309,6 +1309,9 @@ html.theme-the-finals body::after {
 .titlebar-no-drag {
   -webkit-app-region: no-drag;
   app-region: no-drag;
+  -webkit-user-select: auto;
+  user-select: auto;
+  cursor: auto;
 }
 
 /* 细腻卡片阴影 */
