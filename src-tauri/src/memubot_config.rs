@@ -347,8 +347,12 @@ impl Default for SymphonyConfig {
     }
 }
 
-fn default_agent_loop_timeout_secs() -> u64 { 600 }
-fn default_true() -> bool { true }
+fn default_agent_loop_timeout_secs() -> u64 {
+    600
+}
+fn default_true() -> bool {
+    true
+}
 
 /// Memory OS feature flags — three-layer architecture.
 ///
@@ -466,6 +470,20 @@ pub struct MemoryOsConfig {
     /// extractor's budget — the two producers can each spend this much
     /// per day without crossing into "noticeable" spend territory.
     pub gbrain_extractor_daily_token_budget: u32,
+    /// L3 §4.12.1 RETAINED — gates the periodic Importance-Aware Decay
+    /// batch in ProactiveService. When ON, every 360 ticks (~3h) the
+    /// loop picks up to `importance_decay_daily_batch_size` nodes
+    /// from `memory_nodes` (filtered to `DEFAULT_BATCH_KINDS`) and
+    /// refreshes their `memory_importance_scores` row. Zero LLM cost.
+    /// Flip OFF to A/B test the decay path or disable on memory-tight
+    /// machines; flipping doesn't lose data (existing score rows stay).
+    pub importance_decay_enabled: bool,
+    /// L3 §4.12.1 RETAINED — bound on per-batch work. Default 100
+    /// keeps the per-tick work negligible (a 100-node batch on a
+    /// modern SSD is single-digit milliseconds). Raise for big
+    /// knowledge bases; set to 0 to disable the loop without flipping
+    /// the bool (the loop short-circuits on limit=0).
+    pub importance_decay_batch_size: u32,
 }
 
 impl Default for MemoryOsConfig {
@@ -523,6 +541,15 @@ impl Default for MemoryOsConfig {
             // the extractor entirely without flipping the boolean (the
             // dispatcher short-circuits on budget==0 even when enabled).
             gbrain_extractor_daily_token_budget: 30_000,
+            // L3 Q1c default ON. Zero-LLM cost; runs every 360 ticks
+            // (~3h @ 30s tick interval). The cost guard is the batch
+            // size cap, not a token budget.
+            importance_decay_enabled: true,
+            // L3 Q1c default 100 nodes/batch. At 8 batches/day = 800
+            // importance refreshes — easily covers a typical knowledge
+            // base. Set to 0 to disable the loop without flipping the
+            // boolean.
+            importance_decay_batch_size: 100,
         }
     }
 }
@@ -584,10 +611,7 @@ impl Default for SkillExtractionConfig {
             trigger_execution_count: 10,
             trigger_on_failure: true,
             min_interval_ms: 120_000, // 2 分钟
-            memory_types: vec![
-                "skill".to_string(),
-                "tool".to_string(),
-            ],
+            memory_types: vec!["skill".to_string(), "tool".to_string()],
             system_prompt: None,
         }
     }
@@ -731,8 +755,7 @@ impl MemubotConfig {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(crate::error::Error::Io)?;
         }
-        let content =
-            serde_json::to_string_pretty(self).map_err(crate::error::Error::Serde)?;
+        let content = serde_json::to_string_pretty(self).map_err(crate::error::Error::Serde)?;
         std::fs::write(&path, content).map_err(crate::error::Error::Io)?;
         Ok(())
     }
@@ -868,6 +891,42 @@ mod tests {
     fn memory_os_config_default_has_wiki_view_enabled() {
         let c = MemoryOsConfig::default();
         assert!(c.wiki_view_enabled, "Phase 3 default should be on");
+    }
+
+    #[test]
+    fn memory_os_config_default_has_importance_decay_enabled() {
+        // L3 §4.12.1 RETAINED. Default ON (zero LLM cost) so the
+        // scheduled batch updates importance scores nightly.
+        let c = MemoryOsConfig::default();
+        assert!(
+            c.importance_decay_enabled,
+            "Importance Decay (L3 §4.12.1) default should be on"
+        );
+        assert_eq!(
+            c.importance_decay_batch_size, 100,
+            "default batch size should be 100"
+        );
+    }
+
+    #[test]
+    fn memory_os_config_importance_decay_partial_json_keeps_defaults() {
+        // Forward-compat: omitting importance_decay_* keys in user
+        // config doesn't accidentally flip them off.
+        let json = r#"{"memory_os":{"wiki_view_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(config.memory_os.importance_decay_enabled);
+        assert_eq!(config.memory_os.importance_decay_batch_size, 100);
+    }
+
+    #[test]
+    fn memory_os_config_importance_decay_explicit_disable_preserved() {
+        let json = r#"{"memory_os":{"importance_decay_enabled":false,"importance_decay_batch_size":0}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.memory_os.importance_decay_enabled);
+        assert_eq!(config.memory_os.importance_decay_batch_size, 0);
+        // Other flags must NOT be affected by toggling these.
+        assert!(config.memory_os.entity_page_enabled);
+        assert!(config.memory_os.auto_link_enabled);
     }
 
     #[test]
@@ -1033,8 +1092,10 @@ mod tests {
         // Forward-compat: opting into Phase 6c doesn't change earlier flags
         assert!(config.memory_os.entity_page_enabled);
         assert!(config.memory_os.memory_lint_enabled);
-        assert!(!config.memory_os.wiki_real_synthesizer_enabled,
-                "6c alone must NOT flip 6b on");
+        assert!(
+            !config.memory_os.wiki_real_synthesizer_enabled,
+            "6c alone must NOT flip 6b on"
+        );
         assert_eq!(config.memory_os.memory_lint_daily_token_budget, 50_000);
     }
 
@@ -1085,7 +1146,10 @@ mod tests {
         let json = r#"{"memory_os":{"tier_escalator_daily_cap":3}}"#;
         let config: MemubotConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.memory_os.tier_escalator_daily_cap, 3);
-        assert!(config.memory_os.tier_escalator_enabled, "flag default holds");
+        assert!(
+            config.memory_os.tier_escalator_enabled,
+            "flag default holds"
+        );
     }
 
     #[test]

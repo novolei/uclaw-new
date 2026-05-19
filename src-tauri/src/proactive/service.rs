@@ -186,6 +186,12 @@ pub struct MemoryOsRuntimeConfig {
     /// Phase 6.1 — daily upgrade cap. Downgrades are uncapped because
     /// they SAVE token spend on the next synthesis pass.
     pub tier_escalator_daily_cap: u32,
+    /// L3 §4.12.1 RETAINED — gates the periodic Importance-Aware
+    /// Decay batch. Zero LLM cost. Runs every 360 ticks (~3h).
+    pub importance_decay_enabled: bool,
+    /// L3 §4.12.1 RETAINED — per-batch cap on node count. Bounds
+    /// per-tick work so the service stays responsive on slow disks.
+    pub importance_decay_batch_size: u32,
     /// Sprint 1 — gates the openhuman-style stability_detector +
     /// PROFILE.md rebuild. Default ON; rebuild itself is zero cost
     /// when the candidate buffer is empty.
@@ -224,6 +230,8 @@ impl MemoryOsRuntimeConfig {
             lint_analyzer,
             tier_escalator_enabled: cfg.tier_escalator_enabled,
             tier_escalator_daily_cap: cfg.tier_escalator_daily_cap,
+            importance_decay_enabled: cfg.importance_decay_enabled,
+            importance_decay_batch_size: cfg.importance_decay_batch_size,
             learning_enabled: cfg.learning_enabled,
             learning_scheduler: None,  // wired in AppState bootstrap
             facet_cache: None,         // wired in AppState bootstrap
@@ -245,6 +253,8 @@ impl MemoryOsRuntimeConfig {
                 as Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
             tier_escalator_enabled: true,
             tier_escalator_daily_cap: 10,
+            importance_decay_enabled: false,  // off in tests; tests opt-in
+            importance_decay_batch_size: 100,
             learning_enabled: false,  // off in tests by default — tests opt-in by setting handles
             learning_scheduler: None,
             facet_cache: None,
@@ -264,6 +274,8 @@ impl Default for MemoryOsRuntimeConfig {
                 as Arc<dyn crate::proactive::scenarios::memory_lint::LintAnalyzer>,
             tier_escalator_enabled: true,
             tier_escalator_daily_cap: 10,
+            importance_decay_enabled: true,
+            importance_decay_batch_size: 100,
             learning_enabled: true,
             learning_scheduler: None,
             facet_cache: None,
@@ -1263,6 +1275,58 @@ impl ProactiveService {
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "[ProactiveService] tier_escalator failed");
+                    }
+                }
+            });
+        }
+
+        // L3 §4.12.1 RETAINED — Importance-Aware Decay batch.
+        // Every 360 ticks (~3h @ 30s tick interval). Zero LLM cost.
+        // Iterates up to `batch_size` nodes from
+        // DEFAULT_BATCH_KINDS, ordered by NULL-last_computed_at then
+        // oldest-last_computed_at; calls compute_importance + upserts
+        // `memory_importance_scores`. Offset from tier_escalator (240)
+        // and other 60/120 schedules so co-firing is rare.
+        if refs.memory_os.importance_decay_enabled
+            && refs.memory_os.importance_decay_batch_size > 0
+            && refs.tick_count.load(Ordering::SeqCst) % 360 == 0
+        {
+            let store = refs.memory_graph_store.clone();
+            let batch_size = refs.memory_os.importance_decay_batch_size as usize;
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            tokio::task::spawn_blocking(move || {
+                let conn = match store.conn.lock() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "[ProactiveService] importance_decay: DB lock failed");
+                        return;
+                    }
+                };
+                match crate::memory_graph::importance_decay::batch_recompute_importance(
+                    &conn,
+                    crate::memory_graph::importance_decay::DEFAULT_BATCH_KINDS,
+                    batch_size,
+                    now_ms,
+                ) {
+                    Ok(outcome) => {
+                        if outcome.recomputed > 0 || outcome.errored > 0 {
+                            tracing::info!(
+                                recomputed = outcome.recomputed,
+                                errored = outcome.errored,
+                                batch_size,
+                                "[ProactiveService] importance_decay: batch done"
+                            );
+                        } else {
+                            tracing::debug!(
+                                "[ProactiveService] importance_decay: no eligible nodes"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "[ProactiveService] importance_decay: batch failed"
+                        );
                     }
                 }
             });
