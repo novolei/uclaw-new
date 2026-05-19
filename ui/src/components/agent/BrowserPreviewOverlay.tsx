@@ -27,21 +27,9 @@ export function BrowserPreviewOverlay({ sessionId }: BrowserPreviewOverlayProps)
   const preview = previewMap.get(sessionId)
   const tabId = preview?.visible ? (preview.tabId ?? null) : null
   useBrowserScreencast(sessionId, tabId)
-
-  if (!preview?.visible) return null
-
-  const { url, minimized } = preview
-
-  // The full Browser panel may be open too, but this overlay remains a live
-  // visual confirmation instead of collapsing into a status-only chip.
-  const panelKey = previewTabKey({ mountId: 'browser', relPath: sessionId })
-  const panelActive = activeKey === panelKey
-
-  // Latest screencast frame for this session.
-  const frame = frameMap.get(sessionId)
-
   const canvasRef = React.useRef<HTMLCanvasElement>(null)
   const lastDimsRef = React.useRef({ w: 0, h: 0 })
+  const frame = preview?.visible ? frameMap.get(sessionId) : undefined
 
   React.useEffect(() => {
     const canvas = canvasRef.current
@@ -65,6 +53,15 @@ export function BrowserPreviewOverlay({ sessionId }: BrowserPreviewOverlayProps)
     }).catch(() => {})
     return () => { cancelled = true }
   }, [frame])
+
+  if (!preview?.visible) return null
+
+  const { url, minimized } = preview
+
+  // The full Browser panel may be open too, but this overlay remains a live
+  // visual confirmation instead of collapsing into a status-only chip.
+  const panelKey = previewTabKey({ mountId: 'browser', relPath: sessionId })
+  const panelActive = activeKey === panelKey
 
   const update = (patch: Partial<typeof preview>) => {
     setPreviewMap((prev) => {
