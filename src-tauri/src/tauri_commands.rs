@@ -855,6 +855,8 @@ pub async fn send_message(
             "No API key configured. Please set up your AI provider in Settings.".into(),
         ));
     }
+    let model = llm_config.model.clone();
+    let llm = llm::create_provider(&llm_config)?;
 
     // Setup tools — pin to the active workspace's folder, not the global root.
     let mut tools = ToolRegistry::new();
@@ -894,9 +896,14 @@ pub async fn send_message(
     );
     // Browser tools (v2 — BrowserContextManager)
     {
+        use crate::browser::decision::LlmBrowserDecisionAdapter;
         use crate::browser::tools::*;
         let ctx_mgr = Arc::clone(&state.browser_context_manager);
         let sid = input.conversation_id.clone();
+        let decision_adapter = Arc::new(LlmBrowserDecisionAdapter::new(
+            Arc::clone(&llm),
+            model.clone(),
+        ));
         macro_rules! bt {
             ($T:ident) => { $T { ctx_mgr: Arc::clone(&ctx_mgr), session_id: sid.clone() } };
         }
@@ -926,8 +933,16 @@ pub async fn send_message(
         tools.register(bt!(BrowserListSessionsTool));
         tools.register(bt!(BrowserCloseSessionTool));
         tools.register(bt!(BrowserCloseAllTool));
-        tools.register(bt!(BrowserTaskTool));
-        tools.register(bt!(RetryWithBrowserAgentTool));
+        tools.register(BrowserTaskTool {
+            ctx_mgr: Arc::clone(&ctx_mgr),
+            session_id: sid.clone(),
+            decision_adapter: decision_adapter.clone(),
+        });
+        tools.register(RetryWithBrowserAgentTool {
+            ctx_mgr: Arc::clone(&ctx_mgr),
+            session_id: sid.clone(),
+            decision_adapter,
+        });
     }
     // MCP tool proxies — agents see tools from any currently-connected
     // MCP server as `mcp__{server_id}__{tool_name}`. Sourced from
@@ -950,9 +965,6 @@ pub async fn send_message(
         }
     }
     let tools = Arc::new(tools);
-
-    // Create LLM provider
-    let llm = llm::create_provider(&llm_config)?;
 
     let is_first_message = {
         let session_mgr = state.session_manager.read().await;
@@ -8722,7 +8734,7 @@ pub async fn send_agent_message(
     drop(legacy_config);
 
     let model = llm_config.model.clone();
-    let llm = Arc::new(llm::create_provider(&llm_config)?);
+    let llm = llm::create_provider(&llm_config)?;
 
     // Persist user message (and, if a /<skill-name> resolved, the skill
     // prompt as a `system` row inserted with created_at = now - 1 so it
@@ -8859,9 +8871,14 @@ pub async fn send_agent_message(
     // is live, so conversational sessions (coding, Q&A) don't pay 7K tokens/turn for
     // tools they never use.
     {
+        use crate::browser::decision::LlmBrowserDecisionAdapter;
         use crate::browser::tools::*;
         let ctx_mgr = Arc::clone(&state.browser_context_manager);
         let sid = input.session_id.clone();
+        let decision_adapter = Arc::new(LlmBrowserDecisionAdapter::new(
+            Arc::clone(&llm),
+            model.clone(),
+        ));
         macro_rules! bt {
             ($T:ident) => { $T { ctx_mgr: Arc::clone(&ctx_mgr), session_id: sid.clone() } };
         }
@@ -8869,8 +8886,16 @@ pub async fn send_agent_message(
         // Always register the navigation entry-point so the LLM can open a browser
         // on demand even when none is currently running.
         tools.register(bt!(BrowserNavigateTool));
-        tools.register(bt!(BrowserTaskTool));
-        tools.register(bt!(RetryWithBrowserAgentTool));
+        tools.register(BrowserTaskTool {
+            ctx_mgr: Arc::clone(&ctx_mgr),
+            session_id: sid.clone(),
+            decision_adapter: decision_adapter.clone(),
+        });
+        tools.register(RetryWithBrowserAgentTool {
+            ctx_mgr: Arc::clone(&ctx_mgr),
+            session_id: sid.clone(),
+            decision_adapter,
+        });
         if browser_active {
             tools.register(bt!(BrowserGoBackTool));
             tools.register(bt!(BrowserGoForwardTool));

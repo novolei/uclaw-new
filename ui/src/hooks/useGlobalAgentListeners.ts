@@ -494,8 +494,18 @@ function startAgentListeners(store: Store): void {
     listen<{ conversationId: string; activity: any }>('chat:stream-tool-activity', ({ payload }) => {
       const sid = payload.conversationId
       const ev = payload.activity
-      if (ev.type !== 'tool_result') return
       const toolName: string = ev.toolName ?? ''
+
+      if (
+        ev.type === 'tool_start' &&
+        (toolName === 'browser_task' || toolName === 'retry_with_browser_agent')
+      ) {
+        const initialUrl = typeof ev.input?.start_url === 'string' ? ev.input.start_url : ''
+        store.set(openBrowserTabAction, { agentSessionId: sid, initialUrl })
+        return
+      }
+
+      if (ev.type !== 'tool_result') return
       if (toolName !== 'browser_navigate' && toolName !== 'browser_screenshot') return
 
       // ToolOutput::success wraps the text as { ok: true, content: "..." }.

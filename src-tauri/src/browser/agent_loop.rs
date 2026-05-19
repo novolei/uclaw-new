@@ -3,10 +3,18 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
+use tokio::time::{sleep, Duration};
 
+use crate::browser::action::BrowserAction;
+use crate::browser::action_registry::BrowserActionRegistry;
 use crate::browser::context_manager::BrowserContextManager;
+use crate::browser::decision::{BrowserDecisionAdapter, BrowserDecisionStatus};
+use crate::browser::loop_detector::{make_fingerprint, LoopDetector};
 use crate::browser::observation::BrowserObservation;
-use crate::browser::session_state::{BrowserTaskRun, BrowserTaskStatus, BrowserTaskStep};
+use crate::browser::recovery::{classify_browser_error, BrowserRecoveryKind};
+use crate::browser::session_state::{
+    BrowserTaskRun, BrowserTaskStatus, BrowserTaskStep, BrowserTaskStepPhase,
+};
 
 pub fn clamp_max_steps(max_steps: Option<u32>) -> u32 {
     max_steps.unwrap_or(8).clamp(1, 25)
@@ -23,11 +31,17 @@ pub struct BrowserTaskRequest {
 
 pub struct BrowserAgentLoop {
     ctx_mgr: Arc<BrowserContextManager>,
+    decision_adapter: Arc<dyn BrowserDecisionAdapter>,
+    action_registry: BrowserActionRegistry,
 }
 
 impl BrowserAgentLoop {
-    pub fn new(ctx_mgr: Arc<BrowserContextManager>) -> Self {
-        Self { ctx_mgr }
+    pub fn new(
+        ctx_mgr: Arc<BrowserContextManager>,
+        decision_adapter: Arc<dyn BrowserDecisionAdapter>,
+    ) -> Self {
+        let action_registry = BrowserActionRegistry::new(Arc::clone(&ctx_mgr));
+        Self { ctx_mgr, decision_adapter, action_registry }
     }
 
     pub async fn run(&self, request: BrowserTaskRequest) -> Result<BrowserTaskRun> {
@@ -51,42 +65,243 @@ impl BrowserAgentLoop {
                 .ok_or_else(|| anyhow!("No browser tab is available for task"))?
         };
 
-        let observation = ctx.observe(&tab_id, false).await?;
-        let observe_step = BrowserTaskStep {
-            step_index: 0,
-            observation_summary: summarize_observation(&observation),
-            reasoning: format!("Initial browser observation captured. max_steps={max_steps}."),
-            action_name: "observe".to_string(),
-            action_args: serde_json::json!({
-                "tabId": tab_id,
-                "includeScreenshot": false
-            }),
-            ok: true,
-            message: Some("Observed current browser state.".to_string()),
-            error: None,
-            timestamp_ms: chrono::Utc::now().timestamp_millis(),
-        };
-        self.push_step(&mut run, observe_step);
+        let mut active_tab_id = tab_id;
+        let mut step_index = 0;
+        let mut loop_detector = LoopDetector::default();
 
-        let planner_error = "browser_task planner is not wired yet; Task 5 will attach the LLM decision adapter.";
-        let stop_step = BrowserTaskStep {
-            step_index: 1,
+        for _ in 0..max_steps {
+            let observation = ctx.observe(&active_tab_id, false).await?;
+            let observation_json = serde_json::to_value(&observation)?;
+            self.push_step(&mut run, BrowserTaskStep {
+                step_index,
+                phase: BrowserTaskStepPhase::Observe,
+                observation_summary: summarize_observation(&observation),
+                reasoning: "Captured current browser state for planning.".to_string(),
+                action_name: "observe".to_string(),
+                action_args: serde_json::json!({
+                    "tabId": active_tab_id,
+                    "includeScreenshot": false
+                }),
+                ok: true,
+                message: Some("Observed current browser state.".to_string()),
+                error: None,
+                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            });
+            step_index += 1;
+
+            let decision = self
+                .decision_adapter
+                .decide(&request.task, &observation_json, &run.steps)
+                .await?;
+            self.push_step(&mut run, BrowserTaskStep {
+                step_index,
+                phase: BrowserTaskStepPhase::Decide,
+                observation_summary: summarize_observation(&observation),
+                reasoning: decision.reasoning.clone(),
+                action_name: "decide".to_string(),
+                action_args: serde_json::to_value(&decision.action)?,
+                ok: decision.status != BrowserDecisionStatus::Failed,
+                message: decision.final_answer.clone(),
+                error: if decision.status == BrowserDecisionStatus::Failed {
+                    decision.final_answer.clone()
+                } else {
+                    None
+                },
+                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            });
+            step_index += 1;
+
+            match decision.status {
+                BrowserDecisionStatus::Done => {
+                    run.status = BrowserTaskStatus::Completed;
+                    self.push_step(&mut run, BrowserTaskStep {
+                        step_index,
+                        phase: BrowserTaskStepPhase::Done,
+                        observation_summary: summarize_observation(&observation),
+                        reasoning: "Browser task reported completion.".to_string(),
+                        action_name: "done".to_string(),
+                        action_args: serde_json::json!({ "task": request.task }),
+                        ok: true,
+                        message: decision.final_answer,
+                        error: None,
+                        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                    });
+                    self.emit_run(&run);
+                    return Ok(run);
+                }
+                BrowserDecisionStatus::Failed => {
+                    run.status = BrowserTaskStatus::Failed;
+                    self.emit_run(&run);
+                    return Ok(run);
+                }
+                BrowserDecisionStatus::Continue => {}
+            }
+
+            let action = decision
+                .action
+                .clone()
+                .ok_or_else(|| anyhow!("browser decision status=continue but action was null"))?;
+            let action_args = serde_json::to_value(&action)?;
+            let action_args_text = serde_json::to_string(&action_args)?;
+            let fingerprint = make_fingerprint(
+                &observation.url,
+                action_name(&action),
+                &action_args_text,
+            );
+            if loop_detector.record(&fingerprint) {
+                run.status = BrowserTaskStatus::Failed;
+                self.push_step(&mut run, BrowserTaskStep {
+                    step_index,
+                    phase: BrowserTaskStepPhase::Recover,
+                    observation_summary: summarize_observation(&observation),
+                    reasoning: "Detected repeated browser action loop.".to_string(),
+                    action_name: "loop_detector".to_string(),
+                    action_args,
+                    ok: false,
+                    message: None,
+                    error: Some("Browser agent repeated the same action on the same URL; stopping for re-plan.".to_string()),
+                    timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                });
+                self.emit_run(&run);
+                return Ok(run);
+            }
+
+            match self
+                .action_registry
+                .execute(&request.session_id, action.clone())
+                .await
+            {
+                Ok(result) => {
+                    if let Some(tab_id) = result.tab_id.as_ref() {
+                        active_tab_id = tab_id.clone();
+                    } else if let Some(tab_id) = tab_id_from_action(&action) {
+                        active_tab_id = tab_id;
+                    }
+                    self.push_step(&mut run, BrowserTaskStep {
+                        step_index,
+                        phase: BrowserTaskStepPhase::Act,
+                        observation_summary: String::new(),
+                        reasoning: format!("Executed {}.", result.action_name),
+                        action_name: result.action_name,
+                        action_args,
+                        ok: result.ok,
+                        message: result.message,
+                        error: result.error,
+                        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                    });
+                    step_index += 1;
+                }
+                Err(error) => {
+                    let err = error.to_string();
+                    self.push_step(&mut run, BrowserTaskStep {
+                        step_index,
+                        phase: BrowserTaskStepPhase::Act,
+                        observation_summary: String::new(),
+                        reasoning: "Browser action failed.".to_string(),
+                        action_name: action_name(&action).to_string(),
+                        action_args: action_args.clone(),
+                        ok: false,
+                        message: None,
+                        error: Some(err.clone()),
+                        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                    });
+                    step_index += 1;
+
+                    match self
+                        .recover_after_error(
+                            &mut run,
+                            &mut active_tab_id,
+                            step_index,
+                            &err,
+                            &Some(action.clone()),
+                        )
+                        .await?
+                    {
+                        RecoveryOutcome::Continue(next_step_index) => {
+                            step_index = next_step_index;
+                            continue;
+                        }
+                        RecoveryOutcome::Stop => {
+                            run.status = BrowserTaskStatus::Failed;
+                            self.emit_run(&run);
+                            return Ok(run);
+                        }
+                    }
+                }
+            }
+        }
+
+        run.status = BrowserTaskStatus::Stopped;
+        self.push_step(&mut run, BrowserTaskStep {
+            step_index,
+            phase: BrowserTaskStepPhase::Done,
             observation_summary: String::new(),
-            reasoning: "Stopping before action execution because no decision adapter is available.".to_string(),
-            action_name: "planner".to_string(),
-            action_args: serde_json::json!({
-                "task": request.task,
-                "maxSteps": max_steps
-            }),
+            reasoning: format!("Stopped after reaching max_steps={max_steps}."),
+            action_name: "max_steps".to_string(),
+            action_args: serde_json::json!({ "maxSteps": max_steps }),
             ok: false,
             message: None,
-            error: Some(planner_error.to_string()),
+            error: Some("Browser task reached max_steps before completion.".to_string()),
             timestamp_ms: chrono::Utc::now().timestamp_millis(),
-        };
-        self.push_step(&mut run, stop_step);
-        run.status = BrowserTaskStatus::Failed;
+        });
         self.emit_run(&run);
         Ok(run)
+    }
+
+    async fn recover_after_error(
+        &self,
+        run: &mut BrowserTaskRun,
+        active_tab_id: &mut String,
+        step_index: u32,
+        error: &str,
+        failed_action: &Option<BrowserAction>,
+    ) -> Result<RecoveryOutcome> {
+        let kind = classify_browser_error(error);
+        let (ok, message) = match kind {
+            BrowserRecoveryKind::RefreshTabsAndRetry => {
+                let ctx = self.ctx_mgr.get_or_create(&run.session_id).await?;
+                if let Some(tab_id) = ctx.active_or_first_tab_id().await {
+                    *active_tab_id = tab_id;
+                    (true, "Refreshed active tab id; retrying with a fresh observation.".to_string())
+                } else {
+                    (false, "No live browser tab remains after refresh.".to_string())
+                }
+            }
+            BrowserRecoveryKind::RefreshDomAndRetry => {
+                let ctx = self.ctx_mgr.get_or_create(&run.session_id).await?;
+                ctx.invalidate_dom_cache(active_tab_id).await;
+                (true, "Invalidated DOM cache; retrying with a fresh observation.".to_string())
+            }
+            BrowserRecoveryKind::WaitAndRetry => {
+                sleep(Duration::from_millis(800)).await;
+                (true, "Waited for page stability; retrying with a fresh observation.".to_string())
+            }
+            BrowserRecoveryKind::Stop => {
+                (false, "Error is not recoverable by the browser agent.".to_string())
+            }
+        };
+
+        self.push_step(run, BrowserTaskStep {
+            step_index,
+            phase: BrowserTaskStepPhase::Recover,
+            observation_summary: String::new(),
+            reasoning: format!("Recovery classification: {kind:?}."),
+            action_name: "recover".to_string(),
+            action_args: serde_json::json!({
+                "kind": format!("{kind:?}"),
+                "failedAction": failed_action,
+            }),
+            ok,
+            message: Some(message),
+            error: if ok { None } else { Some(error.to_string()) },
+            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+        });
+
+        if ok {
+            Ok(RecoveryOutcome::Continue(step_index + 1))
+        } else {
+            Ok(RecoveryOutcome::Stop)
+        }
     }
 
     fn push_step(&self, run: &mut BrowserTaskRun, step: BrowserTaskStep) {
@@ -104,6 +319,11 @@ impl BrowserAgentLoop {
     }
 }
 
+enum RecoveryOutcome {
+    Continue(u32),
+    Stop,
+}
+
 fn summarize_observation(observation: &BrowserObservation) -> String {
     let mut text = observation.page_text.trim().replace('\n', " ");
     if text.len() > 240 {
@@ -117,6 +337,30 @@ fn summarize_observation(observation: &BrowserObservation) -> String {
         observation.elements.len(),
         text
     )
+}
+
+fn tab_id_from_action(action: &BrowserAction) -> Option<String> {
+    match action {
+        BrowserAction::Navigate { tab_id, .. } => tab_id.clone(),
+        BrowserAction::Click { tab_id, .. }
+        | BrowserAction::Type { tab_id, .. }
+        | BrowserAction::Scroll { tab_id, .. }
+        | BrowserAction::SendKeys { tab_id, .. }
+        | BrowserAction::Evaluate { tab_id, .. }
+        | BrowserAction::GetState { tab_id, .. } => Some(tab_id.clone()),
+    }
+}
+
+fn action_name(action: &BrowserAction) -> &'static str {
+    match action {
+        BrowserAction::Navigate { .. } => "browser_navigate",
+        BrowserAction::Click { .. } => "browser_click",
+        BrowserAction::Type { .. } => "browser_type",
+        BrowserAction::Scroll { .. } => "browser_scroll",
+        BrowserAction::SendKeys { .. } => "browser_send_keys",
+        BrowserAction::Evaluate { .. } => "browser_evaluate",
+        BrowserAction::GetState { .. } => "browser_get_state",
+    }
 }
 
 #[cfg(test)]

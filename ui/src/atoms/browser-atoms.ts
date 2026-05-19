@@ -61,6 +61,33 @@ export interface NavStateEntry {
 /** Latest nav state per sessionId. Populated by BrowserPanel's listenNavState subscription. */
 export const browserNavStateAtom = atom(new Map<string, NavStateEntry>())
 
+export type BrowserTaskStatus = 'running' | 'completed' | 'failed' | 'stopped'
+export type BrowserTaskStepPhase = 'observe' | 'decide' | 'act' | 'recover' | 'done'
+
+export interface BrowserTaskStepEntry {
+  stepIndex: number
+  phase: BrowserTaskStepPhase
+  observationSummary: string
+  reasoning: string
+  actionName: string
+  actionArgs: unknown
+  ok: boolean
+  message: string | null
+  error: string | null
+  timestampMs: number
+}
+
+export interface BrowserTaskRunEntry {
+  runId: string
+  sessionId: string
+  task: string
+  status: BrowserTaskStatus
+  steps: BrowserTaskStepEntry[]
+}
+
+/** Latest autonomous browser task run per sessionId. */
+export const browserTaskRunAtom = atom(new Map<string, BrowserTaskRunEntry>())
+
 // ── V1 compatibility shims (Sprint 2.2 hotfix) ────────────────────────
 //
 // PR #213 (Browser Agent v2) rewrote this file's atom surface from the

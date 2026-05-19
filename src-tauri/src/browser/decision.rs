@@ -66,8 +66,26 @@ pub fn build_browser_decision_prompt(
 
 pub fn parse_browser_decision(raw: &str) -> Result<BrowserDecision> {
     let trimmed = raw.trim();
-    serde_json::from_str(trimmed)
+    let candidate = strip_json_code_fence(trimmed).unwrap_or(trimmed);
+    let candidate = extract_json_object(candidate).unwrap_or(candidate);
+    serde_json::from_str(candidate)
         .map_err(|e| anyhow!("browser decision JSON parse error: {e}; raw={trimmed}"))
+}
+
+fn strip_json_code_fence(raw: &str) -> Option<&str> {
+    let body = raw.strip_prefix("```json")
+        .or_else(|| raw.strip_prefix("```JSON"))
+        .or_else(|| raw.strip_prefix("```"))?;
+    Some(body.strip_suffix("```").unwrap_or(body).trim())
+}
+
+fn extract_json_object(raw: &str) -> Option<&str> {
+    let start = raw.find('{')?;
+    let end = raw.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    Some(raw[start..=end].trim())
 }
 
 #[async_trait]
@@ -128,6 +146,14 @@ mod tests {
         let raw = r#"{"status":"continue","reasoning":"Click search","action":{"kind":"click","tab_id":"t1","index":2},"finalAnswer":null}"#;
         let decision: BrowserDecision = serde_json::from_str(raw).unwrap();
         assert_eq!(decision.status, BrowserDecisionStatus::Continue);
+    }
+
+    #[test]
+    fn parses_decision_from_json_fence() {
+        let raw = "```json\n{\"status\":\"done\",\"reasoning\":\"Finished\",\"action\":null,\"finalAnswer\":\"ok\"}\n```";
+        let decision = parse_browser_decision(raw).unwrap();
+        assert_eq!(decision.status, BrowserDecisionStatus::Done);
+        assert_eq!(decision.final_answer.as_deref(), Some("ok"));
     }
 
     #[test]
