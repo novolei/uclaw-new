@@ -76,11 +76,12 @@ describe('BottomDock · atom-driven order', () => {
   it('renders one button per dockOrderAtom entry, in atom order', () => {
     const { container } = renderDock()
     const buttons = container.querySelectorAll('button[aria-label]')
-    // Default atom seed produces 聊天 / Agent / 记忆 / 万花筒, in that order.
+    // Default atom seed produces 聊天 / Agent / Symphony / 记忆 / 万花筒, in that order.
     expect(buttons[0].getAttribute('aria-label')).toBe('聊天')
     expect(buttons[1].getAttribute('aria-label')).toBe('Agent')
-    expect(buttons[2].getAttribute('aria-label')).toBe('记忆')
-    expect(buttons[3].getAttribute('aria-label')).toBe('万花筒')
+    expect(buttons[2].getAttribute('aria-label')).toBe('Symphony')
+    expect(buttons[3].getAttribute('aria-label')).toBe('记忆')
+    expect(buttons[4].getAttribute('aria-label')).toBe('万花筒')
   })
 
   it('reflects a reordered atom in render order', () => {

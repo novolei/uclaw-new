@@ -31,6 +31,7 @@ export const memuOnlineAtom = atom<boolean | null>(null)
 export type DockMode =
   | 'chat'
   | 'agent'
+  | 'symphony'
   | 'memory'
   | 'kaleidoscope'
   | 'home'
@@ -54,6 +55,7 @@ export type DockItemSpec =
 export const CANONICAL_DOCK_MODES: DockMode[] = [
   'chat',
   'agent',
+  'symphony',
   'memory',
   'kaleidoscope',
   'home',
