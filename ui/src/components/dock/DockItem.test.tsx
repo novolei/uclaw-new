@@ -12,8 +12,8 @@ vi.mock('motion/react', () => ({
     button: React.forwardRef<
       HTMLButtonElement,
       React.ComponentPropsWithoutRef<'button'> & { style?: unknown }
-    >(({ style: _style, ...rest }, ref) =>
-      React.createElement('button', { ref, ...rest }),
+    >(({ style, ...rest }, ref) =>
+      React.createElement('button', { ref, style, ...rest }),
     ),
   },
   useSpring: () => ({ set: vi.fn() }),
@@ -139,5 +139,28 @@ describe('DockItem', () => {
       />,
     )
     expect(inactiveContainer.querySelector('[data-dock-active-dot]')).toBeNull()
+  })
+
+  it('renders a 56 px outer slot with a 44 px inner icon box', () => {
+    const { container } = render(
+      <DockItem
+        icon={<Bot size={18} />}
+        label="Agent"
+        isActive={false}
+        index={0}
+        hoveredIndex={null}
+        onHoverIndexChange={vi.fn()}
+        onClick={vi.fn()}
+      />,
+    )
+    const btn = screen.getByRole('button', { name: 'Agent' })
+    // Outer slot (SLOT_W = 56)
+    expect(btn.style.width).toBe('56px')
+    expect(btn.style.height).toBe('56px')
+    // Inner icon-box span (ICON_BOX = 44). It's the only <span> child of the
+    // button at this point (the active-dot span only renders when isActive).
+    const iconBox = container.querySelector('button > span') as HTMLElement
+    expect(iconBox.style.width).toBe('44px')
+    expect(iconBox.style.height).toBe('44px')
   })
 })
