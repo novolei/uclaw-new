@@ -1,5 +1,18 @@
-pub mod trajectory;
+pub mod adapters;
+pub mod artifacts;
 pub mod budget;
+pub mod case;
+pub mod episode;
+pub mod graders;
+pub mod runtime;
+pub mod trace;
+pub mod trajectory;
 
-pub use trajectory::TrajectoryStore;
+pub use artifacts::{HarnessArtifact, HarnessArtifactStore};
 pub use budget::ToolBudgetManager;
+pub use case::{HarnessBudget, HarnessCase, HarnessSubject};
+pub use episode::{HarnessEpisode, HarnessVerdict};
+pub use graders::{HarnessGraderRegistry, HarnessGraderResult, HarnessGraderSpec};
+pub use runtime::HarnessRuntime;
+pub use trace::{HarnessEvent, MemoryHarnessTarget};
+pub use trajectory::TrajectoryStore;
