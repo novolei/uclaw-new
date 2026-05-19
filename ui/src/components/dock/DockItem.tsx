@@ -180,10 +180,11 @@ export function DockItem({
                 aria-hidden="true"
                 className="pointer-events-none absolute inset-0 rounded-[14px]"
                 style={{
-                  boxShadow: '0 0 14px hsl(var(--primary) / 0.45)',
+                  boxShadow:
+                    '0 0 24px hsl(var(--primary) / 0.7), 0 0 8px hsl(var(--primary) / 0.5)',
                 }}
-                animate={{ opacity: [0.4, 0.8, 0.4] }}
-                transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+                animate={{ opacity: [0.5, 1, 0.5] }}
+                transition={{ duration: 1.6, repeat: Infinity, ease: 'easeInOut' }}
               />
             )}
             {streaming && (
@@ -192,15 +193,29 @@ export function DockItem({
                 aria-hidden="true"
                 className="pointer-events-none absolute inset-x-0 top-0 h-0"
               >
-                {particles.map((seed) => (
-                  <motion.div
-                    key={seed}
-                    className="absolute left-1/2 -translate-x-1/2 w-[3px] h-[3px] rounded-full bg-primary"
-                    initial={{ y: 0, opacity: 1 }}
-                    animate={{ y: -12, opacity: 0 }}
-                    transition={{ duration: 0.6, ease: 'easeOut' }}
-                  />
-                ))}
+                {particles.map((seed) => {
+                  // Deterministic horizontal jitter from seed (-3..+3 px), so each
+                  // particle rises along a slightly different vertical line and they
+                  // don't visually stack as a single column.
+                  const jitter = (((seed * 9301 + 49297) % 233280) / 233280 - 0.5) * 6
+                  return (
+                    <motion.div
+                      key={seed}
+                      className="absolute left-1/2 w-1 h-1 rounded-full bg-primary"
+                      style={{
+                        translateX: `calc(-50% + ${jitter}px)`,
+                        boxShadow: '0 0 4px hsl(var(--primary) / 0.7), 0 0 1px hsl(var(--primary))',
+                      }}
+                      initial={{ y: 0, opacity: 0 }}
+                      animate={{ y: -16, opacity: [0, 1, 0] }}
+                      transition={{
+                        duration: 0.8,
+                        ease: 'easeOut',
+                        times: [0, 0.25, 1],
+                      }}
+                    />
+                  )
+                })}
               </div>
             )}
             <motion.div
