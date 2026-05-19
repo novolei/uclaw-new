@@ -919,6 +919,15 @@ pub async fn send_message(
         tools.register(bt!(BrowserWaitTool));
         tools.register(bt!(BrowserHoverTool));
         tools.register(bt!(BrowserUploadFileTool));
+        tools.register(bt!(BrowserGetStateTool));
+        tools.register(bt!(BrowserListTabsTool));
+        tools.register(bt!(BrowserSwitchTabTool));
+        tools.register(bt!(BrowserCloseTabTool));
+        tools.register(bt!(BrowserListSessionsTool));
+        tools.register(bt!(BrowserCloseSessionTool));
+        tools.register(bt!(BrowserCloseAllTool));
+        tools.register(bt!(BrowserTaskTool));
+        tools.register(bt!(RetryWithBrowserAgentTool));
     }
     // MCP tool proxies — agents see tools from any currently-connected
     // MCP server as `mcp__{server_id}__{tool_name}`. Sourced from
@@ -8860,6 +8869,8 @@ pub async fn send_agent_message(
         // Always register the navigation entry-point so the LLM can open a browser
         // on demand even when none is currently running.
         tools.register(bt!(BrowserNavigateTool));
+        tools.register(bt!(BrowserTaskTool));
+        tools.register(bt!(RetryWithBrowserAgentTool));
         if browser_active {
             tools.register(bt!(BrowserGoBackTool));
             tools.register(bt!(BrowserGoForwardTool));
@@ -8879,10 +8890,17 @@ pub async fn send_agent_message(
             tools.register(bt!(BrowserWaitTool));
             tools.register(bt!(BrowserHoverTool));
             tools.register(bt!(BrowserUploadFileTool));
+            tools.register(bt!(BrowserGetStateTool));
+            tools.register(bt!(BrowserListTabsTool));
+            tools.register(bt!(BrowserSwitchTabTool));
+            tools.register(bt!(BrowserCloseTabTool));
+            tools.register(bt!(BrowserListSessionsTool));
+            tools.register(bt!(BrowserCloseSessionTool));
+            tools.register(bt!(BrowserCloseAllTool));
         }
         tracing::info!(
             browser_active,
-            browser_tools = if browser_active { 19 } else { 1 },
+            browser_tools = if browser_active { 28 } else { 3 },
             "Browser tools registered (lazy: full set only when context is live)"
         );
     }
@@ -9557,6 +9575,17 @@ pub async fn browser_start_screencast(
 }
 
 #[tauri::command]
+pub async fn browser_capture_screenshot(
+    session_id: String,
+    tab_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    ctx.screenshot(&tab_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn browser_stop_screencast(
     session_id: String,
     tab_id: String,
@@ -9614,6 +9643,18 @@ pub async fn browser_ui_go_forward(
     let ctx = state.browser_context_manager.get_or_create(&session_id).await
         .map_err(|e| e.to_string())?;
     ctx.go_forward(&tab_id, &app_handle).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn browser_ui_switch_tab(
+    session_id: String,
+    tab_id: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    ctx.switch_tab(&tab_id, &app_handle).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

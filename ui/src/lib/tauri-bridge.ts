@@ -1717,7 +1717,7 @@ export const browserShutdown = (): Promise<boolean> =>
   invoke<boolean>('browser_shutdown')
 
 export const browserTakeScreenshot = (tabId: string): Promise<string> =>
-  invoke<string>('browser_take_screenshot', { tab_id: tabId })
+  invoke<string>('browser_take_screenshot', { tabId })
 
 // ── v2 session commands ───────────────────────────────────────────────
 
@@ -1725,33 +1725,39 @@ export const browserListSessions = (): Promise<string[]> =>
   invoke<string[]>('browser_list_sessions')
 
 export const browserDestroySession = (sessionId: string): Promise<void> =>
-  invoke<void>('browser_destroy_session', { session_id: sessionId })
+  invoke<void>('browser_destroy_session', { sessionId })
 
 // ── v2 UI control commands ────────────────────────────────────────────
 
 export const browserUINavigate = (sessionId: string, tabId: string, url: string): Promise<string> =>
-  invoke<string>('browser_ui_navigate', { session_id: sessionId, tab_id: tabId, url })
+  invoke<string>('browser_ui_navigate', { sessionId, tabId, url })
 
 export const browserUIGoBack = (sessionId: string, tabId: string): Promise<void> =>
-  invoke<void>('browser_ui_go_back', { session_id: sessionId, tab_id: tabId })
+  invoke<void>('browser_ui_go_back', { sessionId, tabId })
 
 export const browserUIGoForward = (sessionId: string, tabId: string): Promise<void> =>
-  invoke<void>('browser_ui_go_forward', { session_id: sessionId, tab_id: tabId })
+  invoke<void>('browser_ui_go_forward', { sessionId, tabId })
+
+export const browserUISwitchTab = (sessionId: string, tabId: string): Promise<void> =>
+  invoke<void>('browser_ui_switch_tab', { sessionId, tabId })
 
 export const browserUIReload = (sessionId: string, tabId: string): Promise<void> =>
-  invoke<void>('browser_ui_reload', { session_id: sessionId, tab_id: tabId })
+  invoke<void>('browser_ui_reload', { sessionId, tabId })
 
 export const browserUICloseTab = (sessionId: string, tabId: string): Promise<void> =>
-  invoke<void>('browser_ui_close_tab', { session_id: sessionId, tab_id: tabId })
+  invoke<void>('browser_ui_close_tab', { sessionId, tabId })
 
 export const browserGetDOMState = (sessionId: string, tabId: string): Promise<DOMStateResponse> =>
-  invoke<DOMStateResponse>('browser_get_dom_state', { session_id: sessionId, tab_id: tabId })
+  invoke<DOMStateResponse>('browser_get_dom_state', { sessionId, tabId })
 
 export const browserStartScreencast = (sessionId: string, tabId: string): Promise<void> =>
-  invoke<void>('browser_start_screencast', { session_id: sessionId, tab_id: tabId })
+  invoke<void>('browser_start_screencast', { sessionId, tabId })
+
+export const browserCaptureScreenshot = (sessionId: string, tabId: string): Promise<string> =>
+  invoke<string>('browser_capture_screenshot', { sessionId, tabId })
 
 export const browserStopScreencast = (sessionId: string, tabId: string): Promise<void> =>
-  invoke<void>('browser_stop_screencast', { session_id: sessionId, tab_id: tabId })
+  invoke<void>('browser_stop_screencast', { sessionId, tabId })
 
 /** Subscribe to CDP screencast frames. Returns an unlisten function. */
 export const listenScreencastFrames = (

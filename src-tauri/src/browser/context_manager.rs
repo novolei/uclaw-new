@@ -78,6 +78,16 @@ impl BrowserContextManager {
         }
     }
 
+    /// Destroy every live browser context.
+    pub async fn destroy_all(&self) -> usize {
+        let session_ids = self.list_active_sessions().await;
+        let count = session_ids.len();
+        for session_id in session_ids {
+            self.destroy(&session_id).await;
+        }
+        count
+    }
+
     /// Returns true if `session_id` has a live Chrome context.
     /// Used to gate lazy browser-tool registration (saves ~6 500 tokens/turn
     /// for non-browser sessions).

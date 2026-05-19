@@ -2,7 +2,7 @@ import * as React from 'react'
 import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { BrowserTabEntry } from '@/atoms/browser-atoms'
-import { browserUICloseTab } from '@/lib/tauri-bridge'
+import { browserUICloseTab, browserUISwitchTab } from '@/lib/tauri-bridge'
 
 interface BrowserTabBarProps {
   sessionId: string
@@ -19,7 +19,10 @@ export function BrowserTabBar({ sessionId, tabs, activeTabId, onSelectTab }: Bro
       {tabs.map((tab) => (
         <button
           key={tab.tabId}
-          onClick={() => onSelectTab(tab.tabId)}
+          onClick={() => {
+            onSelectTab(tab.tabId)
+            browserUISwitchTab(sessionId, tab.tabId).catch(console.error)
+          }}
           className={cn(
             'group flex items-center gap-1.5 px-3 py-1.5 rounded-t-md text-[12px] max-w-[160px] min-w-0 shrink-0',
             'border border-b-0 transition-colors',

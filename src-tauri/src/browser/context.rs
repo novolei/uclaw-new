@@ -16,6 +16,7 @@ use chromiumoxide::cdp::browser_protocol::input::{
 };
 use chromiumoxide::cdp::browser_protocol::page::{
     ScreencastFrameAckParams, StartScreencastFormat, StartScreencastParams,
+    StopScreencastParams,
 };
 use chromiumoxide::{Browser, Page};
 use futures::StreamExt;
@@ -72,6 +73,7 @@ impl DevicePreset {
 pub struct BrowserContext {
     pub browser: Arc<Browser>,
     pub pages: Arc<RwLock<HashMap<String, Page>>>,
+    active_tab_id: Arc<RwLock<Option<String>>>,
     dom_cache: Arc<RwLock<HashMap<String, (DOMState, Instant)>>>,
     screencast_stops: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
     session_id: String,
@@ -127,11 +129,12 @@ impl BrowserContext {
             .await
             .map_err(|e| anyhow!("Failed to open initial tab: {}", e))?;
         let init_id = Uuid::new_v4().to_string();
-        pages.write().await.insert(init_id, init_page);
+        pages.write().await.insert(init_id.clone(), init_page);
 
         Ok(Self {
             browser,
             pages,
+            active_tab_id: Arc::new(RwLock::new(Some(init_id))),
             dom_cache: Arc::new(RwLock::new(HashMap::new())),
             screencast_stops: Arc::new(Mutex::new(HashMap::new())),
             session_id: session_id.to_string(),
@@ -230,7 +233,7 @@ impl BrowserContext {
             can_go_forward: false,
         });
 
-        let mut pages = self.pages.write().await;
+        let pages = self.pages.write().await;
         if tab_id != "new" {
             if let Some(page) = pages.get(tab_id) {
                 let page = page.clone();
@@ -238,6 +241,7 @@ impl BrowserContext {
                 page.goto(url)
                     .await
                     .map_err(|e| anyhow!("navigate to {url}: {e}"))?;
+                *self.active_tab_id.write().await = Some(tab_id.to_string());
                 self.invalidate_dom_cache(tab_id).await;
                 self.emit_nav_state(tab_id, &page, app_handle, false).await;
                 return Ok(tab_id.to_string());
@@ -252,6 +256,7 @@ impl BrowserContext {
             .map_err(|e| anyhow!("new_page: {e}"))?;
         let new_id = Uuid::new_v4().to_string();
         self.pages.write().await.insert(new_id.clone(), page.clone());
+        *self.active_tab_id.write().await = Some(new_id.clone());
         self.invalidate_dom_cache(&new_id).await;
         self.emit_nav_state(&new_id, &page, app_handle, false).await;
         Ok(new_id)
@@ -259,6 +264,7 @@ impl BrowserContext {
 
     pub async fn go_back(&self, tab_id: &str, app_handle: &tauri::AppHandle) -> Result<()> {
         let page = self.get_page(tab_id).await?;
+        *self.active_tab_id.write().await = Some(tab_id.to_string());
         page.evaluate("history.back()")
             .await
             .map_err(|e| anyhow!("go_back failed: {}", e))?;
@@ -270,6 +276,7 @@ impl BrowserContext {
 
     pub async fn go_forward(&self, tab_id: &str, app_handle: &tauri::AppHandle) -> Result<()> {
         let page = self.get_page(tab_id).await?;
+        *self.active_tab_id.write().await = Some(tab_id.to_string());
         page.evaluate("history.forward()")
             .await
             .map_err(|e| anyhow!("go_forward failed: {}", e))?;
@@ -281,6 +288,7 @@ impl BrowserContext {
 
     pub async fn reload(&self, tab_id: &str, app_handle: &tauri::AppHandle) -> Result<()> {
         let page = self.get_page(tab_id).await?;
+        *self.active_tab_id.write().await = Some(tab_id.to_string());
         let _ = app_handle.emit("browser:nav-state", NavStatePayload {
             session_id: self.session_id.clone(),
             tab_id: tab_id.to_string(),
@@ -294,6 +302,13 @@ impl BrowserContext {
             .await
             .map_err(|e| anyhow!("reload failed: {}", e))?;
         self.invalidate_dom_cache(tab_id).await;
+        self.emit_nav_state(tab_id, &page, app_handle, false).await;
+        Ok(())
+    }
+
+    pub async fn switch_tab(&self, tab_id: &str, app_handle: &tauri::AppHandle) -> Result<()> {
+        let page = self.get_page(tab_id).await?;
+        *self.active_tab_id.write().await = Some(tab_id.to_string());
         self.emit_nav_state(tab_id, &page, app_handle, false).await;
         Ok(())
     }
@@ -354,6 +369,32 @@ impl BrowserContext {
             .map_err(|e| anyhow!("Screenshot failed: {}", e))?;
 
         Ok(STANDARD.encode(&png_bytes))
+    }
+
+    /// Return a structured browser-use-style observation for agent planning.
+    pub async fn observe(
+        &self,
+        tab_id: &str,
+        include_screenshot: bool,
+    ) -> Result<crate::browser::observation::BrowserObservation> {
+        let state = self.get_dom_state(tab_id).await?;
+        let screenshot_b64 = if include_screenshot {
+            Some(self.screenshot(tab_id).await?)
+        } else {
+            None
+        };
+
+        Ok(crate::browser::observation::BrowserObservation {
+            session_id: self.session_id.clone(),
+            tab_id: tab_id.to_string(),
+            url: state.url,
+            title: state.title,
+            page_text: state.page_text,
+            elements: state.elements,
+            tabs: state.tabs,
+            screenshot_b64,
+            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+        })
     }
 
     // ── Interaction ───────────────────────────────────────────────────────────
@@ -488,18 +529,41 @@ impl BrowserContext {
     // ── Tab management ────────────────────────────────────────────────────────
 
     pub async fn get_all_tabs(&self) -> Vec<TabInfo> {
-        // url/title not populated here; use get_dom_state() for full tab info.
-        self.pages
-            .read()
-            .await
-            .keys()
-            .map(|id| TabInfo {
+        let active = self.active_tab_id.read().await.clone();
+        let pages = self.pages.read().await;
+        let mut tabs = Vec::with_capacity(pages.len());
+        for (id, page) in pages.iter() {
+            let url = page
+                .evaluate("window.location.href")
+                .await
+                .ok()
+                .and_then(|v| v.into_value::<String>().ok())
+                .unwrap_or_default();
+            let title = page
+                .evaluate("document.title")
+                .await
+                .ok()
+                .and_then(|v| v.into_value::<String>().ok())
+                .unwrap_or_default();
+            tabs.push(TabInfo {
                 tab_id: id.clone(),
-                url: String::new(),
-                title: String::new(),
-                active: false,
-            })
-            .collect()
+                url,
+                title,
+                active: active.as_deref() == Some(id.as_str()),
+            });
+        }
+        tabs
+    }
+
+    /// Return the active tab id, falling back to the first known tab.
+    pub async fn active_or_first_tab_id(&self) -> Option<String> {
+        let active = self.active_tab_id.read().await.clone();
+        if let Some(tab_id) = active {
+            if self.pages.read().await.contains_key(&tab_id) {
+                return Some(tab_id);
+            }
+        }
+        self.pages.read().await.keys().next().cloned()
     }
 
     pub async fn close_tab(&self, tab_id: &str) -> Result<()> {
@@ -509,13 +573,19 @@ impl BrowserContext {
             .await
             .remove(tab_id)
             .ok_or_else(|| anyhow!("Tab '{}' not found", tab_id))?;
+        // Stop CDP screencast before closing the page; Page::close consumes it.
+        if let Some(stop_tx) = self.screencast_stops.lock().await.remove(tab_id) {
+            let _ = page.execute(StopScreencastParams::default()).await;
+            let _ = stop_tx.send(());
+        }
         page.close()
             .await
             .map_err(|e| anyhow!("close_tab failed: {}", e))?;
         self.dom_cache.write().await.remove(tab_id);
-        // Send stop signal to any running screencast task.
-        if let Some(stop_tx) = self.screencast_stops.lock().await.remove(tab_id) {
-            let _ = stop_tx.send(());
+        let should_pick_next = self.active_tab_id.read().await.as_deref() == Some(tab_id);
+        if should_pick_next {
+            let next = self.pages.read().await.keys().next().cloned();
+            *self.active_tab_id.write().await = next;
         }
         Ok(())
     }
@@ -529,6 +599,16 @@ impl BrowserContext {
     ) -> Result<()> {
         let page = self.get_page(tab_id).await?;
 
+        if let Some(stop_tx) = self.screencast_stops.lock().await.remove(tab_id) {
+            let _ = page.execute(StopScreencastParams::default()).await;
+            let _ = stop_tx.send(());
+        }
+
+        let mut frame_stream = page
+            .event_listener::<chromiumoxide::cdp::browser_protocol::page::EventScreencastFrame>()
+            .await
+            .map_err(|e| anyhow!("event_listener failed: {}", e))?;
+
         page.execute(
             StartScreencastParams::builder()
                 .format(StartScreencastFormat::Jpeg)
@@ -540,11 +620,6 @@ impl BrowserContext {
         )
         .await
         .map_err(|e| anyhow!("start_screencast failed: {}", e))?;
-
-        let mut frame_stream = page
-            .event_listener::<chromiumoxide::cdp::browser_protocol::page::EventScreencastFrame>()
-            .await
-            .map_err(|e| anyhow!("event_listener failed: {}", e))?;
 
         let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
         self.screencast_stops
@@ -594,6 +669,9 @@ impl BrowserContext {
 
     pub async fn stop_screencast(&self, tab_id: &str) {
         if let Some(stop_tx) = self.screencast_stops.lock().await.remove(tab_id) {
+            if let Ok(page) = self.get_page(tab_id).await {
+                let _ = page.execute(StopScreencastParams::default()).await;
+            }
             let _ = stop_tx.send(());
         }
     }

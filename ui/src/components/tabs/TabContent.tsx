@@ -10,7 +10,7 @@ import { useAtomValue } from 'jotai'
 import { visibleTabsAtom } from '@/atoms/tab-atoms'
 import { ChatView } from '@/components/chat/ChatView'
 import { AgentView } from '@/components/agent/AgentView'
-import { BrowserViewer } from '@/components/canvas/BrowserViewer'
+import { BrowserPanel } from '@/components/browser/BrowserPanel'
 import { SymphonyCanvas } from '@/components/symphony_graph'
 import { TabErrorBoundary } from './TabErrorBoundary'
 
@@ -48,7 +48,7 @@ export function TabContent({ tabId }: TabContentProps): React.ReactElement {
   if (tab.type === 'browser') {
     return (
       <TabErrorBoundary key={tab.sessionId} sessionId={tab.sessionId}>
-        <BrowserViewer />
+        <BrowserPanel agentSessionId={tab.sessionId} />
       </TabErrorBoundary>
     )
   }
