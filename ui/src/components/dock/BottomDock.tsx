@@ -16,7 +16,7 @@ import { DockItem } from './DockItem'
 import { ConnectionIndicator } from './ConnectionIndicator'
 import { DockDragHandle } from './DockDragHandle'
 import { useConnectionStatus } from './useConnectionStatus'
-import { bottomDockEnabledAtom, dockOrderAtom, type DockItemSpec } from '@/atoms/dock-atoms'
+import { bottomDockEnabledAtom, dockOrderAtom, applyDockReorder, type DockItemSpec } from '@/atoms/dock-atoms'
 import { appModeAtom, type AppMode } from '@/atoms/app-mode'
 import { topLevelViewAtom, type TopLevelView } from '@/atoms/top-level-view'
 import { kaleidoscopeModuleAtom, type KaleidoscopeModuleId } from '@/atoms/kaleidoscope'
@@ -138,6 +138,7 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
   const setAppMode = useSetAtom(appModeAtom)
   const setTopLevelView = useSetAtom(topLevelViewAtom)
   const setKaleidoscopeModule = useSetAtom(kaleidoscopeModuleAtom)
+  const setDockOrder = useSetAtom(dockOrderAtom)
 
   const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null)
 
@@ -154,10 +155,16 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
     [dockOrder],
   )
 
-  const handleDragEnd = React.useCallback((event: DragEndEvent) => {
-    // Task 6 wires this to the atom via applyDockReorder.
-    void event
-  }, [])
+  const handleDragEnd = React.useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event
+      if (!over) return
+      setDockOrder((current) =>
+        applyDockReorder(current, sortableIds, String(active.id), String(over.id)),
+      )
+    },
+    [sortableIds, setDockOrder],
+  )
 
   // Reset magnification when collapsed so reopening doesn't briefly show
   // a stale hovered icon before mouse lands somewhere new.

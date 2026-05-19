@@ -59,6 +59,11 @@ export function DockItem({
   // dnd-kit sortable hookup. When sortableId is undefined, we still
   // call the hook (Rules of Hooks) but with a dummy id and ignore its
   // outputs — DockItem stays usable from non-sortable contexts (tests).
+  //
+  // The dummy id is intentionally never registered in any ambient
+  // SortableContext, so the hook returns inert defaults. Do NOT
+  // "optimize" this by wrapping the hook call in a conditional —
+  // that would violate Rules of Hooks.
   const sortable = useSortable({ id: sortableId ?? `__non-sortable-${index}` })
 
   React.useEffect(() => {
