@@ -90,6 +90,15 @@ pub struct MemUBridge {
     restart_lock: Mutex<()>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemUBridgeDiagnostics {
+    pub alive: bool,
+    pub python_path: String,
+    pub script_path: String,
+    pub db_path: String,
+}
+
 impl MemUBridge {
     /// Create a new MemUBridge.
     ///
@@ -352,6 +361,20 @@ impl MemUBridge {
         self.alive.load(Ordering::SeqCst)
     }
 
+    pub fn diagnostics_snapshot(&self) -> MemUBridgeDiagnostics {
+        MemUBridgeDiagnostics {
+            alive: self.is_alive(),
+            python_path: self.python_path.clone(),
+            script_path: self.script_path.display().to_string(),
+            db_path: self
+                .data_dir
+                .join("memory")
+                .join("memu.db")
+                .display()
+                .to_string(),
+        }
+    }
+
     /// Send a JSON-RPC style request to the Python subprocess and await the response.
     ///
     /// # Arguments
@@ -372,6 +395,27 @@ impl MemUBridge {
         params: serde_json::Value,
         timeout: Duration,
     ) -> Result<serde_json::Value, BridgeError> {
+        self.send_request_with_timeout_inner(method, params, timeout, true)
+            .await
+    }
+
+    pub async fn send_request_without_restart(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, BridgeError> {
+        self.send_request_with_timeout_inner(method, params, timeout, false)
+            .await
+    }
+
+    async fn send_request_with_timeout_inner(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Duration,
+        auto_restart: bool,
+    ) -> Result<serde_json::Value, BridgeError> {
         if self.shutdown.load(Ordering::SeqCst) {
             return Err(BridgeError::ShuttingDown);
         }
@@ -380,6 +424,9 @@ impl MemUBridge {
         // Use a restart lock to prevent concurrent try_restart calls from
         // overwriting inner.child (kill_on_drop → kills freshly-started process).
         if !self.alive.load(Ordering::SeqCst) {
+            if !auto_restart {
+                return Err(BridgeError::NotRunning);
+            }
             let _restart_guard = self.restart_lock.lock().await;
             // Re-check: another caller may have completed a restart while
             // we waited for the lock.

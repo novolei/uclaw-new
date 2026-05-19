@@ -2,7 +2,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::memu::bridge::{BridgeError, MemUBridge};
+use crate::memu::bridge::{BridgeError, MemUBridge, MemUBridgeDiagnostics};
 use crate::memory::{ScenarioMemorizeResult, EnrichedMemoryItem};
 
 // ─── Response Types ────────────────────────────────────────────────────
@@ -274,6 +274,23 @@ impl MemUClient {
         }
     }
 
+    pub async fn diagnostic_health_check(&self) -> Result<bool, BridgeError> {
+        let result = self
+            .bridge
+            .send_request_without_restart(
+                "health",
+                serde_json::Value::Null,
+                std::time::Duration::from_secs(5),
+            )
+            .await?;
+        let ok = result
+            .get("status")
+            .and_then(|v| v.as_str())
+            .map(|s| s == "ok")
+            .unwrap_or(false);
+        Ok(ok)
+    }
+
     /// Embed a list of texts using the local FastEmbed model on the Python side.
     ///
     /// Returns one 384-dimensional vector per input text (bge-small-en-v1.5).
@@ -301,6 +318,10 @@ impl MemUClient {
     /// stop errors), then starts fresh.
     pub async fn force_restart(&self) -> Result<(), BridgeError> {
         self.bridge.force_restart().await
+    }
+
+    pub fn diagnostics_snapshot(&self) -> MemUBridgeDiagnostics {
+        self.bridge.diagnostics_snapshot()
     }
 
     // ── Scene-aware Bridge Methods ──────────────────────────────────────

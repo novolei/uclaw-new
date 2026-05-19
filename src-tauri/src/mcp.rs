@@ -146,6 +146,51 @@ pub fn redact_env_values(s: &str, env: &HashMap<String, String>) -> String {
     out
 }
 
+fn diagnostic_error_summary(s: &str, env: &HashMap<String, String>) -> String {
+    let redacted = redact_env_values(s, env);
+    let lower = redacted.to_lowercase();
+    let kind = if lower.contains("timed out waiting for pglite lock") {
+        "pglite_lock_timeout"
+    } else if lower.contains("no brain configured") || lower.contains("pg_version") {
+        "pglite_not_ready"
+    } else if lower.contains("permission denied") {
+        "permission_denied"
+    } else if lower.contains("gbrain_home") || lower.contains("pglite_data_dir") {
+        "path_mismatch"
+    } else if lower.contains("timeout waiting for response")
+        || (lower.contains("gbrain cli") && lower.contains("timed out"))
+    {
+        "mcp_connect_timeout"
+    } else if lower.contains("sigkill") || lower.contains("signal: 9") {
+        "process_killed"
+    } else if lower.contains("page_not_found") {
+        "page_not_found"
+    } else if lower.contains("failed to spawn") || lower.contains("no such file") {
+        "launcher_missing_or_unusable"
+    } else {
+        "tool_call_failed"
+    };
+
+    let status = if lower.contains("signal: 9") {
+        "signal: 9"
+    } else if lower.contains("timed out") {
+        "timed out"
+    } else if lower.contains("exit status: 1") {
+        "exit status: 1"
+    } else if lower.contains("exit status: 2") {
+        "exit status: 2"
+    } else if lower.contains("exit status") {
+        "exit status: nonzero"
+    } else {
+        ""
+    };
+    if status.is_empty() {
+        format!("diagnostic_kind={kind}")
+    } else {
+        format!("diagnostic_kind={kind}; status={}", status.chars().take(160).collect::<String>())
+    }
+}
+
 /// Kinds of events written to `mcp_audit`. Stored as the literal
 /// string in the `event_kind` column; new variants are append-only so
 /// historical rows stay parseable.
@@ -1665,15 +1710,33 @@ impl crate::agent::tools::tool::Tool for McpToolProxy {
                     .join("\n");
 
                 if call_result.is_error {
+                    {
+                        let mut mgr = self.manager.write().await;
+                        if let Some(state) = mgr.servers.get_mut(&self.server_id) {
+                            McpManager::set_error_for_state(state, Some(text.clone()));
+                        }
+                    }
                     Ok(crate::agent::tools::tool::ToolOutput::error(&text, duration_ms))
                 } else {
+                    {
+                        let mut mgr = self.manager.write().await;
+                        if let Some(state) = mgr.servers.get_mut(&self.server_id) {
+                            McpManager::set_error_for_state(state, None);
+                        }
+                    }
                     Ok(crate::agent::tools::tool::ToolOutput::success(&text, duration_ms))
                 }
             }
-            Err(e) => Ok(crate::agent::tools::tool::ToolOutput::error(
-                &e.to_string(),
-                duration_ms,
-            )),
+            Err(e) => {
+                let error = e.to_string();
+                {
+                    let mut mgr = self.manager.write().await;
+                    if let Some(state) = mgr.servers.get_mut(&self.server_id) {
+                        McpManager::set_error_for_state(state, Some(error.clone()));
+                    }
+                }
+                Ok(crate::agent::tools::tool::ToolOutput::error(&error, duration_ms))
+            }
         }
     }
 }
@@ -1950,12 +2013,21 @@ impl McpManager {
     /// (passing `None`) is unchanged.
     pub fn set_error(&mut self, id: &str, error: Option<String>) {
         if let Some(state) = self.servers.get_mut(id) {
-            let redacted = error.map(|e| redact_env_values(&e, &state.config.env));
+            let redacted = error.map(|e| diagnostic_error_summary(&e, &state.config.env));
             let is_err = redacted.is_some();
             state.error = redacted;
             if is_err {
                 state.status = McpServerStatus::Error;
             }
+        }
+    }
+
+    fn set_error_for_state(state: &mut McpServerState, error: Option<String>) {
+        let redacted = error.map(|e| diagnostic_error_summary(&e, &state.config.env));
+        let is_err = redacted.is_some();
+        state.error = redacted;
+        if is_err {
+            state.status = McpServerStatus::Error;
         }
     }
 
@@ -1991,6 +2063,10 @@ impl McpManager {
     /// server ID is not registered.
     pub fn server_tool_count(&self, id: &str) -> Option<usize> {
         self.servers.get(id).map(|s| s.tools.len())
+    }
+
+    pub fn server_config(&self, id: &str) -> Option<McpServerConfig> {
+        self.servers.get(id).map(|s| s.config.clone())
     }
 
     #[cfg(test)]
@@ -2255,6 +2331,7 @@ impl McpManager {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<CallToolResult, McpError> {
+        tracing::debug!("Calling MCP tool '{}' on server '{}'", tool_name, server_id);
         let state = self.servers.get(server_id).ok_or_else(|| {
             McpError::Server(format!("Server {} not found", server_id))
         })?;
@@ -2262,7 +2339,6 @@ impl McpManager {
             McpError::Server(format!("Server {} is not connected", server_id))
         })?;
 
-        tracing::debug!("Calling MCP tool '{}' on server '{}'", tool_name, server_id);
         conn.call_tool(tool_name, arguments).await
     }
 
@@ -2758,6 +2834,20 @@ mod tests {
         let stored = mgr.all_servers().into_iter().find(|c| c.id == "a").unwrap();
         assert_eq!(stored.transport_type, TransportType::Http);
         assert_eq!(stored.url.as_deref(), Some("https://example.com/mcp"));
+    }
+
+    #[test]
+    fn diagnostic_error_summary_classifies_without_user_content() {
+        let mut env = HashMap::new();
+        env.insert("GBRAIN_HOME".to_string(), "/Users/alice/.uclaw/gbrain".to_string());
+        let summary = diagnostic_error_summary(
+            "[gbrain] gbrain CLI 'list_pages' timed out while searching private customer notes /Users/alice/.uclaw/gbrain",
+            &env,
+        );
+        assert!(summary.contains("diagnostic_kind=mcp_connect_timeout"));
+        assert!(summary.contains("timed out"));
+        assert!(!summary.contains("private customer notes"));
+        assert!(!summary.contains("/Users/alice"));
     }
 
     #[test]

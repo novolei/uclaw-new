@@ -25,6 +25,10 @@ interface ServiceHealth {
 interface MemUBridgeStatus {
   running: boolean
   pid: number | null
+  reason: string | null
+  python_path: string | null
+  script_path: string | null
+  db_path: string | null
 }
 
 interface GbrainStatus {
@@ -32,6 +36,18 @@ interface GbrainStatus {
   tool_count: number
   pgdata_ready: boolean
   error: string | null
+  status: string
+  error_kind: string | null
+  suggested_action: string | null
+  home_path: string
+  launcher_path: string
+  pgdata_path: string
+  config_command: string | null
+  config_entry_path: string | null
+  config_command_exists: boolean
+  config_entry_exists: boolean
+  config_gbrain_home: string | null
+  path_stale: boolean
 }
 
 // Sprint 2.2.5b — mirror of Rust's `mcp::GbrainInitStatus`. Discriminated
@@ -90,6 +106,29 @@ function serviceStatusDot(s: ServiceStatus): string {
   return 'bg-yellow-400' // Starting
 }
 
+function formatReason(reason: string): string {
+  const map: Record<string, string> = {
+    client_not_initialized: '客户端未初始化',
+    python_subprocess_not_alive: 'Python 进程未存活',
+    health_check_returned_false: '健康检查失败',
+    pglite_lock_timeout: 'PGLite 锁超时',
+    mcp_connect_timeout: 'MCP 连接超时',
+    process_killed: '进程被系统终止',
+    page_not_found: '页面不存在',
+    pglite_not_ready: 'PGLite 未就绪',
+    permission_denied: '权限不足',
+    path_mismatch: '路径不匹配',
+    launcher_missing_or_unusable: '启动器缺失或不可用',
+    not_registered: '未注册',
+    disconnected: '已断开',
+    connecting: '连接中',
+    connected: '已连接',
+    error: '错误',
+    unknown: '未知错误',
+  }
+  return map[reason] ?? reason
+}
+
 // ── Main component ───────────────────────────────────────────────────
 
 export function SystemTab() {
@@ -122,9 +161,27 @@ export function SystemTab() {
       && !report.services.some(s => s.status.status === 'Failed')
       && report.memu.running
       && report.gbrain.connected
+      && report.gbrain.tool_count > 0
+      && report.gbrain.pgdata_ready
+      && !report.gbrain.error_kind
+      && !report.gbrain.path_stale
     : true
 
   const failedServices = report?.services.filter(s => s.status.status === 'Failed') ?? []
+  const hasGbrainIssue = report
+    ? !report.gbrain.connected
+      || report.gbrain.tool_count === 0
+      || !report.gbrain.pgdata_ready
+      || Boolean(report.gbrain.error_kind)
+      || report.gbrain.path_stale
+    : false
+  const gbrainOperational = report
+    ? report.gbrain.connected
+      && report.gbrain.tool_count > 0
+      && report.gbrain.pgdata_ready
+      && !report.gbrain.error_kind
+      && !report.gbrain.path_stale
+    : false
 
   async function handleBridgeAction(
     command: string,
@@ -208,15 +265,20 @@ export function SystemTab() {
             </div>
             {healthExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </div>
-          {healthExpanded && (failedServices.length > 0 || !report.memu.running || !report.gbrain.connected) && (
+          {healthExpanded && (failedServices.length > 0 || !report.memu.running || hasGbrainIssue) && (
             <ul className="mt-2 text-xs text-red-400 space-y-0.5">
               {failedServices.map(s => (
                 <li key={s.name}>• {s.name}: {serviceStatusLabel(s.status)}</li>
               ))}
-              {!report.memu.running && <li>• memU: Python Bridge 未运行或健康检查失败</li>}
-              {!report.gbrain.connected && (
-                <li>• gbrain: MCP 未连接{report.gbrain.error ? ` — ${report.gbrain.error.slice(0, 140)}` : ''}</li>
+              {!report.memu.running && (
+                <li>• memU: {report.memu.reason ? formatReason(report.memu.reason) : 'Python Bridge 未运行或健康检查失败'}</li>
               )}
+              {!report.gbrain.connected && (
+                <li>• gbrain: MCP 未连接{report.gbrain.suggested_action ? ` — ${report.gbrain.suggested_action}` : ''}</li>
+              )}
+              {report.gbrain.connected && report.gbrain.tool_count === 0 && <li>• gbrain: MCP 已连接但没有可用工具</li>}
+              {report.gbrain.connected && !report.gbrain.pgdata_ready && <li>• gbrain: PGLite 未就绪</li>}
+              {report.gbrain.path_stale && <li>• gbrain: MCP 配置路径与当前数据目录不一致</li>}
             </ul>
           )}
         </div>
@@ -253,15 +315,32 @@ export function SystemTab() {
                 running={report.memu.running}
                 detail={report.memu.running
                   ? (report.memu.pid ? `PID ${report.memu.pid}` : '运行中')
-                  : '未运行'}
+                  : `未运行${report.memu.reason ? `: ${formatReason(report.memu.reason)}` : ''}`}
+                diagnostics={[
+                  report.memu.python_path ? `Python: ${report.memu.python_path}` : null,
+                  report.memu.script_path ? `Bridge: ${report.memu.script_path}` : null,
+                  report.memu.db_path ? `DB: ${report.memu.db_path}` : null,
+                ]}
               />
               <BridgeCard
                 name="gbrain"
                 subtitle="Bun MCP"
-                running={report.gbrain.connected}
-                detail={report.gbrain.connected
+                running={gbrainOperational}
+                detail={gbrainOperational
                   ? `${report.gbrain.tool_count} 工具 · PGlite pgdata ${report.gbrain.pgdata_ready ? '已就绪' : '未就绪'}`
-                  : (report.gbrain.error ? `未连接: ${report.gbrain.error.slice(0, 90)}` : '未连接')}
+                  : `不可用${report.gbrain.error_kind ? `: ${formatReason(report.gbrain.error_kind)}` : report.gbrain.connected ? '' : ': MCP 未连接'}`}
+                diagnostics={[
+                  `MCP: ${formatReason(report.gbrain.status)}`,
+                  `Home: ${report.gbrain.home_path}`,
+                  `Launcher: ${report.gbrain.launcher_path}`,
+                  `PGlite: ${report.gbrain.pgdata_path}`,
+                  report.gbrain.config_command ? `Config command: ${report.gbrain.config_command} (${report.gbrain.config_command_exists ? 'exists' : 'missing'})` : null,
+                  report.gbrain.config_entry_path ? `Config entry: ${report.gbrain.config_entry_path} (${report.gbrain.config_entry_exists ? 'exists' : 'missing'})` : null,
+                  report.gbrain.config_gbrain_home ? `Config GBRAIN_HOME: ${report.gbrain.config_gbrain_home}` : null,
+                  report.gbrain.path_stale ? '路径状态: 配置已过期' : '路径状态: 当前',
+                  report.gbrain.suggested_action ? `建议: ${report.gbrain.suggested_action}` : null,
+                  report.gbrain.error ? `错误: ${report.gbrain.error.slice(0, 220)}` : null,
+                ]}
               />
             </div>
             {/* Sprint 2.2.5b — init status row.
@@ -385,17 +464,29 @@ function InfoCell({ label, value }: { label: string; value: string }) {
   )
 }
 
-function BridgeCard({ name, subtitle, running, detail }: {
-  name: string; subtitle: string; running: boolean; detail: string
+function BridgeCard({ name, subtitle, running, detail, diagnostics = [] }: {
+  name: string; subtitle: string; running: boolean; detail: string; diagnostics?: Array<string | null>
 }) {
+  const visibleDiagnostics = diagnostics.filter(Boolean) as string[]
   return (
-    <div className="rounded-lg bg-muted/40 px-3 py-2.5 flex items-center justify-between">
-      <div className="flex items-center gap-2">
-        <span className={cn('size-2 rounded-full flex-shrink-0', running ? 'bg-green-500' : 'bg-muted-foreground/40')} />
-        <span className="text-sm font-medium text-foreground">{name}</span>
-        <span className="text-xs text-muted-foreground">({subtitle})</span>
+    <div className="rounded-lg bg-muted/40 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <span className={cn('size-2 rounded-full flex-shrink-0', running ? 'bg-green-500' : 'bg-muted-foreground/40')} />
+          <span className="text-sm font-medium text-foreground">{name}</span>
+          <span className="text-xs text-muted-foreground">({subtitle})</span>
+        </div>
+        <span className={cn('text-xs text-right', running ? 'text-green-400' : 'text-muted-foreground')}>{detail}</span>
       </div>
-      <span className={cn('text-xs', running ? 'text-green-400' : 'text-muted-foreground')}>{detail}</span>
+      {visibleDiagnostics.length > 0 && (
+        <div className="mt-2 space-y-0.5 border-t border-border/40 pt-2">
+          {visibleDiagnostics.map((line, idx) => (
+            <div key={idx} className="break-all text-[11px] leading-4 text-muted-foreground">
+              {line}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

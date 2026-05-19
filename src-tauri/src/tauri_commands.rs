@@ -255,6 +255,10 @@ pub async fn patch_memory_recall_config(
 pub struct MemUBridgeStatus {
     pub running: bool,
     pub pid: Option<u32>,
+    pub reason: Option<String>,
+    pub python_path: Option<String>,
+    pub script_path: Option<String>,
+    pub db_path: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -263,6 +267,18 @@ pub struct GbrainStatus {
     pub tool_count: u32,
     pub pgdata_ready: bool,
     pub error: Option<String>,
+    pub status: String,
+    pub error_kind: Option<String>,
+    pub suggested_action: Option<String>,
+    pub home_path: String,
+    pub launcher_path: String,
+    pub pgdata_path: String,
+    pub config_command: Option<String>,
+    pub config_entry_path: Option<String>,
+    pub config_command_exists: bool,
+    pub config_entry_exists: bool,
+    pub config_gbrain_home: Option<String>,
+    pub path_stale: bool,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -328,36 +344,121 @@ pub async fn get_system_diagnostics(
 
     // memU bridge status
     let memu = match state.memu_client.as_ref() {
-        Some(client) => MemUBridgeStatus {
-            running: client.health_check().await.unwrap_or(false),
+        Some(client) => {
+            let snapshot = client.diagnostics_snapshot();
+            let health = client.diagnostic_health_check().await;
+            let (running, reason) = match health {
+                Ok(true) => (true, None),
+                Ok(false) if snapshot.alive => {
+                    (false, Some("health_check_returned_false".to_string()))
+                }
+                Ok(false) => (false, Some("python_subprocess_not_alive".to_string())),
+                Err(error) => (
+                    false,
+                    Some(redact_diagnostic_path(&error.to_string(), &state.data_dir)),
+                ),
+            };
+            MemUBridgeStatus {
+                running,
+                pid: None,
+                reason,
+                python_path: Some(redact_diagnostic_path(&snapshot.python_path, &state.data_dir)),
+                script_path: Some(redact_diagnostic_path(&snapshot.script_path, &state.data_dir)),
+                db_path: Some(redact_diagnostic_path(&snapshot.db_path, &state.data_dir)),
+            }
+        }
+        None => MemUBridgeStatus {
+            running: false,
             pid: None,
+            reason: Some("client_not_initialized".to_string()),
+            python_path: None,
+            script_path: None,
+            db_path: Some(redact_diagnostic_path(
+                &state.data_dir.join("memory").join("memu.db").display().to_string(),
+                &state.data_dir,
+            )),
         },
-        None => MemUBridgeStatus { running: false, pid: None },
     };
 
     // gbrain status
     let gbrain = {
         let mcp = state.mcp_manager.read().await;
-        let connected = matches!(
-            mcp.status("gbrain"),
-            Some(crate::mcp::McpServerStatus::Connected)
-        );
+        let mcp_status = mcp.status("gbrain");
+        let connected = matches!(mcp_status, Some(crate::mcp::McpServerStatus::Connected));
         let tool_count = mcp.server_tool_count("gbrain").unwrap_or(0) as u32;
         let error = mcp.server_error("gbrain");
-        let pgdata_ready = state
-            .data_dir
-            .join("gbrain")
-            .join(".gbrain")
-            .join("brain.pglite")
-            .join("PG_VERSION")
-            .exists()
-            || state
-                .data_dir
-                .join("gbrain")
-                .join("pgdata")
-                .join("PG_VERSION")
-                .exists();
-        GbrainStatus { connected, tool_count, pgdata_ready, error }
+        let config = mcp.server_config("gbrain");
+        let home_path = state.data_dir.join("gbrain");
+        let launcher_path = home_path.join("run.sh");
+        let pglite_path = home_path.join(".gbrain").join("brain.pglite");
+        let legacy_pgdata_path = home_path.join("pgdata");
+        let pglite_ready = pglite_path.join("PG_VERSION").exists();
+        let legacy_pgdata_ready = legacy_pgdata_path.join("PG_VERSION").exists();
+        let pgdata_ready = pglite_ready || legacy_pgdata_ready;
+        let pgdata_path = if pglite_ready || !legacy_pgdata_ready {
+            pglite_path
+        } else {
+            legacy_pgdata_path
+        };
+        let expected_home = home_path.display().to_string();
+        let config_gbrain_home_raw = config
+            .as_ref()
+            .and_then(|config| config.env.get("GBRAIN_HOME").cloned());
+        let config_command_exists = config
+            .as_ref()
+            .map(|config| std::path::Path::new(&config.command).exists())
+            .unwrap_or(false);
+        let config_entry_path_raw = config.as_ref().and_then(|config| config.args.first().cloned());
+        let config_entry_exists = config_entry_path_raw
+            .as_deref()
+            .map(|path| std::path::Path::new(path).exists())
+            .unwrap_or(false);
+        let config_uses_serve = config
+            .as_ref()
+            .map(|config| config.args.iter().any(|arg| arg == "serve"))
+            .unwrap_or(false);
+        let path_stale = config_gbrain_home_raw
+            .as_deref()
+            .map(|value| value.is_empty() || value != expected_home)
+            .unwrap_or(true)
+            || !config_command_exists
+            || !config_entry_exists
+            || !config_uses_serve;
+        let error_kind = error.as_deref().map(classify_gbrain_error);
+        let suggested_action = suggested_gbrain_action(
+            mcp_status.as_ref(),
+            error_kind.as_deref(),
+            pgdata_ready,
+            launcher_path.exists() && config_command_exists && config_entry_exists,
+            path_stale,
+            tool_count,
+        );
+        let status = mcp_status
+            .as_ref()
+            .map(mcp_status_label)
+            .unwrap_or_else(|| "not_registered".to_string());
+        GbrainStatus {
+            connected,
+            tool_count,
+            pgdata_ready,
+            error,
+            status,
+            error_kind,
+            suggested_action,
+            home_path: redact_diagnostic_path(&home_path.display().to_string(), &state.data_dir),
+            launcher_path: redact_diagnostic_path(&launcher_path.display().to_string(), &state.data_dir),
+            pgdata_path: redact_diagnostic_path(&pgdata_path.display().to_string(), &state.data_dir),
+            config_command: config
+                .as_ref()
+                .map(|config| redact_diagnostic_path(&config.command, &state.data_dir)),
+            config_entry_path: config_entry_path_raw
+                .map(|value| redact_diagnostic_path(&value, &state.data_dir)),
+            config_command_exists,
+            config_entry_exists,
+            config_gbrain_home: config_gbrain_home_raw
+                .map(|value| redact_diagnostic_path(&value, &state.data_dir)),
+            path_stale,
+        }
     };
 
     // Sprint 2.2.5b — last-known init outcome from Stage 3 boot.
@@ -383,6 +484,167 @@ pub async fn get_system_diagnostics(
         gbrain,
         gbrain_init,
     })
+}
+
+fn classify_gbrain_error(error: &str) -> String {
+    let lower = error.to_lowercase();
+    if let Some(kind) = lower
+        .split("diagnostic_kind=")
+        .nth(1)
+        .and_then(|tail| tail.split([';', ' ', '\n', '\r']).next())
+        .filter(|kind| !kind.is_empty())
+    {
+        kind.to_string()
+    } else if lower.contains("timed out waiting for pglite lock") {
+        "pglite_lock_timeout".to_string()
+    } else if lower.contains("no brain configured") || lower.contains("pg_version") {
+        "pglite_not_ready".to_string()
+    } else if lower.contains("permission denied") {
+        "permission_denied".to_string()
+    } else if lower.contains("gbrain_home") || lower.contains("pglite_data_dir") {
+        "path_mismatch".to_string()
+    } else if lower.contains("timeout waiting for response") || lower.contains("gbrain cli") && lower.contains("timed out") {
+        "mcp_connect_timeout".to_string()
+    } else if lower.contains("sigkill") || lower.contains("signal: 9") {
+        "process_killed".to_string()
+    } else if lower.contains("page_not_found") {
+        "page_not_found".to_string()
+    } else if lower.contains("failed to spawn") || lower.contains("no such file") {
+        "launcher_missing_or_unusable".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+fn mcp_status_label(status: &crate::mcp::McpServerStatus) -> String {
+    match status {
+        crate::mcp::McpServerStatus::Disconnected => "disconnected",
+        crate::mcp::McpServerStatus::Connecting => "connecting",
+        crate::mcp::McpServerStatus::Connected => "connected",
+        crate::mcp::McpServerStatus::Error => "error",
+    }
+    .to_string()
+}
+
+fn suggested_gbrain_action(
+    status: Option<&crate::mcp::McpServerStatus>,
+    error_kind: Option<&str>,
+    pgdata_ready: bool,
+    launcher_exists: bool,
+    path_stale: bool,
+    tool_count: u32,
+) -> Option<String> {
+    if matches!(status, Some(crate::mcp::McpServerStatus::Connected))
+        && tool_count > 0
+        && pgdata_ready
+        && !path_stale
+        && error_kind.is_none()
+    {
+        return None;
+    }
+    if path_stale {
+        return Some("Refresh bundled gbrain config because MCP paths do not match the current app data directory.".to_string());
+    }
+    if !launcher_exists {
+        return Some("Run gbrain setup/init so ~/.uclaw/gbrain/run.sh exists, then restart gbrain.".to_string());
+    }
+    if !pgdata_ready {
+        return Some("Run gbrain init or restart the app to initialize PGLite before connecting MCP.".to_string());
+    }
+    match error_kind {
+        Some("pglite_lock_timeout") => Some("Stop stale gbrain processes, wait for PGLite lock release, then restart gbrain.".to_string()),
+        Some("pglite_not_ready") => Some("Initialize gbrain PGLite storage, then restart gbrain MCP.".to_string()),
+        Some("permission_denied") => Some("Fix permissions on the gbrain home directory or bundled launcher, then restart gbrain.".to_string()),
+        Some("path_mismatch") => Some("Refresh bundled gbrain config and restart gbrain; the environment points at a stale path.".to_string()),
+        Some("mcp_connect_timeout") => Some("Restart gbrain MCP; if it repeats, inspect stderr tail for slow startup or lock contention.".to_string()),
+        Some("process_killed") => Some("Retry once, then reduce query/list size or inspect memory pressure if SIGKILL repeats.".to_string()),
+        Some("launcher_missing_or_unusable") => Some("Refresh bundled runtime paths from System Diagnostics, then restart gbrain.".to_string()),
+        Some("page_not_found") => Some("Use gbrain list_pages/search to pick an existing slug, then retry get_page.".to_string()),
+        Some(_) | None => Some("Restart gbrain MCP and export diagnostics if it remains disconnected.".to_string()),
+    }
+}
+
+fn redact_diagnostic_path(path: &str, data_dir: &std::path::Path) -> String {
+    let mut redacted = path.to_string();
+    let data_dir_str = data_dir.display().to_string();
+    if !data_dir_str.is_empty() {
+        redacted = redacted.replace(&data_dir_str, "$UCLAW_DATA");
+    }
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.display().to_string();
+        if !home_str.is_empty() {
+            redacted = redacted.replace(&home_str, "~");
+        }
+    }
+    redacted
+}
+
+#[cfg(test)]
+mod diagnostics_status_tests {
+    use super::*;
+
+    #[test]
+    fn classify_gbrain_error_recognizes_common_runtime_failures() {
+        assert_eq!(
+            classify_gbrain_error("GBrain: Timed out waiting for PGLite lock."),
+            "pglite_lock_timeout"
+        );
+        assert_eq!(
+            classify_gbrain_error("diagnostic_kind=process_killed; status=signal: 9"),
+            "process_killed"
+        );
+        assert_eq!(
+            classify_gbrain_error("Timeout waiting for response to request 1"),
+            "mcp_connect_timeout"
+        );
+        assert_eq!(
+            classify_gbrain_error("[gbrain] gbrain CLI 'list_pages' timed out"),
+            "mcp_connect_timeout"
+        );
+        assert_eq!(
+            classify_gbrain_error("failed: signal: 9 (SIGKILL)"),
+            "process_killed"
+        );
+        assert_eq!(
+            classify_gbrain_error("Error [page_not_found]: Page not found"),
+            "page_not_found"
+        );
+    }
+
+    #[test]
+    fn suggested_gbrain_action_prioritizes_missing_launcher_and_connected_state() {
+        assert!(suggested_gbrain_action(
+            Some(&crate::mcp::McpServerStatus::Connected),
+            Some("process_killed"),
+            true,
+            true,
+            false,
+            6,
+        )
+        .unwrap()
+        .contains("SIGKILL"));
+
+        let action = suggested_gbrain_action(None, None, true, false, false, 0).unwrap();
+        assert!(action.contains("run.sh"));
+
+        let action = suggested_gbrain_action(
+            Some(&crate::mcp::McpServerStatus::Error),
+            Some("pglite_lock_timeout"),
+            true,
+            true,
+            false,
+            0,
+        )
+        .unwrap();
+        assert!(action.contains("PGLite"));
+    }
+
+    #[test]
+    fn redact_diagnostic_path_hides_home_and_data_dir() {
+        let data_dir = dirs::home_dir().unwrap().join(".uclaw");
+        let path = data_dir.join("gbrain").join("run.sh").display().to_string();
+        assert_eq!(redact_diagnostic_path(&path, &data_dir), "$UCLAW_DATA/gbrain/run.sh");
+    }
 }
 
 #[tauri::command]
