@@ -15,6 +15,7 @@ use crate::browser::recovery::{classify_browser_error, BrowserRecoveryKind};
 use crate::browser::session_state::{
     BrowserTaskRun, BrowserTaskStatus, BrowserTaskStep, BrowserTaskStepPhase,
 };
+use crate::browser::task_store::{BrowserTaskMemory, BrowserTaskStore};
 
 pub fn clamp_max_steps(max_steps: Option<u32>) -> u32 {
     max_steps.unwrap_or(8).clamp(1, 25)
@@ -33,6 +34,7 @@ pub struct BrowserAgentLoop {
     ctx_mgr: Arc<BrowserContextManager>,
     decision_adapter: Arc<dyn BrowserDecisionAdapter>,
     action_registry: BrowserActionRegistry,
+    task_store: Option<Arc<BrowserTaskStore>>,
 }
 
 impl BrowserAgentLoop {
@@ -41,7 +43,12 @@ impl BrowserAgentLoop {
         decision_adapter: Arc<dyn BrowserDecisionAdapter>,
     ) -> Self {
         let action_registry = BrowserActionRegistry::new(Arc::clone(&ctx_mgr));
-        Self { ctx_mgr, decision_adapter, action_registry }
+        Self { ctx_mgr, decision_adapter, action_registry, task_store: None }
+    }
+
+    pub fn with_task_store(mut self, task_store: Option<Arc<BrowserTaskStore>>) -> Self {
+        self.task_store = task_store;
+        self
     }
 
     pub async fn run(&self, request: BrowserTaskRequest) -> Result<BrowserTaskRun> {
@@ -72,6 +79,7 @@ impl BrowserAgentLoop {
         for _ in 0..max_steps {
             let observation = ctx.observe(&active_tab_id, false).await?;
             let observation_json = serde_json::to_value(&observation)?;
+            let memory = self.update_memory(&request, &observation_json);
             self.push_step(&mut run, BrowserTaskStep {
                 step_index,
                 phase: BrowserTaskStepPhase::Observe,
@@ -91,7 +99,7 @@ impl BrowserAgentLoop {
 
             let decision = self
                 .decision_adapter
-                .decide(&request.task, &observation_json, &run.steps)
+                .decide(&request.task, &observation_json, memory.as_ref(), &run.steps)
                 .await?;
             self.push_step(&mut run, BrowserTaskStep {
                 step_index,
@@ -306,6 +314,11 @@ impl BrowserAgentLoop {
 
     fn push_step(&self, run: &mut BrowserTaskRun, step: BrowserTaskStep) {
         run.steps.push(step.clone());
+        if let Some(store) = self.task_store.as_ref() {
+            if let Err(e) = store.persist_run(run) {
+                tracing::warn!(run_id = %run.run_id, error = %e, "failed to persist browser task step");
+            }
+        }
         let _ = self.ctx_mgr.app_handle().emit("browser:task-step", serde_json::json!({
             "runId": run.run_id,
             "sessionId": run.session_id,
@@ -315,7 +328,32 @@ impl BrowserAgentLoop {
     }
 
     fn emit_run(&self, run: &BrowserTaskRun) {
+        if let Some(store) = self.task_store.as_ref() {
+            if let Err(e) = store.persist_run(run) {
+                tracing::warn!(run_id = %run.run_id, error = %e, "failed to persist browser task run");
+            }
+        }
         let _ = self.ctx_mgr.app_handle().emit("browser:task-run", run);
+    }
+
+    fn update_memory(
+        &self,
+        request: &BrowserTaskRequest,
+        observation_json: &serde_json::Value,
+    ) -> Option<BrowserTaskMemory> {
+        self.task_store.as_ref().and_then(|store| {
+            match store.merge_observation(&request.session_id, &request.task, observation_json) {
+                Ok(memory) => Some(memory),
+                Err(e) => {
+                    tracing::warn!(
+                        session_id = %request.session_id,
+                        error = %e,
+                        "failed to update browser task memory"
+                    );
+                    None
+                }
+            }
+        })
     }
 }
 

@@ -1661,6 +1661,51 @@ CREATE INDEX IF NOT EXISTS idx_mcp_audit_time
     ON mcp_audit(created_at DESC);
 ";
 
+/// V41 — Browser task memory/checkpoint foundation.
+///
+/// Persists autonomous browser runs, their step trail, and a compact per-session
+/// memory notebook. This is intentionally additive so browser agent state can
+/// survive app restarts without changing existing agent session tables.
+pub const V41_BROWSER_TASK_MEMORY: &str = "
+CREATE TABLE IF NOT EXISTS browser_task_runs (
+    run_id      TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    task        TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_browser_task_runs_session_time
+    ON browser_task_runs(session_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS browser_task_steps (
+    run_id               TEXT NOT NULL,
+    step_index           INTEGER NOT NULL,
+    phase                TEXT NOT NULL,
+    observation_summary  TEXT NOT NULL,
+    reasoning            TEXT NOT NULL,
+    action_name          TEXT NOT NULL,
+    action_args_json     TEXT NOT NULL,
+    ok                   INTEGER NOT NULL,
+    message              TEXT,
+    error                TEXT,
+    timestamp_ms         INTEGER NOT NULL,
+    PRIMARY KEY (run_id, step_index),
+    FOREIGN KEY (run_id) REFERENCES browser_task_runs(run_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_browser_task_steps_run_time
+    ON browser_task_steps(run_id, step_index);
+
+CREATE TABLE IF NOT EXISTS browser_task_memory (
+    session_id       TEXT PRIMARY KEY,
+    task_summary     TEXT NOT NULL,
+    facts_json       TEXT NOT NULL DEFAULT '[]',
+    visited_urls_json TEXT NOT NULL DEFAULT '[]',
+    open_tabs_json   TEXT NOT NULL DEFAULT '[]',
+    updated_at       INTEGER NOT NULL
+);
+";
+
 pub const V39_USER_PROFILE_FACETS: &str = "
 CREATE TABLE IF NOT EXISTS user_profile_facets (
     facet_id           TEXT PRIMARY KEY,
@@ -1981,6 +2026,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V40_MCP_AUDIT.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V40 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V41: browser task persistence + per-session notebook.
+    tracing::debug!("Running migration V41: browser_task_memory");
+    for stmt in V41_BROWSER_TASK_MEMORY.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V41 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
