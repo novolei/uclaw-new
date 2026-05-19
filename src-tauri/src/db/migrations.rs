@@ -1807,6 +1807,67 @@ CREATE TABLE IF NOT EXISTS analysis_cache (
 );
 ";
 
+/// V43 seed — Phase 8.2: 7 default rows in `wiki_page_templates`, one
+/// per subkind defined in Cognitive Spec §2.2. `INSERT OR IGNORE` keeps
+/// the seed re-runnable: users / agents can tune the prompts in the
+/// table afterwards and the seed won't overwrite their edits.
+///
+/// Subkinds (display_name shown for clarity):
+/// - entity     (实体)   — Summary / Background / Current Status / Relationships / Open Questions
+/// - concept    (概念)   — Definition / Key Properties / Examples / Confusables / References
+/// - comparison (对比)   — Dimensions / Side-by-Side Table / When-to-Use / Trade-offs
+/// - question   (问题)   — Question Statement / Why It Matters / Current Hypotheses / Known Answers / Status
+/// - synthesis  (综合)   — Topic / Scope / Key Findings / Open Issues / Source List
+/// - decision   (决策)   — Context / Options Considered / Decision / Rationale / Pitfalls Avoided
+/// - gap        (空白)   — Question / What We Know / What We Don't Know / Possible Paths / Priority
+///
+/// `compile_prompt` is the LLM-facing instruction the Phase-10
+/// `wiki_compile` module will use when (re)generating a page's
+/// `compiled_truth` section. Placeholders `{title}`, `{sources}`,
+/// `{existing_truth}`, `{timeline}` are substituted at compile time.
+///
+/// Single quotes inside the seed are SQL-escaped via doubled `''`.
+pub const V43_SEED_TEMPLATES: &str = r#"
+INSERT OR IGNORE INTO wiki_page_templates
+    (subkind, display_name, compile_prompt, sections_json, ui_card_layout, updated_at)
+VALUES
+    ('entity', '实体',
+     '你是一个知识管理员,负责为实体页生成 compiled_truth。给定标题 {title}、源材料 {sources}、当前 compiled_truth {existing_truth}、时间线摘要 {timeline}。写一份 5 段结构的实体页:Summary(一句话定位)、Background(背景与历史)、Current Status(当下在做什么/最新状态)、Relationships(与其他实体的关键关系)、Open Questions(尚未明朗的问题)。语言简洁,事实优先,避免主观判断。',
+     '["Summary","Background","Current Status","Relationships","Open Questions"]',
+     'card_entity', strftime('%s','now')*1000),
+
+    ('concept', '概念',
+     '你是一个知识管理员,负责为概念页生成 compiled_truth。给定标题 {title}、源材料 {sources}、当前 compiled_truth {existing_truth}、时间线摘要 {timeline}。写一份 5 段结构的概念页:Definition(严格定义,1-2 句)、Key Properties(关键属性清单)、Examples(2-3 个具体实例)、Confusables(易混淆点 + 区分线)、References(原始出处)。精确性优先,避免类比扩展。',
+     '["Definition","Key Properties","Examples","Confusables","References"]',
+     'card_concept', strftime('%s','now')*1000),
+
+    ('comparison', '对比',
+     '你是一个知识管理员,负责为对比页生成 compiled_truth。给定标题 {title}、源材料 {sources}、当前 compiled_truth {existing_truth}、时间线摘要 {timeline}。写一份 4 段结构的对比页:Dimensions(对比维度列表)、Side-by-Side Table(强制 markdown 表格,每个维度一行)、When-to-Use(什么场景选哪个)、Trade-offs(取舍与限制)。表格是该页的核心,务必完整。',
+     '["Dimensions","Side-by-Side Table","When-to-Use","Trade-offs"]',
+     'card_comparison', strftime('%s','now')*1000),
+
+    ('question', '问题',
+     '你是一个知识管理员,负责为问题页生成 compiled_truth。给定标题 {title}、源材料 {sources}、当前 compiled_truth {existing_truth}、时间线摘要 {timeline}。写一份 5 段结构的问题页:Question Statement(问题陈述,一句话)、Why It Matters(为什么值得追问)、Current Hypotheses(当前假设清单)、Known Answers(已知答案 + 出处引用)、Status(`open` / `answered` / `disputed`)。answered 时必须附 Answer 段与引用源。',
+     '["Question Statement","Why It Matters","Current Hypotheses","Known Answers","Status"]',
+     'card_question', strftime('%s','now')*1000),
+
+    ('synthesis', '综合',
+     '你是一个知识管理员,负责为综合页生成 compiled_truth。给定标题 {title}、源材料 {sources}、当前 compiled_truth {existing_truth}、时间线摘要 {timeline}。写一份 5 段结构的综合页:Topic(综合主题)、Scope(包含/排除范围)、Key Findings(关键发现,跨多源)、Open Issues(尚未解决的问题)、Source List(完整引用列表,必填)。综合页必须有引用列表,无引用的发现不要写入。',
+     '["Topic","Scope","Key Findings","Open Issues","Source List"]',
+     'card_synthesis', strftime('%s','now')*1000),
+
+    ('decision', '决策',
+     '你是一个知识管理员,负责为决策页生成 compiled_truth。给定标题 {title}、源材料 {sources}、当前 compiled_truth {existing_truth}、时间线摘要 {timeline}。写一份 5 段结构的决策页:Context(决策背景)、Options Considered(候选方案清单)、Decision(最终选择)、Rationale(选择理由)、Pitfalls Avoided(避开了什么坑 + 学到了什么)。Pitfalls 是该页的核心价值载体,务必具体。',
+     '["Context","Options Considered","Decision","Rationale","Pitfalls Avoided"]',
+     'card_decision', strftime('%s','now')*1000),
+
+    ('gap', '空白',
+     '你是一个知识管理员,负责为空白页生成 compiled_truth。给定标题 {title}、源材料 {sources}、当前 compiled_truth {existing_truth}、时间线摘要 {timeline}。写一份 5 段结构的空白页:Question(我们想知道但不知道的核心问题)、What We Know(已知部分)、What We Don''t Know(明确的盲区)、Possible Paths(可能的探索方向)、Priority(`urgent` / `important` / `curious`)。这页让 Agent 显式留白主动调研。',
+     '["Question","What We Know","What We Don''t Know","Possible Paths","Priority"]',
+     'card_gap', strftime('%s','now')*1000)
+;
+"#;
+
 pub const V39_USER_PROFILE_FACETS: &str = "
 CREATE TABLE IF NOT EXISTS user_profile_facets (
     facet_id           TEXT PRIMARY KEY,
@@ -2152,6 +2213,15 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V43_COGNITIVE_LAYER.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V43 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V43 seed — Phase 8.2: 7 default rows for wiki_page_templates.
+    // INSERT OR IGNORE keeps the seed re-runnable; user edits to
+    // existing rows are preserved across restarts.
+    tracing::debug!("Running migration V43 seed: wiki_page_templates");
+    for stmt in V43_SEED_TEMPLATES.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V43 seed stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -3627,5 +3697,181 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 0, "FK ON DELETE CASCADE must purge analysis_cache");
+    }
+
+    // ─── V43 seed — Phase 8.2: wiki_page_templates default rows ───
+
+    #[test]
+    fn v43_seed_inserts_exactly_seven_template_rows() {
+        // Plan §8.2.3 verification contract: SELECT COUNT(*) == 7
+        // after seed runs.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wiki_page_templates",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 7, "expected 7 seeded rows, got {}", n);
+    }
+
+    #[test]
+    fn v43_seed_covers_all_seven_subkinds() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        for subkind in [
+            "entity",
+            "concept",
+            "comparison",
+            "question",
+            "synthesis",
+            "decision",
+            "gap",
+        ] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM wiki_page_templates WHERE subkind = ?1",
+                    [subkind],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "missing seed row for subkind '{}'", subkind);
+        }
+    }
+
+    #[test]
+    fn v43_seed_rows_carry_non_empty_prompt_and_sections() {
+        // Defensive: a future edit could leave one template's
+        // `compile_prompt` blank and the wiki_compile module (Phase
+        // 10) would silently produce empty pages. Catch at migration
+        // time.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT subkind, compile_prompt, sections_json, display_name \
+                 FROM wiki_page_templates ORDER BY subkind",
+            )
+            .unwrap();
+        let rows: Vec<(String, String, String, String)> = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(rows.len(), 7);
+        for (subkind, prompt, sections, display_name) in &rows {
+            assert!(
+                !prompt.trim().is_empty(),
+                "subkind '{}' has empty compile_prompt",
+                subkind
+            );
+            assert!(
+                !sections.trim().is_empty() && sections.starts_with('[') && sections.ends_with(']'),
+                "subkind '{}' sections_json must be a non-empty JSON array, got: {}",
+                subkind,
+                sections
+            );
+            assert!(
+                !display_name.trim().is_empty(),
+                "subkind '{}' has empty display_name",
+                subkind
+            );
+            // Sections should be parseable as a JSON array of strings.
+            let parsed: Vec<String> = serde_json::from_str(sections).unwrap_or_else(|e| {
+                panic!(
+                    "subkind '{}' sections_json not parseable as JSON: {}\n raw: {}",
+                    subkind, e, sections
+                )
+            });
+            assert!(
+                !parsed.is_empty(),
+                "subkind '{}' sections_json must contain at least one section",
+                subkind
+            );
+        }
+    }
+
+    #[test]
+    fn v43_seed_is_idempotent() {
+        // Re-running the migration must not produce 14 rows or error.
+        // INSERT OR IGNORE is the contract; this test guards against
+        // a future edit dropping OR IGNORE (which would then violate
+        // PRIMARY KEY on second run).
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        super::run(&conn).expect("second migration run must not error");
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wiki_page_templates",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 7, "double-run must still produce exactly 7 rows");
+    }
+
+    #[test]
+    fn v43_seed_compile_prompts_carry_at_least_one_placeholder() {
+        // Defensive: if a future edit silently drops the `{title}` /
+        // `{sources}` / `{existing_truth}` / `{timeline}` placeholders
+        // from a prompt, Phase 10's wiki_compile would substitute
+        // nothing and produce a literal template echo. Catch at
+        // migration time.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT subkind, compile_prompt FROM wiki_page_templates")
+            .unwrap();
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .unwrap()
+            .flatten()
+            .collect();
+        for (subkind, prompt) in &rows {
+            assert!(
+                prompt.contains('{') && prompt.contains('}'),
+                "subkind '{}' compile_prompt missing `{{...}}` placeholder \
+                 — Phase 10 substitution would no-op",
+                subkind
+            );
+        }
+    }
+
+    #[test]
+    fn v43_seed_preserves_user_edits_across_runs() {
+        // INSERT OR IGNORE preserves existing rows on re-run. This
+        // matters because users / agents will tune `compile_prompt`
+        // and we don't want migrations to clobber their edits.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        // User edits the 'entity' template.
+        conn.execute(
+            "UPDATE wiki_page_templates SET compile_prompt = 'MY CUSTOM PROMPT' WHERE subkind = 'entity'",
+            [],
+        )
+        .unwrap();
+        // Re-run migrations.
+        super::run(&conn).expect("re-run must not error");
+        // Custom prompt must survive.
+        let prompt: String = conn
+            .query_row(
+                "SELECT compile_prompt FROM wiki_page_templates WHERE subkind = 'entity'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            prompt, "MY CUSTOM PROMPT",
+            "INSERT OR IGNORE must not overwrite user-edited compile_prompt"
+        );
     }
 }
