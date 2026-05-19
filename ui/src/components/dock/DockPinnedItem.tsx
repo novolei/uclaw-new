@@ -63,6 +63,10 @@ export function DockPinnedItem({
 
   const scaleSpring = useSpring(1, { stiffness: 320, damping: 26, mass: 0.6 })
   const ySpring = useSpring(0, { stiffness: 320, damping: 26, mass: 0.6 })
+  // Reorder slide spring — see DockItem for full rationale. Same tuning
+  // here so mode + pinned items shift in lockstep when one of them is
+  // dragged across the dock.
+  const xShift = useSpring(0, { stiffness: 520, damping: 34, mass: 0.7 })
 
   // DockPinnedItem always has a sortableId (required prop), so we pass it
   // directly — no dummy-fallback pattern needed (unlike DockItem).
@@ -98,21 +102,31 @@ export function DockPinnedItem({
     }
   }, [distance, scaleSpring, ySpring, prefersReducedMotion, sortable.isDragging])
 
+  const sortableXRaw = sortable.transform?.x ?? 0
+  React.useEffect(() => {
+    if (sortable.isDragging || prefersReducedMotion) {
+      xShift.jump(0)
+      return
+    }
+    xShift.set(sortableXRaw)
+  }, [sortableXRaw, sortable.isDragging, prefersReducedMotion, xShift])
+
   const dragTransform = sortable.transform
     ? CSS.Transform.toString(sortable.transform)
     : undefined
 
-  // Branch the style object: dnd-kit owns transform during drag; motion
-  // springs own it otherwise. Avoids motion-vs-CSS transform collision.
+  // Same iOS-lift treatment as DockItem — see DockItem for the full
+  // rationale on the dragging vs idle style branches.
   const motionStyle = sortable.isDragging
     ? {
         width: SLOT_W,
         height: SLOT_W,
         transformOrigin: 'bottom center' as const,
         transform: dragTransform
-          ? `${dragTransform} scale(1.05)`
-          : 'scale(1.05)',
-        transition: sortable.transition,
+          ? `${dragTransform} translateY(-6px) scale(1.12)`
+          : 'translateY(-6px) scale(1.12)',
+        transition: undefined,
+        filter: 'brightness(1.04) drop-shadow(0 10px 18px hsl(var(--foreground) / 0.28)) drop-shadow(0 3px 6px hsl(var(--foreground) / 0.18))',
         zIndex: 50,
       }
     : {
@@ -120,6 +134,7 @@ export function DockPinnedItem({
         height: SLOT_W,
         scale: scaleSpring,
         y: ySpring,
+        x: xShift,
         transformOrigin: 'bottom center' as const,
       }
 

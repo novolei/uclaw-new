@@ -24,7 +24,7 @@ vi.mock('motion/react', () => ({
     }: React.ComponentPropsWithoutRef<'div'> & Record<string, unknown>) =>
       React.createElement('div', rest),
   },
-  useSpring: () => ({ set: vi.fn() }),
+  useSpring: () => ({ set: vi.fn(), jump: vi.fn() }),
   useReducedMotion: () => true,
 }))
 

@@ -21,7 +21,7 @@ vi.mock('motion/react', () => ({
     div: ({ initial: _i, animate: _a, transition: _t, ...rest }: React.ComponentPropsWithoutRef<'div'> & Record<string, unknown>) =>
       <div {...rest} />,
   },
-  useSpring: () => ({ set: vi.fn() }),
+  useSpring: () => ({ set: vi.fn(), jump: vi.fn() }),
   useReducedMotion: () => true,
   MotionConfig: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
