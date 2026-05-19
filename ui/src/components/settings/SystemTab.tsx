@@ -33,6 +33,17 @@ interface GbrainStatus {
   pgdata_ready: boolean
 }
 
+// Sprint 2.2.5b — mirror of Rust's `mcp::GbrainInitStatus`. Discriminated
+// union via serde's `tag = "status"`. The frontend pattern-matches on
+// the `status` field to pick the right label + remediation hint.
+type GbrainInitStatus =
+  | { status: 'not_attempted' }
+  | { status: 'in_progress' }
+  | { status: 'succeeded'; duration_ms: number; at_ms: number }
+  | { status: 'skipped_already_initialized'; at_ms: number }
+  | { status: 'failed'; error: string; stderr_tail: string | null; at_ms: number }
+  | { status: 'bundle_missing' }
+
 interface SystemDiagnosticsReport {
   app_version: string
   platform: string
@@ -47,6 +58,7 @@ interface SystemDiagnosticsReport {
   services: ServiceHealth[]
   memu: MemUBridgeStatus
   gbrain: GbrainStatus
+  gbrain_init: GbrainInitStatus
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -244,6 +256,13 @@ export function SystemTab() {
                   : '未连接'}
               />
             </div>
+            {/* Sprint 2.2.5b — init status row.
+                Only render when init was attempted (not_attempted = boot
+                pre-Stage-3, no useful signal). Failed shows actionable
+                hint pointing at scripts/init-gbrain.sh. */}
+            {report.gbrain_init.status !== 'not_attempted' && (
+              <GbrainInitRow status={report.gbrain_init} />
+            )}
           </Section>
 
           {/* 服务状态 */}
@@ -369,6 +388,72 @@ function BridgeCard({ name, subtitle, running, detail }: {
         <span className="text-xs text-muted-foreground">({subtitle})</span>
       </div>
       <span className={cn('text-xs', running ? 'text-green-400' : 'text-muted-foreground')}>{detail}</span>
+    </div>
+  )
+}
+
+// Sprint 2.2.5b — surface the gbrain init outcome with actionable copy.
+// Each status branch picks an appropriate dot color + 1-line message +
+// optional remediation hint.
+function GbrainInitRow({ status }: { status:
+  | { status: 'not_attempted' }
+  | { status: 'in_progress' }
+  | { status: 'succeeded'; duration_ms: number; at_ms: number }
+  | { status: 'skipped_already_initialized'; at_ms: number }
+  | { status: 'failed'; error: string; stderr_tail: string | null; at_ms: number }
+  | { status: 'bundle_missing' }
+}) {
+  let dotClass = 'bg-muted-foreground/40'
+  let label = '初始化未尝试'
+  let detail = ''
+  let hint: string | null = null
+
+  switch (status.status) {
+    case 'in_progress':
+      dotClass = 'bg-yellow-400 animate-pulse'
+      label = '初始化进行中'
+      detail = '首次启动 — PGlite 正在跑 ~63 次迁移 (30-60s)'
+      break
+    case 'succeeded':
+      dotClass = 'bg-green-500'
+      label = '初始化成功'
+      detail = `首次初始化耗时 ${(status.duration_ms / 1000).toFixed(1)}s`
+      break
+    case 'skipped_already_initialized':
+      dotClass = 'bg-green-500'
+      label = '已初始化'
+      detail = 'PGlite 数据库已就绪'
+      break
+    case 'failed':
+      dotClass = 'bg-red-500'
+      label = '初始化失败'
+      detail = status.error
+      hint = '运行 scripts/init-gbrain.sh 或删除 ~/.uclaw/gbrain/ 后重启'
+      break
+    case 'bundle_missing':
+      dotClass = 'bg-red-500'
+      label = 'bundle 缺失'
+      detail = 'bunembed/bun 或 gbrain-source 未找到'
+      hint = '运行 scripts/setup-bun-runtime.sh + scripts/setup-gbrain-source.sh'
+      break
+    case 'not_attempted':
+      // Caller filters this out, but TS demands exhaustive match.
+      break
+  }
+
+  return (
+    <div className="mt-2 rounded-lg bg-muted/30 px-3 py-2 text-xs">
+      <div className="flex items-center gap-2">
+        <span className={cn('size-2 rounded-full flex-shrink-0', dotClass)} />
+        <span className="font-medium text-foreground">gbrain init</span>
+        <span className="text-muted-foreground">— {label}</span>
+      </div>
+      {detail && (
+        <div className="mt-1 pl-4 text-muted-foreground">{detail}</div>
+      )}
+      {hint && (
+        <div className="mt-1 pl-4 text-amber-400">{hint}</div>
+      )}
     </div>
   )
 }

@@ -279,6 +279,11 @@ pub struct SystemDiagnosticsReport {
     pub services: Vec<crate::services::ServiceHealth>,
     pub memu: MemUBridgeStatus,
     pub gbrain: GbrainStatus,
+    /// Sprint 2.2.5b — last-known gbrain init outcome surfaced from
+    /// AppState. UI uses this to show actionable guidance when init
+    /// failed (e.g. "Run scripts/init-gbrain.sh") instead of just a
+    /// red dot.
+    pub gbrain_init: crate::mcp::GbrainInitStatus,
 }
 
 #[tauri::command]
@@ -343,6 +348,13 @@ pub async fn get_system_diagnostics(
         GbrainStatus { connected, tool_count, pgdata_ready }
     };
 
+    // Sprint 2.2.5b — last-known init outcome from Stage 3 boot.
+    let gbrain_init = state
+        .gbrain_init_status
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or(crate::mcp::GbrainInitStatus::NotAttempted);
+
     Ok(SystemDiagnosticsReport {
         app_version: env!("CARGO_PKG_VERSION").into(),
         platform: std::env::consts::OS.into(),
@@ -357,6 +369,7 @@ pub async fn get_system_diagnostics(
         services: summary.services,
         memu,
         gbrain,
+        gbrain_init,
     })
 }
 
@@ -1145,6 +1158,19 @@ pub async fn send_message(
             {
                 delegate.set_learned_profile_block(block);
             }
+        }
+    }
+
+    // Sprint 2.3 — inject gbrain instruction block when mcp__gbrain__*
+    // tools are visible in the manifest. Reads from the live MCP
+    // manager so a reconnect mid-session means the next ChatDelegate
+    // construction picks up the change. Returns None → no append.
+    {
+        let mcp_mgr = state.mcp_manager.read().await;
+        if let Some(block) =
+            crate::agent::gbrain_prompt::GbrainKnowledgeSection::render(&*mcp_mgr)
+        {
+            delegate.set_gbrain_knowledge_block(block);
         }
     }
 
@@ -8911,6 +8937,14 @@ pub async fn send_agent_message(
     let learning_buffer_for_spawn = Arc::clone(&state.learning_buffer);
     let learning_llm_for_spawn = state.learning_llm.clone();
     let facet_cache_for_spawn = Arc::clone(&state.facet_cache);
+    // Sprint 2.3 — pre-render the gbrain instruction block now (before
+    // spawn) so the move closure doesn't need to keep an McpManager
+    // handle. Empty string when no mcp__gbrain__* tools are visible.
+    let gbrain_knowledge_for_spawn = {
+        let mgr = state.mcp_manager.read().await;
+        crate::agent::gbrain_prompt::GbrainKnowledgeSection::render(&*mgr)
+            .unwrap_or_default()
+    };
     // Same rule as tool registration above: prefer the session's actual
     // workspace, fall back to the globally-active workspace only if the
     // session has no space binding.
@@ -9054,6 +9088,13 @@ pub async fn send_agent_message(
             {
                 delegate.set_learned_profile_block(block);
             }
+        }
+        // Sprint 2.3 — gbrain block was pre-rendered above the spawn so
+        // we don't have to hold an McpManager handle here. Empty string
+        // (when no mcp__gbrain__* tools) results in a no-op append in
+        // `effective_system_prompt`.
+        if !gbrain_knowledge_for_spawn.is_empty() {
+            delegate.set_gbrain_knowledge_block(gbrain_knowledge_for_spawn.clone());
         }
 
         let mut config = AgenticLoopConfig::default();
@@ -11809,9 +11850,17 @@ pub async fn start_agent_teams(
     // and clone them per-delegate inside the closure. Snapshot
     // semantics match the chat/agent IPC paths (a server connected
     // mid-team-run won't be visible until the next run).
-    let mcp_proxies_for_factory: Vec<crate::mcp::McpToolProxy> = {
+    //
+    // Sprint 2.3 — same snapshot rationale for the gbrain instruction
+    // block. Pre-rendered string is moved into the factory closure
+    // and cloned per delegate.
+    let (mcp_proxies_for_factory, gbrain_knowledge_for_factory) = {
         let mgr = state.mcp_manager.read().await;
-        crate::mcp::McpManager::create_tool_proxies(&state.mcp_manager, &*mgr)
+        let proxies =
+            crate::mcp::McpManager::create_tool_proxies(&state.mcp_manager, &*mgr);
+        let block = crate::agent::gbrain_prompt::GbrainKnowledgeSection::render(&*mgr)
+            .unwrap_or_default();
+        (proxies, block)
     };
     if !mcp_proxies_for_factory.is_empty() {
         tracing::info!(
@@ -11915,6 +11964,14 @@ pub async fn start_agent_teams(
                     {
                         delegate.set_learned_profile_block(block);
                     }
+                }
+                // Sprint 2.3 — pre-rendered gbrain block snapshot.
+                // Empty string is a no-op append; only sets when
+                // gbrain was visible at team-run kickoff.
+                if !gbrain_knowledge_for_factory.is_empty() {
+                    delegate.set_gbrain_knowledge_block(
+                        gbrain_knowledge_for_factory.clone(),
+                    );
                 }
                 Box::new(delegate)
             },

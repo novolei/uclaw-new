@@ -2,6 +2,7 @@ pub mod agentic_loop;
 pub mod code_rescue;
 pub mod context;
 pub mod dispatcher;
+pub mod gbrain_prompt;
 pub mod gep;
 pub mod headless;
 pub mod history_window;

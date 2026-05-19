@@ -285,6 +285,13 @@ pub struct AppState {
     /// gbrain MCP server ID stored after seed_bundled_gbrain succeeds.
     /// "gbrain" when seeded; None when bun/gbrain binaries are missing.
     pub gbrain_mcp_id: Arc<std::sync::Mutex<Option<String>>>,
+
+    /// Sprint 2.2.5b — last-known outcome of `ensure_bundled_gbrain_initialized`.
+    /// Stage 3 updates this slot before/after the init call so
+    /// `get_system_diagnostics` can surface an actionable status in the
+    /// Settings → 系统 tab (instead of users only finding init failures
+    /// by tail-ing logs).
+    pub gbrain_init_status: Arc<std::sync::Mutex<crate::mcp::GbrainInitStatus>>,
 }
 
 impl AppState {
@@ -768,6 +775,9 @@ impl AppState {
             symphony_service: Arc::new(tokio::sync::RwLock::new(None)),
             boot_time: std::time::Instant::now(),
             gbrain_mcp_id: Arc::new(std::sync::Mutex::new(None)),
+            gbrain_init_status: Arc::new(std::sync::Mutex::new(
+                crate::mcp::GbrainInitStatus::default(),
+            )),
         })
     }
 

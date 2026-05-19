@@ -401,6 +401,8 @@ fn main() {
                         // task — easier to just clone the Arc once).
                         let db_for_mcp = state_ref.db.clone();
                         let gbrain_mcp_id_slot = state_ref.gbrain_mcp_id.clone();
+                        // Sprint 2.2.5b — diagnostics slot for init outcome.
+                        let gbrain_init_status_slot = state_ref.gbrain_init_status.clone();
                         // gbrain Sprint 2.1 init-fix — resolve bundled
                         // artifacts. Returning Option lets the seed below
                         // skip cleanly if the bundle is missing (fresh
@@ -499,20 +501,65 @@ fn main() {
                                         "[Stage 3] failed to write ~/.uclaw/gbrain/{{run.sh,paths.json}}"
                                     );
                                 }
-                                match uclaw_core::mcp::ensure_bundled_gbrain_initialized(
+                                // Sprint 2.2.5b — flip status to InProgress
+                                // before the spawn so the diagnostics tab can
+                                // show "running" if the user opens Settings
+                                // during the 30-60s first-launch window.
+                                let init_started = std::time::Instant::now();
+                                *gbrain_init_status_slot.lock().unwrap() =
+                                    uclaw_core::mcp::GbrainInitStatus::InProgress;
+                                let init_outcome = uclaw_core::mcp::ensure_bundled_gbrain_initialized(
                                     bun, entry, &gbrain_home,
-                                ) {
-                                    Ok(true) => tracing::info!(
-                                        "[Stage 3] gbrain brain initialized (first launch)"
-                                    ),
-                                    Ok(false) => tracing::debug!(
-                                        "[Stage 3] gbrain brain already initialized"
-                                    ),
+                                )
+                                .await;
+                                let now_ms = chrono::Utc::now().timestamp_millis();
+                                match &init_outcome {
+                                    Ok(true) => {
+                                        let duration_ms =
+                                            init_started.elapsed().as_millis() as u64;
+                                        tracing::info!(
+                                            duration_ms,
+                                            "[Stage 3] gbrain brain initialized (first launch)"
+                                        );
+                                        *gbrain_init_status_slot.lock().unwrap() =
+                                            uclaw_core::mcp::GbrainInitStatus::Succeeded {
+                                                duration_ms,
+                                                at_ms: now_ms,
+                                            };
+                                    }
+                                    Ok(false) => {
+                                        tracing::debug!(
+                                            "[Stage 3] gbrain brain already initialized"
+                                        );
+                                        *gbrain_init_status_slot.lock().unwrap() =
+                                            uclaw_core::mcp::GbrainInitStatus::SkippedAlreadyInitialized {
+                                                at_ms: now_ms,
+                                            };
+                                    }
                                     Err(e) => {
                                         tracing::warn!(
                                             error = %e,
-                                            "[Stage 3] gbrain init failed — seeding the MCP entry anyway so it surfaces in the UI for debugging; gbrain will fail to connect until init succeeds (re-run scripts/setup-gbrain-source.sh or remove ~/.uclaw/gbrain/ to retry)"
+                                            "[Stage 3] gbrain init failed — seeding the MCP entry anyway so it surfaces in the UI for debugging; gbrain will fail to connect until init succeeds (re-run scripts/init-gbrain.sh or remove ~/.uclaw/gbrain/ to retry)"
                                         );
+                                        // Extract stderr-tail from the
+                                        // error message when present
+                                        // (ensure_bundled_gbrain_initialized
+                                        // emits a "stderr (last 20 lines):\n…"
+                                        // section on subprocess failures).
+                                        let stderr_tail = e
+                                            .split_once("stderr (last 20 lines):\n")
+                                            .map(|(_, t)| t.to_string());
+                                        let error_summary = e
+                                            .lines()
+                                            .next()
+                                            .unwrap_or("gbrain init failed")
+                                            .to_string();
+                                        *gbrain_init_status_slot.lock().unwrap() =
+                                            uclaw_core::mcp::GbrainInitStatus::Failed {
+                                                error: error_summary,
+                                                stderr_tail,
+                                                at_ms: now_ms,
+                                            };
                                         // Intentional fall-through: still
                                         // run the seed match below so the
                                         // entry appears in the Integrations
@@ -546,6 +593,13 @@ fn main() {
                                 tracing::info!(
                                     "[Stage 3] gbrain MCP seed skipped (bundle artifacts missing — run setup-bun-runtime.sh + setup-gbrain-source.sh)"
                                 );
+                                // Sprint 2.2.5b — mark the init slot so the
+                                // diagnostics tab can tell users explicitly
+                                // "the bundle is missing, run setup scripts"
+                                // instead of just "NotAttempted" which sounds
+                                // like a transient state.
+                                *gbrain_init_status_slot.lock().unwrap() =
+                                    uclaw_core::mcp::GbrainInitStatus::BundleMissing;
                             }
                             // Drop the write lock before the slow
                             // connect pass so readers aren't blocked.
