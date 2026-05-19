@@ -160,7 +160,10 @@ mod tests {
         );
         // Sanity check the most important rules are present.
         assert!(out.contains("put_page"));
-        assert!(out.contains("recall"));
+        // PR #253 renamed the retrieval guidance from `recall` to
+        // `query` / `search` to match the actual gbrain MCP tool names.
+        // Assertion follows the prompt's current vocabulary.
+        assert!(out.contains("query") || out.contains("search"));
         assert!(out.contains("Slug format"));
     }
 
