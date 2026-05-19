@@ -5849,6 +5849,22 @@ pub async fn memory_entity_page_create(
         .create_entity_page(&space_id, &input.slug, &input.title, &input.compiled_truth, metadata)
         .map_err(|e| format!("Failed to create entity page: {}", e))?;
 
+    // L3 §3.2.1 Q2a (RETAINED per ADR 2026-05-20 §8) — record a
+    // `timeline_events` row for the EntityPage create. Best-effort:
+    // a timeline-write failure must NEVER fail the create itself.
+    {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let event = crate::memory_graph::timeline_events::TimelineEvent::entity_page_created(
+            space_id.clone(),
+            detail.node.id.clone(),
+            detail.node.title.clone(),
+            now_ms,
+        );
+        if let Ok(conn) = store.conn.lock() {
+            crate::memory_graph::timeline_events::insert_event_best_effort(&conn, &event);
+        }
+    }
+
     serde_json::to_value(&detail).map_err(|e| format!("Serialization failed: {}", e))
 }
 
