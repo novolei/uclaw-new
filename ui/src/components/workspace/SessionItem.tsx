@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { LoaderCircle, MoreHorizontal, FolderInput, Trash2, Pin, PinOff, Archive, ArchiveRestore } from 'lucide-react'
+import { LoaderCircle, MoreHorizontal, FolderInput, Trash2, Pin, PinOff, Archive, ArchiveRestore, Anchor } from 'lucide-react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -16,7 +16,7 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { dockOrderAtom, addDockPin } from '@/atoms/dock-atoms'
+import { dockOrderAtom, addDockPin, removeDockPin } from '@/atoms/dock-atoms'
 
 interface SessionItemProps {
   id: string
@@ -65,13 +65,29 @@ function SessionItemImpl({
   onToggleArchive,
   isArchived,
 }: SessionItemProps): React.ReactElement {
-  const hasMenu = Boolean(onDelete || onMove || onTogglePin || onToggleArchive)
   const channel = imChannelDisplay(imChannelType)
 
   const dockOrder = useAtomValue(dockOrderAtom)
   const setDockOrder = useSetAtom(dockOrderAtom)
 
-  const handlePinToDock = React.useCallback(() => {
+  // Whether this session is currently pinned to the bottom dock.
+  // Drives the dropdown item label + handler choice. Note this is a
+  // separate axis from `isPinned` (workspace-rail session pin); a session
+  // can be pinned in the rail, in the dock, in both, or neither.
+  const isInDock = React.useMemo(
+    () =>
+      dockOrder.some(
+        (s) => s.kind === 'pinned-conversation' && s.sessionId === id,
+      ),
+    [dockOrder, id],
+  )
+
+  const handleToggleDockPin = React.useCallback(() => {
+    if (isInDock) {
+      setDockOrder(removeDockPin(dockOrder, `conv-${id}`))
+      toast.success('已从 Dock 移除')
+      return
+    }
     const next = addDockPin(dockOrder, {
       kind: 'pinned-conversation',
       sessionId: id,
@@ -83,7 +99,13 @@ function SessionItemImpl({
     }
     setDockOrder(next)
     toast.success('已固定到 Dock')
-  }, [dockOrder, setDockOrder, id])
+  }, [dockOrder, setDockOrder, id, isInDock])
+
+  // The dock-pin item is always available — every session can be pinned —
+  // so the 3-dot trigger is always shown. (The legacy `hasMenu` gate
+  // hid the trigger when no action callbacks were wired; that's now
+  // moot because the dock-pin action is unconditional.)
+  const hasMenu = true
 
   return (
     <ContextMenu>
@@ -188,6 +210,13 @@ function SessionItemImpl({
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" side="bottom" sideOffset={4} className="w-40 min-w-0 p-0.5 z-[100]">
+                  <DropdownMenuItem
+                    className="text-xs py-1 [&>svg]:size-3.5"
+                    onSelect={() => { handleToggleDockPin() }}
+                  >
+                    <Anchor />
+                    {isInDock ? '从 Dock 移除' : '固定到 Dock'}
+                  </DropdownMenuItem>
                   {onTogglePin && (
                     <DropdownMenuItem
                       className="text-xs py-1 [&>svg]:size-3.5"
@@ -231,9 +260,9 @@ function SessionItemImpl({
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onSelect={handlePinToDock}>
-          <Pin size={14} className="mr-2" />
-          固定到 Dock
+        <ContextMenuItem onSelect={handleToggleDockPin}>
+          <Anchor size={14} className="mr-2" />
+          {isInDock ? '从 Dock 移除' : '固定到 Dock'}
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
