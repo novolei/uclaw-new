@@ -81,6 +81,16 @@ pub enum BrowserInterventionDecision {
 }
 
 impl BrowserInterventionDecision {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Continue => "I handled it, continue",
+            Self::ContinueWithSteps(8) => "Continue 8 steps",
+            Self::ContinueWithSteps(25) => "Continue 25 steps",
+            Self::ContinueWithSteps(_) => "Continue",
+            Self::Stop => "Stop task",
+        }
+    }
+
     pub fn from_result(result: &AskUserResult) -> Self {
         let Some(answer) = result.answers.get(BROWSER_INTERVENTION_QUESTION) else {
             return Self::Stop;
