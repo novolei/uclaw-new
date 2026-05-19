@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { ChevronDown, ChevronUp, RefreshCw, RotateCcw, Power } from 'lucide-react'
+import { Activity, ChevronDown, ChevronUp, PlayCircle, RefreshCw, RotateCcw, Power } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { EmbeddingEndpointSection } from './EmbeddingEndpointSection'
 import { DeveloperOptionsSection } from './DeveloperOptionsSection'
@@ -78,6 +78,28 @@ interface SystemDiagnosticsReport {
   gbrain_init: GbrainInitStatus
 }
 
+interface HarnessCheckResult {
+  id: string
+  passed: boolean
+  score: number
+  message: string
+}
+
+interface HarnessScorecard {
+  caseId: string
+  title: string
+  passed: boolean
+  score: number
+  checks: HarnessCheckResult[]
+}
+
+interface HarnessSuiteReport {
+  passed: boolean
+  averageScore: number
+  runIds: string[]
+  scorecards: HarnessScorecard[]
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function formatUptime(secs: number): string {
@@ -141,6 +163,11 @@ export function SystemTab() {
   const [busyReset, setBusyReset] = React.useState(false)
   const [busyRestart, setBusyRestart] = React.useState(false)
   const [actionError, setActionError] = React.useState<string | null>(null)
+  const [harnessBusy, setHarnessBusy] = React.useState<string | null>(null)
+  const [harnessReports, setHarnessReports] = React.useState<Record<string, HarnessSuiteReport | null>>({
+    memory: null,
+    agent: null,
+  })
 
   const runDiagnostics = React.useCallback(async () => {
     setLoading(true)
@@ -196,6 +223,19 @@ export function SystemTab() {
       setActionError(String(e))
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function handleHarnessRun(kind: 'memory' | 'agent', command: string) {
+    setHarnessBusy(kind)
+    setActionError(null)
+    try {
+      const result = await invoke<HarnessSuiteReport>(command)
+      setHarnessReports(prev => ({ ...prev, [kind]: result }))
+    } catch (e) {
+      setActionError(String(e))
+    } finally {
+      setHarnessBusy(null)
     }
   }
 
@@ -367,6 +407,44 @@ export function SystemTab() {
             </div>
           </Section>
 
+          {/* Harness 评估 */}
+          <Section title="Harness 评估">
+            <div className="rounded-lg border border-border/50 bg-muted/20">
+              <div className="flex items-center justify-between gap-3 border-b border-border/50 px-3 py-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Activity size={14} className="text-muted-foreground" />
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-foreground">自治回归套件</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      运行 memory/gbrain 与 agent control-plane scorecard
+                    </div>
+                  </div>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <HarnessButton
+                    label="Memory"
+                    busy={harnessBusy === 'memory'}
+                    onClick={() => handleHarnessRun('memory', 'run_memory_gbrain_eval_harness')}
+                  />
+                  <HarnessButton
+                    label="Agent"
+                    busy={harnessBusy === 'agent'}
+                    onClick={() => handleHarnessRun('agent', 'run_agent_control_plane_harness')}
+                  />
+                </div>
+              </div>
+              <div className="space-y-2 p-3">
+                <HarnessSummary name="memory/gbrain" report={harnessReports.memory} />
+                <HarnessSummary name="agent control-plane" report={harnessReports.agent} />
+                {!harnessReports.memory && !harnessReports.agent && (
+                  <div className="text-xs text-muted-foreground">
+                    尚未运行。结果会显示通过率、平均分和失败 case 的具体检查项。
+                  </div>
+                )}
+              </div>
+            </div>
+          </Section>
+
           {/* 恢复操作 */}
           <Section title="恢复操作">
             <div className="flex flex-col gap-2">
@@ -435,6 +513,71 @@ export function SystemTab() {
         <p className="text-sm text-muted-foreground text-center py-8">
           点击「运行诊断」开始检查系统状态
         </p>
+      )}
+    </div>
+  )
+}
+
+function HarnessButton({ label, busy, onClick }: {
+  label: string; busy: boolean; onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      className="flex min-h-8 items-center gap-1.5 rounded-md border border-border/60 bg-background px-2.5 text-xs text-foreground transition-colors hover:bg-accent disabled:opacity-50"
+    >
+      {busy ? <RefreshCw size={12} className="animate-spin" /> : <PlayCircle size={12} />}
+      {label}
+    </button>
+  )
+}
+
+function HarnessSummary({ name, report }: { name: string; report: HarnessSuiteReport | null }) {
+  if (!report) return null
+  const failed = report.scorecards.filter(card => !card.passed)
+  return (
+    <div className="rounded-md bg-background/70 px-3 py-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium text-foreground">{name}</div>
+          <div className="text-[11px] text-muted-foreground">
+            {report.scorecards.length} cases · {report.runIds.length} runs
+          </div>
+        </div>
+        <div className="shrink-0 text-right">
+          <div className={cn('text-xs font-medium', report.passed ? 'text-green-400' : 'text-red-400')}>
+            {report.passed ? '通过' : '失败'}
+          </div>
+          <div className="font-mono text-[11px] text-muted-foreground">
+            {(report.averageScore * 100).toFixed(0)}%
+          </div>
+        </div>
+      </div>
+      <div className="mt-2 overflow-hidden rounded border border-border/40">
+        {report.scorecards.map(card => (
+          <div
+            key={card.caseId}
+            className="grid grid-cols-[1fr_auto] gap-2 border-b border-border/40 px-2 py-1.5 last:border-b-0"
+          >
+            <div className="min-w-0">
+              <div className="truncate text-xs text-foreground">{card.title}</div>
+              {!card.passed && (
+                <div className="mt-0.5 text-[11px] text-red-400">
+                  {card.checks.filter(check => !check.passed).map(check => check.id).join(', ')}
+                </div>
+              )}
+            </div>
+            <div className={cn('font-mono text-[11px]', card.passed ? 'text-green-400' : 'text-red-400')}>
+              {(card.score * 100).toFixed(0)}%
+            </div>
+          </div>
+        ))}
+      </div>
+      {failed.length > 0 && (
+        <div className="mt-2 text-[11px] leading-4 text-muted-foreground">
+          首个失败：{failed[0].checks.find(check => !check.passed)?.message ?? failed[0].title}
+        </div>
       )}
     </div>
   )
