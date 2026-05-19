@@ -1807,6 +1807,33 @@ CREATE TABLE IF NOT EXISTS analysis_cache (
 );
 ";
 
+/// V45 — Memory OS L3 §4.12.3 RETAINED (per ADR 2026-05-20 §8) —
+/// Spaced Repetition state. One row per node enrolled in review;
+/// SM-2-style interval ladder (1, 3, 7, 14, 30, 90 days).
+///
+/// Caller (Q3a Spaced Repetition module) enrolls nodes whose
+/// `memory_importance_scores.importance >= 0.6` AND
+/// `metadata_json.status = 'verified'`. The scheduled review
+/// (future PR) re-checks the node's content via LLM; on pass →
+/// next interval, on fail → reset to interval 0.
+///
+/// `enabled = 0` is a per-node opt-out (e.g. user marks a page
+/// "no review needed"). Default 1.
+pub const V45_SPACED_REPETITION_STATE: &str = "
+CREATE TABLE IF NOT EXISTS spaced_repetition_state (
+    node_id          TEXT PRIMARY KEY REFERENCES memory_nodes(id) ON DELETE CASCADE,
+    interval_idx     INTEGER NOT NULL DEFAULT 0,
+    last_reviewed_at INTEGER NOT NULL,
+    next_review_at   INTEGER NOT NULL,
+    reviews_total    INTEGER NOT NULL DEFAULT 0,
+    reviews_passed   INTEGER NOT NULL DEFAULT 0,
+    enabled          INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_spaced_rep_due
+    ON spaced_repetition_state(next_review_at)
+    WHERE enabled = 1;
+";
+
 /// V43 seed — Phase 8.2: 7 default rows in `wiki_page_templates`, one
 /// per subkind defined in Cognitive Spec §2.2. `INSERT OR IGNORE` keeps
 /// the seed re-runnable: users / agents can tune the prompts in the
@@ -2328,6 +2355,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V44_L3_RETAINED_SCHEMA.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V44 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V45: Memory OS L3 §4.12.3 RETAINED — Spaced Repetition state table.
+    tracing::debug!("Running migration V45: spaced_repetition_state");
+    for stmt in V45_SPACED_REPETITION_STATE.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V45 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -4177,5 +4211,73 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 0, "FK ON DELETE CASCADE must purge memory_importance_scores");
+    }
+
+    // ─── V45 — Spaced Repetition state (L3 §4.12.3 RETAINED) ───
+
+    #[test]
+    fn v45_creates_spaced_repetition_state_table_and_index() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='spaced_repetition_state'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "table must exist after V45");
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_spaced_rep_due'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "partial index idx_spaced_rep_due must exist after V45");
+    }
+
+    #[test]
+    fn v45_is_idempotent() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error");
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='spaced_repetition_state'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn v45_defaults_interval_idx_zero_enabled_one() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        // Disable FK enforcement so this column-defaults test doesn't
+        // require seeding a matching memory_nodes row.
+        conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+        conn.execute(
+            "INSERT INTO spaced_repetition_state \
+             (node_id, last_reviewed_at, next_review_at) \
+             VALUES ('n1', 1700000000000, 1700000086400000)",
+            [],
+        )
+        .unwrap();
+        let (idx, enabled, total, passed): (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT interval_idx, enabled, reviews_total, reviews_passed \
+                 FROM spaced_repetition_state WHERE node_id = 'n1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(idx, 0);
+        assert_eq!(enabled, 1);
+        assert_eq!(total, 0);
+        assert_eq!(passed, 0);
     }
 }
