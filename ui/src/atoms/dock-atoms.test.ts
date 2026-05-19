@@ -107,3 +107,94 @@ describe('applyDockReorder', () => {
     expect(next).toBe(defaultOrder)
   })
 })
+
+import { addDockPin, removeDockPin, pinIdColorSeed } from './dock-atoms'
+
+describe('addDockPin', () => {
+  const base: DockItemSpec[] = [
+    { kind: 'mode', mode: 'chat' },
+    { kind: 'mode', mode: 'agent' },
+    { kind: 'mode', mode: 'memory' },
+    { kind: 'mode', mode: 'kaleidoscope' },
+  ]
+
+  it('appends a new pinned-conversation', () => {
+    const next = addDockPin(base, {
+      kind: 'pinned-conversation',
+      sessionId: 'sess-1',
+      type: 'agent',
+    })
+    expect(next).toHaveLength(5)
+    expect(next[4]).toEqual({
+      kind: 'pinned-conversation',
+      sessionId: 'sess-1',
+      type: 'agent',
+    })
+  })
+
+  it('appends a pinned-workspace', () => {
+    const next = addDockPin(base, { kind: 'pinned-workspace', spaceId: 'space-1' })
+    expect(next).toHaveLength(5)
+    expect(next[4]).toEqual({ kind: 'pinned-workspace', spaceId: 'space-1' })
+  })
+
+  it('appends a pinned-automation', () => {
+    const next = addDockPin(base, { kind: 'pinned-automation', specId: 'spec-1' })
+    expect(next).toHaveLength(5)
+    expect(next[4]).toEqual({ kind: 'pinned-automation', specId: 'spec-1' })
+  })
+
+  it('is idempotent — adding the same pin twice does not duplicate', () => {
+    const once = addDockPin(base, { kind: 'pinned-workspace', spaceId: 'space-1' })
+    const twice = addDockPin(once, { kind: 'pinned-workspace', spaceId: 'space-1' })
+    expect(twice).toBe(once) // referential equality — no allocation
+    expect(twice).toHaveLength(5)
+  })
+})
+
+describe('removeDockPin', () => {
+  const base: DockItemSpec[] = [
+    { kind: 'mode', mode: 'chat' },
+    { kind: 'pinned-workspace', spaceId: 'space-1' },
+    { kind: 'mode', mode: 'agent' },
+  ]
+
+  it('removes the matching entry by sortable id', () => {
+    const next = removeDockPin(base, 'space-space-1')
+    expect(next).toHaveLength(2)
+    expect(next).toEqual([
+      { kind: 'mode', mode: 'chat' },
+      { kind: 'mode', mode: 'agent' },
+    ])
+  })
+
+  it('returns the same array reference when id not found', () => {
+    const next = removeDockPin(base, 'space-nonexistent')
+    expect(next).toBe(base)
+  })
+
+  it('cannot remove a mode entry — modes are not pins', () => {
+    const next = removeDockPin(base, 'mode-chat')
+    expect(next).toBe(base)
+  })
+})
+
+describe('pinIdColorSeed', () => {
+  it('returns a 2-stop gradient (from, to) as CSS hsl strings', () => {
+    const seed = pinIdColorSeed('space-workspace-1')
+    expect(seed.from).toMatch(/^hsl\(\d+(?:\.\d+)?,\s*\d+%,\s*\d+%\)$/)
+    expect(seed.to).toMatch(/^hsl\(\d+(?:\.\d+)?,\s*\d+%,\s*\d+%\)$/)
+  })
+
+  it('is deterministic — same id maps to same gradient', () => {
+    const a = pinIdColorSeed('space-workspace-1')
+    const b = pinIdColorSeed('space-workspace-1')
+    expect(a).toEqual(b)
+  })
+
+  it('different ids produce different gradients (hash spread)', () => {
+    const a = pinIdColorSeed('space-workspace-1')
+    const b = pinIdColorSeed('space-workspace-2')
+    expect(a.from).not.toBe(b.from)
+  })
+})

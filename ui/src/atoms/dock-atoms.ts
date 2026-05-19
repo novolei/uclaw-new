@@ -61,3 +61,74 @@ export function applyDockReorder(
   if (oldIndex < 0 || newIndex < 0) return current
   return arrayMove(current, oldIndex, newIndex)
 }
+
+/**
+ * Returns the sortable id for a pinned-* spec. Mirrors specToSortableId
+ * in BottomDock.tsx but lives here so add/remove helpers can match by id.
+ * Mode-* ids are not produced here (modes are not pinnable).
+ */
+function pinnedSpecSortableId(spec: DockItemSpec): string | null {
+  switch (spec.kind) {
+    case 'pinned-conversation':
+      return `conv-${spec.sessionId}`
+    case 'pinned-workspace':
+      return `space-${spec.spaceId}`
+    case 'pinned-automation':
+      return `auto-${spec.specId}`
+    default:
+      return null
+  }
+}
+
+/**
+ * Append a pin to the dock order. Idempotent — if a spec with the same
+ * sortable id is already present, returns the input array unchanged
+ * (referential equality). Modes are not pinnable; the type system
+ * already enforces that (caller passes a pinned-* spec).
+ */
+export function addDockPin(
+  current: DockItemSpec[],
+  spec: Exclude<DockItemSpec, { kind: 'mode' }>,
+): DockItemSpec[] {
+  const newId = pinnedSpecSortableId(spec)
+  if (newId === null) return current
+  const exists = current.some((s) => pinnedSpecSortableId(s) === newId)
+  if (exists) return current
+  return [...current, spec]
+}
+
+/**
+ * Remove a pin by its sortable id (e.g. 'space-workspace-1', 'conv-sess-1',
+ * 'auto-spec-1'). Returns the input array unchanged (referential equality)
+ * when no entry matches — including any attempt to remove a mode-* id.
+ */
+export function removeDockPin(
+  current: DockItemSpec[],
+  sortableId: string,
+): DockItemSpec[] {
+  const idx = current.findIndex((s) => pinnedSpecSortableId(s) === sortableId)
+  if (idx < 0) return current
+  return [...current.slice(0, idx), ...current.slice(idx + 1)]
+}
+
+/**
+ * Deterministic 2-color HSL gradient seeded from a string id. Used by
+ * DockPinnedItem when the entity has no explicit color (most pinned
+ * conversations / automation specs). FNV-1a hash → hue 20..339 (skip
+ * yellow-grey band), 70% saturation, lightness 55→45 with +20° hue walk.
+ */
+export function pinIdColorSeed(id: string): { from: string; to: string } {
+  let h = 2166136261
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  const hue = ((h >>> 0) % 320) + 20
+  const sat = 70
+  const lightFrom = 55
+  const lightTo = 45
+  return {
+    from: `hsl(${hue}, ${sat}%, ${lightFrom}%)`,
+    to: `hsl(${(hue + 20) % 360}, ${sat}%, ${lightTo}%)`,
+  }
+}
