@@ -261,8 +261,8 @@ Update this table after every PR is implemented, verified, merged, and synced.
 | #240 | merged | `0c5829f` | browser identity | Existing browser identity tests from PR. | N/A | Pass | Auth profile broker baseline exists. |
 | #241 | merged | `5c3eedf` | browser identity startup | `browser::identity`, `browser::agent_loop`, `browser::context_manager`, `cargo check` from PR run. | Auth state can be selected for browser task startup. | Pass | Local `main` synced after merge. |
 | #242 | merged | `7e2a56a` | rollout tracker | `rg -n "PR-244\\|Memory System and gbrain\\|Track Ledger\\|Immediate Next Step\\|CAPTCHA automation remains allowlist-only" docs/superpowers/plans/2026-05-19-uclaw-agent-autonomy-rollout-tracker.md` | N/A | Pass | Local `main` synced after merge. |
-| #244 | in progress | PR head | browser perception | `browser::perception`, `browser::observation`, `browser::agent_loop`, `cargo check` | Not run; production OCR sidecar is deferred, provider seam is covered by mock/no-op tests. | Pass | Adds visual provider seam, mock/no-op providers, and optional `include_visual` browser observation metadata. |
-| #245 | pending |  | browser boundary |  |  |  |  |
+| #244 | merged | `9ea01b6` | browser perception | `browser::perception`, `browser::observation`, `browser::agent_loop`, `cargo check` | Not run; production OCR sidecar is deferred, provider seam is covered by mock/no-op tests. | Pass | Local `main` synced after merge. |
+| #245 | in progress | PR head | browser boundary | `browser::boundary`, `browser::intervention_bridge`, `browser::agent_loop`, `cargo check` | Not run; covered by deterministic CAPTCHA/login/visual CAPTCHA/stale-auth unit tests. | Pass | Expands boundary detection into structured events with evidence, recommended action, and resume metadata. |
 | #246 | pending |  | browser parity harness |  |  |  |  |
 | #247 | pending |  | memory/gbrain harness |  |  |  |  |
 | #248 | pending |  | agent loop control-plane harness |  |  |  |  |
