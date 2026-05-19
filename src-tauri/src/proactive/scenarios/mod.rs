@@ -23,6 +23,10 @@ pub mod tier_escalator;
 // Trait-object behind AppState.entity_synthesizer; manually triggered
 // via IPC (Phase 6.3) — no automatic tick yet.
 pub mod entity_synthesizer;
+// Memory OS L3 §3.2.2 (RETAINED per ADR 2026-05-20 §8) — daily /
+// weekly / monthly aggregator over `timeline_events`. V1 ships
+// SQL-only summaries (this PR); V2 will swap in a Haiku LLM call.
+pub mod timeline_aggregator;
 
 pub use types::*;
 
@@ -84,7 +88,10 @@ impl ScenarioManager {
 
     /// 获取所有场景名称
     pub fn scenario_names(&self) -> Vec<String> {
-        self.scenarios.iter().map(|s| s.name().to_string()).collect()
+        self.scenarios
+            .iter()
+            .map(|s| s.name().to_string())
+            .collect()
     }
 }
 
