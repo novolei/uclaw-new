@@ -32,6 +32,7 @@ import { AgentTeamsPanel } from '@/components/agent/AgentTeamsPanel'
 import { PlanViewer } from '@/components/agent/PlanViewer'
 import { TrajectoryReel } from '@/components/agent/TrajectoryReel'
 import { BrowserViewer } from '@/components/agent/BrowserViewer'
+import { useWindowDragOnMove } from '@/hooks/useWindowDragOnMove'
 
 export type ActiveTab = 'files' | 'teams' | 'plan' | 'trajectory' | 'browser'
 
@@ -55,9 +56,18 @@ interface TabButtonProps {
 }
 
 function TabButton({ isActive, onClick, icon, label }: TabButtonProps): React.ReactElement {
+  const windowDrag = useWindowDragOnMove()
+
   return (
     <button
-      onClick={onClick}
+      onClick={(e) => {
+        if (windowDrag.consumeClickIfDragged(e)) return
+        onClick()
+      }}
+      onPointerDown={windowDrag.onPointerDown}
+      onPointerMove={windowDrag.onPointerMove}
+      onPointerUp={windowDrag.onPointerUp}
+      onPointerCancel={windowDrag.onPointerCancel}
       className={[
         // Individual tab buttons opt out because the surrounding tab row is
         // a Tauri drag region.

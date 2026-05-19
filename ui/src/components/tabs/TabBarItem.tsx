@@ -15,6 +15,7 @@ import type { TabType, TabMinimapItem } from '@/atoms/tab-atoms'
 import type { SessionIndicatorStatus } from '@/atoms/agent-atoms'
 import { tabMinimapCacheAtom } from '@/atoms/tab-atoms'
 import { imChannelDisplay } from '@/lib/im-channel-display'
+import { useWindowDragOnMove } from '@/hooks/useWindowDragOnMove'
 import { TabPreviewPanel } from './TabPreviewPanel'
 
 export interface TabBarItemProps {
@@ -101,6 +102,7 @@ export function TabBarItem({
     : undefined
   const indicatorPulse = isStreaming === 'running' || isStreaming === 'blocked'
   const previewItems = minimapCache.get(id) ?? []
+  const windowDrag = useWindowDragOnMove()
   // 当前 active Tab 不显示预览面板
   const showPreview = isHovered && !isActive
 
@@ -135,8 +137,15 @@ export function TabBarItem({
             ? 'bg-content-area text-foreground border-border/50'
             : 'text-muted-foreground hover:text-foreground hover:bg-muted/40',
         )}
-        onClick={onActivate}
+        onClick={(e) => {
+          if (windowDrag.consumeClickIfDragged(e)) return
+          onActivate()
+        }}
         onMouseDown={handleMouseDown}
+        onPointerDown={windowDrag.onPointerDown}
+        onPointerMove={windowDrag.onPointerMove}
+        onPointerUp={windowDrag.onPointerUp}
+        onPointerCancel={windowDrag.onPointerCancel}
       >
         {/* 类型图标（agent tab 用 emoji 标题作为视觉标识，不需要额外图标） */}
         {type !== 'agent' && (

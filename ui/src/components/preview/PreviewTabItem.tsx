@@ -3,6 +3,7 @@ import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { FileTypeIcon } from '@/components/file-browser/FileTypeIcon'
 import type { PreviewTabItem as PreviewTabItemModel } from '@/atoms/preview-panel-atoms'
+import { useWindowDragOnMove } from '@/hooks/useWindowDragOnMove'
 
 interface Props {
   tab: PreviewTabItemModel
@@ -17,13 +18,22 @@ export function PreviewTabItem({
   onActivate,
   onClose,
 }: Props): React.ReactElement {
+  const windowDrag = useWindowDragOnMove()
+
   return (
     <div
       role="tab"
       aria-selected={isActive}
       aria-label={tab.name}
       tabIndex={isActive ? 0 : -1}
-      onClick={onActivate}
+      onClick={(e) => {
+        if (windowDrag.consumeClickIfDragged(e)) return
+        onActivate()
+      }}
+      onPointerDown={windowDrag.onPointerDown}
+      onPointerMove={windowDrag.onPointerMove}
+      onPointerUp={windowDrag.onPointerUp}
+      onPointerCancel={windowDrag.onPointerCancel}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
