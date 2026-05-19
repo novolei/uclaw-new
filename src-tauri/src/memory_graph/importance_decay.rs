@@ -43,7 +43,7 @@
 //! half_life_days = 30.0 * (0.5 + importance)       // 15 ~ 45 days
 //! ```
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 /// Default base half-life in days when computing decay. Importance
 /// multiplies this by `0.5 + importance` so the actual half-life
@@ -303,6 +303,128 @@ pub fn upsert_importance_score(
     )
 }
 
+// ─── DB collection (Q1a) ──────────────────────────────────────────────
+
+/// Read the inputs needed by `compute_importance` from the existing
+/// `memory_nodes` + `memory_versions` + `memory_edges` tables (V4
+/// foundation) plus the prior `memory_importance_scores` row if any
+/// (V44).
+///
+/// Returns `None` when the node doesn't exist or its required columns
+/// can't be parsed — caller logs + skips.
+///
+/// Counts (`cited_count`, `edge_count`):
+/// - `cited_count` = edges WHERE `child_node_id = node_id` (incoming
+///   references from other nodes)
+/// - `edge_count` = `cited_count` + edges where `parent_node_id = node_id`
+///   (total edges touching this node)
+///
+/// Content length comes from the latest `memory_versions` row for this
+/// node with `status = 'active'`; nodes with no active version are
+/// treated as `content_chars = 0`.
+///
+/// Age is computed via SQLite's `julianday()` on the `updated_at` TEXT
+/// column (uses the SQLite-native datetime format that V4 schema set).
+pub fn collect_node_importance_inputs(
+    conn: &Connection,
+    node_id: &str,
+) -> rusqlite::Result<Option<NodeImportanceInputs>> {
+    // 1) Pull kind + metadata + age in one query against memory_nodes.
+    let row = conn
+        .query_row(
+            "SELECT kind, COALESCE(metadata_json, ''),
+                    COALESCE(julianday('now') - julianday(updated_at), 0.0)
+             FROM memory_nodes WHERE id = ?1",
+            [node_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, f64>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let (kind_str, metadata_json, age_days) = match row {
+        Some(t) => t,
+        None => return Ok(None),
+    };
+    let is_boot = kind_str.eq_ignore_ascii_case("boot");
+
+    // 2) Parse status + tier out of metadata_json (best-effort; missing
+    //    keys map to Unknown / 3).
+    let (status, tier) = parse_status_and_tier(&metadata_json);
+
+    // 3) Edge counts (single query with conditional aggregation).
+    let (cited_count, total_edges) = conn.query_row(
+        "SELECT
+             COALESCE(SUM(CASE WHEN child_node_id = ?1 THEN 1 ELSE 0 END), 0),
+             COALESCE(SUM(CASE WHEN parent_node_id = ?1 OR child_node_id = ?1 THEN 1 ELSE 0 END), 0)
+         FROM memory_edges",
+        [node_id],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+    )?;
+    let cited_count = cited_count.max(0) as u32;
+    let edge_count = total_edges.max(0) as u32;
+
+    // 4) Content length from the latest active memory_versions row.
+    let content_chars: u32 = conn
+        .query_row(
+            "SELECT COALESCE(LENGTH(content), 0)
+             FROM memory_versions
+             WHERE node_id = ?1 AND status = 'active'
+             ORDER BY created_at DESC
+             LIMIT 1",
+            [node_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .map(|n| n.max(0) as u32)
+        .unwrap_or(0);
+
+    // 5) Carry forward the existing half-life if we computed before.
+    //    First-time computations start at the global base.
+    let current_half_life_days: f64 = conn
+        .query_row(
+            "SELECT decay_half_life_days FROM memory_importance_scores WHERE node_id = ?1",
+            [node_id],
+            |r| r.get::<_, f64>(0),
+        )
+        .optional()?
+        .unwrap_or(BASE_HALF_LIFE_DAYS);
+
+    Ok(Some(NodeImportanceInputs {
+        cited_count,
+        edge_count,
+        age_days,
+        status,
+        tier,
+        is_boot,
+        content_chars,
+        current_half_life_days,
+    }))
+}
+
+/// Pull `status` + `enrichment_tier` out of a node's `metadata_json`.
+/// Tolerant of missing keys, missing object, malformed JSON.
+fn parse_status_and_tier(metadata_json: &str) -> (NodeStatus, u8) {
+    if metadata_json.trim().is_empty() {
+        return (NodeStatus::Unknown, 3);
+    }
+    let v: serde_json::Value = match serde_json::from_str(metadata_json) {
+        Ok(v) => v,
+        Err(_) => return (NodeStatus::Unknown, 3),
+    };
+    let status = NodeStatus::from_metadata_str(v.get("status").and_then(|s| s.as_str()));
+    let tier = v
+        .get("enrichment_tier")
+        .and_then(|t| t.as_u64())
+        .and_then(|n| u8::try_from(n).ok())
+        .filter(|&n| (1..=3).contains(&n))
+        .unwrap_or(3);
+    (status, tier)
+}
+
 // ─── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -548,5 +670,215 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1, "upsert must keep exactly one row per node_id");
+    }
+
+    // ─── Q1a — collect_node_importance_inputs DB reader ────────────
+
+    /// Helper: seed a memory_nodes row with given kind + metadata.
+    fn seed_node(conn: &Connection, id: &str, kind: &str, metadata_json: &str) {
+        conn.execute(
+            "INSERT INTO memory_nodes (id, space_id, kind, title, metadata_json)
+             VALUES (?1, 'default', ?2, 'test-title', ?3)",
+            params![id, kind, metadata_json],
+        )
+        .unwrap();
+    }
+
+    /// Helper: seed a memory_versions row with given content.
+    fn seed_version(conn: &Connection, node_id: &str, content: &str) {
+        conn.execute(
+            "INSERT INTO memory_versions (id, node_id, status, content)
+             VALUES (?1, ?2, 'active', ?3)",
+            params![format!("ver-{}", node_id), node_id, content],
+        )
+        .unwrap();
+    }
+
+    /// Helper: seed an edge between two nodes.
+    fn seed_edge(conn: &Connection, parent: &str, child: &str) {
+        conn.execute(
+            "INSERT INTO memory_edges (id, space_id, parent_node_id, child_node_id)
+             VALUES (?1, 'default', ?2, ?3)",
+            params![format!("edge-{}-{}", parent, child), parent, child],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn collect_returns_none_for_unknown_node() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        let result = collect_node_importance_inputs(&conn, "ghost-node-id").unwrap();
+        assert!(result.is_none(), "missing node should return None");
+    }
+
+    #[test]
+    fn collect_reads_kind_metadata_content_and_edges() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+
+        // Target node: a Boot node with status=verified, tier=1.
+        seed_node(
+            &conn,
+            "n-target",
+            "boot",
+            r#"{"status":"verified","enrichment_tier":1}"#,
+        );
+        seed_version(
+            &conn,
+            "n-target",
+            "This is some non-trivial content body that exceeds 50 characters easily.",
+        );
+        // 2 incoming citations + 1 outgoing edge → cited=2, total=3
+        seed_node(&conn, "n-a", "reference", "{}");
+        seed_node(&conn, "n-b", "reference", "{}");
+        seed_node(&conn, "n-c", "reference", "{}");
+        seed_edge(&conn, "n-a", "n-target");
+        seed_edge(&conn, "n-b", "n-target");
+        seed_edge(&conn, "n-target", "n-c");
+
+        let inputs = collect_node_importance_inputs(&conn, "n-target")
+            .unwrap()
+            .expect("node exists");
+        assert!(inputs.is_boot, "kind=boot must set is_boot");
+        assert_eq!(inputs.status, NodeStatus::Verified);
+        assert_eq!(inputs.tier, 1);
+        assert_eq!(inputs.cited_count, 2);
+        assert_eq!(inputs.edge_count, 3);
+        assert!(
+            inputs.content_chars >= 70,
+            "content >= 70 chars expected, got {}",
+            inputs.content_chars
+        );
+        // age_days near 0 because we just inserted; tolerate up to a
+        // day for test-clock drift.
+        assert!(
+            inputs.age_days < 1.0,
+            "freshly-seeded node age should be < 1 day, got {}",
+            inputs.age_days
+        );
+        // First computation → carry forward the base half-life.
+        assert!(
+            (inputs.current_half_life_days - BASE_HALF_LIFE_DAYS).abs() < f64::EPSILON,
+            "first-time should default to BASE_HALF_LIFE_DAYS"
+        );
+    }
+
+    #[test]
+    fn collect_carries_forward_existing_half_life() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        seed_node(&conn, "n-target", "reference", r#"{"status":"draft"}"#);
+        seed_version(&conn, "n-target", "hi");
+
+        // First pass: collect + compute + upsert.
+        let inputs_v1 = collect_node_importance_inputs(&conn, "n-target")
+            .unwrap()
+            .unwrap();
+        let score_v1 = compute_importance(&inputs_v1);
+        upsert_importance_score(&conn, "n-target", &score_v1, 1_700_000_000_000).unwrap();
+
+        // Second collection should pick up the persisted half-life,
+        // not the global default.
+        let inputs_v2 = collect_node_importance_inputs(&conn, "n-target")
+            .unwrap()
+            .unwrap();
+        assert!(
+            (inputs_v2.current_half_life_days - score_v1.decay_half_life_days).abs() < 1e-9,
+            "second collection should carry the persisted half-life ({}); got {}",
+            score_v1.decay_half_life_days,
+            inputs_v2.current_half_life_days
+        );
+    }
+
+    #[test]
+    fn collect_treats_missing_metadata_keys_as_unknown_tier_3() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        seed_node(&conn, "n-bare", "reference", "{}");
+        seed_version(&conn, "n-bare", "minimal content");
+        let inputs = collect_node_importance_inputs(&conn, "n-bare")
+            .unwrap()
+            .unwrap();
+        assert_eq!(inputs.status, NodeStatus::Unknown);
+        assert_eq!(inputs.tier, 3);
+    }
+
+    #[test]
+    fn collect_tolerates_malformed_metadata_json() {
+        // Defensive: bad metadata_json should not panic / explode the
+        // collector. Real DBs sometimes have legacy rows with quoted-
+        // string metadata or partial JSON.
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        seed_node(&conn, "n-bad", "reference", "{ this is not json");
+        seed_version(&conn, "n-bad", "x");
+        let inputs = collect_node_importance_inputs(&conn, "n-bad")
+            .unwrap()
+            .unwrap();
+        assert_eq!(inputs.status, NodeStatus::Unknown);
+        assert_eq!(inputs.tier, 3);
+        assert!(!inputs.is_boot);
+    }
+
+    #[test]
+    fn collect_handles_node_with_no_active_version() {
+        // A node can exist without any active memory_versions row
+        // (e.g. compacted, archival, or just-created without content).
+        // Collector should still succeed with content_chars=0.
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        seed_node(&conn, "n-empty", "reference", r#"{"status":"draft"}"#);
+        let inputs = collect_node_importance_inputs(&conn, "n-empty")
+            .unwrap()
+            .unwrap();
+        assert_eq!(inputs.content_chars, 0);
+    }
+
+    #[test]
+    fn collect_then_compute_then_upsert_end_to_end() {
+        // Full integration: collect inputs from a realistic node,
+        // compute the score, persist, read back, confirm consistency.
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        seed_node(
+            &conn,
+            "n-e2e",
+            "entity_page",
+            r#"{"status":"verified","enrichment_tier":2}"#,
+        );
+        seed_version(
+            &conn,
+            "n-e2e",
+            "This is a real-ish content body about something meaningful for the test.",
+        );
+        seed_node(&conn, "n-ref-1", "reference", "{}");
+        seed_node(&conn, "n-ref-2", "reference", "{}");
+        seed_edge(&conn, "n-ref-1", "n-e2e");
+        seed_edge(&conn, "n-ref-2", "n-e2e");
+
+        let inputs = collect_node_importance_inputs(&conn, "n-e2e")
+            .unwrap()
+            .unwrap();
+        let score = compute_importance(&inputs);
+        let n = upsert_importance_score(&conn, "n-e2e", &score, 1_700_000_000_000).unwrap();
+        assert_eq!(n, 1);
+
+        // Read-back: persisted importance equals computed importance.
+        let stored: f64 = conn
+            .query_row(
+                "SELECT importance FROM memory_importance_scores WHERE node_id = 'n-e2e'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            (stored - score.importance).abs() < 1e-9,
+            "stored ({}) should match computed ({})",
+            stored,
+            score.importance
+        );
+        // Cited node with verified + tier 2 status should clear baseline.
+        assert!(stored > 0.60, "expected importance > 0.60, got {}", stored);
     }
 }
