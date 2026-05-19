@@ -8,6 +8,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import type { LivenessState } from '@/hooks/useDockLiveness'
 
 interface DockItemProps {
   icon: React.ReactNode
@@ -22,6 +23,8 @@ interface DockItemProps {
   sortableId?: string
   /** Phase 2C: increments to trigger a one-shot bounce. */
   bounceKey?: number
+  /** Phase 3: per-item liveness flags driving halo / particles / pulse. */
+  liveness?: LivenessState
 }
 
 /**
@@ -51,10 +54,15 @@ export function DockItem({
   onClick,
   sortableId,
   bounceKey,
+  liveness,
 }: DockItemProps): React.ReactElement {
   const prefersReducedMotion = useReducedMotion()
   const distance =
     hoveredIndex === null ? Infinity : Math.abs(index - hoveredIndex)
+
+  const breathing = liveness?.breathing ?? false
+  const streaming = liveness?.streaming ?? false
+  const pulsing = liveness?.pulsing ?? false
 
   const scaleSpring = useSpring(1, { stiffness: 320, damping: 26, mass: 0.6 })
   const ySpring = useSpring(0, { stiffness: 320, damping: 26, mass: 0.6 })
@@ -104,6 +112,22 @@ export function DockItem({
     return undefined
   }, [bounceKey])
 
+  // Phase 3: streaming particle emitter — up to 3 co-existing dots.
+  const [particles, setParticles] = React.useState<number[]>([])
+
+  React.useEffect(() => {
+    if (!streaming) {
+      setParticles([])
+      return undefined
+    }
+    let seed = 0
+    const id = setInterval(() => {
+      seed += 1
+      setParticles((prev) => [...prev.slice(-2), seed])
+    }, 400)
+    return () => clearInterval(id)
+  }, [streaming])
+
   const dragTransform = sortable.transform
     ? CSS.Transform.toString(sortable.transform)
     : undefined
@@ -141,6 +165,7 @@ export function DockItem({
             data-sortable-id={sortableId ?? undefined}
             data-dragging={sortable.isDragging ? 'true' : undefined}
             data-bouncing={bouncing ? 'true' : undefined}
+            data-pulsing={pulsing ? 'true' : undefined}
             className="relative flex items-end justify-center select-none outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-0 rounded-[14px]"
             style={motionStyle}
             onMouseEnter={() => onHoverIndexChange(index)}
@@ -149,14 +174,49 @@ export function DockItem({
             aria-label={label}
             aria-pressed={isActive}
           >
+            {breathing && (
+              <motion.div
+                data-dock-halo
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 rounded-[14px]"
+                style={{
+                  boxShadow: '0 0 14px hsl(var(--primary) / 0.45)',
+                }}
+                animate={{ opacity: [0.4, 0.8, 0.4] }}
+                transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+              />
+            )}
+            {streaming && (
+              <div
+                data-dock-particles
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-x-0 top-0 h-0"
+              >
+                {particles.map((seed) => (
+                  <motion.div
+                    key={seed}
+                    className="absolute left-1/2 -translate-x-1/2 w-[3px] h-[3px] rounded-full bg-primary"
+                    initial={{ y: 0, opacity: 1 }}
+                    animate={{ y: -12, opacity: 0 }}
+                    transition={{ duration: 0.6, ease: 'easeOut' }}
+                  />
+                ))}
+              </div>
+            )}
             <motion.div
               className="flex items-center justify-center"
               style={{ width: ICON_BOX, height: ICON_BOX, transformOrigin: 'center' }}
-              animate={bouncing ? { scale: [1, 1.35, 1] } : { scale: 1 }}
+              animate={
+                bouncing ? { scale: [1, 1.35, 1] } :
+                pulsing ? { scale: [1, 1.04, 1] } :
+                { scale: 1 }
+              }
               transition={
                 bouncing
                   ? { duration: 0.5, times: [0, 0.4, 1], ease: 'easeInOut' }
-                  : { duration: 0 }
+                  : pulsing
+                    ? { duration: 1.5, repeat: Infinity, ease: 'easeInOut' }
+                    : { duration: 0 }
               }
             >
               {icon}
