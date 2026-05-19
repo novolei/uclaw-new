@@ -551,6 +551,12 @@ pub async fn run_agent_control_plane_harness(
         .map_err(|error| Error::Internal(format!("agent control-plane harness failed: {error}")))
 }
 
+#[tauri::command]
+pub async fn run_self_improvement_gate_harness(
+) -> Result<Vec<crate::harness::SelfImprovementGateReport>, Error> {
+    Ok(crate::harness::self_improvement::run_self_improvement_gate_fixture_suite())
+}
+
 async fn run_memory_gbrain_eval_probe(
     memu_client: Option<std::sync::Arc<crate::memu::client::MemUClient>>,
     mcp_manager: crate::mcp::SharedMcpManager,

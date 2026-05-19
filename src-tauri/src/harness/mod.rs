@@ -6,6 +6,7 @@ pub mod episode;
 pub mod graders;
 pub mod memory_inventory;
 pub mod runtime;
+pub mod self_improvement;
 pub mod trace;
 pub mod trajectory;
 
@@ -16,5 +17,6 @@ pub use episode::{HarnessEpisode, HarnessVerdict};
 pub use graders::{HarnessGraderRegistry, HarnessGraderResult, HarnessGraderSpec};
 pub use memory_inventory::MemoryInventorySmokeReport;
 pub use runtime::HarnessRuntime;
+pub use self_improvement::{SelfImprovementGateReport, SelfImprovementGateVerdict};
 pub use trace::{HarnessEvent, MemoryHarnessTarget};
 pub use trajectory::TrajectoryStore;
