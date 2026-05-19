@@ -42,4 +42,14 @@ describe('ConnectionIndicator', () => {
     const { container } = renderWithStore({ internet: true, backend: true, memu: null })
     expect(container.querySelector('[data-conn-bar="memu"]')?.getAttribute('data-state')).toBe('warning')
   })
+
+  it('unified container is the tooltip trigger — no individual aria-label on bars', () => {
+    const { container } = renderWithStore({ internet: true, backend: true, memu: true })
+    // Individual bars are visual-only; the group container carries the a11y surface.
+    const bars = container.querySelectorAll('[data-conn-bar]')
+    bars.forEach((bar) => {
+      expect(bar.getAttribute('aria-label')).toBeNull()
+      expect(bar.getAttribute('role')).toBeNull()
+    })
+  })
 })
