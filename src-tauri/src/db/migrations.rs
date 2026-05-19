@@ -1807,6 +1807,37 @@ CREATE TABLE IF NOT EXISTS analysis_cache (
 );
 ";
 
+/// V46 — Memory OS L3 §4.12.4 RETAINED (per ADR 2026-05-20 §8) —
+/// Concept Drift Detection events. One row per drift signal detected
+/// on an EntityPage's version chain.
+///
+/// Spec §4.12.4: if a page is rewritten >= 3 times in 30 days with
+/// large content diffs, it's "drifting" — could be evolving fact,
+/// LLM instability, or unresolved contradiction. Each drift signal
+/// becomes a `drift_events` row + (in a future PR) a
+/// `review_queue_items` row for human triage.
+///
+/// `score` is the Levenshtein-normalized drift magnitude (0-1).
+/// `snapshot_version_ids` is a JSON array of the version IDs that
+/// were sampled to compute the score (debugging + future LLM
+/// review uses this to reconstruct what changed).
+pub const V46_DRIFT_EVENTS: &str = "
+CREATE TABLE IF NOT EXISTS drift_events (
+    id                   TEXT PRIMARY KEY,
+    node_id              TEXT NOT NULL REFERENCES memory_nodes(id) ON DELETE CASCADE,
+    score                REAL NOT NULL,
+    snapshot_version_ids TEXT NOT NULL,
+    computed_at          INTEGER NOT NULL,
+    status               TEXT NOT NULL DEFAULT 'open',
+    resolution_note      TEXT,
+    resolved_at          INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_drift_events_node_time
+    ON drift_events(node_id, computed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_drift_events_status
+    ON drift_events(status, computed_at DESC);
+";
+
 /// V45 — Memory OS L3 §4.12.3 RETAINED (per ADR 2026-05-20 §8) —
 /// Spaced Repetition state. One row per node enrolled in review;
 /// SM-2-style interval ladder (1, 3, 7, 14, 30, 90 days).
@@ -2362,6 +2393,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V45_SPACED_REPETITION_STATE.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V45 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V46: Memory OS L3 §4.12.4 RETAINED — Concept Drift Detection events.
+    tracing::debug!("Running migration V46: drift_events");
+    for stmt in V46_DRIFT_EVENTS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V46 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -4251,6 +4289,52 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    // ─── V46 — Concept Drift Detection events (L3 §4.12.4 RETAINED) ───
+
+    #[test]
+    fn v46_creates_drift_events_table_and_indexes() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='drift_events'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        for index in ["idx_drift_events_node_time", "idx_drift_events_status"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                    [index],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{} must exist after V46", index);
+        }
+    }
+
+    #[test]
+    fn v46_drift_events_default_status_open() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+        conn.execute(
+            "INSERT INTO drift_events (id, node_id, score, snapshot_version_ids, computed_at) \
+             VALUES ('d1', 'n1', 0.75, '[\"v1\",\"v2\"]', 1700000000000)",
+            [],
+        ).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM drift_events WHERE id = 'd1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "open");
     }
 
     #[test]
