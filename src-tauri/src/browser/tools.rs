@@ -1321,6 +1321,11 @@ impl Tool for BrowserTaskTool {
                 "start_url": {
                     "type": "string",
                     "description": "Optional URL to open before the first observation"
+                },
+                "available_file_paths": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional file paths the browser agent may upload. Paths are relative to the agent workspace."
                 }
             },
             "required": ["task"]
@@ -1334,6 +1339,15 @@ impl Tool for BrowserTaskTool {
             .to_string();
         let max_steps = params["max_steps"].as_u64().map(|v| v as u32);
         let start_url = params["start_url"].as_str().map(|s| s.to_string());
+        let available_file_paths = params["available_file_paths"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let runner = BrowserAgentLoop::new(
             Arc::clone(&self.ctx_mgr),
             Arc::clone(&self.decision_adapter),
@@ -1343,6 +1357,7 @@ impl Tool for BrowserTaskTool {
             task,
             max_steps,
             start_url,
+            available_file_paths,
         }).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
         Ok(ToolOutput::new(
