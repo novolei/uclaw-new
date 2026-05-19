@@ -22,6 +22,12 @@ import { useDockLiveness } from '@/hooks/useDockLiveness'
 import { appModeAtom, type AppMode } from '@/atoms/app-mode'
 import { topLevelViewAtom, type TopLevelView } from '@/atoms/top-level-view'
 import { kaleidoscopeModuleAtom, type KaleidoscopeModuleId } from '@/atoms/kaleidoscope'
+import { conversationsAtom } from '@/atoms/chat-atoms'
+import { agentSessionsAtom } from '@/atoms/agent-atoms'
+import { workspacesAtom, activeWorkspaceIdAtom } from '@/atoms/workspace'
+import { humaneSpecsAtom } from '@/atoms/automation'
+import { automationSelectedSpecIdAtom } from '@/atoms/automation-ui'
+import { useOpenSession } from '@/hooks/useOpenSession'
 import chatIcon from '@/assets/dock-icons/chat.png'
 import agentIcon from '@/assets/dock-icons/agent.png'
 import memoryIcon from '@/assets/dock-icons/memory.png'
@@ -143,6 +149,13 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
   const setTopLevelView = useSetAtom(topLevelViewAtom)
   const setKaleidoscopeModule = useSetAtom(kaleidoscopeModuleAtom)
   const setDockOrder = useSetAtom(dockOrderAtom)
+  const conversations = useAtomValue(conversationsAtom)
+  const agentSessions = useAtomValue(agentSessionsAtom)
+  const workspaces = useAtomValue(workspacesAtom)
+  const automationSpecs = useAtomValue(humaneSpecsAtom)
+  const setActiveWorkspaceId = useSetAtom(activeWorkspaceIdAtom)
+  const setAutomationSelectedSpecId = useSetAtom(automationSelectedSpecIdAtom)
+  const openSession = useOpenSession()
 
   const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null)
 
@@ -242,54 +255,67 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
                   )
                   break
                 }
-                case 'pinned-conversation':
+                case 'pinned-conversation': {
+                  const matchingConv = spec.type === 'chat'
+                    ? conversations.find((c) => c.id === spec.sessionId)
+                    : agentSessions.find((s) => s.id === spec.sessionId)
+                  const label = matchingConv?.title
+                    ?? `Conversation ${spec.sessionId.slice(0, 6)}`
+                  const emoji = spec.type === 'agent'
+                    ? agentSessions.find((s) => s.id === spec.sessionId)?.titleEmoji
+                    : undefined
                   body = (
                     <DockPinnedItem
                       key={sortableId}
                       sortableId={sortableId}
-                      label={`Conversation ${spec.sessionId.slice(0, 6)}`}
+                      label={label}
+                      emoji={emoji}
                       index={i}
                       hoveredIndex={hoveredIndex}
                       onHoverIndexChange={setHoveredIndex}
-                      onClick={() => {
-                        // Phase 2B: programmatic-only. Phase 2D wires this to
-                        // useOpenSession to resume the actual conversation.
-                      }}
+                      onClick={() => openSession(spec.type, spec.sessionId, label)}
                     />
                   )
                   break
-                case 'pinned-workspace':
+                }
+                case 'pinned-workspace': {
+                  const matchingSpace = workspaces.find((w) => w.id === spec.spaceId)
+                  const label = matchingSpace?.name ?? `Workspace ${spec.spaceId.slice(0, 6)}`
+                  const emoji = matchingSpace?.icon
                   body = (
                     <DockPinnedItem
                       key={sortableId}
                       sortableId={sortableId}
-                      label={`Workspace ${spec.spaceId.slice(0, 6)}`}
+                      label={label}
+                      emoji={emoji}
                       index={i}
                       hoveredIndex={hoveredIndex}
                       onHoverIndexChange={setHoveredIndex}
-                      onClick={() => {
-                        // Phase 2B: programmatic-only. Phase 2D wires this to
-                        // setActiveWorkspaceId to switch context.
-                      }}
+                      onClick={() => setActiveWorkspaceId(spec.spaceId)}
                     />
                   )
                   break
-                case 'pinned-automation':
+                }
+                case 'pinned-automation': {
+                  const matchingSpec = automationSpecs.find((s) => s.id === spec.specId)
+                  const label = matchingSpec?.name ?? `Automation ${spec.specId.slice(0, 6)}`
                   body = (
                     <DockPinnedItem
                       key={sortableId}
                       sortableId={sortableId}
-                      label={`Automation ${spec.specId.slice(0, 6)}`}
+                      label={label}
                       index={i}
                       hoveredIndex={hoveredIndex}
                       onHoverIndexChange={setHoveredIndex}
                       onClick={() => {
-                        // Phase 2B: programmatic-only. Phase 2D wires this to
-                        // the automation hub.
+                        setAutomationSelectedSpecId(spec.specId)
+                        setKaleidoscopeModule('humans')
+                        setTopLevelView('kaleidoscope')
                       }}
                     />
                   )
                   break
+                }
               }
 
               return (

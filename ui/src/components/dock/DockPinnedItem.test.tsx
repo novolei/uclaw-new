@@ -95,4 +95,20 @@ describe('DockPinnedItem', () => {
     const tile = container.querySelector('[data-dock-pin-tile]') as HTMLElement
     expect(tile.style.background).toMatch(/linear-gradient/)
   })
+
+  it('wraps the button in a ContextMenu (trigger has data-state="closed")', () => {
+    const { container } = render(
+      <DockPinnedItem
+        sortableId="space-w1"
+        label="research"
+        index={0}
+        hoveredIndex={null}
+        onHoverIndexChange={vi.fn()}
+        onClick={vi.fn()}
+      />,
+    )
+    // Radix ContextMenuTrigger marks itself with data-state="closed" when idle.
+    const trigger = container.querySelector('[data-state="closed"]')
+    expect(trigger).not.toBeNull()
+  })
 })
