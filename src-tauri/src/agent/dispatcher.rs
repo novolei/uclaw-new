@@ -687,14 +687,6 @@ impl ChatDelegate {
         // Absorbed into the reasoning stream; no separate frontend event needed
     }
 
-    /// Emit error to the frontend
-    fn emit_error(&self, error: &str) {
-        let _ = self.app_handle.emit("chat:stream-error", serde_json::json!({
-            "conversationId": self.conversation_id,
-            "error": error,
-        }));
-    }
-
     /// Emit turn cost event after each LLM call.
     ///
     /// Async because the budget-threshold check reads `state.settings`, a
@@ -2005,12 +1997,10 @@ impl LoopDelegate for ChatDelegate {
                         Err(e) => {
                             let duration_ms = tool_start.elapsed().as_millis() as u64;
                             tracing::error!("Tool {} execution failed: {}", tc.name, e);
-                            // Mark the tool activity as failed in the UI immediately —
-                            // before this, only emit_error fired (which raises a toast
-                            // but doesn't update the tool row), so the spinner kept
-                            // running until end-of-turn final cleanup.
+                            // Mark the tool activity as failed in the UI immediately
+                            // without emitting chat:stream-error. The agent turn can
+                            // recover from a tool-level error and continue.
                             self.emit_tool_error(&tc.name, &tc.id, &e.to_string(), duration_ms);
-                            self.emit_error(&e.to_string());
 
                             // Collect tool error for GeneRetriever matching
                             if let Ok(mut errors) = self.recent_tool_errors.lock() {
