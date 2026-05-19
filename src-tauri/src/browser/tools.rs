@@ -7,6 +7,7 @@ use crate::browser::context::DevicePreset;
 use crate::browser::context_manager::BrowserContextManager;
 use crate::browser::decision::BrowserDecisionAdapter;
 use crate::browser::dom_state::format_dom_state_for_llm;
+use crate::browser::intervention_bridge::BrowserAskUserBridge;
 use crate::browser::task_store::BrowserTaskStore;
 
 // ── Macro: declare all 14 tool structs ────────────────────────────────────────
@@ -52,6 +53,7 @@ pub struct BrowserTaskTool {
     pub session_id: String,
     pub decision_adapter: Arc<dyn BrowserDecisionAdapter>,
     pub task_store: Option<Arc<BrowserTaskStore>>,
+    pub ask_user_bridge: Option<Arc<BrowserAskUserBridge>>,
 }
 
 pub struct BrowserTaskResumeTool {
@@ -59,6 +61,7 @@ pub struct BrowserTaskResumeTool {
     pub session_id: String,
     pub decision_adapter: Arc<dyn BrowserDecisionAdapter>,
     pub task_store: Option<Arc<BrowserTaskStore>>,
+    pub ask_user_bridge: Option<Arc<BrowserAskUserBridge>>,
 }
 
 pub struct RetryWithBrowserAgentTool {
@@ -66,6 +69,7 @@ pub struct RetryWithBrowserAgentTool {
     pub session_id: String,
     pub decision_adapter: Arc<dyn BrowserDecisionAdapter>,
     pub task_store: Option<Arc<BrowserTaskStore>>,
+    pub ask_user_bridge: Option<Arc<BrowserAskUserBridge>>,
 }
 
 // ── 1. BrowserNavigateTool ────────────────────────────────────────────────────
@@ -1363,7 +1367,9 @@ impl Tool for BrowserTaskTool {
         let runner = BrowserAgentLoop::new(
             Arc::clone(&self.ctx_mgr),
             Arc::clone(&self.decision_adapter),
-        ).with_task_store(self.task_store.clone());
+        )
+            .with_task_store(self.task_store.clone())
+            .with_ask_user_bridge(self.ask_user_bridge.clone());
         let run = runner.run(BrowserTaskRequest {
             session_id: self.session_id.clone(),
             task,
@@ -1421,7 +1427,9 @@ impl Tool for BrowserTaskResumeTool {
         let runner = BrowserAgentLoop::new(
             Arc::clone(&self.ctx_mgr),
             Arc::clone(&self.decision_adapter),
-        ).with_task_store(self.task_store.clone());
+        )
+            .with_task_store(self.task_store.clone())
+            .with_ask_user_bridge(self.ask_user_bridge.clone());
         let run = runner.run(BrowserTaskRequest {
             session_id: prior.session_id,
             task: prior.task,
@@ -1457,6 +1465,7 @@ impl Tool for RetryWithBrowserAgentTool {
             session_id: self.session_id.clone(),
             decision_adapter: Arc::clone(&self.decision_adapter),
             task_store: self.task_store.clone(),
+            ask_user_bridge: self.ask_user_bridge.clone(),
         }.parameters_schema()
     }
 
@@ -1466,6 +1475,7 @@ impl Tool for RetryWithBrowserAgentTool {
             session_id: self.session_id.clone(),
             decision_adapter: Arc::clone(&self.decision_adapter),
             task_store: self.task_store.clone(),
+            ask_user_bridge: self.ask_user_bridge.clone(),
         }.execute(params).await
     }
 }
