@@ -1362,7 +1362,7 @@ impl Tool for BrowserTaskTool {
             .map_err(|e| ToolError::Execution(e.to_string()))?;
         Ok(ToolOutput::new(
             serde_json::json!({
-                "ok": run.status != crate::browser::session_state::BrowserTaskStatus::Failed,
+                "ok": run.status == crate::browser::session_state::BrowserTaskStatus::Completed,
                 "run": run,
             }),
             start.elapsed().as_millis() as u64,

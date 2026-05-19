@@ -32,6 +32,7 @@ pub enum BrowserTaskStatus {
     Completed,
     Failed,
     Stopped,
+    NeedsUserIntervention,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -41,5 +42,6 @@ pub enum BrowserTaskStepPhase {
     Decide,
     Act,
     Recover,
+    UserIntervention,
     Done,
 }

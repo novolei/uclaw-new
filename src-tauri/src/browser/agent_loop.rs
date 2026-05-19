@@ -7,6 +7,7 @@ use tokio::time::{sleep, Duration};
 
 use crate::browser::action::BrowserAction;
 use crate::browser::action_registry::BrowserActionRegistry;
+use crate::browser::boundary::detect_intervention_boundary;
 use crate::browser::context_manager::BrowserContextManager;
 use crate::browser::decision::{BrowserDecisionAdapter, BrowserDecisionStatus};
 use crate::browser::loop_detector::{make_fingerprint, LoopDetector};
@@ -99,6 +100,24 @@ impl BrowserAgentLoop {
             });
             step_index += 1;
 
+            if let Some(boundary) = detect_intervention_boundary(&observation_json) {
+                run.status = BrowserTaskStatus::NeedsUserIntervention;
+                self.push_step(&mut run, BrowserTaskStep {
+                    step_index,
+                    phase: BrowserTaskStepPhase::UserIntervention,
+                    observation_summary: summarize_observation(&observation),
+                    reasoning: boundary.reason.clone(),
+                    action_name: "needs_user_intervention".to_string(),
+                    action_args: serde_json::to_value(&boundary)?,
+                    ok: false,
+                    message: Some(boundary.reason),
+                    error: None,
+                    timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                });
+                self.emit_run(&run);
+                return Ok(run);
+            }
+
             let decision = self
                 .decision_adapter
                 .decide(
@@ -116,9 +135,15 @@ impl BrowserAgentLoop {
                 reasoning: decision.reasoning.clone(),
                 action_name: "decide".to_string(),
                 action_args: serde_json::to_value(&decision.action)?,
-                ok: decision.status != BrowserDecisionStatus::Failed,
+                ok: !matches!(
+                    decision.status,
+                    BrowserDecisionStatus::Failed | BrowserDecisionStatus::NeedsUserIntervention
+                ),
                 message: decision.final_answer.clone(),
-                error: if decision.status == BrowserDecisionStatus::Failed {
+                error: if matches!(
+                    decision.status,
+                    BrowserDecisionStatus::Failed | BrowserDecisionStatus::NeedsUserIntervention
+                ) {
                     decision.final_answer.clone()
                 } else {
                     None
@@ -147,6 +172,23 @@ impl BrowserAgentLoop {
                 }
                 BrowserDecisionStatus::Failed => {
                     run.status = BrowserTaskStatus::Failed;
+                    self.emit_run(&run);
+                    return Ok(run);
+                }
+                BrowserDecisionStatus::NeedsUserIntervention => {
+                    run.status = BrowserTaskStatus::NeedsUserIntervention;
+                    self.push_step(&mut run, BrowserTaskStep {
+                        step_index,
+                        phase: BrowserTaskStepPhase::UserIntervention,
+                        observation_summary: summarize_observation(&observation),
+                        reasoning: "Browser decision requested user intervention.".to_string(),
+                        action_name: "needs_user_intervention".to_string(),
+                        action_args: serde_json::json!({ "task": request.task }),
+                        ok: false,
+                        message: decision.final_answer,
+                        error: None,
+                        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                    });
                     self.emit_run(&run);
                     return Ok(run);
                 }

@@ -16,6 +16,7 @@ pub enum BrowserDecisionStatus {
     Continue,
     Done,
     Failed,
+    NeedsUserIntervention,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,7 +48,7 @@ pub fn build_browser_decision_prompt(
         "You are the browser decision adapter for an AI browser agent.\n\
          Return exactly one JSON object matching this schema and no markdown:\n\
          {{\n\
-           \"status\": \"continue\" | \"done\" | \"failed\",\n\
+           \"status\": \"continue\" | \"done\" | \"failed\" | \"needs_user_intervention\",\n\
            \"reasoning\": string,\n\
            \"action\": null | BrowserAction,\n\
            \"finalAnswer\": null | string\n\
@@ -68,6 +69,7 @@ pub fn build_browser_decision_prompt(
          - Use status=continue only when action is non-null.\n\
          - Use status=done when the task is complete and finalAnswer explains the result.\n\
          - Use status=failed when the task cannot proceed and finalAnswer explains why.\n\
+         - Use status=needs_user_intervention for CAPTCHA, 2FA, login credentials, paywalls, or other boundaries requiring the user.\n\
          - When multiple tabs are open, inspect tabs and switch to the tab that best matches the next subtask before clicking or typing.\n\
          - For upload_file, file_path must exactly match one of the available files listed below; do not invent file paths.\n\
          - Prefer DOM element indexes from the latest observation; do not invent indexes.\n\
