@@ -179,7 +179,7 @@ impl MemUBridge {
         // (The restart_lock in the caller should prevent this, but this
         // is defense-in-depth.)
         let mut inner = self.inner.lock().await;
-        if let Some(mut old_child) = inner.child.take() {
+        if let Some(old_child) = inner.child.take() {
             drop(old_child); // kill_on_drop triggers here
             // Give the OS a moment to release resources
         }
@@ -453,7 +453,9 @@ impl MemUBridge {
                 }
             }
 
-            tokio::time::sleep(RESTART_DELAY).await;
+            if attempt > 1 {
+                tokio::time::sleep(RESTART_DELAY).await;
+            }
 
             match self.spawn_subprocess().await {
                 Ok(()) => {

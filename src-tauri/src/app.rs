@@ -453,17 +453,23 @@ impl AppState {
         // resource dir was already resolved above for the Bundled skills tier.
         let memu_client = Self::try_init_memu(&data_dir, resource_dir.as_deref());
 
-        // Eagerly start the memU bridge in a background thread
+        // Eagerly start the memU bridge on Tauri's long-lived async runtime.
+        //
+        // Do not create a one-off Tokio runtime here: MemUBridge::spawn_subprocess
+        // spawns stdout/stderr reader tasks and owns Tokio child pipes. If those
+        // tasks are attached to a temporary runtime, the runtime is dropped as
+        // soon as this health check returns, leaving the bridge with IO handles
+        // bound to a shutting-down reactor.
         if let Some(ref client) = memu_client {
             let eager_client = Arc::clone(client);
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    match eager_client.health_check().await {
-                        Ok(status) => tracing::info!("memU bridge health: {}", status),
-                        Err(e) => tracing::warn!("memU bridge health check failed: {}; will retry later", e),
-                    }
-                });
+            tauri::async_runtime::spawn(async move {
+                match eager_client.health_check().await {
+                    Ok(status) => tracing::info!("memU bridge health: {}", status),
+                    Err(e) => tracing::warn!(
+                        "memU bridge health check failed: {}; will retry later",
+                        e
+                    ),
+                }
             });
         }
 

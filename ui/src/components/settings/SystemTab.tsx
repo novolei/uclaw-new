@@ -31,6 +31,7 @@ interface GbrainStatus {
   connected: boolean
   tool_count: number
   pgdata_ready: boolean
+  error: string | null
 }
 
 // Sprint 2.2.5b — mirror of Rust's `mcp::GbrainInitStatus`. Discriminated
@@ -117,7 +118,10 @@ export function SystemTab() {
   }, [])
 
   const isHealthy = report
-    ? report.consecutive_failures === 0 && !report.services.some(s => s.status.status === 'Failed')
+    ? report.consecutive_failures === 0
+      && !report.services.some(s => s.status.status === 'Failed')
+      && report.memu.running
+      && report.gbrain.connected
     : true
 
   const failedServices = report?.services.filter(s => s.status.status === 'Failed') ?? []
@@ -204,11 +208,15 @@ export function SystemTab() {
             </div>
             {healthExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </div>
-          {healthExpanded && failedServices.length > 0 && (
+          {healthExpanded && (failedServices.length > 0 || !report.memu.running || !report.gbrain.connected) && (
             <ul className="mt-2 text-xs text-red-400 space-y-0.5">
               {failedServices.map(s => (
                 <li key={s.name}>• {s.name}: {serviceStatusLabel(s.status)}</li>
               ))}
+              {!report.memu.running && <li>• memU: Python Bridge 未运行或健康检查失败</li>}
+              {!report.gbrain.connected && (
+                <li>• gbrain: MCP 未连接{report.gbrain.error ? ` — ${report.gbrain.error.slice(0, 140)}` : ''}</li>
+              )}
             </ul>
           )}
         </div>
@@ -253,7 +261,7 @@ export function SystemTab() {
                 running={report.gbrain.connected}
                 detail={report.gbrain.connected
                   ? `${report.gbrain.tool_count} 工具 · PGlite pgdata ${report.gbrain.pgdata_ready ? '已就绪' : '未就绪'}`
-                  : '未连接'}
+                  : (report.gbrain.error ? `未连接: ${report.gbrain.error.slice(0, 90)}` : '未连接')}
               />
             </div>
             {/* Sprint 2.2.5b — init status row.
