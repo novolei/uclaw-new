@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::memu::bridge::{BridgeError, MemUBridge};
 use crate::memory::{ScenarioMemorizeResult, EnrichedMemoryItem};
@@ -62,12 +63,38 @@ pub struct MemoryCategory {
 /// Wraps `MemUBridge` and provides typed methods for each memU API operation.
 pub struct MemUClient {
     bridge: Arc<MemUBridge>,
+    /// Optional Tauri handle, attached post-construction (the AppHandle
+    /// is not available at MemUClient::new time, before .setup runs).
+    /// Used by memorize* methods to emit consolidation start/finish
+    /// events so the UI can render a memU activity indicator (Memory
+    /// icon pulse in BottomDock — see Phase 3 design spec §3).
+    app_handle: Arc<tokio::sync::RwLock<Option<tauri::AppHandle>>>,
 }
 
 impl MemUClient {
     /// Create a new `MemUClient` backed by the given bridge.
     pub fn new(bridge: Arc<MemUBridge>) -> Self {
-        Self { bridge }
+        Self {
+            bridge,
+            app_handle: Arc::new(tokio::sync::RwLock::new(None)),
+        }
+    }
+
+    /// Attach the Tauri AppHandle post-construction so memorize* methods
+    /// can emit consolidation events. Called once from main.rs after the
+    /// Tauri app is built.
+    pub async fn set_app_handle(&self, handle: tauri::AppHandle) {
+        *self.app_handle.write().await = Some(handle);
+    }
+
+    /// Emit a consolidation lifecycle event to the frontend.
+    /// No-ops silently when the AppHandle has not yet been attached.
+    async fn emit_consolidation_event(&self, event: &str, id: &str) {
+        use tauri::Emitter;
+        let guard = self.app_handle.read().await;
+        if let Some(handle) = guard.as_ref() {
+            let _ = handle.emit(event, serde_json::json!({ "id": id }));
+        }
     }
 
     /// Process content through the memU memorize pipeline.
@@ -90,12 +117,17 @@ impl MemUClient {
             "user_scope": user_scope,
         });
 
+        let event_id = Uuid::new_v4().to_string();
+        self.emit_consolidation_event("memu:consolidation_started", &event_id).await;
         // memorize runs an LLM extraction that yields ~8-10 items per call —
         // 30s default timeout is too tight. See MEMORIZE_TIMEOUT comment.
-        let result = self
+        let outcome = self
             .bridge
             .send_request_with_timeout("memorize", params, crate::memu::bridge::MEMORIZE_TIMEOUT)
-            .await?;
+            .await;
+        self.emit_consolidation_event("memu:consolidation_finished", &event_id).await;
+
+        let result = outcome?;
         serde_json::from_value(result).map_err(BridgeError::JsonError)
     }
 
@@ -296,14 +328,19 @@ impl MemUClient {
             }
         });
 
-        let result = self
+        let event_id = Uuid::new_v4().to_string();
+        self.emit_consolidation_event("memu:consolidation_started", &event_id).await;
+        let outcome = self
             .bridge
             .send_request_with_timeout(
                 "memorize_with_config",
                 params,
                 crate::memu::bridge::MEMORIZE_TIMEOUT,
             )
-            .await?;
+            .await;
+        self.emit_consolidation_event("memu:consolidation_finished", &event_id).await;
+
+        let result = outcome?;
         serde_json::from_value(result).map_err(BridgeError::JsonError)
     }
 
@@ -382,14 +419,19 @@ impl MemUClient {
             }
         });
 
-        let result = self
+        let event_id = Uuid::new_v4().to_string();
+        self.emit_consolidation_event("memu:consolidation_started", &event_id).await;
+        let outcome = self
             .bridge
             .send_request_with_timeout(
                 "memorize_multimodal",
                 params,
                 crate::memu::bridge::MEMORIZE_TIMEOUT,
             )
-            .await?;
+            .await;
+        self.emit_consolidation_event("memu:consolidation_finished", &event_id).await;
+
+        let result = outcome?;
         serde_json::from_value(result).map_err(BridgeError::JsonError)
     }
 }
