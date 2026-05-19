@@ -1,28 +1,64 @@
 /**
- * Right-click bridge — ensures the browser `contextmenu` event fires for
- * every right-button mousedown across the app, even in environments where
- * the webview's default behavior swallows it (a known nuisance on some
- * macOS Tauri/WKWebView configurations: certain non-selectable elements
- * never receive a native `contextmenu` event, so Radix's `ContextMenu`
- * trigger never opens).
+ * Right-click bridge — owns app-wide `contextmenu` event behavior for the
+ * uClaw desktop window.
  *
- * Strategy:
- *  1. Listen for `mousedown` button === 2 at the document level (bubble
- *     phase, so the page's own preventDefaults can still cancel us by
- *     calling `stopPropagation` — which is what an input's text-selection
- *     menu does).
- *  2. Watch the same target for a native `contextmenu` event in the next
- *     tick. If one arrives, we do nothing (the platform handled it).
- *  3. If the native event never arrives within ~16ms, dispatch a synthetic
- *     `contextmenu` MouseEvent that bubbles + is cancelable. Radix's
- *     trigger picks it up exactly like the native one.
+ * Two responsibilities:
  *
- * Idempotent: calling install() twice without uninstall is a no-op (a
- * module-level flag tracks whether the listener is already attached).
+ *  1. **Suppress WebKit's default context menu.** On macOS Tauri (WKWebView)
+ *     dev builds, right-clicking shows "Reload / Inspect Element" by
+ *     default — a browser dev affordance that has no place in a shipping
+ *     desktop app. We `preventDefault()` every contextmenu event so the
+ *     native menu never appears. Editable form controls (`<input>`,
+ *     `<textarea>`, `[contenteditable]`) keep their native menu because
+ *     that's where users expect text-selection / spellcheck operations.
+ *
+ *  2. **Synthesize a `contextmenu` event when the platform doesn't.**
+ *     Some macOS Tauri configurations never dispatch a JS contextmenu
+ *     event for non-selectable elements — so Radix `ContextMenu` triggers
+ *     never open. When that happens, we fire a synthetic event ourselves
+ *     so React's `onContextMenu` handlers still see a fresh event.
+ *
+ * Both behaviors are installed by `installRightClickBridge()`, called once
+ * from `main.tsx` before React mounts. Idempotent — second install() is
+ * a no-op.
  */
 
 let installed = false
 
+/** Match elements where the native context menu should be preserved. */
+function shouldAllowNativeMenu(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  // Form controls and contenteditable surfaces — users expect cut/copy/
+  // paste / spellcheck / dictation entries via the system menu here.
+  if (target.closest('input, textarea, [contenteditable=""], [contenteditable="true"]')) {
+    return true
+  }
+  // Opt-in escape hatch for any future component that explicitly wants
+  // the native menu (e.g. a debug panel showing "Reload / Inspect").
+  if (target.closest('[data-allow-native-contextmenu="true"]')) {
+    return true
+  }
+  return false
+}
+
+/**
+ * Document-level contextmenu listener. Runs in capture phase so we see
+ * the event BEFORE React's listeners — but we don't stopPropagation, so
+ * Radix and other React onContextMenu handlers still fire normally.
+ *
+ * Returning early on allow-native-menu targets lets the native menu
+ * appear there (no preventDefault).
+ */
+function suppressDefaultMenu(event: Event): void {
+  if (shouldAllowNativeMenu(event.target)) return
+  event.preventDefault()
+}
+
+/**
+ * mousedown fallback: in environments where the platform doesn't fire
+ * a contextmenu event at all on right-button mousedown, we dispatch a
+ * synthetic one ourselves so Radix triggers still activate.
+ */
 function bridgeRightClick(event: MouseEvent): void {
   if (event.button !== 2) return
   const target = event.target as EventTarget | null
@@ -32,14 +68,8 @@ function bridgeRightClick(event: MouseEvent): void {
   const onNative = (): void => {
     nativeFired = true
   }
-  // Capture phase so we observe the event even if some intermediate
-  // handler later calls stopPropagation.
   target.addEventListener('contextmenu', onNative, { once: true, capture: true })
 
-  // One animation frame is plenty of time for the platform's own
-  // contextmenu dispatch — we only need to bridge environments where it
-  // never fires at all. Avoiding 0ms keeps us out of the same microtask
-  // queue as the mousedown's native follow-up.
   window.setTimeout(() => {
     target.removeEventListener('contextmenu', onNative, true)
     if (nativeFired) return
@@ -64,14 +94,16 @@ function bridgeRightClick(event: MouseEvent): void {
 export function installRightClickBridge(): void {
   if (installed) return
   installed = true
+  // Capture phase so this runs before any React-level handlers; we don't
+  // stopPropagation, so Radix etc. still see the event.
+  document.addEventListener('contextmenu', suppressDefaultMenu, true)
   document.addEventListener('mousedown', bridgeRightClick, true)
 }
 
-// Test-only helper. Production code should treat the bridge as
-// fire-and-forget — there's no scenario where the app wants to suppress
-// app-wide right-click after install.
+// Test-only helper.
 export function _uninstallRightClickBridgeForTests(): void {
   if (!installed) return
   installed = false
+  document.removeEventListener('contextmenu', suppressDefaultMenu, true)
   document.removeEventListener('mousedown', bridgeRightClick, true)
 }
