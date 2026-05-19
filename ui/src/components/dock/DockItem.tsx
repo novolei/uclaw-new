@@ -1,6 +1,5 @@
 import * as React from 'react'
 import { motion, useSpring, useReducedMotion } from 'motion/react'
-import { cn } from '@/lib/utils'
 import {
   Tooltip,
   TooltipContent,
@@ -28,8 +27,8 @@ interface DockItemProps {
  * 标签不再内嵌于 dock 内（避免推挤兄弟节点），改用 Radix Tooltip 在图标
  * 正上方悬浮，hover 才出现；active 状态用底部小圆点指示。
  */
-const SLOT_W = 48 // px, holds 40px icon comfortably even at hover scale (~1.3x)
-const ICON_BOX = 38 // px
+const SLOT_W = 56 // px, holds 44 px ICON_BOX comfortably even at hover scale 1.34
+const ICON_BOX = 44 // px
 const HOVER_SCALE = 1.34
 const NEIGHBOR_SCALE = 1.12
 const HOVER_LIFT = -4 // px
@@ -89,25 +88,22 @@ export function DockItem({
             aria-label={label}
             aria-pressed={isActive}
           >
+            {/* Icon renders flush — no slot backplate. The Liquid Glass PNG
+                IS the visual; an inner pill would compete with it. */}
             <span
-              className={cn(
-                'flex items-center justify-center rounded-[11px] transition-colors duration-200',
-                isActive
-                  ? 'bg-primary/12 text-primary ring-1 ring-primary/30 shadow-[0_0_14px_-2px_hsl(var(--primary)/0.35)] dark:text-primary'
-                  : 'bg-foreground/[0.06] text-foreground/80 hover:bg-foreground/[0.10] hover:text-foreground',
-              )}
+              className="flex items-center justify-center"
               style={{ width: ICON_BOX, height: ICON_BOX }}
             >
               {icon}
             </span>
-            {/* Active indicator — small dot under the icon */}
-            <span
-              className={cn(
-                'pointer-events-none absolute -bottom-0.5 left-1/2 -translate-x-1/2 h-[3px] rounded-full transition-all duration-200',
-                isActive ? 'w-1.5 bg-primary opacity-100' : 'w-0 opacity-0',
-              )}
-              aria-hidden="true"
-            />
+            {/* Active indicator — solid primary dot 4 px below the button bottom edge, with a soft glow. */}
+            {isActive && (
+              <span
+                data-dock-active-dot
+                className="pointer-events-none absolute left-1/2 -translate-x-1/2 -bottom-1 w-1 h-1 rounded-full bg-primary shadow-[0_0_6px_hsl(var(--primary)/0.5)]"
+                aria-hidden="true"
+              />
+            )}
           </motion.button>
         </TooltipTrigger>
         <TooltipContent

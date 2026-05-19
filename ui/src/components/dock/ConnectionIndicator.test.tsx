@@ -1,8 +1,7 @@
 import * as React from 'react'
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { createStore } from 'jotai'
-import { Provider as JotaiProvider } from 'jotai'
+import { createStore, Provider as JotaiProvider } from 'jotai'
 import { ConnectionIndicator } from './ConnectionIndicator'
 import { internetOnlineAtom, backendOnlineAtom, memuOnlineAtom } from '@/atoms/dock-atoms'
 
@@ -14,19 +13,33 @@ function renderWithStore(overrides: { internet?: boolean; backend?: boolean; mem
   return render(
     <JotaiProvider store={store}>
       <ConnectionIndicator />
-    </JotaiProvider>
+    </JotaiProvider>,
   )
 }
 
 describe('ConnectionIndicator', () => {
-  it('renders the status container', () => {
+  it('renders the status container with aria-label', () => {
     renderWithStore({ internet: true, backend: true, memu: true })
     expect(screen.getByLabelText('连接状态')).toBeInTheDocument()
   })
 
-  it('renders three dots', () => {
+  it('renders exactly 3 signal bars', () => {
     const { container } = renderWithStore({ internet: true, backend: true, memu: true })
-    const dots = container.querySelectorAll('[class*="rounded-full"]')
-    expect(dots.length).toBeGreaterThanOrEqual(3)
+    const bars = container.querySelectorAll('[data-conn-bar]')
+    expect(bars.length).toBe(3)
+  })
+
+  it('marks an offline channel with data-state=offline', () => {
+    const { container } = renderWithStore({ internet: false, backend: true, memu: true })
+    const internetBar = container.querySelector('[data-conn-bar="internet"]')
+    expect(internetBar?.getAttribute('data-state')).toBe('offline')
+    // When internet is offline, backend/memu cascade to offline too.
+    expect(container.querySelector('[data-conn-bar="backend"]')?.getAttribute('data-state')).toBe('offline')
+    expect(container.querySelector('[data-conn-bar="memu"]')?.getAttribute('data-state')).toBe('offline')
+  })
+
+  it('marks memu warning state when memu atom is null (initializing)', () => {
+    const { container } = renderWithStore({ internet: true, backend: true, memu: null })
+    expect(container.querySelector('[data-conn-bar="memu"]')?.getAttribute('data-state')).toBe('warning')
   })
 })
