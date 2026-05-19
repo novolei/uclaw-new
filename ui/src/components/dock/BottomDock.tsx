@@ -3,6 +3,7 @@ import { motion } from 'motion/react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { DockItem } from './DockItem'
 import { ConnectionIndicator } from './ConnectionIndicator'
+import { DockDragHandle } from './DockDragHandle'
 import { useConnectionStatus } from './useConnectionStatus'
 import { bottomDockEnabledAtom } from '@/atoms/dock-atoms'
 import { appModeAtom, type AppMode } from '@/atoms/app-mode'
@@ -140,12 +141,13 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
     <motion.div
       role="navigation"
       aria-label="底部导航"
-      className="flex items-end gap-1 px-3 pt-3 pb-2 rounded-t-2xl bg-popover/85 backdrop-blur-xl border-t border-x border-border/40 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.35)] supports-[backdrop-filter]:bg-popover/70 will-change-transform"
+      className="group relative flex items-end gap-1 px-3 pt-3 pb-2 rounded-t-2xl bg-popover/85 backdrop-blur-xl border-t border-x border-border/40 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.35)] supports-[backdrop-filter]:bg-popover/70 will-change-transform"
       initial={false}
       animate={{ y: revealed ? 0 : SLIDE_HIDDEN_Y, opacity: revealed ? 1 : 0 }}
       transition={revealed ? REVEAL_TRANSITION : HIDE_TRANSITION}
       onMouseLeave={() => setHoveredIndex(null)}
     >
+      <DockDragHandle />
       {NAV_ITEMS.map((item, i) => (
         <DockItem
           key={item.id}
