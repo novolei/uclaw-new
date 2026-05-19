@@ -1,7 +1,26 @@
 # Agent Memory OS — Engines Layer 设计(Entity Graph · Timeline · Dream Cycle)
 
+> **🟡 STATUS: PARTIALLY PAUSED (2026-05-20)** — 见 [ADR 2026-05-20 §8](../../adr/2026-05-20-gbrain-primary-freeze-l2-cognitive.md)。
+>
+> 重叠审计发现 L3 跟 gbrain 不是一刀切重叠。决策(按 ADR §8):
+>
+> | L3 组件 | 状态 | 理由 |
+> |---|---|---|
+> | **Entity Graph Engine** (NER + alias + coreference) — Phase 15 | 🛑 PAUSED | gbrain `chat_extractor` + `maintain` skill 已覆盖 regex NER + alias dict + Haiku 消歧 + 周末 dedup。Coreference 是 anti-pattern。 |
+> | **Timeline Engine** (全局 timeline + 日/周/月聚合) — Phase 16 | ✅ RETAINED | gbrain 只有 per-page timeline,没全局 timeline、没聚合循环。standalone-worthy。 |
+> | **Dream Cycle 8 阶段** — Phase 17 | 🛑 PAUSED | 阶段①-⑥重叠 gbrain 6 阶段;⑦⑧ 折进具体消费方,不复用整套 pipeline。 |
+> | **§4.12.1 Importance-Aware Decay** | ✅ RETAINED | gbrain 无 decay 算法;知识库卫生关键。 |
+> | **§4.12.2 Hypothesis Generation** | 🛑 PAUSED | 边际价值低。 |
+> | **§4.12.3 Spaced Repetition (Anki SM-2)** | ✅ RETAINED | 学习科学验证;gbrain 无等价。 |
+> | **§4.12.4 Concept Drift Detection** | ✅ RETAINED | 跨版本矛盾发现。 |
+> | **§4.12.5 Cross-Source Triangulation** | ✅ RETAINED | 多源置信度核对。 |
+> | **§4.12.6 Predictive Boot Preparation** | 🛑 PAUSED | 优化级。 |
+> | **§4.12.7 Synthetic Q&A** | 🛑 PAUSED | token 成本高,信号低。 |
+>
+> **执行规则:** 仅 RETAINED 项目开放实施。spec 中所有 V36 引用应改读为 V44(下一空闲号,V36 已被 Automation Phase 2b 占用)。
+
 **Date:** 2026-05-18
-**Status:** Draft
+**Status:** Partially Paused (was: Draft) — see ADR 2026-05-20 §8
 **Layer position:** **Engines Layer(Phase 15-21)** —— 三层 Memory OS 设计的第三层。
 - **Foundation Layer(Phase 1-7)**:[`2026-05-18-agent-memory-os-design.md`](2026-05-18-agent-memory-os-design.md)
 - **Cognitive Layer(Phase 8-14)**:[`2026-05-18-agent-memory-os-cognitive-design.md`](2026-05-18-agent-memory-os-cognitive-design.md)
@@ -19,7 +38,7 @@
 | **Cognitive** | 9 种 page type / 段落级 provenance / 两步 compile / Review brake / Adaptive RAG | "我的 wiki 知识可信、可审计、可分级、可路由" |
 | **Engines** | NER + alias resolution / 全局 Timeline / Dream Cycle 8 阶段 + 7 项高级增强 | **"Agent 有时间观念、会自动夜间整理、知道自己不知道什么、会做记忆巩固"** |
 
-**承诺继续:不破坏前两层。** Engines 层全部叠加在 Foundation+Cognitive 之上,通过新表(V36)和新 scenario 实现,**不修改任何已合并的 V1–V35 schema**。
+**承诺继续:不破坏前两层。** Engines 层全部叠加在 Foundation+Cognitive 之上,通过新表(V44)和新 scenario 实现,**不修改任何已合并的 V1–V43 schema**。(原 spec 写的 V36 是过时假设 — 实际 Foundation 已用到 V42、Cognitive 用 V43、V36 是 skipped 空号(Phase 7 抢占 V37 时跳号);V44 是当前下一空闲。)
 
 ---
 
@@ -157,7 +176,7 @@ Output:
 
 每个 cluster 内的所有 mention 共享同一个 resolved entity_id。**注意:跨文档不做 coreference**——那是 alias 表的职责,不要混淆。
 
-### 2.5 数据模型(V36 部分)
+### 2.5 数据模型(V44 部分)
 
 ```sql
 -- 全局 alias 索引(快查 + 模糊匹配)
@@ -291,7 +310,7 @@ pub fn list_backlinks(node_id: &str, ctx: &Ctx) -> Vec<Backlink> {
 
 ### 3.2 三个核心数据结构
 
-#### 3.2.1 全局 `timeline_events` 表(V36 部分)
+#### 3.2.1 全局 `timeline_events` 表(V44 部分)
 
 ```sql
 CREATE TABLE IF NOT EXISTS timeline_events (
@@ -561,7 +580,7 @@ Recent active themes (last 7 days):
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.2 数据模型(V36 部分)
+### 4.2 数据模型(V44 部分)
 
 ```sql
 -- 每次 Dream Cycle 运行的元数据
@@ -1163,10 +1182,10 @@ pub struct DreamCycleConfig {
 
 ---
 
-## 6. V36 Migration 汇总
+## 6. V44 Migration 汇总(原 spec 写的 V36 已过时)
 
 ```sql
--- V36: Engines Layer
+-- V44: Engines Layer
 
 -- Entity Graph
 CREATE TABLE IF NOT EXISTS entity_aliases (...);

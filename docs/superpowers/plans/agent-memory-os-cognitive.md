@@ -1,5 +1,11 @@
 # Agent Memory OS — Cognitive Layer Implementation Plan(Phase 8-14)
 
+> **🛑 STATUS: PAUSED (2026-05-20)** — See [ADR 2026-05-20 — gbrain primary, freeze L2 Cognitive](../../adr/2026-05-20-gbrain-primary-freeze-l2-cognitive.md).
+>
+> gbrain (the real `garrytan/gbrain` MCP server shipped in Sprint 2.0–2.4) is now uClaw's primary long-term knowledge layer. This cognitive plan would deepen L1 Foundation's `memory_nodes`-backed EntityPage system, which has been frozen. **Do not execute this plan as-is.** Phase 8.1 (V43 migration tables) and Phase 8.2 (wiki_page_templates seed) already shipped — they sit inert. Phases 9–14 are paused.
+>
+> The plan is retained for reference value and as a fall-back if the decision reverses. Several ideas (two-step compile, review queue, adaptive RAG) may yet inform gbrain-side work — see the ADR's "Follow-up work" section.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Layer position:** **L2 Cognitive Layer (Phase 8-14)** —— 三层 Memory OS 计划的第二层。
