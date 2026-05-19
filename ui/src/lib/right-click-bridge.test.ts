@@ -76,4 +76,39 @@ describe('right-click-bridge', () => {
 
     expect(handler).toHaveBeenCalledTimes(1)
   })
+
+  it('preventDefaults the contextmenu event so WebKit native menu does not show', () => {
+    const target = document.getElementById('target')!
+    const evt = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    target.dispatchEvent(evt)
+    // defaultPrevented = true means WKWebView/WebKit will skip the
+    // native "Reload / Inspect Element" menu.
+    expect(evt.defaultPrevented).toBe(true)
+  })
+
+  it('still lets React/Radix listeners see the event (no stopPropagation)', () => {
+    const target = document.getElementById('target')!
+    const handler = vi.fn()
+    target.addEventListener('contextmenu', handler)
+    target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    // Listeners on the same target should still fire; only the
+    // browser's default action is suppressed.
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it('allows native contextmenu on inputs (text-selection menu kept)', () => {
+    document.body.innerHTML = '<input id="text" type="text" />'
+    const input = document.getElementById('text')!
+    const evt = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    input.dispatchEvent(evt)
+    expect(evt.defaultPrevented).toBe(false)
+  })
+
+  it('allows native contextmenu on opted-in elements', () => {
+    document.body.innerHTML = '<div data-allow-native-contextmenu="true" id="optin">x</div>'
+    const optin = document.getElementById('optin')!
+    const evt = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    optin.dispatchEvent(evt)
+    expect(evt.defaultPrevented).toBe(false)
+  })
 })
