@@ -35,6 +35,12 @@ import {
 } from '@/atoms/preview-panel-atoms'
 import { workspaceSessionsAtom, updateSessionTitleAtom, type WorkspaceSession } from '@/atoms/workspace'
 import { tabsAtom } from '@/atoms/tab-atoms'
+import {
+  browserTaskRunAtom,
+  type BrowserTaskRunEntry,
+  type BrowserTaskStatus,
+  type BrowserTaskStepEntry,
+} from '@/atoms/browser-atoms'
 import type { AgentSessionMeta } from '@/lib/agent-types'
 import type { TabItem } from '@/atoms/tab-atoms'
 
@@ -62,6 +68,15 @@ interface ChipResolutionIpcPayload {
   absolutePath: string | null
 }
 
+interface BrowserTaskRunPayload extends BrowserTaskRunEntry {}
+
+interface BrowserTaskStepPayload {
+  runId: string
+  sessionId: string
+  status: BrowserTaskStatus
+  step: BrowserTaskStepEntry
+}
+
 function createInitialStreamState(): AgentStreamState {
   return {
     running: true,
@@ -70,6 +85,28 @@ function createInitialStreamState(): AgentStreamState {
     teammates: [],
     startedAt: Date.now(),
   }
+}
+
+function upsertBrowserTaskStep(
+  current: BrowserTaskRunEntry | undefined,
+  payload: BrowserTaskStepPayload,
+): BrowserTaskRunEntry {
+  const run: BrowserTaskRunEntry = current ?? {
+    runId: payload.runId,
+    sessionId: payload.sessionId,
+    task: '',
+    status: payload.status,
+    steps: [],
+  }
+  const steps = [...run.steps]
+  const idx = steps.findIndex((step) => step.stepIndex === payload.step.stepIndex)
+  if (idx >= 0) {
+    steps[idx] = payload.step
+  } else {
+    steps.push(payload.step)
+    steps.sort((a, b) => a.stepIndex - b.stepIndex)
+  }
+  return { ...run, status: payload.status, steps }
 }
 
 // ─── Module-level singleton ───────────────────────────────────────────────────
@@ -559,6 +596,29 @@ function startAgentListeners(store: Store): void {
         })()
         store.set(openBrowserTabAction, { agentSessionId: sid, initialUrl: currentUrl })
       }
+    })
+  )
+
+  // browser task events are emitted directly by the backend, not as ordinary
+  // chat tool results. Keep this listener global so early task steps are not
+  // lost while the BrowserPanel tab is still being opened.
+  reg(
+    listen<BrowserTaskRunPayload>('browser:task-run', ({ payload }) => {
+      store.set(browserTaskRunAtom, (prev) => {
+        const next = new Map(prev)
+        next.set(payload.sessionId, payload)
+        return next
+      })
+    })
+  )
+
+  reg(
+    listen<BrowserTaskStepPayload>('browser:task-step', ({ payload }) => {
+      store.set(browserTaskRunAtom, (prev) => {
+        const next = new Map(prev)
+        next.set(payload.sessionId, upsertBrowserTaskStep(prev.get(payload.sessionId), payload))
+        return next
+      })
     })
   )
 
