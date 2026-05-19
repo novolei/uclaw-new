@@ -36,7 +36,7 @@ These three PRs are treated as the starting line. Do not recreate them.
 
 ## PR Queue
 
-### PR-243: `feat(browser): add visual perception adapter`
+### PR-244: `feat(browser): add visual perception adapter`
 
 **Goal:** Add the browser visual perception provider seam without binding the browser loop to one OCR/VLM implementation.
 
@@ -66,7 +66,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 **Manual smoke:** Run a browser task against a local fixture with text only visible in screenshot space; confirm the trace includes visual observation artifacts when the mock/provider is enabled and still succeeds with provider disabled.
 
-### PR-244: `feat(browser): add challenge boundary broker v2`
+### PR-245: `feat(browser): add challenge boundary broker v2`
 
 **Goal:** Promote login, password, 2FA, CAPTCHA, payment, privacy, and stale-auth states into structured boundary events that bridge to ask_user/checkpoint/resume.
 
@@ -97,7 +97,7 @@ cargo test --manifest-path src-tauri/Cargo.toml browser::agent_loop --lib
 
 **Manual smoke:** Run a task against `https://the-internet.herokuapp.com/login`; verify a password boundary produces an ask_user tool-call record in chat, the browser task pauses, user response is recorded, and resume continues from the same page state.
 
-### PR-245: `feat(harness): add browser parity suite`
+### PR-246: `feat(harness): add browser parity suite`
 
 **Goal:** Make browser-use parity measurable through harness cases instead of subjective inspection.
 
@@ -126,7 +126,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 **Manual smoke:** Run the browser parity suite and attach the generated scorecard path to the PR body.
 
-### PR-246: `feat(harness): add memory and gbrain adapters`
+### PR-247: `feat(harness): add memory and gbrain adapters`
 
 **Goal:** Evaluate both Memory System and gbrain through one memory harness target model.
 
@@ -158,7 +158,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 **Manual smoke:** Write a user preference, recall it through the chat agent, verify the harness records both Memory System and gbrain results, then apply a correction and verify stale facts score as failures.
 
-### PR-247: `feat(harness): add agent loop tools permissions hooks adapters`
+### PR-248: `feat(harness): add agent loop tools permissions hooks adapters`
 
 **Goal:** Cover the main agent loop and control-plane surfaces with harness adapters.
 
@@ -188,7 +188,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 **Manual smoke:** Trigger a controlled failing tool call; verify the UI still shows the session as running until the backend run actually finishes, and verify the harness episode contains both the failure and recovery.
 
-### PR-248: `feat(harness): add dashboard and report commands`
+### PR-249: `feat(harness): add dashboard and report commands`
 
 **Goal:** Make harness episodes, scorecards, traces, and artifacts visible and runnable from the app.
 
@@ -218,7 +218,7 @@ pnpm --dir ui typecheck
 
 **Manual smoke:** Run one browser case and one memory case from the dashboard; verify both episodes show trace and artifact links.
 
-### PR-249: `feat(autonomy): add skill prompt automation promotion gates`
+### PR-250: `feat(autonomy): add skill prompt automation promotion gates`
 
 **Goal:** Let failed episodes become learning candidates without silently mutating production memory, prompts, hooks, or skills.
 
@@ -260,14 +260,14 @@ Update this table after every PR is implemented, verified, merged, and synced.
 | #238 | merged | `e2d8e85` | harness core | Existing harness tests from PR. | N/A | Pass | Baseline runtime core exists. |
 | #240 | merged | `0c5829f` | browser identity | Existing browser identity tests from PR. | N/A | Pass | Auth profile broker baseline exists. |
 | #241 | merged | `5c3eedf` | browser identity startup | `browser::identity`, `browser::agent_loop`, `browser::context_manager`, `cargo check` from PR run. | Auth state can be selected for browser task startup. | Pass | Local `main` synced after merge. |
-| #242 | open | PR head | rollout tracker | `rg -n "PR-243\\|Memory System and gbrain\\|Track Ledger\\|Immediate Next Step\\|CAPTCHA automation remains allowlist-only" docs/superpowers/plans/2026-05-19-uclaw-agent-autonomy-rollout-tracker.md` | N/A | Pass | This PR creates the rollout tracker and PR queue; fill merge commit after merge. |
-| #243 | pending |  | browser perception |  |  |  |  |
-| #244 | pending |  | browser boundary |  |  |  |  |
-| #245 | pending |  | browser parity harness |  |  |  |  |
-| #246 | pending |  | memory/gbrain harness |  |  |  |  |
-| #247 | pending |  | agent loop control-plane harness |  |  |  |  |
-| #248 | pending |  | harness UI/reporting |  |  |  |  |
-| #249 | pending |  | self-improvement gates |  |  |  |  |
+| #242 | merged | `7e2a56a` | rollout tracker | `rg -n "PR-244\\|Memory System and gbrain\\|Track Ledger\\|Immediate Next Step\\|CAPTCHA automation remains allowlist-only" docs/superpowers/plans/2026-05-19-uclaw-agent-autonomy-rollout-tracker.md` | N/A | Pass | Local `main` synced after merge. |
+| #244 | in progress | PR head | browser perception | `browser::perception`, `browser::observation`, `browser::agent_loop`, `cargo check` | Not run; production OCR sidecar is deferred, provider seam is covered by mock/no-op tests. | Pass | Adds visual provider seam, mock/no-op providers, and optional `include_visual` browser observation metadata. |
+| #245 | pending |  | browser boundary |  |  |  |  |
+| #246 | pending |  | browser parity harness |  |  |  |  |
+| #247 | pending |  | memory/gbrain harness |  |  |  |  |
+| #248 | pending |  | agent loop control-plane harness |  |  |  |  |
+| #249 | pending |  | harness UI/reporting |  |  |  |  |
+| #250 | pending |  | self-improvement gates |  |  |  |  |
 
 ---
 
@@ -295,6 +295,6 @@ Each PR body should include this block:
 
 ## Immediate Next Step
 
-Start PR-243 next: `feat(browser): add visual perception adapter`.
+After PR-244 merges, start PR-245: `feat(browser): add challenge boundary broker v2`.
 
-Reason: PR #238 gives the harness substrate and #240/#241 give browser identity. Visual perception is the next reusable component needed by CAPTCHA detection, visual-only controls, browser parity fixtures, and future autonomy scorecards. It should land as a provider seam plus mock tests first, before any production OCR sidecar is wired.
+Reason: PR #238 gives the harness substrate, #240/#241 give browser identity, and PR-244 adds the visual perception seam. The next useful autonomy layer is structured boundary detection for login/password/2FA/CAPTCHA/payment/privacy/stale-auth states, routed through ask_user/checkpoint/resume instead of ad hoc task failure.

@@ -94,8 +94,11 @@ impl BrowserActionRegistry {
             BrowserAction::GetState {
                 tab_id,
                 include_screenshot,
+                include_visual,
             } => {
-                let observation = ctx.observe(&tab_id, include_screenshot).await?;
+                let observation = ctx
+                    .observe_with_visual(&tab_id, include_screenshot, include_visual)
+                    .await?;
                 let mut r = BrowserActionResult::success(
                     "browser_get_state",
                     Some("Observed page state".into()),

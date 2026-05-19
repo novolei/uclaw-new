@@ -26,6 +26,7 @@ use uuid::Uuid;
 
 use crate::browser::dom_state::{dom_state_from_raw, DOM_QUERY_SCRIPT};
 use crate::browser::identity::{PlaywrightOrigin, PlaywrightStorageState};
+use crate::browser::perception::{NoopVisualPerceptionProvider, VisualPerceptionProvider};
 use crate::browser::types::{DOMState, DomStateRaw, NavStatePayload, ScreencastFramePayload, TabInfo};
 
 // ── DOM cache ─────────────────────────────────────────────────────────────────
@@ -77,6 +78,7 @@ pub struct BrowserContext {
     active_tab_id: Arc<RwLock<Option<String>>>,
     dom_cache: Arc<RwLock<HashMap<String, (DOMState, Instant)>>>,
     screencast_stops: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
+    visual_perception_provider: Arc<dyn VisualPerceptionProvider>,
     session_id: String,
 }
 
@@ -138,8 +140,17 @@ impl BrowserContext {
             active_tab_id: Arc::new(RwLock::new(Some(init_id))),
             dom_cache: Arc::new(RwLock::new(HashMap::new())),
             screencast_stops: Arc::new(Mutex::new(HashMap::new())),
+            visual_perception_provider: Arc::new(NoopVisualPerceptionProvider),
             session_id: session_id.to_string(),
         })
+    }
+
+    pub fn with_visual_perception_provider(
+        mut self,
+        provider: Arc<dyn VisualPerceptionProvider>,
+    ) -> Self {
+        self.visual_perception_provider = provider;
+        self
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -378,9 +389,48 @@ impl BrowserContext {
         tab_id: &str,
         include_screenshot: bool,
     ) -> Result<crate::browser::observation::BrowserObservation> {
+        self.observe_with_visual(tab_id, include_screenshot, false).await
+    }
+
+    pub async fn observe_with_visual(
+        &self,
+        tab_id: &str,
+        include_screenshot: bool,
+        include_visual: bool,
+    ) -> Result<crate::browser::observation::BrowserObservation> {
         let state = self.get_dom_state(tab_id).await?;
-        let screenshot_b64 = if include_screenshot {
+        let screenshot_b64 = if include_screenshot || include_visual {
             Some(self.screenshot(tab_id).await?)
+        } else {
+            None
+        };
+        let visual_observation = if include_visual {
+            match screenshot_b64.as_deref() {
+                Some(screenshot) => {
+                    let screenshot_ref = format!(
+                        "browser://{}/{}/{}",
+                        self.session_id,
+                        tab_id,
+                        chrono::Utc::now().timestamp_millis()
+                    );
+                    match self
+                        .visual_perception_provider
+                        .analyze_screenshot(&screenshot_ref, screenshot)
+                        .await
+                    {
+                        Ok(observation) => observation,
+                        Err(error) => {
+                            tracing::warn!(
+                                provider = ?self.visual_perception_provider.kind(),
+                                error = %error,
+                                "visual perception provider failed; degrading to DOM-only observation"
+                            );
+                            None
+                        }
+                    }
+                }
+                None => None,
+            }
         } else {
             None
         };
@@ -394,6 +444,7 @@ impl BrowserContext {
             elements: state.elements,
             tabs: state.tabs,
             screenshot_b64,
+            visual_observation,
             timestamp_ms: chrono::Utc::now().timestamp_millis(),
         })
     }

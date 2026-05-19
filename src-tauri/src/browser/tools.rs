@@ -1104,7 +1104,7 @@ impl Tool for BrowserGetStateTool {
     fn name(&self) -> &str { "browser_get_state" }
 
     fn description(&self) -> &str {
-        "Return structured browser state for the current tab: URL, title, tabs, page text, interactive DOM elements, and optionally screenshot data."
+        "Return structured browser state for the current tab: URL, title, tabs, page text, interactive DOM elements, and optionally screenshot and visual perception data."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -1112,7 +1112,8 @@ impl Tool for BrowserGetStateTool {
             "type": "object",
             "properties": {
                 "tab_id": { "type": "string", "description": "Tab ID to observe" },
-                "include_screenshot": { "type": "boolean", "description": "Include base64 PNG screenshot data (default false)" }
+                "include_screenshot": { "type": "boolean", "description": "Include base64 PNG screenshot data (default false)" },
+                "include_visual": { "type": "boolean", "description": "Run the configured visual perception provider over a screenshot and include OCR/control candidates when available (default false)" }
             },
             "required": ["tab_id"]
         })
@@ -1123,9 +1124,10 @@ impl Tool for BrowserGetStateTool {
         let tab_id = params["tab_id"].as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
         let include_screenshot = params["include_screenshot"].as_bool().unwrap_or(false);
+        let include_visual = params["include_visual"].as_bool().unwrap_or(false);
         let ctx = self.ctx_mgr.get_or_create(&self.session_id).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let observation = ctx.observe(tab_id, include_screenshot).await
+        let observation = ctx.observe_with_visual(tab_id, include_screenshot, include_visual).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
         Ok(ToolOutput::new(
             serde_json::json!({ "ok": true, "observation": observation }),
