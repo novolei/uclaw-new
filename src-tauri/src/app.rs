@@ -893,29 +893,42 @@ impl AppState {
 
     /// Find a suitable Python interpreter, preferring embedded Python in resource_dir.
     fn find_python(resource_dir: Option<&std::path::Path>) -> Option<String> {
-        // 1. Check embedded Python (Release mode)
+        // 1. Check embedded Python (Release mode). Validate executability,
+        // not just existence: resource copying can materialize a broken
+        // `python3` launcher while the versioned `python3.13` binary is fine.
         if let Some(res_dir) = resource_dir {
-            let embedded = if cfg!(target_os = "windows") {
-                res_dir.join("python").join("python.exe")
+            let bin_dir = if cfg!(target_os = "windows") {
+                res_dir.join("python")
             } else {
-                res_dir.join("python").join("bin").join("python3")
+                res_dir.join("python").join("bin")
             };
-            if embedded.exists() {
-                let path_str = embedded.to_string_lossy().into_owned();
-                tracing::info!("Found embedded Python at {}", path_str);
+            let candidates = if cfg!(target_os = "windows") {
+                vec![bin_dir.join("python.exe")]
+            } else {
+                vec![
+                    bin_dir.join("python3.13"),
+                    bin_dir.join("python"),
+                    bin_dir.join("python3"),
+                ]
+            };
+            if let Some(path_str) = Self::first_working_python(candidates, "embedded") {
                 return Some(path_str);
             }
         }
 
         // 2. Check dev pyembed Python (cargo tauri dev)
-        let dev_pyembed = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        let dev_pyembed_bin = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("pyembed")
             .join("python")
-            .join("bin")
-            .join("python3");
-        if dev_pyembed.exists() {
-            let path_str = dev_pyembed.to_string_lossy().into_owned();
-            tracing::info!("Found dev pyembed Python at {}", path_str);
+            .join("bin");
+        if let Some(path_str) = Self::first_working_python(
+            vec![
+                dev_pyembed_bin.join("python3.13"),
+                dev_pyembed_bin.join("python"),
+                dev_pyembed_bin.join("python3"),
+            ],
+            "dev pyembed",
+        ) {
             return Some(path_str);
         }
 
@@ -936,6 +949,56 @@ impl AppState {
         None
     }
 
+    fn first_working_python(
+        candidates: Vec<std::path::PathBuf>,
+        source_label: &str,
+    ) -> Option<String> {
+        for candidate in candidates {
+            if !candidate.exists() {
+                continue;
+            }
+            let output = std::process::Command::new(&candidate)
+                .arg("--version")
+                .output();
+            match output {
+                Ok(output) if output.status.success() => {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let version = if stdout.trim().is_empty() {
+                        stderr.trim()
+                    } else {
+                        stdout.trim()
+                    };
+                    let path_str = candidate.to_string_lossy().into_owned();
+                    tracing::info!(
+                        source = source_label,
+                        python = %path_str,
+                        version,
+                        "Found working Python"
+                    );
+                    return Some(path_str);
+                }
+                Ok(output) => {
+                    tracing::warn!(
+                        source = source_label,
+                        python = %candidate.display(),
+                        status = ?output.status.code(),
+                        "Skipping unusable Python candidate"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        source = source_label,
+                        python = %candidate.display(),
+                        error = %error,
+                        "Skipping Python candidate that failed to launch"
+                    );
+                }
+            }
+        }
+        None
+    }
+
     /// gbrain Sprint 2.1 — find the bundled `bun` binary.
     /// Same find-resource-then-fall-back-to-dev shape as `find_python`.
     /// Returns `None` if neither location has the binary; caller (Stage
@@ -944,21 +1007,67 @@ impl AppState {
         // 1. Bundled — Tauri resource dir contains `bun` (per tauri.conf.json
         //    "bunembed/bun": "bun" mapping)
         if let Some(res_dir) = resource_dir {
-            let bundled = res_dir.join("bun");
-            if bundled.exists() {
-                tracing::info!("Found bundled Bun at {}", bundled.display());
-                return Some(bundled);
+            if let Some(bun) = Self::first_working_bun(vec![res_dir.join("bun")], "resource") {
+                return Some(bun);
             }
         }
         // 2. Dev — repo's bunembed/bun (after running setup-bun-runtime.sh)
         let dev_bun = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("bunembed")
             .join("bun");
-        if dev_bun.exists() {
-            tracing::debug!("Found dev Bun at {}", dev_bun.display());
-            return Some(dev_bun);
+        if let Some(bun) = Self::first_working_bun(vec![dev_bun], "dev") {
+            return Some(bun);
         }
         tracing::warn!("Bun binary not found in bundle or dev location");
+        None
+    }
+
+    fn first_working_bun(
+        candidates: Vec<std::path::PathBuf>,
+        source_label: &str,
+    ) -> Option<std::path::PathBuf> {
+        for candidate in candidates {
+            if !candidate.exists() {
+                continue;
+            }
+            let output = std::process::Command::new(&candidate)
+                .arg("--version")
+                .output();
+            match output {
+                Ok(output) if output.status.success() => {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let version = if stdout.trim().is_empty() {
+                        stderr.trim()
+                    } else {
+                        stdout.trim()
+                    };
+                    tracing::info!(
+                        source = source_label,
+                        bun = %candidate.display(),
+                        version,
+                        "Found working Bun"
+                    );
+                    return Some(candidate);
+                }
+                Ok(output) => {
+                    tracing::warn!(
+                        source = source_label,
+                        bun = %candidate.display(),
+                        status = ?output.status.code(),
+                        "Skipping unusable Bun candidate"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        source = source_label,
+                        bun = %candidate.display(),
+                        error = %error,
+                        "Skipping Bun candidate that failed to launch"
+                    );
+                }
+            }
+        }
         None
     }
 

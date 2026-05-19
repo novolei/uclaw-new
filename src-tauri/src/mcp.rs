@@ -1776,12 +1776,24 @@ impl McpManager {
                 return Ok(true);
             }
             if GbrainCliTransport::is_bundled_gbrain(&state.config) {
-                let desired = bundled_gbrain_tool_allowlist();
-                if state.config.tool_allowlist.as_ref() != Some(&desired) {
-                    state.config.tool_allowlist = Some(desired);
+                let enabled = state.config.enabled;
+                let auto_approve = state.config.auto_approve;
+                let mut desired_config = bundled_gbrain_config(bun_path, entry_path, gbrain_home);
+                desired_config.enabled = enabled;
+                desired_config.auto_approve = auto_approve;
+
+                if state.config.command != desired_config.command
+                    || state.config.args != desired_config.args
+                    || state.config.env != desired_config.env
+                    || state.config.tool_allowlist != desired_config.tool_allowlist
+                {
+                    state.config = desired_config;
                     self.save_config();
                     tracing::info!(
-                        "seed_bundled_gbrain: refreshed bundled gbrain tool allowlist"
+                        bun = %bun_path.display(),
+                        entry = %entry_path.display(),
+                        gbrain_home = %gbrain_home.display(),
+                        "seed_bundled_gbrain: refreshed bundled gbrain command/env/tool allowlist"
                     );
                     return Ok(true);
                 }
