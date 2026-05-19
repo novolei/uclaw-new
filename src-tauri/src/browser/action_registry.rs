@@ -20,8 +20,19 @@ impl BrowserActionRegistry {
         session_id: &str,
         action: BrowserAction,
     ) -> Result<BrowserActionResult> {
+        self.execute_with_identity(session_id, None, action).await
+    }
+
+    pub async fn execute_with_identity(
+        &self,
+        session_id: &str,
+        identity_profile_id: Option<&str>,
+        action: BrowserAction,
+    ) -> Result<BrowserActionResult> {
         let started = Instant::now();
-        let ctx = self.ctx_mgr.get_or_create(session_id).await?;
+        let ctx = self.ctx_mgr
+            .get_or_create_with_identity(session_id, identity_profile_id)
+            .await?;
         let mut result = match action {
             BrowserAction::Navigate { url, tab_id } => {
                 let id = ctx

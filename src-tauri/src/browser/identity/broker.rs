@@ -64,6 +64,15 @@ impl BrowserAuthProfileBroker {
         Ok(Some((profile, state)))
     }
 
+    pub fn load_storage_state_for_profile(
+        &self,
+        id: &str,
+    ) -> BrowserIdentityResult<(BrowserIdentityProfile, PlaywrightStorageState)> {
+        let profile = self.profile_store.get_profile(id)?;
+        let state = self.profile_store.load_storage_state(id)?;
+        Ok((profile, state))
+    }
+
     pub fn delete_profile(&self, id: &str) -> BrowserIdentityResult<bool> {
         self.profile_store.delete_profile(id)
     }
