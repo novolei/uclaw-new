@@ -31,6 +31,15 @@ fn main() {
         .setup(|app| {
             let app_state = AppState::new(app.handle())?;
 
+            // Attach AppHandle to MemUClient so consolidation events can emit
+            if let Some(memu_client) = &app_state.memu_client {
+                let memu_client = memu_client.clone();
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    memu_client.set_app_handle(app_handle).await;
+                });
+            }
+
             // System tray icon
             let tray = tauri::tray::TrayIconBuilder::new()
                 .tooltip("uClaw — AI Coworker")
