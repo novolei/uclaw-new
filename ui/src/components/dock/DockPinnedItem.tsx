@@ -1,7 +1,5 @@
 import * as React from 'react'
 import { motion, useSpring, useReducedMotion } from 'motion/react'
-import { useSortable } from '@dnd-kit/sortable'
-import { CSS } from '@dnd-kit/utilities'
 import {
   Tooltip,
   TooltipContent,
@@ -22,13 +20,8 @@ import { PinOff } from 'lucide-react'
 /**
  * Renders a pinned dock entry (conversation / workspace / automation) as
  * a CSS squircle with a deterministic 2-color gradient backplate and a
- * single character glyph (emoji if provided, else first letter of label
- * uppercased). Visually adjacent to DockItem (same SLOT_W / ICON_BOX /
- * magnification spring), but the icon visual is generated rather than
- * a PNG — pinned entries don't have a Liquid Glass asset.
- *
- * The active dot indicator from DockItem is intentionally absent: pinned
- * items don't have a current/active state in Phase 2B (only modes do).
+ * single character glyph. Visual layer only — drag and reorder are owned
+ * by the parent `<Reorder.Group>` in BottomDock.
  */
 const SLOT_W = 56
 const ICON_BOX = 44
@@ -63,29 +56,19 @@ export function DockPinnedItem({
 
   const scaleSpring = useSpring(1, { stiffness: 320, damping: 26, mass: 0.6 })
   const ySpring = useSpring(0, { stiffness: 320, damping: 26, mass: 0.6 })
-  // Reorder slide spring — see DockItem for full rationale. Same tuning
-  // here so mode + pinned items shift in lockstep when one of them is
-  // dragged across the dock.
-  const xShift = useSpring(0, { stiffness: 520, damping: 34, mass: 0.7 })
-
-  // DockPinnedItem always has a sortableId (required prop), so we pass it
-  // directly — no dummy-fallback pattern needed (unlike DockItem).
-  const sortable = useSortable({ id: sortableId })
 
   const dockOrder = useAtomValue(dockOrderAtom)
   const setDockOrder = useSetAtom(dockOrderAtom)
 
   const handleUnpin = React.useCallback(() => {
     const next = removeDockPin(dockOrder, sortableId)
-    if (next === dockOrder) return // safety: already gone
+    if (next === dockOrder) return
     setDockOrder(next)
     toast.success('已从 Dock 取消固定')
   }, [dockOrder, setDockOrder, sortableId])
 
   React.useEffect(() => {
-    // While dragging, suppress magnification — the lifted item carries its
-    // own constant 1.05 scale; neighbors shouldn't bobble in/out.
-    if (sortable.isDragging || prefersReducedMotion) {
+    if (prefersReducedMotion) {
       scaleSpring.set(1)
       ySpring.set(0)
       return
@@ -100,43 +83,7 @@ export function DockPinnedItem({
       scaleSpring.set(1)
       ySpring.set(0)
     }
-  }, [distance, scaleSpring, ySpring, prefersReducedMotion, sortable.isDragging])
-
-  const sortableXRaw = sortable.transform?.x ?? 0
-  React.useEffect(() => {
-    if (sortable.isDragging || prefersReducedMotion) {
-      xShift.jump(0)
-      return
-    }
-    xShift.set(sortableXRaw)
-  }, [sortableXRaw, sortable.isDragging, prefersReducedMotion, xShift])
-
-  const dragTransform = sortable.transform
-    ? CSS.Transform.toString(sortable.transform)
-    : undefined
-
-  // Same iOS-lift treatment as DockItem — see DockItem for the full
-  // rationale on the dragging vs idle style branches.
-  const motionStyle = sortable.isDragging
-    ? {
-        width: SLOT_W,
-        height: SLOT_W,
-        transformOrigin: 'bottom center' as const,
-        transform: dragTransform
-          ? `${dragTransform} translateY(-6px) scale(1.12)`
-          : 'translateY(-6px) scale(1.12)',
-        transition: undefined,
-        filter: 'brightness(1.04) drop-shadow(0 10px 18px hsl(var(--foreground) / 0.28)) drop-shadow(0 3px 6px hsl(var(--foreground) / 0.18))',
-        zIndex: 50,
-      }
-    : {
-        width: SLOT_W,
-        height: SLOT_W,
-        scale: scaleSpring,
-        y: ySpring,
-        x: xShift,
-        transformOrigin: 'bottom center' as const,
-      }
+  }, [distance, scaleSpring, ySpring, prefersReducedMotion])
 
   const seed = pinIdColorSeed(sortableId)
   const tileBackground = `linear-gradient(135deg, ${seed.from} 0%, ${seed.to} 100%)`
@@ -150,15 +97,17 @@ export function DockPinnedItem({
             <Tooltip>
               <TooltipTrigger asChild>
                 <motion.button
-                  ref={sortable.setNodeRef}
                   type="button"
                   data-sortable-id={sortableId}
-                  data-dragging={sortable.isDragging ? 'true' : undefined}
                   data-dock-pin
                   className="relative flex items-end justify-center select-none outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-0 rounded-[14px]"
-                  style={motionStyle}
-                  {...sortable.attributes}
-                  {...sortable.listeners}
+                  style={{
+                    width: SLOT_W,
+                    height: SLOT_W,
+                    scale: scaleSpring,
+                    y: ySpring,
+                    transformOrigin: 'bottom center',
+                  }}
                   onMouseEnter={() => onHoverIndexChange(index)}
                   onMouseLeave={() => onHoverIndexChange(null)}
                   onClick={onClick}

@@ -27,7 +27,34 @@ vi.mock('motion/react', () => ({
   },
   useSpring: () => ({ set: vi.fn(), jump: vi.fn() }),
   useReducedMotion: () => true,
+  useDragControls: () => ({ start: vi.fn() }),
   MotionConfig: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Reorder: {
+    Group: ({
+      values: _values,
+      onReorder: _onReorder,
+      axis: _axis,
+      as: _as,
+      layoutScroll: _layoutScroll,
+      children,
+      ...rest
+    }: Record<string, unknown> & { children?: React.ReactNode }) =>
+      <div {...(rest as React.HTMLAttributes<HTMLDivElement>)}>{children}</div>,
+    Item: ({
+      value: _value,
+      as: _as,
+      drag: _drag,
+      dragListener: _dragListener,
+      dragControls: _dragControls,
+      dragTransition: _dragTransition,
+      whileDrag: _whileDrag,
+      layout: _layout,
+      transition: _transition,
+      children,
+      ...rest
+    }: Record<string, unknown> & { children?: React.ReactNode }) =>
+      <div {...(rest as React.HTMLAttributes<HTMLDivElement>)}>{children}</div>,
+  },
 }))
 
 function renderRegion(enabled = true) {
