@@ -1,6 +1,7 @@
 use crate::harness::case::HarnessSubject;
 
 pub mod browser;
+pub mod memory;
 
 pub trait HarnessAdapter: Send + Sync {
     fn subject(&self) -> HarnessSubject;

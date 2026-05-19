@@ -497,6 +497,253 @@ pub async fn run_memory_inventory_smoke(
     .await)
 }
 
+pub fn build_memory_gbrain_eval_harness_report(
+    data_dir: &std::path::Path,
+    report: crate::harness::MemoryInventorySmokeReport,
+    evidence: crate::harness::adapters::memory::MemoryGbrainEvalEvidence,
+) -> Result<crate::harness::adapters::memory::MemoryGbrainSuiteReport, Error> {
+    let runtime = crate::harness::HarnessRuntime::new(
+        data_dir
+            .join("harness")
+            .join("memory-gbrain")
+            .join("eval"),
+    );
+    let adapter = crate::harness::adapters::memory::MemoryGbrainHarnessAdapter;
+    let input = crate::harness::adapters::memory::MemoryGbrainEvalInput {
+        inventory: report,
+        evidence,
+    };
+    adapter
+        .run_eval_suite(&runtime, &input)
+        .map_err(|error| Error::Internal(format!("memory/gbrain eval harness failed: {error}")))
+}
+
+#[tauri::command]
+pub async fn run_memory_gbrain_eval_harness(
+    state: State<'_, AppState>,
+) -> Result<crate::harness::adapters::memory::MemoryGbrainSuiteReport, Error> {
+    let report = crate::harness::memory_inventory::run_memory_inventory_smoke(
+        state.memu_client.clone(),
+        state.mcp_manager.clone(),
+    )
+    .await;
+    let evidence = run_memory_gbrain_eval_probe(
+        state.memu_client.clone(),
+        state.mcp_manager.clone(),
+    )
+    .await;
+    build_memory_gbrain_eval_harness_report(&state.data_dir, report, evidence)
+}
+
+async fn run_memory_gbrain_eval_probe(
+    memu_client: Option<std::sync::Arc<crate::memu::client::MemUClient>>,
+    mcp_manager: crate::mcp::SharedMcpManager,
+) -> crate::harness::adapters::memory::MemoryGbrainEvalEvidence {
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let fact = format!(
+        "browser parity harness grounded observation; known grounded user fact; gbrain grounded page fact; run_id={run_id}"
+    );
+    let (memu, gbrain) = tokio::join!(
+        probe_memu_write_recall(memu_client, fact.clone()),
+        probe_gbrain_write_recall(mcp_manager, run_id, fact),
+    );
+
+    let mut evidence = crate::harness::adapters::memory::MemoryGbrainEvalEvidence::default();
+    evidence.write_receipts.extend(memu.write_receipts);
+    evidence.write_receipts.extend(gbrain.write_receipts);
+    evidence.memu_recall_texts.extend(memu.recall_texts);
+    evidence.gbrain_recall_texts.extend(gbrain.recall_texts);
+    evidence.gbrain_page_texts.extend(gbrain.page_texts);
+    evidence
+}
+
+#[derive(Debug, Default)]
+struct MemoryEvalProbeOutput {
+    write_receipts: Vec<String>,
+    recall_texts: Vec<String>,
+    page_texts: Vec<String>,
+}
+
+async fn probe_memu_write_recall(
+    memu_client: Option<std::sync::Arc<crate::memu::client::MemUClient>>,
+    fact: String,
+) -> MemoryEvalProbeOutput {
+    let Some(client) = memu_client else {
+        return MemoryEvalProbeOutput::default();
+    };
+    let mut output = MemoryEvalProbeOutput::default();
+    if let Ok(result) = client
+        .create_item(
+            "harness_eval",
+            &fact,
+            vec!["uclaw-harness".to_string(), "memory-gbrain-eval".to_string()],
+            None,
+        )
+        .await
+    {
+        output
+            .write_receipts
+            .push(format!("memu:create_item:{:?}", result.memory_item));
+    }
+    if let Ok(result) = client
+        .retrieve(
+            vec![serde_json::json!({
+                "role": "user",
+                "content": "browser parity harness grounded observation known grounded user fact"
+            })],
+            None,
+            None,
+        )
+        .await
+    {
+        output
+            .recall_texts
+            .push(serde_json::to_string(&result).unwrap_or_default());
+    }
+    output
+}
+
+async fn probe_gbrain_write_recall(
+    mcp_manager: crate::mcp::SharedMcpManager,
+    run_id: String,
+    fact: String,
+) -> MemoryEvalProbeOutput {
+    let slug = format!("harness/memory-gbrain-eval/{run_id}");
+    let content = format!("# Memory gbrain eval\n\n{fact}\n");
+    let mut output = MemoryEvalProbeOutput::default();
+
+    if let Some(text) = call_gbrain_eval_tool(
+        mcp_manager.clone(),
+        "put_page",
+        serde_json::json!({ "slug": slug, "content": content }),
+    )
+    .await
+    {
+        output.write_receipts.push(format!("gbrain:put_page:{text}"));
+    }
+    if let Some(text) = call_gbrain_eval_tool(
+        mcp_manager.clone(),
+        "get_page",
+        serde_json::json!({ "slug": slug }),
+    )
+    .await
+    {
+        output.page_texts.push(text);
+    }
+    if let Some(text) = call_gbrain_eval_tool(
+        mcp_manager,
+        "search",
+        serde_json::json!({
+            "query": "gbrain grounded page fact",
+            "limit": 5
+        }),
+    )
+    .await
+    {
+        output.recall_texts.push(text);
+    }
+    output
+}
+
+async fn call_gbrain_eval_tool(
+    mcp_manager: crate::mcp::SharedMcpManager,
+    tool_name: &str,
+    arguments: serde_json::Value,
+) -> Option<String> {
+    let (transport, req_id) = {
+        let manager = mcp_manager.read().await;
+        if !matches!(
+            manager.status("gbrain"),
+            Some(crate::mcp::McpServerStatus::Connected)
+        ) {
+            return None;
+        }
+        manager.get_transport("gbrain").ok()?
+    };
+    let request = crate::mcp::JsonRpcRequest::call_tool(req_id, tool_name, arguments);
+    let response = transport.send(&request).await.ok()?;
+    if response.error.is_some() {
+        return None;
+    }
+    let result = serde_json::from_value::<crate::mcp::CallToolResult>(response.result?).ok()?;
+    if result.is_error {
+        return None;
+    }
+    Some(
+        result
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                crate::mcp::ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+#[cfg(test)]
+mod memory_gbrain_eval_harness_command_tests {
+    use super::build_memory_gbrain_eval_harness_report;
+    use crate::harness::memory_inventory::{
+        InventoryProbeStatus, MemoryInventorySmokeReport, MemoryInventoryTargetReport,
+    };
+
+    fn target(
+        name: &str,
+        status: InventoryProbeStatus,
+        item_count: u64,
+        tool_count: Option<u64>,
+        sample_keys: Vec<&str>,
+    ) -> MemoryInventoryTargetReport {
+        MemoryInventoryTargetReport {
+            target: name.to_string(),
+            status,
+            item_count,
+            category_count: None,
+            tool_count,
+            sample_keys: sample_keys.into_iter().map(ToString::to_string).collect(),
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn command_helper_records_memory_gbrain_scorecards() {
+        let tmp = tempfile::tempdir().unwrap();
+        let report = MemoryInventorySmokeReport {
+            ok: true,
+            generated_at: "2026-05-20T00:00:00Z".into(),
+            memu: target("memu", InventoryProbeStatus::Empty, 0, None, vec![]),
+            gbrain: target(
+                "gbrain",
+                InventoryProbeStatus::Pass,
+                2,
+                Some(5),
+                vec!["people/ryanliu"],
+            ),
+            observations: vec![],
+        };
+
+        let evidence = crate::harness::adapters::memory::MemoryGbrainEvalEvidence {
+            write_receipts: vec!["memu:ok".into(), "gbrain:ok".into()],
+            memu_recall_texts: vec![
+                "browser parity harness grounded observation; known grounded user fact".into(),
+            ],
+            gbrain_recall_texts: vec!["gbrain grounded page fact".into()],
+            gbrain_page_texts: vec![
+                "browser parity harness grounded observation; gbrain grounded page fact".into(),
+            ],
+            ..Default::default()
+        };
+
+        let suite = build_memory_gbrain_eval_harness_report(tmp.path(), report, evidence).unwrap();
+
+        assert!(suite.passed, "{suite:#?}");
+        assert_eq!(suite.scorecards.len(), 7);
+        assert!(tmp.path().join("harness/memory-gbrain/eval").exists());
+    }
+}
+
 fn classify_gbrain_error(error: &str) -> String {
     let lower = error.to_lowercase();
     if let Some(kind) = lower
