@@ -53,7 +53,7 @@ import { topLevelViewAtom } from '@/atoms/top-level-view'
 import { KaleidoscopeShell } from '@/views/Kaleidoscope/KaleidoscopeShell'
 import { MemoryVoiceCapture } from '@/components/memory/MemoryVoiceCapture'
 import { QuickCaptureDialog } from '@/components/memory/QuickCaptureDialog'
-import { BottomDockHoverRegion } from '@/components/dock/BottomDockHoverRegion'
+import { BottomDockHoverRegion, type BottomDockHoverRegionHandle } from '@/components/dock/BottomDockHoverRegion'
 import { bottomDockEnabledAtom } from '@/atoms/dock-atoms'
 
 export interface AppShellProps {
@@ -70,6 +70,9 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const showRightPanel = appMode === 'agent' && !!currentSessionId
   const focusMode = useAtomValue(focusModeAtom)
   const isDockEnabled = useAtomValue(bottomDockEnabledAtom)
+  // Ref wired to BottomDockHoverRegion's imperative handle. Used by Task 5
+  // (useDockBounce) to call forceReveal() / holdRevealed() from IPC events.
+  const dockHoverRef = React.useRef<BottomDockHoverRegionHandle>(null)
   useFocusModeShortcut()  // global Alt+F binding
 
   // Escalation modal: subscribe to pending escalations and show one at a time.
@@ -399,7 +402,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         <QuickCaptureDialog />
 
         {/* macOS Dock 风格底部导航栏 — 触底滑出，离开后自动收回 */}
-        {isDockEnabled && <BottomDockHoverRegion />}
+        {isDockEnabled && <BottomDockHoverRegion ref={dockHoverRef} />}
       </div>
     </AppShellProvider>
   )
