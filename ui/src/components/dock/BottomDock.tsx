@@ -5,7 +5,7 @@ import { DockItem } from './DockItem'
 import { ConnectionIndicator } from './ConnectionIndicator'
 import { DockDragHandle } from './DockDragHandle'
 import { useConnectionStatus } from './useConnectionStatus'
-import { bottomDockEnabledAtom } from '@/atoms/dock-atoms'
+import { bottomDockEnabledAtom, dockOrderAtom, type DockItemSpec } from '@/atoms/dock-atoms'
 import { appModeAtom, type AppMode } from '@/atoms/app-mode'
 import { topLevelViewAtom, type TopLevelView } from '@/atoms/top-level-view'
 import { kaleidoscopeModuleAtom, type KaleidoscopeModuleId } from '@/atoms/kaleidoscope'
@@ -31,17 +31,17 @@ interface ActionCtx {
   setKaleidoscopeModule: (m: KaleidoscopeModuleId) => void
 }
 
-interface NavItem {
-  id: string
+type ModeId = 'chat' | 'agent' | 'memory' | 'kaleidoscope'
+
+interface ModeMeta {
   iconSrc: string
   label: string
   isActive: (ctx: NavCtx) => boolean
   onClick: (ctx: ActionCtx) => void
 }
 
-const NAV_ITEMS: NavItem[] = [
-  {
-    id: 'chat',
+const MODE_REGISTRY: Record<ModeId, ModeMeta> = {
+  chat: {
     iconSrc: chatIcon,
     label: '聊天',
     isActive: ({ appMode, topLevelView }) =>
@@ -51,8 +51,7 @@ const NAV_ITEMS: NavItem[] = [
       setTopLevelView('workspace')
     },
   },
-  {
-    id: 'agent',
+  agent: {
     iconSrc: agentIcon,
     label: 'Agent',
     isActive: ({ appMode, topLevelView }) =>
@@ -62,8 +61,7 @@ const NAV_ITEMS: NavItem[] = [
       setTopLevelView('workspace')
     },
   },
-  {
-    id: 'memory',
+  memory: {
     iconSrc: memoryIcon,
     label: '记忆',
     isActive: ({ topLevelView, kaleidoscopeModule }) =>
@@ -73,8 +71,7 @@ const NAV_ITEMS: NavItem[] = [
       setTopLevelView('kaleidoscope')
     },
   },
-  {
-    id: 'kaleidoscope',
+  kaleidoscope: {
     iconSrc: kaleidoscopeIcon,
     label: '万花筒',
     isActive: ({ topLevelView, kaleidoscopeModule }) =>
@@ -83,7 +80,7 @@ const NAV_ITEMS: NavItem[] = [
       setTopLevelView('kaleidoscope')
     },
   },
-]
+}
 
 const SLIDE_HIDDEN_Y = 96 // px; large enough to clear dock height in any theme
 
@@ -110,6 +107,7 @@ const HIDE_TRANSITION = {
 
 export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | null {
   const isDockEnabled = useAtomValue(bottomDockEnabledAtom)
+  const dockOrder = useAtomValue(dockOrderAtom)
   const appMode = useAtomValue(appModeAtom)
   const topLevelView = useAtomValue(topLevelViewAtom)
   const kaleidoscopeModule = useAtomValue(kaleidoscopeModuleAtom)
@@ -148,25 +146,29 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
       onMouseLeave={() => setHoveredIndex(null)}
     >
       <DockDragHandle />
-      {NAV_ITEMS.map((item, i) => (
-        <DockItem
-          key={item.id}
-          icon={
-            <img
-              src={item.iconSrc}
-              alt={item.label}
-              draggable={false}
-              className="w-7 h-7 select-none pointer-events-none"
-            />
-          }
-          label={item.label}
-          isActive={item.isActive(navCtx)}
-          index={i}
-          hoveredIndex={hoveredIndex}
-          onHoverIndexChange={setHoveredIndex}
-          onClick={() => item.onClick(actionCtx)}
-        />
-      ))}
+      {dockOrder.map((spec, i) => {
+        if (spec.kind !== 'mode') return null
+        const meta = MODE_REGISTRY[spec.mode]
+        return (
+          <DockItem
+            key={`mode-${spec.mode}`}
+            icon={
+              <img
+                src={meta.iconSrc}
+                alt={meta.label}
+                draggable={false}
+                className="w-7 h-7 select-none pointer-events-none"
+              />
+            }
+            label={meta.label}
+            isActive={meta.isActive(navCtx)}
+            index={i}
+            hoveredIndex={hoveredIndex}
+            onHoverIndexChange={setHoveredIndex}
+            onClick={() => meta.onClick(actionCtx)}
+          />
+        )
+      })}
       <div
         className="mx-2 h-7 w-px self-center bg-border/50"
         aria-hidden="true"
