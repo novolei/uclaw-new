@@ -1,7 +1,6 @@
 import * as React from 'react'
 import { motion } from 'motion/react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { MessageSquare, Bot, Brain, Sparkles } from 'lucide-react'
 import { DockItem } from './DockItem'
 import { ConnectionIndicator } from './ConnectionIndicator'
 import { useConnectionStatus } from './useConnectionStatus'
@@ -9,6 +8,10 @@ import { bottomDockEnabledAtom } from '@/atoms/dock-atoms'
 import { appModeAtom, type AppMode } from '@/atoms/app-mode'
 import { topLevelViewAtom, type TopLevelView } from '@/atoms/top-level-view'
 import { kaleidoscopeModuleAtom, type KaleidoscopeModuleId } from '@/atoms/kaleidoscope'
+import chatIcon from '@/assets/dock-icons/chat.png'
+import agentIcon from '@/assets/dock-icons/agent.png'
+import memoryIcon from '@/assets/dock-icons/memory.png'
+import kaleidoscopeIcon from '@/assets/dock-icons/kaleidoscope.png'
 
 interface BottomDockProps {
   /** Controlled from BottomDockHoverRegion. Drives slide animation. */
@@ -29,7 +32,7 @@ interface ActionCtx {
 
 interface NavItem {
   id: string
-  icon: React.ReactNode
+  iconSrc: string
   label: string
   isActive: (ctx: NavCtx) => boolean
   onClick: (ctx: ActionCtx) => void
@@ -38,7 +41,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   {
     id: 'chat',
-    icon: <MessageSquare size={18} strokeWidth={1.75} />,
+    iconSrc: chatIcon,
     label: '聊天',
     isActive: ({ appMode, topLevelView }) =>
       appMode === 'chat' && topLevelView === 'workspace',
@@ -49,7 +52,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     id: 'agent',
-    icon: <Bot size={18} strokeWidth={1.75} />,
+    iconSrc: agentIcon,
     label: 'Agent',
     isActive: ({ appMode, topLevelView }) =>
       appMode === 'agent' && topLevelView === 'workspace',
@@ -60,7 +63,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     id: 'memory',
-    icon: <Brain size={18} strokeWidth={1.75} />,
+    iconSrc: memoryIcon,
     label: '记忆',
     isActive: ({ topLevelView, kaleidoscopeModule }) =>
       topLevelView === 'kaleidoscope' && kaleidoscopeModule === 'memory',
@@ -71,7 +74,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     id: 'kaleidoscope',
-    icon: <Sparkles size={18} strokeWidth={1.75} />,
+    iconSrc: kaleidoscopeIcon,
     label: '万花筒',
     isActive: ({ topLevelView, kaleidoscopeModule }) =>
       topLevelView === 'kaleidoscope' && kaleidoscopeModule !== 'memory',
@@ -146,7 +149,14 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
       {NAV_ITEMS.map((item, i) => (
         <DockItem
           key={item.id}
-          icon={item.icon}
+          icon={
+            <img
+              src={item.iconSrc}
+              alt={item.label}
+              draggable={false}
+              className="w-7 h-7 select-none pointer-events-none"
+            />
+          }
           label={item.label}
           isActive={item.isActive(navCtx)}
           index={i}
