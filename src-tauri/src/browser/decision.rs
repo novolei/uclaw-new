@@ -56,11 +56,15 @@ pub fn build_browser_decision_prompt(
          {{\"kind\":\"scroll\",\"tab_id\":string,\"direction\":\"up\"|\"down\"|\"left\"|\"right\",\"pixels\"?:number,\"index\"?:number}}\n\
          {{\"kind\":\"send_keys\",\"tab_id\":string,\"keys\":string}}\n\
          {{\"kind\":\"evaluate\",\"tab_id\":string,\"script\":string}}\n\
-         {{\"kind\":\"get_state\",\"tab_id\":string,\"include_screenshot\":boolean}}\n\n\
+         {{\"kind\":\"get_state\",\"tab_id\":string,\"include_screenshot\":boolean}}\n\
+         {{\"kind\":\"list_tabs\"}}\n\
+         {{\"kind\":\"switch_tab\",\"tab_id\":string}}\n\
+         {{\"kind\":\"close_tab\",\"tab_id\":string}}\n\n\
          Rules:\n\
          - Use status=continue only when action is non-null.\n\
          - Use status=done when the task is complete and finalAnswer explains the result.\n\
          - Use status=failed when the task cannot proceed and finalAnswer explains why.\n\
+         - When multiple tabs are open, inspect tabs and switch to the tab that best matches the next subtask before clicking or typing.\n\
          - Prefer DOM element indexes from the latest observation; do not invent indexes.\n\
          - Keep reasoning concise.\n\n\
          Task:\n{task}\n\n\
@@ -175,5 +179,18 @@ mod tests {
         assert!(prompt.contains("Return exactly one JSON object"));
         assert!(prompt.contains("\"status\": \"continue\" | \"done\" | \"failed\""));
         assert!(prompt.contains("Search for rust crates"));
+    }
+
+    #[test]
+    fn prompt_exposes_multi_tab_actions_to_autonomous_loop() {
+        let prompt = build_browser_decision_prompt(
+            "Compare two tabs",
+            &serde_json::json!({"tabs": []}),
+            None,
+            &[],
+        );
+        assert!(prompt.contains("\"kind\":\"list_tabs\""), "{prompt}");
+        assert!(prompt.contains("\"kind\":\"switch_tab\""), "{prompt}");
+        assert!(prompt.contains("\"kind\":\"close_tab\""), "{prompt}");
     }
 }

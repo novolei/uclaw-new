@@ -92,6 +92,33 @@ impl BrowserActionRegistry {
                 r.observation_json = Some(serde_json::to_value(observation)?);
                 r
             }
+            BrowserAction::ListTabs => {
+                let tabs = ctx.get_all_tabs().await;
+                let mut r = BrowserActionResult::success(
+                    "browser_list_tabs",
+                    Some(format!("Listed {} tab(s)", tabs.len())),
+                );
+                r.observation_json = Some(serde_json::json!({ "tabs": tabs }));
+                r
+            }
+            BrowserAction::SwitchTab { tab_id } => {
+                ctx.switch_tab(&tab_id, self.ctx_mgr.app_handle()).await?;
+                let mut r = BrowserActionResult::success(
+                    "browser_switch_tab",
+                    Some(format!("Switched to tab {tab_id}")),
+                );
+                r.tab_id = Some(tab_id);
+                r
+            }
+            BrowserAction::CloseTab { tab_id } => {
+                ctx.close_tab(&tab_id).await?;
+                let mut r = BrowserActionResult::success(
+                    "browser_close_tab",
+                    Some(format!("Closed tab {tab_id}")),
+                );
+                r.tab_id = ctx.active_or_first_tab_id().await;
+                r
+            }
         };
         result.duration_ms = started.elapsed().as_millis() as u64;
         Ok(result)

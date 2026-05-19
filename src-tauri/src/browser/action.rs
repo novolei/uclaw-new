@@ -10,6 +10,9 @@ pub enum BrowserAction {
     SendKeys { tab_id: String, keys: String },
     Evaluate { tab_id: String, script: String },
     GetState { tab_id: String, include_screenshot: bool },
+    ListTabs,
+    SwitchTab { tab_id: String },
+    CloseTab { tab_id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
