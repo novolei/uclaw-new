@@ -1781,6 +1781,47 @@ export const listenNavState = (
 ): Promise<UnlistenFn> =>
   listen<NavStatePayload>('browser:nav-state', ({ payload }) => handler(payload))
 
+export type BrowserTaskStatus = 'running' | 'completed' | 'failed' | 'stopped'
+export type BrowserTaskStepPhase = 'observe' | 'decide' | 'act' | 'recover' | 'done'
+
+export interface BrowserTaskStepPayload {
+  stepIndex: number
+  phase: BrowserTaskStepPhase
+  observationSummary: string
+  reasoning: string
+  actionName: string
+  actionArgs: unknown
+  ok: boolean
+  message: string | null
+  error: string | null
+  timestampMs: number
+}
+
+export interface BrowserTaskRunPayload {
+  runId: string
+  sessionId: string
+  task: string
+  status: BrowserTaskStatus
+  steps: BrowserTaskStepPayload[]
+}
+
+export interface BrowserTaskStepEventPayload {
+  runId: string
+  sessionId: string
+  status: BrowserTaskStatus
+  step: BrowserTaskStepPayload
+}
+
+export const listenBrowserTaskRun = (
+  handler: (payload: BrowserTaskRunPayload) => void,
+): Promise<UnlistenFn> =>
+  listen<BrowserTaskRunPayload>('browser:task-run', ({ payload }) => handler(payload))
+
+export const listenBrowserTaskStep = (
+  handler: (payload: BrowserTaskStepEventPayload) => void,
+): Promise<UnlistenFn> =>
+  listen<BrowserTaskStepEventPayload>('browser:task-step', ({ payload }) => handler(payload))
+
 // ─── Automation (Phase 3) ─────────────────────────────────────────────
 export interface AutomationActivity {
   id: string

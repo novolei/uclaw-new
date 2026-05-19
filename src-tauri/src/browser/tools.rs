@@ -5,6 +5,7 @@ use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
 use crate::browser::agent_loop::{BrowserAgentLoop, BrowserTaskRequest};
 use crate::browser::context::DevicePreset;
 use crate::browser::context_manager::BrowserContextManager;
+use crate::browser::decision::BrowserDecisionAdapter;
 use crate::browser::dom_state::format_dom_state_for_llm;
 
 // ── Macro: declare all 14 tool structs ────────────────────────────────────────
@@ -44,8 +45,18 @@ browser_tool!(BrowserCloseTabTool);
 browser_tool!(BrowserListSessionsTool);
 browser_tool!(BrowserCloseSessionTool);
 browser_tool!(BrowserCloseAllTool);
-browser_tool!(BrowserTaskTool);
-browser_tool!(RetryWithBrowserAgentTool);
+
+pub struct BrowserTaskTool {
+    pub ctx_mgr: Arc<BrowserContextManager>,
+    pub session_id: String,
+    pub decision_adapter: Arc<dyn BrowserDecisionAdapter>,
+}
+
+pub struct RetryWithBrowserAgentTool {
+    pub ctx_mgr: Arc<BrowserContextManager>,
+    pub session_id: String,
+    pub decision_adapter: Arc<dyn BrowserDecisionAdapter>,
+}
 
 // ── 1. BrowserNavigateTool ────────────────────────────────────────────────────
 
@@ -1290,7 +1301,7 @@ impl Tool for BrowserTaskTool {
     fn name(&self) -> &str { "browser_task" }
 
     fn description(&self) -> &str {
-        "Run an autonomous browser task loop. Current implementation opens/observes the browser and records structured task-step events; the LLM planner adapter is wired in the next stage."
+        "Run an autonomous browser task loop: observe page state, ask the active LLM for the next browser action, execute it, recover from stale page errors, and emit structured browser task events."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -1320,7 +1331,10 @@ impl Tool for BrowserTaskTool {
             .to_string();
         let max_steps = params["max_steps"].as_u64().map(|v| v as u32);
         let start_url = params["start_url"].as_str().map(|s| s.to_string());
-        let runner = BrowserAgentLoop::new(Arc::clone(&self.ctx_mgr));
+        let runner = BrowserAgentLoop::new(
+            Arc::clone(&self.ctx_mgr),
+            Arc::clone(&self.decision_adapter),
+        );
         let run = runner.run(BrowserTaskRequest {
             session_id: self.session_id.clone(),
             task,
@@ -1352,6 +1366,7 @@ impl Tool for RetryWithBrowserAgentTool {
         BrowserTaskTool {
             ctx_mgr: Arc::clone(&self.ctx_mgr),
             session_id: self.session_id.clone(),
+            decision_adapter: Arc::clone(&self.decision_adapter),
         }.parameters_schema()
     }
 
@@ -1359,6 +1374,7 @@ impl Tool for RetryWithBrowserAgentTool {
         BrowserTaskTool {
             ctx_mgr: Arc::clone(&self.ctx_mgr),
             session_id: self.session_id.clone(),
+            decision_adapter: Arc::clone(&self.decision_adapter),
         }.execute(params).await
     }
 }

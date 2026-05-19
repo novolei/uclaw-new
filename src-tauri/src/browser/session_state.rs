@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct BrowserTaskStep {
     pub step_index: u32,
+    pub phase: BrowserTaskStepPhase,
     pub observation_summary: String,
     pub reasoning: String,
     pub action_name: String,
@@ -31,4 +32,14 @@ pub enum BrowserTaskStatus {
     Completed,
     Failed,
     Stopped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserTaskStepPhase {
+    Observe,
+    Decide,
+    Act,
+    Recover,
+    Done,
 }

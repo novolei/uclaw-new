@@ -19,10 +19,12 @@ import {
 } from '@/atoms/browser-atoms'
 import { sessionBrowserPreviewMapAtom, type BrowserPreviewState } from '@/atoms/agent-atoms'
 import { useBrowserScreencast } from '@/hooks/useBrowserScreencast'
+import { useBrowserTaskEvents } from '@/hooks/useBrowserTaskEvents'
 import { BrowserAddressBar } from './BrowserAddressBar'
 import { BrowserTabBar } from './BrowserTabBar'
 import { BrowserScreencastView } from './BrowserScreencastView'
 import { BrowserStatusBar } from './BrowserStatusBar'
+import { BrowserTaskMonitor } from './BrowserTaskMonitor'
 
 interface BrowserPanelProps {
   agentSessionId: string
@@ -45,6 +47,7 @@ export function BrowserPanel({ agentSessionId }: BrowserPanelProps): React.React
   const displayUrl = domEntry?.url ?? currentUrl
 
   useBrowserScreencast(agentSessionId, activeTabId)
+  useBrowserTaskEvents(agentSessionId)
 
   // Subscribe to navigation state events for this session.
   //
@@ -134,6 +137,7 @@ export function BrowserPanel({ agentSessionId }: BrowserPanelProps): React.React
         url={displayUrl}
       />
       <BrowserScreencastView sessionId={agentSessionId} />
+      <BrowserTaskMonitor sessionId={agentSessionId} />
       <BrowserStatusBar sessionId={agentSessionId} />
     </div>
   )
