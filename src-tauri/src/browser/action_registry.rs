@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 use crate::browser::action::{BrowserAction, BrowserActionResult};
 use crate::browser::context_manager::BrowserContextManager;
@@ -119,8 +119,34 @@ impl BrowserActionRegistry {
                 r.tab_id = ctx.active_or_first_tab_id().await;
                 r
             }
+            BrowserAction::UploadFile { tab_id, index, file_path } => {
+                let resolved = resolve_workspace_file_path(&file_path)?;
+                ctx.upload_file(&tab_id, index, &resolved).await?;
+                BrowserActionResult::success(
+                    "browser_upload_file",
+                    Some(format!("Uploaded file '{file_path}' into element [{index}]")),
+                )
+            }
         };
         result.duration_ms = started.elapsed().as_millis() as u64;
         Ok(result)
     }
+}
+
+fn resolve_workspace_file_path(file_path: &str) -> Result<std::path::PathBuf> {
+    if file_path.contains("..") {
+        return Err(anyhow!("file_path must not contain '..'"));
+    }
+    let workspace_root = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("Documents/workground");
+    let abs_path = workspace_root.join(file_path);
+    let canonical_root = workspace_root.canonicalize().unwrap_or(workspace_root);
+    let canonical_abs = abs_path
+        .canonicalize()
+        .map_err(|_| anyhow!("File not found: {} (looked in {})", file_path, abs_path.display()))?;
+    if !canonical_abs.starts_with(&canonical_root) {
+        return Err(anyhow!("file_path must not escape the workspace directory"));
+    }
+    Ok(canonical_abs)
 }

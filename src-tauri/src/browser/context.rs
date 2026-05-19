@@ -447,6 +447,23 @@ impl BrowserContext {
         Ok(())
     }
 
+    pub async fn upload_file(&self, tab_id: &str, index: u32, file_path: &std::path::Path) -> Result<()> {
+        let selector = Self::index_selector(index);
+        let page = self.get_page(tab_id).await?;
+        let element = page.find_element(selector).await
+            .map_err(|_| anyhow!("Element with index {} not found", index))?;
+
+        use chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams;
+        let mut cmd = SetFileInputFilesParams::new(vec![file_path.to_string_lossy().to_string()]);
+        cmd.node_id = Some(element.node_id);
+
+        page.execute(cmd)
+            .await
+            .map_err(|e| anyhow!("setFileInputFiles failed: {e}"))?;
+        self.invalidate_dom_cache(tab_id).await;
+        Ok(())
+    }
+
     pub async fn scroll(
         &self,
         tab_id: &str,

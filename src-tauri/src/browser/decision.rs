@@ -31,6 +31,7 @@ pub fn build_browser_decision_prompt(
     task: &str,
     observation_json: &serde_json::Value,
     memory: Option<&BrowserTaskMemory>,
+    available_file_paths: &[String],
     previous_steps: &[BrowserTaskStep],
 ) -> String {
     let steps_json = serde_json::to_string_pretty(previous_steps)
@@ -40,6 +41,8 @@ pub fn build_browser_decision_prompt(
     let memory_json = memory
         .and_then(|m| serde_json::to_string_pretty(m).ok())
         .unwrap_or_else(|| "{}".to_string());
+    let available_files_json = serde_json::to_string_pretty(available_file_paths)
+        .unwrap_or_else(|_| "[]".to_string());
     format!(
         "You are the browser decision adapter for an AI browser agent.\n\
          Return exactly one JSON object matching this schema and no markdown:\n\
@@ -59,16 +62,19 @@ pub fn build_browser_decision_prompt(
          {{\"kind\":\"get_state\",\"tab_id\":string,\"include_screenshot\":boolean}}\n\
          {{\"kind\":\"list_tabs\"}}\n\
          {{\"kind\":\"switch_tab\",\"tab_id\":string}}\n\
-         {{\"kind\":\"close_tab\",\"tab_id\":string}}\n\n\
+         {{\"kind\":\"close_tab\",\"tab_id\":string}}\n\
+         {{\"kind\":\"upload_file\",\"tab_id\":string,\"index\":number,\"file_path\":string}}\n\n\
          Rules:\n\
          - Use status=continue only when action is non-null.\n\
          - Use status=done when the task is complete and finalAnswer explains the result.\n\
          - Use status=failed when the task cannot proceed and finalAnswer explains why.\n\
          - When multiple tabs are open, inspect tabs and switch to the tab that best matches the next subtask before clicking or typing.\n\
+         - For upload_file, file_path must exactly match one of the available files listed below; do not invent file paths.\n\
          - Prefer DOM element indexes from the latest observation; do not invent indexes.\n\
          - Keep reasoning concise.\n\n\
          Task:\n{task}\n\n\
          Browser task memory JSON:\n{memory_json}\n\n\
+         Available files JSON:\n{available_files_json}\n\n\
          Latest observation JSON:\n{observation_json}\n\n\
          Previous browser steps:\n{steps_json}\n"
     )
@@ -105,6 +111,7 @@ pub trait BrowserDecisionAdapter: Send + Sync {
         task: &str,
         observation_json: &serde_json::Value,
         memory: Option<&BrowserTaskMemory>,
+        available_file_paths: &[String],
         previous_steps: &[BrowserTaskStep],
     ) -> Result<BrowserDecision>;
 }
@@ -127,9 +134,16 @@ impl BrowserDecisionAdapter for LlmBrowserDecisionAdapter {
         task: &str,
         observation_json: &serde_json::Value,
         memory: Option<&BrowserTaskMemory>,
+        available_file_paths: &[String],
         previous_steps: &[BrowserTaskStep],
     ) -> Result<BrowserDecision> {
-        let prompt = build_browser_decision_prompt(task, observation_json, memory, previous_steps);
+        let prompt = build_browser_decision_prompt(
+            task,
+            observation_json,
+            memory,
+            available_file_paths,
+            previous_steps,
+        );
         let config = CompletionConfig {
             model: self.model.clone(),
             max_tokens: 1024,
@@ -175,6 +189,7 @@ mod tests {
             &serde_json::json!({"url": "https://example.test", "elements": []}),
             None,
             &[],
+            &[],
         );
         assert!(prompt.contains("Return exactly one JSON object"));
         assert!(prompt.contains("\"status\": \"continue\" | \"done\" | \"failed\""));
@@ -188,9 +203,23 @@ mod tests {
             &serde_json::json!({"tabs": []}),
             None,
             &[],
+            &[],
         );
         assert!(prompt.contains("\"kind\":\"list_tabs\""), "{prompt}");
         assert!(prompt.contains("\"kind\":\"switch_tab\""), "{prompt}");
         assert!(prompt.contains("\"kind\":\"close_tab\""), "{prompt}");
+    }
+
+    #[test]
+    fn prompt_exposes_file_upload_action_and_available_files() {
+        let prompt = build_browser_decision_prompt(
+            "Upload the report",
+            &serde_json::json!({"elements": [{"index": 7, "tag": "input"}]}),
+            None,
+            &["reports/q1.pdf".to_string()],
+            &[],
+        );
+        assert!(prompt.contains("\"kind\":\"upload_file\""), "{prompt}");
+        assert!(prompt.contains("reports/q1.pdf"), "{prompt}");
     }
 }

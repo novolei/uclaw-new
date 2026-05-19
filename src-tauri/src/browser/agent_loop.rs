@@ -28,6 +28,8 @@ pub struct BrowserTaskRequest {
     pub task: String,
     pub max_steps: Option<u32>,
     pub start_url: Option<String>,
+    #[serde(default)]
+    pub available_file_paths: Vec<String>,
 }
 
 pub struct BrowserAgentLoop {
@@ -99,7 +101,13 @@ impl BrowserAgentLoop {
 
             let decision = self
                 .decision_adapter
-                .decide(&request.task, &observation_json, memory.as_ref(), &run.steps)
+                .decide(
+                    &request.task,
+                    &observation_json,
+                    memory.as_ref(),
+                    &request.available_file_paths,
+                    &run.steps,
+                )
                 .await?;
             self.push_step(&mut run, BrowserTaskStep {
                 step_index,
@@ -387,6 +395,7 @@ fn tab_id_from_action(action: &BrowserAction) -> Option<String> {
         | BrowserAction::Evaluate { tab_id, .. }
         | BrowserAction::GetState { tab_id, .. }
         | BrowserAction::SwitchTab { tab_id } => Some(tab_id.clone()),
+        | BrowserAction::UploadFile { tab_id, .. } => Some(tab_id.clone()),
         BrowserAction::ListTabs | BrowserAction::CloseTab { .. } => None,
     }
 }
@@ -403,6 +412,7 @@ fn action_name(action: &BrowserAction) -> &'static str {
         BrowserAction::ListTabs => "browser_list_tabs",
         BrowserAction::SwitchTab { .. } => "browser_switch_tab",
         BrowserAction::CloseTab { .. } => "browser_close_tab",
+        BrowserAction::UploadFile { .. } => "browser_upload_file",
     }
 }
 

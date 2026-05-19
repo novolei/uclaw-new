@@ -13,6 +13,7 @@ pub enum BrowserAction {
     ListTabs,
     SwitchTab { tab_id: String },
     CloseTab { tab_id: String },
+    UploadFile { tab_id: String, index: u32, file_path: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
