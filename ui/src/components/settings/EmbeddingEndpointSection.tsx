@@ -1,8 +1,9 @@
 import * as React from 'react'
-import { Save, RotateCcw } from 'lucide-react'
+import { Save, RotateCcw, Plug } from 'lucide-react'
 import {
   getEmbeddingConfig,
   setEmbeddingConfig,
+  testEmbeddingEndpoint,
   type EmbeddingEndpointConfig,
 } from '@/lib/embedding-endpoint'
 
@@ -18,6 +19,7 @@ export function EmbeddingEndpointSection(): React.ReactElement {
   const [pristine, setPristine] = React.useState<EmbeddingEndpointConfig>(DEFAULT_CONFIG)
   const [loading, setLoading] = React.useState(false)
   const [saving, setSaving] = React.useState(false)
+  const [testing, setTesting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [toast, setToast] = React.useState<string | null>(null)
 
@@ -61,6 +63,20 @@ export function EmbeddingEndpointSection(): React.ReactElement {
     setConfig(pristine)
     setError(null)
     setToast(null)
+  }
+
+  const handleTest = async () => {
+    setTesting(true)
+    setError(null)
+    setToast(null)
+    try {
+      await testEmbeddingEndpoint(config.base_url)
+      setToast(`✓ ${config.base_url} 可达`)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setTesting(false)
+    }
   }
 
   return (
@@ -116,15 +132,24 @@ export function EmbeddingEndpointSection(): React.ReactElement {
       <div className="flex items-center gap-2 pt-2">
         <button
           onClick={handleSave}
-          disabled={!dirty || saving || loading}
+          disabled={!dirty || saving || loading || testing}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium bg-primary text-primary-foreground disabled:opacity-50"
         >
           <Save size={11} />
           {saving ? '保存中...' : '保存'}
         </button>
         <button
+          onClick={handleTest}
+          disabled={saving || loading || testing || !config.base_url}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] bg-muted text-foreground hover:bg-accent disabled:opacity-50"
+          title="2 秒内 GET <base_url>/models 验证端点可达"
+        >
+          <Plug size={11} />
+          {testing ? '测试中...' : '测试连接'}
+        </button>
+        <button
           onClick={handleReset}
-          disabled={!dirty || saving}
+          disabled={!dirty || saving || testing}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] bg-muted text-muted-foreground hover:bg-accent disabled:opacity-50"
         >
           <RotateCcw size={11} />
