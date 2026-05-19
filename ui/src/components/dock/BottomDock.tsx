@@ -17,7 +17,7 @@ import { DockPinnedItem } from './DockPinnedItem'
 import { ConnectionIndicator } from './ConnectionIndicator'
 import { DockDragHandle } from './DockDragHandle'
 import { useConnectionStatus } from './useConnectionStatus'
-import { bottomDockEnabledAtom, dockOrderAtom, applyDockReorder, type DockItemSpec } from '@/atoms/dock-atoms'
+import { bottomDockEnabledAtom, dockOrderAtom, applyDockReorder, dockBounceKeysAtom, type DockItemSpec } from '@/atoms/dock-atoms'
 import { appModeAtom, type AppMode } from '@/atoms/app-mode'
 import { topLevelViewAtom, type TopLevelView } from '@/atoms/top-level-view'
 import { kaleidoscopeModuleAtom, type KaleidoscopeModuleId } from '@/atoms/kaleidoscope'
@@ -133,6 +133,7 @@ const HIDE_TRANSITION = {
 export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | null {
   const isDockEnabled = useAtomValue(bottomDockEnabledAtom)
   const dockOrder = useAtomValue(dockOrderAtom)
+  const bounceKeys = useAtomValue(dockBounceKeysAtom)
   const appMode = useAtomValue(appModeAtom)
   const topLevelView = useAtomValue(topLevelViewAtom)
   const kaleidoscopeModule = useAtomValue(kaleidoscopeModuleAtom)
@@ -219,6 +220,7 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
                     <DockItem
                       key={sortableId}
                       sortableId={sortableId}
+                      bounceKey={bounceKeys[sortableId]}
                       icon={
                         <img
                           src={meta.iconSrc}

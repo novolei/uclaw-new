@@ -55,6 +55,7 @@ import { MemoryVoiceCapture } from '@/components/memory/MemoryVoiceCapture'
 import { QuickCaptureDialog } from '@/components/memory/QuickCaptureDialog'
 import { BottomDockHoverRegion, type BottomDockHoverRegionHandle } from '@/components/dock/BottomDockHoverRegion'
 import { bottomDockEnabledAtom } from '@/atoms/dock-atoms'
+import { useDockBounce } from '@/hooks/useDockBounce'
 
 export interface AppShellProps {
   /** Context 值，用于传递给子组件 */
@@ -73,6 +74,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   // Ref wired to BottomDockHoverRegion's imperative handle. Used by Task 5
   // (useDockBounce) to call forceReveal() / holdRevealed() from IPC events.
   const dockHoverRef = React.useRef<BottomDockHoverRegionHandle>(null)
+  useDockBounce(dockHoverRef)
   useFocusModeShortcut()  // global Alt+F binding
 
   // Escalation modal: subscribe to pending escalations and show one at a time.
