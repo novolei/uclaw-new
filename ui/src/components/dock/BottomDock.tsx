@@ -1,11 +1,22 @@
 import * as React from 'react'
 import { motion } from 'motion/react'
 import { useAtomValue, useSetAtom } from 'jotai'
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+} from '@dnd-kit/sortable'
 import { DockItem } from './DockItem'
 import { ConnectionIndicator } from './ConnectionIndicator'
 import { DockDragHandle } from './DockDragHandle'
 import { useConnectionStatus } from './useConnectionStatus'
-import { bottomDockEnabledAtom } from '@/atoms/dock-atoms'
+import { bottomDockEnabledAtom, dockOrderAtom, applyDockReorder, type DockItemSpec } from '@/atoms/dock-atoms'
 import { appModeAtom, type AppMode } from '@/atoms/app-mode'
 import { topLevelViewAtom, type TopLevelView } from '@/atoms/top-level-view'
 import { kaleidoscopeModuleAtom, type KaleidoscopeModuleId } from '@/atoms/kaleidoscope'
@@ -31,17 +42,17 @@ interface ActionCtx {
   setKaleidoscopeModule: (m: KaleidoscopeModuleId) => void
 }
 
-interface NavItem {
-  id: string
+type ModeId = 'chat' | 'agent' | 'memory' | 'kaleidoscope'
+
+interface ModeMeta {
   iconSrc: string
   label: string
   isActive: (ctx: NavCtx) => boolean
   onClick: (ctx: ActionCtx) => void
 }
 
-const NAV_ITEMS: NavItem[] = [
-  {
-    id: 'chat',
+const MODE_REGISTRY: Record<ModeId, ModeMeta> = {
+  chat: {
     iconSrc: chatIcon,
     label: '聊天',
     isActive: ({ appMode, topLevelView }) =>
@@ -51,8 +62,7 @@ const NAV_ITEMS: NavItem[] = [
       setTopLevelView('workspace')
     },
   },
-  {
-    id: 'agent',
+  agent: {
     iconSrc: agentIcon,
     label: 'Agent',
     isActive: ({ appMode, topLevelView }) =>
@@ -62,8 +72,7 @@ const NAV_ITEMS: NavItem[] = [
       setTopLevelView('workspace')
     },
   },
-  {
-    id: 'memory',
+  memory: {
     iconSrc: memoryIcon,
     label: '记忆',
     isActive: ({ topLevelView, kaleidoscopeModule }) =>
@@ -73,8 +82,7 @@ const NAV_ITEMS: NavItem[] = [
       setTopLevelView('kaleidoscope')
     },
   },
-  {
-    id: 'kaleidoscope',
+  kaleidoscope: {
     iconSrc: kaleidoscopeIcon,
     label: '万花筒',
     isActive: ({ topLevelView, kaleidoscopeModule }) =>
@@ -83,7 +91,20 @@ const NAV_ITEMS: NavItem[] = [
       setTopLevelView('kaleidoscope')
     },
   },
-]
+}
+
+function specToSortableId(spec: DockItemSpec): string {
+  switch (spec.kind) {
+    case 'mode':
+      return `mode-${spec.mode}`
+    case 'pinned-conversation':
+      return `conv-${spec.sessionId}`
+    case 'pinned-workspace':
+      return `space-${spec.spaceId}`
+    case 'pinned-automation':
+      return `auto-${spec.specId}`
+  }
+}
 
 const SLIDE_HIDDEN_Y = 96 // px; large enough to clear dock height in any theme
 
@@ -110,17 +131,40 @@ const HIDE_TRANSITION = {
 
 export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | null {
   const isDockEnabled = useAtomValue(bottomDockEnabledAtom)
+  const dockOrder = useAtomValue(dockOrderAtom)
   const appMode = useAtomValue(appModeAtom)
   const topLevelView = useAtomValue(topLevelViewAtom)
   const kaleidoscopeModule = useAtomValue(kaleidoscopeModuleAtom)
   const setAppMode = useSetAtom(appModeAtom)
   const setTopLevelView = useSetAtom(topLevelViewAtom)
   const setKaleidoscopeModule = useSetAtom(kaleidoscopeModuleAtom)
+  const setDockOrder = useSetAtom(dockOrderAtom)
 
   const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null)
 
   // Rules of Hooks: keep before any early return.
   useConnectionStatus()
+
+  // Long-press 200 ms before drag activates — keeps simple taps responsive.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+  )
+
+  const sortableIds = React.useMemo(
+    () => dockOrder.map(specToSortableId),
+    [dockOrder],
+  )
+
+  const handleDragEnd = React.useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event
+      if (!over) return
+      setDockOrder((current) =>
+        applyDockReorder(current, sortableIds, String(active.id), String(over.id)),
+      )
+    },
+    [sortableIds, setDockOrder],
+  )
 
   // Reset magnification when collapsed so reopening doesn't briefly show
   // a stale hovered icon before mouse lands somewhere new.
@@ -138,42 +182,53 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
   }
 
   return (
-    <motion.div
-      role="navigation"
-      aria-label="底部导航"
-      className="group relative flex items-end gap-1 px-3 pt-3 pb-2 rounded-t-2xl bg-popover/85 backdrop-blur-xl border-t border-x border-border/40 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.35)] supports-[backdrop-filter]:bg-popover/70 will-change-transform"
-      initial={false}
-      animate={{ y: revealed ? 0 : SLIDE_HIDDEN_Y, opacity: revealed ? 1 : 0 }}
-      transition={revealed ? REVEAL_TRANSITION : HIDE_TRANSITION}
-      onMouseLeave={() => setHoveredIndex(null)}
-    >
-      <DockDragHandle />
-      {NAV_ITEMS.map((item, i) => (
-        <DockItem
-          key={item.id}
-          icon={
-            <img
-              src={item.iconSrc}
-              alt={item.label}
-              draggable={false}
-              className="w-7 h-7 select-none pointer-events-none"
-            />
-          }
-          label={item.label}
-          isActive={item.isActive(navCtx)}
-          index={i}
-          hoveredIndex={hoveredIndex}
-          onHoverIndexChange={setHoveredIndex}
-          onClick={() => item.onClick(actionCtx)}
-        />
-      ))}
-      <div
-        className="mx-2 h-7 w-px self-center bg-border/50"
-        aria-hidden="true"
-      />
-      <div className="flex items-center self-center pb-1 pr-1">
-        <ConnectionIndicator />
-      </div>
-    </motion.div>
+    <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+      <SortableContext items={sortableIds} strategy={horizontalListSortingStrategy}>
+        <motion.div
+          role="navigation"
+          aria-label="底部导航"
+          data-dock-dnd-root
+          className="group relative flex items-end gap-1 px-3 pt-3 pb-2 rounded-t-2xl bg-popover/85 backdrop-blur-xl border-t border-x border-border/40 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.35)] supports-[backdrop-filter]:bg-popover/70 will-change-transform"
+          initial={false}
+          animate={{ y: revealed ? 0 : SLIDE_HIDDEN_Y, opacity: revealed ? 1 : 0 }}
+          transition={revealed ? REVEAL_TRANSITION : HIDE_TRANSITION}
+          onMouseLeave={() => setHoveredIndex(null)}
+        >
+          <DockDragHandle />
+          {dockOrder.map((spec, i) => {
+            if (spec.kind !== 'mode') return null
+            const meta = MODE_REGISTRY[spec.mode]
+            const sortableId = specToSortableId(spec)
+            return (
+              <DockItem
+                key={sortableId}
+                sortableId={sortableId}
+                icon={
+                  <img
+                    src={meta.iconSrc}
+                    alt={meta.label}
+                    draggable={false}
+                    className="w-7 h-7 select-none pointer-events-none"
+                  />
+                }
+                label={meta.label}
+                isActive={meta.isActive(navCtx)}
+                index={i}
+                hoveredIndex={hoveredIndex}
+                onHoverIndexChange={setHoveredIndex}
+                onClick={() => meta.onClick(actionCtx)}
+              />
+            )
+          })}
+          <div
+            className="mx-2 h-7 w-px self-center bg-border/50"
+            aria-hidden="true"
+          />
+          <div className="flex items-center self-center pb-1 pr-1">
+            <ConnectionIndicator />
+          </div>
+        </motion.div>
+      </SortableContext>
+    </DndContext>
   )
 }

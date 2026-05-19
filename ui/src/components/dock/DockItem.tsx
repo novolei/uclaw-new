@@ -1,5 +1,7 @@
 import * as React from 'react'
 import { motion, useSpring, useReducedMotion } from 'motion/react'
+import { useSortable } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import {
   Tooltip,
   TooltipContent,
@@ -15,6 +17,9 @@ interface DockItemProps {
   hoveredIndex: number | null
   onHoverIndexChange: (index: number | null) => void
   onClick: () => void
+  /** Phase 2A: id used by dnd-kit's SortableContext. When undefined,
+   *  the item is not sortable (drag-and-drop disabled). */
+  sortableId?: string
 }
 
 /**
@@ -42,6 +47,7 @@ export function DockItem({
   hoveredIndex,
   onHoverIndexChange,
   onClick,
+  sortableId,
 }: DockItemProps): React.ReactElement {
   const prefersReducedMotion = useReducedMotion()
   const distance =
@@ -50,8 +56,20 @@ export function DockItem({
   const scaleSpring = useSpring(1, { stiffness: 320, damping: 26, mass: 0.6 })
   const ySpring = useSpring(0, { stiffness: 320, damping: 26, mass: 0.6 })
 
+  // dnd-kit sortable hookup. When sortableId is undefined, we still
+  // call the hook (Rules of Hooks) but with a dummy id and ignore its
+  // outputs — DockItem stays usable from non-sortable contexts (tests).
+  //
+  // The dummy id is intentionally never registered in any ambient
+  // SortableContext, so the hook returns inert defaults. Do NOT
+  // "optimize" this by wrapping the hook call in a conditional —
+  // that would violate Rules of Hooks.
+  const sortable = useSortable({ id: sortableId ?? `__non-sortable-${index}` })
+
   React.useEffect(() => {
-    if (prefersReducedMotion) {
+    // While dragging, suppress magnification — the lifted item carries its
+    // own constant 1.05 scale; neighbors shouldn't bobble in/out.
+    if (sortable.isDragging || prefersReducedMotion) {
       scaleSpring.set(1)
       ySpring.set(0)
       return
@@ -66,37 +84,58 @@ export function DockItem({
       scaleSpring.set(1)
       ySpring.set(0)
     }
-  }, [distance, scaleSpring, ySpring, prefersReducedMotion])
+  }, [distance, scaleSpring, ySpring, prefersReducedMotion, sortable.isDragging])
+
+  const dragTransform = sortable.transform
+    ? CSS.Transform.toString(sortable.transform)
+    : undefined
+
+  // Branch the style object: dnd-kit owns transform during drag; motion
+  // springs own it otherwise. Avoids motion-vs-CSS transform collision.
+  const motionStyle = sortable.isDragging
+    ? {
+        width: SLOT_W,
+        height: SLOT_W,
+        transformOrigin: 'bottom center' as const,
+        transform: dragTransform
+          ? `${dragTransform} scale(1.05)`
+          : 'scale(1.05)',
+        transition: sortable.transition,
+        zIndex: 50,
+      }
+    : {
+        width: SLOT_W,
+        height: SLOT_W,
+        scale: scaleSpring,
+        y: ySpring,
+        transformOrigin: 'bottom center' as const,
+      }
 
   return (
     <TooltipProvider delayDuration={140} skipDelayDuration={80}>
       <Tooltip>
         <TooltipTrigger asChild>
           <motion.button
+            ref={sortableId ? sortable.setNodeRef : undefined}
             type="button"
+            {...(sortableId ? sortable.attributes : {})}
+            {...(sortableId ? sortable.listeners : {})}
+            data-sortable-id={sortableId ?? undefined}
+            data-dragging={sortable.isDragging ? 'true' : undefined}
             className="relative flex items-end justify-center select-none outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-0 rounded-[14px]"
-            style={{
-              width: SLOT_W,
-              height: SLOT_W,
-              scale: scaleSpring,
-              y: ySpring,
-              transformOrigin: 'bottom center',
-            }}
+            style={motionStyle}
             onMouseEnter={() => onHoverIndexChange(index)}
             onMouseLeave={() => onHoverIndexChange(null)}
             onClick={onClick}
             aria-label={label}
             aria-pressed={isActive}
           >
-            {/* Icon renders flush — no slot backplate. The Liquid Glass PNG
-                IS the visual; an inner pill would compete with it. */}
             <span
               className="flex items-center justify-center"
               style={{ width: ICON_BOX, height: ICON_BOX }}
             >
               {icon}
             </span>
-            {/* Active indicator — solid primary dot 4 px below the button bottom edge, with a soft glow. */}
             {isActive && (
               <span
                 data-dock-active-dot

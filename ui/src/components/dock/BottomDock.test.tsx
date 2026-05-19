@@ -5,7 +5,7 @@ import { createStore, Provider as JotaiProvider } from 'jotai'
 import { MotionConfig } from 'motion/react'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { BottomDock } from './BottomDock'
-import { bottomDockEnabledAtom } from '@/atoms/dock-atoms'
+import { bottomDockEnabledAtom, dockOrderAtom, type DockItemSpec } from '@/atoms/dock-atoms'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue({}) }))
 vi.mock('./useConnectionStatus', () => ({ useConnectionStatus: () => {} }))
@@ -37,6 +37,17 @@ function renderDock(enabled = true) {
   )
 }
 
+function renderDockWithOrder(order: DockItemSpec[]) {
+  const store = createStore()
+  store.set(bottomDockEnabledAtom, true)
+  store.set(dockOrderAtom, order)
+  return render(
+    <JotaiProvider store={store}>
+      <BottomDock revealed />
+    </JotaiProvider>,
+  )
+}
+
 describe('BottomDock · icons', () => {
   it('renders an <img> for every dock item (not lucide svg)', () => {
     renderDock()
@@ -55,5 +66,35 @@ describe('BottomDock · icons', () => {
       .getByRole('button', { name: '聊天' })
       .querySelector('img') as HTMLImageElement
     expect(chatImg.src).toMatch(/chat\.png/)
+  })
+})
+
+describe('BottomDock · atom-driven order', () => {
+  it('renders one button per dockOrderAtom entry, in atom order', () => {
+    const { container } = renderDock()
+    const buttons = container.querySelectorAll('button[aria-label]')
+    // Default atom seed produces 聊天 / Agent / 记忆 / 万花筒, in that order.
+    expect(buttons[0].getAttribute('aria-label')).toBe('聊天')
+    expect(buttons[1].getAttribute('aria-label')).toBe('Agent')
+    expect(buttons[2].getAttribute('aria-label')).toBe('记忆')
+    expect(buttons[3].getAttribute('aria-label')).toBe('万花筒')
+  })
+
+  it('reflects a reordered atom in render order', () => {
+    const { container } = renderDockWithOrder([
+      { kind: 'mode', mode: 'agent' },
+      { kind: 'mode', mode: 'chat' },
+      { kind: 'mode', mode: 'memory' },
+      { kind: 'mode', mode: 'kaleidoscope' },
+    ])
+    const buttons = container.querySelectorAll('button[aria-label]')
+    expect(buttons[0].getAttribute('aria-label')).toBe('Agent')
+    expect(buttons[1].getAttribute('aria-label')).toBe('聊天')
+  })
+
+  it('mounts inside a DndContext (data-dock-dnd-root marker present)', () => {
+    const { container } = renderDock()
+    const marker = container.querySelector('[data-dock-dnd-root]')
+    expect(marker).not.toBeNull()
   })
 })
