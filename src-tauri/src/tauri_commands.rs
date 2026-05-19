@@ -428,6 +428,81 @@ pub async fn get_embedding_config(
     Ok((&cfg.embedding_endpoint).into())
 }
 
+/// Sprint 2.2.5c — wall-clock ceiling on the embedding-endpoint probe.
+/// Long enough that a slow LAN to a llama-server box can still respond
+/// (~1s latencies are normal under load), tight enough that the Save
+/// button can't lock the UI when the URL is a typo pointing at a black
+/// hole.
+const EMBEDDING_PROBE_TIMEOUT_SECS: u64 = 2;
+
+/// Sprint 2.2.5c — send a `GET <base_url>/models` (the OpenAI-compatible
+/// liveness endpoint, also what gbrain queries before its first embed
+/// call). Returns Ok(()) on any HTTP response with status < 500 — even a
+/// 401/404 confirms there's _something_ listening, which is the level of
+/// confidence we want at config time. Returns Err with an actionable
+/// message on connection refused, DNS failure, TLS error, or timeout.
+///
+/// Trims trailing slashes from `base_url` so `http://h/v1/` and
+/// `http://h/v1` both probe the same URL. Standalone helper (not on
+/// AppState) so both `set_embedding_config` and `test_embedding_endpoint`
+/// can call it without duplicating the reqwest setup.
+async fn probe_embedding_endpoint(base_url: &str) -> Result<(), String> {
+    let trimmed = base_url.trim_end_matches('/');
+    let probe_url = format!("{}/models", trimmed);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(EMBEDDING_PROBE_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("build reqwest client: {}", e))?;
+    match client.get(&probe_url).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.is_server_error() {
+                // 5xx → upstream is reachable but broken. Treat as a
+                // soft failure with a hint (vs the hard-fail we use for
+                // unreachable).
+                Err(format!(
+                    "endpoint reachable but returned {} — verify the \
+                     embedding server (llama-server / memU /v1) is \
+                     healthy",
+                    status.as_u16()
+                ))
+            } else {
+                // 2xx / 4xx both prove there's an HTTP server at the
+                // URL (4xx commonly = auth / not-implemented on a real
+                // OpenAI-compatible /models route, still better than
+                // a typo at a black hole).
+                Ok(())
+            }
+        }
+        Err(e) => {
+            if e.is_timeout() {
+                Err(format!(
+                    "embedding endpoint {} did not respond within {}s — \
+                     check the URL and that the embedding server is running",
+                    probe_url, EMBEDDING_PROBE_TIMEOUT_SECS
+                ))
+            } else if e.is_connect() {
+                Err(format!(
+                    "cannot connect to {} — verify host/port and that \
+                     the embedding server is running",
+                    probe_url
+                ))
+            } else {
+                Err(format!("probe {} failed: {}", probe_url, e))
+            }
+        }
+    }
+}
+
+/// Sprint 2.2.5c — frontend "Test connection" button uses this IPC to
+/// preview reachability before clicking Save. Returns the same Ok/Err
+/// shape as the implicit probe inside `set_embedding_config` so the UI
+/// can render identical error copy for both paths.
+#[tauri::command]
+pub async fn test_embedding_endpoint(base_url: String) -> Result<(), String> {
+    probe_embedding_endpoint(&base_url).await
+}
+
 /// Apply embedding-endpoint settings:
 ///   1. Shell out to `~/.uclaw/gbrain/run.sh config set ...` for the
 ///      three gbrain keys (`embedding_model`, `embedding_dimensions`,
@@ -450,6 +525,17 @@ pub async fn set_embedding_config(
     state: State<'_, AppState>,
     payload: EmbeddingEndpointPayload,
 ) -> Result<EmbeddingEndpointPayload, Error> {
+    // Sprint 2.2.5c — health-check the new base_url BEFORE doing any
+    // destructive work (gbrain config writes, memU restart). A typo'd
+    // URL would otherwise leave the user with the gbrain CLI persisting
+    // a base_url that nothing answers on, and the memU subprocess
+    // restarting against a model name that may or may not match. Probe
+    // first; if the URL is unreachable, bail out with the same error
+    // copy the explicit "Test" button produces.
+    probe_embedding_endpoint(&payload.base_url)
+        .await
+        .map_err(Error::Internal)?;
+
     // Capture the OLD fastembed_model BEFORE we overwrite it, so we
     // know whether a memU restart is needed.
     let old_fastembed_model = {
@@ -1263,6 +1349,9 @@ pub async fn send_message(
         let cfg = state.memubot_config.read().await;
         let learning_enabled = cfg.memory_os.learning_enabled;
         let llm_daily_budget = cfg.memory_os.learning_llm_daily_token_budget;
+        let gbrain_extractor_enabled = cfg.memory_os.gbrain_extractor_enabled;
+        let gbrain_extractor_daily_budget =
+            cfg.memory_os.gbrain_extractor_daily_token_budget;
         drop(cfg);
         delegate.set_learning_pipeline(
             state.learning_buffer.clone(),
@@ -1270,6 +1359,17 @@ pub async fn send_message(
             Arc::clone(&state.db),
             learning_enabled,
             llm_daily_budget,
+        );
+        // Sprint 2.4b — wire the gbrain chat-turn auto-extractor. Reuses
+        // `learning_llm` (same MemoryOsLlm trait) so we don't duplicate
+        // provider plumbing; cost_tag inside the extractor differentiates
+        // gbrain_extract% from memory_learning% in cost_records.
+        delegate.set_gbrain_extractor_pipeline(
+            state.learning_llm.clone(),
+            Arc::clone(&state.db),
+            state.mcp_manager.clone(),
+            gbrain_extractor_enabled,
+            gbrain_extractor_daily_budget,
         );
         if learning_enabled {
             if let Some(block) =
@@ -9178,6 +9278,11 @@ pub async fn send_agent_message(
     let learning_enabled_for_spawn = cfg_snapshot.memory_os.learning_enabled;
     let learning_llm_daily_budget_for_spawn =
         cfg_snapshot.memory_os.learning_llm_daily_token_budget;
+    // Sprint 2.4b — same snapshot rationale for the gbrain extractor.
+    let gbrain_extractor_enabled_for_spawn =
+        cfg_snapshot.memory_os.gbrain_extractor_enabled;
+    let gbrain_extractor_daily_budget_for_spawn =
+        cfg_snapshot.memory_os.gbrain_extractor_daily_token_budget;
     drop(cfg_snapshot);
 
     // Clone for spawn
@@ -9197,6 +9302,10 @@ pub async fn send_agent_message(
     let learning_buffer_for_spawn = Arc::clone(&state.learning_buffer);
     let learning_llm_for_spawn = state.learning_llm.clone();
     let facet_cache_for_spawn = Arc::clone(&state.facet_cache);
+    // Sprint 2.4b — gbrain extractor reuses `learning_llm` (same trait) +
+    // shares the McpManager handle so its accepted proposals can fire
+    // mcp__gbrain__put_page from inside the spawned task.
+    let gbrain_mcp_mgr_for_spawn = state.mcp_manager.clone();
     // Sprint 2.3 — pre-render the gbrain instruction block now (before
     // spawn) so the move closure doesn't need to keep an McpManager
     // handle. Empty string when no mcp__gbrain__* tools are visible.
@@ -9339,6 +9448,14 @@ pub async fn send_agent_message(
             Arc::clone(&db),
             learning_enabled_for_spawn,
             learning_llm_daily_budget_for_spawn,
+        );
+        // Sprint 2.4b — gbrain auto-extractor pipeline.
+        delegate.set_gbrain_extractor_pipeline(
+            learning_llm_for_spawn.clone(),
+            Arc::clone(&db),
+            gbrain_mcp_mgr_for_spawn.clone(),
+            gbrain_extractor_enabled_for_spawn,
+            gbrain_extractor_daily_budget_for_spawn,
         );
         if learning_enabled_for_spawn {
             if let Some(block) =
@@ -12120,11 +12237,20 @@ pub async fn start_agent_teams(
     let learning_buffer_for_factory = Arc::clone(&state.learning_buffer);
     let learning_llm_for_factory = state.learning_llm.clone();
     let facet_cache_for_factory = Arc::clone(&state.facet_cache);
-    let (learning_enabled_for_factory, learning_llm_daily_budget_for_factory) = {
+    // Sprint 2.4b — same snapshot rationale for the gbrain extractor.
+    let gbrain_mcp_mgr_for_factory = state.mcp_manager.clone();
+    let (
+        learning_enabled_for_factory,
+        learning_llm_daily_budget_for_factory,
+        gbrain_extractor_enabled_for_factory,
+        gbrain_extractor_daily_budget_for_factory,
+    ) = {
         let c = state.memubot_config.read().await;
         (
             c.memory_os.learning_enabled,
             c.memory_os.learning_llm_daily_token_budget,
+            c.memory_os.gbrain_extractor_enabled,
+            c.memory_os.gbrain_extractor_daily_token_budget,
         )
     };
     // PR-1 — snapshot MCP proxies once for the whole team run. The
@@ -12238,6 +12364,14 @@ pub async fn start_agent_teams(
                     Arc::clone(&db_for_factory),
                     learning_enabled_for_factory,
                     learning_llm_daily_budget_for_factory,
+                );
+                // Sprint 2.4b — gbrain auto-extractor pipeline.
+                delegate.set_gbrain_extractor_pipeline(
+                    learning_llm_for_factory.clone(),
+                    Arc::clone(&db_for_factory),
+                    gbrain_mcp_mgr_for_factory.clone(),
+                    gbrain_extractor_enabled_for_factory,
+                    gbrain_extractor_daily_budget_for_factory,
                 );
                 if learning_enabled_for_factory {
                     if let Some(block) =
@@ -14773,5 +14907,73 @@ mod setup_script_tests {
         assert!(!SETUP_SCRIPT_ALLOWLIST.contains(&"setup-bun-runtime.sh"), "name must NOT include the .sh extension");
         assert!(!SETUP_SCRIPT_ALLOWLIST.contains(&"../scripts/setup-bun-runtime"));
         assert!(SETUP_SCRIPT_ALLOWLIST.contains(&"setup-bun-runtime"));
+    }
+}
+
+// ─── Sprint 2.2.5c — embedding-endpoint probe tests ───────────────────
+#[cfg(test)]
+mod embedding_probe_tests {
+    use super::probe_embedding_endpoint;
+    use std::net::SocketAddr;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// Spawn a minimal HTTP server on an OS-assigned port that returns
+    /// `status` + empty body for any request, then resolves to the bound
+    /// `base_url` the test can probe (without `/models` — that's the
+    /// path the function under test appends). The listener runs for one
+    /// request then stops, which is enough for the probe's single GET.
+    async fn spawn_one_shot_server(status: u16) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                // Drain enough bytes to consume the request line + headers.
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let body = format!(
+                    "HTTP/1.1 {} OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    status
+                );
+                let _ = sock.write_all(body.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        format!("http://{}/v1", addr)
+    }
+
+    #[tokio::test]
+    async fn probe_ok_when_server_returns_200() {
+        let base_url = spawn_one_shot_server(200).await;
+        let result = probe_embedding_endpoint(&base_url).await;
+        assert!(result.is_ok(), "200 should be Ok, got {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn probe_ok_when_server_returns_404() {
+        // 4xx means "reachable but route unknown" — still proves there's
+        // an HTTP server. We accept that as Ok at config time.
+        let base_url = spawn_one_shot_server(404).await;
+        let result = probe_embedding_endpoint(&base_url).await;
+        assert!(result.is_ok(), "404 should be Ok (server reachable), got {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn probe_err_when_port_unbound() {
+        // Bind a listener, grab its addr, then immediately drop the
+        // listener so the port is free again (race-free way to get a
+        // guaranteed-unbound localhost port number).
+        let throwaway = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = throwaway.local_addr().unwrap();
+        drop(throwaway);
+        let base_url = format!("http://{}/v1", addr);
+        let result = probe_embedding_endpoint(&base_url).await;
+        assert!(result.is_err(), "unbound port should be Err");
+        let msg = result.err().unwrap();
+        assert!(
+            msg.contains("cannot connect") || msg.contains("failed"),
+            "expected connect-failure msg, got: {}",
+            msg
+        );
     }
 }

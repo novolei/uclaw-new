@@ -122,6 +122,19 @@ pub struct ChatDelegate {
     /// layer still runs). Set via `set_learning_pipeline`; default 0
     /// = effectively disabled.
     learning_llm_daily_budget: u32,
+    /// Sprint 2.4b — gbrain chat-turn auto-extractor handles. When
+    /// `gbrain_extractor_enabled = true` AND all three handles are
+    /// `Some` AND daily budget remaining > 0, `before_llm_call` at
+    /// iteration=0 spawns `gbrain::chat_extractor::extract_from_chat_turn`
+    /// on the user's latest message. Accepted proposals (confidence
+    /// >= `MIN_ACT_CONFIDENCE`) fire `mcp__gbrain__put_page` via the
+    /// shared McpManager. Failures logged + swallowed so a producer
+    /// bug never poisons the LLM call.
+    gbrain_extractor_enabled: bool,
+    gbrain_extract_llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
+    gbrain_extract_db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
+    gbrain_extract_daily_budget: u32,
+    gbrain_extract_mcp_mgr: Option<crate::mcp::SharedMcpManager>,
     /// FNV-style hash of the last tool definition list sent to the LLM.
     /// When the list is identical across iterations within a single agent
     /// turn, the Anthropic cache should cover it — this tracks whether the
@@ -171,6 +184,11 @@ impl ChatDelegate {
             learning_enabled: false,
             learning_db: None,
             learning_llm_daily_budget: 0,
+            gbrain_extractor_enabled: false,
+            gbrain_extract_llm: None,
+            gbrain_extract_db: None,
+            gbrain_extract_daily_budget: 0,
+            gbrain_extract_mcp_mgr: None,
             last_tool_defs_hash: Mutex::new(None),
         }
     }
@@ -471,6 +489,32 @@ impl ChatDelegate {
         self.learning_db = Some(db);
         self.learning_enabled = enabled;
         self.learning_llm_daily_budget = llm_daily_budget;
+    }
+
+    /// Sprint 2.4b — wire the gbrain chat-turn auto-extractor pipeline.
+    ///
+    /// Once set, `before_llm_call` at iteration=0 spawns the gbrain
+    /// extractor on the latest user message. Proposals with confidence
+    /// >= `crate::gbrain::chat_extractor::MIN_ACT_CONFIDENCE` fire
+    /// `mcp__gbrain__put_page` via `mcp_mgr`. Failures are logged +
+    /// swallowed so a producer bug never stalls the agent loop.
+    ///
+    /// All params take their non-trivial value from AppState. Passing
+    /// `enabled=false` OR `daily_budget=0` short-circuits the per-turn
+    /// spawn before the LLM is invoked.
+    pub fn set_gbrain_extractor_pipeline(
+        &mut self,
+        llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
+        db: Arc<std::sync::Mutex<rusqlite::Connection>>,
+        mcp_mgr: crate::mcp::SharedMcpManager,
+        enabled: bool,
+        daily_budget: u32,
+    ) {
+        self.gbrain_extract_llm = llm;
+        self.gbrain_extract_db = Some(db);
+        self.gbrain_extract_mcp_mgr = Some(mcp_mgr);
+        self.gbrain_extractor_enabled = enabled;
+        self.gbrain_extract_daily_budget = daily_budget;
     }
 
     /// Build the effective system prompt including memory context, the user's
@@ -1149,6 +1193,96 @@ impl LoopDelegate for ChatDelegate {
                                     candidates = n,
                                     "[ChatDelegate] learning::extractor pushed candidates"
                                 );
+                            }
+                        });
+                    }
+                }
+            }
+        }
+
+        // Sprint 2.4b — gbrain chat-turn auto-extractor. Sibling of the
+        // learning extractor above; same iteration=0 + budget-gate shape.
+        // Proposals returned by the extractor with confidence >=
+        // MIN_ACT_CONFIDENCE are fired as mcp__gbrain__put_page calls.
+        // All failure modes (LLM error, budget exhausted, MCP call
+        // failed) are logged + swallowed so producer bugs never stall
+        // the LLM call.
+        if iteration == 0 && self.gbrain_extractor_enabled {
+            let user_text = reason_ctx
+                .messages
+                .iter()
+                .rev()
+                .find(|m| matches!(m.role, MessageRole::User))
+                .and_then(|m| m.content.iter().find_map(|c| match c {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                }));
+            if let Some(text) = user_text {
+                if !text.trim().is_empty() {
+                    let llm = self.gbrain_extract_llm.clone();
+                    let db = self.gbrain_extract_db.clone();
+                    let mcp_mgr = self.gbrain_extract_mcp_mgr.clone();
+                    let daily_budget = self.gbrain_extract_daily_budget;
+                    let llm_present = llm.is_some();
+                    if llm_present && db.is_some() && mcp_mgr.is_some() && daily_budget > 0 {
+                        tokio::spawn(async move {
+                            let llm = match llm {
+                                Some(l) => l,
+                                None => return,
+                            };
+                            let db = match db {
+                                Some(d) => d,
+                                None => return,
+                            };
+                            let mcp_mgr = match mcp_mgr {
+                                Some(m) => m,
+                                None => return,
+                            };
+                            let spent = crate::cost_store::today_gbrain_extract_tokens(&db);
+                            if spent >= daily_budget {
+                                tracing::debug!(
+                                    spent,
+                                    budget = daily_budget,
+                                    "[ChatDelegate] gbrain extractor — budget exhausted, skipping"
+                                );
+                                return;
+                            }
+                            let proposals =
+                                crate::gbrain::chat_extractor::extract_from_chat_turn(
+                                    &text,
+                                    "",
+                                    &llm,
+                                )
+                                .await;
+                            if proposals.is_empty() {
+                                return;
+                            }
+                            let actionable: Vec<_> = proposals
+                                .into_iter()
+                                .filter(|p| {
+                                    p.confidence
+                                        >= crate::gbrain::chat_extractor::MIN_ACT_CONFIDENCE
+                                })
+                                .collect();
+                            tracing::debug!(
+                                count = actionable.len(),
+                                "[ChatDelegate] gbrain extractor — firing put_page calls"
+                            );
+                            for proposal in actionable {
+                                let args = serde_json::json!({
+                                    "slug": proposal.slug,
+                                    "content": proposal.content,
+                                });
+                                let mgr = mcp_mgr.read().await;
+                                if let Err(e) =
+                                    mgr.call_tool("gbrain", "put_page", args).await
+                                {
+                                    tracing::warn!(
+                                        slug = %proposal.slug,
+                                        error = %e,
+                                        "[ChatDelegate] gbrain extractor — put_page failed"
+                                    );
+                                }
                             }
                         });
                     }

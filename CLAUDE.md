@@ -164,7 +164,10 @@ Track which V-number is claimed by which open PR before starting schema work:
 | V36 | (skipped — renumbered to V38 when Phase 7 claimed V37; no migration exists at this number) | — |
 | V37 | brain_sync_state — disk-mirror metadata for Memory OS Phase 7 markdown sync | merged (PR #193) |
 | V38 | automation_chat_sessions(spec_id, identity_key, agent_session_id) — per-(spec, identity) long-lived chat threads | merged (PR #194) |
-| V39 | user_profile_facets — openhuman-style stability-graded user profile facet store | **in progress (Memory OS Sprint 1 — openhuman warm-start)** |
+| V39 | user_profile_facets — openhuman-style stability-graded user profile facet store | merged (PR #199, Memory OS Sprint 1.5–1.11) |
+| V40 | mcp_audit — env-redacted MCP audit log + per-server timeline + global-recent indexes | merged (MCP completeness PR-5) |
+| V41 | browser_task_runs + browser_task_steps + browser_task_memory — autonomous browser run trail + per-session memory notebook | merged (Browser agent v2) |
+| V42 | browser_task_checkpoints — resumable browser-run snapshots (active_tab_id + memory_json + loop_state_json) | merged (Browser agent v2) |
 
 If you're adding a migration: pick the next number after both merged AND open PRs to avoid conflicts. Update this table in your PR.
 

@@ -95,6 +95,35 @@ pub fn today_learning_tokens(
     n.max(0) as u32
 }
 
+/// Sprint 2.4b — sibling of [`today_learning_tokens`] for the gbrain
+/// chat-turn extractor's daily-budget gate. Sums today's `cost_records`
+/// where `model LIKE 'gbrain_extract%'` (the prefix
+/// `crate::gbrain::chat_extractor` writes via the `"gbrain_extract"`
+/// cost_tag passed to `MemoryOsLlm::complete_text`).
+///
+/// Standalone fn (not on AppState) so the agent dispatcher can call it
+/// given only the raw `Arc<Mutex<Connection>>` — matches the shape
+/// `set_gbrain_extractor_pipeline` hands the dispatcher.
+pub fn today_gbrain_extract_tokens(
+    db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
+) -> u32 {
+    let since_ms = current_day_start_ms();
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    let n: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(input_tokens + output_tokens), 0)
+             FROM cost_records
+             WHERE model LIKE 'gbrain_extract%' AND created_at >= ?1",
+            params![since_ms],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
+    n.max(0) as u32
+}
+
 /// Pure helper: which threshold (if any) was crossed on this turn?
 /// Fires 100 OR 80 (preferring 100 when both crossed in one turn), or None.
 /// Never fires when budget <= 0.0.
@@ -135,5 +164,66 @@ mod tests {
     fn no_fire_when_budget_zero_or_negative() {
         assert_eq!(fired_threshold(50.0, 150.0, 0.0), None);
         assert_eq!(fired_threshold(50.0, 150.0, -10.0), None);
+    }
+
+    // ─── Sprint 2.4b — gbrain extractor budget query ─────────────
+
+    fn open_test_db_with_cost_records() -> std::sync::Arc<std::sync::Mutex<rusqlite::Connection>> {
+        use std::sync::{Arc, Mutex};
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // Minimal V13 cost_records schema — just enough to exercise the
+        // SUM-by-prefix queries. Real schema has more columns but they
+        // don't affect this test.
+        conn.execute_batch(
+            "CREATE TABLE cost_records (
+                 id TEXT PRIMARY KEY,
+                 session_id TEXT NOT NULL,
+                 model TEXT NOT NULL,
+                 input_tokens INTEGER NOT NULL,
+                 output_tokens INTEGER NOT NULL,
+                 cost_usd REAL,
+                 created_at INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+        Arc::new(Mutex::new(conn))
+    }
+
+    fn insert_cost(
+        db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
+        model: &str,
+        input: i64,
+        output: i64,
+        at_ms: i64,
+    ) {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO cost_records (id, session_id, model, input_tokens, output_tokens, cost_usd, created_at)
+             VALUES (?1, 'test', ?2, ?3, ?4, 0.0, ?5)",
+            params![uuid::Uuid::new_v4().to_string(), model, input, output, at_ms],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn today_gbrain_extract_tokens_sums_only_gbrain_prefix() {
+        let db = open_test_db_with_cost_records();
+        let now = chrono::Utc::now().timestamp_millis();
+        // Two gbrain rows today → should sum to 350
+        insert_cost(&db, "gbrain_extract:claude-haiku-4-5", 100, 50, now);
+        insert_cost(&db, "gbrain_extract:other-model", 150, 50, now);
+        // Memory_learning row today — must NOT count toward gbrain total
+        insert_cost(&db, "memory_learning:claude-haiku-4-5", 999, 999, now);
+        // Gbrain row from yesterday — must NOT count
+        let yesterday = now - 26 * 60 * 60 * 1000;
+        insert_cost(&db, "gbrain_extract:claude-haiku-4-5", 500, 500, yesterday);
+
+        assert_eq!(today_gbrain_extract_tokens(&db), 350);
+    }
+
+    #[test]
+    fn today_gbrain_extract_tokens_returns_zero_when_no_rows() {
+        let db = open_test_db_with_cost_records();
+        assert_eq!(today_gbrain_extract_tokens(&db), 0);
     }
 }
