@@ -24,3 +24,7 @@ pub mod profile_md;
 // `memory_importance_scores` table. Algorithm-only in this PR; scheduler
 // wiring deferred to a follow-up.
 pub mod importance_decay;
+// Memory OS L3 §3.2.1 (RETAINED per ADR 2026-05-20 §8) — global
+// `timeline_events` write API. Wired into EntityPage create (Q2a) +
+// other event sources in follow-up PRs.
+pub mod timeline_events;
