@@ -26,6 +26,13 @@ import { Toaster } from './components/ui/sonner'
 import { GlobalShortcuts } from './components/shortcuts/GlobalShortcuts'
 import './styles/globals.css'
 
+// App-wide right-click bridge — ensures the contextmenu event fires for
+// every right-button mousedown, working around macOS WKWebView setups
+// where Radix ContextMenu triggers otherwise stay silent. Installs once
+// at module load (idempotent).
+import { installRightClickBridge } from './lib/right-click-bridge'
+installRightClickBridge()
+
 // 开机即应用聊天外观（避免首次渲染时闪烁）
 import { applyChatAppearanceToDOM } from './atoms/chat-appearance'
 try {
