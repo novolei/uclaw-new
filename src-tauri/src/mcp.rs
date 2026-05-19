@@ -2768,6 +2768,57 @@ mod tests {
     }
 
     #[test]
+    fn seed_bundled_gbrain_refreshes_stale_bundled_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut mgr = McpManager::new(dir.path());
+            let mut stale = bundled_gbrain_config(
+                std::path::Path::new("/old/dev/target/debug/bun"),
+                std::path::Path::new("/old/dev/target/debug/gbrain/src/cli.ts"),
+                std::path::Path::new("/old/home"),
+            );
+            stale.enabled = false;
+            stale.auto_approve = false;
+            mgr.add_server(stale).unwrap();
+
+            let changed = mgr
+                .seed_bundled_gbrain(
+                    std::path::Path::new("/Applications/uClaw.app/Contents/Resources/bun"),
+                    std::path::Path::new(
+                        "/Applications/uClaw.app/Contents/Resources/gbrain/src/cli.ts",
+                    ),
+                    std::path::Path::new("/Users/test/.uclaw/gbrain"),
+                )
+                .unwrap();
+            assert!(changed);
+        }
+
+        let mgr = McpManager::new(dir.path());
+        let stored = mgr
+            .all_servers()
+            .into_iter()
+            .find(|config| config.id == "gbrain")
+            .unwrap();
+        assert_eq!(
+            stored.command,
+            "/Applications/uClaw.app/Contents/Resources/bun"
+        );
+        assert_eq!(
+            stored.args,
+            vec![
+                "/Applications/uClaw.app/Contents/Resources/gbrain/src/cli.ts".to_string(),
+                "serve".to_string(),
+            ]
+        );
+        assert_eq!(
+            stored.env.get("GBRAIN_HOME").map(String::as_str),
+            Some("/Users/test/.uclaw/gbrain")
+        );
+        assert!(!stored.enabled);
+        assert!(!stored.auto_approve);
+    }
+
+    #[test]
     fn seed_bundled_gbrain_preserves_non_legacy_existing_entry() {
         let dir = tempfile::tempdir().unwrap();
         {

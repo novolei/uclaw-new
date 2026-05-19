@@ -1554,3 +1554,54 @@ mod gbrain_launcher_tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+mod memu_runtime_resolution_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::tempdir;
+
+    fn write_executable(path: &std::path::Path, body: &str) {
+        fs::write(path, body).unwrap();
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[test]
+    fn find_python_skips_broken_python3_and_uses_versioned_binary() {
+        let dir = tempdir().unwrap();
+        let bin_dir = dir.path().join("python").join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        write_executable(
+            &bin_dir.join("python3"),
+            "#!/usr/bin/env bash\nexit 137\n",
+        );
+        write_executable(
+            &bin_dir.join("python3.13"),
+            "#!/usr/bin/env bash\necho Python 3.13.13\n",
+        );
+
+        let selected = AppState::find_python(Some(dir.path())).unwrap();
+        assert_eq!(
+            selected,
+            bin_dir.join("python3.13").to_string_lossy().as_ref()
+        );
+    }
+
+    #[test]
+    fn find_bridge_script_prefers_release_resource_over_data_copy() {
+        let resource_dir = tempdir().unwrap();
+        let data_dir = tempdir().unwrap();
+        let bundled = resource_dir.path().join("memu_bridge.py");
+        let stale_data_copy = data_dir.path().join("memu_bridge.py");
+        fs::write(&bundled, "# bundled\n").unwrap();
+        fs::write(&stale_data_copy, "# stale data copy\n").unwrap();
+
+        let selected =
+            AppState::find_bridge_script(Some(resource_dir.path()), data_dir.path()).unwrap();
+        assert_eq!(selected, bundled);
+    }
+}
