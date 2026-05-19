@@ -13,6 +13,7 @@ import {
   horizontalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { DockItem } from './DockItem'
+import { DockPinnedItem } from './DockPinnedItem'
 import { ConnectionIndicator } from './ConnectionIndicator'
 import { DockDragHandle } from './DockDragHandle'
 import { useConnectionStatus } from './useConnectionStatus'
@@ -195,35 +196,105 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
           onMouseLeave={() => setHoveredIndex(null)}
         >
           <DockDragHandle />
-          {dockOrder.map((spec, i) => {
-            if (spec.kind !== 'mode') return null
-            const meta = MODE_REGISTRY[spec.mode]
-            const sortableId = specToSortableId(spec)
-            return (
-              <DockItem
-                key={sortableId}
-                sortableId={sortableId}
-                icon={
-                  <img
-                    src={meta.iconSrc}
-                    alt={meta.label}
-                    draggable={false}
-                    className="w-7 h-7 select-none pointer-events-none"
-                  />
+          {(() => {
+            // Find the first non-mode index — divider sits before it. If no
+            // non-mode entries exist, no divider renders.
+            const firstPinIdx = dockOrder.findIndex((s) => s.kind !== 'mode')
+            return dockOrder.map((spec, i) => {
+              const sortableId = specToSortableId(spec)
+              const dividerBefore = firstPinIdx !== -1 && i === firstPinIdx ? (
+                <div
+                  key="dock-section-divider"
+                  data-dock-section-divider
+                  className="mx-2 h-7 w-px self-center bg-border/50"
+                  aria-hidden="true"
+                />
+              ) : null
+
+              let body: React.ReactElement | null = null
+              switch (spec.kind) {
+                case 'mode': {
+                  const meta = MODE_REGISTRY[spec.mode]
+                  body = (
+                    <DockItem
+                      key={sortableId}
+                      sortableId={sortableId}
+                      icon={
+                        <img
+                          src={meta.iconSrc}
+                          alt={meta.label}
+                          draggable={false}
+                          className="w-7 h-7 select-none pointer-events-none"
+                        />
+                      }
+                      label={meta.label}
+                      isActive={meta.isActive(navCtx)}
+                      index={i}
+                      hoveredIndex={hoveredIndex}
+                      onHoverIndexChange={setHoveredIndex}
+                      onClick={() => meta.onClick(actionCtx)}
+                    />
+                  )
+                  break
                 }
-                label={meta.label}
-                isActive={meta.isActive(navCtx)}
-                index={i}
-                hoveredIndex={hoveredIndex}
-                onHoverIndexChange={setHoveredIndex}
-                onClick={() => meta.onClick(actionCtx)}
-              />
-            )
-          })}
-          <div
-            className="mx-2 h-7 w-px self-center bg-border/50"
-            aria-hidden="true"
-          />
+                case 'pinned-conversation':
+                  body = (
+                    <DockPinnedItem
+                      key={sortableId}
+                      sortableId={sortableId}
+                      label={`Conversation ${spec.sessionId.slice(0, 6)}`}
+                      index={i}
+                      hoveredIndex={hoveredIndex}
+                      onHoverIndexChange={setHoveredIndex}
+                      onClick={() => {
+                        // Phase 2B: programmatic-only. Phase 2D wires this to
+                        // useOpenSession to resume the actual conversation.
+                      }}
+                    />
+                  )
+                  break
+                case 'pinned-workspace':
+                  body = (
+                    <DockPinnedItem
+                      key={sortableId}
+                      sortableId={sortableId}
+                      label={`Workspace ${spec.spaceId.slice(0, 6)}`}
+                      index={i}
+                      hoveredIndex={hoveredIndex}
+                      onHoverIndexChange={setHoveredIndex}
+                      onClick={() => {
+                        // Phase 2B: programmatic-only. Phase 2D wires this to
+                        // setActiveWorkspaceId to switch context.
+                      }}
+                    />
+                  )
+                  break
+                case 'pinned-automation':
+                  body = (
+                    <DockPinnedItem
+                      key={sortableId}
+                      sortableId={sortableId}
+                      label={`Automation ${spec.specId.slice(0, 6)}`}
+                      index={i}
+                      hoveredIndex={hoveredIndex}
+                      onHoverIndexChange={setHoveredIndex}
+                      onClick={() => {
+                        // Phase 2B: programmatic-only. Phase 2D wires this to
+                        // the automation hub.
+                      }}
+                    />
+                  )
+                  break
+              }
+
+              return (
+                <React.Fragment key={sortableId}>
+                  {dividerBefore}
+                  {body}
+                </React.Fragment>
+              )
+            })
+          })()}
           <div className="flex items-center self-center pb-1 pr-1">
             <ConnectionIndicator />
           </div>

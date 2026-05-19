@@ -129,6 +129,7 @@ export function DockPinnedItem({
           >
             <span
               data-dock-pin-tile
+              aria-hidden="true"
               className="flex items-center justify-center rounded-[11px] text-white font-semibold text-[18px] shadow-[inset_0_-1px_2px_rgba(0,0,0,0.15),inset_0_1px_1px_rgba(255,255,255,0.18)]"
               style={{
                 width: ICON_BOX,

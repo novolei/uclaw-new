@@ -98,3 +98,47 @@ describe('BottomDock · atom-driven order', () => {
     expect(marker).not.toBeNull()
   })
 })
+
+describe('BottomDock · pinned-* dispatch + dynamic divider', () => {
+  it('renders a DockPinnedItem for each pinned-* entry', () => {
+    const { container } = renderDockWithOrder([
+      { kind: 'mode', mode: 'chat' },
+      { kind: 'pinned-workspace', spaceId: 'space-1' },
+      { kind: 'mode', mode: 'agent' },
+    ])
+    const pins = container.querySelectorAll('[data-dock-pin]')
+    expect(pins.length).toBe(1)
+    expect(pins[0].getAttribute('data-sortable-id')).toBe('space-space-1')
+  })
+
+  it('renders the section divider between the last contiguous mode and the first non-mode', () => {
+    const { container } = renderDockWithOrder([
+      { kind: 'mode', mode: 'chat' },
+      { kind: 'mode', mode: 'agent' },
+      { kind: 'pinned-workspace', spaceId: 'space-1' },
+      { kind: 'pinned-workspace', spaceId: 'space-2' },
+    ])
+    const divider = container.querySelector('[data-dock-section-divider]')
+    expect(divider).not.toBeNull()
+    const buttons = container.querySelectorAll('button')
+    const dividerEl = divider as HTMLElement
+    const all = Array.from(
+      container.querySelectorAll('button, [data-dock-section-divider]')
+    )
+    const dividerPos = all.indexOf(dividerEl)
+    const agentPos = all.indexOf(buttons[1])
+    const firstPinPos = all.indexOf(buttons[2])
+    expect(dividerPos).toBeGreaterThan(agentPos)
+    expect(dividerPos).toBeLessThan(firstPinPos)
+  })
+
+  it('omits the divider entirely when no pinned entries are present', () => {
+    const { container } = renderDockWithOrder([
+      { kind: 'mode', mode: 'chat' },
+      { kind: 'mode', mode: 'agent' },
+      { kind: 'mode', mode: 'memory' },
+      { kind: 'mode', mode: 'kaleidoscope' },
+    ])
+    expect(container.querySelector('[data-dock-section-divider]')).toBeNull()
+  })
+})
