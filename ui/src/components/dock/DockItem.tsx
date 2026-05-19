@@ -1,7 +1,5 @@
 import * as React from 'react'
 import { motion, useSpring, useReducedMotion } from 'motion/react'
-import { useSortable } from '@dnd-kit/sortable'
-import { CSS } from '@dnd-kit/utilities'
 import {
   Tooltip,
   TooltipContent,
@@ -18,8 +16,9 @@ interface DockItemProps {
   hoveredIndex: number | null
   onHoverIndexChange: (index: number | null) => void
   onClick: () => void
-  /** Phase 2A: id used by dnd-kit's SortableContext. When undefined,
-   *  the item is not sortable (drag-and-drop disabled). */
+  /** Stable identifier; used by tests + as the parent's React key.
+   *  No longer drives dnd-kit (replaced by motion's Reorder primitive
+   *  in BottomDock); kept as a passthrough so test selectors don't break. */
   sortableId?: string
   /** Phase 2C: increments to trigger a one-shot bounce. */
   bounceKey?: number
@@ -28,11 +27,15 @@ interface DockItemProps {
 }
 
 /**
- * 单个 dock 图标。每个 item 占用一个固定宽度的 slot（SLOT_W），icon 在 slot
- * 内部 scale，永远不会越过邻居的 slot 边界 —— 杜绝 hover 时按钮重叠。
+ * 单个 dock 图标 — 视觉层。每个 item 占用一个固定宽度的 slot (SLOT_W),
+ * icon 在 slot 内部 scale，永远不会越过邻居的 slot 边界 —— 杜绝 hover 时按钮重叠。
  *
  * 放大原点固定在 slot 底部中央，向上长出，模拟 macOS Dock 的视觉行为：
  * 图标随鼠标距离平滑增大并轻微上抬，邻居被牵动得更弱，远处保持原状。
+ *
+ * 拖拽和 reorder 由父组件 BottomDock 通过 motion 的 `Reorder.Group` /
+ * `Reorder.Item` 接管 —— layout animations 让邻居在 drag 过程中自然
+ * 挤压让位，iOS Springboard 风格。本组件只负责视觉呈现。
  *
  * 标签不再内嵌于 dock 内（避免推挤兄弟节点），改用 Radix Tooltip 在图标
  * 正上方悬浮，hover 才出现；active 状态用底部小圆点指示。
@@ -67,27 +70,8 @@ export function DockItem({
   const scaleSpring = useSpring(1, { stiffness: 320, damping: 26, mass: 0.6 })
   const ySpring = useSpring(0, { stiffness: 320, damping: 26, mass: 0.6 })
 
-  // Horizontal slide spring driven by dnd-kit's sortable.transform.x.
-  // Lives outside the magnification springs so a neighbor making room for
-  // a drag-hover doesn't compete with hover lift. Tuned for iOS Springboard
-  // feel — quick start, gentle settle, no oscillation. Only x; the dock
-  // uses horizontalListSortingStrategy so y is always 0 here.
-  const xShift = useSpring(0, { stiffness: 520, damping: 34, mass: 0.7 })
-
-  // dnd-kit sortable hookup. When sortableId is undefined, we still
-  // call the hook (Rules of Hooks) but with a dummy id and ignore its
-  // outputs — DockItem stays usable from non-sortable contexts (tests).
-  //
-  // The dummy id is intentionally never registered in any ambient
-  // SortableContext, so the hook returns inert defaults. Do NOT
-  // "optimize" this by wrapping the hook call in a conditional —
-  // that would violate Rules of Hooks.
-  const sortable = useSortable({ id: sortableId ?? `__non-sortable-${index}` })
-
   React.useEffect(() => {
-    // While dragging, suppress magnification — the lifted item carries its
-    // own constant 1.05 scale; neighbors shouldn't bobble in/out.
-    if (sortable.isDragging || prefersReducedMotion) {
+    if (prefersReducedMotion) {
       scaleSpring.set(1)
       ySpring.set(0)
       return
@@ -102,19 +86,7 @@ export function DockItem({
       scaleSpring.set(1)
       ySpring.set(0)
     }
-  }, [distance, scaleSpring, ySpring, prefersReducedMotion, sortable.isDragging])
-
-  // Drive the reorder slide spring from dnd-kit's per-item transform.
-  // For the active drag target we leave xShift at 0 — that item uses raw
-  // CSS transform (in the dragging style branch) to track the cursor 1:1.
-  const sortableXRaw = sortable.transform?.x ?? 0
-  React.useEffect(() => {
-    if (sortable.isDragging || prefersReducedMotion) {
-      xShift.jump(0)
-      return
-    }
-    xShift.set(sortableXRaw)
-  }, [sortableXRaw, sortable.isDragging, prefersReducedMotion, xShift])
+  }, [distance, scaleSpring, ySpring, prefersReducedMotion])
 
   // Phase 2C: one-shot bounce when bounceKey increments.
   const [bouncing, setBouncing] = React.useState(false)
@@ -147,59 +119,23 @@ export function DockItem({
     return () => clearInterval(id)
   }, [streaming])
 
-  const dragTransform = sortable.transform
-    ? CSS.Transform.toString(sortable.transform)
-    : undefined
-
-  // Branch the style object: dnd-kit owns transform during drag; motion
-  // springs own it otherwise. Avoids motion-vs-CSS transform collision.
-  //
-  // Dragging branch — iOS Springboard lift: scale 1.12, lift via translateY,
-  // dual-stop drop shadow, and a hair of brightness so the lifted icon
-  // visibly leaves the dock plane. Transition string is left undefined so
-  // dnd-kit's own per-frame transform updates aren't smoothed (the cursor
-  // is authoritative; we want pixel-perfect tracking).
-  //
-  // Idle branch — motion springs drive both the hover magnify (scale + y)
-  // and the reorder slide (x). xShift follows sortable.transform.x so a
-  // neighbor making room for the dragged item slides springily instead of
-  // dnd-kit's default linear ease.
-  const motionStyle = sortable.isDragging
-    ? {
-        width: SLOT_W,
-        height: SLOT_W,
-        transformOrigin: 'bottom center' as const,
-        transform: dragTransform
-          ? `${dragTransform} translateY(-6px) scale(1.12)`
-          : 'translateY(-6px) scale(1.12)',
-        transition: undefined,
-        filter: 'brightness(1.04) drop-shadow(0 10px 18px hsl(var(--foreground) / 0.28)) drop-shadow(0 3px 6px hsl(var(--foreground) / 0.18))',
-        zIndex: 50,
-      }
-    : {
-        width: SLOT_W,
-        height: SLOT_W,
-        scale: scaleSpring,
-        y: ySpring,
-        x: xShift,
-        transformOrigin: 'bottom center' as const,
-      }
-
   return (
     <TooltipProvider delayDuration={140} skipDelayDuration={80}>
       <Tooltip>
         <TooltipTrigger asChild>
           <motion.button
-            ref={sortableId ? sortable.setNodeRef : undefined}
             type="button"
-            {...(sortableId ? sortable.attributes : {})}
-            {...(sortableId ? sortable.listeners : {})}
             data-sortable-id={sortableId ?? undefined}
-            data-dragging={sortable.isDragging ? 'true' : undefined}
             data-bouncing={bouncing ? 'true' : undefined}
             data-pulsing={pulsing ? 'true' : undefined}
             className="relative flex items-end justify-center select-none outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-0 rounded-[14px]"
-            style={motionStyle}
+            style={{
+              width: SLOT_W,
+              height: SLOT_W,
+              scale: scaleSpring,
+              y: ySpring,
+              transformOrigin: 'bottom center',
+            }}
             onMouseEnter={() => onHoverIndexChange(index)}
             onMouseLeave={() => onHoverIndexChange(null)}
             onClick={onClick}
@@ -226,9 +162,6 @@ export function DockItem({
                 className="pointer-events-none absolute inset-x-0 top-0 h-0"
               >
                 {particles.map((seed) => {
-                  // Deterministic horizontal jitter from seed (-3..+3 px), so each
-                  // particle rises along a slightly different vertical line and they
-                  // don't visually stack as a single column.
                   const jitter = (((seed * 9301 + 49297) % 233280) / 233280 - 0.5) * 6
                   return (
                     <motion.div

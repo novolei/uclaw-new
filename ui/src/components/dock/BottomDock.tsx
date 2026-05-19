@@ -1,23 +1,13 @@
 import * as React from 'react'
-import { motion } from 'motion/react'
+import { motion, Reorder } from 'motion/react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import {
-  DndContext,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from '@dnd-kit/core'
-import {
-  SortableContext,
-  horizontalListSortingStrategy,
-} from '@dnd-kit/sortable'
 import { DockItem } from './DockItem'
 import { DockPinnedItem } from './DockPinnedItem'
 import { ConnectionIndicator } from './ConnectionIndicator'
 import { DockDragHandle } from './DockDragHandle'
 import { useConnectionStatus } from './useConnectionStatus'
-import { bottomDockEnabledAtom, dockOrderAtom, applyDockReorder, dockBounceKeysAtom, ensureCanonicalModes, type DockItemSpec } from '@/atoms/dock-atoms'
+import { useLongPressDrag } from './useLongPressDrag'
+import { bottomDockEnabledAtom, dockOrderAtom, dockBounceKeysAtom, ensureCanonicalModes, type DockItemSpec } from '@/atoms/dock-atoms'
 import { useDockLiveness } from '@/hooks/useDockLiveness'
 import { appModeAtom, type AppMode } from '@/atoms/app-mode'
 import { topLevelViewAtom, type TopLevelView } from '@/atoms/top-level-view'
@@ -226,27 +216,6 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
   // Rules of Hooks: keep before any early return.
   useConnectionStatus()
 
-  // Long-press 200 ms before drag activates — keeps simple taps responsive.
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
-  )
-
-  const sortableIds = React.useMemo(
-    () => dockOrder.map(specToSortableId),
-    [dockOrder],
-  )
-
-  const handleDragEnd = React.useCallback(
-    (event: DragEndEvent) => {
-      const { active, over } = event
-      if (!over) return
-      setDockOrder((current) =>
-        applyDockReorder(current, sortableIds, String(active.id), String(over.id)),
-      )
-    },
-    [sortableIds, setDockOrder],
-  )
-
   // Reset magnification when collapsed so reopening doesn't briefly show
   // a stale hovered icon before mouse lands somewhere new.
   React.useEffect(() => {
@@ -282,139 +251,235 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
     setAlertOpen,
   }
 
+  // For each item we render a sibling that owns the visual + click target.
+  // The reorder logic lives on `<Reorder.Item>` wrapping that visual — it
+  // applies `layout` animations (so neighbors squeeze and slide out of
+  // the way as the dragged item passes) and `whileDrag` styling (so the
+  // dragged item lifts iOS Springboard-style and follows the cursor).
+  const firstPinIdx = dockOrder.findIndex((s) => s.kind !== 'mode')
+  const renderItemContent = (spec: DockItemSpec, i: number): React.ReactElement | null => {
+    const sortableId = specToSortableId(spec)
+    switch (spec.kind) {
+      case 'mode': {
+        const meta = MODE_REGISTRY[spec.mode]
+        return (
+          <DockItem
+            sortableId={sortableId}
+            bounceKey={bounceKeys[sortableId]}
+            liveness={livenessMap[sortableId]}
+            icon={
+              <img
+                src={meta.iconSrc}
+                alt={meta.label}
+                draggable={false}
+                className="w-7 h-7 select-none pointer-events-none"
+              />
+            }
+            label={meta.label}
+            isActive={meta.isActive(navCtx)}
+            index={i}
+            hoveredIndex={hoveredIndex}
+            onHoverIndexChange={setHoveredIndex}
+            onClick={() => meta.onClick(actionCtx)}
+          />
+        )
+      }
+      case 'pinned-conversation': {
+        const matchingConv = spec.type === 'chat'
+          ? conversations.find((c) => c.id === spec.sessionId)
+          : agentSessions.find((s) => s.id === spec.sessionId)
+        const label = matchingConv?.title ?? `Conversation ${spec.sessionId.slice(0, 6)}`
+        const emoji = spec.type === 'agent'
+          ? agentSessions.find((s) => s.id === spec.sessionId)?.titleEmoji
+          : undefined
+        return (
+          <DockPinnedItem
+            sortableId={sortableId}
+            label={label}
+            emoji={emoji}
+            index={i}
+            hoveredIndex={hoveredIndex}
+            onHoverIndexChange={setHoveredIndex}
+            onClick={() => openSession(spec.type, spec.sessionId, label)}
+          />
+        )
+      }
+      case 'pinned-workspace': {
+        const matchingSpace = workspaces.find((w) => w.id === spec.spaceId)
+        const label = matchingSpace?.name ?? `Workspace ${spec.spaceId.slice(0, 6)}`
+        return (
+          <DockPinnedItem
+            sortableId={sortableId}
+            label={label}
+            emoji={matchingSpace?.icon}
+            index={i}
+            hoveredIndex={hoveredIndex}
+            onHoverIndexChange={setHoveredIndex}
+            onClick={() => setActiveWorkspaceId(spec.spaceId)}
+          />
+        )
+      }
+      case 'pinned-automation': {
+        const matchingSpec = automationSpecs.find((s) => s.id === spec.specId)
+        const label = matchingSpec?.name ?? `Automation ${spec.specId.slice(0, 6)}`
+        return (
+          <DockPinnedItem
+            sortableId={sortableId}
+            label={label}
+            index={i}
+            hoveredIndex={hoveredIndex}
+            onHoverIndexChange={setHoveredIndex}
+            onClick={() => {
+              setAutomationSelectedSpecId(spec.specId)
+              setKaleidoscopeModule('humans')
+              setTopLevelView('kaleidoscope')
+            }}
+          />
+        )
+      }
+    }
+  }
+
   return (
-    <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-      <SortableContext items={sortableIds} strategy={horizontalListSortingStrategy}>
-        <motion.div
-          role="navigation"
-          aria-label="底部导航"
-          data-dock-dnd-root
-          className="group relative flex items-end gap-1 px-3 pt-3 pb-2 rounded-t-2xl bg-popover/85 backdrop-blur-xl border-t border-x border-border/40 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.35)] supports-[backdrop-filter]:bg-popover/70 will-change-transform"
-          initial={false}
-          animate={{ y: revealed ? 0 : SLIDE_HIDDEN_Y, opacity: revealed ? 1 : 0 }}
-          transition={revealed ? REVEAL_TRANSITION : HIDE_TRANSITION}
-          onMouseLeave={() => setHoveredIndex(null)}
-        >
-          <DockDragHandle />
-          {(() => {
-            // Find the first non-mode index — divider sits before it. If no
-            // non-mode entries exist, no divider renders.
-            const firstPinIdx = dockOrder.findIndex((s) => s.kind !== 'mode')
-            return dockOrder.map((spec, i) => {
-              const sortableId = specToSortableId(spec)
-              const dividerBefore = firstPinIdx !== -1 && i === firstPinIdx ? (
-                <div
-                  key="dock-section-divider"
-                  data-dock-section-divider
-                  className="mx-2 h-7 w-px self-center bg-border/50"
-                  aria-hidden="true"
-                />
-              ) : null
-
-              let body: React.ReactElement | null = null
-              switch (spec.kind) {
-                case 'mode': {
-                  const meta = MODE_REGISTRY[spec.mode]
-                  body = (
-                    <DockItem
-                      key={sortableId}
-                      sortableId={sortableId}
-                      bounceKey={bounceKeys[sortableId]}
-                      liveness={livenessMap[sortableId]}
-                      icon={
-                        <img
-                          src={meta.iconSrc}
-                          alt={meta.label}
-                          draggable={false}
-                          className="w-7 h-7 select-none pointer-events-none"
-                        />
-                      }
-                      label={meta.label}
-                      isActive={meta.isActive(navCtx)}
-                      index={i}
-                      hoveredIndex={hoveredIndex}
-                      onHoverIndexChange={setHoveredIndex}
-                      onClick={() => meta.onClick(actionCtx)}
-                    />
-                  )
-                  break
-                }
-                case 'pinned-conversation': {
-                  const matchingConv = spec.type === 'chat'
-                    ? conversations.find((c) => c.id === spec.sessionId)
-                    : agentSessions.find((s) => s.id === spec.sessionId)
-                  const label = matchingConv?.title
-                    ?? `Conversation ${spec.sessionId.slice(0, 6)}`
-                  const emoji = spec.type === 'agent'
-                    ? agentSessions.find((s) => s.id === spec.sessionId)?.titleEmoji
-                    : undefined
-                  body = (
-                    <DockPinnedItem
-                      key={sortableId}
-                      sortableId={sortableId}
-                      label={label}
-                      emoji={emoji}
-                      index={i}
-                      hoveredIndex={hoveredIndex}
-                      onHoverIndexChange={setHoveredIndex}
-                      onClick={() => openSession(spec.type, spec.sessionId, label)}
-                    />
-                  )
-                  break
-                }
-                case 'pinned-workspace': {
-                  const matchingSpace = workspaces.find((w) => w.id === spec.spaceId)
-                  const label = matchingSpace?.name ?? `Workspace ${spec.spaceId.slice(0, 6)}`
-                  const emoji = matchingSpace?.icon
-                  body = (
-                    <DockPinnedItem
-                      key={sortableId}
-                      sortableId={sortableId}
-                      label={label}
-                      emoji={emoji}
-                      index={i}
-                      hoveredIndex={hoveredIndex}
-                      onHoverIndexChange={setHoveredIndex}
-                      onClick={() => setActiveWorkspaceId(spec.spaceId)}
-                    />
-                  )
-                  break
-                }
-                case 'pinned-automation': {
-                  const matchingSpec = automationSpecs.find((s) => s.id === spec.specId)
-                  const label = matchingSpec?.name ?? `Automation ${spec.specId.slice(0, 6)}`
-                  body = (
-                    <DockPinnedItem
-                      key={sortableId}
-                      sortableId={sortableId}
-                      label={label}
-                      index={i}
-                      hoveredIndex={hoveredIndex}
-                      onHoverIndexChange={setHoveredIndex}
-                      onClick={() => {
-                        setAutomationSelectedSpecId(spec.specId)
-                        setKaleidoscopeModule('humans')
-                        setTopLevelView('kaleidoscope')
-                      }}
-                    />
-                  )
-                  break
-                }
-              }
-
-              return (
-                <React.Fragment key={sortableId}>
-                  {dividerBefore}
-                  {body}
-                </React.Fragment>
-              )
-            })
-          })()}
-          <div className="flex items-center self-center pb-1 pr-1">
-            <ConnectionIndicator />
-          </div>
-        </motion.div>
-      </SortableContext>
-    </DndContext>
+    <motion.div
+      role="navigation"
+      aria-label="底部导航"
+      data-dock-dnd-root
+      className="group relative flex items-end gap-1 px-3 pt-3 pb-2 rounded-t-2xl bg-popover/85 backdrop-blur-xl border-t border-x border-border/40 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.35)] supports-[backdrop-filter]:bg-popover/70 will-change-transform"
+      initial={false}
+      animate={{ y: revealed ? 0 : SLIDE_HIDDEN_Y, opacity: revealed ? 1 : 0 }}
+      transition={revealed ? REVEAL_TRANSITION : HIDE_TRANSITION}
+      onMouseLeave={() => setHoveredIndex(null)}
+    >
+      <DockDragHandle />
+      <Reorder.Group
+        axis="x"
+        as="div"
+        values={dockOrder}
+        onReorder={setDockOrder}
+        className="flex items-end gap-1"
+        // Ensure layoutScroll is on so motion factors in the parent flex
+        // container when measuring deltas — without this, layout
+        // animations can mismeasure when the dock itself is sliding.
+        layoutScroll
+      >
+        {dockOrder.map((spec, i) => {
+          const sortableId = specToSortableId(spec)
+          const dividerBefore = firstPinIdx !== -1 && i === firstPinIdx ? (
+            <DockSectionDivider key={`divider-before-${sortableId}`} />
+          ) : null
+          return (
+            <React.Fragment key={sortableId}>
+              {dividerBefore}
+              <DockReorderItem spec={spec} sortableId={sortableId}>
+                {renderItemContent(spec, i)}
+              </DockReorderItem>
+            </React.Fragment>
+          )
+        })}
+      </Reorder.Group>
+      <div className="flex items-center self-center pb-1 pr-1">
+        <ConnectionIndicator />
+      </div>
+    </motion.div>
   )
 }
+
+/**
+ * Non-animated section divider — sits between mode and pinned items.
+ * Kept as its own non-Reorder element so motion's layout pipeline never
+ * treats it as a sortable value.
+ */
+function DockSectionDivider(): React.ReactElement {
+  return (
+    <div
+      data-dock-section-divider
+      className="mx-2 h-7 w-px self-center bg-border/50"
+      aria-hidden="true"
+    />
+  )
+}
+
+/**
+ * `Reorder.Item` wrapper that owns drag activation + lift visuals.
+ *
+ * - Long-press 200 ms gate via `useLongPressDrag` (keeps simple taps
+ *   responsive — only after the user holds does motion start tracking).
+ * - `whileDrag` lifts the icon iOS-style (scale 1.18, drop shadow, slight
+ *   tilt) so the dragged item visibly leaves the dock plane.
+ * - `layout` + `transition` give neighbors a springy slide-and-squeeze as
+ *   the dragged item passes over their slot.
+ *
+ * The child visual (DockItem / DockPinnedItem) handles hover magnify +
+ * click; this wrapper purely owns drag/reorder mechanics.
+ */
+const DRAG_LIFT_TRANSITION = {
+  type: 'spring' as const,
+  stiffness: 520,
+  damping: 34,
+  mass: 0.7,
+}
+const REORDER_LAYOUT_TRANSITION = {
+  type: 'spring' as const,
+  stiffness: 480,
+  damping: 36,
+  mass: 0.6,
+}
+
+function DockReorderItem({
+  spec,
+  sortableId,
+  children,
+}: {
+  spec: DockItemSpec
+  sortableId: string
+  children: React.ReactNode
+}): React.ReactElement {
+  const { dragControls, pointerHandlers } = useLongPressDrag({
+    delayMs: 200,
+    tolerancePx: 5,
+  })
+  return (
+    <Reorder.Item
+      value={spec}
+      as="div"
+      data-reorder-id={sortableId}
+      // Bypass motion's default pointer listener so taps don't immediately
+      // start dragging — long-press gate above will start the drag manually.
+      dragListener={false}
+      dragControls={dragControls}
+      // `whileDrag` is the iOS Springboard lift — scale up, lift, glow.
+      // motion's portal tracks the cursor automatically while these styles
+      // apply, so the dragged icon visibly leaves the dock and follows the
+      // finger / cursor 1:1.
+      whileDrag={{
+        scale: 1.18,
+        y: -8,
+        rotate: -1.5,
+        zIndex: 50,
+        filter:
+          'brightness(1.06) drop-shadow(0 16px 26px hsl(var(--foreground) / 0.35)) drop-shadow(0 4px 8px hsl(var(--foreground) / 0.22))',
+        cursor: 'grabbing',
+      }}
+      // No drag axis lock — motion will translate freely. The visual layer
+      // will follow the cursor; the `onReorder` callback fires when the
+      // dragged item crosses neighbor centerlines, swapping live so the
+      // dock stays visually consistent with the array order.
+      transition={REORDER_LAYOUT_TRANSITION}
+      // dragTransition tames the "snap-back if dropped on empty space"
+      // motion-default — small power → quick settle to the new slot.
+      dragTransition={{ bounceStiffness: 600, bounceDamping: 28, power: 0.18 }}
+      layout
+      {...pointerHandlers}
+      // Drag controls need a hint: spring out of the way as we follow.
+      style={{ touchAction: 'none' }}
+    >
+      {children}
+    </Reorder.Item>
+  )
+}
+
+// Suppress unused-import lint for the drag-lift transition tuning constant
+// (kept exported-shape for future tuning — same name pattern as
+// REVEAL_TRANSITION / HIDE_TRANSITION at the top of this file).
+void DRAG_LIFT_TRANSITION
