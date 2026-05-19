@@ -486,6 +486,17 @@ pub async fn get_system_diagnostics(
     })
 }
 
+#[tauri::command]
+pub async fn run_memory_inventory_smoke(
+    state: State<'_, AppState>,
+) -> Result<crate::harness::MemoryInventorySmokeReport, Error> {
+    Ok(crate::harness::memory_inventory::run_memory_inventory_smoke(
+        state.memu_client.clone(),
+        state.mcp_manager.clone(),
+    )
+    .await)
+}
+
 fn classify_gbrain_error(error: &str) -> String {
     let lower = error.to_lowercase();
     if let Some(kind) = lower
