@@ -1706,6 +1706,24 @@ CREATE TABLE IF NOT EXISTS browser_task_memory (
 );
 ";
 
+pub const V42_BROWSER_TASK_CHECKPOINTS: &str = "
+CREATE TABLE IF NOT EXISTS browser_task_checkpoints (
+    checkpoint_id   TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL,
+    session_id      TEXT NOT NULL,
+    step_index      INTEGER NOT NULL,
+    active_tab_id   TEXT,
+    memory_json     TEXT,
+    loop_state_json TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES browser_task_runs(run_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_browser_task_checkpoints_run_step
+    ON browser_task_checkpoints(run_id, step_index DESC);
+CREATE INDEX IF NOT EXISTS idx_browser_task_checkpoints_session_time
+    ON browser_task_checkpoints(session_id, created_at DESC);
+";
+
 pub const V39_USER_PROFILE_FACETS: &str = "
 CREATE TABLE IF NOT EXISTS user_profile_facets (
     facet_id           TEXT PRIMARY KEY,
@@ -2033,6 +2051,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V41_BROWSER_TASK_MEMORY.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V41 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V42: resumable browser task checkpoints.
+    tracing::debug!("Running migration V42: browser_task_checkpoints");
+    for stmt in V42_BROWSER_TASK_CHECKPOINTS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V42 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");

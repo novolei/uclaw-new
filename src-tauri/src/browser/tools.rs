@@ -54,6 +54,13 @@ pub struct BrowserTaskTool {
     pub task_store: Option<Arc<BrowserTaskStore>>,
 }
 
+pub struct BrowserTaskResumeTool {
+    pub ctx_mgr: Arc<BrowserContextManager>,
+    pub session_id: String,
+    pub decision_adapter: Arc<dyn BrowserDecisionAdapter>,
+    pub task_store: Option<Arc<BrowserTaskStore>>,
+}
+
 pub struct RetryWithBrowserAgentTool {
     pub ctx_mgr: Arc<BrowserContextManager>,
     pub session_id: String,
@@ -1326,6 +1333,10 @@ impl Tool for BrowserTaskTool {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Optional file paths the browser agent may upload. Paths are relative to the agent workspace."
+                },
+                "resume_run_id": {
+                    "type": "string",
+                    "description": "Optional previous browser task run_id to resume from its latest checkpoint"
                 }
             },
             "required": ["task"]
@@ -1348,6 +1359,7 @@ impl Tool for BrowserTaskTool {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let resume_run_id = params["resume_run_id"].as_str().map(|s| s.to_string());
         let runner = BrowserAgentLoop::new(
             Arc::clone(&self.ctx_mgr),
             Arc::clone(&self.decision_adapter),
@@ -1358,6 +1370,65 @@ impl Tool for BrowserTaskTool {
             max_steps,
             start_url,
             available_file_paths,
+            resume_run_id,
+        }).await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        Ok(ToolOutput::new(
+            serde_json::json!({
+                "ok": run.status == crate::browser::session_state::BrowserTaskStatus::Completed,
+                "run": run,
+            }),
+            start.elapsed().as_millis() as u64,
+        ))
+    }
+}
+
+#[async_trait]
+impl Tool for BrowserTaskResumeTool {
+    fn name(&self) -> &str { "browser_task_resume" }
+
+    fn description(&self) -> &str {
+        "Resume a paused/checkpointed autonomous browser task run from its latest checkpoint."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "run_id": { "type": "string", "description": "Browser task run_id to resume" },
+                "max_steps": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 25,
+                    "description": "Maximum additional autonomous browser steps"
+                }
+            },
+            "required": ["run_id"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let run_id = params["run_id"].as_str()
+            .ok_or_else(|| ToolError::Execution("run_id is required".to_string()))?
+            .to_string();
+        let max_steps = params["max_steps"].as_u64().map(|v| v as u32);
+        let store = self.task_store.as_ref()
+            .ok_or_else(|| ToolError::Execution("browser task store is not available".to_string()))?;
+        let prior = store.load_run(&run_id)
+            .map_err(|e| ToolError::Execution(e.to_string()))?
+            .ok_or_else(|| ToolError::Execution(format!("browser task run '{}' not found", run_id)))?;
+        let runner = BrowserAgentLoop::new(
+            Arc::clone(&self.ctx_mgr),
+            Arc::clone(&self.decision_adapter),
+        ).with_task_store(self.task_store.clone());
+        let run = runner.run(BrowserTaskRequest {
+            session_id: prior.session_id,
+            task: prior.task,
+            max_steps,
+            start_url: None,
+            available_file_paths: Vec::new(),
+            resume_run_id: Some(run_id),
         }).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
         Ok(ToolOutput::new(

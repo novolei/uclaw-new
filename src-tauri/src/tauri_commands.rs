@@ -941,6 +941,12 @@ pub async fn send_message(
             decision_adapter: decision_adapter.clone(),
             task_store: Some(Arc::clone(&task_store)),
         });
+        tools.register(BrowserTaskResumeTool {
+            ctx_mgr: Arc::clone(&ctx_mgr),
+            session_id: sid.clone(),
+            decision_adapter: decision_adapter.clone(),
+            task_store: Some(Arc::clone(&task_store)),
+        });
         tools.register(RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
             session_id: sid.clone(),
@@ -8893,6 +8899,12 @@ pub async fn send_agent_message(
         // on demand even when none is currently running.
         tools.register(bt!(BrowserNavigateTool));
         tools.register(BrowserTaskTool {
+            ctx_mgr: Arc::clone(&ctx_mgr),
+            session_id: sid.clone(),
+            decision_adapter: decision_adapter.clone(),
+            task_store: Some(Arc::clone(&task_store)),
+        });
+        tools.register(BrowserTaskResumeTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
             session_id: sid.clone(),
             decision_adapter: decision_adapter.clone(),

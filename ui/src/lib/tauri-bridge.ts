@@ -1781,7 +1781,13 @@ export const listenNavState = (
 ): Promise<UnlistenFn> =>
   listen<NavStatePayload>('browser:nav-state', ({ payload }) => handler(payload))
 
-export type BrowserTaskStatus = 'running' | 'completed' | 'failed' | 'stopped' | 'needs_user_intervention'
+export type BrowserTaskStatus =
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'stopped'
+  | 'needs_user_intervention'
+  | 'paused_checkpointed'
 export type BrowserTaskStepPhase = 'observe' | 'decide' | 'act' | 'recover' | 'user_intervention' | 'done'
 
 export interface BrowserTaskStepPayload {

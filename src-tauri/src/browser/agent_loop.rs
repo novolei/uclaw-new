@@ -31,6 +31,7 @@ pub struct BrowserTaskRequest {
     pub start_url: Option<String>,
     #[serde(default)]
     pub available_file_paths: Vec<String>,
+    pub resume_run_id: Option<String>,
 }
 
 pub struct BrowserAgentLoop {
@@ -56,18 +57,26 @@ impl BrowserAgentLoop {
 
     pub async fn run(&self, request: BrowserTaskRequest) -> Result<BrowserTaskRun> {
         let max_steps = clamp_max_steps(request.max_steps);
-        let run_id = uuid::Uuid::new_v4().to_string();
-        let mut run = BrowserTaskRun {
-            run_id,
-            session_id: request.session_id.clone(),
-            task: request.task.clone(),
-            status: BrowserTaskStatus::Running,
-            steps: Vec::new(),
-        };
+        let mut run = self
+            .load_resume_run(&request)?
+            .unwrap_or_else(|| BrowserTaskRun {
+                run_id: uuid::Uuid::new_v4().to_string(),
+                session_id: request.session_id.clone(),
+                task: request.task.clone(),
+                status: BrowserTaskStatus::Running,
+                steps: Vec::new(),
+            });
+        run.status = BrowserTaskStatus::Running;
         self.emit_run(&run);
 
         let ctx = self.ctx_mgr.get_or_create(&request.session_id).await?;
-        let tab_id = if let Some(start_url) = request.start_url.as_deref() {
+        let resume_checkpoint = self.latest_checkpoint(&request);
+        let tab_id = if let Some(tab_id) = resume_checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.active_tab_id.clone())
+        {
+            tab_id
+        } else if let Some(start_url) = request.start_url.as_deref() {
             ctx.navigate("new", start_url, self.ctx_mgr.app_handle()).await?
         } else {
             ctx.active_or_first_tab_id()
@@ -76,13 +85,15 @@ impl BrowserAgentLoop {
         };
 
         let mut active_tab_id = tab_id;
-        let mut step_index = 0;
+        let mut step_index = run.steps.last().map(|step| step.step_index + 1).unwrap_or(0);
         let mut loop_detector = LoopDetector::default();
+        let mut latest_memory = resume_checkpoint.and_then(|checkpoint| checkpoint.memory);
 
         for _ in 0..max_steps {
             let observation = ctx.observe(&active_tab_id, false).await?;
             let observation_json = serde_json::to_value(&observation)?;
             let memory = self.update_memory(&request, &observation_json);
+            latest_memory = memory.clone().or(latest_memory);
             self.push_step(&mut run, BrowserTaskStep {
                 step_index,
                 phase: BrowserTaskStepPhase::Observe,
@@ -168,11 +179,13 @@ impl BrowserAgentLoop {
                         timestamp_ms: chrono::Utc::now().timestamp_millis(),
                     });
                     self.emit_run(&run);
+                    self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
                     return Ok(run);
                 }
                 BrowserDecisionStatus::Failed => {
                     run.status = BrowserTaskStatus::Failed;
                     self.emit_run(&run);
+                    self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
                     return Ok(run);
                 }
                 BrowserDecisionStatus::NeedsUserIntervention => {
@@ -190,6 +203,7 @@ impl BrowserAgentLoop {
                         timestamp_ms: chrono::Utc::now().timestamp_millis(),
                     });
                     self.emit_run(&run);
+                    self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
                     return Ok(run);
                 }
                 BrowserDecisionStatus::Continue => {}
@@ -220,9 +234,10 @@ impl BrowserAgentLoop {
                     error: Some("Browser agent repeated the same action on the same URL; stopping for re-plan.".to_string()),
                     timestamp_ms: chrono::Utc::now().timestamp_millis(),
                 });
-                self.emit_run(&run);
-                return Ok(run);
-            }
+                    self.emit_run(&run);
+                    self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
+                    return Ok(run);
+                }
 
             match self
                 .action_registry
@@ -282,6 +297,7 @@ impl BrowserAgentLoop {
                         RecoveryOutcome::Stop => {
                             run.status = BrowserTaskStatus::Failed;
                             self.emit_run(&run);
+                            self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
                             return Ok(run);
                         }
                     }
@@ -289,19 +305,20 @@ impl BrowserAgentLoop {
             }
         }
 
-        run.status = BrowserTaskStatus::Stopped;
+        run.status = BrowserTaskStatus::PausedCheckpointed;
         self.push_step(&mut run, BrowserTaskStep {
             step_index,
             phase: BrowserTaskStepPhase::Done,
             observation_summary: String::new(),
-            reasoning: format!("Stopped after reaching max_steps={max_steps}."),
-            action_name: "max_steps".to_string(),
+            reasoning: format!("Paused at checkpoint after reaching max_steps={max_steps}."),
+            action_name: "checkpoint_pause".to_string(),
             action_args: serde_json::json!({ "maxSteps": max_steps }),
             ok: false,
             message: None,
-            error: Some("Browser task reached max_steps before completion.".to_string()),
+            error: Some("Browser task reached max_steps and saved a resumable checkpoint.".to_string()),
             timestamp_ms: chrono::Utc::now().timestamp_millis(),
         });
+        self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref());
         self.emit_run(&run);
         Ok(run)
     }
@@ -404,6 +421,47 @@ impl BrowserAgentLoop {
                 }
             }
         })
+    }
+
+    fn load_resume_run(&self, request: &BrowserTaskRequest) -> Result<Option<BrowserTaskRun>> {
+        let Some(run_id) = request.resume_run_id.as_deref() else {
+            return Ok(None);
+        };
+        let Some(store) = self.task_store.as_ref() else {
+            return Err(anyhow!("browser_task resume_run_id requires a task store"));
+        };
+        store
+            .load_run(run_id)?
+            .map(Some)
+            .ok_or_else(|| anyhow!("browser task run '{}' was not found for resume", run_id))
+    }
+
+    fn latest_checkpoint(
+        &self,
+        request: &BrowserTaskRequest,
+    ) -> Option<crate::browser::task_store::BrowserTaskCheckpoint> {
+        let run_id = request.resume_run_id.as_deref()?;
+        self.task_store
+            .as_ref()
+            .and_then(|store| store.latest_checkpoint(run_id).ok().flatten())
+    }
+
+    fn persist_checkpoint(
+        &self,
+        run: &BrowserTaskRun,
+        step_index: u32,
+        active_tab_id: Option<&str>,
+        memory: Option<&BrowserTaskMemory>,
+    ) {
+        if let Some(store) = self.task_store.as_ref() {
+            let loop_state = serde_json::json!({
+                "status": run.status,
+                "stepCount": run.steps.len(),
+            });
+            if let Err(e) = store.persist_checkpoint(run, step_index, active_tab_id, memory, loop_state) {
+                tracing::warn!(run_id = %run.run_id, error = %e, "failed to persist browser task checkpoint");
+            }
+        }
     }
 }
 
