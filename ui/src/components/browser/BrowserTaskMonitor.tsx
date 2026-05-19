@@ -47,6 +47,7 @@ export function BrowserTaskMonitor({ sessionId }: BrowserTaskMonitorProps): Reac
   const latest = run.steps.slice(-8)
   const done = run.status === 'completed'
   const failed = run.status === 'failed' || run.status === 'stopped'
+  const needsUser = run.status === 'needs_user_intervention'
 
   return (
     <div className="border-t border-border/50 bg-background/95">
@@ -61,7 +62,8 @@ export function BrowserTaskMonitor({ sessionId }: BrowserTaskMonitorProps): Reac
           'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium',
           done && 'bg-emerald-500/10 text-emerald-600',
           failed && 'bg-destructive/10 text-destructive',
-          !done && !failed && 'bg-blue-500/10 text-blue-600',
+          needsUser && 'bg-amber-500/10 text-amber-600',
+          !done && !failed && !needsUser && 'bg-blue-500/10 text-blue-600',
         )}>
           {run.status}
         </span>

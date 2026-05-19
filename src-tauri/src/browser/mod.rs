@@ -1,6 +1,7 @@
 pub mod action;
 pub mod action_registry;
 pub mod agent_loop;
+pub mod boundary;
 pub mod context;
 pub mod context_manager;
 pub mod decision;

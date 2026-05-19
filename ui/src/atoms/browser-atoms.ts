@@ -61,8 +61,8 @@ export interface NavStateEntry {
 /** Latest nav state per sessionId. Populated by BrowserPanel's listenNavState subscription. */
 export const browserNavStateAtom = atom(new Map<string, NavStateEntry>())
 
-export type BrowserTaskStatus = 'running' | 'completed' | 'failed' | 'stopped'
-export type BrowserTaskStepPhase = 'observe' | 'decide' | 'act' | 'recover' | 'done'
+export type BrowserTaskStatus = 'running' | 'completed' | 'failed' | 'stopped' | 'needs_user_intervention'
+export type BrowserTaskStepPhase = 'observe' | 'decide' | 'act' | 'recover' | 'user_intervention' | 'done'
 
 export interface BrowserTaskStepEntry {
   stepIndex: number

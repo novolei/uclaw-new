@@ -234,6 +234,7 @@ fn status_to_str(status: &BrowserTaskStatus) -> &'static str {
         BrowserTaskStatus::Completed => "completed",
         BrowserTaskStatus::Failed => "failed",
         BrowserTaskStatus::Stopped => "stopped",
+        BrowserTaskStatus::NeedsUserIntervention => "needs_user_intervention",
     }
 }
 
@@ -242,6 +243,7 @@ fn status_from_str(value: &str) -> BrowserTaskStatus {
         "completed" => BrowserTaskStatus::Completed,
         "failed" => BrowserTaskStatus::Failed,
         "stopped" => BrowserTaskStatus::Stopped,
+        "needs_user_intervention" => BrowserTaskStatus::NeedsUserIntervention,
         _ => BrowserTaskStatus::Running,
     }
 }
@@ -252,6 +254,7 @@ fn phase_to_str(phase: &BrowserTaskStepPhase) -> &'static str {
         BrowserTaskStepPhase::Decide => "decide",
         BrowserTaskStepPhase::Act => "act",
         BrowserTaskStepPhase::Recover => "recover",
+        BrowserTaskStepPhase::UserIntervention => "user_intervention",
         BrowserTaskStepPhase::Done => "done",
     }
 }
@@ -261,6 +264,7 @@ fn phase_from_str(value: &str) -> BrowserTaskStepPhase {
         "decide" => BrowserTaskStepPhase::Decide,
         "act" => BrowserTaskStepPhase::Act,
         "recover" => BrowserTaskStepPhase::Recover,
+        "user_intervention" => BrowserTaskStepPhase::UserIntervention,
         "done" => BrowserTaskStepPhase::Done,
         _ => BrowserTaskStepPhase::Observe,
     }
