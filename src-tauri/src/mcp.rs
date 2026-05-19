@@ -191,6 +191,68 @@ fn diagnostic_error_summary(s: &str, env: &HashMap<String, String>) -> String {
     }
 }
 
+fn classify_gbrain_cli_failure(stderr: &str, status: &str) -> String {
+    let lower = format!("{} {}", stderr, status).to_lowercase();
+    if lower.contains("timed out waiting for pglite lock") {
+        "pglite_lock_timeout"
+    } else if lower.contains("no brain configured") || lower.contains("pg_version") {
+        "pglite_not_ready"
+    } else if lower.contains("permission denied") {
+        "permission_denied"
+    } else if lower.contains("gbrain_home") || lower.contains("pglite_data_dir") {
+        "path_mismatch"
+    } else if lower.contains("sigkill") || lower.contains("signal: 9") {
+        "process_killed"
+    } else if lower.contains("page_not_found") {
+        "page_not_found"
+    } else if lower.contains("failed to spawn") || lower.contains("no such file") {
+        "launcher_missing_or_unusable"
+    } else if lower.contains("timed out") {
+        "timeout"
+    } else {
+        "unknown"
+    }
+    .to_string()
+}
+
+fn gbrain_cli_error_hint(kind: &str) -> &'static str {
+    match kind {
+        "page_not_found" => "Pick an existing slug from the suggestions or retry with fuzzy=true/include_deleted=true.",
+        "process_killed" => "The gbrain CLI was killed by the OS. Retry with a smaller query/list size and check memory pressure if it repeats.",
+        "timeout" => "The gbrain CLI timed out. Retry once, then restart gbrain if the problem repeats.",
+        "pglite_lock_timeout" => "Stop stale gbrain processes and wait for the PGLite lock to clear, then retry.",
+        "pglite_not_ready" => "Run gbrain init or restart the app so PGLite storage is ready.",
+        "permission_denied" => "Fix permissions on the gbrain home directory or bundled launcher.",
+        "path_mismatch" => "Refresh bundled gbrain configuration from System Diagnostics and restart gbrain.",
+        "launcher_missing_or_unusable" => "Refresh bundled runtime paths and restart gbrain.",
+        _ => "Open System Diagnostics for gbrain runtime details, then retry.",
+    }
+}
+
+fn gbrain_cli_error_payload(tool: &str, kind: &str, status: &str, nearest_slugs: Vec<String>) -> String {
+    serde_json::json!({
+        "ok": false,
+        "source": "gbrain",
+        "tool": tool,
+        "kind": kind,
+        "status": status,
+        "message": match kind {
+            "page_not_found" => "gbrain page not found",
+            "process_killed" => "gbrain process was killed",
+            "timeout" => "gbrain CLI timed out",
+            "pglite_lock_timeout" => "gbrain PGLite lock timed out",
+            "pglite_not_ready" => "gbrain PGLite storage is not ready",
+            "permission_denied" => "gbrain permission denied",
+            "path_mismatch" => "gbrain runtime path mismatch",
+            "launcher_missing_or_unusable" => "gbrain launcher missing or unusable",
+            _ => "gbrain CLI failed",
+        },
+        "hint": gbrain_cli_error_hint(kind),
+        "nearest_slugs": nearest_slugs,
+    })
+    .to_string()
+}
+
 /// Kinds of events written to `mcp_audit`. Stored as the literal
 /// string in the `event_kind` column; new variants are append-only so
 /// historical rows stay parseable.
@@ -968,20 +1030,18 @@ impl McpTransport for HttpTransport {
 /// `bun <gbrain>/src/cli.ts <command> ...`. This makes the bridge
 /// deterministic and avoids long-lived PGLite lock holders.
 struct GbrainCliTransport {
-    server_name: String,
     command: String,
     base_args: Vec<String>,
     env: HashMap<String, String>,
 }
 
 impl GbrainCliTransport {
-    fn new(server_name: &str, command: &str, args: &[String], env: &HashMap<String, String>) -> Self {
+    fn new(_server_name: &str, command: &str, args: &[String], env: &HashMap<String, String>) -> Self {
         let mut base_args = args.to_vec();
         if base_args.last().map(|s| s.as_str()) == Some("serve") {
             base_args.pop();
         }
         Self {
-            server_name: server_name.to_string(),
             command: command.to_string(),
             base_args,
             env: env.clone(),
@@ -1179,35 +1239,23 @@ impl GbrainCliTransport {
 
         let output = tokio::time::timeout(Duration::from_secs(45), cmd.output())
             .await
-            .map_err(|_| McpError::Timeout(format!("[{}] gbrain CLI '{}' timed out", self.server_name, tool)))?
+            .map_err(|_| McpError::Server(gbrain_cli_error_payload(tool, "timeout", "timed out", Vec::new())))?
             .map_err(|e| McpError::Io(e))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if !output.status.success() {
+            let mut suggestions = Vec::new();
             if tool == "get_page" && stderr.contains("page_not_found") {
                 if let Some(slug) = requested_slug.as_deref() {
-                    let suggestions = self.suggest_page_slugs(slug).await;
-                    if !suggestions.is_empty() {
-                        return Err(McpError::Server(format!(
-                            "[{}] gbrain CLI '{}' failed: {}{}{}\nnearest slugs: {}",
-                            self.server_name,
-                            tool,
-                            output.status,
-                            if stderr.is_empty() { "" } else { "\nstderr: " },
-                            stderr,
-                            suggestions.join(", ")
-                        )));
-                    }
+                    suggestions = self.suggest_page_slugs(slug).await;
                 }
             }
-            return Err(McpError::Server(format!(
-                "[{}] gbrain CLI '{}' failed: {}{}{}",
-                self.server_name,
+            return Err(McpError::Server(gbrain_cli_error_payload(
                 tool,
-                output.status,
-                if stderr.is_empty() { "" } else { "\nstderr: " },
-                stderr
+                &classify_gbrain_cli_failure(&stderr, &output.status.to_string()),
+                &output.status.to_string(),
+                suggestions,
             )));
         }
         if stdout.is_empty() && !stderr.is_empty() {
@@ -2848,6 +2896,23 @@ mod tests {
         assert!(summary.contains("timed out"));
         assert!(!summary.contains("private customer notes"));
         assert!(!summary.contains("/Users/alice"));
+    }
+
+    #[test]
+    fn gbrain_cli_error_payload_is_structured_for_recovery_ui() {
+        let payload = gbrain_cli_error_payload(
+            "get_page",
+            "page_not_found",
+            "exit status: 1",
+            vec!["knowledge/openai-gpt5".to_string()],
+        );
+        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["source"], "gbrain");
+        assert_eq!(value["tool"], "get_page");
+        assert_eq!(value["kind"], "page_not_found");
+        assert_eq!(value["nearest_slugs"][0], "knowledge/openai-gpt5");
+        assert!(value["hint"].as_str().unwrap().contains("suggestions"));
     }
 
     #[test]
