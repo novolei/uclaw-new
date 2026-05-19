@@ -7,6 +7,7 @@ import { Bot } from 'lucide-react'
 // motion/react is mocked so springs resolve synchronously and DOM stays plain.
 // motion.button is forwardRef-wrapped so Radix Tooltip's `asChild` Slot can
 // forward its ref without React warnings.
+// motion.div strips motion-only props so React doesn't warn about unknown attrs.
 vi.mock('motion/react', () => ({
   motion: {
     button: React.forwardRef<
@@ -15,6 +16,13 @@ vi.mock('motion/react', () => ({
     >(({ style, ...rest }, ref) =>
       React.createElement('button', { ref, style, ...rest }),
     ),
+    div: ({
+      animate: _animate,
+      transition: _transition,
+      initial: _initial,
+      ...rest
+    }: React.ComponentPropsWithoutRef<'div'> & Record<string, unknown>) =>
+      React.createElement('div', rest),
   },
   useSpring: () => ({ set: vi.fn() }),
   useReducedMotion: () => true,
@@ -157,9 +165,9 @@ describe('DockItem', () => {
     // Outer slot (SLOT_W = 56)
     expect(btn.style.width).toBe('56px')
     expect(btn.style.height).toBe('56px')
-    // Inner icon-box span (ICON_BOX = 44). It's the only <span> child of the
-    // button at this point (the active-dot span only renders when isActive).
-    const iconBox = container.querySelector('button > span') as HTMLElement
+    // Inner icon-box div (ICON_BOX = 44). It's the only direct <div> child of
+    // the button at this point (the active-dot span only renders when isActive).
+    const iconBox = container.querySelector('button > div') as HTMLElement
     expect(iconBox.style.width).toBe('44px')
     expect(iconBox.style.height).toBe('44px')
   })
@@ -195,5 +203,38 @@ describe('DockItem', () => {
     )
     const btn = screen.getByRole('button', { name: 'Agent' })
     expect(btn.hasAttribute('data-sortable-id')).toBe(false)
+  })
+
+  it('runs a one-shot bounce animation when bounceKey increments', () => {
+    const { rerender } = render(
+      <DockItem
+        icon={<Bot size={18} />}
+        label="Agent"
+        isActive={false}
+        index={0}
+        hoveredIndex={null}
+        onHoverIndexChange={vi.fn()}
+        onClick={vi.fn()}
+        bounceKey={0}
+      />,
+    )
+    const btn = screen.getByRole('button', { name: 'Agent' })
+    // No bounce indicator at baseline.
+    expect(btn.getAttribute('data-bouncing')).toBeNull()
+
+    rerender(
+      <DockItem
+        icon={<Bot size={18} />}
+        label="Agent"
+        isActive={false}
+        index={0}
+        hoveredIndex={null}
+        onHoverIndexChange={vi.fn()}
+        onClick={vi.fn()}
+        bounceKey={1}
+      />,
+    )
+    // After bounceKey bump, the data-bouncing attr is set for the bounce window.
+    expect(btn.getAttribute('data-bouncing')).toBe('true')
   })
 })
