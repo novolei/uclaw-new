@@ -198,3 +198,27 @@ describe('pinIdColorSeed', () => {
     expect(a.from).not.toBe(b.from)
   })
 })
+
+import { dockBounceKeysAtom } from './dock-atoms'
+
+describe('dockBounceKeysAtom', () => {
+  it('starts empty', () => {
+    const store = createStore()
+    expect(store.get(dockBounceKeysAtom)).toEqual({})
+  })
+
+  it('can write a per-target bounce counter', () => {
+    const store = createStore()
+    store.set(dockBounceKeysAtom, (prev) => ({
+      ...prev,
+      'mode-agent': (prev['mode-agent'] ?? 0) + 1,
+    }))
+    expect(store.get(dockBounceKeysAtom)).toEqual({ 'mode-agent': 1 })
+
+    store.set(dockBounceKeysAtom, (prev) => ({
+      ...prev,
+      'mode-agent': (prev['mode-agent'] ?? 0) + 1,
+    }))
+    expect(store.get(dockBounceKeysAtom)).toEqual({ 'mode-agent': 2 })
+  })
+})
