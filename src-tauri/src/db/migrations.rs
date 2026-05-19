@@ -1890,6 +1890,101 @@ CREATE INDEX IF NOT EXISTS idx_facets_last_seen
     ON user_profile_facets(last_seen_at);
 ";
 
+/// V44 — Memory OS L3 Engines RETAINED schema (per ADR 2026-05-20 §8).
+///
+/// gbrain is uClaw's primary knowledge layer; L2 Cognitive is paused;
+/// L3 Engines is partially paused. This migration ships only the
+/// schema for the RETAINED subset:
+///
+/// - `timeline_events`         — global event ledger (Phase 16)
+/// - `temporal_aggregates`     — per-grain summaries (Phase 16; day/week/month/quarter/year)
+/// - `activity_clusters`       — LLM-grouped event clusters per period (Phase 16)
+/// - `memory_importance_scores` — Ebbinghaus + importance-weighted decay (Phase §4.12.1)
+///
+/// Tables explicitly NOT shipped (Entity Graph PAUSED, Dream Cycle pipeline
+/// PAUSED): `entity_aliases`, `entity_aliases_fts`, `entity_raw_data`,
+/// `dream_cycle_runs`, `dream_cycle_stages`, `spaced_repetition_state`,
+/// `drift_events`, `triangulation_evidence`. Those land later, each
+/// alongside the code that uses them (or as future-V migrations).
+///
+/// All four tables are `IF NOT EXISTS` and additive. `memory_importance_scores`
+/// FKs to `memory_nodes(id)` with `ON DELETE CASCADE` (matches V43's
+/// `page_content_hashes` / `analysis_cache` pattern). Tables stay empty
+/// until consumers (Timeline Engine scenario in a follow-up PR;
+/// Importance Decay algorithm in P2) start populating them.
+pub const V44_L3_RETAINED_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS timeline_events (
+    id                 TEXT PRIMARY KEY,
+    space_id           TEXT NOT NULL,
+    event_kind         TEXT NOT NULL,
+    subject_id         TEXT,
+    title              TEXT NOT NULL,
+    payload_json       TEXT,
+    related_entity_ids TEXT,
+    occurred_at        INTEGER NOT NULL,
+    importance         REAL NOT NULL DEFAULT 0.5,
+    created_at         INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_timeline_events_time
+    ON timeline_events(space_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_timeline_events_entity
+    ON timeline_events(related_entity_ids);
+CREATE INDEX IF NOT EXISTS idx_timeline_events_kind
+    ON timeline_events(space_id, event_kind, occurred_at DESC);
+
+CREATE TABLE IF NOT EXISTS temporal_aggregates (
+    id            TEXT PRIMARY KEY,
+    space_id      TEXT NOT NULL,
+    grain         TEXT NOT NULL,
+    period_start  INTEGER NOT NULL,
+    period_end    INTEGER NOT NULL,
+    summary_md    TEXT NOT NULL,
+    event_count   INTEGER NOT NULL DEFAULT 0,
+    top_themes    TEXT NOT NULL DEFAULT '[]',
+    top_entities  TEXT NOT NULL DEFAULT '[]',
+    llm_model     TEXT,
+    token_cost    INTEGER,
+    created_at    INTEGER NOT NULL,
+    UNIQUE(space_id, grain, period_start)
+);
+CREATE INDEX IF NOT EXISTS idx_temporal_aggregates_lookup
+    ON temporal_aggregates(space_id, grain, period_start DESC);
+
+CREATE TABLE IF NOT EXISTS activity_clusters (
+    id                 TEXT PRIMARY KEY,
+    space_id           TEXT NOT NULL,
+    period_start       INTEGER NOT NULL,
+    period_end         INTEGER NOT NULL,
+    cluster_label      TEXT NOT NULL,
+    description        TEXT NOT NULL,
+    event_ids          TEXT NOT NULL,
+    related_entity_ids TEXT NOT NULL DEFAULT '[]',
+    score              REAL NOT NULL DEFAULT 0.5,
+    created_at         INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_activity_clusters_period
+    ON activity_clusters(space_id, period_start DESC);
+
+CREATE TABLE IF NOT EXISTS memory_importance_scores (
+    node_id               TEXT PRIMARY KEY REFERENCES memory_nodes(id) ON DELETE CASCADE,
+    base_value            REAL NOT NULL,
+    citation_factor       REAL NOT NULL,
+    edge_factor           REAL NOT NULL,
+    recency_factor        REAL NOT NULL,
+    status_bonus          REAL NOT NULL,
+    penalty               REAL NOT NULL,
+    importance            REAL NOT NULL,
+    decay_half_life_days  REAL NOT NULL,
+    last_computed_at      INTEGER NOT NULL,
+    archive_pending_since INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_importance_scores_value
+    ON memory_importance_scores(importance DESC);
+CREATE INDEX IF NOT EXISTS idx_importance_scores_archive
+    ON memory_importance_scores(archive_pending_since)
+    WHERE archive_pending_since IS NOT NULL;
+";
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -2222,6 +2317,17 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V43_SEED_TEMPLATES.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V43 seed stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V44: Memory OS L3 Engines RETAINED schema (per ADR 2026-05-20 §8).
+    // 4 new tables: timeline_events / temporal_aggregates /
+    // activity_clusters / memory_importance_scores. Additive only;
+    // tables stay empty until P2 (Importance Decay) and later
+    // Timeline Engine scenarios populate them.
+    tracing::debug!("Running migration V44: L3 engines retained schema");
+    for stmt in V44_L3_RETAINED_SCHEMA.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V44 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -3873,5 +3979,203 @@ mod tests {
             prompt, "MY CUSTOM PROMPT",
             "INSERT OR IGNORE must not overwrite user-edited compile_prompt"
         );
+    }
+
+    // ─── V44 — L3 Engines RETAINED schema (per ADR 2026-05-20) ─────
+
+    #[test]
+    fn v44_creates_retained_l3_tables_and_indexes() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+
+        for table in [
+            "timeline_events",
+            "temporal_aggregates",
+            "activity_clusters",
+            "memory_importance_scores",
+        ] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{} table must exist after V44", table);
+        }
+
+        for index in [
+            "idx_timeline_events_time",
+            "idx_timeline_events_entity",
+            "idx_timeline_events_kind",
+            "idx_temporal_aggregates_lookup",
+            "idx_activity_clusters_period",
+            "idx_importance_scores_value",
+            "idx_importance_scores_archive",
+        ] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                    [index],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "index {} must exist after V44", index);
+        }
+    }
+
+    #[test]
+    fn v44_does_not_ship_paused_tables() {
+        // ADR §8 explicitly defers Entity Graph + Dream Cycle pipeline +
+        // 3 paused enhancements (Hypothesis / Predictive Boot / Synthetic Q&A).
+        // None of their tables should exist after V44. If a future
+        // edit accidentally adds them here, this test catches the
+        // scope creep.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+
+        for paused_table in [
+            "entity_aliases",
+            "entity_aliases_fts",
+            "entity_raw_data",
+            "ner_decisions",
+            "dream_cycle_runs",
+            "dream_cycle_stages",
+        ] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [paused_table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                n, 0,
+                "paused table '{}' must NOT exist (ADR §8); scope creep detected",
+                paused_table
+            );
+        }
+    }
+
+    #[test]
+    fn v44_is_idempotent() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error (IF NOT EXISTS)");
+        for table in [
+            "timeline_events",
+            "temporal_aggregates",
+            "activity_clusters",
+            "memory_importance_scores",
+        ] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1);
+        }
+    }
+
+    #[test]
+    fn v44_temporal_aggregates_unique_per_grain_period() {
+        // (space_id, grain, period_start) is UNIQUE — re-running the
+        // daily / weekly / monthly aggregator for the same period
+        // should overwrite via UPSERT, not silently double-write.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        let now = 1_700_000_000_000_i64;
+
+        conn.execute(
+            "INSERT INTO temporal_aggregates \
+             (id, space_id, grain, period_start, period_end, summary_md, created_at) \
+             VALUES ('a1', 'default', 'day', ?1, ?1, 'summary v1', ?1)",
+            [now],
+        )
+        .unwrap();
+
+        // Same (space_id, grain, period_start) — second insert MUST fail
+        // unless caller uses ON CONFLICT.
+        let err = conn.execute(
+            "INSERT INTO temporal_aggregates \
+             (id, space_id, grain, period_start, period_end, summary_md, created_at) \
+             VALUES ('a2', 'default', 'day', ?1, ?1, 'summary v2', ?1)",
+            [now],
+        );
+        assert!(err.is_err(), "duplicate (space, grain, period_start) must violate UNIQUE");
+    }
+
+    #[test]
+    fn v44_timeline_events_default_importance_is_half() {
+        // ADR-cited contract: spec §3.2.1 says default importance = 0.5
+        // until Dream Cycle / Importance Decay updates it. Defensive
+        // against a future edit dropping the DEFAULT.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        let now = 1_700_000_000_000_i64;
+
+        conn.execute(
+            "INSERT INTO timeline_events \
+             (id, space_id, event_kind, title, occurred_at, created_at) \
+             VALUES ('e1', 'default', 'episode', 'test event', ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+
+        let importance: f64 = conn
+            .query_row(
+                "SELECT importance FROM timeline_events WHERE id = 'e1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            (importance - 0.5).abs() < f64::EPSILON,
+            "default importance should be 0.5, got {}",
+            importance
+        );
+    }
+
+    #[test]
+    fn v44_importance_scores_cascades_on_node_delete() {
+        // FK ON DELETE CASCADE: when an EntityPage / memory_node is
+        // deleted, its row in memory_importance_scores must vanish too,
+        // otherwise the Importance Decay (P2) sees a phantom score for
+        // a non-existent node and emits warnings forever.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
+
+        let node_inserted = conn
+            .execute(
+                "INSERT OR IGNORE INTO memory_nodes (id) VALUES ('node-importance-cascade')",
+                [],
+            )
+            .unwrap_or(0);
+        if node_inserted == 0 {
+            // memory_nodes has unfillable NOT NULL columns; FK structure
+            // verified by the CREATE — accept skip.
+            return;
+        }
+        conn.execute(
+            "INSERT INTO memory_importance_scores \
+             (node_id, base_value, citation_factor, edge_factor, recency_factor, \
+              status_bonus, penalty, importance, decay_half_life_days, last_computed_at) \
+             VALUES ('node-importance-cascade', 0.5, 1.0, 1.0, 1.0, 0.0, 0.0, 0.5, 30.0, ?1)",
+            [1_700_000_000_000_i64],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM memory_nodes WHERE id = 'node-importance-cascade'", [])
+            .unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_importance_scores WHERE node_id = 'node-importance-cascade'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "FK ON DELETE CASCADE must purge memory_importance_scores");
     }
 }

@@ -169,6 +169,7 @@ Track which V-number is claimed by which open PR before starting schema work:
 | V41 | browser_task_runs + browser_task_steps + browser_task_memory — autonomous browser run trail + per-session memory notebook | merged (Browser agent v2) |
 | V42 | browser_task_checkpoints — resumable browser-run snapshots (active_tab_id + memory_json + loop_state_json) | merged (Browser agent v2) |
 | V43 | Memory OS Cognitive Layer Phase 8.1 — 5 new tables (wiki_log_events / page_content_hashes / review_queue_items / wiki_page_templates / analysis_cache) | shipped empty + 7-row template seed; **PAUSED — see [ADR 2026-05-20](docs/adr/2026-05-20-gbrain-primary-freeze-l2-cognitive.md) (gbrain is primary)** |
+| V44 | Memory OS L3 Engines RETAINED schema (per ADR 2026-05-20 §8) — 4 new tables (timeline_events / temporal_aggregates / activity_clusters / memory_importance_scores). Entity Graph + Dream Cycle pipeline tables intentionally NOT shipped. | in progress |
 
 If you're adding a migration: pick the next number after both merged AND open PRs to avoid conflicts. Update this table in your PR.
 
