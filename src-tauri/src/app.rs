@@ -859,6 +859,11 @@ impl AppState {
         None
     }
 
+    fn is_packaged_resource_dir(resource_dir: &std::path::Path) -> bool {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        !resource_dir.starts_with(manifest_dir)
+    }
+
     /// Find the memU bridge script, checking bundled resource dir, dev path, and data dir.
     fn find_bridge_script(resource_dir: Option<&std::path::Path>, data_dir: &std::path::Path) -> Option<PathBuf> {
         // 1. Check Tauri resource_dir (Release bundle)
@@ -867,6 +872,13 @@ impl AppState {
             if bundled.exists() {
                 tracing::info!("Found bundled bridge script at {}", bundled.display());
                 return Some(bundled);
+            }
+            if Self::is_packaged_resource_dir(res_dir) {
+                tracing::warn!(
+                    expected = %bundled.display(),
+                    "Packaged memU bridge script missing; refusing to fall back to dev/data paths"
+                );
+                return None;
             }
         }
 
@@ -913,6 +925,13 @@ impl AppState {
             };
             if let Some(path_str) = Self::first_working_python(candidates, "embedded") {
                 return Some(path_str);
+            }
+            if Self::is_packaged_resource_dir(res_dir) {
+                tracing::warn!(
+                    resource_dir = %res_dir.display(),
+                    "Packaged Python runtime missing or unusable; refusing to fall back to dev/system Python"
+                );
+                return None;
             }
         }
 
@@ -1010,6 +1029,13 @@ impl AppState {
             if let Some(bun) = Self::first_working_bun(vec![res_dir.join("bun")], "resource") {
                 return Some(bun);
             }
+            if Self::is_packaged_resource_dir(res_dir) {
+                tracing::warn!(
+                    expected = %res_dir.join("bun").display(),
+                    "Packaged Bun missing or unusable; refusing to fall back to dev Bun"
+                );
+                return None;
+            }
         }
         // 2. Dev — repo's bunembed/bun (after running setup-bun-runtime.sh)
         let dev_bun = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1082,6 +1108,13 @@ impl AppState {
             if bundled.exists() {
                 tracing::info!("Found bundled gbrain CLI at {}", bundled.display());
                 return Some(bundled);
+            }
+            if Self::is_packaged_resource_dir(res_dir) {
+                tracing::warn!(
+                    expected = %bundled.display(),
+                    "Packaged gbrain CLI missing; refusing to fall back to dev gbrain source"
+                );
+                return None;
             }
         }
         // 2. Dev — repo's gbrain-source/src/cli.ts
@@ -1603,5 +1636,92 @@ mod memu_runtime_resolution_tests {
         let selected =
             AppState::find_bridge_script(Some(resource_dir.path()), data_dir.path()).unwrap();
         assert_eq!(selected, bundled);
+    }
+
+    #[test]
+    fn release_resource_resolution_uses_packaged_paths_for_memory_runtimes() {
+        let resource_dir = tempdir().unwrap();
+        let data_dir = tempdir().unwrap();
+
+        let bundled_bun = resource_dir.path().join("bun");
+        write_executable(&bundled_bun, "#!/usr/bin/env bash\necho 1.2.3\n");
+
+        let bundled_python_dir = resource_dir.path().join("python").join("bin");
+        fs::create_dir_all(&bundled_python_dir).unwrap();
+        let bundled_python = bundled_python_dir.join("python3.13");
+        write_executable(&bundled_python, "#!/usr/bin/env bash\necho Python 3.13.13\n");
+
+        let bundled_gbrain_entry = resource_dir
+            .path()
+            .join("gbrain")
+            .join("src")
+            .join("cli.ts");
+        fs::create_dir_all(bundled_gbrain_entry.parent().unwrap()).unwrap();
+        fs::write(&bundled_gbrain_entry, "console.log('gbrain')\n").unwrap();
+
+        let bundled_bridge = resource_dir.path().join("memu_bridge.py");
+        fs::write(&bundled_bridge, "# bundled bridge\n").unwrap();
+        fs::write(data_dir.path().join("memu_bridge.py"), "# stale data bridge\n").unwrap();
+
+        let bun = AppState::find_bun_path(Some(resource_dir.path())).unwrap();
+        let python = AppState::find_python(Some(resource_dir.path())).unwrap();
+        let gbrain_entry = AppState::find_gbrain_entry(Some(resource_dir.path())).unwrap();
+        let bridge = AppState::find_bridge_script(Some(resource_dir.path()), data_dir.path()).unwrap();
+
+        assert_eq!(bun, bundled_bun);
+        assert_eq!(python, bundled_python.to_string_lossy().as_ref());
+        assert_eq!(gbrain_entry, bundled_gbrain_entry);
+        assert_eq!(bridge, bundled_bridge);
+
+        let gbrain_home = data_dir.path().join("gbrain");
+        AppState::write_gbrain_launcher_files(&gbrain_home, &bun, &gbrain_entry).unwrap();
+        let run_sh = fs::read_to_string(gbrain_home.join("run.sh")).unwrap();
+        let paths_json = fs::read_to_string(gbrain_home.join("paths.json")).unwrap();
+
+        assert!(
+            run_sh.contains(&resource_dir.path().display().to_string()),
+            "release launcher should point at bundled resources, got:\n{}",
+            run_sh
+        );
+        assert!(
+            !run_sh.contains(env!("CARGO_MANIFEST_DIR")),
+            "release launcher must not bake in dev checkout paths, got:\n{}",
+            run_sh
+        );
+        assert!(
+            paths_json.contains(&resource_dir.path().display().to_string()),
+            "paths manifest should point at bundled resources, got:\n{}",
+            paths_json
+        );
+        assert!(
+            !paths_json.contains(env!("CARGO_MANIFEST_DIR")),
+            "paths manifest must not bake in dev checkout paths, got:\n{}",
+            paths_json
+        );
+    }
+
+    #[test]
+    fn packaged_resource_resolution_refuses_dev_fallback_when_bundle_is_incomplete() {
+        let resource_dir = tempdir().unwrap();
+        let data_dir = tempdir().unwrap();
+
+        fs::write(data_dir.path().join("memu_bridge.py"), "# stale data bridge\n").unwrap();
+
+        assert!(
+            AppState::find_bun_path(Some(resource_dir.path())).is_none(),
+            "packaged release must not fall back to dev bunembed/bun"
+        );
+        assert!(
+            AppState::find_gbrain_entry(Some(resource_dir.path())).is_none(),
+            "packaged release must not fall back to dev gbrain-source"
+        );
+        assert!(
+            AppState::find_bridge_script(Some(resource_dir.path()), data_dir.path()).is_none(),
+            "packaged release must not fall back to stale data-dir memu_bridge.py"
+        );
+        assert!(
+            AppState::find_python(Some(resource_dir.path())).is_none(),
+            "packaged release must not fall back to dev or system Python"
+        );
     }
 }
