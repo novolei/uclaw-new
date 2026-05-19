@@ -1807,6 +1807,38 @@ CREATE TABLE IF NOT EXISTS analysis_cache (
 );
 ";
 
+/// V47 — Memory OS L3 §4.12.5 RETAINED (per ADR 2026-05-20 §8) —
+/// Cross-Source Triangulation evidence.
+///
+/// Spec §4.12.5: when ≥2 independent sources agree on a claim, the
+/// agent's confidence in that claim should be boosted; when sources
+/// disagree, surface it for review. Each row is one (claim, source)
+/// agreement assertion. The triangulation algorithm groups by claim
+/// and computes a confidence boost from the agreement rate.
+///
+/// `claim_id` is a caller-supplied identifier (typically a hash of
+/// the claim text or a node_id when the claim is "this EntityPage's
+/// compiled_truth"). `source_node_id` references the source page
+/// providing the evidence. `agrees` is 1 when the source supports
+/// the claim, 0 when it contradicts (so opposing evidence is
+/// captured too).
+pub const V47_TRIANGULATION_EVIDENCE: &str = "
+CREATE TABLE IF NOT EXISTS triangulation_evidence (
+    id              TEXT PRIMARY KEY,
+    claim_id        TEXT NOT NULL,
+    source_node_id  TEXT NOT NULL REFERENCES memory_nodes(id) ON DELETE CASCADE,
+    agrees          INTEGER NOT NULL DEFAULT 1,
+    weight          REAL NOT NULL DEFAULT 1.0,
+    note            TEXT,
+    computed_at     INTEGER NOT NULL,
+    UNIQUE(claim_id, source_node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_triangulation_claim
+    ON triangulation_evidence(claim_id);
+CREATE INDEX IF NOT EXISTS idx_triangulation_source
+    ON triangulation_evidence(source_node_id);
+";
+
 /// V46 — Memory OS L3 §4.12.4 RETAINED (per ADR 2026-05-20 §8) —
 /// Concept Drift Detection events. One row per drift signal detected
 /// on an EntityPage's version chain.
@@ -2400,6 +2432,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V46_DRIFT_EVENTS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V46 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V47: Memory OS L3 §4.12.5 RETAINED — Cross-Source Triangulation evidence.
+    tracing::debug!("Running migration V47: triangulation_evidence");
+    for stmt in V47_TRIANGULATION_EVIDENCE.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V47 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -4289,6 +4328,50 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    // ─── V47 — Cross-Source Triangulation (L3 §4.12.5 RETAINED) ───
+
+    #[test]
+    fn v47_creates_triangulation_evidence_table_and_indexes() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='triangulation_evidence'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        for idx in ["idx_triangulation_claim", "idx_triangulation_source"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                    [idx],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{} must exist after V47", idx);
+        }
+    }
+
+    #[test]
+    fn v47_enforces_unique_claim_source_pair() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+        conn.execute(
+            "INSERT INTO triangulation_evidence (id, claim_id, source_node_id, agrees, weight, computed_at) \
+             VALUES ('t1', 'claim-x', 'source-1', 1, 1.0, 1700000000000)",
+            [],
+        ).unwrap();
+        let err = conn.execute(
+            "INSERT INTO triangulation_evidence (id, claim_id, source_node_id, agrees, weight, computed_at) \
+             VALUES ('t2', 'claim-x', 'source-1', 0, 1.0, 1700000001000)",
+            [],
+        );
+        assert!(err.is_err(), "(claim_id, source_node_id) UNIQUE must violate");
     }
 
     // ─── V46 — Concept Drift Detection events (L3 §4.12.4 RETAINED) ───

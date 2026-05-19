@@ -172,6 +172,7 @@ Track which V-number is claimed by which open PR before starting schema work:
 | V44 | Memory OS L3 Engines RETAINED schema (per ADR 2026-05-20 §8) — 4 new tables (timeline_events / temporal_aggregates / activity_clusters / memory_importance_scores). Entity Graph + Dream Cycle pipeline tables intentionally NOT shipped. | in progress |
 | V45 | Memory OS L3 §4.12.3 RETAINED — `spaced_repetition_state` (Anki SM-2 ladder for verified high-importance EntityPages) | in progress |
 | V46 | Memory OS L3 §4.12.4 RETAINED — `drift_events` (Concept Drift Detection signal log; flags EntityPages whose compiled_truth keeps changing) | in progress |
+| V47 | Memory OS L3 §4.12.5 RETAINED — `triangulation_evidence` (Cross-Source Triangulation; per-(claim, source) agreement rows for multi-source confidence boost) | in progress |
 
 If you're adding a migration: pick the next number after both merged AND open PRs to avoid conflicts. Update this table in your PR.
 

@@ -41,3 +41,9 @@ pub mod spaced_repetition;
 // Drift Detection. V46 schema + Levenshtein-based pure algorithm +
 // tests; scheduler + LLM triage in a follow-up.
 pub mod drift_detection;
+// Memory OS L3 §4.12.5 (RETAINED per ADR 2026-05-20 §8) — Cross-
+// Source Triangulation: confidence boost when ≥2 sources agree.
+// V47 schema + pure boost formula + DB record/summarize helpers
+// in this PR; scheduler + LLM "does source X support claim Y?"
+// classifier in a follow-up.
+pub mod triangulation;
