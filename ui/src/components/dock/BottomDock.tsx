@@ -28,10 +28,10 @@ import { workspacesAtom, activeWorkspaceIdAtom } from '@/atoms/workspace'
 import { humaneSpecsAtom } from '@/atoms/automation'
 import { automationSelectedSpecIdAtom } from '@/atoms/automation-ui'
 import { useOpenSession } from '@/hooks/useOpenSession'
-import chatIcon from '@/assets/dock-icons/chat.png'
-import agentIcon from '@/assets/dock-icons/agent.png'
-import memoryIcon from '@/assets/dock-icons/memory.png'
-import kaleidoscopeIcon from '@/assets/dock-icons/kaleidoscope.png'
+import chatIcon from '@/assets/dock-icons/chat.webp'
+import agentIcon from '@/assets/dock-icons/agent.webp'
+import memoryIcon from '@/assets/dock-icons/memory.webp'
+import kaleidoscopeIcon from '@/assets/dock-icons/kaleidoscope.webp'
 
 interface BottomDockProps {
   /** Controlled from BottomDockHoverRegion. Drives slide animation. */

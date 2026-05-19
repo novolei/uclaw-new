@@ -63,12 +63,12 @@ describe('BottomDock · icons', () => {
     }
   })
 
-  it('image src points to the PNG asset bundled by Vite', () => {
+  it('image src points to the webp asset bundled by Vite', () => {
     renderDock()
     const chatImg = screen
       .getByRole('button', { name: '聊天' })
       .querySelector('img') as HTMLImageElement
-    expect(chatImg.src).toMatch(/chat\.png/)
+    expect(chatImg.src).toMatch(/chat\.webp/)
   })
 })
 
