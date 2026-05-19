@@ -71,8 +71,9 @@ function TabButton({ isActive, onClick, icon, label }: TabButtonProps): React.Re
       className={[
         // Individual tab buttons opt out because the surrounding tab row is
         // a Tauri drag region.
-        'titlebar-no-drag flex items-center gap-1.5 px-2.5 py-1.5 rounded-md',
+        'titlebar-no-drag window-drag-tab flex items-center gap-1.5 px-2.5 py-1.5 rounded-md',
         'text-[11px] font-medium transition-colors',
+        windowDrag.isDragging ? 'is-window-dragging' : '',
         isActive
           ? 'bg-primary/10 text-foreground shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.2)]'
           : 'text-muted-foreground hover:text-foreground hover:bg-foreground/[0.04]',

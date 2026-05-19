@@ -131,8 +131,9 @@ export function TabBarItem({
         type="button"
         className={cn(
           'group relative flex items-center gap-1.5 px-3 h-[34px] w-full',
-          'rounded-t-lg text-xs transition-colors select-none cursor-pointer',
+          'window-drag-tab rounded-t-lg text-xs transition-colors select-none',
           'border-t border-l border-r border-transparent',
+          windowDrag.isDragging && 'is-window-dragging',
           isActive
             ? 'bg-content-area text-foreground border-border/50'
             : 'text-muted-foreground hover:text-foreground hover:bg-muted/40',

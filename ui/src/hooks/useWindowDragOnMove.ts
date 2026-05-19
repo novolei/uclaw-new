@@ -15,6 +15,7 @@ interface WindowDragOnMoveOptions {
 export function useWindowDragOnMove(
   options: WindowDragOnMoveOptions = {},
 ): {
+  isDragging: boolean
   onPointerDown: (event: React.PointerEvent<HTMLElement>) => void
   onPointerMove: (event: React.PointerEvent<HTMLElement>) => void
   onPointerUp: (event: React.PointerEvent<HTMLElement>) => void
@@ -24,6 +25,7 @@ export function useWindowDragOnMove(
   const threshold = options.threshold ?? 5
   const startRef = React.useRef<DragStart | null>(null)
   const draggedRef = React.useRef(false)
+  const [isDragging, setIsDragging] = React.useState(false)
 
   const reset = React.useCallback(() => {
     const start = startRef.current
@@ -35,6 +37,7 @@ export function useWindowDragOnMove(
       }
     }
     startRef.current = null
+    setIsDragging(false)
   }, [])
 
   const onPointerDown = React.useCallback((event: React.PointerEvent<HTMLElement>) => {
@@ -51,6 +54,7 @@ export function useWindowDragOnMove(
       // Some synthetic/test environments do not implement pointer capture.
     }
     draggedRef.current = false
+    setIsDragging(false)
   }, [])
 
   const onPointerMove = React.useCallback((event: React.PointerEvent<HTMLElement>) => {
@@ -61,6 +65,7 @@ export function useWindowDragOnMove(
     if (Math.hypot(dx, dy) < threshold) return
 
     draggedRef.current = true
+    setIsDragging(true)
     startRef.current = null
     try {
       start.target.releasePointerCapture(start.pointerId)
@@ -74,12 +79,14 @@ export function useWindowDragOnMove(
   const consumeClickIfDragged = React.useCallback((event: React.MouseEvent<HTMLElement>) => {
     if (!draggedRef.current) return false
     draggedRef.current = false
+    setIsDragging(false)
     event.preventDefault()
     event.stopPropagation()
     return true
   }, [])
 
   return {
+    isDragging,
     onPointerDown,
     onPointerMove,
     onPointerUp: reset,

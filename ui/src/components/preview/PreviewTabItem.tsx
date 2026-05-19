@@ -47,8 +47,9 @@ export function PreviewTabItem({
         }
       }}
       className={cn(
-        'titlebar-no-drag group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer select-none',
+        'titlebar-no-drag window-drag-tab group flex items-center gap-1.5 px-3 py-1.5 text-xs select-none',
         'border-r border-border/40 min-w-[80px] max-w-[200px] shrink-0',
+        windowDrag.isDragging && 'is-window-dragging',
         isActive
           ? 'bg-background text-foreground border-b-2 border-b-primary'
           : 'bg-card text-muted-foreground hover:bg-muted/40',
