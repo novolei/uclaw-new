@@ -18,6 +18,7 @@ import { ConnectionIndicator } from './ConnectionIndicator'
 import { DockDragHandle } from './DockDragHandle'
 import { useConnectionStatus } from './useConnectionStatus'
 import { bottomDockEnabledAtom, dockOrderAtom, applyDockReorder, dockBounceKeysAtom, type DockItemSpec } from '@/atoms/dock-atoms'
+import { useDockLiveness } from '@/hooks/useDockLiveness'
 import { appModeAtom, type AppMode } from '@/atoms/app-mode'
 import { topLevelViewAtom, type TopLevelView } from '@/atoms/top-level-view'
 import { kaleidoscopeModuleAtom, type KaleidoscopeModuleId } from '@/atoms/kaleidoscope'
@@ -134,6 +135,7 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
   const isDockEnabled = useAtomValue(bottomDockEnabledAtom)
   const dockOrder = useAtomValue(dockOrderAtom)
   const bounceKeys = useAtomValue(dockBounceKeysAtom)
+  const livenessMap = useDockLiveness()
   const appMode = useAtomValue(appModeAtom)
   const topLevelView = useAtomValue(topLevelViewAtom)
   const kaleidoscopeModule = useAtomValue(kaleidoscopeModuleAtom)
@@ -221,6 +223,7 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
                       key={sortableId}
                       sortableId={sortableId}
                       bounceKey={bounceKeys[sortableId]}
+                      liveness={livenessMap[sortableId]}
                       icon={
                         <img
                           src={meta.iconSrc}
