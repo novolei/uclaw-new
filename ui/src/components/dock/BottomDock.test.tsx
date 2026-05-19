@@ -6,6 +6,9 @@ import { MotionConfig } from 'motion/react'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { BottomDock } from './BottomDock'
 import { bottomDockEnabledAtom, dockOrderAtom, type DockItemSpec } from '@/atoms/dock-atoms'
+import { conversationsAtom } from '@/atoms/chat-atoms'
+import { agentSessionsAtom } from '@/atoms/agent-atoms'
+import { workspacesAtom } from '@/atoms/workspace'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue({}) }))
 vi.mock('./useConnectionStatus', () => ({ useConnectionStatus: () => {} }))
@@ -140,5 +143,64 @@ describe('BottomDock · pinned-* dispatch + dynamic divider', () => {
       { kind: 'mode', mode: 'kaleidoscope' },
     ])
     expect(container.querySelector('[data-dock-section-divider]')).toBeNull()
+  })
+})
+
+describe('BottomDock · pinned item live labels', () => {
+  it('resolves pinned-conversation label from conversationsAtom', () => {
+    const store = createStore()
+    store.set(bottomDockEnabledAtom, true)
+    store.set(conversationsAtom, [
+      { id: 'sess-1', title: 'My chat about onboarding' } as never,
+    ])
+    store.set(dockOrderAtom, [
+      { kind: 'mode', mode: 'chat' },
+      { kind: 'pinned-conversation', sessionId: 'sess-1', type: 'chat' },
+    ])
+    const { container } = render(
+      <JotaiProvider store={store}>
+        <BottomDock revealed />
+      </JotaiProvider>,
+    )
+    const pin = container.querySelector('[data-sortable-id="conv-sess-1"]')
+    expect(pin?.getAttribute('aria-label')).toBe('My chat about onboarding')
+  })
+
+  it('falls back to short id when conversation not found', () => {
+    const store = createStore()
+    store.set(bottomDockEnabledAtom, true)
+    store.set(dockOrderAtom, [
+      { kind: 'mode', mode: 'chat' },
+      { kind: 'pinned-conversation', sessionId: 'abc123def', type: 'chat' },
+    ])
+    const { container } = render(
+      <JotaiProvider store={store}>
+        <BottomDock revealed />
+      </JotaiProvider>,
+    )
+    const pin = container.querySelector('[data-sortable-id="conv-abc123def"]')
+    expect(pin?.getAttribute('aria-label')).toBe('Conversation abc123')
+  })
+
+  it('resolves pinned-workspace label + emoji', () => {
+    const store = createStore()
+    store.set(bottomDockEnabledAtom, true)
+    store.set(workspacesAtom, [
+      { id: 'ws-1', name: 'Research', icon: '🔬', path: null, attachedDirs: [], sortOrder: 0, createdAt: '', updatedAt: '' } as never,
+    ])
+    store.set(dockOrderAtom, [
+      { kind: 'mode', mode: 'chat' },
+      { kind: 'pinned-workspace', spaceId: 'ws-1' },
+    ])
+    const { container } = render(
+      <JotaiProvider store={store}>
+        <BottomDock revealed />
+      </JotaiProvider>,
+    )
+    const pin = container.querySelector('[data-sortable-id="space-ws-1"]')
+    expect(pin?.getAttribute('aria-label')).toBe('Research')
+    // emoji rendered as glyph
+    const tile = pin?.querySelector('[data-dock-pin-glyph]')
+    expect(tile?.textContent).toBe('🔬')
   })
 })
