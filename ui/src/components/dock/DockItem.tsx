@@ -67,6 +67,13 @@ export function DockItem({
   const scaleSpring = useSpring(1, { stiffness: 320, damping: 26, mass: 0.6 })
   const ySpring = useSpring(0, { stiffness: 320, damping: 26, mass: 0.6 })
 
+  // Horizontal slide spring driven by dnd-kit's sortable.transform.x.
+  // Lives outside the magnification springs so a neighbor making room for
+  // a drag-hover doesn't compete with hover lift. Tuned for iOS Springboard
+  // feel — quick start, gentle settle, no oscillation. Only x; the dock
+  // uses horizontalListSortingStrategy so y is always 0 here.
+  const xShift = useSpring(0, { stiffness: 520, damping: 34, mass: 0.7 })
+
   // dnd-kit sortable hookup. When sortableId is undefined, we still
   // call the hook (Rules of Hooks) but with a dummy id and ignore its
   // outputs — DockItem stays usable from non-sortable contexts (tests).
@@ -96,6 +103,18 @@ export function DockItem({
       ySpring.set(0)
     }
   }, [distance, scaleSpring, ySpring, prefersReducedMotion, sortable.isDragging])
+
+  // Drive the reorder slide spring from dnd-kit's per-item transform.
+  // For the active drag target we leave xShift at 0 — that item uses raw
+  // CSS transform (in the dragging style branch) to track the cursor 1:1.
+  const sortableXRaw = sortable.transform?.x ?? 0
+  React.useEffect(() => {
+    if (sortable.isDragging || prefersReducedMotion) {
+      xShift.jump(0)
+      return
+    }
+    xShift.set(sortableXRaw)
+  }, [sortableXRaw, sortable.isDragging, prefersReducedMotion, xShift])
 
   // Phase 2C: one-shot bounce when bounceKey increments.
   const [bouncing, setBouncing] = React.useState(false)
@@ -134,15 +153,27 @@ export function DockItem({
 
   // Branch the style object: dnd-kit owns transform during drag; motion
   // springs own it otherwise. Avoids motion-vs-CSS transform collision.
+  //
+  // Dragging branch — iOS Springboard lift: scale 1.12, lift via translateY,
+  // dual-stop drop shadow, and a hair of brightness so the lifted icon
+  // visibly leaves the dock plane. Transition string is left undefined so
+  // dnd-kit's own per-frame transform updates aren't smoothed (the cursor
+  // is authoritative; we want pixel-perfect tracking).
+  //
+  // Idle branch — motion springs drive both the hover magnify (scale + y)
+  // and the reorder slide (x). xShift follows sortable.transform.x so a
+  // neighbor making room for the dragged item slides springily instead of
+  // dnd-kit's default linear ease.
   const motionStyle = sortable.isDragging
     ? {
         width: SLOT_W,
         height: SLOT_W,
         transformOrigin: 'bottom center' as const,
         transform: dragTransform
-          ? `${dragTransform} scale(1.05)`
-          : 'scale(1.05)',
-        transition: sortable.transition,
+          ? `${dragTransform} translateY(-6px) scale(1.12)`
+          : 'translateY(-6px) scale(1.12)',
+        transition: undefined,
+        filter: 'brightness(1.04) drop-shadow(0 10px 18px hsl(var(--foreground) / 0.28)) drop-shadow(0 3px 6px hsl(var(--foreground) / 0.18))',
         zIndex: 50,
       }
     : {
@@ -150,6 +181,7 @@ export function DockItem({
         height: SLOT_W,
         scale: scaleSpring,
         y: ySpring,
+        x: xShift,
         transformOrigin: 'bottom center' as const,
       }
 

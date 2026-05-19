@@ -12,7 +12,7 @@ vi.mock('motion/react', () => ({
       React.createElement('button', { ref, style: style as React.CSSProperties, ...rest }),
     ),
   },
-  useSpring: () => ({ set: vi.fn() }),
+  useSpring: () => ({ set: vi.fn(), jump: vi.fn() }),
   useReducedMotion: () => true,
 }))
 
