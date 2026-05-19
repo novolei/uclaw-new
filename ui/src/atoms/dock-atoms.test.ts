@@ -41,12 +41,13 @@ describe('dock-atoms', () => {
 })
 
 describe('dockOrderAtom', () => {
-  it('seeds with all 8 canonical mode entries in canonical order', () => {
+  it('seeds with all 9 canonical mode entries in canonical order', () => {
     const store = createStore()
     const order = store.get(dockOrderAtom)
     expect(order).toEqual([
       { kind: 'mode', mode: 'chat' },
       { kind: 'mode', mode: 'agent' },
+      { kind: 'mode', mode: 'symphony' },
       { kind: 'mode', mode: 'memory' },
       { kind: 'mode', mode: 'kaleidoscope' },
       { kind: 'mode', mode: 'home' },
@@ -93,7 +94,7 @@ describe('ensureCanonicalModes', () => {
   })
 
   it('appends missing canonical modes while preserving existing order + pins', () => {
-    // Simulates a localStorage from before home/connections/alert/settings landed.
+    // Simulates a localStorage from before symphony/home/connections/alert/settings landed.
     const legacy: DockItemSpec[] = [
       { kind: 'mode', mode: 'chat' },
       { kind: 'mode', mode: 'agent' },
@@ -107,6 +108,7 @@ describe('ensureCanonicalModes', () => {
     expect(next.slice(0, 5)).toEqual(legacy)
     // Missing modes appended in canonical order
     expect(next.slice(5)).toEqual([
+      { kind: 'mode', mode: 'symphony' },
       { kind: 'mode', mode: 'home' },
       { kind: 'mode', mode: 'connections' },
       { kind: 'mode', mode: 'alert' },

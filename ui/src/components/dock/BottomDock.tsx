@@ -33,6 +33,7 @@ import { automationSelectedSpecIdAtom } from '@/atoms/automation-ui'
 import { useOpenSession } from '@/hooks/useOpenSession'
 import chatIcon from '@/assets/dock-icons/chat.webp'
 import agentIcon from '@/assets/dock-icons/agent.webp'
+import symphonyIcon from '@/assets/dock-icons/symphony.webp'
 import memoryIcon from '@/assets/dock-icons/memory.webp'
 import kaleidoscopeIcon from '@/assets/dock-icons/kaleidoscope.webp'
 import homeIcon from '@/assets/dock-icons/home-office.webp'
@@ -65,7 +66,7 @@ interface ActionCtx {
   setAlertOpen: (v: boolean) => void
 }
 
-type ModeId = 'chat' | 'agent' | 'memory' | 'kaleidoscope' | 'home' | 'connections' | 'alert' | 'settings'
+type ModeId = 'chat' | 'agent' | 'symphony' | 'memory' | 'kaleidoscope' | 'home' | 'connections' | 'alert' | 'settings'
 
 interface ModeMeta {
   iconSrc: string
@@ -92,6 +93,16 @@ const MODE_REGISTRY: Record<ModeId, ModeMeta> = {
       appMode === 'agent' && topLevelView === 'workspace',
     onClick: ({ setAppMode, setTopLevelView }) => {
       setAppMode('agent')
+      setTopLevelView('workspace')
+    },
+  },
+  symphony: {
+    iconSrc: symphonyIcon,
+    label: 'Symphony',
+    isActive: ({ appMode, topLevelView }) =>
+      appMode === 'symphony' && topLevelView === 'workspace',
+    onClick: ({ setAppMode, setTopLevelView }) => {
+      setAppMode('symphony')
       setTopLevelView('workspace')
     },
   },
