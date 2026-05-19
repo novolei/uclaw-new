@@ -1349,6 +1349,9 @@ pub async fn send_message(
         let cfg = state.memubot_config.read().await;
         let learning_enabled = cfg.memory_os.learning_enabled;
         let llm_daily_budget = cfg.memory_os.learning_llm_daily_token_budget;
+        let gbrain_extractor_enabled = cfg.memory_os.gbrain_extractor_enabled;
+        let gbrain_extractor_daily_budget =
+            cfg.memory_os.gbrain_extractor_daily_token_budget;
         drop(cfg);
         delegate.set_learning_pipeline(
             state.learning_buffer.clone(),
@@ -1356,6 +1359,17 @@ pub async fn send_message(
             Arc::clone(&state.db),
             learning_enabled,
             llm_daily_budget,
+        );
+        // Sprint 2.4b — wire the gbrain chat-turn auto-extractor. Reuses
+        // `learning_llm` (same MemoryOsLlm trait) so we don't duplicate
+        // provider plumbing; cost_tag inside the extractor differentiates
+        // gbrain_extract% from memory_learning% in cost_records.
+        delegate.set_gbrain_extractor_pipeline(
+            state.learning_llm.clone(),
+            Arc::clone(&state.db),
+            state.mcp_manager.clone(),
+            gbrain_extractor_enabled,
+            gbrain_extractor_daily_budget,
         );
         if learning_enabled {
             if let Some(block) =
@@ -9264,6 +9278,11 @@ pub async fn send_agent_message(
     let learning_enabled_for_spawn = cfg_snapshot.memory_os.learning_enabled;
     let learning_llm_daily_budget_for_spawn =
         cfg_snapshot.memory_os.learning_llm_daily_token_budget;
+    // Sprint 2.4b — same snapshot rationale for the gbrain extractor.
+    let gbrain_extractor_enabled_for_spawn =
+        cfg_snapshot.memory_os.gbrain_extractor_enabled;
+    let gbrain_extractor_daily_budget_for_spawn =
+        cfg_snapshot.memory_os.gbrain_extractor_daily_token_budget;
     drop(cfg_snapshot);
 
     // Clone for spawn
@@ -9283,6 +9302,10 @@ pub async fn send_agent_message(
     let learning_buffer_for_spawn = Arc::clone(&state.learning_buffer);
     let learning_llm_for_spawn = state.learning_llm.clone();
     let facet_cache_for_spawn = Arc::clone(&state.facet_cache);
+    // Sprint 2.4b — gbrain extractor reuses `learning_llm` (same trait) +
+    // shares the McpManager handle so its accepted proposals can fire
+    // mcp__gbrain__put_page from inside the spawned task.
+    let gbrain_mcp_mgr_for_spawn = state.mcp_manager.clone();
     // Sprint 2.3 — pre-render the gbrain instruction block now (before
     // spawn) so the move closure doesn't need to keep an McpManager
     // handle. Empty string when no mcp__gbrain__* tools are visible.
@@ -9425,6 +9448,14 @@ pub async fn send_agent_message(
             Arc::clone(&db),
             learning_enabled_for_spawn,
             learning_llm_daily_budget_for_spawn,
+        );
+        // Sprint 2.4b — gbrain auto-extractor pipeline.
+        delegate.set_gbrain_extractor_pipeline(
+            learning_llm_for_spawn.clone(),
+            Arc::clone(&db),
+            gbrain_mcp_mgr_for_spawn.clone(),
+            gbrain_extractor_enabled_for_spawn,
+            gbrain_extractor_daily_budget_for_spawn,
         );
         if learning_enabled_for_spawn {
             if let Some(block) =
@@ -12206,11 +12237,20 @@ pub async fn start_agent_teams(
     let learning_buffer_for_factory = Arc::clone(&state.learning_buffer);
     let learning_llm_for_factory = state.learning_llm.clone();
     let facet_cache_for_factory = Arc::clone(&state.facet_cache);
-    let (learning_enabled_for_factory, learning_llm_daily_budget_for_factory) = {
+    // Sprint 2.4b — same snapshot rationale for the gbrain extractor.
+    let gbrain_mcp_mgr_for_factory = state.mcp_manager.clone();
+    let (
+        learning_enabled_for_factory,
+        learning_llm_daily_budget_for_factory,
+        gbrain_extractor_enabled_for_factory,
+        gbrain_extractor_daily_budget_for_factory,
+    ) = {
         let c = state.memubot_config.read().await;
         (
             c.memory_os.learning_enabled,
             c.memory_os.learning_llm_daily_token_budget,
+            c.memory_os.gbrain_extractor_enabled,
+            c.memory_os.gbrain_extractor_daily_token_budget,
         )
     };
     // PR-1 — snapshot MCP proxies once for the whole team run. The
@@ -12324,6 +12364,14 @@ pub async fn start_agent_teams(
                     Arc::clone(&db_for_factory),
                     learning_enabled_for_factory,
                     learning_llm_daily_budget_for_factory,
+                );
+                // Sprint 2.4b — gbrain auto-extractor pipeline.
+                delegate.set_gbrain_extractor_pipeline(
+                    learning_llm_for_factory.clone(),
+                    Arc::clone(&db_for_factory),
+                    gbrain_mcp_mgr_for_factory.clone(),
+                    gbrain_extractor_enabled_for_factory,
+                    gbrain_extractor_daily_budget_for_factory,
                 );
                 if learning_enabled_for_factory {
                     if let Some(block) =

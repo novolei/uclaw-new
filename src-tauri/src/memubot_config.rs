@@ -449,6 +449,23 @@ pub struct MemoryOsConfig {
     /// (≈$0.05 with Haiku) — a comfortable ceiling for "openhuman
     /// warm-start" budgets where the LLM is a fallback to regex.
     pub learning_llm_daily_token_budget: u32,
+    /// Sprint 2.4b — gbrain chat-turn auto-extractor. When ON,
+    /// `ChatDelegate::before_llm_call` at iteration=0 spawns
+    /// `crate::gbrain::chat_extractor::extract_from_chat_turn` on the
+    /// user's latest message. Proposals with `confidence >= 0.7` are
+    /// fired as `mcp__gbrain__put_page` calls. Default ON because
+    /// Sprint 2.3 (PR #223) post-merge QA validated the agent does call
+    /// gbrain on explicit instructions — the extractor is the safety net
+    /// for cases where the agent missed an obvious entity, gated by the
+    /// daily token budget below.
+    pub gbrain_extractor_enabled: bool,
+    /// Sprint 2.4b — daily token budget for the gbrain chat-turn
+    /// extractor. Mirrors `learning_llm_daily_token_budget` shape; sum
+    /// is over `cost_records.model LIKE 'gbrain_extract%'`. Defaults to
+    /// 30_000 tokens/day (≈$0.05 with Haiku), parallel to the learning
+    /// extractor's budget — the two producers can each spend this much
+    /// per day without crossing into "noticeable" spend territory.
+    pub gbrain_extractor_daily_token_budget: u32,
 }
 
 impl Default for MemoryOsConfig {
@@ -496,6 +513,16 @@ impl Default for MemoryOsConfig {
             // Set to 0 to disable the LLM layer entirely (regex-only
             // operation, no per-day token spend on extraction).
             learning_llm_daily_token_budget: 30_000,
+            // Sprint 2.4b default ON. Sprint 2.3 (PR #223) validated
+            // post-merge that the agent does fire put_page on explicit
+            // prompts; the extractor is the safety net for missed
+            // entities, budget-gated by the field below. Flip OFF only
+            // to A/B compare against a no-extractor baseline.
+            gbrain_extractor_enabled: true,
+            // Sprint 2.4b default 30_000 tokens/day. Set to 0 to disable
+            // the extractor entirely without flipping the boolean (the
+            // dispatcher short-circuits on budget==0 even when enabled).
+            gbrain_extractor_daily_token_budget: 30_000,
         }
     }
 }
