@@ -93,4 +93,51 @@ describe('DockItem', () => {
     fireEvent.mouseLeave(btn)
     expect(onHoverIndexChange).toHaveBeenLastCalledWith(null)
   })
+
+  it('does NOT render a colored slot backplate around the icon', () => {
+    const { container } = render(
+      <DockItem
+        icon={<Bot size={18} />}
+        label="Agent"
+        isActive
+        index={0}
+        hoveredIndex={null}
+        onHoverIndexChange={vi.fn()}
+        onClick={vi.fn()}
+      />,
+    )
+    const button = screen.getByRole('button', { name: 'Agent' })
+    const html = button.outerHTML
+    expect(html).not.toMatch(/bg-primary\/12/)
+    expect(html).not.toMatch(/bg-foreground\/\[0\.06\]/)
+    expect(html).not.toMatch(/ring-primary\/30/)
+  })
+
+  it('renders the active-state dot only when isActive', () => {
+    const { container: activeContainer } = render(
+      <DockItem
+        icon={<Bot size={18} />}
+        label="Agent"
+        isActive
+        index={0}
+        hoveredIndex={null}
+        onHoverIndexChange={vi.fn()}
+        onClick={vi.fn()}
+      />,
+    )
+    expect(activeContainer.querySelector('[data-dock-active-dot]')).not.toBeNull()
+
+    const { container: inactiveContainer } = render(
+      <DockItem
+        icon={<Bot size={18} />}
+        label="Agent"
+        isActive={false}
+        index={1}
+        hoveredIndex={null}
+        onHoverIndexChange={vi.fn()}
+        onClick={vi.fn()}
+      />,
+    )
+    expect(inactiveContainer.querySelector('[data-dock-active-dot]')).toBeNull()
+  })
 })
