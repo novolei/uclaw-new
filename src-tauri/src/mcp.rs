@@ -1590,6 +1590,15 @@ impl McpManager {
     async fn run_health_loop(mgr: SharedMcpManager, id: String) {
         let mut attempt: u32 = 0;
         loop {
+            let current_status = {
+                let m = mgr.read().await;
+                m.status(&id)
+            };
+            if matches!(current_status, Some(McpServerStatus::Connecting)) {
+                tokio::time::sleep(Duration::from_secs(RECONNECT_INITIAL_DELAY_SECS)).await;
+                continue;
+            }
+
             // Ping under a read lock — short critical section.
             let ping_result = {
                 let m = mgr.read().await;
@@ -1880,6 +1889,12 @@ pub(crate) async fn connect_server_shared(
         let state = guard.servers.get(id).ok_or_else(|| {
             McpError::Server(format!("Server {} not found", id))
         })?;
+        if matches!(state.status, McpServerStatus::Connecting) {
+            return Err(McpError::Server(format!(
+                "Server {} is already connecting",
+                id
+            )));
+        }
         let config = state.config.clone();
         let notification_tx = guard.notification_tx.clone();
         if let Some(state) = guard.servers.get_mut(id) {
