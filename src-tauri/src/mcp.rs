@@ -448,6 +448,57 @@ pub struct McpServerConfig {
     pub tool_allowlist: Option<Vec<String>>,
 }
 
+fn bundled_gbrain_tool_allowlist() -> Vec<String> {
+    vec![
+        "search".to_string(),
+        "query".to_string(),
+        "think".to_string(),
+        "get_page".to_string(),
+        "put_page".to_string(),
+        "traverse_graph".to_string(),
+        "get_links".to_string(),
+        "get_backlinks".to_string(),
+    ]
+}
+
+fn bundled_gbrain_config(
+    bun_path: &std::path::Path,
+    entry_path: &std::path::Path,
+    gbrain_home: &std::path::Path,
+) -> McpServerConfig {
+    let mut env = HashMap::new();
+    env.insert(
+        "GBRAIN_HOME".to_string(),
+        gbrain_home.to_string_lossy().to_string(),
+    );
+    McpServerConfig {
+        id: "gbrain".to_string(),
+        name: "gbrain (bundled)".to_string(),
+        description: "Local semantic-retrieval engine — wiki / entity-graph / dream-cycle. \
+                     Bundled via Bun + gbrain source. PGLite brain at \
+                     ~/.uclaw/gbrain/.gbrain/brain.pglite/."
+            .to_string(),
+        transport_type: TransportType::Stdio,
+        command: bun_path.to_string_lossy().to_string(),
+        args: vec![entry_path.to_string_lossy().to_string(), "serve".to_string()],
+        env,
+        url: None,
+        enabled: true,
+        auto_approve: true,
+        tool_allowlist: Some(bundled_gbrain_tool_allowlist()),
+    }
+}
+
+fn is_legacy_bundled_gbrain_script_wrapper(config: &McpServerConfig) -> bool {
+    config.id == "gbrain"
+        && config.transport_type == TransportType::Stdio
+        && config.command.ends_with("/script")
+        && config.args.iter().any(|arg| {
+            arg.ends_with("gbrain/src/cli.ts") || arg.ends_with("gbrain-source/src/cli.ts")
+        })
+        && config.args.iter().any(|arg| arg == "serve")
+}
+
 /// MCP tool definition from a server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1267,59 +1318,38 @@ impl McpManager {
     ///   first — without an initialized brain, gbrain serve exits
     ///   immediately on every connect attempt.
     ///
-    /// Returns `Ok(true)` if seeded, `Ok(false)` if entry already
-    /// existed (no-op). Errors propagate from `add_server`.
+    /// Returns `Ok(true)` if seeded or a legacy bundled entry was
+    /// migrated, `Ok(false)` if a non-legacy entry already existed
+    /// (no-op). Errors propagate from `add_server`.
     pub fn seed_bundled_gbrain(
         &mut self,
         bun_path: &std::path::Path,
         entry_path: &std::path::Path,
         gbrain_home: &std::path::Path,
     ) -> Result<bool, String> {
-        if self.servers.contains_key("gbrain") {
+        if let Some(state) = self.servers.get_mut("gbrain") {
+            if is_legacy_bundled_gbrain_script_wrapper(&state.config) {
+                let enabled = state.config.enabled;
+                let auto_approve = state.config.auto_approve;
+                let mut config = bundled_gbrain_config(bun_path, entry_path, gbrain_home);
+                config.enabled = enabled;
+                config.auto_approve = auto_approve;
+                state.config = config;
+                self.save_config();
+                tracing::warn!(
+                    bun = %bun_path.display(),
+                    entry = %entry_path.display(),
+                    gbrain_home = %gbrain_home.display(),
+                    "gbrain Sprint 2.1: migrated legacy /usr/bin/script MCP wrapper to direct Bun stdio"
+                );
+                return Ok(true);
+            }
             tracing::debug!(
                 "seed_bundled_gbrain: 'gbrain' entry already in config (keeping user state)"
             );
             return Ok(false);
         }
-        let mut env = HashMap::new();
-        env.insert(
-            "GBRAIN_HOME".to_string(),
-            gbrain_home.to_string_lossy().to_string(),
-        );
-        let config = McpServerConfig {
-            id: "gbrain".to_string(),
-            name: "gbrain (bundled)".to_string(),
-            description: "Local semantic-retrieval engine — wiki / entity-graph / dream-cycle. \
-                         Bundled via Bun + gbrain source. PGLite brain at \
-                         ~/.uclaw/gbrain/.gbrain/brain.pglite/."
-                .to_string(),
-            transport_type: TransportType::Stdio,
-            command: bun_path.to_string_lossy().to_string(),
-            // `bun <entry> serve` matches gbrain's stdio MCP CLI per
-            // Sprint 2.0 Mac-side verification.
-            args: vec![
-                entry_path.to_string_lossy().to_string(),
-                "serve".to_string(),
-            ],
-            env,
-            url: None,
-            enabled: true,
-            auto_approve: true,
-            // Expose only the 8 conversational tools to the agent LLM.
-            // gbrain has 71 tools total; the remaining 63 (jobs, raw_data,
-            // file_upload, admin, doctor, etc.) are never needed in dialogue
-            // and cost ~12K tokens per LLM call in tool definitions alone.
-            tool_allowlist: Some(vec![
-                "search".to_string(),
-                "query".to_string(),
-                "think".to_string(),
-                "get_page".to_string(),
-                "put_page".to_string(),
-                "traverse_graph".to_string(),
-                "get_links".to_string(),
-                "get_backlinks".to_string(),
-            ]),
-        };
+        let config = bundled_gbrain_config(bun_path, entry_path, gbrain_home);
         self.add_server(config)?;
         tracing::info!(
             bun = %bun_path.display(),
@@ -1926,6 +1956,7 @@ pub(crate) async fn connect_server_shared(
                 config.name,
                 e
             );
+            guard.record_audit(id, McpAuditKind::ConnectFailed, &e.to_string());
             if let Some(state) = guard.servers.get_mut(id) {
                 state.status = McpServerStatus::Error;
                 state.error = Some(e.to_string());
@@ -2189,6 +2220,88 @@ mod tests {
             .update_server("nope", cfg("nope", TransportType::Stdio))
             .unwrap_err();
         assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn seed_bundled_gbrain_migrates_legacy_script_wrapper() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut mgr = McpManager::new(dir.path());
+            let mut legacy = cfg("gbrain", TransportType::Stdio);
+            legacy.name = "gbrain (bundled)".into();
+            legacy.description =
+                "Wrapped via macOS BSD `script` to defeat bun stdout buffering".into();
+            legacy.command = "/usr/bin/script".into();
+            legacy.args = vec![
+                "-q".into(),
+                "/dev/null".into(),
+                "/tmp/uclaw/bun".into(),
+                "/tmp/uclaw/gbrain/src/cli.ts".into(),
+                "serve".into(),
+            ];
+            legacy.env.insert("GBRAIN_HOME".into(), "/old/home".into());
+            legacy.enabled = false;
+            legacy.auto_approve = false;
+            mgr.add_server(legacy).unwrap();
+
+            let changed = mgr
+                .seed_bundled_gbrain(
+                    std::path::Path::new("/new/bun"),
+                    std::path::Path::new("/new/gbrain/src/cli.ts"),
+                    std::path::Path::new("/new/home"),
+                )
+                .unwrap();
+            assert!(changed);
+        }
+
+        let mgr = McpManager::new(dir.path());
+        let stored = mgr
+            .all_servers()
+            .into_iter()
+            .find(|config| config.id == "gbrain")
+            .unwrap();
+        assert_eq!(stored.command, "/new/bun");
+        assert_eq!(
+            stored.args,
+            vec!["/new/gbrain/src/cli.ts".to_string(), "serve".to_string()]
+        );
+        assert_eq!(stored.env.get("GBRAIN_HOME").map(String::as_str), Some("/new/home"));
+        assert!(!stored.enabled);
+        assert!(!stored.auto_approve);
+        assert_eq!(
+            stored.tool_allowlist.as_deref(),
+            Some(bundled_gbrain_tool_allowlist().as_slice())
+        );
+    }
+
+    #[test]
+    fn seed_bundled_gbrain_preserves_non_legacy_existing_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut mgr = McpManager::new(dir.path());
+            let mut custom = cfg("gbrain", TransportType::Stdio);
+            custom.command = "/custom/gbrain".into();
+            custom.args = vec!["serve".into()];
+            mgr.add_server(custom).unwrap();
+
+            let changed = mgr
+                .seed_bundled_gbrain(
+                    std::path::Path::new("/new/bun"),
+                    std::path::Path::new("/new/gbrain/src/cli.ts"),
+                    std::path::Path::new("/new/home"),
+                )
+                .unwrap();
+            assert!(!changed);
+        }
+
+        let mgr = McpManager::new(dir.path());
+        let stored = mgr
+            .all_servers()
+            .into_iter()
+            .find(|config| config.id == "gbrain")
+            .unwrap();
+        assert_eq!(stored.command, "/custom/gbrain");
+        assert_eq!(stored.args, vec!["serve".to_string()]);
     }
 
     // ─── PR-1 — prefix helpers + auto_approve plumbing ──────────────

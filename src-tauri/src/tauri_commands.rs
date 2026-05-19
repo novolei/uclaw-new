@@ -342,9 +342,16 @@ pub async fn get_system_diagnostics(
         let pgdata_ready = state
             .data_dir
             .join("gbrain")
-            .join("pgdata")
+            .join(".gbrain")
+            .join("brain.pglite")
             .join("PG_VERSION")
-            .exists();
+            .exists()
+            || state
+                .data_dir
+                .join("gbrain")
+                .join("pgdata")
+                .join("PG_VERSION")
+                .exists();
         GbrainStatus { connected, tool_count, pgdata_ready }
     };
 
@@ -735,6 +742,61 @@ pub async fn restart_gbrain_mcp(
         .map_err(|e| e.to_string())
 }
 
+fn build_browser_task_memory_context(state: &AppState, query: &str) -> Option<String> {
+    let lower = query.to_lowercase();
+    let is_browser_memory_query = [
+        "browser_task",
+        "browser task",
+        "browser-tasks",
+        "browser tasks",
+        "visual observation",
+        "视觉观察",
+        "浏览器任务",
+        "浏览器记忆",
+        "gbrain",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    if !is_browser_memory_query {
+        return None;
+    }
+
+    let mut memories = state.memory_store.search_full(
+        query,
+        Some("browser_task"),
+        Some("global"),
+        None,
+        8,
+    );
+    if memories.is_empty() {
+        memories = state.memory_store.list_filtered(&crate::memory::ListFilter {
+            space_id: Some("global".to_string()),
+            namespace: Some("browser_task".to_string()),
+            kind: None,
+            tag: None,
+            limit: Some(8),
+            offset: None,
+        });
+    }
+    if memories.is_empty() {
+        return None;
+    }
+
+    let mut ctx = String::from("<browser_task_memories namespace=\"browser_task\">\n");
+    for memory in &memories {
+        ctx.push_str(&format!(
+            "- key: {}\n  kind: {}\n  value: {}\n",
+            memory.key, memory.kind, memory.value
+        ));
+    }
+    ctx.push_str("</browser_task_memories>\n");
+    tracing::info!(
+        browser_task_memories = memories.len(),
+        "Browser task memories injected"
+    );
+    Some(ctx)
+}
+
 #[tauri::command]
 pub async fn reset_ai_engine(
     state: State<'_, AppState>,
@@ -898,11 +960,16 @@ pub async fn send_message(
     {
         use crate::browser::decision::LlmBrowserDecisionAdapter;
         use crate::browser::intervention_bridge::BrowserAskUserBridge;
+        use crate::browser::memory_adapter::BrowserLongTermMemoryAdapter;
         use crate::browser::task_store::BrowserTaskStore;
         use crate::browser::tools::*;
         let ctx_mgr = Arc::clone(&state.browser_context_manager);
         let sid = input.conversation_id.clone();
         let task_store = Arc::new(BrowserTaskStore::new(Arc::clone(&state.db)));
+        let long_term_memory = Arc::new(BrowserLongTermMemoryAdapter::new(
+            Arc::clone(&state.memory_store),
+            Some(Arc::clone(&state.mcp_manager)),
+        ));
         let ask_user_bridge = Arc::new(BrowserAskUserBridge::new(
             app_handle.clone(),
             Arc::clone(&state.pending_ask_users),
@@ -947,6 +1014,7 @@ pub async fn send_message(
             decision_adapter: decision_adapter.clone(),
             task_store: Some(Arc::clone(&task_store)),
             ask_user_bridge: Some(Arc::clone(&ask_user_bridge)),
+            long_term_memory: Some(Arc::clone(&long_term_memory)),
         });
         tools.register(BrowserTaskResumeTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -954,6 +1022,7 @@ pub async fn send_message(
             decision_adapter: decision_adapter.clone(),
             task_store: Some(Arc::clone(&task_store)),
             ask_user_bridge: Some(Arc::clone(&ask_user_bridge)),
+            long_term_memory: Some(Arc::clone(&long_term_memory)),
         });
         tools.register(RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -961,6 +1030,7 @@ pub async fn send_message(
             decision_adapter,
             task_store: Some(task_store),
             ask_user_bridge: Some(ask_user_bridge),
+            long_term_memory: Some(long_term_memory),
         });
     }
     // MCP tool proxies — agents see tools from any currently-connected
@@ -1264,6 +1334,8 @@ pub async fn send_message(
                         None
                     }
                 };
+                let browser_task_memory_ctx =
+                    build_browser_task_memory_context(&state, &input.content);
 
                 if total > 0 {
                     let budget = recall_engine.config().token_budget;
@@ -1271,6 +1343,9 @@ pub async fn send_message(
                     // 将会话级记忆追加到 memory context
                     if let Some(ref sess_ctx) = session_memory_ctx {
                         memory_ctx.push_str(sess_ctx);
+                    }
+                    if let Some(ref browser_ctx) = browser_task_memory_ctx {
+                        memory_ctx.push_str(browser_ctx);
                     }
                     tracing::info!(total_candidates = total, "Memory recall injected into system prompt");
                     delegate.set_memory_context(memory_ctx);
@@ -1309,12 +1384,20 @@ pub async fn send_message(
                     // Best-effort, fire-and-forget — usage_count is a soft
                     // ranking signal, never a correctness requirement.
                     recall_engine.record_used_skills(&plan);
-                } else if let Some(sess_ctx) = session_memory_ctx {
-                    // 图召回为空但 session 记忆存在：注入 session 记忆
-                    delegate.set_memory_context(sess_ctx);
-                    tracing::info!("Session-scoped memories injected (no graph recall)");
                 } else {
-                    tracing::info!("Memory recall returned no candidates");
+                    let mut memory_ctx = String::new();
+                    if let Some(sess_ctx) = session_memory_ctx {
+                        memory_ctx.push_str(&sess_ctx);
+                    }
+                    if let Some(browser_ctx) = browser_task_memory_ctx {
+                        memory_ctx.push_str(&browser_ctx);
+                    }
+                    if !memory_ctx.is_empty() {
+                        delegate.set_memory_context(memory_ctx);
+                        tracing::info!("Auxiliary memories injected (no graph recall)");
+                    } else {
+                        tracing::info!("Memory recall returned no candidates");
+                    }
                 }
             }
             Err(e) => {
@@ -8967,11 +9050,16 @@ pub async fn send_agent_message(
     {
         use crate::browser::decision::LlmBrowserDecisionAdapter;
         use crate::browser::intervention_bridge::BrowserAskUserBridge;
+        use crate::browser::memory_adapter::BrowserLongTermMemoryAdapter;
         use crate::browser::task_store::BrowserTaskStore;
         use crate::browser::tools::*;
         let ctx_mgr = Arc::clone(&state.browser_context_manager);
         let sid = input.session_id.clone();
         let task_store = Arc::new(BrowserTaskStore::new(Arc::clone(&state.db)));
+        let long_term_memory = Arc::new(BrowserLongTermMemoryAdapter::new(
+            Arc::clone(&state.memory_store),
+            Some(Arc::clone(&state.mcp_manager)),
+        ));
         let ask_user_bridge = Arc::new(BrowserAskUserBridge::new(
             app_handle.clone(),
             Arc::clone(&state.pending_ask_users),
@@ -8994,6 +9082,7 @@ pub async fn send_agent_message(
             decision_adapter: decision_adapter.clone(),
             task_store: Some(Arc::clone(&task_store)),
             ask_user_bridge: Some(Arc::clone(&ask_user_bridge)),
+            long_term_memory: Some(Arc::clone(&long_term_memory)),
         });
         tools.register(BrowserTaskResumeTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -9001,6 +9090,7 @@ pub async fn send_agent_message(
             decision_adapter: decision_adapter.clone(),
             task_store: Some(Arc::clone(&task_store)),
             ask_user_bridge: Some(Arc::clone(&ask_user_bridge)),
+            long_term_memory: Some(Arc::clone(&long_term_memory)),
         });
         tools.register(RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -9008,6 +9098,7 @@ pub async fn send_agent_message(
             decision_adapter,
             task_store: Some(task_store),
             ask_user_bridge: Some(ask_user_bridge),
+            long_term_memory: Some(long_term_memory),
         });
         if browser_active {
             tools.register(bt!(BrowserGoBackTool));

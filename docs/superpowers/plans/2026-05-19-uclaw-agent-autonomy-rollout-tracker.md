@@ -97,7 +97,38 @@ cargo test --manifest-path src-tauri/Cargo.toml browser::agent_loop --lib
 
 **Manual smoke:** Run a task against `https://the-internet.herokuapp.com/login`; verify a password boundary produces an ask_user tool-call record in chat, the browser task pauses, user response is recorded, and resume continues from the same page state.
 
-### PR-246: `feat(harness): add browser parity suite`
+### PR-246 / GitHub #247: `feat(browser): add memory and gbrain adapter`
+
+**Goal:** Persist browser task checkpoint, boundary, auth profile selection, and visual observation events into the long-term agent memory path through both the Memory System and gbrain.
+
+**Primary files:**
+
+- `src-tauri/src/browser/memory_adapter.rs`
+- `src-tauri/src/browser/agent_loop.rs`
+- `src-tauri/src/browser/tools.rs`
+- `src-tauri/src/tauri_commands.rs`
+- `src-tauri/src/memory.rs`
+- `src-tauri/src/mcp.rs`
+
+**Implementation tasks:**
+
+- [x] Add browser long-term memory adapter that writes structured events into `MemoryStore`.
+- [x] Add gbrain writer that uses the existing connected MCP `put_page` path without holding the MCP manager lock across the tool call.
+- [x] Record auth profile application, visual observation summaries, boundary events, checkpoints, and final task state.
+- [x] Strip raw screenshot base64 before memory/gbrain writes.
+- [x] Wire the adapter into `browser_task`, `browser_task_resume`, and `retry_with_browser_agent`.
+
+**Verification:**
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml browser::memory_adapter --lib
+cargo test --manifest-path src-tauri/Cargo.toml browser::agent_loop --lib
+cargo check --manifest-path src-tauri/Cargo.toml
+```
+
+**Manual smoke:** Run one `browser_task` with an auth profile and one task that reaches a login/CAPTCHA boundary; verify `memory_search namespace=browser_task` finds the run events, and `mcp__gbrain__recall` can retrieve the generated `browser-tasks/*` pages.
+
+### PR-248: `feat(harness): add browser parity suite`
 
 **Goal:** Make browser-use parity measurable through harness cases instead of subjective inspection.
 
@@ -126,7 +157,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 **Manual smoke:** Run the browser parity suite and attach the generated scorecard path to the PR body.
 
-### PR-247: `feat(harness): add memory and gbrain adapters`
+### PR-249: `feat(harness): add memory and gbrain eval adapters`
 
 **Goal:** Evaluate both Memory System and gbrain through one memory harness target model.
 
@@ -158,7 +189,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 **Manual smoke:** Write a user preference, recall it through the chat agent, verify the harness records both Memory System and gbrain results, then apply a correction and verify stale facts score as failures.
 
-### PR-248: `feat(harness): add agent loop tools permissions hooks adapters`
+### PR-250: `feat(harness): add agent loop tools permissions hooks adapters`
 
 **Goal:** Cover the main agent loop and control-plane surfaces with harness adapters.
 
@@ -188,7 +219,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 **Manual smoke:** Trigger a controlled failing tool call; verify the UI still shows the session as running until the backend run actually finishes, and verify the harness episode contains both the failure and recovery.
 
-### PR-249: `feat(harness): add dashboard and report commands`
+### PR-251: `feat(harness): add dashboard and report commands`
 
 **Goal:** Make harness episodes, scorecards, traces, and artifacts visible and runnable from the app.
 
@@ -218,7 +249,7 @@ pnpm --dir ui typecheck
 
 **Manual smoke:** Run one browser case and one memory case from the dashboard; verify both episodes show trace and artifact links.
 
-### PR-250: `feat(autonomy): add skill prompt automation promotion gates`
+### PR-252: `feat(autonomy): add skill prompt automation promotion gates`
 
 **Goal:** Let failed episodes become learning candidates without silently mutating production memory, prompts, hooks, or skills.
 
@@ -262,12 +293,13 @@ Update this table after every PR is implemented, verified, merged, and synced.
 | #241 | merged | `5c3eedf` | browser identity startup | `browser::identity`, `browser::agent_loop`, `browser::context_manager`, `cargo check` from PR run. | Auth state can be selected for browser task startup. | Pass | Local `main` synced after merge. |
 | #242 | merged | `7e2a56a` | rollout tracker | `rg -n "PR-244\\|Memory System and gbrain\\|Track Ledger\\|Immediate Next Step\\|CAPTCHA automation remains allowlist-only" docs/superpowers/plans/2026-05-19-uclaw-agent-autonomy-rollout-tracker.md` | N/A | Pass | Local `main` synced after merge. |
 | #244 | merged | `9ea01b6` | browser perception | `browser::perception`, `browser::observation`, `browser::agent_loop`, `cargo check` | Not run; production OCR sidecar is deferred, provider seam is covered by mock/no-op tests. | Pass | Local `main` synced after merge. |
-| #245 | in progress | PR head | browser boundary | `browser::boundary`, `browser::intervention_bridge`, `browser::agent_loop`, `cargo check` | Not run; covered by deterministic CAPTCHA/login/visual CAPTCHA/stale-auth unit tests. | Pass | Expands boundary detection into structured events with evidence, recommended action, and resume metadata. |
-| #246 | pending |  | browser parity harness |  |  |  |  |
-| #247 | pending |  | memory/gbrain harness |  |  |  |  |
-| #248 | pending |  | agent loop control-plane harness |  |  |  |  |
-| #249 | pending |  | harness UI/reporting |  |  |  |  |
-| #250 | pending |  | self-improvement gates |  |  |  |  |
+| #245 | merged | `21a3f19` | browser boundary | `browser::boundary`, `browser::intervention_bridge`, `browser::agent_loop`, `cargo check` | Not run; covered by deterministic CAPTCHA/login/visual CAPTCHA/stale-auth unit tests. | Pass | Local `main` synced after merge. Expands boundary detection into structured events with evidence, recommended action, and resume metadata. |
+| #247 | open | PR head | browser memory/gbrain adapter | `browser::memory_adapter`, `browser::agent_loop`, `cargo check` | Pending. | Pass | GitHub #246 was already consumed by a merged dock PR; this implements planned PR-246 as GitHub #247. Wires browser task auth profile, visual observation, boundary, checkpoint, and final-state events into MemoryStore and gbrain MCP `put_page`; raw screenshot base64 is stripped before long-term writes. |
+| #248 | pending |  | browser parity harness |  |  |  |  |
+| #249 | pending |  | memory/gbrain eval harness |  |  |  |  |
+| #250 | pending |  | agent loop control-plane harness |  |  |  |  |
+| #251 | pending |  | harness UI/reporting |  |  |  |  |
+| #252 | pending |  | self-improvement gates |  |  |  |  |
 
 ---
 

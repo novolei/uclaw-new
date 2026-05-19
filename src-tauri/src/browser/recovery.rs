@@ -19,6 +19,8 @@ pub fn classify_browser_error(error: &str) -> BrowserRecoveryKind {
         || lower.contains("detached")
         || lower.contains("target closed")
         || lower.contains("execution context was destroyed")
+        || lower.contains("cannot find context with specified id")
+        || lower.contains("cannot find execution context")
     {
         return BrowserRecoveryKind::WaitAndRetry;
     }
@@ -49,6 +51,14 @@ mod tests {
     fn classifies_navigation_timeout() {
         assert_eq!(
             classify_browser_error("Timeout while waiting for navigation"),
+            BrowserRecoveryKind::WaitAndRetry
+        );
+    }
+
+    #[test]
+    fn classifies_transient_cdp_context_loss() {
+        assert_eq!(
+            classify_browser_error("DOM query failed: Error -32000: Cannot find context with specified id"),
             BrowserRecoveryKind::WaitAndRetry
         );
     }
