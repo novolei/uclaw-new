@@ -5,6 +5,7 @@ interface DragStart {
   x: number
   y: number
   pointerId: number
+  target: HTMLElement
 }
 
 interface WindowDragOnMoveOptions {
@@ -25,6 +26,14 @@ export function useWindowDragOnMove(
   const draggedRef = React.useRef(false)
 
   const reset = React.useCallback(() => {
+    const start = startRef.current
+    if (start) {
+      try {
+        start.target.releasePointerCapture(start.pointerId)
+      } catch {
+        // Ignore release failures when capture was never acquired.
+      }
+    }
     startRef.current = null
   }, [])
 
@@ -34,6 +43,12 @@ export function useWindowDragOnMove(
       x: event.clientX,
       y: event.clientY,
       pointerId: event.pointerId,
+      target: event.currentTarget,
+    }
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId)
+    } catch {
+      // Some synthetic/test environments do not implement pointer capture.
     }
     draggedRef.current = false
   }, [])
@@ -47,6 +62,11 @@ export function useWindowDragOnMove(
 
     draggedRef.current = true
     startRef.current = null
+    try {
+      start.target.releasePointerCapture(start.pointerId)
+    } catch {
+      // Ignore release failures when the browser already released capture.
+    }
     event.preventDefault()
     getCurrentWindow().startDragging().catch(() => {})
   }, [threshold])
