@@ -1,5 +1,9 @@
 # Agent Memory OS — Foundation Layer Implementation Plan(Phase 1-7)
 
+> **🔧 STATUS: MAINTENANCE MODE (2026-05-20)** — See [ADR 2026-05-20 — gbrain primary, freeze L2 Cognitive](../../adr/2026-05-20-gbrain-primary-freeze-l2-cognitive.md).
+>
+> Phase 1–7 fully shipped on main between 2026-04 and 2026-05-18. Going forward, **gbrain (Sprint 2.0–2.4) is uClaw's primary long-term knowledge layer**; the EntityPage path described in this plan stays alive in maintenance mode for existing data on disk. No further application-layer Phase work lands on top of it. Existing scenarios (memory_health, memory_lint, tier_escalator, brain_io/watcher) continue to run on existing rows. New knowledge from chat / agent flows go to gbrain via `mcp__gbrain__put_page`, not to this plan's EntityPage CRUD.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Layer position:** **L1 Foundation Layer (Phase 1-7)** —— 三层 Memory OS 计划的第一层。

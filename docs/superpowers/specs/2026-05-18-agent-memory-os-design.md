@@ -1,7 +1,11 @@
 # Agent Memory OS — Foundation Layer 设计(实体级长期记忆 + Auto-Link + AI Wiki)
 
+> **🔧 STATUS: MAINTENANCE MODE (2026-05-20)** — 见 [ADR 2026-05-20 — gbrain primary, freeze L2 Cognitive](../../adr/2026-05-20-gbrain-primary-freeze-l2-cognitive.md)。
+>
+> Phase 1–7 已经全部 ship 到 main(2026-04 ~ 2026-05-18)。后续工作:**gbrain (Sprint 2.0–2.4) 是 uClaw 的主长期知识层**;本 spec 描述的 EntityPage 路径进入 maintenance mode,只维护已有数据。新知识不再通过此路径写入,改走 `mcp__gbrain__put_page`。
+
 **Date:** 2026-05-18
-**Status:** Draft
+**Status:** Maintenance mode (was: Draft) — see ADR 2026-05-20
 **Layer position:** **L1 Foundation Layer (Phase 1-7)** ——本 spec 是**三层** Memory OS 设计的第一层。
 - **L1 Foundation(本文)**:实体级长期记忆 + Auto-link + AI Wiki view
 - **L2 Cognitive**:[`2026-05-18-agent-memory-os-cognitive-design.md`](2026-05-18-agent-memory-os-cognitive-design.md) + [`agent-memory-os-cognitive.md`](../plans/agent-memory-os-cognitive.md) —— 段落级 provenance + 9 page type + 两步 compile + Adaptive RAG

@@ -1,7 +1,11 @@
 # Agent Memory OS — Cognitive Layer Design(第二大脑完全形态)
 
+> **🛑 STATUS: PAUSED (2026-05-20)** — 见 [ADR 2026-05-20 — gbrain primary, freeze L2 Cognitive](../../adr/2026-05-20-gbrain-primary-freeze-l2-cognitive.md)。
+>
+> 本 spec 的执行计划([`../plans/agent-memory-os-cognitive.md`](../plans/agent-memory-os-cognitive.md))已暂停。gbrain (Sprint 2.0–2.4 接入的 `garrytan/gbrain` MCP server) 已成为 uClaw 的主长期记忆层。本 spec 设计的段落级 provenance / 两步 compile / review queue / adaptive RAG 与 gbrain 内置能力概念重叠;再造一遍会建立两套并行系统。Spec 保留作为参考与"若决策反向再启用"的回退点。
+
 **Date:** 2026-05-18
-**Status:** Draft
+**Status:** Paused (was: Draft) — see ADR 2026-05-20
 **Layer position:** **L2 Cognitive Layer (Phase 8-14)** —— 三层 Memory OS 设计的第二层。
 - **L1 Foundation**:[`2026-05-18-agent-memory-os-design.md`](2026-05-18-agent-memory-os-design.md) + [`agent-memory-os.md`](../plans/agent-memory-os.md) —— 实体级长期记忆 + Auto-link + AI Wiki view
 - **L2 Cognitive(本文)**:段落级 provenance + 9 page type + 两步 compile + Adaptive RAG

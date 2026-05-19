@@ -1,5 +1,24 @@
 # Agent Memory OS — Engines Layer Implementation Plan(Phase 15-21)
 
+> **🟡 STATUS: PARTIALLY PAUSED (2026-05-20)** — See [ADR 2026-05-20 — gbrain primary, freeze L2 Cognitive](../../adr/2026-05-20-gbrain-primary-freeze-l2-cognitive.md) §8.
+>
+> An overlap audit found L3 Engines splits cleanly into "gbrain-redundant" and "gbrain-additive" pieces. Decision per the ADR:
+>
+> | L3 component | Status | Why |
+> |---|---|---|
+> | **Entity Graph Engine** (NER + alias resolution + coreference) — Phase 15 | 🛑 PAUSED | gbrain's `chat_extractor` + `maintain` skill already cover regex NER + Aho-Corasick + Haiku-disambiguation + weekly alias dedup. Coreference is anti-pattern. |
+> | **Timeline Engine** (global `timeline_events` + daily/weekly/monthly summaries) — Phase 16 | ✅ RETAINED | gbrain has per-page timeline but no global timeline, no aggregation loop. Standalone-worthy. ~400 LOC. |
+> | **Dream Cycle stages ①–⑧** — Phase 17 | 🛑 PAUSED | Stages ①–⑥ overlap gbrain's 6-stage cycle. ⑦ UpdateEmbeddings + ⑧ RefreshGraphEdges to be folded into specific consumers, not re-imported as a pipeline. |
+> | **Enhancement 4.12.1 Importance-Aware Decay** | ✅ RETAINED | gbrain has no decay algorithm; knowledge-hygiene gap. ~250 LOC. |
+> | **Enhancement 4.12.2 Hypothesis Generation** | 🛑 PAUSED | Low marginal value; user queries cover it. |
+> | **Enhancement 4.12.3 Spaced Repetition (Anki SM-2)** | ✅ RETAINED | Proven learning-science; gbrain has nothing equivalent. ~300 LOC. |
+> | **Enhancement 4.12.4 Concept Drift Detection** | ✅ RETAINED | Catches contradictions across versions. ~200 LOC. |
+> | **Enhancement 4.12.5 Cross-Source Triangulation** | ✅ RETAINED | Key when external data sources land. ~250 LOC. |
+> | **Enhancement 4.12.6 Predictive Boot Preparation** | 🛑 PAUSED | Optimization-level, ~10% UX win. |
+> | **Enhancement 4.12.7 Synthetic Q&A Materialization** | 🛑 PAUSED | High token cost, low signal. |
+>
+> **Execution rule:** Only the RETAINED items are open for implementation. Anything PAUSED should not be picked up without revisiting the ADR. Schema additions for retained items target **V44** (the V36 number this plan originally claimed is reserved/skipped per CLAUDE.md registry).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Layer position:** **Engines Layer (Phase 15-21)** —— 三层 Memory OS 计划的第三层。
@@ -11,7 +30,7 @@
 
 **Spec:** [`docs/superpowers/specs/2026-05-18-agent-memory-os-engines-design.md`](../specs/2026-05-18-agent-memory-os-engines-design.md)
 
-**Migration claim:** Engines layer 占用 **V36**(单一迁移,内含 10 张新表)。Foundation=V34,Cognitive=V35,Engines=V36,**无冲突**。
+**Migration claim:** Engines layer 占用 **V44**(原 plan 写的 V36 已过时 — 实际 V35-V42 是 Foundation + browser-task + MCP audit,V43 是 Cognitive,V36 在 CLAUDE.md 注册表里标为 skipped(Phase 7 抢占 V37 时跳号产生的空号))。Engines 层 RETAINED 项的新表都进 V44(单一迁移,目前估计 4-5 张新表 — 仅 Timeline + 4 enhancements 需要的)。
 
 **合并节奏建议:** Foundation Phase 1-7 完工 + 跑 1-2 周 → Cognitive Phase 8-14 完工 + 跑 1-2 周 → 再开 Engines Phase 15。**不要并行**。
 
@@ -34,7 +53,7 @@ Expected:能看到 V34 / V35 migration 提交 + 14 个 phase summary 文档。
 ```bash
 grep -nE "^pub const V[0-9]+|^const V[0-9]+" src-tauri/src/db/migrations.rs | tail -10
 ```
-Expected:V35 是最后一个;V36 未占用。如有其它 PR 抢先 → 顺延 V37 + 同步改本 plan 全部引用。
+Expected:看到 V35-V43 已被 Foundation Phase 1-7 + Automation + Cognitive Phase 8.1 占用(详见 CLAUDE.md Active migration registry)。**V44 应该未占用**。如有其它 PR 抢先把 V44 也占了,顺延到下一空闲号,所有引用同步改。
 
 ---
 
@@ -45,15 +64,16 @@ Expected:V35 是最后一个;V36 未占用。如有其它 PR 抢先 → 顺延 V
 **Depends on:** Cognitive Phase 13 merged(review_queue 已存在)
 **Spec ref:** Engines §2
 
-### Task 15.1: V36 migration —— Engines 全部 10 张新表
+### Task 15.1: V44 migration —— Engines RETAINED 子集新表(原 plan 是 V36 + 10 张表)
 
 **Files:**
-- Modify: `src-tauri/src/db/migrations.rs`(add `V36_ENGINES_LAYER`)
+- Modify: `src-tauri/src/db/migrations.rs`(add `V44_ENGINES_LAYER`)
+- **NOTE**: Phase 15 (Entity Graph Engine) is PAUSED per ADR §8 — the SQL snippets for `entity_aliases` etc. should NOT land. Only Timeline Engine (Phase 16) + RETAINED enhancements (4.12.1/3/4/5) tables should make it into V44.
 
-- [ ] **Step 15.1.1** 在 V35 之后追加 V36 常量。完整 SQL 见 Engines Spec §6,这里给前 4 张表(本 Phase 用):
+- [ ] **Step 15.1.1** 在 V43 之后追加 V44 常量。完整 SQL 见 Engines Spec §6 — **跳过 Entity Graph 相关表**(`entity_aliases`, `entity_aliases_fts`, `entity_raw_data`)按 ADR §8 paused;仅保留 Timeline + 4 enhancements 所需:
 
 ```rust
-pub const V36_ENGINES_LAYER: &str = "
+pub const V44_ENGINES_LAYER: &str = "
 -- Entity Graph
 CREATE TABLE IF NOT EXISTS entity_aliases (
     id          TEXT PRIMARY KEY,
@@ -116,7 +136,7 @@ CREATE TABLE IF NOT EXISTS spaced_repetition_state (...);
 
 (把 spec §6 的全部 10 张表 SQL 都填进去。这一次性建好,后续 phase 不再加表。)
 
-- [ ] **Step 15.1.2** 挂载到 `run()`,**先补全 V32-V35 的 CLAUDE.md 注册表行,再加 V36 行**。
+- [ ] **Step 15.1.2** 挂载到 `run()`,在 V43_COGNITIVE_LAYER 之后追加 V44 runner,**再加 V44 注册表行到 CLAUDE.md**(V35-V42 + V43 行 PR #262/#264 已完成)。
 
 - [ ] **Step 15.1.3** 验证 10 张表都被创建:
 
@@ -125,7 +145,7 @@ sqlite3 ~/.uclaw/uclaw.db ".tables" | tr ' ' '\n' | grep -E "entity_aliases|enti
 # 应输出 10 行(entity_aliases_fts 是虚拟表)
 ```
 
-**Commit:** `feat(db): V36 — engines layer schema (10 new tables)`
+**Commit:** `feat(db): V44 — engines layer schema (RETAINED subset, ~5 new tables)`
 
 ### Task 15.2: `alias_resolver.rs` 模块
 
@@ -304,7 +324,7 @@ pub struct MemubotConfig {
 
 | # | Subject |
 |---|---|
-| 1 | feat(db): V36 — engines layer schema (10 new tables) |
+| 1 | feat(db): V44 — engines layer schema (RETAINED subset, ~5 new tables) |
 | 2 | feat(memory): alias_resolver with exact + fuzzy + aho lookup |
 | 3 | feat(memory-os): entity_recognition scenario |
 | 4 | feat(memory-os): LLM disambiguation for ambiguous mentions |
@@ -1074,7 +1094,7 @@ GROUP BY model
 
 - [ ] **Step 21.5.1** Memory subsystem 段落补一段"三层架构概述",链到 README。
 
-- [ ] **Step 21.5.2** Active migration registry 补 V32-V36 行。
+- [ ] **Step 21.5.2** Active migration registry 补 V44 行(V32-V42 在 PR #262 之前的工作已补全;V43 在 PR #264 已加)。
 
 - [ ] **Step 21.5.3** 列出新的 feature flags(共 ~15 个,合并到现有 memubot_config 描述)。
 
@@ -1103,7 +1123,7 @@ echo "=== rust tests ==="  && (cd src-tauri && cargo test --lib 2>&1 | tail -10)
 echo "=== ts ==="          && (cd ui && npx tsc --noEmit 2>&1 | head -10)
 echo "=== ui tests ==="    && (cd ui && npm test -- --run 2>&1 | tail -10)
 
-# V36 表完整性(10 张表)
+# V44 表完整性(RETAINED 子集 ~5 张表;原 plan 是 V36 + 10 张)
 sqlite3 ~/.uclaw/uclaw.db "SELECT name FROM sqlite_master WHERE type='table' AND name IN (
   'entity_aliases','entity_raw_data','ner_decisions',
   'timeline_events','temporal_aggregates','activity_clusters',
@@ -1158,7 +1178,7 @@ pub struct MemubotConfig {
 }
 ```
 
-**最坏情况:** 把所有 engines flags 关掉,uClaw 回退到 Cognitive Phase 8-14 行为。V36 表是 additive,不删除,空表不影响 Foundation+Cognitive 任何功能。
+**最坏情况:** 把所有 engines flags 关掉,uClaw 回退到 gbrain-primary 行为(Foundation Phase 1-7 maintenance mode + gbrain MCP)。V44 表是 additive,不删除,空表不影响任何其他功能。
 
 ---
 
@@ -1196,7 +1216,7 @@ Engines Spec: `docs/superpowers/specs/2026-05-18-agent-memory-os-engines-design.
 - cargo test --lib: all passing (added N new tests)
 - npx tsc --noEmit: 0 errors
 - npm test -- --run: all passing
-- DB:V36 表创建无错;若是 Phase 19+ 跑一次 dream_cycle_run_now 全过
+- DB:V44 表创建无错;若是 Phase 19+(已 paused — 仅 4 项 enhancements RETAINED)别跑 dream_cycle_run_now
 
 ### Feature flag
 - `memubot_config.<flag>` (default: <value>)
@@ -1213,5 +1233,5 @@ Engines Spec: `docs/superpowers/specs/2026-05-18-agent-memory-os-engines-design.
 - 召回延迟:无变化(三层缓存)
 
 ### Rollback
-关 `memubot_config.<flag>`。V36 表是 additive,空表无影响。
+关 `memubot_config.<flag>`。V44 表是 additive,空表无影响。
 ```
