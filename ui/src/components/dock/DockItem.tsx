@@ -15,6 +15,9 @@ interface DockItemProps {
   hoveredIndex: number | null
   onHoverIndexChange: (index: number | null) => void
   onClick: () => void
+  /** Phase 2A: id used by dnd-kit's SortableContext. When undefined,
+   *  the item is not sortable (drag-and-drop disabled). */
+  sortableId?: string
 }
 
 /**
@@ -42,6 +45,7 @@ export function DockItem({
   hoveredIndex,
   onHoverIndexChange,
   onClick,
+  sortableId: _sortableId,  // wired in Task 5
 }: DockItemProps): React.ReactElement {
   const prefersReducedMotion = useReducedMotion()
   const distance =

@@ -1,6 +1,17 @@
 import * as React from 'react'
 import { motion } from 'motion/react'
 import { useAtomValue, useSetAtom } from 'jotai'
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+} from '@dnd-kit/sortable'
 import { DockItem } from './DockItem'
 import { ConnectionIndicator } from './ConnectionIndicator'
 import { DockDragHandle } from './DockDragHandle'
@@ -82,6 +93,19 @@ const MODE_REGISTRY: Record<ModeId, ModeMeta> = {
   },
 }
 
+function specToSortableId(spec: DockItemSpec): string {
+  switch (spec.kind) {
+    case 'mode':
+      return `mode-${spec.mode}`
+    case 'pinned-conversation':
+      return `conv-${spec.sessionId}`
+    case 'pinned-workspace':
+      return `space-${spec.spaceId}`
+    case 'pinned-automation':
+      return `auto-${spec.specId}`
+  }
+}
+
 const SLIDE_HIDDEN_Y = 96 // px; large enough to clear dock height in any theme
 
 // macOS Dock-style asymmetric transitions: spring when coming UP (feels
@@ -120,6 +144,21 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
   // Rules of Hooks: keep before any early return.
   useConnectionStatus()
 
+  // Long-press 200 ms before drag activates — keeps simple taps responsive.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+  )
+
+  const sortableIds = React.useMemo(
+    () => dockOrder.map(specToSortableId),
+    [dockOrder],
+  )
+
+  const handleDragEnd = React.useCallback((event: DragEndEvent) => {
+    // Task 6 wires this to the atom via applyDockReorder.
+    void event
+  }, [])
+
   // Reset magnification when collapsed so reopening doesn't briefly show
   // a stale hovered icon before mouse lands somewhere new.
   React.useEffect(() => {
@@ -136,46 +175,53 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
   }
 
   return (
-    <motion.div
-      role="navigation"
-      aria-label="底部导航"
-      className="group relative flex items-end gap-1 px-3 pt-3 pb-2 rounded-t-2xl bg-popover/85 backdrop-blur-xl border-t border-x border-border/40 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.35)] supports-[backdrop-filter]:bg-popover/70 will-change-transform"
-      initial={false}
-      animate={{ y: revealed ? 0 : SLIDE_HIDDEN_Y, opacity: revealed ? 1 : 0 }}
-      transition={revealed ? REVEAL_TRANSITION : HIDE_TRANSITION}
-      onMouseLeave={() => setHoveredIndex(null)}
-    >
-      <DockDragHandle />
-      {dockOrder.map((spec, i) => {
-        if (spec.kind !== 'mode') return null
-        const meta = MODE_REGISTRY[spec.mode]
-        return (
-          <DockItem
-            key={`mode-${spec.mode}`}
-            icon={
-              <img
-                src={meta.iconSrc}
-                alt={meta.label}
-                draggable={false}
-                className="w-7 h-7 select-none pointer-events-none"
+    <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+      <SortableContext items={sortableIds} strategy={horizontalListSortingStrategy}>
+        <motion.div
+          role="navigation"
+          aria-label="底部导航"
+          data-dock-dnd-root
+          className="group relative flex items-end gap-1 px-3 pt-3 pb-2 rounded-t-2xl bg-popover/85 backdrop-blur-xl border-t border-x border-border/40 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.35)] supports-[backdrop-filter]:bg-popover/70 will-change-transform"
+          initial={false}
+          animate={{ y: revealed ? 0 : SLIDE_HIDDEN_Y, opacity: revealed ? 1 : 0 }}
+          transition={revealed ? REVEAL_TRANSITION : HIDE_TRANSITION}
+          onMouseLeave={() => setHoveredIndex(null)}
+        >
+          <DockDragHandle />
+          {dockOrder.map((spec, i) => {
+            if (spec.kind !== 'mode') return null
+            const meta = MODE_REGISTRY[spec.mode]
+            const sortableId = specToSortableId(spec)
+            return (
+              <DockItem
+                key={sortableId}
+                sortableId={sortableId}
+                icon={
+                  <img
+                    src={meta.iconSrc}
+                    alt={meta.label}
+                    draggable={false}
+                    className="w-7 h-7 select-none pointer-events-none"
+                  />
+                }
+                label={meta.label}
+                isActive={meta.isActive(navCtx)}
+                index={i}
+                hoveredIndex={hoveredIndex}
+                onHoverIndexChange={setHoveredIndex}
+                onClick={() => meta.onClick(actionCtx)}
               />
-            }
-            label={meta.label}
-            isActive={meta.isActive(navCtx)}
-            index={i}
-            hoveredIndex={hoveredIndex}
-            onHoverIndexChange={setHoveredIndex}
-            onClick={() => meta.onClick(actionCtx)}
+            )
+          })}
+          <div
+            className="mx-2 h-7 w-px self-center bg-border/50"
+            aria-hidden="true"
           />
-        )
-      })}
-      <div
-        className="mx-2 h-7 w-px self-center bg-border/50"
-        aria-hidden="true"
-      />
-      <div className="flex items-center self-center pb-1 pr-1">
-        <ConnectionIndicator />
-      </div>
-    </motion.div>
+          <div className="flex items-center self-center pb-1 pr-1">
+            <ConnectionIndicator />
+          </div>
+        </motion.div>
+      </SortableContext>
+    </DndContext>
   )
 }

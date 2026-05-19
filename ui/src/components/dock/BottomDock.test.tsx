@@ -91,4 +91,10 @@ describe('BottomDock · atom-driven order', () => {
     expect(buttons[0].getAttribute('aria-label')).toBe('Agent')
     expect(buttons[1].getAttribute('aria-label')).toBe('聊天')
   })
+
+  it('mounts inside a DndContext (data-dock-dnd-root marker present)', () => {
+    const { container } = renderDock()
+    const marker = container.querySelector('[data-dock-dnd-root]')
+    expect(marker).not.toBeNull()
+  })
 })
