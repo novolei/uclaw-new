@@ -83,6 +83,27 @@ const NAV_ITEMS: NavItem[] = [
 
 const SLIDE_HIDDEN_Y = 96 // px; large enough to clear dock height in any theme
 
+// macOS Dock-style asymmetric transitions: spring when coming UP (feels
+// alive, slight settle), but tween + opacity fade on the way DOWN so the
+// dock literally "slips away" — no rebound, no overshoot, no slam at the
+// bottom. Curve is Apple's standard smooth ease used in iOS system
+// transitions; opacity fades a touch faster than translate so the dock is
+// already mostly invisible before reaching its hidden y.
+const REVEAL_TRANSITION = {
+  y: { type: 'spring' as const, stiffness: 300, damping: 30, mass: 0.8 },
+  opacity: { duration: 0.16, ease: 'easeOut' as const },
+}
+const HIDE_TRANSITION = {
+  y: {
+    duration: 0.42,
+    ease: [0.32, 0.72, 0, 1] as [number, number, number, number],
+  },
+  opacity: {
+    duration: 0.3,
+    ease: [0.4, 0, 0.6, 1] as [number, number, number, number],
+  },
+}
+
 export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | null {
   const isDockEnabled = useAtomValue(bottomDockEnabledAtom)
   const appMode = useAtomValue(appModeAtom)
@@ -116,10 +137,10 @@ export function BottomDock({ revealed }: BottomDockProps): React.ReactElement | 
     <motion.div
       role="navigation"
       aria-label="底部导航"
-      className="flex items-end gap-1 px-3 pt-3 pb-2 rounded-t-2xl bg-popover/85 backdrop-blur-xl border-t border-x border-border/40 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.35)] supports-[backdrop-filter]:bg-popover/70"
+      className="flex items-end gap-1 px-3 pt-3 pb-2 rounded-t-2xl bg-popover/85 backdrop-blur-xl border-t border-x border-border/40 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.35)] supports-[backdrop-filter]:bg-popover/70 will-change-transform"
       initial={false}
-      animate={{ y: revealed ? 0 : SLIDE_HIDDEN_Y }}
-      transition={{ type: 'spring', stiffness: 360, damping: 32, mass: 0.7 }}
+      animate={{ y: revealed ? 0 : SLIDE_HIDDEN_Y, opacity: revealed ? 1 : 0 }}
+      transition={revealed ? REVEAL_TRANSITION : HIDE_TRANSITION}
       onMouseLeave={() => setHoveredIndex(null)}
     >
       {NAV_ITEMS.map((item, i) => (

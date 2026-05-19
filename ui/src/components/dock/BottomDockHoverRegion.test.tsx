@@ -61,11 +61,11 @@ describe('BottomDockHoverRegion', () => {
     expect(region.dataset.revealed).toBe('true')
 
     fireEvent.mouseLeave(region)
-    // still revealed during the debounce window
+    // still revealed during the 220ms debounce window
     expect(region.dataset.revealed).toBe('true')
 
     act(() => {
-      vi.advanceTimersByTime(200)
+      vi.advanceTimersByTime(250)
     })
     expect(region.dataset.revealed).toBe('false')
   })
@@ -76,14 +76,36 @@ describe('BottomDockHoverRegion', () => {
 
     fireEvent.mouseEnter(region)
     fireEvent.mouseLeave(region)
-    // Re-enter before the 180ms timer fires
+    // Re-enter before the 220ms debounce fires
     act(() => {
-      vi.advanceTimersByTime(100)
+      vi.advanceTimersByTime(120)
     })
     fireEvent.mouseEnter(region)
     act(() => {
-      vi.advanceTimersByTime(500)
+      vi.advanceTimersByTime(600)
     })
     expect(region.dataset.revealed).toBe('true')
+  })
+
+  it('keeps the container open during the dock exit animation', () => {
+    // After the hide debounce fires, the container stays at its wide bounds
+    // for HIDE_ANIM_DURATION_MS so re-entry can catch the dock mid-fall. The
+    // dock's `revealed` flips false at debounce, container width collapses
+    // only after the dock animation has played out.
+    const { container } = renderRegion()
+    const region = container.querySelector('[data-revealed]') as HTMLElement
+
+    fireEvent.mouseEnter(region)
+    fireEvent.mouseLeave(region)
+    act(() => {
+      vi.advanceTimersByTime(250) // past hide debounce
+    })
+    expect(region.dataset.revealed).toBe('false')
+    expect(region.dataset.containerOpen).toBe('true')
+
+    act(() => {
+      vi.advanceTimersByTime(500) // past dock exit animation
+    })
+    expect(region.dataset.containerOpen).toBe('false')
   })
 })
