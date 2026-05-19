@@ -32,3 +32,8 @@ pub mod timeline_events;
 // Query Classifier. V1 keyword + regex detection; future PR adds
 // LLM disambiguation fallback.
 pub mod temporal_classifier;
+// Memory OS L3 §4.12.3 (RETAINED per ADR 2026-05-20 §8) — Spaced
+// Repetition (Anki SM-2 ladder) for verified high-importance
+// EntityPages. V45 schema + state-machine + tests in this PR;
+// scheduler hook + LLM re-check in a follow-up.
+pub mod spaced_repetition;
