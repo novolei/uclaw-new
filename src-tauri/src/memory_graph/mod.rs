@@ -28,3 +28,7 @@ pub mod importance_decay;
 // `timeline_events` write API. Wired into EntityPage create (Q2a) +
 // other event sources in follow-up PRs.
 pub mod timeline_events;
+// Memory OS L3 §3.3 (RETAINED per ADR 2026-05-20 §8) — Temporal
+// Query Classifier. V1 keyword + regex detection; future PR adds
+// LLM disambiguation fallback.
+pub mod temporal_classifier;
