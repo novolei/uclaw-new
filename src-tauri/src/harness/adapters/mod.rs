@@ -1,5 +1,6 @@
 use crate::harness::case::HarnessSubject;
 
+pub mod agent_loop;
 pub mod browser;
 pub mod memory;
 

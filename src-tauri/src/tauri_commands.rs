@@ -535,6 +535,22 @@ pub async fn run_memory_gbrain_eval_harness(
     build_memory_gbrain_eval_harness_report(&state.data_dir, report, evidence)
 }
 
+#[tauri::command]
+pub async fn run_agent_control_plane_harness(
+    state: State<'_, AppState>,
+) -> Result<crate::harness::adapters::agent_loop::AgentControlPlaneSuiteReport, Error> {
+    let runtime = crate::harness::HarnessRuntime::new(
+        state
+            .data_dir
+            .join("harness")
+            .join("agent-control-plane"),
+    );
+    let adapter = crate::harness::adapters::agent_loop::AgentLoopControlPlaneHarnessAdapter;
+    adapter
+        .run_fixture_suite(&runtime)
+        .map_err(|error| Error::Internal(format!("agent control-plane harness failed: {error}")))
+}
+
 async fn run_memory_gbrain_eval_probe(
     memu_client: Option<std::sync::Arc<crate::memu::client::MemUClient>>,
     mcp_manager: crate::mcp::SharedMcpManager,
