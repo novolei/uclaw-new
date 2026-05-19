@@ -20,6 +20,8 @@ interface DockItemProps {
   /** Phase 2A: id used by dnd-kit's SortableContext. When undefined,
    *  the item is not sortable (drag-and-drop disabled). */
   sortableId?: string
+  /** Phase 2C: increments to trigger a one-shot bounce. */
+  bounceKey?: number
 }
 
 /**
@@ -48,6 +50,7 @@ export function DockItem({
   onHoverIndexChange,
   onClick,
   sortableId,
+  bounceKey,
 }: DockItemProps): React.ReactElement {
   const prefersReducedMotion = useReducedMotion()
   const distance =
@@ -86,6 +89,21 @@ export function DockItem({
     }
   }, [distance, scaleSpring, ySpring, prefersReducedMotion, sortable.isDragging])
 
+  // Phase 2C: one-shot bounce when bounceKey increments.
+  const [bouncing, setBouncing] = React.useState(false)
+  const lastBounceKeyRef = React.useRef(bounceKey ?? 0)
+
+  React.useEffect(() => {
+    const current = bounceKey ?? 0
+    if (current > lastBounceKeyRef.current) {
+      lastBounceKeyRef.current = current
+      setBouncing(true)
+      const t = setTimeout(() => setBouncing(false), 520)
+      return () => clearTimeout(t)
+    }
+    return undefined
+  }, [bounceKey])
+
   const dragTransform = sortable.transform
     ? CSS.Transform.toString(sortable.transform)
     : undefined
@@ -122,6 +140,7 @@ export function DockItem({
             {...(sortableId ? sortable.listeners : {})}
             data-sortable-id={sortableId ?? undefined}
             data-dragging={sortable.isDragging ? 'true' : undefined}
+            data-bouncing={bouncing ? 'true' : undefined}
             className="relative flex items-end justify-center select-none outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-0 rounded-[14px]"
             style={motionStyle}
             onMouseEnter={() => onHoverIndexChange(index)}
@@ -130,12 +149,18 @@ export function DockItem({
             aria-label={label}
             aria-pressed={isActive}
           >
-            <span
+            <motion.div
               className="flex items-center justify-center"
-              style={{ width: ICON_BOX, height: ICON_BOX }}
+              style={{ width: ICON_BOX, height: ICON_BOX, transformOrigin: 'center' }}
+              animate={bouncing ? { scale: [1, 1.35, 1] } : { scale: 1 }}
+              transition={
+                bouncing
+                  ? { duration: 0.5, times: [0, 0.4, 1], ease: 'easeInOut' }
+                  : { duration: 0 }
+              }
             >
               {icon}
-            </span>
+            </motion.div>
             {isActive && (
               <span
                 data-dock-active-dot

@@ -132,3 +132,15 @@ export function pinIdColorSeed(id: string): { from: string; to: string } {
     to: `hsl(${(hue + 20) % 360}, ${sat}%, ${lightTo}%)`,
   }
 }
+
+/**
+ * Phase 2C bounce signal — per-target monotonic counter keyed by sortable id
+ * (e.g. 'mode-agent', 'mode-chat', or future pinned-* ids). Consumers
+ * (DockItem, DockPinnedItem) compare against their previous value to detect
+ * "should run a one-shot bounce animation now". Resetting to 0 is unnecessary —
+ * the counter is read incrementally, not absolutely.
+ *
+ * Intentionally NOT persisted: bounces are transient attention signals, not
+ * state to remember across reloads.
+ */
+export const dockBounceKeysAtom = atom<Record<string, number>>({})

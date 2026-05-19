@@ -2,7 +2,7 @@ import * as React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, fireEvent, act } from '@testing-library/react'
 import { createStore, Provider as JotaiProvider } from 'jotai'
-import { BottomDockHoverRegion } from './BottomDockHoverRegion'
+import { BottomDockHoverRegion, type BottomDockHoverRegionHandle } from './BottomDockHoverRegion'
 import { bottomDockEnabledAtom } from '@/atoms/dock-atoms'
 
 // BottomDock renders BottomDock → DockItem → motion + tauri invoke (via
@@ -107,5 +107,49 @@ describe('BottomDockHoverRegion', () => {
       vi.advanceTimersByTime(500) // past dock exit animation
     })
     expect(region.dataset.containerOpen).toBe('false')
+  })
+
+  it('exposes forceReveal() and holdRevealed(ms) via ref', () => {
+    const ref = React.createRef<BottomDockHoverRegionHandle>()
+    const store = createStore()
+    store.set(bottomDockEnabledAtom, true)
+    const { container } = render(
+      <JotaiProvider store={store}>
+        <BottomDockHoverRegion ref={ref} />
+      </JotaiProvider>,
+    )
+    const region = container.querySelector('[data-revealed]') as HTMLElement
+    expect(region.dataset.revealed).toBe('false')
+
+    act(() => { ref.current?.forceReveal() })
+    expect(region.dataset.revealed).toBe('true')
+  })
+
+  it('holdRevealed(ms) blocks the normal hide debounce for the duration', () => {
+    const ref = React.createRef<BottomDockHoverRegionHandle>()
+    const store = createStore()
+    store.set(bottomDockEnabledAtom, true)
+    const { container } = render(
+      <JotaiProvider store={store}>
+        <BottomDockHoverRegion ref={ref} />
+      </JotaiProvider>,
+    )
+    const region = container.querySelector('[data-revealed]') as HTMLElement
+
+    act(() => { ref.current?.forceReveal() })
+    expect(region.dataset.revealed).toBe('true')
+
+    act(() => { ref.current?.holdRevealed(1500) })
+
+    // Trigger scheduleHide via mouseLeave during the hold window
+    fireEvent.mouseLeave(region)
+
+    // < 1500 ms elapsed — hide should be deferred
+    act(() => { vi.advanceTimersByTime(1000) })
+    expect(region.dataset.revealed).toBe('true')
+
+    // After hold + debounce — hide proceeds
+    act(() => { vi.advanceTimersByTime(800) })
+    expect(region.dataset.revealed).toBe('false')
   })
 })
