@@ -53,7 +53,7 @@ impl Tool for MemuMemoryTool {
     }
 
     fn description(&self) -> &str {
-        "检索用户的长期记忆。当你需要了解用户的偏好、历史信息、身份特征等时使用此工具。"
+        "检索或列出用户的长期记忆。当用户询问“有什么长期记忆/所有记忆/全部记忆”时也使用此工具。"
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -62,7 +62,7 @@ impl Tool for MemuMemoryTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "查询文本，描述你想了解的用户信息"
+                    "description": "查询文本，描述你想了解的用户信息；如需列出全部记忆，可传 all/所有记忆/全部记忆"
                 },
                 "limit": {
                     "type": "integer",
@@ -91,6 +91,66 @@ impl Tool for MemuMemoryTool {
 
         match &self.client {
             Some(client) => {
+                if is_list_all_memory_query(&input.query) {
+                    match client
+                        .list_items(None, None, Some(input.limit as u32), Some(0), None)
+                        .await
+                    {
+                        Ok(result) => {
+                            let memories = result
+                                .items
+                                .iter()
+                                .map(|item| {
+                                    json!({
+                                        "content": item
+                                            .get("content")
+                                            .or_else(|| item.get("summary"))
+                                            .cloned()
+                                            .unwrap_or(serde_json::Value::Null),
+                                        "type": item
+                                            .get("memory_type")
+                                            .or_else(|| item.get("type"))
+                                            .cloned()
+                                            .unwrap_or(serde_json::Value::Null),
+                                        "categories": item
+                                            .get("categories")
+                                            .cloned()
+                                            .unwrap_or_else(|| serde_json::Value::Array(vec![])),
+                                        "created_at": item.get("created_at").cloned(),
+                                        "id": item.get("id").cloned(),
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            let count = memories.len();
+                            let result = json!({
+                                "memories": memories,
+                                "query": input.query,
+                                "mode": "list",
+                                "count": count,
+                                "total": result.total,
+                            });
+                            return Ok(ToolOutput::new(
+                                result,
+                                start.elapsed().as_millis() as u64,
+                            ));
+                        }
+                        Err(e) => {
+                            warn!("[MemuMemoryTool] list_items failed: {}", e);
+                            let result = json!({
+                                "memories": [],
+                                "query": input.query,
+                                "mode": "list",
+                                "count": 0,
+                                "error": format!("list_items failed: {}", e),
+                            });
+                            return Ok(ToolOutput::new(
+                                result,
+                                start.elapsed().as_millis() as u64,
+                            ));
+                        }
+                    }
+                }
+
                 match client
                     .retrieve_with_context(&input.query, None, input.limit, true)
                     .await
@@ -134,6 +194,31 @@ impl Tool for MemuMemoryTool {
             }
         }
     }
+}
+
+fn is_list_all_memory_query(query: &str) -> bool {
+    let normalized = query.trim().to_lowercase();
+    matches!(
+        normalized.as_str(),
+        ""
+            | "*"
+            | "all"
+            | "all memory"
+            | "all memories"
+            | "list"
+            | "list all"
+            | "所有记忆"
+            | "全部记忆"
+            | "长期记忆"
+            | "都是什么记忆内容"
+            | "都是什么记忆内容？"
+            | "有什么长期记忆"
+            | "有什么长期记忆？"
+            | "memu里有什么长期记忆"
+            | "memu里有什么长期记忆？"
+    ) || normalized.contains("所有记忆")
+        || normalized.contains("全部记忆")
+        || normalized.contains("有什么长期记忆")
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -374,4 +459,18 @@ pub fn register_memu_tools(registry: &mut ToolRegistry, memu_client: Option<Arc<
 pub fn register_proactive_tools(registry: &mut ToolRegistry, memu_client: Option<Arc<MemUClient>>) {
     register_memu_tools(registry, memu_client);
     registry.register(WaitUserConfirmTool::new());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_list_all_memory_query;
+
+    #[test]
+    fn list_all_memory_query_recognizes_inventory_prompts() {
+        assert!(is_list_all_memory_query("所有记忆"));
+        assert!(is_list_all_memory_query("都是什么记忆内容？"));
+        assert!(is_list_all_memory_query("*"));
+        assert!(is_list_all_memory_query("all memories"));
+        assert!(!is_list_all_memory_query("天津大学"));
+    }
 }

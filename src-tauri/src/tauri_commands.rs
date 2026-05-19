@@ -262,6 +262,7 @@ pub struct GbrainStatus {
     pub connected: bool,
     pub tool_count: u32,
     pub pgdata_ready: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -342,6 +343,7 @@ pub async fn get_system_diagnostics(
             Some(crate::mcp::McpServerStatus::Connected)
         );
         let tool_count = mcp.server_tool_count("gbrain").unwrap_or(0) as u32;
+        let error = mcp.server_error("gbrain");
         let pgdata_ready = state
             .data_dir
             .join("gbrain")
@@ -355,7 +357,7 @@ pub async fn get_system_diagnostics(
                 .join("pgdata")
                 .join("PG_VERSION")
                 .exists();
-        GbrainStatus { connected, tool_count, pgdata_ready }
+        GbrainStatus { connected, tool_count, pgdata_ready, error }
     };
 
     // Sprint 2.2.5b — last-known init outcome from Stage 3 boot.
@@ -958,6 +960,10 @@ pub async fn send_message(
             Arc::clone(&state.db),
             app_handle.clone(),
         ).with_infra(Arc::clone(&state.infra_service))
+    );
+    crate::agent::tools::memu_tools::register_memu_tools(
+        &mut tools,
+        state.memu_client.clone(),
     );
     // Browser tools (v2 — BrowserContextManager)
     {
@@ -9044,6 +9050,10 @@ pub async fn send_agent_message(
         input.session_id.clone(),
         "default".into(),
     ));
+    crate::agent::tools::memu_tools::register_memu_tools(
+        &mut tools,
+        state.memu_client.clone(),
+    );
     // Browser tools (v2 — BrowserContextManager)
     // Lazy registration: when no active browser context exists for this session,
     // only register browser_navigate as the entry-point tool (~380 tokens vs ~7 000

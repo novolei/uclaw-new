@@ -37,10 +37,17 @@ When to call `mcp__gbrain__put_page`:
 - Conversation surfaces a stable fact (e.g. \"GPT-5 released in 2026\")
 - A multi-turn investigation reaches a conclusion worth preserving
 
-When to call `mcp__gbrain__recall`:
+When to call `mcp__gbrain__query` / `mcp__gbrain__search`:
 - User asks \"do you remember\" / \"what did we say about\"
 - A new question echoes a topic from a prior session
 - Before answering a factual question that gbrain might know
+
+When to call `mcp__gbrain__list_pages`:
+- User asks what is currently stored in gbrain / the knowledge base
+- User asks for all memories, all pages, recent pages, or an inventory
+- You need to verify whether gbrain contains any pages before searching
+- Do not use `query` or `search` with `*` to list everything; `*` is not a
+  supported all-pages query.
 
 Slug format: kebab-case English, namespaced when useful. Examples:
 - `openai-gpt-5-release`
@@ -51,7 +58,7 @@ Content format: YAML frontmatter (title, type, aliases, tags) +
 markdown body. Keep bodies under 500 words; link to sub-pages via
 `[[other-slug]]` when content grows.
 
-After calling `recall`, cite the slug(s) you read from in your
+After calling `query` / `search`, cite the slug(s) you read from in your
 response. After calling `put_page`, mention what you have recorded.
 
 DO NOT:
@@ -59,7 +66,7 @@ DO NOT:
   separate tool calls
 - Use `put_page` for ephemeral things (this turn's question, jokes,
   small talk)
-- Call `recall` for general-knowledge questions that don't reference
+- Call gbrain retrieval for general-knowledge questions that don't reference
   prior conversation";
 
 /// The agent-facing rendering entry point.
