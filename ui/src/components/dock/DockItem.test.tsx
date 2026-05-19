@@ -163,4 +163,37 @@ describe('DockItem', () => {
     expect(iconBox.style.width).toBe('44px')
     expect(iconBox.style.height).toBe('44px')
   })
+
+  it('exposes data-sortable-id when sortableId prop is passed', () => {
+    render(
+      <DockItem
+        icon={<Bot size={18} />}
+        label="Agent"
+        isActive={false}
+        index={0}
+        hoveredIndex={null}
+        onHoverIndexChange={vi.fn()}
+        onClick={vi.fn()}
+        sortableId="mode-agent"
+      />,
+    )
+    const btn = screen.getByRole('button', { name: 'Agent' })
+    expect(btn.getAttribute('data-sortable-id')).toBe('mode-agent')
+  })
+
+  it('does NOT expose data-sortable-id when sortableId is undefined', () => {
+    render(
+      <DockItem
+        icon={<Bot size={18} />}
+        label="Agent"
+        isActive={false}
+        index={0}
+        hoveredIndex={null}
+        onHoverIndexChange={vi.fn()}
+        onClick={vi.fn()}
+      />,
+    )
+    const btn = screen.getByRole('button', { name: 'Agent' })
+    expect(btn.hasAttribute('data-sortable-id')).toBe(false)
+  })
 })
