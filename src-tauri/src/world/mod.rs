@@ -17,10 +17,12 @@
 //! - [`entity`] — `WorldEntity` + `WorldEntityKind` + supporting refs
 //! - [`snapshot`] — `WorldSnapshot` + `ProjectionStats`
 
+pub mod adapters;
 pub mod entity;
 pub mod snapshot;
 pub mod store;
 
+pub use adapters::{scan_directory, FileSystemAdapter, ScanOptions, ScanResult};
 pub use entity::{EntityRef, WorldEntity, WorldEntityKind, WorldEntityState};
 pub use snapshot::{ProjectionStats, WorldSnapshot};
 pub use store::{
