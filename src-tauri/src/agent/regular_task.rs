@@ -130,9 +130,50 @@ impl SessionTask for RegularTask {
         // pending preemption can proceed without contention.
         drop(ctx);
 
+        // M1-T4a — emit intermediate events derived from the outcome so the
+        // rollout stream has more than just Started + Finished. Heavier
+        // event interleaving (ToolCall / ToolResult per tool, ModelTurn per
+        // iteration, MemoryWrite per side-effect) lands in M1-T4b/c when
+        // the dispatcher hooks directly through this task type. For now we
+        // surface the highest-value summary events.
+        let now = || chrono::Utc::now().to_rfc3339();
+        match &outcome {
+            LoopOutcome::Response {
+                usage: Some(usage),
+                ..
+            } => {
+                events.push(TaskEvent::ModelTurn {
+                    ts: now(),
+                    source: TaskEventSource::AgentLoop,
+                    task_id: self.spec.id.clone(),
+                    provider: "agent_loop".into(),
+                    model: "aggregated".into(),
+                    token_usage: crate::runtime::contracts::TokenUsage {
+                        input_tokens: usage.input_tokens,
+                        cached_input_tokens: usage.cache_read_tokens,
+                        output_tokens: usage.output_tokens,
+                        reasoning_output_tokens: 0,
+                        total_tokens: usage.input_tokens
+                            .saturating_add(usage.output_tokens),
+                        cost_usd_micros: None,
+                    },
+                });
+            }
+            LoopOutcome::Failure { error } => {
+                events.push(TaskEvent::Warning {
+                    ts: now(),
+                    source: TaskEventSource::AgentLoop,
+                    task_id: self.spec.id.clone(),
+                    code: "agent_loop_failure".into(),
+                    message: error.clone(),
+                });
+            }
+            _ => {}
+        }
+
         let verdict = outcome_to_verdict(&outcome, &token);
         events.push(TaskEvent::TaskFinished {
-            ts: chrono::Utc::now().to_rfc3339(),
+            ts: now(),
             source: TaskEventSource::AgentLoop,
             task_id: self.spec.id.clone(),
             verdict,
@@ -430,5 +471,188 @@ mod tests {
             }
             other => panic!("expected Cancelled, got {other:?}"),
         }
+    }
+
+    // ── M1-T4a — intermediate event emission ──────────────────────────
+
+    /// LoopDelegate returning a Response with usage. The task should emit
+    /// Started + ModelTurn + Finished{Completed}.
+    struct ResponseWithUsageDelegate;
+
+    #[async_trait]
+    impl LoopDelegate for ResponseWithUsageDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(
+            &self,
+            _ctx: &mut ReasoningContext,
+            _iter: usize,
+        ) -> Option<LoopOutcome> {
+            None
+        }
+        async fn call_llm(
+            &self,
+            _ctx: &mut ReasoningContext,
+            _iter: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            Ok(RespondOutput::Text {
+                text: "ok".into(),
+                thinking: None,
+                thinking_signature: None,
+                metadata: ResponseMetadata {
+                    model: "test-model".into(),
+                    finish_reason: Some("stop".into()),
+                    usage: Some(crate::agent::types::TokenUsage {
+                        input_tokens: 100,
+                        output_tokens: 25,
+                        cache_read_tokens: 40,
+                        cache_creation_tokens: 0,
+                    }),
+                },
+            })
+        }
+        async fn handle_text_response(
+            &self,
+            _t: &str,
+            meta: ResponseMetadata,
+            _c: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Return(LoopOutcome::Response {
+                text: "ok".into(),
+                usage: meta.usage,
+                truncated: false,
+            })
+        }
+        async fn execute_tool_calls(
+            &self,
+            _: Vec<ToolCall>,
+            _: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            Ok(None)
+        }
+        async fn on_usage(
+            &self,
+            _: &crate::agent::types::TokenUsage,
+            _: &ReasoningContext,
+        ) {
+        }
+        async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}
+        async fn after_iteration(&self, _: usize) {}
+    }
+
+    #[tokio::test]
+    async fn task_emits_model_turn_with_token_usage_on_response() {
+        let ctx = make_ctx(false);
+        let task = Arc::new(RegularTask::new(
+            task_spec("response-1"),
+            RegularTaskInputs {
+                delegate: Arc::new(ResponseWithUsageDelegate),
+                reason_ctx: ctx,
+                config: AgenticLoopConfig::default(),
+            },
+        ));
+        let events = task.run(CancellationToken::new()).await;
+        assert_eq!(events.len(), 3, "expected Started + ModelTurn + Finished, got {events:?}");
+        assert!(matches!(events[0], TaskEvent::TaskStarted { .. }));
+        match &events[1] {
+            TaskEvent::ModelTurn {
+                source,
+                token_usage,
+                ..
+            } => {
+                assert_eq!(*source, TaskEventSource::AgentLoop);
+                assert_eq!(token_usage.input_tokens, 100);
+                assert_eq!(token_usage.cached_input_tokens, 40);
+                assert_eq!(token_usage.output_tokens, 25);
+                // total = input + output (per the saturating_add) = 125
+                assert_eq!(token_usage.total_tokens, 125);
+            }
+            other => panic!("expected ModelTurn, got {other:?}"),
+        }
+        assert!(matches!(
+            events[2],
+            TaskEvent::TaskFinished {
+                verdict: TaskVerdict::Completed { .. },
+                ..
+            }
+        ));
+    }
+
+    /// LoopDelegate returning a Failure. The task should emit
+    /// Started + Warning + Finished{Failed}.
+    struct FailingDelegate;
+
+    #[async_trait]
+    impl LoopDelegate for FailingDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(
+            &self,
+            _ctx: &mut ReasoningContext,
+            _iter: usize,
+        ) -> Option<LoopOutcome> {
+            None
+        }
+        async fn call_llm(
+            &self,
+            _ctx: &mut ReasoningContext,
+            _iter: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            Err(crate::error::Error::Internal("simulated LLM failure".into()))
+        }
+        async fn handle_text_response(
+            &self,
+            _t: &str,
+            _meta: ResponseMetadata,
+            _c: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Continue
+        }
+        async fn execute_tool_calls(
+            &self,
+            _: Vec<ToolCall>,
+            _: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            Ok(None)
+        }
+        async fn on_usage(
+            &self,
+            _: &crate::agent::types::TokenUsage,
+            _: &ReasoningContext,
+        ) {
+        }
+        async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}
+        async fn after_iteration(&self, _: usize) {}
+    }
+
+    #[tokio::test]
+    async fn task_emits_warning_then_failed_on_loop_failure() {
+        let ctx = make_ctx(false);
+        let task = Arc::new(RegularTask::new(
+            task_spec("fail-1"),
+            RegularTaskInputs {
+                delegate: Arc::new(FailingDelegate),
+                reason_ctx: ctx,
+                config: AgenticLoopConfig::default(),
+            },
+        ));
+        let events = task.run(CancellationToken::new()).await;
+        assert_eq!(events.len(), 3, "expected Started + Warning + Finished, got {events:?}");
+        match &events[1] {
+            TaskEvent::Warning { code, message, .. } => {
+                assert_eq!(code, "agent_loop_failure");
+                assert!(message.contains("simulated LLM failure"));
+            }
+            other => panic!("expected Warning, got {other:?}"),
+        }
+        assert!(matches!(
+            events[2],
+            TaskEvent::TaskFinished {
+                verdict: TaskVerdict::Failed { .. },
+                ..
+            }
+        ));
     }
 }
