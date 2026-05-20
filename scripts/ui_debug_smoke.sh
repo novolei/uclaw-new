@@ -50,7 +50,7 @@ git -C "$ROOT_DIR" status --short
 print_header "start vite"
 (
   cd "$UI_DIR"
-  npm run dev -- --host "$VITE_HOST" --port "$VITE_PORT"
+  npm run dev -- --host "$VITE_HOST" --port "$VITE_PORT" --strictPort
 ) >"$LOG_DIR/vite.log" 2>&1 &
 PIDS+=("$!")
 
