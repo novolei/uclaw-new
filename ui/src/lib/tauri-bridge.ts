@@ -120,6 +120,12 @@ import type {
   HealthRunNowInput,
   HealthFindingDto,
   HealthRunOutcome,
+  // Drift events + importance candidates (Memory OS L3)
+  DriftListInput,
+  DriftResolveInput,
+  ImportanceListInput,
+  DriftEventDto,
+  ImportanceCandidateDto,
   // Lint (Memory OS Foundation Phase 5)
   LintRunNowInput,
   LintRunOutcome,
@@ -847,6 +853,25 @@ export const memoryHealthRunNow = (
   input: HealthRunNowInput,
 ): Promise<HealthRunOutcome> =>
   invoke('memory_health_run_now', { input });
+
+// ─────────────────────────────────────────────────────────
+// Drift events + importance candidates (Memory OS L3)
+// ─────────────────────────────────────────────────────────
+
+export const memoryDriftListEvents = (
+  input: DriftListInput,
+): Promise<DriftEventDto[]> =>
+  invoke('memory_drift_list_events', { input });
+
+export const memoryDriftResolveEvent = (
+  input: DriftResolveInput,
+): Promise<void> =>
+  invoke('memory_drift_resolve_event', { input });
+
+export const memoryImportanceListCandidates = (
+  input: ImportanceListInput,
+): Promise<ImportanceCandidateDto[]> =>
+  invoke('memory_importance_list_candidates', { input });
 
 // ─────────────────────────────────────────────────────────
 // Lint scan (Memory OS Foundation Phase 5)
