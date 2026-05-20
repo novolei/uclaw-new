@@ -54,6 +54,8 @@ pub fn to_mcp_json(
         "get_page" => get_page_to_json(args, &cleaned),
         "search" => search_to_json(&cleaned),
         "get_versions" => versions_to_json(&cleaned),
+        "get_links" => links_from_graph(args, &cleaned),
+        "revert_version" => Ok("{\"status\":\"reverted\"}".to_string()),
         _ => Ok(cleaned),
     }
 }
@@ -233,6 +235,32 @@ fn mk_ver(id: i64, iso: String, preview: String) -> serde_json::Value {
     serde_json::json!({ "id": id, "snapshot_at": iso, "compiled_truth": preview })
 }
 
+/// `get_links` 用 `graph <slug> --depth 1` 实现:graph 输出 GraphNode[]
+/// `[{slug,links:[{to_slug,link_type}]}]`,找 slug==入参的节点,其 links
+/// → [{from_slug:入参slug, to_slug, link_type}](browse::parse_links 形状)。
+fn links_from_graph(args: &serde_json::Value, cleaned: &str) -> Result<String, McpError> {
+    let slug = args.get("slug").and_then(|v| v.as_str()).unwrap_or("");
+    let nodes: serde_json::Value = serde_json::from_str(extract_json(cleaned)?)
+        .map_err(|e| McpError::Server(format!("graph json: {e}")))?;
+    let mut edges: Vec<serde_json::Value> = Vec::new();
+    if let Some(arr) = nodes.as_array() {
+        for node in arr {
+            if node.get("slug").and_then(|s| s.as_str()) == Some(slug) {
+                if let Some(links) = node.get("links").and_then(|l| l.as_array()) {
+                    for l in links {
+                        let to = l.get("to_slug").and_then(|s| s.as_str()).unwrap_or("");
+                        let lt = l.get("link_type").and_then(|s| s.as_str()).unwrap_or("");
+                        edges.push(serde_json::json!({
+                            "from_slug": slug, "to_slug": to, "link_type": lt,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    serde_json::to_string(&edges).map_err(|e| McpError::Server(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,5 +347,24 @@ mod tests {
         assert_eq!(v[0]["id"], 6);
         assert_eq!(v[0]["snapshot_at"], "2026-05-20T04:33:40");
         assert_eq!(v[1]["id"], 4);
+    }
+
+    #[test]
+    fn get_links_from_graph_node() {
+        let stdout = "[{\"slug\":\"a\",\"title\":\"A\",\"type\":\"concept\",\"depth\":0,\"links\":[{\"to_slug\":\"b\",\"link_type\":\"mentions\"},{\"to_slug\":\"c\",\"link_type\":\"refs\"}]}]";
+        let json = to_mcp_json("get_links", &serde_json::json!({"slug":"a"}), stdout).unwrap();
+        let v: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0]["from_slug"], "a");
+        assert_eq!(v[0]["to_slug"], "b");
+        assert_eq!(v[0]["link_type"], "mentions");
+        assert_eq!(v[1]["to_slug"], "c");
+    }
+
+    #[test]
+    fn get_links_no_match_is_empty() {
+        let stdout = "[{\"slug\":\"x\",\"links\":[]}]";
+        let json = to_mcp_json("get_links", &serde_json::json!({"slug":"a"}), stdout).unwrap();
+        assert_eq!(json, "[]");
     }
 }
