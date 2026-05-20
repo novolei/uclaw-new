@@ -1,0 +1,20 @@
+[package]
+name = "uclaw-utils-file-watcher"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[lib]
+name = "uclaw_utils_file_watcher"
+path = "src/lib.rs"
+doctest = false
+
+
+[dependencies]
+notify = "7"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "sync", "fs", "io-util"] }
+tracing = { version = "0.1", features = ["log"] }
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"

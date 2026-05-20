@@ -22,11 +22,14 @@ Version 2.0.
   Upstream commit date: 2026-05-19
   Reviewed by:          uClaw maintainers on 2026-05-20
 
-The following derived crates will be added in subsequent Phase 0.5 PRs and
-each will be listed below as it lands. Until then this list is intentionally
-empty — no derived code has been imported yet at the time of this commit.
+The following derived crates are present in the repository, each carrying the
+SPDX-License-Identifier + "Derived from codex-rs/<path>" attribution in every
+.rs file:
 
-  (no derived crates yet)
+  Phase 0.5-T3 (first batch — small independent utility crates):
+  - crates/uclaw-utils-async-utils/         ← codex-rs/async-utils/         (PR #299)
+  - crates/uclaw-utils-terminal-detection/  ← codex-rs/terminal-detection/  (PR #299)
+  - crates/uclaw-utils-file-watcher/        ← codex-rs/file-watcher/        (PR #299)
 
 When new derived crates land:
   - the crate must be listed here with its upstream path

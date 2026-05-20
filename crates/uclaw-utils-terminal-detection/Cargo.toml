@@ -1,0 +1,17 @@
+[package]
+name = "uclaw-utils-terminal-detection"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[lib]
+name = "uclaw_utils_terminal_detection"
+path = "src/lib.rs"
+doctest = false
+
+
+[dependencies]
+tracing = { version = "0.1", features = ["log"] }
+
+[dev-dependencies]
+pretty_assertions = "1"
