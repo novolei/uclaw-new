@@ -1,12 +1,11 @@
 import React from 'react'
-import { getPathForFile } from '@/lib/tauri-bridge'
+import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
 import { listen } from '@tauri-apps/api/event'
 import { toast } from 'sonner'
 import { ingestFiles, ingestUrl, type IngestionJob } from '@/lib/ingestion'
 
 export function FeedPanel({ onClose: _onClose }: { onClose: () => void }): React.ReactElement {
   const [url, setUrl] = React.useState('')
-  const [dragOver, setDragOver] = React.useState(false)
   const [jobs, setJobs] = React.useState<Record<string, IngestionJob>>({})
 
   React.useEffect(() => {
@@ -22,15 +21,15 @@ export function FeedPanel({ onClose: _onClose }: { onClose: () => void }): React
     return () => { un.then((f) => f()) }
   }, [])
 
-  const handleDrop = async (e: React.DragEvent) => {
-    e.preventDefault()
-    setDragOver(false)
-    const files = Array.from(e.dataTransfer.files)
-    const paths: string[] = []
-    for (const f of files) {
-      try { const p = getPathForFile(f); if (p) paths.push(p) } catch { /* skip */ }
-    }
-    if (paths.length === 0) { toast.error('无法获取文件路径'); return }
+  const pickFiles = async () => {
+    const selected = await openFileDialog({
+      multiple: true,
+      title: '选择要摄入的文件',
+      filters: [{ name: '文档/音视频', extensions: ['md', 'markdown', 'txt', 'pdf', 'mp3', 'wav', 'm4a', 'flac', 'ogg', 'mp4', 'mov', 'webm'] }],
+    })
+    if (selected == null) return
+    const paths = Array.isArray(selected) ? selected : [selected]
+    if (paths.length === 0) return
     await ingestFiles(paths)
     toast.message(`已开始摄入 ${paths.length} 个文件`)
   }
@@ -47,16 +46,13 @@ export function FeedPanel({ onClose: _onClose }: { onClose: () => void }): React
 
   return (
     <div className="flex flex-col gap-3">
-      <div
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={handleDrop}
-        className={`rounded-lg border-2 border-dashed p-6 text-center text-sm ${
-          dragOver ? 'border-accent bg-accent/10' : 'border-border text-muted-foreground'
-        }`}
+      <button
+        type="button"
+        onClick={() => void pickFiles()}
+        className="rounded-lg border-2 border-dashed border-border p-6 text-center text-sm text-muted-foreground hover:border-accent hover:bg-accent/10"
       >
-        拖放 PDF / md / 音视频文件到这里
-      </div>
+        点击选择 PDF / md / 音视频文件
+      </button>
       <div className="flex gap-2">
         <input
           value={url}
