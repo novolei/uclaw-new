@@ -64,6 +64,10 @@ uClaw skill catalog (auto-managed by `gitnexus setup` and team-curated):
   knowledge graph (agent, browser, automation, harness, learning, …).
 - `.claude/skills/superpowers/*` — universal workflow skills (brainstorming,
   writing-plans, subagent-driven-development, …).
+- `.claude/skills/uclaw-*/` — uClaw-specific decision contexts (migrations,
+  Tauri commands, composers, codex-derived code, memory_graph freeze,
+  GitNexus workflow, PR discipline). See `.claude/skills/README.md` for the
+  full catalog.
 
 If an agent reads more than ~3 unrelated `.claude/skills/*/SKILL.md` files in a
 single session, that is a smell — the wrong skills are being loaded, or the
