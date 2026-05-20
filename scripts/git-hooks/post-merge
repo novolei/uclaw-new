@@ -1,0 +1,32 @@
+#!/bin/sh
+# post-merge — auto-run `npm install` after a git pull if ui/package.json changed.
+#
+# Triggers on:
+#   - `git pull` that produces a merge or fast-forward (the common case)
+#   - `git merge` from another branch
+#
+# Does NOT trigger on:
+#   - `git checkout` between branches (use post-checkout for that if needed)
+#   - `git rebase` (post-rewrite covers that)
+#
+# Skipped silently if `ui/` doesn't exist or `npm` isn't on PATH so this
+# stays harmless in checkouts that don't have the JS toolchain installed.
+set -e
+
+# Diff merged commits' tree against the prior HEAD (HEAD@{1} = pre-merge ref).
+CHANGED=$(git diff --name-only HEAD@{1} HEAD 2>/dev/null || true)
+
+if echo "$CHANGED" | grep -qE "^ui/(package\.json|package-lock\.json)$"; then
+    if [ ! -d "ui" ]; then
+        exit 0
+    fi
+    if ! command -v npm >/dev/null 2>&1; then
+        echo "[post-merge] ui/package.json changed but npm is not on PATH; skipping install" >&2
+        exit 0
+    fi
+    echo "[post-merge] ui/package.json changed — running 'npm install'"
+    (cd ui && npm install --no-audit --no-fund) || {
+        echo "[post-merge] npm install failed — run 'cd ui && npm install' manually" >&2
+        exit 0
+    }
+fi
