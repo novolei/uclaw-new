@@ -98,6 +98,16 @@ pub struct HumaneAutomationSpec {
     #[garde(dive)]
     #[serde(default)]
     pub config_schema: Vec<InputDef>,
+    // Runtime/user config defaults. Kept as raw JSON because individual specs
+    // may define platform-specific keys before the shared schema catches up.
+    #[garde(skip)]
+    #[serde(default)]
+    pub config: serde_json::Value,
+    // uClaw-private runtime extension block. This must survive YAML -> JSON
+    // normalization because executor routing depends on it.
+    #[garde(skip)]
+    #[serde(default)]
+    pub x_uclaw_runtime: serde_json::Value,
     // requires used to be `Requires { mcps: Vec<String>, skills: Vec<String> }`
     // — Phase 1 mirror. DHP marketplace specs use a richer shape:
     //   requires:
@@ -598,6 +608,38 @@ memory_schema:
         let spec: HumaneAutomationSpec = serde_yml::from_str(dhp_style).expect("parses");
         spec.validate().expect("validates");
         assert!(spec.memory_schema.is_some());
+    }
+
+    #[test]
+    fn preserves_config_and_uclaw_runtime_extension() {
+        let yaml = r#"
+type: automation
+name: Douyin Live Moderator
+version: 0.1.0
+author: uClaw
+description: live room moderator
+system_prompt: moderate
+config:
+  platform: douyin
+  room_id: room-a
+x_uclaw_runtime:
+  kind: live_room_moderator
+  poll_interval_seconds: 30
+"#;
+        let spec: HumaneAutomationSpec = serde_yml::from_str(yaml).expect("parses");
+        spec.validate().expect("validates");
+        assert_eq!(spec.config["platform"].as_str(), Some("douyin"));
+        assert_eq!(
+            spec.x_uclaw_runtime["kind"].as_str(),
+            Some("live_room_moderator")
+        );
+
+        let value = serde_json::to_value(&spec).expect("serializes");
+        assert_eq!(value["config"]["room_id"].as_str(), Some("room-a"));
+        assert_eq!(
+            value["x_uclaw_runtime"]["poll_interval_seconds"].as_u64(),
+            Some(30)
+        );
     }
 
     #[test]

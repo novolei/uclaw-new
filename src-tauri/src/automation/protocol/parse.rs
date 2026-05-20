@@ -35,6 +35,8 @@ const KNOWN_TOP_LEVEL_FIELDS: &[&str] = &[
     "system_prompt",
     "subscriptions",
     "config_schema",
+    "config",
+    "x_uclaw_runtime",
     "requires",
     "filters",
     "memory_schema",

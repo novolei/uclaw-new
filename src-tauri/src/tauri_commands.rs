@@ -1526,6 +1526,39 @@ pub async fn gbrain_full_graph(
         .map_err(|e| e.to_command_string())
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GbrainSmokeReport {
+    pub list_pages_ok: bool,
+    pub list_pages_count: usize,
+    pub get_stats_ok: bool,
+    pub error: Option<String>,
+}
+
+/// 真起的 gbrain serve 端到端 smoke:调 list_pages + get_stats,断言能解析成强类型。
+/// 子项目 A/C 当初缺的真集成网——按需手动跑(bundled gbrain 在场 + 已 init)。
+#[tauri::command]
+pub async fn gbrain_serve_smoke(state: State<'_, AppState>) -> Result<GbrainSmokeReport, String> {
+    let mut report = GbrainSmokeReport {
+        list_pages_ok: false,
+        list_pages_count: 0,
+        get_stats_ok: false,
+        error: None,
+    };
+    match crate::gbrain::browse::list_pages(&state.mcp_manager, 50, None, None, None, None).await {
+        Ok(pages) => { report.list_pages_ok = true; report.list_pages_count = pages.len(); }
+        Err(e) => { report.error = Some(format!("list_pages: {}", e.to_command_string())); }
+    }
+    match crate::gbrain::browse::get_stats(&state.mcp_manager).await {
+        Ok(_) => { report.get_stats_ok = true; }
+        Err(e) => {
+            let msg = format!("get_stats: {}", e.to_command_string());
+            report.error = Some(match report.error.take() { Some(prev) => format!("{prev}; {msg}"), None => msg });
+        }
+    }
+    Ok(report)
+}
+
 fn build_browser_task_memory_context(state: &AppState, query: &str) -> Option<String> {
     let lower = query.to_lowercase();
     let is_browser_memory_query = [

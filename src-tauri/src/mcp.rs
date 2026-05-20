@@ -1048,15 +1048,6 @@ impl GbrainCliTransport {
         }
     }
 
-    fn is_bundled_gbrain(config: &McpServerConfig) -> bool {
-        config.id == "gbrain"
-            && config.transport_type == TransportType::Stdio
-            && config.args.last().map(|s| s.as_str()) == Some("serve")
-            && config.args.iter().any(|arg| {
-                arg.ends_with("gbrain/src/cli.ts") || arg.ends_with("gbrain-source/src/cli.ts")
-            })
-    }
-
     fn tools() -> Vec<McpRemoteTool> {
         vec![
             Self::tool(
@@ -1161,7 +1152,7 @@ impl GbrainCliTransport {
     }
 
     async fn call_cli(&self, tool: &str, arguments: serde_json::Value) -> Result<String, McpError> {
-        self.cleanup_stale_pglite_lock();
+        cleanup_stale_pglite_lock(&self.env);
 
         let mut argv = self.base_args.clone();
         let mut requested_slug: Option<String> = None;
@@ -1221,6 +1212,47 @@ impl GbrainCliTransport {
                 argv.push("--content".to_string());
                 argv.push(content);
             }
+            "get_backlinks" => {
+                let slug = required_string(&arguments, "slug")?;
+                argv.push("backlinks".to_string());
+                argv.push(slug);
+            }
+            "traverse_graph" => {
+                let slug = required_string(&arguments, "slug")?;
+                argv.push("graph".to_string());
+                argv.push(slug);
+                push_number_flag(&mut argv, &arguments, "depth", "--depth");
+                push_string_flag(&mut argv, &arguments, "direction", "--direction");
+            }
+            "get_links" => {
+                let slug = required_string(&arguments, "slug")?;
+                argv.push("graph".to_string());
+                argv.push(slug);
+                argv.push("--depth".to_string());
+                argv.push("1".to_string());
+            }
+            "get_versions" => {
+                let slug = required_string(&arguments, "slug")?;
+                argv.push("history".to_string());
+                argv.push(slug);
+            }
+            "get_stats" => {
+                argv.push("stats".to_string());
+            }
+            "find_orphans" => {
+                argv.push("orphans".to_string());
+                argv.push("--json".to_string());
+            }
+            "revert_version" => {
+                let slug = required_string(&arguments, "slug")?;
+                let vid = arguments
+                    .get("version_id")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| McpError::Server("revert_version: version_id (number) required".into()))?;
+                argv.push("revert".to_string());
+                argv.push(slug);
+                argv.push(vid.to_string());
+            }
             other => {
                 return Err(McpError::Server(format!(
                     "gbrain CLI transport does not support tool '{}'",
@@ -1259,10 +1291,9 @@ impl GbrainCliTransport {
             )));
         }
         if stdout.is_empty() && !stderr.is_empty() {
-            Ok(stderr)
-        } else {
-            Ok(stdout)
+            return Ok(stderr);
         }
+        crate::gbrain::cli_format::to_mcp_json(tool, &arguments, &stdout)
     }
 
     async fn suggest_page_slugs(&self, missing_slug: &str) -> Vec<String> {
@@ -1301,40 +1332,6 @@ impl GbrainCliTransport {
             .collect()
     }
 
-    fn cleanup_stale_pglite_lock(&self) {
-        let Some(home) = self.env.get("GBRAIN_HOME") else {
-            return;
-        };
-        let lock_dir = std::path::Path::new(home)
-            .join(".gbrain")
-            .join("brain.pglite")
-            .join(".gbrain-lock");
-        let lock_file = lock_dir.join("lock");
-        let Ok(raw) = std::fs::read_to_string(&lock_file) else {
-            return;
-        };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-            return;
-        };
-        let Some(pid) = v.get("pid").and_then(|p| p.as_i64()) else {
-            return;
-        };
-        if !pid_is_alive(pid) {
-            if let Err(e) = std::fs::remove_dir_all(&lock_dir) {
-                tracing::warn!(
-                    lock = %lock_dir.display(),
-                    error = %e,
-                    "Failed to remove stale gbrain PGLite lock"
-                );
-            } else {
-                tracing::warn!(
-                    pid,
-                    lock = %lock_dir.display(),
-                    "Removed stale gbrain PGLite lock for dead process"
-                );
-            }
-        }
-    }
 }
 
 #[async_trait]
@@ -1470,6 +1467,37 @@ fn pid_is_alive(pid: i64) -> bool {
         .output()
         .map(|out| out.status.success() && !String::from_utf8_lossy(&out.stdout).trim().is_empty())
         .unwrap_or(false)
+}
+
+fn is_bundled_gbrain(config: &McpServerConfig) -> bool {
+    config.id == "gbrain"
+        && config.transport_type == TransportType::Stdio
+        && config.args.last().map(|s| s.as_str()) == Some("serve")
+        && config.args.iter().any(|arg| {
+            arg.ends_with("gbrain/src/cli.ts") || arg.ends_with("gbrain-source/src/cli.ts")
+        })
+}
+
+/// 清掉 gbrain PGLite 的崩溃残留单写锁(锁文件里的 PID 已不存活时删除)。
+/// 在 spawn 持久 `gbrain serve` 前调用,避免上次 serve 崩溃留下的锁让新 serve
+/// 卡在 "Timed out waiting for PGLite lock"。
+fn cleanup_stale_pglite_lock(env: &HashMap<String, String>) {
+    let Some(home) = env.get("GBRAIN_HOME") else { return; };
+    let lock_dir = std::path::Path::new(home)
+        .join(".gbrain")
+        .join("brain.pglite")
+        .join(".gbrain-lock");
+    let lock_file = lock_dir.join("lock");
+    let Ok(raw) = std::fs::read_to_string(&lock_file) else { return; };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else { return; };
+    let Some(pid) = v.get("pid").and_then(|p| p.as_i64()) else { return; };
+    if !pid_is_alive(pid) {
+        if let Err(e) = std::fs::remove_dir_all(&lock_dir) {
+            tracing::warn!(lock = %lock_dir.display(), error = %e, "Failed to remove stale gbrain PGLite lock");
+        } else {
+            tracing::warn!(pid, lock = %lock_dir.display(), "Removed stale gbrain PGLite lock for dead process");
+        }
+    }
 }
 
 // ─── MCP Client (per-server connection) ─────────────────────────────────
@@ -1960,7 +1988,7 @@ impl McpManager {
                 );
                 return Ok(true);
             }
-            if GbrainCliTransport::is_bundled_gbrain(&state.config) {
+            if is_bundled_gbrain(&state.config) {
                 let enabled = state.config.enabled;
                 let auto_approve = state.config.auto_approve;
                 let mut desired_config = bundled_gbrain_config(bun_path, entry_path, gbrain_home);
@@ -2531,7 +2559,7 @@ pub(crate) async fn connect_server_shared(
     let io_result: Result<McpConnection, McpError> = async {
         let transport: Arc<dyn McpTransport> = match config.transport_type {
             TransportType::Stdio => {
-                if GbrainCliTransport::is_bundled_gbrain(&config) {
+                if is_bundled_gbrain(&config) {
                     tracing::warn!(
                         server_id = %id,
                         "Using bundled gbrain CLI-backed MCP transport instead of Bun stdio"
@@ -3294,5 +3322,46 @@ mod gbrain_init_tests {
         let result = tokio::time::timeout(Duration::from_millis(200), cmd.output()).await;
         assert!(result.is_err(), "timeout must fire on hung process");
         // The Elapsed error is what we want — process is killed on drop.
+    }
+}
+
+#[cfg(test)]
+mod pglite_lock_cleanup_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn env_with_home(home: &std::path::Path) -> HashMap<String, String> {
+        let mut m = HashMap::new();
+        m.insert("GBRAIN_HOME".to_string(), home.to_string_lossy().to_string());
+        m
+    }
+
+    fn write_lock(home: &std::path::Path, pid: i64) -> std::path::PathBuf {
+        let dir = home.join(".gbrain").join("brain.pglite").join(".gbrain-lock");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lock"), format!("{{\"pid\": {pid}}}")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn no_lock_file_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        cleanup_stale_pglite_lock(&env_with_home(tmp.path())); // must not panic
+    }
+
+    #[test]
+    fn dead_pid_lock_is_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = write_lock(tmp.path(), 2_000_000_000); // implausibly-high pid → not alive
+        cleanup_stale_pglite_lock(&env_with_home(tmp.path()));
+        assert!(!dir.exists(), "dead-pid lock dir should be removed");
+    }
+
+    #[test]
+    fn live_pid_lock_is_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = write_lock(tmp.path(), std::process::id() as i64); // current process → alive
+        cleanup_stale_pglite_lock(&env_with_home(tmp.path()));
+        assert!(dir.exists(), "live-pid lock dir should be kept");
     }
 }

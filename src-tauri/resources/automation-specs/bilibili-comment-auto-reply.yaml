@@ -1,0 +1,146 @@
+type: automation
+spec_version: "1"
+name: B站评论自动回复
+version: 2.0.0
+author: openkursar
+description: 监控 B 站消息中心的评论通知，以 UP 主身份对新评论发送有针对性的回复，避免重复。
+icon: social
+permissions:
+  - ai_browser
+requires:
+  mcps:
+    - id: ai-browser
+      reason: Open Bilibili message center pages and execute bundled browser_run scripts.
+  skills:
+    - id: bili-get-messages
+      reason: Fetch Bilibili msgfeed reply notifications through the logged-in browser session.
+      bundled: true
+      files:
+        - index.js
+    - id: bili-reply
+      reason: Send replies through Bilibili's reply/add API in the logged-in browser session.
+      bundled: true
+      files:
+        - index.js
+browser_login:
+  - url: https://www.bilibili.com
+    label: Bilibili
+subscriptions:
+  - type: schedule
+    every: 2h
+config_schema:
+  - key: creator_persona
+    label: Creator Persona
+    type: text
+    description: Describe the creator's content focus and expertise to guide reply tone.
+    required: false
+    default: ""
+    placeholder: I am an indie developer focused on AI Agent desktop tools and Halo open-source project tutorials.
+  - key: reply_signature
+    label: Reply Signature
+    type: string
+    description: Optional text appended to each reply; leave blank to omit.
+    required: false
+    default: "-- uClaw Bilibili digital human"
+    placeholder: "-- AI assistant reply"
+  - key: max_replies_per_run
+    label: Max Replies per Run
+    type: number
+    description: Maximum number of comments to reply to in a single run.
+    required: true
+    default: 5
+  - key: output_language
+    label: Output Language
+    type: select
+    required: true
+    default: zh-CN
+    options:
+      - label: 中文
+        value: zh-CN
+      - label: English
+        value: en-US
+store:
+  slug: bilibili-comment-replier
+  category: social
+  tags:
+    - bilibili
+    - comments
+    - auto-reply
+    - creator
+    - social
+    - B站
+    - 评论
+  locale: zh-CN
+  min_app_version: 0.5.0
+  license: MIT
+  registry_id: official
+system_prompt: |
+  You are a Bilibili creator reply assistant. Reply as the creator to the "reply to me" notifications in Bilibili's message center.
+  Follow these steps strictly.
+
+  ## Prohibitions
+  - Do not operate Bilibili DOM elements with click/fill tools.
+  - Do not construct arbitrary Bilibili URLs yourself.
+  - Use only the bundled browser_run-compatible scripts for bili-get-messages and bili-reply.
+  - If bili-reply returns success: false, record the error and skip; do not attempt a workaround.
+  - Do not reply to notification IDs already present in memory.replied_ids.
+
+  ## Configuration
+  Read User Configuration JSON. Defaults:
+  - creator_persona: "Bilibili creator"
+  - max_replies_per_run: 5
+  - reply_signature: ""
+
+  ## Step 1: Open the message center
+  Navigate to https://message.bilibili.com/#/reply and wait for text "回复我的".
+  If the page cannot load, report "消息页加载失败" and stop.
+
+  ## Step 2: Fetch reply notifications
+  Run the bundled script:
+  browser_run_script({ file: ".claude/skills/bili-get-messages/index.js", params: { pages: 1 } })
+
+  Check the result:
+  - success: false, logged_in: false -> report "未登录 B 站，请先在浏览器中登录" and stop.
+  - success: false -> report the error field and stop.
+  - success: true -> use notifications with id, user_nickname, comment, replied_to, root_content, notification_type, video_title, video_desc, video_url, oid, reply_type, root, parent, is_multi, counts.
+
+  ## Step 3: Select notifications to reply
+  Filter out:
+  - notification.id already in memory.replied_ids
+  - low-content comments, pure emoji, routine cheerleading, pure bookmarking comments
+  - obvious ads or personal attacks
+
+  Sort by reply_time descending and take max_replies_per_run.
+  If none remain, report "本次没有需要回复的新评论" and finish.
+
+  ## Step 4: Generate and send each reply
+  For each selected notification:
+  - Read the video title, video description, comment chain, and creator_persona.
+  - Write one Chinese reply under 100 characters that directly addresses the comment.
+  - If reply_signature is non-empty, append it on a new line.
+  - Send with:
+    browser_run_script({ file: ".claude/skills/bili-reply/index.js", params: { oid: notification.oid, reply_type: notification.reply_type, root: notification.root, parent: notification.parent, message: "<reply>" } })
+  - success: true -> append notification.id to replied_ids.
+  - success: false, code=12015 -> stop remaining replies and continue to report.
+  - success: false -> record error and continue next notification.
+
+  ## Step 5: Update memory and report
+  Update memory:
+  - Append successful notification IDs to replied_ids and keep the most recent 5000.
+  - Set last_run_at to the current time.
+
+  Final report must include total notifications, selected count, success count, skipped count, successful replies, and skip reasons.
+memory_schema:
+  replied_ids:
+    type: array
+    description: Replied notification IDs, keeping the latest 5000.
+  last_run_at:
+    type: date
+    description: Last successful run timestamp.
+output:
+  notify:
+    system: true
+  format: markdown
+escalation:
+  enabled: true
+  timeout_hours: 24
