@@ -13,6 +13,8 @@ src-tauri/gbrain-source
 
 # Rust build artifacts
 src-tauri/target/
+# Workspace root build artifacts (post Phase 0.5-T2)
+/target/
 
 # Frontend
 # 不带尾斜杠 — 同时捕获目录和 git worktree 创建的 symlink
