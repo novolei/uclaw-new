@@ -147,6 +147,55 @@ pub fn browser_run_to_events(run: &BrowserTaskRun, intent_id: &str) -> Vec<TaskE
     out
 }
 
+
+// ────────────────────────────────────────────────────────────────────────
+// M1-T4d — fire-and-forget helper that emits a finished browser run to
+// the canonical sessions rollout dir. Env-gated via UCLAW_ROLLOUT_ENABLED
+// for parity with the chat dispatcher (M1-T4b).
+// ────────────────────────────────────────────────────────────────────────
+
+/// Emit a finished browser run to the rollout system if enabled by env.
+///
+/// Spawns a short-lived `RolloutWriter` into `~/.uclaw/sessions/`, emits
+/// every event from `browser_run_to_events`, then drops the handle. The
+/// writer task drains the channel and closes the JSONL file.
+///
+/// Non-blocking from the caller's perspective: the helper awaits the
+/// writer spawn (which is a single tokio task spawn) but does NOT await
+/// the actual JSONL write. Total caller-visible latency is < 5 ms.
+///
+/// `intent_id` should be the upstream chat session id when called from
+/// a chat-driven browser tool; falls back to `run.session_id` if no
+/// better identifier is available.
+pub async fn emit_browser_run_into_session_dir(
+    run: &crate::browser::session_state::BrowserTaskRun,
+    intent_id: &str,
+) {
+    if !crate::agent::rollout_integration::rollout_enabled_by_env() {
+        return;
+    }
+    let sessions_dir = uclaw_utils_home::uclaw_home_pathbuf()
+        .map(|p| p.join("sessions"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.uclaw/sessions"));
+    let handle = match crate::runtime::rollout::RolloutWriter::spawn(sessions_dir, None).await {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(
+                run_id = %run.run_id,
+                "browser rollout: failed to spawn writer: {e}"
+            );
+            return;
+        }
+    };
+    let events = browser_run_to_events(run, intent_id);
+    for ev in events {
+        handle.emit(ev);
+    }
+    // Drop the handle to close the mpsc; the writer task drains
+    // remaining events from the channel before exiting.
+    drop(handle);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1612,6 +1612,17 @@ impl Tool for BrowserTaskTool {
             auth_origin,
         }).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        // M1-T4d — emit terminal browser-run events to the rollout writer
+        // when UCLAW_ROLLOUT_ENABLED=1. Fire-and-forget; helper bails if
+        // rollout is disabled. Uses run.session_id as the intent id (the
+        // chat session that triggered this browser tool).
+        crate::browser::rollout_bridge::emit_browser_run_into_session_dir(
+            &run,
+            &run.session_id,
+        )
+        .await;
+
         Ok(ToolOutput::new(
             serde_json::json!({
                 "ok": run.status == crate::browser::session_state::BrowserTaskStatus::Completed,
@@ -1685,6 +1696,17 @@ impl Tool for BrowserTaskResumeTool {
             auth_origin,
         }).await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        // M1-T4d — emit terminal browser-run events to the rollout writer
+        // when UCLAW_ROLLOUT_ENABLED=1. Fire-and-forget; helper bails if
+        // rollout is disabled. Uses run.session_id as the intent id (the
+        // chat session that triggered this browser tool).
+        crate::browser::rollout_bridge::emit_browser_run_into_session_dir(
+            &run,
+            &run.session_id,
+        )
+        .await;
+
         Ok(ToolOutput::new(
             serde_json::json!({
                 "ok": run.status == crate::browser::session_state::BrowserTaskStatus::Completed,
