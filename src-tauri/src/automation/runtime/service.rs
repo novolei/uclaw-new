@@ -307,7 +307,11 @@ impl AppRuntimeService {
 
     // ── spec loading ────────────────────────────────────────────────────────
 
-    fn load_spec_json(&self, spec_id: &str) -> anyhow::Result<(String, serde_json::Value)> {
+    fn load_spec_json_allow_disabled(
+        &self,
+        spec_id: &str,
+        allow_disabled: bool,
+    ) -> anyhow::Result<(String, serde_json::Value)> {
         let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
         let (spec_json, enabled): (String, i64) = conn
             .query_row(
@@ -317,13 +321,17 @@ impl AppRuntimeService {
             )
             .map_err(|e| anyhow::anyhow!("spec not found {}: {}", spec_id, e))?;
 
-        if enabled == 0 {
+        if enabled == 0 && !allow_disabled {
             anyhow::bail!("spec {} is disabled", spec_id);
         }
 
         let value: serde_json::Value = serde_json::from_str(&spec_json)
             .map_err(|e| anyhow::anyhow!("spec_json parse error: {}", e))?;
         Ok((spec_json, value))
+    }
+
+    fn load_spec_json(&self, spec_id: &str) -> anyhow::Result<(String, serde_json::Value)> {
+        self.load_spec_json_allow_disabled(spec_id, false)
     }
 
     fn parse_humane_spec(spec_json: &str) -> anyhow::Result<HumaneAutomationSpec> {
@@ -421,7 +429,7 @@ impl AppRuntimeService {
             }
         }
 
-        let (spec_json, _) = self.load_spec_json(spec_id)?;
+        let (spec_json, _) = self.load_spec_json_allow_disabled(spec_id, true)?;
         let spec = Self::parse_humane_spec(&spec_json)?;
 
         // Ensure semaphore entry exists.
@@ -2522,11 +2530,8 @@ mod tests {
         let row = svc.get_spec("en-spec").unwrap();
         assert!(!row.enabled);
 
-        // Re-enable — activate skips because spec is disabled, set_enabled just updates the column
-        {
-            let c = svc.db.lock().unwrap();
-            c.execute("UPDATE automation_specs SET enabled=1 WHERE id='en-spec'", []).unwrap();
-        }
+        // Re-enable from the real disabled state. The activation path must be
+        // able to read the spec before the enabled column is flipped.
         svc.set_enabled("en-spec", true).await.unwrap();
         let row2 = svc.get_spec("en-spec").unwrap();
         assert!(row2.enabled);

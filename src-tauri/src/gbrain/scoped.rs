@@ -2,6 +2,7 @@
 pub enum KnowledgeScope {
     RoomOnly,
     RoomPlusPlatform,
+    Global,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +35,9 @@ impl GbrainRoomScope {
     }
 
     pub fn allowed_prefixes(&self) -> Vec<String> {
+        if self.knowledge_scope == KnowledgeScope::Global {
+            return Vec::new();
+        }
         let mut prefixes = vec![self.room_prefix()];
         if self.knowledge_scope == KnowledgeScope::RoomPlusPlatform {
             prefixes.push(format!("live/{}/shared/", self.platform));
@@ -46,12 +50,18 @@ impl GbrainRoomScope {
         if slug.is_empty() {
             return Err("invalid_gbrain_page_slug".to_string());
         }
+        if self.knowledge_scope == KnowledgeScope::Global {
+            return Ok(slug);
+        }
         let full_slug = format!("{}{}", self.room_prefix(), slug);
         self.validate_slug(&full_slug)?;
         Ok(full_slug)
     }
 
     pub fn validate_slug(&self, slug: &str) -> Result<(), String> {
+        if self.knowledge_scope == KnowledgeScope::Global {
+            return Ok(());
+        }
         if self
             .allowed_prefixes()
             .iter()
@@ -115,6 +125,14 @@ mod tests {
     fn rejects_unscoped_page_slug() {
         let scope = GbrainRoomScope::new("douyin", "room-123", KnowledgeScope::RoomOnly).unwrap();
         assert!(scope.validate_slug("projects/private").is_err());
+    }
+
+    #[test]
+    fn global_scope_allows_unscoped_page_slugs_for_testing() {
+        let scope = GbrainRoomScope::new("douyin", "room-123", KnowledgeScope::Global).unwrap();
+        assert_eq!(scope.allowed_prefixes(), Vec::<String>::new());
+        assert!(scope.validate_slug("projects/private").is_ok());
+        assert_eq!(scope.scoped_slug("Projects/Private").unwrap(), "projects/private");
     }
 
     #[test]

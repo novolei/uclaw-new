@@ -19,7 +19,7 @@ interface Props {
 }
 
 const AUTOMATION_PERMISSION_IDS = ['ai_browser', 'notification', 'filesystem', 'network', 'shell'] as const
-const LIVE_CONFIG_FIELDS = ['platform', 'room_id', 'live_url', 'action_mode', 'poll_interval_seconds'] as const
+const LIVE_CONFIG_FIELDS = ['platform', 'room_id', 'live_url', 'action_mode', 'poll_interval_seconds', 'knowledge_scope'] as const
 
 type PermissionState = 'granted' | 'denied' | 'default'
 type LiveConfigDraft = Record<(typeof LIVE_CONFIG_FIELDS)[number], string>
@@ -94,6 +94,16 @@ function readBrowserLoginProfiles(spec: HumaneSpecRow): Record<string, { status?
   return parseJsonRecord(raw.browser_login_profiles) as Record<string, { status?: string; profileId?: string; completedAt?: number }>
 }
 
+function errorMessage(err: unknown, fallback: string): string {
+  if (typeof err === 'string' && err.trim()) return err
+  if (err instanceof Error && err.message.trim()) return err.message
+  if (err && typeof err === 'object' && 'message' in err) {
+    const message = String((err as { message?: unknown }).message ?? '').trim()
+    if (message) return message
+  }
+  return fallback
+}
+
 export function SpecSettingsView({ spec, onSpecChange }: Props) {
   const [view, setView] = useState<'settings' | 'yaml'>('settings')
   const [saving, setSaving] = useState(false)
@@ -108,7 +118,7 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
       await setAutomationEnabled(spec.id, !spec.enabled)
       onSpecChange({ ...spec, enabled: !spec.enabled })
     } catch (err: unknown) {
-      setError((err as { message?: string })?.message ?? '操作失败')
+      setError(errorMessage(err, '操作失败'))
     } finally {
       setSaving(false)
     }
@@ -125,6 +135,7 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
     live_url: liveConfig?.live_url ?? '',
     action_mode: liveConfig?.action_mode ?? 'real',
     poll_interval_seconds: liveConfig?.poll_interval_seconds ?? '30',
+    knowledge_scope: liveConfig?.knowledgeScope ?? 'room_only',
   }))
 
   useEffect(() => {
@@ -134,6 +145,7 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
       live_url: liveConfig?.live_url ?? '',
       action_mode: liveConfig?.action_mode ?? 'real',
       poll_interval_seconds: liveConfig?.poll_interval_seconds ?? '30',
+      knowledge_scope: liveConfig?.knowledgeScope ?? 'room_only',
     })
   }, [
     liveConfig?.platform,
@@ -141,6 +153,7 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
     liveConfig?.live_url,
     liveConfig?.action_mode,
     liveConfig?.poll_interval_seconds,
+    liveConfig?.knowledgeScope,
   ])
 
   useEffect(() => {
@@ -189,7 +202,7 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
         permissionsDenied: JSON.stringify([...nextDenied]),
       })
     } catch (err: unknown) {
-      setError((err as { message?: string })?.message ?? '权限更新失败')
+      setError(errorMessage(err, '权限更新失败'))
     } finally {
       setSavingPermission(null)
     }
@@ -209,6 +222,7 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
         live_url: liveDraft.live_url.trim(),
         action_mode: liveDraft.action_mode.trim() || 'real',
         poll_interval_seconds: Number.isFinite(poll) && poll > 0 ? poll : 30,
+        knowledge_scope: liveDraft.knowledge_scope === 'global' ? 'global' : 'room_only',
       }
       await updateAutomationUserConfig(spec.id, nextValues)
       onSpecChange({
@@ -216,7 +230,7 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
         userConfigValues: JSON.stringify(nextValues),
       })
     } catch (err: unknown) {
-      setError((err as { message?: string })?.message ?? '直播间配置保存失败')
+      setError(errorMessage(err, '直播间配置保存失败'))
     } finally {
       setSavingLiveConfig(false)
     }
@@ -304,7 +318,7 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
                         label: entry.label,
                         url: entry.url,
                       }).catch((err) => {
-                        setError((err as { message?: string })?.message ?? '打开登录窗口失败')
+                        setError(errorMessage(err, '打开登录窗口失败'))
                       })
                     }}
                     className="titlebar-no-drag flex items-center justify-between gap-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-left hover:bg-muted/60"
@@ -350,8 +364,16 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
                 value={liveDraft.poll_interval_seconds}
                 onChange={(v) => setLiveDraft((prev) => ({ ...prev, poll_interval_seconds: v }))}
               />
-              <Row label="知识库" description="仅使用直播间隔离命名空间">
-                <span className="text-xs text-muted-foreground">{liveConfig.knowledgeScope}</span>
+              <Row label="知识库" description={liveDraft.knowledge_scope === 'global' ? '测试模式：允许使用全局知识库' : '仅使用直播间隔离命名空间'}>
+                <select
+                  aria-label="knowledge_scope"
+                  value={liveDraft.knowledge_scope}
+                  onChange={(e) => setLiveDraft((prev) => ({ ...prev, knowledge_scope: e.target.value }))}
+                  className="titlebar-no-drag w-36 rounded border border-border bg-muted/40 px-2 py-1 text-xs"
+                >
+                  <option value="room_only">room_only</option>
+                  <option value="global">global</option>
+                </select>
               </Row>
               <button
                 type="button"

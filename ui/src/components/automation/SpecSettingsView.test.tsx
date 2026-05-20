@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { SpecSettingsView } from './SpecSettingsView'
 import type { HumaneSpecRow } from '@/lib/tauri-bridge'
 import {
+  setAutomationEnabled,
   setAutomationPermission,
   updateAutomationUserConfig,
   listenAutomationBrowserLoginCompleted,
@@ -94,18 +95,29 @@ describe('SpecSettingsView Halo-compatible controls', () => {
     })
   })
 
+  it('shows raw backend toggle errors from Tauri string rejections', async () => {
+    vi.mocked(setAutomationEnabled).mockRejectedValueOnce('spec spec-1 is disabled')
+    render(<SpecSettingsView spec={liveSpec({ enabled: false })} onSpecChange={() => {}} />)
+
+    fireEvent.click(screen.getByRole('switch'))
+
+    expect(await screen.findByText('spec spec-1 is disabled')).toBeInTheDocument()
+  })
+
   it('saves live-room user config overrides without editing the spec yaml', async () => {
     const onSpecChange = vi.fn()
     render(<SpecSettingsView spec={liveSpec()} onSpecChange={onSpecChange} />)
 
     fireEvent.change(screen.getByLabelText('room_id'), { target: { value: 'room-b' } })
     fireEvent.change(screen.getByLabelText('poll_interval_seconds'), { target: { value: '20' } })
+    fireEvent.change(screen.getByLabelText('knowledge_scope'), { target: { value: 'global' } })
     fireEvent.click(screen.getByRole('button', { name: /保存直播间配置/ }))
 
     await waitFor(() => {
       expect(updateAutomationUserConfig).toHaveBeenCalledWith('spec-1', expect.objectContaining({
         room_id: 'room-b',
         poll_interval_seconds: 20,
+        knowledge_scope: 'global',
       }))
       expect(onSpecChange).toHaveBeenCalledWith(expect.objectContaining({
         userConfigValues: expect.stringContaining('room-b'),
