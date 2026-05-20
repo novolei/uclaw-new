@@ -2519,29 +2519,23 @@ pub(crate) async fn connect_server_shared(
     let io_result: Result<McpConnection, McpError> = async {
         let transport: Arc<dyn McpTransport> = match config.transport_type {
             TransportType::Stdio => {
+                // 子项目 A/C 修复:捆绑 gbrain 走真 MCP serve(返回 JSON),不再用 CLI 垫片。
+                // serve 是持久 PGLite 单写锁持有者 → spawn 前清掉上次崩溃残留的死锁。
+                // kill_on_drop(true) + PR-3 reconnect 覆盖运行期/崩溃期锁生命周期。
                 if is_bundled_gbrain(&config) {
-                    tracing::warn!(
-                        server_id = %id,
-                        "Using bundled gbrain CLI-backed MCP transport instead of Bun stdio"
-                    );
-                    Arc::new(GbrainCliTransport::new(
-                        &config.name,
-                        &config.command,
-                        &config.args,
-                        &config.env,
-                    ))
-                } else {
-                    let t = StdioTransport::spawn(
-                        &config.name,
-                        &config.command,
-                        &config.args,
-                        &config.env,
-                        id,
-                        notification_tx.clone(),
-                    )
-                    .await?;
-                    Arc::new(t)
+                    cleanup_stale_pglite_lock(&config.env);
+                    tracing::info!(server_id = %id, "Spawning bundled gbrain via real MCP stdio serve");
                 }
+                let t = StdioTransport::spawn(
+                    &config.name,
+                    &config.command,
+                    &config.args,
+                    &config.env,
+                    id,
+                    notification_tx.clone(),
+                )
+                .await?;
+                Arc::new(t)
             }
             TransportType::Http => {
                 let url = config.url.clone().unwrap_or_default();
