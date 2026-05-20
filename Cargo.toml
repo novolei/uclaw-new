@@ -16,7 +16,10 @@
 resolver = "2"
 members = [
     "src-tauri",
-    # T3/T5 crates land here:  "crates/uclaw-utils-*",
+    "crates/uclaw-utils-async-utils",
+    "crates/uclaw-utils-terminal-detection",
+    "crates/uclaw-utils-file-watcher",
+    # T4/T5 crates land here.
 ]
 # Exclude any temporary or in-progress trees. Keeping this explicit lets
 # `cargo metadata` stay deterministic while crates/ is still empty.
