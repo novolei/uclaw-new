@@ -32,6 +32,10 @@ pub fn planned_tool_names(spec_permissions: &[Permission], gbrain_declared: bool
     if spec_permissions.contains(&Permission::AiBrowser) {
         names.extend(
             [
+                "browser_navigate",
+                "browser_evaluate",
+                "browser_wait",
+                "browser_list_tabs",
                 "browser_task",
                 "browser_task_resume",
                 "retry_with_browser_agent",
@@ -76,8 +80,8 @@ pub fn build_registry_with_capabilities(deps: AutomationToolRegistryDeps) -> Arc
                 std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/live-room")
             });
             let browser_run_script = crate::browser::tools::BrowserRunScriptTool {
-                ctx_mgr,
-                session_id,
+                ctx_mgr: ctx_mgr.clone(),
+                session_id: session_id.clone(),
                 workspace_root: deps.workspace_root.clone(),
                 builtin_root,
             };
@@ -85,7 +89,39 @@ pub fn build_registry_with_capabilities(deps: AutomationToolRegistryDeps) -> Arc
                 inner: browser_run_script.clone(),
             });
             tools.register(browser_run_script);
+            tools.register(crate::browser::tools::BrowserNavigateTool {
+                ctx_mgr: ctx_mgr.clone(),
+                session_id: session_id.clone(),
+            });
+            tools.register(crate::browser::tools::BrowserEvaluateTool {
+                ctx_mgr: ctx_mgr.clone(),
+                session_id: session_id.clone(),
+            });
+            tools.register(crate::browser::tools::BrowserWaitTool {
+                ctx_mgr: ctx_mgr.clone(),
+                session_id: session_id.clone(),
+            });
+            tools.register(crate::browser::tools::BrowserListTabsTool {
+                ctx_mgr,
+                session_id,
+            });
         } else {
+            tools.register(CapabilitySchemaTool::new(
+                "browser_navigate",
+                "Navigate to a browser URL. Execution is connected by AppRuntimeService when a browser session is available.",
+            ));
+            tools.register(CapabilitySchemaTool::new(
+                "browser_evaluate",
+                "Evaluate JavaScript in a browser tab. Execution is connected by AppRuntimeService when a browser session is available.",
+            ));
+            tools.register(CapabilitySchemaTool::new(
+                "browser_wait",
+                "Wait for a browser selector or duration. Execution is connected by AppRuntimeService when a browser session is available.",
+            ));
+            tools.register(CapabilitySchemaTool::new(
+                "browser_list_tabs",
+                "List browser tabs. Execution is connected by AppRuntimeService when a browser session is available.",
+            ));
             tools.register(CapabilitySchemaTool::new(
                 "browser_run",
                 "Run a restricted browser adapter JavaScript file. Execution is connected by AppRuntimeService.",
@@ -344,6 +380,10 @@ mod tests {
         });
         let defs = registry.list_definitions();
         assert!(defs.iter().any(|tool| tool.name == "browser_task"));
+        assert!(defs.iter().any(|tool| tool.name == "browser_navigate"));
+        assert!(defs.iter().any(|tool| tool.name == "browser_evaluate"));
+        assert!(defs.iter().any(|tool| tool.name == "browser_wait"));
+        assert!(defs.iter().any(|tool| tool.name == "browser_list_tabs"));
         assert!(defs.iter().any(|tool| tool.name == "browser_run"));
         assert!(defs.iter().any(|tool| tool.name == "browser_run_script"));
         assert!(defs.iter().any(|tool| tool.name == "gbrain_room_search"));
@@ -373,6 +413,16 @@ mod tests {
                 .contains("Validate and run a restricted browser adapter JavaScript file"),
             "expected real browser_run tool, got schema fallback description: {}",
             browser_run.description()
+        );
+        let browser_navigate = registry
+            .get("browser_navigate")
+            .expect("browser_navigate should be registered");
+        assert!(
+            browser_navigate
+                .description()
+                .contains("Navigate to a URL in the browser"),
+            "expected real browser_navigate tool, got schema fallback description: {}",
+            browser_navigate.description()
         );
     }
 }

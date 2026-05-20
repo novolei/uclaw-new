@@ -43,11 +43,25 @@ impl ScriptPathPolicy {
     }
 
     fn allowed_roots(&self) -> Vec<PathBuf> {
-        vec![
-            self.builtin_root.clone(),
-            canonical_or_normalized(self.workspace_root.join(".claude/skills")),
-            canonical_or_normalized(self.workspace_root.join(".uclaw/skills")),
-        ]
+        let mut roots = vec![self.builtin_root.clone()];
+        for root in [
+            self.workspace_root.join(".claude/skills"),
+            self.workspace_root.join(".uclaw/skills"),
+        ] {
+            if let Some(root) = self.workspace_skill_root(root) {
+                roots.push(root);
+            }
+        }
+        roots
+    }
+
+    fn workspace_skill_root(&self, root: PathBuf) -> Option<PathBuf> {
+        let root = canonical_or_normalized(root);
+        if is_under(&root, &self.workspace_root) {
+            Some(root)
+        } else {
+            None
+        }
     }
 }
 
@@ -176,6 +190,29 @@ mod tests {
         );
         let err = policy
             .resolve(".claude/skills/../../secret.js")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("path_not_allowed"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_workspace_skill_root_that_escapes_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(workspace.join(".claude")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("adapter.js"), "async () => ({ ok: true })").unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.join(".claude/skills")).unwrap();
+
+        let policy = ScriptPathPolicy::new(
+            tmp.path().join("live-room"),
+            workspace,
+            tmp.path().join("home"),
+        );
+        let err = policy
+            .resolve(".claude/skills/adapter.js")
             .unwrap_err()
             .to_string();
         assert!(err.contains("path_not_allowed"));
