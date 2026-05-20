@@ -914,6 +914,10 @@ fn main() {
             uclaw_core::tauri_commands::memory_health_run_now,
             // Lint scan (Memory OS Foundation Phase 5)
             uclaw_core::tauri_commands::memory_lint_run_now,
+            // Drift Detection + Importance Decay (Memory OS L3)
+            uclaw_core::tauri_commands::memory_drift_list_events,
+            uclaw_core::tauri_commands::memory_drift_resolve_event,
+            uclaw_core::tauri_commands::memory_importance_list_candidates,
             // EntityPage synthesis (Memory OS Foundation Phase 6.2/6.3)
             uclaw_core::tauri_commands::memory_entity_page_synthesize_now,
             // Markdown export (Memory OS Foundation Phase 7.1)
@@ -976,6 +980,17 @@ fn main() {
             uclaw_core::tauri_commands::test_embedding_endpoint,
             uclaw_core::tauri_commands::run_setup_script,
             uclaw_core::tauri_commands::restart_gbrain_mcp,
+            uclaw_core::tauri_commands::gbrain_list_pages,
+            uclaw_core::tauri_commands::gbrain_get_page,
+            uclaw_core::tauri_commands::gbrain_search,
+            uclaw_core::tauri_commands::gbrain_get_backlinks,
+            uclaw_core::tauri_commands::gbrain_traverse_graph,
+            uclaw_core::tauri_commands::gbrain_get_versions,
+            uclaw_core::tauri_commands::gbrain_revert_version,
+            uclaw_core::tauri_commands::gbrain_put_page,
+            uclaw_core::tauri_commands::gbrain_get_stats,
+            uclaw_core::tauri_commands::gbrain_find_orphans,
+            uclaw_core::tauri_commands::gbrain_full_graph,
             uclaw_core::tauri_commands::reset_ai_engine,
             uclaw_core::tauri_commands::restart_app,
             // MEMUBOT Services

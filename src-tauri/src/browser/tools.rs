@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::path::PathBuf;
 use std::time::Instant;
 use async_trait::async_trait;
 use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
@@ -9,6 +10,7 @@ use crate::browser::decision::BrowserDecisionAdapter;
 use crate::browser::dom_state::format_dom_state_for_llm;
 use crate::browser::intervention_bridge::BrowserAskUserBridge;
 use crate::browser::memory_adapter::BrowserLongTermMemoryAdapter;
+use crate::browser::script_runner::ScriptPathPolicy;
 use crate::browser::task_store::BrowserTaskStore;
 
 // ── Macro: declare all 14 tool structs ────────────────────────────────────────
@@ -74,6 +76,74 @@ pub struct RetryWithBrowserAgentTool {
     pub task_store: Option<Arc<BrowserTaskStore>>,
     pub ask_user_bridge: Option<Arc<BrowserAskUserBridge>>,
     pub long_term_memory: Option<Arc<BrowserLongTermMemoryAdapter>>,
+}
+
+pub struct BrowserRunScriptTool {
+    pub session_id: String,
+    pub workspace_root: PathBuf,
+    pub builtin_root: PathBuf,
+}
+
+// ── 0. BrowserRunScriptTool ──────────────────────────────────────────────────
+
+#[async_trait]
+impl Tool for BrowserRunScriptTool {
+    fn name(&self) -> &str { "browser_run_script" }
+
+    fn description(&self) -> &str {
+        "Validate and run a restricted browser adapter JavaScript file. \
+         This tool is reserved for automation adapters such as live-room moderation."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "JavaScript file path. Built-in adapter paths may start with douyin/ or shared/."
+                },
+                "params": {
+                    "type": "object",
+                    "description": "Adapter parameters passed to the script.",
+                    "additionalProperties": true
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum script execution time in milliseconds."
+                }
+            },
+            "required": ["file"]
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let file = params["file"].as_str()
+            .ok_or_else(|| ToolError::InvalidParams("file is required".to_string()))?;
+        let home_dir = dirs::home_dir().unwrap_or_else(|| self.workspace_root.clone());
+        let policy = ScriptPathPolicy::new(
+            self.builtin_root.clone(),
+            self.workspace_root.clone(),
+            home_dir,
+        );
+        let resolved = policy.resolve(file)
+            .map_err(|e| ToolError::InvalidParams(e.to_string()))?;
+
+        Ok(ToolOutput::new(
+            serde_json::json!({
+                "ok": false,
+                "error": "browser_run_script_execution_not_connected",
+                "sessionId": self.session_id,
+                "file": file,
+                "resolvedPath": resolved.display().to_string(),
+                "params": params.get("params").cloned().unwrap_or_else(|| serde_json::json!({})),
+                "timeoutMs": params.get("timeout_ms").cloned().unwrap_or_else(|| serde_json::json!(null)),
+            }),
+            start.elapsed().as_millis() as u64,
+        ))
+    }
 }
 
 // ── 1. BrowserNavigateTool ────────────────────────────────────────────────────

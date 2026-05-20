@@ -49,65 +49,24 @@ use crate::services::{ManagedService, ServiceHealth, ServiceStatus};
 /// configurable via `HumaneAutomationSpec.config_schema`).
 const PER_SPEC_CONCURRENCY: usize = 2;
 
-// ─── HumaneToolSchema ─────────────────────────────────────────────────────────
-
-// TODO(2b): relocate HumaneToolSchema to automation/tools/ — it landed here
-// only because D4's commit scope was service.rs + cost.rs.
-/// Schema-only `Tool` wrapper for the four Humane tools (report_to_user,
-/// notify_user, request_escalation, memory).
-///
-/// `HeadlessDelegate::execute_tool_calls` dispatches the Humane tools by
-/// NAME — before the registry's `other =>` fallthrough arm — so this
-/// wrapper's `execute()` is never reached. Its only job is to make the
-/// Humane tools appear in `ToolRegistry::list_definitions()` so the LLM is
-/// told they are available to call. The base built-in tools are real `Tool`
-/// impls; these four are advertisement-only.
-struct HumaneToolSchema {
-    name: String,
-    description: String,
-    input_schema: serde_json::Value,
-}
-
-impl HumaneToolSchema {
-    /// Build from a `humane_tool_schemas()` entry: `{name, description, input_schema}`.
-    fn from_value(v: &serde_json::Value) -> Self {
-        Self {
-            name: v.get("name").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-            description: v
-                .get("description")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string(),
-            input_schema: v
-                .get("input_schema")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({"type": "object"})),
-        }
+pub(crate) fn automation_executor_kind(spec_json: &serde_json::Value) -> &'static str {
+    if spec_json
+        .get("x_uclaw_runtime")
+        .and_then(|v| v.get("kind"))
+        .and_then(|v| v.as_str())
+        == Some("live_room_moderator")
+    {
+        "live_room_moderator"
+    } else {
+        "agentic_loop"
     }
 }
 
-#[async_trait]
-impl crate::agent::tools::tool::Tool for HumaneToolSchema {
-    fn name(&self) -> &str {
-        &self.name
-    }
-    fn description(&self) -> &str {
-        &self.description
-    }
-    fn parameters_schema(&self) -> serde_json::Value {
-        self.input_schema.clone()
-    }
-    async fn execute(
-        &self,
-        _params: serde_json::Value,
-    ) -> Result<crate::agent::tools::tool::ToolOutput, crate::agent::tools::tool::ToolError> {
-        // Unreachable in practice: AutomationDelegate handles the four Humane
-        // tools by name before the ToolRegistry `other =>` arm is consulted.
-        Err(crate::agent::tools::tool::ToolError::Execution(format!(
-            "Humane tool '{}' is delegate-dispatched, not registry-dispatched",
-            self.name
-        )))
-    }
+fn spec_declares_gbrain(spec: &HumaneAutomationSpec) -> bool {
+    spec.requires
+        .as_ref()
+        .map(|value| value.to_string().contains("gbrain"))
+        .unwrap_or(false)
 }
 
 // ─── EscalationRow ───────────────────────────────────────────────────────────
@@ -513,18 +472,19 @@ impl AppRuntimeService {
         );
 
         // ── 3. load spec for filter evaluation ──────────────────────────────
-        let spec = match self.load_spec_json(spec_id) {
-            Ok((json, _)) => match Self::parse_humane_spec(&json) {
+        let (spec_json, spec_value) = match self.load_spec_json(spec_id) {
+            Ok(pair) => pair,
+            Err(e) => {
+                self.update_activity_status(&activity_id, "failed", Some(&e.to_string()))?;
+                return Err(e);
+            }
+        };
+        let spec = match Self::parse_humane_spec(&spec_json) {
                 Ok(s) => s,
                 Err(e) => {
                     self.update_activity_status(&activity_id, "failed", Some(&e.to_string()))?;
                     return Err(e);
                 }
-            },
-            Err(e) => {
-                self.update_activity_status(&activity_id, "failed", Some(&e.to_string()))?;
-                return Err(e);
-            }
         };
 
         // ── 4. evaluate filters ──────────────────────────────────────────────
@@ -640,6 +600,19 @@ impl AppRuntimeService {
             session_id, spec_id, activity_id
         );
 
+        if automation_executor_kind(&spec_value) == "live_room_moderator" {
+            return crate::automation::live_room::runtime::execute_live_room_run(
+                self,
+                spec_id,
+                activity_id,
+                session_id,
+                spec_value,
+                payload,
+                workspace_root,
+            )
+            .await;
+        }
+
         // ── 8. resolve the LLM provider + model ──────────────────────────────
         // A resolution failure (no active model / no API key) is NOT fatal to
         // the pipeline: the run-session already exists + is linked, so mark
@@ -689,7 +662,11 @@ impl AppRuntimeService {
         let mut reason_ctx = ReasoningContext::new(system_prompt);
         reason_ctx.messages.push(ChatMessage::user(&initial_message));
 
-        let tools = self.build_automation_tool_registry(&workspace_root);
+        let tools = self.build_automation_tool_registry(
+            &workspace_root,
+            &permissions.spec,
+            spec_declares_gbrain(&spec),
+        );
 
         // Phase 2b cluster A: if we're in a chat-session run, drain the
         // I/O handles stashed for us by execute_run_in_chat_session. None
@@ -1390,8 +1367,9 @@ impl AppRuntimeService {
     }
 
     /// Build the headless tool set for an automation run: the AppHandle-free
-    /// base built-in tools rooted at `workspace_root`, plus the four Humane
-    /// tools as advertisement-only schemas (see [`HumaneToolSchema`]).
+    /// base built-in tools rooted at `workspace_root`, plus the automation
+    /// schema tools (`report_to_user`, `notify_user`, `request_escalation`,
+    /// `memory`).
     ///
     /// The interactive-chat tools that require a Tauri `AppHandle`
     /// (`ask_user`, `exit_plan_mode`, `plan`, `self_eval`, `skill_search`,
@@ -1400,25 +1378,16 @@ impl AppRuntimeService {
     pub fn build_automation_tool_registry(
         &self,
         workspace_root: &std::path::Path,
+        spec_permissions: &[Permission],
+        gbrain_declared: bool,
     ) -> Arc<crate::agent::tools::tool::ToolRegistry> {
-        use crate::agent::tools::builtin;
-        let mut tools = crate::agent::tools::tool::ToolRegistry::new();
-        let ws = workspace_root.to_path_buf();
-        tools.register(builtin::file::ReadFileTool::new(ws.clone()));
-        tools.register(builtin::file::WriteFileTool::new(ws.clone()));
-        tools.register(builtin::search::GrepTool::new(ws.clone()));
-        tools.register(builtin::search::GlobTool::new(ws.clone()));
-        tools.register(builtin::web::WebFetchTool::new());
-        tools.register(builtin::web::HttpRequestTool::new());
-        tools.register(builtin::edit::EditTool::new(ws.clone()));
-        tools.register(builtin::shell::BashTool::new(ws.clone()));
-        // Advertise the four Humane tools to the LLM. They are dispatched by
-        // name in HeadlessDelegate::execute_tool_calls, so these wrappers
-        // exist purely so list_definitions() includes them.
-        for schema in crate::automation::tools::humane_tool_schemas() {
-            tools.register(HumaneToolSchema::from_value(&schema));
-        }
-        Arc::new(tools)
+        crate::automation::runtime::tool_registry::build_registry_with_capabilities(
+            crate::automation::runtime::tool_registry::AutomationToolRegistryDeps {
+                workspace_root: workspace_root.to_path_buf(),
+                spec_permissions: spec_permissions.to_vec(),
+                gbrain_declared,
+            },
+        )
     }
 
     /// Resolve the LLM provider + model id for an automation run from the
@@ -1616,6 +1585,21 @@ mod tests {
             "system_prompt": "you are a test agent",
             "subscriptions": []
         }"#
+    }
+
+    #[test]
+    fn live_room_spec_uses_live_room_executor() {
+        let spec = serde_json::json!({
+            "type": "automation",
+            "x_uclaw_runtime": { "kind": "live_room_moderator" }
+        });
+        assert_eq!(automation_executor_kind(&spec), "live_room_moderator");
+    }
+
+    #[test]
+    fn default_spec_uses_agentic_loop_executor() {
+        let spec = serde_json::json!({ "type": "automation" });
+        assert_eq!(automation_executor_kind(&spec), "agentic_loop");
     }
 
     fn make_service(conn: rusqlite::Connection) -> Arc<AppRuntimeService> {

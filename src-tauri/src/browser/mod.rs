@@ -13,6 +13,7 @@ pub mod memory_adapter;
 pub mod observation;
 pub mod perception;
 pub mod recovery;
+pub mod script_runner;
 pub mod session_state;
 pub mod task_store;
 pub mod tools;

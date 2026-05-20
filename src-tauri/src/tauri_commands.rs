@@ -1394,6 +1394,138 @@ pub async fn restart_gbrain_mcp(
         .map_err(|e| e.to_string())
 }
 
+// ─── 子项目 A — gbrain 知识浏览器代理命令 ────────────────────────────────
+
+#[tauri::command]
+pub async fn gbrain_list_pages(
+    state: State<'_, AppState>,
+    limit: Option<u32>,
+    sort: Option<String>,
+    page_type: Option<String>,
+    tag: Option<String>,
+    updated_after: Option<String>,
+) -> Result<Vec<crate::gbrain::browse::PageSummary>, String> {
+    crate::gbrain::browse::list_pages(
+        &state.mcp_manager,
+        limit.unwrap_or(200),
+        sort,
+        page_type,
+        tag,
+        updated_after,
+    )
+    .await
+    .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_get_page(
+    state: State<'_, AppState>,
+    slug: String,
+) -> Result<crate::gbrain::browse::PageDetail, String> {
+    crate::gbrain::browse::get_page(&state.mcp_manager, &slug)
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_search(
+    state: State<'_, AppState>,
+    query: String,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<Vec<crate::gbrain::browse::SearchHit>, String> {
+    crate::gbrain::browse::search(
+        &state.mcp_manager,
+        &query,
+        limit.unwrap_or(20),
+        offset.unwrap_or(0),
+    )
+    .await
+    .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_get_backlinks(
+    state: State<'_, AppState>,
+    slug: String,
+) -> Result<Vec<crate::gbrain::browse::Backlink>, String> {
+    crate::gbrain::browse::get_backlinks(&state.mcp_manager, &slug)
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_traverse_graph(
+    state: State<'_, AppState>,
+    slug: String,
+    depth: Option<u32>,
+    direction: Option<String>,
+) -> Result<serde_json::Value, String> {
+    crate::gbrain::browse::traverse_graph(&state.mcp_manager, &slug, depth.unwrap_or(2), direction)
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_get_versions(
+    state: State<'_, AppState>,
+    slug: String,
+) -> Result<Vec<crate::gbrain::browse::VersionMeta>, String> {
+    crate::gbrain::browse::get_versions(&state.mcp_manager, &slug)
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_revert_version(
+    state: State<'_, AppState>,
+    slug: String,
+    version_id: i64,
+) -> Result<crate::gbrain::browse::PageDetail, String> {
+    crate::gbrain::browse::revert_version(&state.mcp_manager, &slug, version_id)
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_put_page(
+    state: State<'_, AppState>,
+    slug: String,
+    content: String,
+) -> Result<crate::gbrain::browse::PageDetail, String> {
+    crate::gbrain::browse::put_page(&state.mcp_manager, &slug, &content)
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_get_stats(
+    state: State<'_, AppState>,
+) -> Result<crate::gbrain::browse::BrainStats, String> {
+    crate::gbrain::browse::get_stats(&state.mcp_manager)
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_find_orphans(
+    state: State<'_, AppState>,
+) -> Result<crate::gbrain::browse::OrphanSummary, String> {
+    crate::gbrain::browse::find_orphans(&state.mcp_manager)
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_full_graph(
+    state: State<'_, AppState>,
+    limit: Option<u32>,
+) -> Result<crate::gbrain::browse::KnowledgeGraph, String> {
+    crate::gbrain::browse::full_graph(&state.mcp_manager, limit.unwrap_or(150))
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
 fn build_browser_task_memory_context(state: &AppState, query: &str) -> Option<String> {
     let lower = query.to_lowercase();
     let is_browser_memory_query = [
@@ -6892,6 +7024,83 @@ pub async fn memory_lint_run_now(
     .await
     .map_err(|e| format!("run_lint_checks: {}", e))?;
     serde_json::to_value(&outcome).map_err(|e| format!("serialize: {}", e))
+}
+
+// ─── Memory OS L3 — Drift Detection + Importance Decay IPC ────────────
+
+#[tauri::command]
+pub async fn memory_drift_list_events(
+    state: State<'_, AppState>,
+    input: crate::ipc::DriftListInput,
+) -> Result<Vec<crate::ipc::DriftEventDto>, String> {
+    ensure_memory_health_enabled(&state).await?;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let limit = input.limit.unwrap_or(100);
+    let conn = state
+        .memory_graph_store
+        .conn
+        .lock()
+        .map_err(|e| format!("DB lock: {e}"))?;
+    let rows = crate::memory_graph::drift_detection::list_open_drift_events(&conn, &space_id, limit)
+        .map_err(|e| format!("list drift: {e}"))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| crate::ipc::DriftEventDto {
+            id: r.id,
+            node_id: r.node_id,
+            title: r.title,
+            score: r.score,
+            computed_at: r.computed_at,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn memory_drift_resolve_event(
+    state: State<'_, AppState>,
+    input: crate::ipc::DriftResolveInput,
+) -> Result<(), String> {
+    ensure_memory_health_enabled(&state).await?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let conn = state
+        .memory_graph_store
+        .conn
+        .lock()
+        .map_err(|e| format!("DB lock: {e}"))?;
+    crate::memory_graph::drift_detection::resolve_drift_event(
+        &conn,
+        &input.event_id,
+        input.note.as_deref(),
+        now_ms,
+    )
+    .map_err(|e| format!("resolve drift: {e}"))
+}
+
+#[tauri::command]
+pub async fn memory_importance_list_candidates(
+    state: State<'_, AppState>,
+    input: crate::ipc::ImportanceListInput,
+) -> Result<Vec<crate::ipc::ImportanceCandidateDto>, String> {
+    ensure_memory_health_enabled(&state).await?;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let limit = input.limit.unwrap_or(100);
+    let conn = state
+        .memory_graph_store
+        .conn
+        .lock()
+        .map_err(|e| format!("DB lock: {e}"))?;
+    let rows = crate::memory_graph::importance_decay::list_decay_candidates(&conn, &space_id, limit)
+        .map_err(|e| format!("list importance: {e}"))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| crate::ipc::ImportanceCandidateDto {
+            node_id: r.node_id,
+            title: r.title,
+            importance: r.importance,
+            archive_pending_since: r.archive_pending_since,
+            last_computed_at: r.last_computed_at,
+        })
+        .collect())
 }
 
 // ─── Memory OS Phase 6.2 / 6.3 — EntityPage synth IPC ──────────────────────

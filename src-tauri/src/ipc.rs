@@ -1186,6 +1186,49 @@ pub struct HealthFindingDto {
     pub dismissed_at: Option<i64>,
 }
 
+// ─── Memory OS L3 — Drift Detection + Importance Decay IPC types ───────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriftListInput {
+    pub space_id: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriftResolveInput {
+    pub event_id: String,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportanceListInput {
+    pub space_id: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriftEventDto {
+    pub id: String,
+    pub node_id: String,
+    pub title: String,
+    pub score: f64,
+    pub computed_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportanceCandidateDto {
+    pub node_id: String,
+    pub title: String,
+    pub importance: f64,
+    pub archive_pending_since: Option<i64>,
+    pub last_computed_at: i64,
+}
+
 // ─── Cost dashboard ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -16,7 +16,7 @@
  */
 
 import * as React from 'react'
-import { Loader2, RefreshCw, ShieldCheck, X, ExternalLink } from 'lucide-react'
+import { Loader2, RefreshCw, ShieldCheck, X, ExternalLink, ChevronRight, ChevronDown, TrendingDown, Activity } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -26,8 +26,11 @@ import {
   memoryHealthListFindings,
   memoryHealthDismissFinding,
   memoryHealthRunNow,
+  memoryDriftListEvents,
+  memoryDriftResolveEvent,
+  memoryImportanceListCandidates,
 } from '@/lib/tauri-bridge'
-import type { HealthFindingDto, HealthRunOutcome } from '@/lib/types'
+import type { HealthFindingDto, HealthRunOutcome, DriftEventDto, ImportanceCandidateDto } from '@/lib/types'
 
 interface MemoryHealthPanelProps {
   spaceId?: string
@@ -104,6 +107,11 @@ export function MemoryHealthPanel({
   const [lastRun, setLastRun] = React.useState<HealthRunOutcome | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [dismissingIds, setDismissingIds] = React.useState<Set<string>>(new Set())
+  const [drift, setDrift] = React.useState<DriftEventDto[]>([])
+  const [driftError, setDriftError] = React.useState<string | null>(null)
+  const [resolvingIds, setResolvingIds] = React.useState<Set<string>>(new Set())
+  const [importance, setImportance] = React.useState<ImportanceCandidateDto[]>([])
+  const [importanceError, setImportanceError] = React.useState<string | null>(null)
 
   const fetchFindings = React.useCallback(async () => {
     setLoading(true)
@@ -121,9 +129,32 @@ export function MemoryHealthPanel({
     }
   }, [space])
 
+  const fetchDrift = React.useCallback(async () => {
+    setDriftError(null)
+    try {
+      setDrift(await memoryDriftListEvents({ spaceId: space, limit: 100 }))
+    } catch (e) {
+      setDriftError(`加载漂移失败: ${String(e)}`)
+    }
+  }, [space])
+
+  const fetchImportance = React.useCallback(async () => {
+    setImportanceError(null)
+    try {
+      setImportance(await memoryImportanceListCandidates({ spaceId: space, limit: 100 }))
+    } catch (e) {
+      setImportanceError(`加载重要度失败: ${String(e)}`)
+    }
+  }, [space])
+
   React.useEffect(() => {
     void fetchFindings()
   }, [fetchFindings])
+
+  React.useEffect(() => {
+    void fetchDrift()
+    void fetchImportance()
+  }, [fetchDrift, fetchImportance])
 
   const handleScan = async (): Promise<void> => {
     setScanning(true)
@@ -158,6 +189,22 @@ export function MemoryHealthPanel({
       toast.error(`Dismiss failed: ${String(e)}`)
     } finally {
       setDismissingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+    }
+  }
+
+  const handleResolveDrift = async (id: string): Promise<void> => {
+    setResolvingIds((prev) => new Set(prev).add(id))
+    try {
+      await memoryDriftResolveEvent({ eventId: id })
+      setDrift((prev) => prev.filter((d) => d.id !== id))
+    } catch (e) {
+      toast.error(`标记失败: ${String(e)}`)
+    } finally {
+      setResolvingIds((prev) => {
         const next = new Set(prev)
         next.delete(id)
         return next
@@ -259,6 +306,86 @@ export function MemoryHealthPanel({
                 onSelectSubject={onSelectSubject}
               />
             ))}
+
+          {/* 子项目 E — 概念漂移 */}
+          <CollapsibleSection
+            title="概念漂移"
+            icon={<Activity className="size-3" />}
+            count={drift.length}
+            defaultOpen
+          >
+            {driftError ? (
+              <p className="text-[10px] text-destructive">{driftError}</p>
+            ) : drift.length === 0 ? (
+              <p className="text-[10px] text-muted-foreground/60">无漂移事件</p>
+            ) : (
+              <div data-testid="health-drift-list" className="space-y-1">
+                {drift.map((d) => (
+                  <div
+                    key={d.id}
+                    className="flex items-start gap-2 px-2 py-1.5 rounded-sm text-xs hover:bg-muted/60 border border-transparent hover:border-border/40"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-medium truncate">{d.title || d.nodeId}</span>
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            'text-[9px] px-1 py-0',
+                            d.score >= 0.6 ? 'border-destructive/50 text-destructive' : 'border-amber-500/50 text-amber-500',
+                          )}
+                        >
+                          drift {d.score.toFixed(2)}
+                        </Badge>
+                      </div>
+                      <span className="text-[10px] text-muted-foreground/50">
+                        {formatDateTime(new Date(d.computedAt).toISOString())}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleResolveDrift(d.id)}
+                      disabled={resolvingIds.has(d.id)}
+                      className="p-1 rounded-sm text-muted-foreground/60 hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50"
+                      title="标记已处理"
+                      data-testid="health-drift-resolve"
+                    >
+                      {resolvingIds.has(d.id) ? <Loader2 className="size-3 animate-spin" /> : <X className="size-3" />}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CollapsibleSection>
+
+          {/* 子项目 E — 重要度衰减候选（只读） */}
+          <CollapsibleSection
+            title="重要度 · 衰减候选"
+            icon={<TrendingDown className="size-3" />}
+            count={importance.length}
+            defaultOpen={false}
+          >
+            {importanceError ? (
+              <p className="text-[10px] text-destructive">{importanceError}</p>
+            ) : importance.length === 0 ? (
+              <p className="text-[10px] text-muted-foreground/60">无衰减候选</p>
+            ) : (
+              <div data-testid="health-importance-list" className="space-y-1">
+                {importance.map((it) => (
+                  <div
+                    key={it.nodeId}
+                    className="flex items-center gap-2 px-2 py-1.5 rounded-sm text-xs hover:bg-muted/60 border border-transparent hover:border-border/40"
+                  >
+                    <span className="flex-1 min-w-0 font-medium truncate">{it.title || it.nodeId}</span>
+                    <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden" title={`importance ${it.importance.toFixed(3)}`}>
+                      <div className="h-full bg-muted-foreground/50" style={{ width: `${Math.round(it.importance * 100)}%` }} />
+                    </div>
+                    <span className="text-[10px] text-muted-foreground/60 tabular-nums">{it.importance.toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CollapsibleSection>
         </div>
       </ScrollArea>
     </div>
@@ -416,6 +543,40 @@ function FindingRow({
           <X className="size-3" />
         )}
       </button>
+    </div>
+  )
+}
+
+// ─── CollapsibleSection ─────────────────────────────────────────────
+
+function CollapsibleSection({
+  title,
+  icon,
+  count,
+  defaultOpen,
+  children,
+}: {
+  title: string
+  icon: React.ReactNode
+  count: number
+  defaultOpen?: boolean
+  children: React.ReactNode
+}): React.ReactElement {
+  const [open, setOpen] = React.useState<boolean>(defaultOpen ?? true)
+  return (
+    <div className="border-t border-border/40 pt-2">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-1.5 text-[10px] uppercase tracking-wide font-medium text-muted-foreground hover:text-foreground transition-colors"
+      >
+        {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+        {icon}
+        <span>{title}</span>
+        <span className="text-muted-foreground/60">({count})</span>
+      </button>
+      {open && <div className="mt-1.5 space-y-1">{children}</div>}
     </div>
   )
 }

@@ -18,6 +18,7 @@ import {
 } from '@/atoms/automation'
 import { automationSelectedSpecIdAtom, automationActiveTabAtom } from '@/atoms/automation-ui'
 import { listAutomationsHumane, getAutomationActivity } from '@/lib/tauri-bridge'
+import type { HumaneSpecRow } from '@/lib/tauri-bridge'
 import { SpecList } from './SpecList'
 import { SpecRunSurface } from './SpecRunSurface'
 
@@ -88,7 +89,7 @@ export function ActivityRow({
 
 // ─── AutomationHub ────────────────────────────────────────────────────────────
 
-export function AutomationHub() {
+export function AutomationHub({ initialSpecs }: { initialSpecs?: HumaneSpecRow[] } = {}) {
   const [specs, setSpecs] = useAtom(humaneSpecsAtom)
   const setActivities = useSetAtom(automationActivitiesAtom)
   const [selectedSpecId, setSelectedSpecId] = useAtom(automationSelectedSpecIdAtom)
@@ -96,8 +97,12 @@ export function AutomationHub() {
 
   // Load specs on mount
   React.useEffect(() => {
+    if (initialSpecs) {
+      setSpecs(initialSpecs)
+      return
+    }
     listAutomationsHumane().then(setSpecs).catch(() => {})
-  }, [setSpecs])
+  }, [initialSpecs, setSpecs])
 
   // Load activities for selected spec
   React.useEffect(() => {

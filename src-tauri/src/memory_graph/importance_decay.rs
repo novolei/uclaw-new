@@ -529,6 +529,48 @@ pub fn batch_recompute_importance(
     Ok(BatchRecomputeOutcome { recomputed, errored })
 }
 
+/// 衰减候选行（join memory_nodes 取标题）。算法已用 archive_pending_since 标记。
+#[derive(Debug, Clone)]
+pub struct ImportanceRow {
+    pub node_id: String,
+    pub title: String,
+    pub importance: f64,
+    pub archive_pending_since: Option<i64>,
+    pub last_computed_at: i64,
+}
+
+/// 列出某 space 下的衰减候选（archive_pending_since 非空），importance 升序。
+pub fn list_decay_candidates(
+    conn: &Connection,
+    space_id: &str,
+    limit: usize,
+) -> rusqlite::Result<Vec<ImportanceRow>> {
+    if limit == 0 {
+        return Ok(vec![]);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT s.node_id, n.title, s.importance, s.archive_pending_since, s.last_computed_at
+         FROM memory_importance_scores s
+         JOIN memory_nodes n ON n.id = s.node_id
+         WHERE s.archive_pending_since IS NOT NULL AND n.space_id = ?1
+         ORDER BY s.importance ASC
+         LIMIT ?2",
+    )?;
+    let rows = stmt
+        .query_map(params![space_id, limit as i64], |r| {
+            Ok(ImportanceRow {
+                node_id: r.get(0)?,
+                title: r.get(1)?,
+                importance: r.get(2)?,
+                archive_pending_since: r.get(3)?,
+                last_computed_at: r.get(4)?,
+            })
+        })?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(rows)
+}
+
 /// Pull `status` + `enrichment_tier` out of a node's `metadata_json`.
 /// Tolerant of missing keys, missing object, malformed JSON.
 fn parse_status_and_tier(metadata_json: &str) -> (NodeStatus, u8) {
@@ -554,6 +596,13 @@ fn parse_status_and_tier(metadata_json: &str) -> (NodeStatus, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fresh_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+        conn
+    }
 
     fn baseline_inputs() -> NodeImportanceInputs {
         NodeImportanceInputs {
@@ -1153,5 +1202,35 @@ mod tests {
         );
         // Cited node with verified + tier 2 status should clear baseline.
         assert!(stored > 0.60, "expected importance > 0.60, got {}", stored);
+    }
+
+    #[test]
+    fn list_decay_candidates_only_archive_pending_asc_filtered_by_space() {
+        let conn = fresh_conn();
+        for (id, sp, title) in [("n1","default","Low"),("n2","default","Lower"),("n3","default","NotPending"),("n4","other","OtherSpace")] {
+            conn.execute(
+                "INSERT INTO memory_nodes (id, space_id, kind, title) VALUES (?1,?2,'reference',?3)",
+                params![id, sp, title],
+            ).unwrap();
+        }
+        let ins = |c: &Connection, node: &str, imp: f64, pending: Option<i64>| {
+            c.execute(
+                "INSERT INTO memory_importance_scores
+                 (node_id, base_value, citation_factor, edge_factor, recency_factor, status_bonus, penalty, importance, decay_half_life_days, last_computed_at, archive_pending_since)
+                 VALUES (?1, 0.0,0.0,0.0,0.0,0.0,0.0, ?2, 30.0, 500, ?3)",
+                params![node, imp, pending],
+            ).unwrap();
+        };
+        ins(&conn, "n1", 0.20, Some(400));
+        ins(&conn, "n2", 0.05, Some(401));
+        ins(&conn, "n3", 0.10, None);
+        ins(&conn, "n4", 0.01, Some(402));
+
+        let rows = list_decay_candidates(&conn, "default", 100).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].node_id, "n2");
+        assert_eq!(rows[0].title, "Lower");
+        assert_eq!(rows[1].node_id, "n1");
+        assert!(list_decay_candidates(&conn, "default", 0).unwrap().is_empty());
     }
 }

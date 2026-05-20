@@ -1247,6 +1247,39 @@ export interface HealthRunOutcome {
   duration_ms: number;
 }
 
+// ─── Drift Events (Memory OS L3) ────────────────────────────────────────
+
+export interface DriftListInput {
+  spaceId?: string;
+  limit?: number;
+}
+
+export interface DriftResolveInput {
+  eventId: string;
+  note?: string;
+}
+
+export interface ImportanceListInput {
+  spaceId?: string;
+  limit?: number;
+}
+
+export interface DriftEventDto {
+  id: string;
+  nodeId: string;
+  title: string;
+  score: number;
+  computedAt: number; // epoch millis
+}
+
+export interface ImportanceCandidateDto {
+  nodeId: string;
+  title: string;
+  importance: number;
+  archivePendingSince: number | null;
+  lastComputedAt: number;
+}
+
 // ─── Lint (Memory OS Foundation Phase 5) ────────────────────────────────
 
 export interface LintRunNowInput {

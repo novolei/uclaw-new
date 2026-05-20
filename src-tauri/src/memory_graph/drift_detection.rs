@@ -297,6 +297,64 @@ pub fn list_open_events_for_node(
     Ok(rows)
 }
 
+/// 全局漂移事件行（join memory_nodes 取标题）。供 Health 面板列表用。
+#[derive(Debug, Clone)]
+pub struct DriftEventRow {
+    pub id: String,
+    pub node_id: String,
+    pub title: String,
+    pub score: f64,
+    pub computed_at: i64,
+}
+
+/// 列出某 space 下所有 open 漂移事件，按 score 降序。
+pub fn list_open_drift_events(
+    conn: &Connection,
+    space_id: &str,
+    limit: usize,
+) -> rusqlite::Result<Vec<DriftEventRow>> {
+    if limit == 0 {
+        return Ok(vec![]);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT d.id, d.node_id, n.title, d.score, d.computed_at
+         FROM drift_events d
+         JOIN memory_nodes n ON n.id = d.node_id
+         WHERE d.status = 'open' AND n.space_id = ?1
+         ORDER BY d.score DESC
+         LIMIT ?2",
+    )?;
+    let rows = stmt
+        .query_map(params![space_id, limit as i64], |r| {
+            Ok(DriftEventRow {
+                id: r.get(0)?,
+                node_id: r.get(1)?,
+                title: r.get(2)?,
+                score: r.get(3)?,
+                computed_at: r.get(4)?,
+            })
+        })?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(rows)
+}
+
+/// 把一条漂移事件标记为已处理（open → resolved）。
+pub fn resolve_drift_event(
+    conn: &Connection,
+    id: &str,
+    note: Option<&str>,
+    now_ms: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE drift_events
+         SET status = 'resolved', resolved_at = ?2, resolution_note = ?3
+         WHERE id = ?1",
+        params![id, now_ms, note],
+    )?;
+    Ok(())
+}
+
 // ─── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -560,5 +618,55 @@ mod tests {
         }
         let out = scan_and_record_drift(&conn, 2, 1_700_000_000_000).unwrap();
         assert_eq!(out.scanned, 2, "batch size caps scanned nodes");
+    }
+
+    #[test]
+    fn list_open_drift_events_orders_by_score_and_filters_space() {
+        let conn = fresh_conn();
+        conn.execute(
+            "INSERT INTO memory_nodes (id, space_id, kind, title) VALUES ('n1','default','reference','Node One')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO memory_nodes (id, space_id, kind, title) VALUES ('n2','default','reference','Node Two')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO memory_nodes (id, space_id, kind, title) VALUES ('n3','other','reference','Other Space')",
+            [],
+        ).unwrap();
+        conn.execute("INSERT INTO drift_events (id,node_id,score,snapshot_version_ids,computed_at,status) VALUES ('e1','n1',0.9,'[]',100,'open')", []).unwrap();
+        conn.execute("INSERT INTO drift_events (id,node_id,score,snapshot_version_ids,computed_at,status) VALUES ('e2','n2',0.4,'[]',101,'open')", []).unwrap();
+        conn.execute("INSERT INTO drift_events (id,node_id,score,snapshot_version_ids,computed_at,status) VALUES ('e3','n3',0.99,'[]',102,'open')", []).unwrap();
+        conn.execute("INSERT INTO drift_events (id,node_id,score,snapshot_version_ids,computed_at,status) VALUES ('e4','n1',0.5,'[]',103,'resolved')", []).unwrap();
+
+        let rows = list_open_drift_events(&conn, "default", 100).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "e1");
+        assert_eq!(rows[0].title, "Node One");
+        assert_eq!(rows[1].id, "e2");
+        assert!(list_open_drift_events(&conn, "default", 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolve_drift_event_flips_status_and_removes_from_list() {
+        let conn = fresh_conn();
+        conn.execute(
+            "INSERT INTO memory_nodes (id, space_id, kind, title) VALUES ('n1','default','reference','N')",
+            [],
+        ).unwrap();
+        conn.execute("INSERT INTO drift_events (id,node_id,score,snapshot_version_ids,computed_at,status) VALUES ('e1','n1',0.9,'[]',100,'open')", []).unwrap();
+        resolve_drift_event(&conn, "e1", Some("looked fine"), 999).unwrap();
+        assert!(list_open_drift_events(&conn, "default", 100).unwrap().is_empty());
+        let (status, note, resolved): (String, Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT status, resolution_note, resolved_at FROM drift_events WHERE id='e1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "resolved");
+        assert_eq!(note.as_deref(), Some("looked fine"));
+        assert_eq!(resolved, Some(999));
     }
 }

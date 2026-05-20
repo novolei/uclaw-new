@@ -70,6 +70,8 @@ If you discover a bug outside the current task's scope with a confident root cau
 
 The original migration target documented in `docs/uclaw-migration-plan.md` mentions Svelte 5, but the implementation is React 18 + TypeScript with Tailwind and Radix UI primitives — trust the code, not that doc.
 
+Strategic north star: `docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`. New agent/runtime/browser/memory/automation/team/cluster designs should preserve the Agent OS v2 direction: local-first long-running work, small Rust runtime kernel, IntentSpec/TaskSpec/TaskEvent contracts, Context Fabric, Capability Mesh, World Projection, Hermes-aligned registries, gbrain as primary long-term knowledge, and harness-gated self-evolution.
+
 ## Common Commands
 
 Tauri orchestrates dev/build via `src-tauri/tauri.conf.json`, which calls the `ui/` npm scripts itself. From `src-tauri/`:

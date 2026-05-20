@@ -2,6 +2,7 @@ use crate::harness::case::HarnessSubject;
 
 pub mod agent_loop;
 pub mod browser;
+pub mod live_room;
 pub mod memory;
 
 pub trait HarnessAdapter: Send + Sync {
@@ -16,6 +17,7 @@ pub const PERMISSIONS_ADAPTER_ID: &str = "permissions";
 pub const HOOKS_ADAPTER_ID: &str = "hooks";
 pub const MEMORY_ADAPTER_ID: &str = "memory";
 pub const GBRAIN_ADAPTER_ID: &str = "gbrain";
+pub const LIVE_ROOM_ADAPTER_ID: &str = "live_room";
 pub const SKILLS_ADAPTER_ID: &str = "skills";
 pub const TASKS_ADAPTER_ID: &str = "tasks";
 pub const PROMPTS_ADAPTER_ID: &str = "prompts";
