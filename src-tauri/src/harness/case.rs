@@ -133,3 +133,110 @@ mod tests {
         assert_eq!(value["budgets"]["maxTokens"], 4000);
     }
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// M1-T3 — bridge to runtime::contracts::TaskEventSource
+//
+// HarnessSubject and runtime::contracts::TaskEventSource were defined as
+// parallel 12-variant enums by M1-T1 (PR #304). This module is the source
+// of truth for the harness; runtime/contracts.rs is the source of truth
+// for the rest of the system.
+//
+// Per `uclaw-upgrade-implementation-plan.md` M1-T3 + `docs/adr/2026-05-20-
+// uclaw-agent-platform-north-star.md` §"Cross-domain rollout", the runtime
+// enum is the canonical one. HarnessSubject is kept as the input vocabulary
+// for harness *cases* (because that's what their YAML defines) but converts
+// 1:1 into TaskEventSource at the moment the harness emits an event for the
+// rollout writer (M1-T5).
+//
+// HarnessEvent → TaskEvent is *not* a 1:1 mapping (HarnessEvent carries
+// case_id; TaskEvent carries task_id + intent_id + source) so its
+// conversion is deferred to M1-T5 once the rollout writer can supply
+// the bridging context.
+
+impl From<HarnessSubject> for crate::runtime::contracts::TaskEventSource {
+    fn from(s: HarnessSubject) -> Self {
+        use crate::runtime::contracts::TaskEventSource as T;
+        match s {
+            HarnessSubject::AgentLoop   => T::AgentLoop,
+            HarnessSubject::Browser     => T::Browser,
+            HarnessSubject::Tools       => T::Tools,
+            HarnessSubject::Skills      => T::Skills,
+            HarnessSubject::Plugins     => T::Plugins,
+            HarnessSubject::Permissions => T::Permissions,
+            HarnessSubject::Hooks       => T::Hooks,
+            HarnessSubject::Memory      => T::Memory,
+            HarnessSubject::Gbrain      => T::Gbrain,
+            HarnessSubject::Tasks       => T::Tasks,
+            HarnessSubject::Coordinator => T::Coordinator,
+            HarnessSubject::Prompts     => T::Prompts,
+        }
+    }
+}
+
+impl crate::runtime::contracts::TaskEventSource {
+    /// Reverse direction: collapse `TaskEventSource` → `HarnessSubject`.
+    /// `TaskEventSource::Automation` has no harness equivalent (harness
+    /// cases predate the unified runtime), so it maps to
+    /// `HarnessSubject::Tasks` as a documented fallback.
+    pub fn to_harness_subject(self) -> HarnessSubject {
+        use crate::runtime::contracts::TaskEventSource as T;
+        match self {
+            T::AgentLoop   => HarnessSubject::AgentLoop,
+            T::Browser     => HarnessSubject::Browser,
+            T::Tools       => HarnessSubject::Tools,
+            T::Skills      => HarnessSubject::Skills,
+            T::Plugins     => HarnessSubject::Plugins,
+            T::Permissions => HarnessSubject::Permissions,
+            T::Hooks       => HarnessSubject::Hooks,
+            T::Memory      => HarnessSubject::Memory,
+            T::Gbrain      => HarnessSubject::Gbrain,
+            T::Tasks       => HarnessSubject::Tasks,
+            T::Coordinator => HarnessSubject::Coordinator,
+            T::Prompts     => HarnessSubject::Prompts,
+            T::Automation  => HarnessSubject::Tasks, // no harness equivalent yet
+        }
+    }
+}
+
+#[cfg(test)]
+mod m1_t3_bridge_tests {
+    use super::*;
+    use crate::runtime::contracts::TaskEventSource;
+
+    /// Every HarnessSubject value round-trips through TaskEventSource and back.
+    /// Covers all 12 enum variants explicitly via a known table; if a new
+    /// variant lands on either side, this test must be updated alongside.
+    #[test]
+    fn harness_subject_round_trips_through_task_event_source() {
+        let cases: [(HarnessSubject, TaskEventSource); 12] = [
+            (HarnessSubject::AgentLoop,   TaskEventSource::AgentLoop),
+            (HarnessSubject::Browser,     TaskEventSource::Browser),
+            (HarnessSubject::Tools,       TaskEventSource::Tools),
+            (HarnessSubject::Skills,      TaskEventSource::Skills),
+            (HarnessSubject::Plugins,     TaskEventSource::Plugins),
+            (HarnessSubject::Permissions, TaskEventSource::Permissions),
+            (HarnessSubject::Hooks,       TaskEventSource::Hooks),
+            (HarnessSubject::Memory,      TaskEventSource::Memory),
+            (HarnessSubject::Gbrain,      TaskEventSource::Gbrain),
+            (HarnessSubject::Tasks,       TaskEventSource::Tasks),
+            (HarnessSubject::Coordinator, TaskEventSource::Coordinator),
+            (HarnessSubject::Prompts,     TaskEventSource::Prompts),
+        ];
+        for (subj, expected_src) in cases {
+            let src: TaskEventSource = subj.into();
+            assert_eq!(src, expected_src, "{subj:?} → {src:?} mismatch");
+            // And the reverse direction recovers the subject.
+            assert_eq!(src.to_harness_subject(), subj);
+        }
+    }
+
+    /// TaskEventSource::Automation has no harness equivalent today; it
+    /// must collapse to Tasks (documented fallback). When M1-T4 ships
+    /// automation adapters, this expectation will likely change.
+    #[test]
+    fn automation_source_collapses_to_tasks_subject() {
+        let src = TaskEventSource::Automation;
+        assert_eq!(src.to_harness_subject(), HarnessSubject::Tasks);
+    }
+}
