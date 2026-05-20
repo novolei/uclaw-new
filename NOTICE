@@ -31,6 +31,17 @@ SPDX-License-Identifier + "Derived from codex-rs/<path>" attribution in every
   - crates/uclaw-utils-terminal-detection/  ← codex-rs/terminal-detection/  (PR #299)
   - crates/uclaw-utils-file-watcher/        ← codex-rs/file-watcher/        (PR #299)
 
+  Phase 0.5-T4 (second batch — independent utility crates from codex-rs/utils/):
+  - crates/uclaw-utils-absolute-path/       ← codex-rs/utils/absolute-path/   (PR #300)
+  - crates/uclaw-utils-elapsed/             ← codex-rs/utils/elapsed/         (PR #300)
+  - crates/uclaw-utils-readiness/           ← codex-rs/utils/readiness/       (PR #300)
+  - crates/uclaw-utils-string/              ← codex-rs/utils/string/          (PR #300)
+  - crates/uclaw-utils-stream-parser/       ← codex-rs/utils/stream-parser/   (PR #300)
+  - crates/uclaw-utils-fuzzy-match/         ← codex-rs/utils/fuzzy-match/     (PR #300)
+  - crates/uclaw-utils-cache/               ← codex-rs/utils/cache/           (PR #300)
+  - crates/uclaw-utils-sleep-inhibitor/     ← codex-rs/utils/sleep-inhibitor/ (PR #300)
+  - crates/uclaw-utils-template/            ← codex-rs/utils/template/        (PR #300)
+
 When new derived crates land:
   - the crate must be listed here with its upstream path
   - each file in the crate must carry a SPDX-License-Identifier header

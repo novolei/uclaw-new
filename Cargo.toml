@@ -16,10 +16,21 @@
 resolver = "2"
 members = [
     "src-tauri",
+    # Phase 0.5-T3 — first batch
     "crates/uclaw-utils-async-utils",
     "crates/uclaw-utils-terminal-detection",
     "crates/uclaw-utils-file-watcher",
-    # T4/T5 crates land here.
+    # Phase 0.5-T4 — independent utility crates (no internal codex deps)
+    "crates/uclaw-utils-absolute-path",
+    "crates/uclaw-utils-elapsed",
+    "crates/uclaw-utils-readiness",
+    "crates/uclaw-utils-string",
+    "crates/uclaw-utils-stream-parser",
+    "crates/uclaw-utils-fuzzy-match",
+    "crates/uclaw-utils-cache",
+    "crates/uclaw-utils-sleep-inhibitor",
+    "crates/uclaw-utils-template",
+    # T5/T6 crates land here.
 ]
 # Exclude any temporary or in-progress trees. Keeping this explicit lets
 # `cargo metadata` stay deterministic while crates/ is still empty.

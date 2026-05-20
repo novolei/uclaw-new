@@ -1,0 +1,22 @@
+
+[package]
+name = "uclaw-utils-absolute-path"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+
+[dependencies]
+dirs = "6"
+dunce = "1"
+schemars = { version = "0.8", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+ts-rs = { version = "10", features = ["serde-json-impl"] }
+
+[dev-dependencies]
+pretty_assertions = "1"
+serde_json = "1"
+tempfile = "3"
+
+[lib]
+doctest = false
