@@ -159,7 +159,9 @@ adds a documented allowlist exception.
 
 ## 10. DRI / Agent Manager — One Human Owns This
 
-One named human (the uClaw maintainer) owns:
+> **Current DRI**: **Ryan Liu** ([@novolei](https://github.com/novolei) on GitHub, `ryanclaudemax@gmail.com`).
+>
+> The DRI is the single point of decision when an agent / contributor / hook disagrees with this spec. They own:
 
 - `BEHAVIOR.md` content and revisions
 - `.claude/settings.json` and the team-curated skill set
