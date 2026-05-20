@@ -2795,3 +2795,44 @@ mod gbrain_init_tests {
         // The Elapsed error is what we want — process is killed on drop.
     }
 }
+
+#[cfg(test)]
+mod pglite_lock_cleanup_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn env_with_home(home: &std::path::Path) -> HashMap<String, String> {
+        let mut m = HashMap::new();
+        m.insert("GBRAIN_HOME".to_string(), home.to_string_lossy().to_string());
+        m
+    }
+
+    fn write_lock(home: &std::path::Path, pid: i64) -> std::path::PathBuf {
+        let dir = home.join(".gbrain").join("brain.pglite").join(".gbrain-lock");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lock"), format!("{{\"pid\": {pid}}}")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn no_lock_file_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        cleanup_stale_pglite_lock(&env_with_home(tmp.path())); // must not panic
+    }
+
+    #[test]
+    fn dead_pid_lock_is_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = write_lock(tmp.path(), 2_000_000_000); // implausibly-high pid → not alive
+        cleanup_stale_pglite_lock(&env_with_home(tmp.path()));
+        assert!(!dir.exists(), "dead-pid lock dir should be removed");
+    }
+
+    #[test]
+    fn live_pid_lock_is_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = write_lock(tmp.path(), std::process::id() as i64); // current process → alive
+        cleanup_stale_pglite_lock(&env_with_home(tmp.path()));
+        assert!(dir.exists(), "live-pid lock dir should be kept");
+    }
+}

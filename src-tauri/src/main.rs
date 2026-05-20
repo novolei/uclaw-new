@@ -991,6 +991,7 @@ fn main() {
             uclaw_core::tauri_commands::gbrain_get_stats,
             uclaw_core::tauri_commands::gbrain_find_orphans,
             uclaw_core::tauri_commands::gbrain_full_graph,
+            uclaw_core::tauri_commands::gbrain_serve_smoke,
             uclaw_core::tauri_commands::reset_ai_engine,
             uclaw_core::tauri_commands::restart_app,
             // MEMUBOT Services
