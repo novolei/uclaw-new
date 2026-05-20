@@ -130,12 +130,24 @@ pub fn compose_system_prompt(
     // implicitly permit the model to probe the workspace with shell tools
     // in response to conversational status questions ("你在干啥" etc.),
     // triggering spurious glob/ls/date calls the user never requested.
-    let workspace_path_block = workspace_root.map(|p| {
-        format!(
-            "[WORKSPACE]\nYour current working directory is: {}\nAll relative paths in shell, file, and glob tools resolve from this directory. When the user asks where files live or what the cwd is, answer directly with this path. Do NOT call shell commands (pwd, ls, glob, find, etc.) to probe or verify the workspace unless the user explicitly requests a file or directory operation.",
-            p.display()
-        )
-    }).unwrap_or_default();
+    // M2-T1a — workspace path block rendered via uclaw_utils_template
+    // (Phase 0.5 ported crate). One placeholder ({{cwd}}); fallback to
+    // empty string is preserved via `unwrap_or_default()` after we map
+    // the Option<&Path>. Render failure also degrades to empty so a
+    // template typo can't crash the agent loop's system prompt build.
+    const WORKSPACE_PATH_TEMPLATE: &str = "[WORKSPACE]\nYour current working directory is: {{cwd}}\nAll relative paths in shell, file, and glob tools resolve from this directory. When the user asks where files live or what the cwd is, answer directly with this path. Do NOT call shell commands (pwd, ls, glob, find, etc.) to probe or verify the workspace unless the user explicitly requests a file or directory operation.";
+    let workspace_path_block = workspace_root
+        .map(|p| {
+            let cwd = p.display().to_string();
+            uclaw_utils_template::render(WORKSPACE_PATH_TEMPLATE, [("cwd", cwd.as_str())])
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        "M2-T1a: workspace-path template render failed: {e};                          falling back to empty string"
+                    );
+                    String::new()
+                })
+        })
+        .unwrap_or_default();
     let parts: Vec<&str> = [
         user_global_base.trim(),
         workspace_md.as_str(),
