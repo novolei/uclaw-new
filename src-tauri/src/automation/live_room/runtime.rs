@@ -136,6 +136,7 @@ pub struct LiveRunReport {
     pub gbrain_writes: u64,
     pub gbrain_slugs: Vec<String>,
     pub error_kinds: Vec<String>,
+    pub entry_signals: Vec<String>,
 }
 
 impl LiveRunReport {
@@ -144,6 +145,7 @@ impl LiveRunReport {
             .ok()
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_else(|| "unknown".to_string());
+        let room_title = self.room_title.as_deref().unwrap_or("unknown");
         let slugs = if self.gbrain_slugs.is_empty() {
             "- none".to_string()
         } else {
@@ -163,9 +165,10 @@ impl LiveRunReport {
                 .join("\n")
         };
         format!(
-            "# Live Room Run Report\n\n- Platform: `{}`\n- Room: `{}`\n- Live URL: `{}`\n- Stop reason: `{}`\n- Comments scanned: {}\n- Replies sent: {}\n- Warnings: {}\n- Mutes: {}\n- Removals: {}\n- gbrain recalls: {}\n- gbrain writes: {}\n\n## gbrain pages\n{}\n\n## errors\n{}\n",
+            "# Live Room Run Report\n\n- Platform: `{}`\n- Room: `{}`\n- Room title: `{}`\n- Live URL: `{}`\n- Stop reason: `{}`\n- Comments scanned: {}\n- Replies sent: {}\n- Warnings: {}\n- Mutes: {}\n- Removals: {}\n- gbrain recalls: {}\n- gbrain writes: {}\n\n## entry signals\n{}\n\n## gbrain pages\n{}\n\n## errors\n{}\n",
             self.platform,
             self.room_id,
+            room_title,
             self.live_url,
             stop_reason,
             self.comments_scanned,
@@ -175,9 +178,22 @@ impl LiveRunReport {
             self.removals_executed,
             self.gbrain_recalls,
             self.gbrain_writes,
+            format_signal_list(&self.entry_signals),
             slugs,
             errors
         )
+    }
+}
+
+fn format_signal_list(signals: &[String]) -> String {
+    if signals.is_empty() {
+        "- none".to_string()
+    } else {
+        signals
+            .iter()
+            .map(|signal| format!("- `{signal}`"))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -216,6 +232,7 @@ pub async fn execute_live_room_run(
         gbrain_writes: 0,
         gbrain_slugs: Vec::new(),
         error_kinds: Vec::new(),
+        entry_signals: Vec::new(),
     };
     let result =
         run_live_room_adapter_loop(service, spec_id, &activity_id, &spec_value, &mut report).await;
@@ -286,6 +303,17 @@ async fn run_live_room_adapter_loop(
     if report.live_url.trim().is_empty() {
         anyhow::bail!("missing_live_url");
     }
+    let profile_id = configured_auth_profile_id(spec_value)
+        .ok_or_else(|| anyhow::anyhow!("browser_auth_profile_missing"))?;
+    let broker = BrowserAuthProfileBroker::system_default()
+        .map_err(|e| anyhow::anyhow!("browser_auth_profile_broker:{e}"))?;
+    let (profile, state) = broker
+        .load_storage_state_for_profile(&profile_id)
+        .map_err(|e| anyhow::anyhow!("browser_auth_profile_load:{e}"))?;
+    report
+        .entry_signals
+        .push(format!("auth_profile_loaded:{}", profile.id));
+
     let ctx_mgr = service
         .browser_context_manager
         .as_ref()
@@ -293,8 +321,18 @@ async fn run_live_room_adapter_loop(
     let app_handle = ctx_mgr.app_handle();
     let browser_session_id =
         crate::automation::runtime::service::automation_browser_session_id(spec_id, activity_id);
-    let ctx = ctx_mgr.get_or_create(&browser_session_id).await?;
-    let mut tab_id = ctx.navigate("new", &report.live_url, app_handle).await?;
+    let ctx = ctx_mgr
+        .get_or_create_with_identity(&browser_session_id, Some(&profile.id))
+        .await?;
+    let mut tab_id = ctx
+        .active_or_first_tab_id()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("browser_tab_unavailable"))?;
+    ctx.apply_storage_state(&tab_id, &state, app_handle).await?;
+    report
+        .entry_signals
+        .push("auth_profile_applied_before_live_navigation".to_string());
+    tab_id = ctx.navigate(&tab_id, &report.live_url, app_handle).await?;
     persist_live_progress_report(
         &service.db,
         activity_id,
@@ -303,26 +341,6 @@ async fn run_live_room_adapter_loop(
         &tab_id,
     )
     .await?;
-
-    if let Some(profile_id) = configured_auth_profile_id(spec_value) {
-        let broker = BrowserAuthProfileBroker::system_default()
-            .map_err(|e| anyhow::anyhow!("browser_auth_profile_broker:{e}"))?;
-        let (_profile, state) = broker
-            .load_storage_state_for_profile(&profile_id)
-            .map_err(|e| anyhow::anyhow!("browser_auth_profile_load:{e}"))?;
-        ctx.apply_storage_state(&tab_id, &state, app_handle).await?;
-        tab_id = ctx.navigate(&tab_id, &report.live_url, app_handle).await?;
-        persist_live_progress_report(
-            &service.db,
-            activity_id,
-            report,
-            &browser_session_id,
-            &tab_id,
-        )
-        .await?;
-    } else {
-        anyhow::bail!("browser_auth_profile_missing");
-    }
 
     let script_root = service.browser_builtin_root.join(&report.platform);
     let enter = run_script(
@@ -340,6 +358,24 @@ async fn run_live_room_adapter_loop(
         .get("roomTitle")
         .and_then(|v| v.as_str())
         .map(str::to_string);
+    record_entry_probe(report, &enter);
+    match enter.get("status").and_then(|v| v.as_str()) {
+        Some("login_required") => {
+            report.stop_reason = LiveStopReason::LoginRequired;
+            report
+                .error_kinds
+                .push("douyin_login_required_after_profile_apply".to_string());
+            return Ok(());
+        }
+        Some("blocked") => {
+            report.stop_reason = LiveStopReason::Blocked;
+            report
+                .error_kinds
+                .push("douyin_live_room_blocked".to_string());
+            return Ok(());
+        }
+        _ => {}
+    }
     persist_live_progress_report(
         &service.db,
         activity_id,
@@ -409,6 +445,37 @@ async fn run_live_room_adapter_loop(
     }
 
     Ok(())
+}
+
+fn record_entry_probe(report: &mut LiveRunReport, enter: &serde_json::Value) {
+    for key in [
+        "status",
+        "url",
+        "roomId",
+        "roomTitle",
+        "hostName",
+        "hasCommentInput",
+        "commentInputDisabled",
+        "canChat",
+        "chatLoginRequired",
+        "hasVideo",
+        "hasLiveSignal",
+        "loginPromptVisible",
+        "loginRequired",
+    ] {
+        if let Some(value) = enter.get(key) {
+            report
+                .entry_signals
+                .push(format!("{key}={}", compact_json_value(value)));
+        }
+    }
+}
+
+fn compact_json_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(value) => value.clone(),
+        other => other.to_string(),
+    }
 }
 
 async fn run_script(
@@ -510,12 +577,15 @@ async fn persist_live_progress_report(
     browser_session_id: &str,
     tab_id: &str,
 ) -> anyhow::Result<()> {
+    let room_title = report.room_title.as_deref().unwrap_or("unknown");
     let text = format!(
-        "# Live Room Run Report\n\n- Platform: `{}`\n- Room: `{}`\n- Live URL: `{}`\n- Status: `running`\n- Comments scanned: {}\n\n## browser\n- Browser session: `{}`\n- Tab: `{}`\n",
+        "# Live Room Run Report\n\n- Platform: `{}`\n- Room: `{}`\n- Room title: `{}`\n- Live URL: `{}`\n- Status: `running`\n- Comments scanned: {}\n\n## entry signals\n{}\n\n## browser\n- Browser session: `{}`\n- Tab: `{}`\n",
         report.platform,
         report.room_id,
+        room_title,
         report.live_url,
         report.comments_scanned,
+        format_signal_list(&report.entry_signals),
         browser_session_id,
         tab_id,
     );
@@ -525,6 +595,7 @@ async fn persist_live_progress_report(
             "title": "Live room report",
             "platform": report.platform,
             "room_id": report.room_id,
+            "room_title": report.room_title,
             "live_url": report.live_url,
             "stop_reason": report.stop_reason,
         },
@@ -632,11 +703,14 @@ mod tests {
             gbrain_writes: 2,
             gbrain_slugs: vec!["live/douyin/room-1/facts/topic".into()],
             error_kinds: vec![],
+            entry_signals: vec!["status=entered".into(), "hasVideo=true".into()],
         };
         let text = report.to_markdown();
         assert!(text.contains("Stop reason: `room_ended`"));
+        assert!(text.contains("Room title: `Launch Room`"));
         assert!(text.contains("Live URL: `https://www.douyin.com/live/room-1`"));
         assert!(text.contains("Comments scanned: 42"));
+        assert!(text.contains("status=entered"));
         assert!(text.contains("live/douyin/room-1/facts/topic"));
     }
 
@@ -645,7 +719,7 @@ mod tests {
         let report = LiveRunReport {
             platform: "douyin".into(),
             room_id: "room-1".into(),
-            room_title: None,
+            room_title: Some("晓晓的抖音直播间".into()),
             live_url: "https://live.douyin.com/room-1".into(),
             started_at_ms: 1000,
             ended_at_ms: 2000,
@@ -659,6 +733,7 @@ mod tests {
             gbrain_writes: 0,
             gbrain_slugs: Vec::new(),
             error_kinds: vec!["browser_auth_profile_missing".into()],
+            entry_signals: Vec::new(),
         };
         let text = report.to_markdown();
         assert!(text.contains("## errors"));
@@ -770,6 +845,7 @@ mod tests {
             gbrain_writes: 0,
             gbrain_slugs: Vec::new(),
             error_kinds: Vec::new(),
+            entry_signals: Vec::new(),
         };
         persist_final_report(&db, "a1", &report).await.unwrap();
         let conn = db.lock().unwrap();
@@ -811,7 +887,7 @@ mod tests {
         let report = LiveRunReport {
             platform: "douyin".into(),
             room_id: "room-1".into(),
-            room_title: None,
+            room_title: Some("晓晓的抖音直播间".into()),
             live_url: "https://live.douyin.com/room-1".into(),
             started_at_ms: 1000,
             ended_at_ms: 2000,
@@ -825,6 +901,10 @@ mod tests {
             gbrain_writes: 0,
             gbrain_slugs: Vec::new(),
             error_kinds: Vec::new(),
+            entry_signals: vec![
+                "auth_profile_loaded:auth-1".into(),
+                "hasCommentInput=false".into(),
+            ],
         };
         persist_live_progress_report(&db, "a1", &report, "browser-session", "tab-1")
             .await
@@ -838,7 +918,9 @@ mod tests {
             )
             .unwrap();
         assert!(text.contains("Live URL: `https://live.douyin.com/room-1`"));
+        assert!(text.contains("Room title: `晓晓的抖音直播间`"));
         assert!(text.contains("Status: `running`"));
+        assert!(text.contains("auth_profile_loaded:auth-1"));
         assert!(artifacts.contains("live_room_browser"));
         assert!(artifacts.contains("browser-session"));
     }
