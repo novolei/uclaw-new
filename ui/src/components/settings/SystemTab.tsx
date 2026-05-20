@@ -100,6 +100,26 @@ interface HarnessSuiteReport {
   scorecards: HarnessScorecard[]
 }
 
+interface SelfImprovementGateReport {
+  candidateId: string
+  verdict: 'promote' | 'hold' | 'reject'
+  score: number
+  checks: Array<{
+    id: string
+    passed: boolean
+    message: string
+  }>
+}
+
+type HarnessKind = 'browser' | 'memory' | 'agent' | 'self'
+
+const harnessCommands: Record<HarnessKind, string> = {
+  browser: 'run_browser_parity_harness',
+  memory: 'run_memory_gbrain_eval_harness',
+  agent: 'run_agent_control_plane_harness',
+  self: 'run_self_improvement_gate_harness',
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function formatUptime(secs: number): string {
@@ -163,10 +183,12 @@ export function SystemTab() {
   const [busyReset, setBusyReset] = React.useState(false)
   const [busyRestart, setBusyRestart] = React.useState(false)
   const [actionError, setActionError] = React.useState<string | null>(null)
-  const [harnessBusy, setHarnessBusy] = React.useState<string | null>(null)
-  const [harnessReports, setHarnessReports] = React.useState<Record<string, HarnessSuiteReport | null>>({
+  const [harnessBusy, setHarnessBusy] = React.useState<HarnessKind | 'all' | null>(null)
+  const [harnessReports, setHarnessReports] = React.useState<Record<HarnessKind, HarnessSuiteReport | null>>({
+    browser: null,
     memory: null,
     agent: null,
+    self: null,
   })
 
   const runDiagnostics = React.useCallback(async () => {
@@ -226,12 +248,27 @@ export function SystemTab() {
     }
   }
 
-  async function handleHarnessRun(kind: 'memory' | 'agent', command: string) {
+  async function handleHarnessRun(kind: HarnessKind, command: string) {
     setHarnessBusy(kind)
     setActionError(null)
     try {
-      const result = await invoke<HarnessSuiteReport>(command)
-      setHarnessReports(prev => ({ ...prev, [kind]: result }))
+      const result = await invoke<unknown>(command)
+      setHarnessReports(prev => ({ ...prev, [kind]: normalizeHarnessReport(kind, result) }))
+    } catch (e) {
+      setActionError(String(e))
+    } finally {
+      setHarnessBusy(null)
+    }
+  }
+
+  async function handleRunAllHarnesses() {
+    setHarnessBusy('all')
+    setActionError(null)
+    try {
+      for (const kind of Object.keys(harnessCommands) as HarnessKind[]) {
+        const result = await invoke<unknown>(harnessCommands[kind])
+        setHarnessReports(prev => ({ ...prev, [kind]: normalizeHarnessReport(kind, result) }))
+      }
     } catch (e) {
       setActionError(String(e))
     } finally {
@@ -416,27 +453,49 @@ export function SystemTab() {
                   <div className="min-w-0">
                     <div className="text-sm font-medium text-foreground">自治回归套件</div>
                     <div className="text-[11px] text-muted-foreground">
-                      运行 memory/gbrain 与 agent control-plane scorecard
+                      运行 Browser、Memory、Agent 与自我改进 gates
                     </div>
                   </div>
                 </div>
-                <div className="flex shrink-0 gap-2">
+                <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                  <HarnessButton
+                    label="All"
+                    busy={harnessBusy === 'all'}
+                    onClick={handleRunAllHarnesses}
+                    disabled={Boolean(harnessBusy)}
+                  />
+                  <HarnessButton
+                    label="Browser"
+                    busy={harnessBusy === 'browser'}
+                    onClick={() => handleHarnessRun('browser', harnessCommands.browser)}
+                    disabled={Boolean(harnessBusy)}
+                  />
                   <HarnessButton
                     label="Memory"
                     busy={harnessBusy === 'memory'}
-                    onClick={() => handleHarnessRun('memory', 'run_memory_gbrain_eval_harness')}
+                    onClick={() => handleHarnessRun('memory', harnessCommands.memory)}
+                    disabled={Boolean(harnessBusy)}
                   />
                   <HarnessButton
                     label="Agent"
                     busy={harnessBusy === 'agent'}
-                    onClick={() => handleHarnessRun('agent', 'run_agent_control_plane_harness')}
+                    onClick={() => handleHarnessRun('agent', harnessCommands.agent)}
+                    disabled={Boolean(harnessBusy)}
+                  />
+                  <HarnessButton
+                    label="Self"
+                    busy={harnessBusy === 'self'}
+                    onClick={() => handleHarnessRun('self', harnessCommands.self)}
+                    disabled={Boolean(harnessBusy)}
                   />
                 </div>
               </div>
               <div className="space-y-2 p-3">
+                <HarnessSummary name="browser parity" report={harnessReports.browser} />
                 <HarnessSummary name="memory/gbrain" report={harnessReports.memory} />
                 <HarnessSummary name="agent control-plane" report={harnessReports.agent} />
-                {!harnessReports.memory && !harnessReports.agent && (
+                <HarnessSummary name="self-improvement gates" report={harnessReports.self} />
+                {!harnessReports.browser && !harnessReports.memory && !harnessReports.agent && !harnessReports.self && (
                   <div className="text-xs text-muted-foreground">
                     尚未运行。结果会显示通过率、平均分和失败 case 的具体检查项。
                   </div>
@@ -518,14 +577,14 @@ export function SystemTab() {
   )
 }
 
-function HarnessButton({ label, busy, onClick }: {
-  label: string; busy: boolean; onClick: () => void
+function HarnessButton({ label, busy, disabled, onClick }: {
+  label: string; busy: boolean; disabled?: boolean; onClick: () => void
 }) {
   return (
     <button
       onClick={onClick}
-      disabled={busy}
-      className="flex min-h-8 items-center gap-1.5 rounded-md border border-border/60 bg-background px-2.5 text-xs text-foreground transition-colors hover:bg-accent disabled:opacity-50"
+      disabled={busy || disabled}
+      className="flex min-h-8 cursor-pointer items-center gap-1.5 rounded-md border border-border/60 bg-background px-2.5 text-xs text-foreground transition-colors hover:bg-accent disabled:cursor-default disabled:opacity-50"
     >
       {busy ? <RefreshCw size={12} className="animate-spin" /> : <PlayCircle size={12} />}
       {label}
@@ -581,6 +640,31 @@ function HarnessSummary({ name, report }: { name: string; report: HarnessSuiteRe
       )}
     </div>
   )
+}
+
+function normalizeHarnessReport(kind: HarnessKind, result: unknown): HarnessSuiteReport {
+  if (kind !== 'self') return result as HarnessSuiteReport
+  const reports = result as SelfImprovementGateReport[]
+  const scorecards: HarnessScorecard[] = reports.map(report => ({
+    caseId: report.candidateId,
+    title: `${report.candidateId} · ${report.verdict}`,
+    passed: report.verdict !== 'hold',
+    score: report.verdict === 'hold' ? 0.5 : 1,
+    checks: report.checks.map(check => ({
+      id: check.id,
+      passed: check.passed,
+      score: check.passed ? 1 : 0,
+      message: check.message,
+    })),
+  }))
+  return {
+    passed: scorecards.every(card => card.passed),
+    averageScore: scorecards.length
+      ? scorecards.reduce((sum, card) => sum + card.score, 0) / scorecards.length
+      : 0,
+    runIds: [],
+    scorecards,
+  }
 }
 
 // ── Sub-components ───────────────────────────────────────────────────

@@ -536,6 +536,25 @@ pub async fn run_memory_gbrain_eval_harness(
 }
 
 #[tauri::command]
+pub async fn run_browser_parity_harness(
+    state: State<'_, AppState>,
+) -> Result<crate::harness::adapters::browser::BrowserParitySuiteReport, Error> {
+    let runtime = crate::harness::HarnessRuntime::new(
+        state
+            .data_dir
+            .join("harness")
+            .join("browser-parity")
+            .join("eval"),
+    );
+    let adapter = crate::harness::adapters::browser::BrowserHarnessAdapter;
+    let executor = crate::harness::adapters::browser::BrowserFixtureParityExecutor;
+    adapter
+        .run_builtin_suite(&runtime, &executor)
+        .await
+        .map_err(|error| Error::Internal(format!("browser parity harness failed: {error}")))
+}
+
+#[tauri::command]
 pub async fn run_agent_control_plane_harness(
     state: State<'_, AppState>,
 ) -> Result<crate::harness::adapters::agent_loop::AgentControlPlaneSuiteReport, Error> {

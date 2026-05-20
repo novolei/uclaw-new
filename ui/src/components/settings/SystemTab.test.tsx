@@ -62,6 +62,21 @@ const suite = {
   ],
 }
 
+const selfGateReports = [
+  {
+    candidateId: 'candidate.memory.safe_profile_fact',
+    verdict: 'promote',
+    score: 1,
+    checks: [{ id: 'rollback_ref', passed: true, message: 'ok' }],
+  },
+  {
+    candidateId: 'candidate.skill.unsafe_shell',
+    verdict: 'reject',
+    score: 0.42,
+    checks: [{ id: 'no_blockers', passed: false, message: 'permission boundary regression' }],
+  },
+]
+
 describe('SystemTab harness reporting', () => {
   beforeEach(() => {
     resetTauriMocks()
@@ -85,5 +100,37 @@ describe('SystemTab harness reporting', () => {
     })
     expect(await screen.findByText('agent control-plane')).toBeInTheDocument()
     expect(screen.getByText('Tool calls are paired with tool results')).toBeInTheDocument()
+  })
+
+  it('runs all exposed harness suites from the unified controls', async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === 'get_system_diagnostics') return diagnostics
+      if (command === 'run_self_improvement_gate_harness') return selfGateReports
+      if (
+        command === 'run_browser_parity_harness'
+        || command === 'run_memory_gbrain_eval_harness'
+        || command === 'run_agent_control_plane_harness'
+      ) return suite
+      throw new Error(`unexpected command ${command}`)
+    })
+
+    const { user } = renderWithProviders(<SystemTab />)
+    await user.click(screen.getByRole('button', { name: /运行诊断/ }))
+    await screen.findByText('自治回归套件')
+
+    await user.click(screen.getByRole('button', { name: /All/ }))
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('run_browser_parity_harness')
+      expect(mockInvoke).toHaveBeenCalledWith('run_memory_gbrain_eval_harness')
+      expect(mockInvoke).toHaveBeenCalledWith('run_agent_control_plane_harness')
+      expect(mockInvoke).toHaveBeenCalledWith('run_self_improvement_gate_harness')
+    })
+    expect(await screen.findByText('browser parity')).toBeInTheDocument()
+    expect(screen.getByText('memory/gbrain')).toBeInTheDocument()
+    expect(screen.getByText('agent control-plane')).toBeInTheDocument()
+    expect(screen.getByText('self-improvement gates')).toBeInTheDocument()
+    expect(screen.getByText('candidate.memory.safe_profile_fact · promote')).toBeInTheDocument()
+    expect(screen.getByText('candidate.skill.unsafe_shell · reject')).toBeInTheDocument()
   })
 })

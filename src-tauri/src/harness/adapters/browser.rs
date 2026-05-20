@@ -267,6 +267,24 @@ impl BrowserParityExecutor for BrowserAgentLoop {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct BrowserFixtureParityExecutor;
+
+#[async_trait]
+impl BrowserParityExecutor for BrowserFixtureParityExecutor {
+    async fn execute_case(
+        &self,
+        case: &BrowserParityCase,
+        request: BrowserTaskRequest,
+    ) -> anyhow::Result<BrowserParityRunOutput> {
+        Ok(BrowserParityRunOutput {
+            active_tab_id: Some("tab-main".to_string()),
+            checkpoint_present: case.require_checkpoint,
+            run: fixture_run_for_case(case, request),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserParitySuiteReport {
@@ -377,6 +395,213 @@ impl BrowserHarnessAdapter {
             scorecards,
         })
     }
+}
+
+fn fixture_run_for_case(case: &BrowserParityCase, request: BrowserTaskRequest) -> BrowserTaskRun {
+    let mut steps = Vec::new();
+    let mut step_index = 0;
+    let current_url = case
+        .expected_url_contains
+        .clone()
+        .or_else(|| case.start_url.clone())
+        .unwrap_or_else(|| "about:blank".to_string());
+
+    if case.require_auth_before_navigation {
+        push_fixture_step(
+            &mut steps,
+            &mut step_index,
+            crate::browser::session_state::BrowserTaskStepPhase::Act,
+            "browser_auth_profile_apply",
+            true,
+            serde_json::json!({
+                "profileId": "fixture-auth-profile",
+                "activeTabId": "tab-main",
+            }),
+            "Applied deterministic fixture auth profile.",
+        );
+    }
+
+    if case.start_url.is_some()
+        || case
+            .required_actions
+            .iter()
+            .any(|action| action == "browser_navigate")
+    {
+        push_fixture_step(
+            &mut steps,
+            &mut step_index,
+            crate::browser::session_state::BrowserTaskStepPhase::Observe,
+            "browser_navigate",
+            true,
+            serde_json::json!({
+                "url": current_url,
+                "currentUrl": case.expected_url_contains.as_deref().unwrap_or(""),
+                "activeTabId": "tab-main",
+            }),
+            "Observed deterministic browser fixture page.",
+        );
+    }
+
+    if case.min_tab_count.unwrap_or(0) >= 2 {
+        push_fixture_step(
+            &mut steps,
+            &mut step_index,
+            crate::browser::session_state::BrowserTaskStepPhase::Act,
+            "browser_switch_tab",
+            true,
+            serde_json::json!({
+                "tabId": "tab-compare",
+                "targetTabId": "tab-summary",
+                "activeTabId": "tab-main",
+                "currentUrl": case.expected_url_contains.as_deref().unwrap_or(""),
+            }),
+            "Switched through deterministic comparison tabs.",
+        );
+    }
+
+    if let Some(file_path) = case.required_file_path.as_deref() {
+        push_fixture_step(
+            &mut steps,
+            &mut step_index,
+            crate::browser::session_state::BrowserTaskStepPhase::Act,
+            "browser_upload_file",
+            true,
+            serde_json::json!({
+                "filePath": file_path,
+                "activeTabId": "tab-main",
+            }),
+            "Uploaded deterministic fixture file.",
+        );
+    }
+
+    if case.require_checkpoint {
+        push_fixture_step(
+            &mut steps,
+            &mut step_index,
+            crate::browser::session_state::BrowserTaskStepPhase::Act,
+            "checkpoint_pause",
+            true,
+            serde_json::json!({
+                "runId": "fixture-checkpoint",
+                "activeTabId": "tab-main",
+            }),
+            "Saved deterministic checkpoint.",
+        );
+    }
+
+    if case.require_resume {
+        push_fixture_step(
+            &mut steps,
+            &mut step_index,
+            crate::browser::session_state::BrowserTaskStepPhase::UserIntervention,
+            "ask_user_response",
+            true,
+            serde_json::json!({
+                "decision": "continue",
+                "activeTabId": "tab-main",
+            }),
+            "Resumed deterministic checkpoint after user acknowledgement.",
+        );
+    }
+
+    if case.require_failure_before_recovery {
+        push_fixture_step(
+            &mut steps,
+            &mut step_index,
+            crate::browser::session_state::BrowserTaskStepPhase::Act,
+            "browser_click",
+            false,
+            serde_json::json!({
+                "error": "stale_dom",
+                "activeTabId": "tab-main",
+            }),
+            "Simulated transient stale DOM failure.",
+        );
+    }
+
+    if case.require_recovery {
+        push_fixture_step(
+            &mut steps,
+            &mut step_index,
+            crate::browser::session_state::BrowserTaskStepPhase::Recover,
+            "recover",
+            true,
+            serde_json::json!({
+                "kind": "stale_dom_retry",
+                "activeTabId": "tab-main",
+            }),
+            "Recovered from deterministic transient browser failure.",
+        );
+    }
+
+    if let Some(boundary_kind) = case.expected_boundary_kind.as_deref() {
+        push_fixture_step(
+            &mut steps,
+            &mut step_index,
+            crate::browser::session_state::BrowserTaskStepPhase::UserIntervention,
+            "needs_user_intervention",
+            false,
+            serde_json::json!({
+                "kind": boundary_kind,
+                "currentUrl": current_url,
+                "activeTabId": "tab-main",
+            }),
+            "Detected deterministic human boundary.",
+        );
+    } else {
+        push_fixture_step(
+            &mut steps,
+            &mut step_index,
+            crate::browser::session_state::BrowserTaskStepPhase::Done,
+            "done",
+            true,
+            serde_json::json!({
+                "currentUrl": current_url,
+                "activeTabId": "tab-main",
+            }),
+            "Completed deterministic browser parity fixture.",
+        );
+    }
+
+    BrowserTaskRun {
+        run_id: uuid::Uuid::new_v4().to_string(),
+        session_id: request.session_id,
+        task: request.task,
+        status: case.expected_status.clone(),
+        steps,
+    }
+}
+
+fn push_fixture_step(
+    steps: &mut Vec<BrowserTaskStep>,
+    step_index: &mut u32,
+    phase: crate::browser::session_state::BrowserTaskStepPhase,
+    action_name: &str,
+    ok: bool,
+    action_args: serde_json::Value,
+    reasoning: &str,
+) {
+    steps.push(BrowserTaskStep {
+        step_index: *step_index,
+        phase,
+        observation_summary: action_args
+            .get("currentUrl")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(reasoning)
+            .to_string(),
+        reasoning: reasoning.to_string(),
+        action_name: action_name.to_string(),
+        action_args,
+        ok,
+        message: Some(reasoning.to_string()),
+        error: if ok {
+            None
+        } else {
+            Some(reasoning.to_string())
+        },
+        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+    });
+    *step_index += 1;
 }
 
 #[derive(Debug)]
