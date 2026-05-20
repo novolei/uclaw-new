@@ -25,9 +25,8 @@ pub struct BrowserContextManager {
 
 impl BrowserContextManager {
     pub fn new(app_handle: tauri::AppHandle) -> Self {
-        let profile_base = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(".uclaw")
+        let profile_base = uclaw_utils_home::uclaw_home_pathbuf()
+            .unwrap_or_else(|_| PathBuf::from("/tmp/.uclaw"))
             .join("browser-profiles");
         Self {
             contexts: Arc::new(RwLock::new(HashMap::new())),

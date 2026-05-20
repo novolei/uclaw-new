@@ -37,9 +37,8 @@ impl BrowserIdentityProfileStore {
     }
 
     pub fn default_metadata_path() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(".uclaw")
+        uclaw_utils_home::uclaw_home_pathbuf()
+            .unwrap_or_else(|_| PathBuf::from("/tmp/.uclaw"))
             .join("browser-identities")
             .join("profiles.json")
     }

@@ -1,8 +1,13 @@
 [package]
-name = "uclaw"
-version = "0.1.0"
-edition = "2021"
+name        = "uclaw"
+version     = "0.1.0"
 description = "AI-powered desktop coworker — uClaw"
+# Inherit from the workspace root (uclaw-upgrade-implementation-plan.md §18 / Phase 0.5-T2).
+edition.workspace      = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
 
 [lib]
 name = "uclaw_core"
@@ -16,6 +21,10 @@ path = "src/main.rs"
 tauri-build = { version = "2.0.0", features = [] }
 
 [dependencies]
+# Phase 0.5-T6 — canonical resolver for ~/.uclaw (sweep target)
+uclaw-utils-home = { path = "../crates/uclaw-utils-home", version = "0.1" }
+# M1-T2a — OrCancelExt for cancellation-aware async
+uclaw-utils-async-utils = { path = "../crates/uclaw-utils-async-utils", version = "0.1" }
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
@@ -182,6 +191,3 @@ default = []
 # Updater plugin — desktop only (not Android/iOS)
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
-
-[profile.release]
-strip = true

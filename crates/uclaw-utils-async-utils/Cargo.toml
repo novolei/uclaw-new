@@ -1,0 +1,15 @@
+[package]
+name = "uclaw-utils-async-utils"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+
+[dependencies]
+async-trait = "0.1"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "sync", "fs", "io-util"] }
+tokio-util = "0.7"
+[dev-dependencies]
+pretty_assertions = "1"
+[lib]
+doctest = false

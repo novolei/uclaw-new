@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# uclaw pre-commit hook — runs all checks under scripts/git-hooks/checks/
+# Each check exits non-zero to block the commit. Bypass with `git commit --no-verify` (use sparingly).
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+CHECKS_DIR="$REPO_ROOT/scripts/git-hooks/checks"
+
+if [ ! -d "$CHECKS_DIR" ]; then
+    # Repo without the checks directory — be permissive (worktrees, partial checkouts).
+    exit 0
+fi
+
+FAILED=0
+for check in "$CHECKS_DIR"/check-*.sh; do
+    [ -x "$check" ] || continue
+    name="$(basename "$check")"
+    if ! "$check"; then
+        FAILED=1
+        echo "[pre-commit] FAILED: $name" >&2
+    fi
+done
+
+if [ "$FAILED" -ne 0 ]; then
+    echo "" >&2
+    echo "[pre-commit] One or more checks failed. To bypass for an emergency:" >&2
+    echo "    git commit --no-verify" >&2
+    echo "Use bypass sparingly and only when you have a clear reason." >&2
+    exit 1
+fi
+
+exit 0

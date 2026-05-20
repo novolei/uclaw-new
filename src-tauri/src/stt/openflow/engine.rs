@@ -35,9 +35,8 @@ pub fn model_is_ready(dir: &Path) -> bool {
 
 /// 默认 SenseVoice 模型目录：`~/.uclaw/models/sensevoice/`。
 pub fn default_sensevoice_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".uclaw")
+    uclaw_utils_home::uclaw_home_pathbuf()
+        .unwrap_or_else(|_| PathBuf::from("./.uclaw"))
         .join("models")
         .join("sensevoice")
 }
