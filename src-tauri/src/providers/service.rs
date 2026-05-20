@@ -152,6 +152,40 @@ impl ProviderService {
         ))
     }
 
+    /// Resolve the ingestion-role model → active_model fallback chain.
+    /// Priority: role_models['ingestion'] → active_model.
+    pub async fn get_ingestion_llm_config(&self) -> Option<(String, String, String, String)> {
+        let configs = self.configs.read().await;
+
+        // Check role_models for 'ingestion' role first
+        if let Some(role_cfg) = configs.role_models.iter().find(|r| r.role == "ingestion") {
+            if let Some(model_ref) = &role_cfg.model_ref {
+                let parts: Vec<&str> = model_ref.splitn(2, '/').collect();
+                if parts.len() == 2 {
+                    let (pid, mid) = (parts[0], parts[1]);
+                    if let Some(provider) = configs.find_provider(pid) {
+                        return Some((
+                            pid.to_string(),
+                            mid.to_string(),
+                            provider.api_key.clone().unwrap_or_default(),
+                            provider.base_url.clone().unwrap_or_default(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Fall back to active_model
+        let active = configs.active_model.as_ref()?;
+        let provider = configs.find_provider(&active.provider_id)?;
+        Some((
+            active.provider_id.clone(),
+            active.model_id.clone(),
+            provider.api_key.clone().unwrap_or_default(),
+            provider.base_url.clone().unwrap_or_default(),
+        ))
+    }
+
     // ── Provider configuration ──────────────────────────────────────────────
 
     /// Save a provider configuration.

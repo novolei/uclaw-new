@@ -64,3 +64,6 @@ pub mod tauri_commands_git;
 
 // Evaluation harness
 pub mod harness;
+
+// Sub-project B: knowledge ingestion pipeline
+pub mod ingestion;

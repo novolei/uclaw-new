@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:mock-tauri": "VITE_UCLAW_MOCK_TAURI=1 vite --host 127.0.0.1 --strictPort",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",

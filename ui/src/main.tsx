@@ -10,6 +10,9 @@
  * - 其余初始化器改为占位，待后续任务逐步接入 Tauri 后端
  */
 
+// Browser-only UI debugging must install the mock before any module imports
+// `@tauri-apps/api` or `tauri-bridge`.
+import './lib/dev-tauri-mock'
 import React, { useEffect, useMemo } from 'react'
 import ReactDOM from 'react-dom/client'
 import { useSetAtom, useAtomValue } from 'jotai'
