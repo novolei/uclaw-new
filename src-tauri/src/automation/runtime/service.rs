@@ -49,67 +49,6 @@ use crate::services::{ManagedService, ServiceHealth, ServiceStatus};
 /// configurable via `HumaneAutomationSpec.config_schema`).
 const PER_SPEC_CONCURRENCY: usize = 2;
 
-// ─── HumaneToolSchema ─────────────────────────────────────────────────────────
-
-// TODO(2b): relocate HumaneToolSchema to automation/tools/ — it landed here
-// only because D4's commit scope was service.rs + cost.rs.
-/// Schema-only `Tool` wrapper for the four Humane tools (report_to_user,
-/// notify_user, request_escalation, memory).
-///
-/// `HeadlessDelegate::execute_tool_calls` dispatches the Humane tools by
-/// NAME — before the registry's `other =>` fallthrough arm — so this
-/// wrapper's `execute()` is never reached. Its only job is to make the
-/// Humane tools appear in `ToolRegistry::list_definitions()` so the LLM is
-/// told they are available to call. The base built-in tools are real `Tool`
-/// impls; these four are advertisement-only.
-struct HumaneToolSchema {
-    name: String,
-    description: String,
-    input_schema: serde_json::Value,
-}
-
-impl HumaneToolSchema {
-    /// Build from a `humane_tool_schemas()` entry: `{name, description, input_schema}`.
-    fn from_value(v: &serde_json::Value) -> Self {
-        Self {
-            name: v.get("name").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-            description: v
-                .get("description")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string(),
-            input_schema: v
-                .get("input_schema")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({"type": "object"})),
-        }
-    }
-}
-
-#[async_trait]
-impl crate::agent::tools::tool::Tool for HumaneToolSchema {
-    fn name(&self) -> &str {
-        &self.name
-    }
-    fn description(&self) -> &str {
-        &self.description
-    }
-    fn parameters_schema(&self) -> serde_json::Value {
-        self.input_schema.clone()
-    }
-    async fn execute(
-        &self,
-        _params: serde_json::Value,
-    ) -> Result<crate::agent::tools::tool::ToolOutput, crate::agent::tools::tool::ToolError> {
-        // Unreachable in practice: AutomationDelegate handles the four Humane
-        // tools by name before the ToolRegistry `other =>` arm is consulted.
-        Err(crate::agent::tools::tool::ToolError::Execution(format!(
-            "Humane tool '{}' is delegate-dispatched, not registry-dispatched",
-            self.name
-        )))
-    }
-}
-
 // ─── EscalationRow ───────────────────────────────────────────────────────────
 
 /// A row from `automation_escalations` returned by `list_pending_escalations`.
@@ -1390,8 +1329,9 @@ impl AppRuntimeService {
     }
 
     /// Build the headless tool set for an automation run: the AppHandle-free
-    /// base built-in tools rooted at `workspace_root`, plus the four Humane
-    /// tools as advertisement-only schemas (see [`HumaneToolSchema`]).
+    /// base built-in tools rooted at `workspace_root`, plus the automation
+    /// schema tools (`report_to_user`, `notify_user`, `request_escalation`,
+    /// `memory`).
     ///
     /// The interactive-chat tools that require a Tauri `AppHandle`
     /// (`ask_user`, `exit_plan_mode`, `plan`, `self_eval`, `skill_search`,
@@ -1401,24 +1341,13 @@ impl AppRuntimeService {
         &self,
         workspace_root: &std::path::Path,
     ) -> Arc<crate::agent::tools::tool::ToolRegistry> {
-        use crate::agent::tools::builtin;
-        let mut tools = crate::agent::tools::tool::ToolRegistry::new();
-        let ws = workspace_root.to_path_buf();
-        tools.register(builtin::file::ReadFileTool::new(ws.clone()));
-        tools.register(builtin::file::WriteFileTool::new(ws.clone()));
-        tools.register(builtin::search::GrepTool::new(ws.clone()));
-        tools.register(builtin::search::GlobTool::new(ws.clone()));
-        tools.register(builtin::web::WebFetchTool::new());
-        tools.register(builtin::web::HttpRequestTool::new());
-        tools.register(builtin::edit::EditTool::new(ws.clone()));
-        tools.register(builtin::shell::BashTool::new(ws.clone()));
-        // Advertise the four Humane tools to the LLM. They are dispatched by
-        // name in HeadlessDelegate::execute_tool_calls, so these wrappers
-        // exist purely so list_definitions() includes them.
-        for schema in crate::automation::tools::humane_tool_schemas() {
-            tools.register(HumaneToolSchema::from_value(&schema));
-        }
-        Arc::new(tools)
+        crate::automation::runtime::tool_registry::build_base_registry(
+            crate::automation::runtime::tool_registry::AutomationToolRegistryDeps {
+                workspace_root: workspace_root.to_path_buf(),
+                spec_permissions: Vec::new(),
+                gbrain_declared: false,
+            },
+        )
     }
 
     /// Resolve the LLM provider + model id for an automation run from the

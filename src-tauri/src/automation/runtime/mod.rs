@@ -5,6 +5,7 @@ pub mod execute;
 pub mod prompt;
 pub mod run_session;
 pub mod service;
+pub mod tool_registry;
 
 pub use service::{AppRuntimeService, EscalationRow};
 
