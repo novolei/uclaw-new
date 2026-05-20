@@ -400,7 +400,62 @@ Lifecycle:
    - update gbrain
    - execute moderation actions
    - write trace
-6. Run stops when the user stops it, the room ends, login becomes stale, permissions are insufficient, or a fatal adapter error occurs.
+6. Runtime checks terminal signals after every tick and after adapter errors.
+7. Run stops when the user stops it, the room ends, login becomes stale, permissions are insufficient, or a fatal adapter error occurs.
+8. Every stop path writes a final run report before the activity becomes terminal.
+
+### Stop Conditions and Final Report
+
+Stop reasons are explicit and persisted in the activity/run metadata:
+
+- `user_stopped`: the app user clicks Stop for this live-room run.
+- `room_ended`: the adapter detects that the live room has ended.
+- `login_required`: the browser session loses login state or hits a human login/CAPTCHA boundary.
+- `insufficient_permissions`: the account is not a room manager or the platform denies a moderator action.
+- `blocked`: the platform blocks access or shows an anti-abuse page.
+- `fatal_adapter_error`: the adapter cannot recover after bounded retries.
+
+The Douyin adapter must expose a room-status check, either as part of `scan_comments` or as a separate built-in script:
+
+```json
+{
+  "status": "live | ended | login_required | blocked | unknown",
+  "signals": ["ended_badge", "no_comment_input", "replay_page"],
+  "reason": "主播已结束直播"
+}
+```
+
+Room-ended detection should combine multiple weak signals instead of trusting a single text selector:
+
+- page text or badge indicates the livestream ended
+- comment input disappears or is disabled
+- page navigates to replay/profile/non-live state
+- scan returns a stable ended status for two consecutive ticks
+
+Manual stop behavior:
+
+- Stopping one live-room spec instance cancels only that run's tick loop.
+- The runtime finishes the in-flight browser action if it is already inside a platform click unless cancellation is needed to avoid unsafe duplicate action.
+- The final report reason is `user_stopped`.
+- Browser context cleanup must not destroy another concurrent live-room run.
+
+Final report content:
+
+- platform, room ID/title, live URL, start time, end time, duration
+- stop reason and terminal adapter status
+- total comments scanned and new comments processed
+- replies sent, atmosphere replies sent, unanswered questions
+- warnings, mutes, removals, action failures, and evidence IDs
+- gbrain recall count, write count, and written room-scoped slugs
+- login/human-boundary events without credential material
+- top learned knowledge candidates and skipped knowledge reasons
+- errors/retries by bounded error kind
+
+The report is written to:
+
+- the automation activity `report_text` / `report_artifacts_json`
+- the run transcript terminal message
+- optionally a room-scoped gbrain page under `live/<platform>/<room_id>/reports/<yyyy-mm-dd>/<run_id>` with secrets redacted
 
 ### Concurrent Spec Instances
 
@@ -688,6 +743,8 @@ Required assertions:
 - `remove_user` acts on the re-verified target user when enabled.
 - If deterministic scripts cannot find the action affordance, the adapter falls back to constrained `browser_task`.
 - The adapter records `action_denied`, `target_not_verified`, or `insufficient_permissions` instead of fake success.
+- The run auto-stops when the controlled room ends and writes a final report.
+- The app Stop button ends only the selected live-room run and writes a final report with `user_stopped`.
 - No password, SMS code, cookie, localStorage payload, or raw storage state appears in automation trace, gbrain, or diagnostics.
 
 ## Rollout Plan

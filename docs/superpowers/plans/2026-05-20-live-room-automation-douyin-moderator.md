@@ -10,6 +10,8 @@
 
 **Real-action correction:** The user confirmed first-version room-manager actions default to real execution. The implementation may keep strong verification gates, but `send_reply`, `warn_user`, `mute_user`, and `remove_user` must have an executable path before the feature is considered complete. If a deterministic script cannot verify the target/action, the adapter must fall back to a constrained `browser_task` action and only return success after the page confirms the intended action.
 
+**Stop/report correction:** The live-room executor must end automatically when the page indicates the live room is over, and the app user must be able to stop a specific running spec instance. Every terminal path writes a full run report before the activity is marked terminal.
+
 **Tech Stack:** Rust/Tauri v2, chromiumoxide browser tools, existing automation runtime, gbrain MCP, rusqlite, React 18 + Jotai, Vitest, Rust unit tests, uClaw harness fixtures.
 
 ---
@@ -837,6 +839,32 @@ mod tests {
         assert_eq!(runtime.kind, "live_room_moderator");
         assert_eq!(runtime.poll_interval_seconds, 30);
     }
+
+    #[test]
+    fn final_report_contains_terminal_reason_and_counts() {
+        let report = LiveRunReport {
+            platform: "douyin".into(),
+            room_id: "room-1".into(),
+            room_title: Some("Launch Room".into()),
+            live_url: "https://www.douyin.com/live/room-1".into(),
+            started_at_ms: 1000,
+            ended_at_ms: 61000,
+            stop_reason: LiveStopReason::RoomEnded,
+            comments_scanned: 42,
+            replies_sent: 3,
+            warnings_sent: 2,
+            mutes_executed: 1,
+            removals_executed: 0,
+            gbrain_recalls: 4,
+            gbrain_writes: 2,
+            gbrain_slugs: vec!["live/douyin/room-1/facts/topic".into()],
+            error_kinds: vec![],
+        };
+        let text = report.to_markdown();
+        assert!(text.contains("Stop reason: `room_ended`"));
+        assert!(text.contains("Comments scanned: 42"));
+        assert!(text.contains("live/douyin/room-1/facts/topic"));
+    }
 }
 ```
 
@@ -886,6 +914,68 @@ pub struct LiveRunState {
     pub tab_id: Option<String>,
     pub comment_cursor: Option<String>,
     pub last_tick_ms: Option<i64>,
+    pub ended_signal_count: u8,
+    pub stop_requested: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveStopReason {
+    UserStopped,
+    RoomEnded,
+    LoginRequired,
+    InsufficientPermissions,
+    Blocked,
+    FatalAdapterError,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LiveRunReport {
+    pub platform: String,
+    pub room_id: String,
+    pub room_title: Option<String>,
+    pub live_url: String,
+    pub started_at_ms: i64,
+    pub ended_at_ms: i64,
+    pub stop_reason: LiveStopReason,
+    pub comments_scanned: u64,
+    pub replies_sent: u64,
+    pub warnings_sent: u64,
+    pub mutes_executed: u64,
+    pub removals_executed: u64,
+    pub gbrain_recalls: u64,
+    pub gbrain_writes: u64,
+    pub gbrain_slugs: Vec<String>,
+    pub error_kinds: Vec<String>,
+}
+
+impl LiveRunReport {
+    pub fn to_markdown(&self) -> String {
+        let stop_reason = serde_json::to_value(self.stop_reason)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| "unknown".to_string());
+        let slugs = self
+            .gbrain_slugs
+            .iter()
+            .map(|slug| format!("- `{slug}`"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            "# Live Room Run Report\n\n- Platform: `{}`\n- Room: `{}`\n- Stop reason: `{}`\n- Comments scanned: {}\n- Replies sent: {}\n- Warnings: {}\n- Mutes: {}\n- Removals: {}\n- gbrain recalls: {}\n- gbrain writes: {}\n\n## gbrain pages\n{}\n",
+            self.platform,
+            self.room_id,
+            stop_reason,
+            self.comments_scanned,
+            self.replies_sent,
+            self.warnings_sent,
+            self.mutes_executed,
+            self.removals_executed,
+            self.gbrain_recalls,
+            self.gbrain_writes,
+            slugs
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -969,7 +1059,97 @@ if automation_executor_kind(&spec_value) == "live_room_moderator" {
 
 The executor must reuse the existing activity row, permission set, provider resolution, tool registry, and stop/deactivation semantics. It must not start a separate scheduler or create a second activity ledger.
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 5: Implement terminal signal and report shell**
+
+Add these helper contracts in `runtime.rs`:
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveRoomStatus {
+    pub status: String,
+    pub signals: Vec<String>,
+    pub reason: Option<String>,
+}
+
+pub fn should_stop_for_room_status(
+    status: &LiveRoomStatus,
+    state: &mut LiveRunState,
+) -> Option<LiveStopReason> {
+    match status.status.as_str() {
+        "ended" => {
+            state.ended_signal_count = state.ended_signal_count.saturating_add(1);
+            if state.ended_signal_count >= 2 {
+                Some(LiveStopReason::RoomEnded)
+            } else {
+                None
+            }
+        }
+        "login_required" => Some(LiveStopReason::LoginRequired),
+        "blocked" => Some(LiveStopReason::Blocked),
+        _ => {
+            state.ended_signal_count = 0;
+            None
+        }
+    }
+}
+
+pub async fn persist_final_report(
+    db: &std::sync::Mutex<rusqlite::Connection>,
+    activity_id: &str,
+    report: &LiveRunReport,
+) -> anyhow::Result<()> {
+    let text = report.to_markdown();
+    let artifacts = serde_json::json!([{
+        "kind": "live_room_report",
+        "platform": report.platform,
+        "room_id": report.room_id,
+        "stop_reason": report.stop_reason
+    }]);
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    conn.execute(
+        "UPDATE automation_activities SET report_text=?1, report_artifacts_json=?2 WHERE id=?3",
+        rusqlite::params![text, artifacts.to_string(), activity_id],
+    )?;
+    Ok(())
+}
+```
+
+Inside `execute_live_room_run`, check both user stop and page stop:
+
+```rust
+loop {
+    if load_stop_requested(spec_id, &run_id)? {
+        stop_reason = LiveStopReason::UserStopped;
+        break;
+    }
+
+    let status = adapter.check_room_status(&state).await?;
+    if let Some(reason) = should_stop_for_room_status(&status, &mut state) {
+        stop_reason = reason;
+        break;
+    }
+
+    run_one_tick(
+        &adapter,
+        &mut state,
+        &mut counters,
+        &tool_context,
+        &room_scope,
+    ).await?;
+    tokio::time::sleep(Duration::from_secs(metadata.poll_interval_seconds)).await;
+}
+
+let report = build_live_run_report(
+    &state,
+    &counters,
+    stop_reason,
+    started_at_ms,
+    chrono::Utc::now().timestamp_millis(),
+);
+persist_final_report(&self.db, &activity_id, &report).await?;
+```
+
+- [ ] **Step 6: Run tests**
 
 Run:
 
@@ -979,7 +1159,7 @@ cd src-tauri && cargo test --lib automation::live_room::runtime::tests -- --noca
 
 Expected: pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src-tauri/src/automation/live_room/runtime.rs src-tauri/src/automation/live_room/mod.rs src-tauri/src/automation/runtime/service.rs
@@ -1111,6 +1291,7 @@ git commit -m "feat(automation): add douyin live room adapter"
 **Files:**
 - Create: `src-tauri/resources/live-room/douyin/scan_comments.js`
 - Create: `src-tauri/resources/live-room/douyin/enter_room.js`
+- Create: `src-tauri/resources/live-room/douyin/check_room_status.js`
 - Create: `src-tauri/resources/live-room/douyin/send_reply.js`
 - Create: `src-tauri/resources/live-room/douyin/warn_user.js`
 - Create: `src-tauri/resources/live-room/douyin/mute_user.js`
@@ -1126,7 +1307,7 @@ In `douyin.rs`, add a test that validates required script files exist relative t
 #[test]
 fn built_in_douyin_scripts_exist() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/live-room/douyin");
-    for name in ["enter_room.js", "scan_comments.js", "send_reply.js", "warn_user.js", "mute_user.js", "remove_user.js"] {
+    for name in ["enter_room.js", "check_room_status.js", "scan_comments.js", "send_reply.js", "warn_user.js", "mute_user.js", "remove_user.js"] {
         assert!(root.join(name).is_file(), "missing script {name}");
     }
 }
@@ -1178,6 +1359,27 @@ async (params) => {
     roomTitle: document.title || 'Douyin Live Room',
     hostId: null,
     url: location.href
+  }
+}
+```
+
+Create `check_room_status.js`:
+
+```javascript
+async () => {
+  const text = document.body?.innerText || ''
+  const hasEndedText = /直播已结束|主播已结束直播|live has ended|replay/i.test(text)
+  const input = document.querySelector('[contenteditable="true"], textarea, input[type="text"]')
+  const url = location.href
+  const signals = []
+  if (hasEndedText) signals.push('ended_text')
+  if (!input || input.disabled || input.getAttribute('aria-disabled') === 'true') signals.push('no_comment_input')
+  if (/replay|record|profile|user/.test(url) && !/live/.test(url)) signals.push('non_live_url')
+  const endedScore = signals.filter((s) => ['ended_text', 'no_comment_input', 'non_live_url'].includes(s)).length
+  return {
+    status: endedScore >= 2 ? 'ended' : 'live',
+    signals,
+    reason: hasEndedText ? 'room ended text detected' : ''
   }
 }
 ```
@@ -1489,6 +1691,7 @@ it('renders live room platform and room status', () => {
   expect(screen.getByText(/douyin/i)).toBeInTheDocument()
   expect(screen.getByText(/Launch Room/)).toBeInTheDocument()
   expect(screen.getByText(/5/)).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument()
 })
 ```
 
@@ -1531,6 +1734,14 @@ const live = (run as any).metadata
 ```
 
 Keep styling consistent with existing automation cards and do not add a nested card.
+
+Use existing automation action patterns. Add or reuse backend invoke names for:
+
+- start live-room run
+- stop live-room run by `spec_id + run_id`
+- show terminal report summary when `report_text` exists
+
+The stop action must target one run instance and must not disable the whole spec unless the user explicitly disables the spec.
 
 - [ ] **Step 4: Run tests**
 
@@ -1579,6 +1790,9 @@ mod tests {
             scoped_gbrain_write: true,
             mute_after_two_warnings: true,
             severe_remove_enabled: true,
+            auto_stopped_on_room_end: true,
+            user_stop_report_written: true,
+            final_report_written: true,
             leaked_auth_material: false,
         };
         assert_eq!(grade_live_room_trace(&trace).verdict, "pass");
@@ -1610,6 +1824,9 @@ pub struct LiveRoomHarnessTrace {
     pub scoped_gbrain_write: bool,
     pub mute_after_two_warnings: bool,
     pub severe_remove_enabled: bool,
+    pub auto_stopped_on_room_end: bool,
+    pub user_stop_report_written: bool,
+    pub final_report_written: bool,
     pub leaked_auth_material: bool,
 }
 
@@ -1626,6 +1843,9 @@ pub fn grade_live_room_trace(trace: &LiveRoomHarnessTrace) -> LiveRoomGrade {
         && trace.scoped_gbrain_write
         && trace.mute_after_two_warnings
         && trace.severe_remove_enabled
+        && trace.auto_stopped_on_room_end
+        && trace.user_stop_report_written
+        && trace.final_report_written
         && !trace.leaked_auth_material;
     LiveRoomGrade { verdict: if pass { "pass" } else { "fail" } }
 }
@@ -1653,6 +1873,9 @@ Create `src-tauri/src/harness/fixtures/live_room_douyin_moderator.json`:
     "gbrain recall uses live/douyin/<room_id>/ prefix",
     "two warnings lead to mute",
     "severe violation can remove",
+    "room ended signal auto-stops run",
+    "user stop writes final report",
+    "final report includes counts and stop reason",
     "no auth material in trace"
   ]
 }
@@ -1671,6 +1894,9 @@ Create `docs/superpowers/reports/live-room-douyin-moderator-scorecard.md`:
 | gbrain writes use `live/douyin/{room_id}/` prefix | not_run |
 | Two warnings lead to mute | not_run |
 | Severe violation can remove | not_run |
+| Room ended signal auto-stops run | not_run |
+| User stop writes final report | not_run |
+| Final report includes counts and stop reason | not_run |
 | Auth material absent from trace | not_run |
 ```
 
