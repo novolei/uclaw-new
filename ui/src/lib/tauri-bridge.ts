@@ -1368,7 +1368,8 @@ export const listAgentSessions = (): Promise<any[]> =>
  *
  * `identityKey` shape:
  *   - "local"                    → spec owner's local chat thread
- *   - "{channelType}:{chatId}"   → per-IM-user thread (e.g. "wechat_ilink:UIN_a")
+ *   - "app-chat:{specId}:{channelType}:{chatId}" → per-IM-user thread
+ *   - "{channelType}:{chatId}"   → legacy per-IM-user thread
  */
 export interface ChatSessionSummary {
   identityKey: string

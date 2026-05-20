@@ -3,8 +3,9 @@
  *
  * Lists every (spec, identity) chat session sourced from
  * `automation_chat_sessions`. Identities are either "local" (the spec
- * owner) or "{channelType}:{chatId}" (one per IM user that has triggered
- * the spec). The leading icon swaps to the channel logo for IM rows,
+ * owner), "app-chat:{specId}:{channelType}:{chatId}" (new app-scoped IM
+ * identity), or legacy "{channelType}:{chatId}" rows created before the
+ * Halo-compatible identity upgrade. The leading icon swaps to the channel logo for IM rows,
  * mirroring the WorkspaceRail / TabBar convention from PR #189.
  *
  * Read-only for now — opening a thread as a tab is a follow-up PR (the
@@ -19,6 +20,32 @@ import { imChannelDisplay } from '@/lib/im-channel-display'
 
 interface Props {
   specId: string
+}
+
+export function parseAutomationChatIdentityKey(identityKey: string): {
+  channelType: string | null
+  chatId: string | null
+  label: string
+} {
+  if (identityKey === 'local') {
+    return { channelType: null, chatId: null, label: '本地 owner' }
+  }
+
+  const parts = identityKey.split(':')
+  if (parts[0] === 'app-chat' && parts.length >= 4) {
+    const channelType = parts[2]
+    const chatId = parts.slice(3).join(':')
+    return { channelType, chatId, label: chatId }
+  }
+
+  const colonIdx = identityKey.indexOf(':')
+  if (colonIdx >= 0) {
+    const channelType = identityKey.slice(0, colonIdx)
+    const chatId = identityKey.slice(colonIdx + 1)
+    return { channelType, chatId, label: chatId }
+  }
+
+  return { channelType: null, chatId: null, label: identityKey }
 }
 
 export function ChatThreadsTab({ specId }: Props): React.ReactElement {
@@ -42,13 +69,8 @@ export function ChatThreadsTab({ specId }: Props): React.ReactElement {
   return (
     <div className="flex flex-col gap-0.5 p-2 overflow-y-auto">
       {sessions.map((s) => {
-        // identity_key: "local" | "{channelType}:{chatId}"
-        const colonIdx = s.identityKey.indexOf(':')
-        const [channelType, chatId] =
-          s.identityKey === 'local' || colonIdx < 0
-            ? [null, null]
-            : [s.identityKey.slice(0, colonIdx), s.identityKey.slice(colonIdx + 1)]
-        const channel = channelType ? imChannelDisplay(channelType) : null
+        const identity = parseAutomationChatIdentityKey(s.identityKey)
+        const channel = identity.channelType ? imChannelDisplay(identity.channelType) : null
 
         return (
           <div
@@ -71,7 +93,7 @@ export function ChatThreadsTab({ specId }: Props): React.ReactElement {
               )}
             </span>
             <span className="flex-1 truncate text-sm">
-              {s.identityKey === 'local' ? '本地 owner' : (chatId ?? s.identityKey)}
+              {identity.label}
             </span>
             <span className="text-xs text-muted-foreground shrink-0">
               {s.messageCount} 条

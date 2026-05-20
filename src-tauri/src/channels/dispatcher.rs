@@ -249,7 +249,7 @@ async fn run_automation_via_im(
     let runtime_service = state.runtime_service.clone();
 
     // Phase 2b cluster A: look up the channel_type for the instance so the
-    // identity_key is the canonical "{channel_type}:{chat_id}" form. Defaults
+    // identity_key uses the Halo-compatible app-scoped form. Defaults
     // to "unknown" if the instance row is missing, which lets the dispatch
     // proceed under a stable (if opaque) identity rather than dropping the
     // message on the floor.
@@ -265,7 +265,12 @@ async fn run_automation_via_im(
         )
         .unwrap_or_else(|_| "unknown".to_string())
     };
-    let identity_key = format!("{}:{}", channel_type, msg.chat_id);
+    let identity_key =
+        crate::automation::runtime::chat_sessions::automation_im_identity_key(
+            &spec.spec_id,
+            &channel_type,
+            &msg.chat_id,
+        );
 
     let payload = serde_json::json!({
         "trigger": "im",
@@ -837,7 +842,10 @@ mod tests {
         // Verifies two IM users on the same channel for the same spec get
         // distinct (spec, identity) chat sessions, while a second message
         // from the first user reuses theirs.
-        use crate::automation::runtime::chat_sessions::get_or_create_chat_session;
+        use crate::automation::runtime::chat_sessions::{
+            automation_im_identity_key,
+            get_or_create_chat_session,
+        };
         let conn = setup_db();
         let now = chrono::Utc::now().timestamp_millis();
         conn.execute(
@@ -851,7 +859,7 @@ mod tests {
         ).unwrap();
 
         // Simulate run_automation_via_im's identity_key construction by
-        // looking up channel_type and combining with chat_id.
+        // looking up channel_type and combining it with spec_id + chat_id.
         let lookup_channel_type = |instance_id: &str| -> String {
             conn.query_row(
                 "SELECT channel_type FROM im_channel_instances WHERE id = ?1",
@@ -861,11 +869,12 @@ mod tests {
             .unwrap_or_else(|_| "unknown".to_string())
         };
 
-        let key_a = format!("{}:{}", lookup_channel_type("chan_x"), "UIN_a");
-        let key_b = format!("{}:{}", lookup_channel_type("chan_x"), "UIN_b");
-        let key_a_again = format!("{}:{}", lookup_channel_type("chan_x"), "UIN_a");
-        assert_eq!(key_a, "wechat_ilink:UIN_a");
-        assert_eq!(key_b, "wechat_ilink:UIN_b");
+        let key_a = automation_im_identity_key("spec_y", &lookup_channel_type("chan_x"), "UIN_a");
+        let key_b = automation_im_identity_key("spec_y", &lookup_channel_type("chan_x"), "UIN_b");
+        let key_a_again =
+            automation_im_identity_key("spec_y", &lookup_channel_type("chan_x"), "UIN_a");
+        assert_eq!(key_a, "app-chat:spec_y:wechat_ilink:UIN_a");
+        assert_eq!(key_b, "app-chat:spec_y:wechat_ilink:UIN_b");
         assert_eq!(key_a, key_a_again);
 
         let id_a = get_or_create_chat_session(&conn, "spec_y", &key_a, "default").unwrap();
@@ -896,8 +905,12 @@ mod tests {
             )
             .unwrap_or_else(|_| "unknown".to_string())
         };
-        let key = format!("{}:{}", lookup_channel_type("nonexistent"), "UIN_z");
-        assert_eq!(key, "unknown:UIN_z");
+        let key = crate::automation::runtime::chat_sessions::automation_im_identity_key(
+            "spec_z",
+            &lookup_channel_type("nonexistent"),
+            "UIN_z",
+        );
+        assert_eq!(key, "app-chat:spec_z:unknown:UIN_z");
     }
 
     // Phase 2b cluster A · Task 7 — end-to-end state contract.
@@ -908,7 +921,8 @@ mod tests {
     // of scope for unit tests; covered by manual QA per the plan).
     //
     // The seam: when WeChat user A sends a trigger phrase that matches
-    // a spec, the dispatcher constructs identity_key="wechat_ilink:UIN_a"
+    // a spec, the dispatcher constructs
+    // identity_key="app-chat:spec_e2e:wechat_ilink:UIN_a"
     // and calls execute_run_in_chat_session which calls
     // get_or_create_chat_session. We exercise that same call chain at
     // the DB level and assert the resulting agent_session + index row
@@ -916,7 +930,10 @@ mod tests {
 
     #[test]
     fn task7_im_round_trip_state_contract() {
-        use crate::automation::runtime::chat_sessions::get_or_create_chat_session;
+        use crate::automation::runtime::chat_sessions::{
+            automation_im_identity_key,
+            get_or_create_chat_session,
+        };
         let conn = setup_db();
         let now = chrono::Utc::now().timestamp_millis();
 
@@ -948,7 +965,8 @@ mod tests {
             "SELECT channel_type FROM im_channel_instances WHERE id='chan_e2e'",
             [], |r| r.get(0),
         ).unwrap();
-        let identity_key = format!("{}:{}", channel_type, "UIN_e2e_user");
+        let identity_key =
+            automation_im_identity_key("spec_e2e", &channel_type, "UIN_e2e_user");
         let chat_session_id = get_or_create_chat_session(
             &conn, "spec_e2e", &identity_key, "default",
         ).unwrap();
@@ -963,12 +981,12 @@ mod tests {
         ).unwrap();
         assert_eq!(origin, "automation:chat");
         assert_eq!(spec_id, "spec_e2e");
-        assert_eq!(ikey, "wechat_ilink:UIN_e2e_user");
+        assert_eq!(ikey, "app-chat:spec_e2e:wechat_ilink:UIN_e2e_user");
 
         // Contract 2: index row connects spec → identity → agent_session.
         let mapped: String = conn.query_row(
             "SELECT agent_session_id FROM automation_chat_sessions
-             WHERE spec_id='spec_e2e' AND identity_key='wechat_ilink:UIN_e2e_user'",
+             WHERE spec_id='spec_e2e' AND identity_key='app-chat:spec_e2e:wechat_ilink:UIN_e2e_user'",
             [], |r| r.get(0),
         ).unwrap();
         assert_eq!(mapped, chat_session_id);
@@ -988,10 +1006,12 @@ mod tests {
             })
             .unwrap().filter_map(|r| r.ok()).collect();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].0, "wechat_ilink:UIN_e2e_user");
+        assert_eq!(rows[0].0, "app-chat:spec_e2e:wechat_ilink:UIN_e2e_user");
         assert_eq!(rows[0].1, chat_session_id);
         // Title shape from get_or_create_chat_session.
-        assert!(rows[0].2.starts_with("Chat · spec_e2e · wechat_ilink:UIN_e2e_user"));
+        assert!(rows[0].2.starts_with(
+            "Chat · spec_e2e · app-chat:spec_e2e:wechat_ilink:UIN_e2e_user"
+        ));
 
         // Contract 4: a second message from the same user reuses the
         // same session (the burst-serialization mutex from Task 2 will
@@ -1003,7 +1023,8 @@ mod tests {
 
         // Contract 5: a DIFFERENT user gets a DIFFERENT session, even
         // for the same spec.
-        let key_other = format!("{}:{}", channel_type, "UIN_other_user");
+        let key_other =
+            automation_im_identity_key("spec_e2e", &channel_type, "UIN_other_user");
         let session_other = get_or_create_chat_session(
             &conn, "spec_e2e", &key_other, "default",
         ).unwrap();
