@@ -372,7 +372,7 @@ async fn run_agent_chat_via_im(
     let llm = crate::llm::create_provider(&llm_config)
         .map_err(|e| anyhow::anyhow!("create provider: {e}"))?;
 
-    let tools = runtime_service.build_automation_tool_registry(&workspace_root);
+    let tools = runtime_service.build_automation_tool_registry(&workspace_root, &[], false);
 
     let auto_cfg = crate::memubot_config::AutomationConfig::default();
     let cost_cap = crate::automation::runtime::cost::CostCapConfig {

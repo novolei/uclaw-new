@@ -59,6 +59,40 @@ pub fn build_base_registry(deps: AutomationToolRegistryDeps) -> Arc<ToolRegistry
     Arc::new(tools)
 }
 
+pub fn build_registry_with_capabilities(deps: AutomationToolRegistryDeps) -> Arc<ToolRegistry> {
+    let mut tools = ToolRegistry::new();
+    register_base_tools(&mut tools, deps.workspace_root.clone());
+    register_automation_schema_tools(&mut tools);
+
+    if deps.spec_permissions.contains(&Permission::AiBrowser) {
+        let builtin_root =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/live-room");
+        tools.register(crate::browser::tools::BrowserRunScriptTool {
+            session_id: "automation-live-room".to_string(),
+            workspace_root: deps.workspace_root.clone(),
+            builtin_root,
+        });
+        tools.register(CapabilitySchemaTool::new(
+            "browser_task",
+            "Run a constrained browser fallback task. Execution is connected by the live browser bridge.",
+        ));
+        tools.register(CapabilitySchemaTool::new(
+            "browser_task_resume",
+            "Resume a constrained browser fallback task. Execution is connected by the live browser bridge.",
+        ));
+        tools.register(CapabilitySchemaTool::new(
+            "retry_with_browser_agent",
+            "Retry a browser action through the browser agent. Execution is connected by the live browser bridge.",
+        ));
+    }
+    if deps.gbrain_declared {
+        tools.register(ScopedGbrainSchemaTool::new("gbrain_room_search"));
+        tools.register(ScopedGbrainSchemaTool::new("gbrain_room_get_page"));
+        tools.register(ScopedGbrainSchemaTool::new("gbrain_room_put_page"));
+    }
+    Arc::new(tools)
+}
+
 pub fn register_base_tools(tools: &mut ToolRegistry, workspace_root: PathBuf) {
     let ws = workspace_root;
     tools.register(builtin::file::ReadFileTool::new(ws.clone()));
@@ -131,6 +165,95 @@ impl crate::agent::tools::tool::Tool for AutomationToolSchema {
     }
 }
 
+pub struct CapabilitySchemaTool {
+    name: String,
+    description: String,
+}
+
+impl CapabilitySchemaTool {
+    pub fn new(name: &str, description: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            description: description.to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl crate::agent::tools::tool::Tool for CapabilitySchemaTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": true
+        })
+    }
+
+    async fn execute(
+        &self,
+        _params: serde_json::Value,
+    ) -> Result<crate::agent::tools::tool::ToolOutput, crate::agent::tools::tool::ToolError> {
+        Err(crate::agent::tools::tool::ToolError::Execution(format!(
+            "{} execution not connected",
+            self.name
+        )))
+    }
+}
+
+pub struct ScopedGbrainSchemaTool {
+    name: String,
+}
+
+impl ScopedGbrainSchemaTool {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl crate::agent::tools::tool::Tool for ScopedGbrainSchemaTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        "Room-scoped gbrain helper. Requires platform and room_id; unscoped access is rejected."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "platform": { "type": "string" },
+                "room_id": { "type": "string" },
+                "query": { "type": "string" },
+                "slug": { "type": "string" },
+                "content": { "type": "string" }
+            },
+            "required": ["platform", "room_id"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        _params: serde_json::Value,
+    ) -> Result<crate::agent::tools::tool::ToolOutput, crate::agent::tools::tool::ToolError> {
+        Err(crate::agent::tools::tool::ToolError::Execution(format!(
+            "{} execution not connected",
+            self.name
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +302,19 @@ mod tests {
         assert!(names.contains(&"notify_user".to_string()));
         assert!(names.contains(&"request_escalation".to_string()));
         assert!(names.contains(&"memory".to_string()));
+    }
+
+    #[test]
+    fn capable_registry_exposes_browser_and_room_gbrain_tools() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = build_registry_with_capabilities(AutomationToolRegistryDeps {
+            workspace_root: tmp.path().to_path_buf(),
+            spec_permissions: vec![Permission::AiBrowser],
+            gbrain_declared: true,
+        });
+        let defs = registry.list_definitions();
+        assert!(defs.iter().any(|tool| tool.name == "browser_task"));
+        assert!(defs.iter().any(|tool| tool.name == "browser_run_script"));
+        assert!(defs.iter().any(|tool| tool.name == "gbrain_room_search"));
     }
 }

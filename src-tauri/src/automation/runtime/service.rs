@@ -62,6 +62,13 @@ pub(crate) fn automation_executor_kind(spec_json: &serde_json::Value) -> &'stati
     }
 }
 
+fn spec_declares_gbrain(spec: &HumaneAutomationSpec) -> bool {
+    spec.requires
+        .as_ref()
+        .map(|value| value.to_string().contains("gbrain"))
+        .unwrap_or(false)
+}
+
 // ─── EscalationRow ───────────────────────────────────────────────────────────
 
 /// A row from `automation_escalations` returned by `list_pending_escalations`.
@@ -655,7 +662,11 @@ impl AppRuntimeService {
         let mut reason_ctx = ReasoningContext::new(system_prompt);
         reason_ctx.messages.push(ChatMessage::user(&initial_message));
 
-        let tools = self.build_automation_tool_registry(&workspace_root);
+        let tools = self.build_automation_tool_registry(
+            &workspace_root,
+            &permissions.spec,
+            spec_declares_gbrain(&spec),
+        );
 
         // Phase 2b cluster A: if we're in a chat-session run, drain the
         // I/O handles stashed for us by execute_run_in_chat_session. None
@@ -1367,12 +1378,14 @@ impl AppRuntimeService {
     pub fn build_automation_tool_registry(
         &self,
         workspace_root: &std::path::Path,
+        spec_permissions: &[Permission],
+        gbrain_declared: bool,
     ) -> Arc<crate::agent::tools::tool::ToolRegistry> {
-        crate::automation::runtime::tool_registry::build_base_registry(
+        crate::automation::runtime::tool_registry::build_registry_with_capabilities(
             crate::automation::runtime::tool_registry::AutomationToolRegistryDeps {
                 workspace_root: workspace_root.to_path_buf(),
-                spec_permissions: Vec::new(),
-                gbrain_declared: false,
+                spec_permissions: spec_permissions.to_vec(),
+                gbrain_declared,
             },
         )
     }
