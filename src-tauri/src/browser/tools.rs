@@ -1620,6 +1620,10 @@ impl Tool for BrowserTaskTool {
         crate::browser::rollout_bridge::emit_browser_run_into_session_dir(
             &run,
             &run.session_id,
+            // M1-backlog #4 — browser tools don't have AppState.db_path in
+            // scope; passing None keeps JSONL-only emission. Wiring the
+            // db_path through ctx_mgr is its own follow-up.
+            None,
         )
         .await;
 
@@ -1704,6 +1708,10 @@ impl Tool for BrowserTaskResumeTool {
         crate::browser::rollout_bridge::emit_browser_run_into_session_dir(
             &run,
             &run.session_id,
+            // M1-backlog #4 — browser tools don't have AppState.db_path in
+            // scope; passing None keeps JSONL-only emission. Wiring the
+            // db_path through ctx_mgr is its own follow-up.
+            None,
         )
         .await;
 

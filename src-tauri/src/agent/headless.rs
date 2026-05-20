@@ -319,6 +319,11 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                             crate::automation::rollout_bridge::emit_activity_into_session_dir(
                                 &activity,
                                 &spec_id,
+                                // M1-backlog #4 — headless has self.db (the
+                                // Arc<Mutex<Connection>>) but not the file
+                                // path. Passing None is intentional; SQLite
+                                // mirror for automation is a separate plumb.
+                                None,
                             )
                             .await;
                         });

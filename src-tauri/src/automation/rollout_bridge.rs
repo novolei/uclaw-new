@@ -136,14 +136,18 @@ fn millis_to_rfc3339(millis: i64) -> String {
 /// Emit a terminal automation activity to the rollout system if enabled
 /// by env (`UCLAW_ROLLOUT_ENABLED=1`). Fire-and-forget; caller-visible
 /// latency < 5 ms.
-pub async fn emit_activity_into_session_dir(activity: &AutomationActivity, intent_id: &str) {
+pub async fn emit_activity_into_session_dir(
+    activity: &AutomationActivity,
+    intent_id: &str,
+    db_path: Option<std::path::PathBuf>,
+) {
     if !crate::agent::rollout_integration::rollout_enabled_by_env() {
         return;
     }
     let sessions_dir = uclaw_utils_home::uclaw_home_pathbuf()
         .map(|p| p.join("sessions"))
         .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.uclaw/sessions"));
-    let handle = match crate::runtime::rollout::RolloutWriter::spawn(sessions_dir, None).await {
+    let handle = match crate::runtime::rollout::RolloutWriter::spawn(sessions_dir, db_path).await {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!(
