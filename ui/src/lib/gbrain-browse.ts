@@ -52,6 +52,23 @@ export interface OrphanSummary {
   total_pages: number
 }
 
+export interface KnowledgeNode {
+  slug: string
+  title: string
+  type: string
+}
+
+export interface KnowledgeEdge {
+  from_slug: string
+  to_slug: string
+  link_type: string
+}
+
+export interface KnowledgeGraph {
+  nodes: KnowledgeNode[]
+  edges: KnowledgeEdge[]
+}
+
 // 命令返回的稳定错误前缀（前端按此分支空状态）
 export const GBRAIN_NOT_CONNECTED = 'gbrain_not_connected'
 
@@ -109,3 +126,6 @@ export const gbrainGetStats = (): Promise<BrainStats> =>
 
 export const gbrainFindOrphans = (): Promise<OrphanSummary> =>
   invoke('gbrain_find_orphans', {})
+
+export const gbrainFullGraph = (limit?: number): Promise<KnowledgeGraph> =>
+  invoke('gbrain_full_graph', { limit })
