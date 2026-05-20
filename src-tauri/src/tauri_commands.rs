@@ -10923,6 +10923,15 @@ pub async fn trigger_automation_manual(
         .map_err(|e| Error::Internal(e.to_string()))
 }
 
+#[tauri::command]
+pub async fn stop_automation_runs(
+    state: State<'_, AppState>,
+    spec_id: String,
+) -> Result<usize, Error> {
+    state.runtime_service.stop_active_runs(&spec_id).await
+        .map_err(|e| Error::Internal(e.to_string()))
+}
+
 // get_automation_activity — upgraded to query V20 schema via AppRuntimeService
 #[tauri::command]
 pub async fn get_automation_activity(

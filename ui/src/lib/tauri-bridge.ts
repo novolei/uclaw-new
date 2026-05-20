@@ -1368,7 +1368,8 @@ export const listAgentSessions = (): Promise<any[]> =>
  *
  * `identityKey` shape:
  *   - "local"                    → spec owner's local chat thread
- *   - "{channelType}:{chatId}"   → per-IM-user thread (e.g. "wechat_ilink:UIN_a")
+ *   - "app-chat:{specId}:{channelType}:{chatId}" → per-IM-user thread
+ *   - "{channelType}:{chatId}"   → legacy per-IM-user thread
  */
 export interface ChatSessionSummary {
   identityKey: string
@@ -1954,6 +1955,9 @@ export const uninstallAutomation = (specId: string): Promise<void> =>
 /** Upgraded: delegates to AppRuntimeService.execute_run. */
 export const triggerAutomationManualHumane = (specId: string): Promise<void> =>
   invoke<void>('trigger_automation_manual', { specId })
+
+export const stopAutomationRuns = (specId: string): Promise<number> =>
+  invoke<number>('stop_automation_runs', { specId })
 
 export const resolveEscalation = (escalationId: string, choice: string, note?: string): Promise<void> =>
   invoke<void>('resolve_escalation', { escalationId, choice, note })

@@ -21,11 +21,15 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
 use std::time::Instant;
 
 use async_trait::async_trait;
+use tauri::Manager;
 use tokio::sync::{Mutex as TokioMutex, RwLock, Semaphore};
 
 use crate::agent::types::{AgenticLoopConfig, ChatMessage, LoopOutcome, ReasoningContext};
 use crate::automation::activity::{
     insert_activity, AutomationActivity, ActivityStatus, TriggerSource,
+};
+use crate::automation::builtin_apps::{
+    load_builtin_apps, sync_builtin_skills, BuiltinAutomationApp,
 };
 use crate::automation::filters;
 use crate::automation::manager::HumaneSpecRow;
@@ -39,6 +43,7 @@ use crate::automation::sources::{
     CustomSource, FileSource, RssSource, ScheduleSource, SubscriptionSource,
     TriggerCallback, WebhookSource, WebpageSource, WecomSource,
 };
+use crate::browser::BrowserContextManager;
 use crate::infra::InfraService;
 use crate::memubot_config::AutomationConfig;
 use crate::providers::service::ProviderService;
@@ -51,54 +56,8 @@ use crate::services::{ManagedService, ServiceHealth, ServiceStatus};
 const PER_SPEC_CONCURRENCY: usize = 2;
 const BUILTIN_DOUYIN_LIVE_MODERATOR_SOURCE_REF: &str =
     "builtin://automation-specs/douyin-live-moderator";
-const BUILTIN_DOUYIN_LIVE_MODERATOR_YAML: &str =
-    include_str!("../../../resources/automation-specs/douyin-live-moderator.yaml");
 const BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_SOURCE_REF: &str =
     "builtin://automation-specs/bilibili-comment-auto-reply";
-const BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_YAML: &str =
-    include_str!("../../../resources/automation-specs/bilibili-comment-auto-reply.yaml");
-const BUILTIN_BILI_GET_MESSAGES_JS: &str =
-    include_str!("../../../resources/automation-skills/bilibili-comment-auto-reply/bili-get-messages/index.js");
-const BUILTIN_BILI_REPLY_JS: &str =
-    include_str!("../../../resources/automation-skills/bilibili-comment-auto-reply/bili-reply/index.js");
-
-struct BuiltinSkillFile {
-    skill_id: &'static str,
-    filename: &'static str,
-    body: &'static str,
-}
-
-struct BuiltinAutomationSpec {
-    source_ref: &'static str,
-    yaml: &'static str,
-    skills: &'static [BuiltinSkillFile],
-}
-
-const BUILTIN_BILIBILI_SKILLS: &[BuiltinSkillFile] = &[
-    BuiltinSkillFile {
-        skill_id: "bili-get-messages",
-        filename: "index.js",
-        body: BUILTIN_BILI_GET_MESSAGES_JS,
-    },
-    BuiltinSkillFile {
-        skill_id: "bili-reply",
-        filename: "index.js",
-        body: BUILTIN_BILI_REPLY_JS,
-    },
-];
-
-const BUILTIN_AUTOMATION_SPECS: &[BuiltinAutomationSpec] = &[
-    BuiltinAutomationSpec {
-        source_ref: BUILTIN_DOUYIN_LIVE_MODERATOR_SOURCE_REF,
-        yaml: BUILTIN_DOUYIN_LIVE_MODERATOR_YAML,
-        skills: &[],
-    },
-    BuiltinAutomationSpec {
-        source_ref: BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_SOURCE_REF,
-        yaml: BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_YAML,
-        skills: BUILTIN_BILIBILI_SKILLS,
-    },
-];
 
 pub(crate) fn automation_executor_kind(spec_json: &serde_json::Value) -> &'static str {
     if spec_json
@@ -120,11 +79,106 @@ fn spec_declares_gbrain(spec: &HumaneAutomationSpec) -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) fn automation_browser_session_id(spec_id: &str, activity_id: &str) -> String {
+    format!("automation:{spec_id}:{activity_id}")
+}
+
 fn builtin_automation_workspace_root(spec_id: &str) -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| Path::new(".").to_path_buf())
         .join("Documents/workground/automations")
         .join(spec_id)
+}
+
+fn builtin_automations_repo_resource_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("builtin-automations")
+}
+
+fn builtin_automations_resource_dir_root(resource_dir: &Path) -> PathBuf {
+    resource_dir.join("builtin-automations")
+}
+
+fn builtin_automations_resource_root(app_handle: Option<&tauri::AppHandle>) -> PathBuf {
+    if let Some(app_handle) = app_handle {
+        if let Ok(resource_dir) = app_handle.path().resource_dir() {
+            let bundled = builtin_automations_resource_dir_root(&resource_dir);
+            if bundled.exists() {
+                return bundled;
+            }
+        }
+    }
+
+    builtin_automations_repo_resource_root()
+}
+
+fn live_room_scripts_repo_resource_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("live-room")
+}
+
+fn live_room_scripts_resource_dir_root(resource_dir: &Path) -> PathBuf {
+    resource_dir.join("live-room")
+}
+
+fn live_room_scripts_resource_root(app_handle: Option<&tauri::AppHandle>) -> PathBuf {
+    if let Some(app_handle) = app_handle {
+        if let Ok(resource_dir) = app_handle.path().resource_dir() {
+            let bundled = live_room_scripts_resource_dir_root(&resource_dir);
+            if bundled.exists() {
+                return bundled;
+            }
+        }
+    }
+
+    live_room_scripts_repo_resource_root()
+}
+
+fn builtin_source_ref(app_id: &str) -> String {
+    match app_id {
+        "douyin-live-room-moderator" => BUILTIN_DOUYIN_LIVE_MODERATOR_SOURCE_REF.to_string(),
+        "bilibili-comment-auto-reply" => BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_SOURCE_REF.to_string(),
+        _ => format!("builtin://automation-specs/{app_id}"),
+    }
+}
+
+fn merge_user_config_into_spec_value(
+    spec_value: &mut serde_json::Value,
+    overrides: &serde_json::Value,
+) {
+    let Some(overrides) = overrides.as_object() else {
+        return;
+    };
+    if overrides.is_empty() {
+        return;
+    }
+
+    let Some(spec_obj) = spec_value.as_object_mut() else {
+        return;
+    };
+    let config = spec_obj
+        .entry("config".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(config_obj) = config.as_object_mut() else {
+        return;
+    };
+
+    for (key, value) in overrides {
+        if !value.is_null() {
+            config_obj.insert(key.clone(), value.clone());
+        }
+    }
+
+    if let Some(poll_interval) = overrides.get("poll_interval_seconds") {
+        let runtime = spec_obj
+            .entry("x_uclaw_runtime".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(runtime_obj) = runtime.as_object_mut() {
+            runtime_obj.insert("poll_interval_seconds".to_string(), poll_interval.clone());
+        }
+    }
 }
 
 // ─── EscalationRow ───────────────────────────────────────────────────────────
@@ -199,6 +253,10 @@ pub struct AppRuntimeService {
     pub app_handle: Option<tauri::AppHandle>,
     /// Channel manager for extended notification types. Passed to HeadlessDelegate.
     pub channel_manager: Option<Arc<tokio::sync::RwLock<crate::channels::ChannelManager>>>,
+    /// Shared browser context manager used by real automation browser tools.
+    pub browser_context_manager: Option<Arc<BrowserContextManager>>,
+    /// Packaged/development live-room adapter script root for `browser_run`.
+    pub browser_builtin_root: PathBuf,
 }
 
 impl AppRuntimeService {
@@ -216,7 +274,9 @@ impl AppRuntimeService {
         provider_service: Arc<ProviderService>,
         app_handle: Option<tauri::AppHandle>,
         channel_manager: Option<Arc<tokio::sync::RwLock<crate::channels::ChannelManager>>>,
+        browser_context_manager: Option<Arc<BrowserContextManager>>,
     ) -> Arc<Self> {
+        let browser_builtin_root = live_room_scripts_resource_root(app_handle.as_ref());
         let svc = Arc::new(Self {
             db,
             schedule,
@@ -238,6 +298,8 @@ impl AppRuntimeService {
             self_weak: OnceLock::new(),
             app_handle,
             channel_manager,
+            browser_context_manager,
+            browser_builtin_root,
         });
         let _ = svc.self_weak.set(Arc::downgrade(&svc));
         svc
@@ -530,13 +592,16 @@ impl AppRuntimeService {
         );
 
         // ── 3. load spec for filter evaluation ──────────────────────────────
-        let (spec_json, spec_value) = match self.load_spec_json(spec_id) {
+        let (spec_json, mut spec_value) = match self.load_spec_json(spec_id) {
             Ok(pair) => pair,
             Err(e) => {
                 self.update_activity_status(&activity_id, "failed", Some(&e.to_string()))?;
                 return Err(e);
             }
         };
+        if let Ok(overrides) = self.load_user_config_values(spec_id) {
+            merge_user_config_into_spec_value(&mut spec_value, &overrides);
+        }
         let spec = match Self::parse_humane_spec(&spec_json) {
                 Ok(s) => s,
                 Err(e) => {
@@ -560,6 +625,15 @@ impl AppRuntimeService {
         // ── 5. acquire per-spec semaphore ────────────────────────────────────
         let sem = self.semaphore_for(spec_id).await;
         let _permit = sem.acquire().await.map_err(|e| anyhow::anyhow!("semaphore: {}", e))?;
+
+        if self.is_activity_cancelled(&activity_id)? {
+            tracing::info!(
+                "[AppRuntimeService] activity {} for spec {} was stopped before execution",
+                activity_id,
+                spec_id
+            );
+            return Ok(());
+        }
 
         // ── 6. per-day cost cap check ────────────────────────────────────────
         // TODO(2b): read caps from MemubotConfig.automation once threaded into
@@ -621,13 +695,30 @@ impl AppRuntimeService {
                 )
                 .map_err(|e| anyhow::anyhow!("create run session: {}", e))?,
             };
-            conn.execute(
+            let updated = conn.execute(
                 "UPDATE automation_activities
                  SET session_id = ?2, status = 'running', started_at = ?3
-                 WHERE id = ?1",
+                 WHERE id = ?1 AND status = 'queued'",
                 rusqlite::params![activity_id, session_id, started_ms],
             )
             .map_err(|e| anyhow::anyhow!("link session to activity: {}", e))?;
+            if updated == 0 {
+                let status: Option<String> = conn
+                    .query_row(
+                        "SELECT status FROM automation_activities WHERE id = ?1",
+                        rusqlite::params![activity_id],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                if status.as_deref() == Some("cancelled") {
+                    return Ok(());
+                }
+                anyhow::bail!(
+                    "activity {} could not transition from queued to running (status={:?})",
+                    activity_id,
+                    status
+                );
+            }
 
             // Resolve the run's working directory: the space's path if it has
             // one, else a per-spec dir under ~/Documents/workground/automations.
@@ -720,10 +811,11 @@ impl AppRuntimeService {
         let mut reason_ctx = ReasoningContext::new(system_prompt);
         reason_ctx.messages.push(ChatMessage::user(&initial_message));
 
-        let tools = self.build_automation_tool_registry(
+        let tools = self.build_automation_tool_registry_for_session(
             &workspace_root,
             &permissions.spec,
             spec_declares_gbrain(&spec),
+            Some(automation_browser_session_id(spec_id, &activity_id)),
         );
 
         // Phase 2b cluster A: if we're in a chat-session run, drain the
@@ -832,7 +924,7 @@ impl AppRuntimeService {
                     conn.execute(
                         "UPDATE automation_activities
                          SET status = 'waiting_user', escalation_id = ?2, completed_at = ?3
-                         WHERE id = ?1",
+                         WHERE id = ?1 AND status != 'cancelled'",
                         rusqlite::params![activity_id, escalation_id, completed_ms],
                     )
                     .map_err(|e| anyhow::anyhow!("activity escalation update: {}", e))?;
@@ -840,12 +932,13 @@ impl AppRuntimeService {
                 // ErrorTerminal / LoopExhausted / no gate → failed; failure_text
                 // was derived above.
                 _ => {
-                    let err_text =
-                        failure_text.as_deref().unwrap_or("loop ended without report");
+                    let err_text = failure_text
+                        .as_deref()
+                        .unwrap_or("loop ended without report");
                     conn.execute(
                         "UPDATE automation_activities
                          SET status = 'failed', error_text = ?2, completed_at = ?3
-                         WHERE id = ?1",
+                         WHERE id = ?1 AND status != 'cancelled'",
                         rusqlite::params![activity_id, err_text, completed_ms],
                     )
                     .map_err(|e| anyhow::anyhow!("activity failure update: {}", e))?;
@@ -985,15 +1078,15 @@ impl AppRuntimeService {
     /// are left untouched.
     pub fn seed_builtin_specs(&self) -> anyhow::Result<usize> {
         let mut inserted = 0;
-        for builtin in BUILTIN_AUTOMATION_SPECS {
-            inserted += self.seed_builtin_spec(builtin)?;
+        for app in load_builtin_apps(builtin_automations_resource_root(self.app_handle.as_ref()))? {
+            inserted += self.seed_builtin_spec(&app)?;
         }
         Ok(inserted)
     }
 
-    fn seed_builtin_spec(&self, builtin: &BuiltinAutomationSpec) -> anyhow::Result<usize> {
-        let yaml = builtin.yaml;
-        let source_ref = builtin.source_ref;
+    fn seed_builtin_spec(&self, builtin: &BuiltinAutomationApp) -> anyhow::Result<usize> {
+        let yaml = builtin.spec_yaml.as_str();
+        let source_ref = builtin_source_ref(&builtin.id);
         let parsed = parse_humane_v1(yaml)
             .map_err(|e| anyhow::anyhow!("builtin spec parse error for {}: {}", source_ref, e))?;
         let spec = &parsed.spec;
@@ -1002,16 +1095,22 @@ impl AppRuntimeService {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
 
-        let existing_id: Option<String> = conn
+        let existing_row: Option<(String, Option<i64>)> = conn
             .query_row(
-                "SELECT id FROM automation_specs WHERE source = 'builtin' AND source_ref = ?1",
+                "SELECT id, uninstalled_at
+                 FROM automation_specs
+                 WHERE source = 'builtin'
+                   AND source_ref = ?1
+                 ORDER BY CASE WHEN uninstalled_at IS NULL THEN 0 ELSE 1 END
+                 LIMIT 1",
                 rusqlite::params![source_ref],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .ok();
 
-        match existing_id {
-            Some(id) => {
+        match existing_row {
+            Some((_id, Some(_))) => Ok(0),
+            Some((id, None)) => {
                 conn.execute(
                     "UPDATE automation_specs
                      SET name = ?2,
@@ -1038,7 +1137,7 @@ impl AppRuntimeService {
                     ],
                 )
                 .map_err(|e| anyhow::anyhow!("update builtin spec {}: {}", source_ref, e))?;
-                self.sync_builtin_spec_skills(&id, builtin.skills)?;
+                self.sync_builtin_spec_skills(&id, builtin)?;
                 Ok(0)
             }
             None => {
@@ -1066,7 +1165,7 @@ impl AppRuntimeService {
                     ],
                 )
                 .map_err(|e| anyhow::anyhow!("insert builtin spec {}: {}", source_ref, e))?;
-                self.sync_builtin_spec_skills(&spec_id, builtin.skills)?;
+                self.sync_builtin_spec_skills(&spec_id, builtin)?;
                 Ok(1)
             }
         }
@@ -1075,26 +1174,14 @@ impl AppRuntimeService {
     fn sync_builtin_spec_skills(
         &self,
         spec_id: &str,
-        skills: &[BuiltinSkillFile],
+        builtin: &BuiltinAutomationApp,
     ) -> anyhow::Result<()> {
-        if skills.is_empty() {
+        if builtin.skills.is_empty() {
             return Ok(());
         }
 
         let workspace_root = builtin_automation_workspace_root(spec_id);
-        let skills_root = workspace_root.join(".claude").join("skills");
-        for skill in skills {
-            if skill.filename.contains('/') || skill.filename.contains('\\') || skill.filename.contains("..") {
-                anyhow::bail!("rejecting suspicious builtin skill filename: {}", skill.filename);
-            }
-            let dir = skills_root.join(skill.skill_id);
-            std::fs::create_dir_all(&dir)
-                .map_err(|e| anyhow::anyhow!("create builtin skill dir {}: {}", dir.display(), e))?;
-            let file_path = dir.join(skill.filename);
-            std::fs::write(&file_path, skill.body)
-                .map_err(|e| anyhow::anyhow!("write builtin skill {}: {}", file_path.display(), e))?;
-        }
-        Ok(())
+        sync_builtin_skills(builtin, workspace_root)
     }
 
     /// Read a file from disk and install it as a Humane spec.
@@ -1173,6 +1260,17 @@ impl AppRuntimeService {
             anyhow::bail!("spec '{}' not found", spec_id);
         }
         Ok(())
+    }
+
+    fn load_user_config_values(&self, spec_id: &str) -> anyhow::Result<serde_json::Value> {
+        let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+        let json: String = conn.query_row(
+            "SELECT user_config_values FROM automation_specs WHERE id = ?1",
+            rusqlite::params![spec_id],
+            |r| r.get(0),
+        )?;
+        serde_json::from_str(&json)
+            .map_err(|e| anyhow::anyhow!("parse user_config_values: {}", e))
     }
 
     /// Grant or deny a single permission; writes to `permission_audit_log`.
@@ -1284,6 +1382,59 @@ impl AppRuntimeService {
     pub async fn trigger_manual(&self, spec_id: &str) -> anyhow::Result<()> {
         self.execute_run(spec_id, None, serde_json::json!({"trigger": "manual"}))
             .await
+    }
+
+    /// Mark active runs as user-stopped and tear down any run-scoped browser sessions.
+    pub async fn stop_active_runs(&self, spec_id: &str) -> anyhow::Result<usize> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let active: Vec<String> = {
+            let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+            let mut stmt = conn.prepare(
+                "SELECT id
+                 FROM automation_activities
+                 WHERE spec_id = ?1 AND status IN ('queued', 'running')
+                 ORDER BY queued_at DESC",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![spec_id], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+
+        if active.is_empty() {
+            return Ok(0);
+        }
+
+        {
+            let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+            for activity_id in &active {
+                conn.execute(
+                    "UPDATE automation_activities
+                     SET status = 'cancelled',
+                         error_text = 'user_stopped',
+                         completed_at = ?2,
+                         report_text = COALESCE(report_text, ?3),
+                         report_outcome = COALESCE(report_outcome, 'stopped')
+                     WHERE id = ?1 AND status IN ('queued', 'running')",
+                    rusqlite::params![
+                        activity_id,
+                        now_ms,
+                        "# Automation Run Report\n\n- Stop reason: `user_stopped`\n"
+                    ],
+                )?;
+            }
+        }
+
+        if let Some(ctx_mgr) = self.browser_context_manager.as_ref() {
+            for activity_id in &active {
+                ctx_mgr
+                    .destroy(&automation_browser_session_id(spec_id, activity_id))
+                    .await;
+            }
+        }
+
+        Ok(active.len())
     }
 
     /// List activity rows for a spec, newest first.
@@ -1410,11 +1561,21 @@ impl AppRuntimeService {
         conn.execute(
             "UPDATE automation_activities
              SET status = ?2, error_text = ?3, completed_at = ?4
-             WHERE id = ?1",
+             WHERE id = ?1 AND status != 'cancelled'",
             rusqlite::params![activity_id, status, error_text, now_ms],
         )
         .map_err(|e| anyhow::anyhow!("activity status update: {}", e))?;
         Ok(())
+    }
+
+    fn is_activity_cancelled(&self, activity_id: &str) -> anyhow::Result<bool> {
+        let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+        conn.query_row(
+            "SELECT status = 'cancelled' FROM automation_activities WHERE id = ?1",
+            rusqlite::params![activity_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|e| anyhow::anyhow!("activity status lookup: {}", e))
     }
 
     // ── run-pipeline helpers (Phase 2a, design §D4) ─────────────────────────
@@ -1562,11 +1723,29 @@ impl AppRuntimeService {
         spec_permissions: &[Permission],
         gbrain_declared: bool,
     ) -> Arc<crate::agent::tools::tool::ToolRegistry> {
+        self.build_automation_tool_registry_for_session(
+            workspace_root,
+            spec_permissions,
+            gbrain_declared,
+            None,
+        )
+    }
+
+    fn build_automation_tool_registry_for_session(
+        &self,
+        workspace_root: &std::path::Path,
+        spec_permissions: &[Permission],
+        gbrain_declared: bool,
+        browser_session_id: Option<String>,
+    ) -> Arc<crate::agent::tools::tool::ToolRegistry> {
         crate::automation::runtime::tool_registry::build_registry_with_capabilities(
             crate::automation::runtime::tool_registry::AutomationToolRegistryDeps {
                 workspace_root: workspace_root.to_path_buf(),
                 spec_permissions: spec_permissions.to_vec(),
                 gbrain_declared,
+                browser_context_manager: self.browser_context_manager.clone(),
+                browser_session_id,
+                browser_builtin_root: Some(self.browser_builtin_root.clone()),
             },
         )
     }
@@ -1783,6 +1962,152 @@ mod tests {
     }
 
     #[test]
+    fn builtin_automations_root_uses_packaged_shape_and_repo_fallback() {
+        let resource_dir = tempfile::tempdir().unwrap();
+        let bundled_root = resource_dir.path().join("builtin-automations");
+        std::fs::create_dir_all(&bundled_root).unwrap();
+
+        assert_eq!(
+            builtin_automations_resource_dir_root(resource_dir.path()),
+            bundled_root
+        );
+
+        let fallback = builtin_automations_resource_root(None);
+        assert!(fallback.join("manifest.json").is_file());
+        assert!(fallback.ends_with("resources/builtin-automations"));
+    }
+
+    #[test]
+    fn user_config_overrides_merge_into_spec_config_only() {
+        let mut spec = serde_json::json!({
+            "type": "automation",
+            "config": {
+                "platform": "douyin",
+                "room_id": "old-room"
+            }
+        });
+        merge_user_config_into_spec_value(
+            &mut spec,
+            &serde_json::json!({
+                "room_id": "new-room",
+                "live_url": "https://live.example/room",
+                "poll_interval_seconds": 15,
+                "ignored": null
+            }),
+        );
+
+        assert_eq!(spec["config"]["platform"], serde_json::json!("douyin"));
+        assert_eq!(spec["config"]["room_id"], serde_json::json!("new-room"));
+        assert_eq!(
+            spec["config"]["live_url"],
+            serde_json::json!("https://live.example/room")
+        );
+        assert_eq!(
+            spec["config"]["poll_interval_seconds"],
+            serde_json::json!(15)
+        );
+        assert_eq!(
+            spec["x_uclaw_runtime"]["poll_interval_seconds"],
+            serde_json::json!(15)
+        );
+        assert!(spec["config"].get("ignored").is_none());
+    }
+
+    #[tokio::test]
+    async fn stop_active_runs_marks_running_rows_cancelled_with_report() {
+        let conn = open_test_db();
+        insert_test_spec(&conn, "stop-spec", minimal_spec_json());
+        conn.execute(
+            "INSERT INTO automation_activities
+             (id, spec_id, trigger_source_type, trigger_payload_json,
+              status, queued_at, started_at, duration_ms, llm_iterations,
+              llm_tokens_in, llm_tokens_out, session_id)
+             VALUES ('run-a','stop-spec','manual','{}','running',1,2,0,0,0,0,'automation:stop-spec:run-a')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO automation_activities
+             (id, spec_id, trigger_source_type, trigger_payload_json,
+              status, queued_at, duration_ms, llm_iterations,
+              llm_tokens_in, llm_tokens_out)
+             VALUES ('run-b','stop-spec','manual','{}','queued',3,0,0,0,0)",
+            [],
+        )
+        .unwrap();
+        let svc = make_service(conn);
+
+        let stopped = svc.stop_active_runs("stop-spec").await.unwrap();
+        assert_eq!(stopped, 2);
+
+        let conn = svc.db.lock().unwrap();
+        let statuses: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT status FROM automation_activities ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(statuses, vec!["cancelled", "cancelled"]);
+        let report: String = conn
+            .query_row(
+                "SELECT report_text FROM automation_activities WHERE id='run-a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(report.contains("user_stopped"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_activity_is_not_overwritten_by_late_terminal_updates() {
+        let conn = open_test_db();
+        insert_test_spec(&conn, "stop-spec-late", minimal_spec_json());
+        conn.execute(
+            "INSERT INTO automation_activities
+             (id, spec_id, trigger_source_type, trigger_payload_json,
+              status, queued_at, started_at, duration_ms, llm_iterations,
+              llm_tokens_in, llm_tokens_out)
+             VALUES ('run-late','stop-spec-late','manual','{}','running',1,2,0,0,0,0)",
+            [],
+        )
+        .unwrap();
+        let svc = make_service(conn);
+
+        assert_eq!(svc.stop_active_runs("stop-spec-late").await.unwrap(), 1);
+        svc.update_activity_status("run-late", "failed", Some("late failure"))
+            .unwrap();
+
+        let conn = svc.db.lock().unwrap();
+        let row: (String, String) = conn
+            .query_row(
+                "SELECT status, error_text FROM automation_activities WHERE id='run-late'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("cancelled".to_string(), "user_stopped".to_string()));
+    }
+
+    #[test]
+    fn live_room_scripts_root_uses_packaged_shape_and_repo_fallback() {
+        let resource_dir = tempfile::tempdir().unwrap();
+        let bundled_root = resource_dir.path().join("live-room");
+        std::fs::create_dir_all(&bundled_root).unwrap();
+
+        assert_eq!(
+            live_room_scripts_resource_dir_root(resource_dir.path()),
+            bundled_root
+        );
+
+        let fallback = live_room_scripts_resource_root(None);
+        assert!(fallback.join("douyin/enter_room.js").is_file());
+        assert!(fallback.ends_with("resources/live-room"));
+    }
+
+    #[test]
     fn live_room_spec_uses_live_room_executor() {
         let spec = serde_json::json!({
             "type": "automation",
@@ -1817,6 +2142,7 @@ mod tests {
             Arc::new(ProviderService::new(&tmp).expect("test provider service")),
             None, // app_handle not available in tests
             None, // channel_manager not available in tests
+            None, // browser_context_manager not available in tests
         )
     }
 
@@ -2067,6 +2393,47 @@ mod tests {
         assert_eq!(seeded[0].status, "paused");
         assert_eq!(seeded[0].user_config_values, r#"{"room_id":"room-a"}"#);
         assert_eq!(seeded[0].permissions_granted, r#"["ai_browser"]"#);
+    }
+
+    #[test]
+    fn seed_builtin_specs_skips_uninstalled_builtin_rows() {
+        let conn = open_test_db();
+        let svc = make_service(conn);
+
+        assert_eq!(svc.seed_builtin_specs().unwrap(), 2);
+        let bili = svc
+            .list_specs()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.source_ref.as_deref() == Some(BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_SOURCE_REF))
+            .unwrap();
+
+        {
+            let db = svc.db.lock().unwrap();
+            db.execute(
+                "UPDATE automation_specs
+                 SET status = 'uninstalled',
+                     enabled = 0,
+                     uninstalled_at = ?2
+                 WHERE id = ?1",
+                rusqlite::params![bili.id, chrono::Utc::now().timestamp_millis()],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(svc.seed_builtin_specs().unwrap(), 0);
+        let db = svc.db.lock().unwrap();
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM automation_specs
+                 WHERE source = 'builtin'
+                   AND source_ref = ?1",
+                rusqlite::params![BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_SOURCE_REF],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     // ── Test §7.3-2: list_specs_returns_inserted_specs_in_order ────────────

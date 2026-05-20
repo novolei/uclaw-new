@@ -1897,6 +1897,18 @@ CREATE INDEX IF NOT EXISTS idx_spaced_rep_due
     WHERE enabled = 1;
 ";
 
+/// V50 — Halo-compatible automation app metadata.
+///
+/// Additive only: `automation_specs.status` already exists on V20+
+/// databases, so duplicate-column errors are tolerated by the migration
+/// runner just like the earlier automation_specs ALTER migrations.
+pub const V50_HALO_AUTOMATION_METADATA: &str = "
+ALTER TABLE automation_specs ADD COLUMN status TEXT;
+ALTER TABLE automation_specs ADD COLUMN user_overrides_json TEXT;
+ALTER TABLE automation_specs ADD COLUMN browser_login TEXT;
+ALTER TABLE automation_specs ADD COLUMN uninstalled_at INTEGER;
+";
+
 /// V43 seed — Phase 8.2: 7 default rows in `wiki_page_templates`, one
 /// per subkind defined in Cognitive Spec §2.2. `INSERT OR IGNORE` keeps
 /// the seed re-runnable: users / agents can tune the prompts in the
@@ -2490,6 +2502,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
         if let Err(e) = conn.execute(stmt, []) {
             // Already-applied ADD COLUMN raises "duplicate column" — that's expected.
             tracing::debug!("V49 stmt skipped (likely already applied): {} :: {}", e, stmt);
+        }
+    }
+    // V50: Halo-compatible automation app metadata.
+    tracing::debug!("Running migration V50: Halo automation metadata");
+    for stmt in V50_HALO_AUTOMATION_METADATA.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V50 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -3246,6 +3265,32 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn halo_metadata_columns_are_additive_to_automation_specs() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('automation_specs')")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        for column in [
+            "status",
+            "user_overrides_json",
+            "browser_login",
+            "uninstalled_at",
+        ] {
+            assert!(
+                columns.iter().any(|name| name == column),
+                "missing automation_specs column: {column}; columns present: {columns:?}"
+            );
+        }
     }
 
     // ─── V33: Symphony schema ─────────────────────────────────────────────
@@ -4547,4 +4592,3 @@ mod tests {
         assert_eq!(row.0.as_deref(), Some("reasoning_output_tokens"));
     }
 }
-

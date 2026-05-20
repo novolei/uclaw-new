@@ -78,13 +78,163 @@ pub struct RetryWithBrowserAgentTool {
     pub long_term_memory: Option<Arc<BrowserLongTermMemoryAdapter>>,
 }
 
+#[derive(Clone)]
 pub struct BrowserRunScriptTool {
+    pub ctx_mgr: Arc<BrowserContextManager>,
     pub session_id: String,
     pub workspace_root: PathBuf,
     pub builtin_root: PathBuf,
 }
 
+pub struct BrowserRunTool {
+    pub inner: BrowserRunScriptTool,
+}
+
 // ── 0. BrowserRunScriptTool ──────────────────────────────────────────────────
+
+fn browser_run_failure_output(
+    start: Instant,
+    session_id: &str,
+    file: Option<&str>,
+    error: impl ToString,
+) -> ToolOutput {
+    let duration_ms = start.elapsed().as_millis() as u64;
+    ToolOutput::new(
+        serde_json::json!({
+            "ok": false,
+            "error": error.to_string(),
+            "sessionId": session_id,
+            "file": file.unwrap_or(""),
+            "durationMs": duration_ms,
+        }),
+        duration_ms,
+    )
+}
+
+fn browser_run_success_output(
+    start: Instant,
+    session_id: &str,
+    file: &str,
+    result: serde_json::Value,
+) -> ToolOutput {
+    let duration_ms = start.elapsed().as_millis() as u64;
+    ToolOutput::new(
+        serde_json::json!({
+            "ok": true,
+            "sessionId": session_id,
+            "file": file,
+            "result": result,
+            "durationMs": duration_ms,
+        }),
+        duration_ms,
+    )
+}
+
+impl BrowserRunScriptTool {
+    async fn execute_run_script(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let Some(file) = params["file"].as_str() else {
+            return Ok(browser_run_failure_output(
+                start,
+                &self.session_id,
+                None,
+                "file is required",
+            ));
+        };
+        let adapter_params = params
+            .get("params")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let timeout_ms = params
+            .get("timeout_ms")
+            .or_else(|| params.get("timeoutMs"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(30_000);
+        let home_dir = dirs::home_dir().unwrap_or_else(|| self.workspace_root.clone());
+        let policy = ScriptPathPolicy::new(
+            self.builtin_root.clone(),
+            self.workspace_root.clone(),
+            home_dir,
+        );
+        let resolved = match policy.resolve(file) {
+            Ok(path) => path,
+            Err(error) => {
+                return Ok(browser_run_failure_output(
+                    start,
+                    &self.session_id,
+                    Some(file),
+                    error,
+                ))
+            }
+        };
+        let source = match std::fs::read_to_string(&resolved) {
+            Ok(source) => source,
+            Err(error) => {
+                return Ok(browser_run_failure_output(
+                    start,
+                    &self.session_id,
+                    Some(file),
+                    error,
+                ))
+            }
+        };
+        let ctx = match self.ctx_mgr.get_or_create(&self.session_id).await {
+            Ok(ctx) => ctx,
+            Err(error) => {
+                return Ok(browser_run_failure_output(
+                    start,
+                    &self.session_id,
+                    Some(file),
+                    error,
+                ))
+            }
+        };
+        let tab_id = adapter_params
+            .get("tab_id")
+            .or_else(|| adapter_params.get("tabId"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                params
+                    .get("tab_id")
+                    .or_else(|| params.get("tabId"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            });
+        let tab_id = match tab_id {
+            Some(tab_id) => tab_id,
+            None => match ctx.active_or_first_tab_id().await {
+                Some(tab_id) => tab_id,
+                None => {
+                    return Ok(browser_run_failure_output(
+                        start,
+                        &self.session_id,
+                        Some(file),
+                        "no browser tab available",
+                    ))
+                }
+            },
+        };
+
+        match ctx
+            .evaluate_script_with_params(&tab_id, &source, adapter_params, timeout_ms)
+            .await
+        {
+            Ok(result) => Ok(browser_run_success_output(
+                start,
+                &self.session_id,
+                file,
+                result,
+            )),
+            Err(error) => Ok(browser_run_failure_output(
+                start,
+                &self.session_id,
+                Some(file),
+                error,
+            )),
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for BrowserRunScriptTool {
@@ -119,30 +269,24 @@ impl Tool for BrowserRunScriptTool {
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let start = Instant::now();
-        let file = params["file"].as_str()
-            .ok_or_else(|| ToolError::InvalidParams("file is required".to_string()))?;
-        let home_dir = dirs::home_dir().unwrap_or_else(|| self.workspace_root.clone());
-        let policy = ScriptPathPolicy::new(
-            self.builtin_root.clone(),
-            self.workspace_root.clone(),
-            home_dir,
-        );
-        let resolved = policy.resolve(file)
-            .map_err(|e| ToolError::InvalidParams(e.to_string()))?;
+        self.execute_run_script(params).await
+    }
+}
 
-        Ok(ToolOutput::new(
-            serde_json::json!({
-                "ok": false,
-                "error": "browser_run_script_execution_not_connected",
-                "sessionId": self.session_id,
-                "file": file,
-                "resolvedPath": resolved.display().to_string(),
-                "params": params.get("params").cloned().unwrap_or_else(|| serde_json::json!({})),
-                "timeoutMs": params.get("timeout_ms").cloned().unwrap_or_else(|| serde_json::json!(null)),
-            }),
-            start.elapsed().as_millis() as u64,
-        ))
+#[async_trait]
+impl Tool for BrowserRunTool {
+    fn name(&self) -> &str { "browser_run" }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.inner.parameters_schema()
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        self.inner.execute_run_script(params).await
     }
 }
 
@@ -1588,6 +1732,10 @@ impl Tool for RetryWithBrowserAgentTool {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
+    use super::{browser_run_failure_output, browser_run_success_output};
+
     #[test]
     fn hover_script_escapes_index() {
         let index: u32 = 42;
@@ -1645,5 +1793,46 @@ mod tests {
         let params = serde_json::json!({"tab_id": "t1"});
         let timeout_ms = params["timeout_ms"].as_u64().unwrap_or(10_000);
         assert_eq!(timeout_ms, 10_000);
+    }
+
+    #[test]
+    fn browser_run_failure_output_has_required_envelope() {
+        let output = browser_run_failure_output(
+            Instant::now(),
+            "automation:spec:activity",
+            Some("missing.js"),
+            "not found",
+        );
+
+        assert_eq!(output.result["ok"], serde_json::json!(false));
+        assert_eq!(
+            output.result["sessionId"],
+            serde_json::json!("automation:spec:activity")
+        );
+        assert_eq!(output.result["file"], serde_json::json!("missing.js"));
+        assert_eq!(output.result["error"], serde_json::json!("not found"));
+        assert!(output.result["durationMs"].is_u64());
+    }
+
+    #[test]
+    fn browser_run_success_output_has_required_envelope() {
+        let output = browser_run_success_output(
+            Instant::now(),
+            "automation:spec:activity",
+            "douyin/scan_comments.js",
+            serde_json::json!({"comments": []}),
+        );
+
+        assert_eq!(output.result["ok"], serde_json::json!(true));
+        assert_eq!(
+            output.result["sessionId"],
+            serde_json::json!("automation:spec:activity")
+        );
+        assert_eq!(
+            output.result["file"],
+            serde_json::json!("douyin/scan_comments.js")
+        );
+        assert_eq!(output.result["result"], serde_json::json!({"comments": []}));
+        assert!(output.result["durationMs"].is_u64());
     }
 }
