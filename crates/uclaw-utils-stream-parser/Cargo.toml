@@ -1,0 +1,12 @@
+[package]
+name = "uclaw-utils-stream-parser"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+
+[dev-dependencies]
+pretty_assertions = "1"
+
+[lib]
+doctest = false
