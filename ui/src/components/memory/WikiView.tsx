@@ -1,6 +1,6 @@
 import * as React from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Loader2, FileText, Search as SearchIcon, RefreshCw } from 'lucide-react'
+import { Loader2, FileText, Search as SearchIcon, RefreshCw, Pencil, History, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -12,6 +12,9 @@ import {
   gbrainGetBacklinks,
   gbrainGetStats,
   gbrainFindOrphans,
+  gbrainPutPage,
+  gbrainGetVersions,
+  gbrainRevertVersion,
   GBRAIN_NOT_CONNECTED,
   type PageSummary,
   type PageDetail,
@@ -19,6 +22,7 @@ import {
   type Backlink,
   type BrainStats,
   type OrphanSummary,
+  type VersionMeta,
 } from '@/lib/gbrain-browse'
 
 interface WikiViewProps {
@@ -46,6 +50,12 @@ export function WikiView({ className }: WikiViewProps): React.ReactElement {
   const [error, setError] = React.useState<string | null>(null)
   // 防竞态：仅最后一次 openPage 的响应能写入 detail/backlinks。
   const latestSlugRef = React.useRef<string | null>(null)
+  const [editing, setEditing] = React.useState(false)
+  const [draft, setDraft] = React.useState('')
+  const [saving, setSaving] = React.useState(false)
+  const [versionsOpen, setVersionsOpen] = React.useState(false)
+  const [versions, setVersions] = React.useState<VersionMeta[]>([])
+  const [loadingVersions, setLoadingVersions] = React.useState(false)
 
   const loadList = React.useCallback(async () => {
     setLoadingList(true)
@@ -114,6 +124,52 @@ export function WikiView({ className }: WikiViewProps): React.ReactElement {
       setError(`搜索失败: ${String(e)}`)
     }
   }, [searchQuery])
+
+  const startEdit = React.useCallback(() => {
+    if (!detail) return
+    setDraft(detail.raw_markdown)
+    setEditing(true)
+  }, [detail])
+
+  const saveEdit = React.useCallback(async () => {
+    if (!detail) return
+    setSaving(true)
+    setError(null)
+    try {
+      const updated = await gbrainPutPage(detail.slug, draft)
+      setDetail(updated)
+      setEditing(false)
+      gbrainGetBacklinks(detail.slug).then(setBacklinks).catch(() => {})
+    } catch (e) {
+      setError(`保存失败: ${String(e)}`)
+    } finally {
+      setSaving(false)
+    }
+  }, [detail, draft])
+
+  const openVersions = React.useCallback(async () => {
+    if (!detail) return
+    setVersionsOpen(true)
+    setLoadingVersions(true)
+    try {
+      setVersions(await gbrainGetVersions(detail.slug))
+    } catch (e) {
+      setError(`加载版本史失败: ${String(e)}`)
+    } finally {
+      setLoadingVersions(false)
+    }
+  }, [detail])
+
+  const revertTo = React.useCallback(async (versionId: number) => {
+    if (!detail) return
+    try {
+      const reverted = await gbrainRevertVersion(detail.slug, versionId)
+      setDetail(reverted)
+      setVersionsOpen(false)
+    } catch (e) {
+      setError(`回滚失败: ${String(e)}`)
+    }
+  }, [detail])
 
   const types = React.useMemo(
     () => Array.from(new Set(pages.map((p) => p.type).filter(Boolean))).sort(),
@@ -266,10 +322,41 @@ export function WikiView({ className }: WikiViewProps): React.ReactElement {
                 <div className="flex items-center gap-2 mb-2">
                   <h2 className="text-sm font-semibold">{detail.title || detail.slug}</h2>
                   <Badge variant="outline" className="text-[10px]">{detail.type}</Badge>
+                  <div className="ml-auto flex items-center gap-1">
+                    {!editing && (
+                      <>
+                        <Button type="button" size="sm" variant="ghost" className="h-6 text-[10px] gap-1" onClick={startEdit} data-testid="wiki-edit-btn">
+                          <Pencil className="size-3" /> 编辑
+                        </Button>
+                        <Button type="button" size="sm" variant="ghost" className="h-6 text-[10px] gap-1" onClick={() => void openVersions()} data-testid="wiki-versions-btn">
+                          <History className="size-3" /> 版本史
+                        </Button>
+                      </>
+                    )}
+                  </div>
                 </div>
-                <div className="prose prose-sm dark:prose-invert max-w-none text-xs" data-testid="wiki-detail-body">
-                  <ReactMarkdown>{detail.compiled_truth}</ReactMarkdown>
-                </div>
+                {editing ? (
+                  <div className="flex flex-col gap-2" data-testid="wiki-editor">
+                    <textarea
+                      className="w-full min-h-[300px] bg-muted/20 rounded p-2 text-xs font-mono outline-none focus:bg-muted/30"
+                      value={draft}
+                      onChange={(e) => setDraft(e.target.value)}
+                    />
+                    <div className="flex items-center gap-2">
+                      <Button type="button" size="sm" className="h-7 text-xs" onClick={() => void saveEdit()} disabled={saving} data-testid="wiki-save-btn">
+                        {saving ? <Loader2 className="size-3 animate-spin mr-1" /> : null}
+                        保存
+                      </Button>
+                      <Button type="button" size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditing(false)} disabled={saving}>
+                        取消
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="prose prose-sm dark:prose-invert max-w-none text-xs" data-testid="wiki-detail-body">
+                    <ReactMarkdown>{detail.compiled_truth}</ReactMarkdown>
+                  </div>
+                )}
                 <div className="mt-4 pt-3 border-t border-border/40">
                   <div className="text-[10px] uppercase text-muted-foreground mb-1">反向链接</div>
                   {backlinks.length === 0 ? (
@@ -298,6 +385,37 @@ export function WikiView({ className }: WikiViewProps): React.ReactElement {
           )}
         </div>
       </div>
+      {versionsOpen && (
+        <div className="absolute inset-0 bg-background/80 flex justify-end" data-testid="wiki-version-drawer">
+          <div className="w-80 h-full bg-popover border-l border-border/50 flex flex-col">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-border/50">
+              <span className="text-xs font-medium">版本史</span>
+              <Button type="button" size="sm" variant="ghost" className="h-6 w-6 p-0" onClick={() => setVersionsOpen(false)}>
+                <X className="size-3" />
+              </Button>
+            </div>
+            <ScrollArea className="flex-1">
+              {loadingVersions ? (
+                <div className="flex justify-center p-4"><Loader2 className="size-4 animate-spin text-muted-foreground" /></div>
+              ) : versions.length === 0 ? (
+                <p className="p-3 text-xs text-muted-foreground">无历史版本</p>
+              ) : (
+                versions.map((v) => (
+                  <div key={v.id} className="px-3 py-2 border-b border-border/30">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-muted-foreground">{v.snapshot_at ?? `#${v.id}`}</span>
+                      <Button type="button" size="sm" variant="ghost" className="h-5 text-[10px]" onClick={() => void revertTo(v.id)}>
+                        回滚到此版本
+                      </Button>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground mt-1 line-clamp-2">{v.compiled_truth.slice(0, 120)}</div>
+                  </div>
+                ))
+              )}
+            </ScrollArea>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
