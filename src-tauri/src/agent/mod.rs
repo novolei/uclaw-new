@@ -3,6 +3,8 @@ pub mod agentic_loop;
 pub mod regular_task;
 // M2-A pilot — BaselineBlock trait + 3-block registry.
 pub mod baseline_blocks;
+// M2-H L3 pilot — per-turn skill selection (top-K under token budget).
+pub mod skill_selection;
 // M1-T4b — opt-in rollout bridge for direct run_agentic_loop callsites.
 pub mod rollout_integration;
 pub mod code_rescue;
