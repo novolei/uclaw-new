@@ -2002,6 +2002,32 @@ CREATE INDEX IF NOT EXISTS idx_facets_last_seen
 /// `page_content_hashes` / `analysis_cache` pattern). Tables stay empty
 /// until consumers (Timeline Engine scenario in a follow-up PR;
 /// Importance Decay algorithm in P2) start populating them.
+pub const V48_TASK_EVENTS_ROLLOUT: &str = "
+-- M1-T5 (Phase 0.5 / Runtime Contracts) — rollout sidecar for task event
+-- stream. Mirrors the JSONL at `~/.uclaw/sessions/rollout-*.jsonl` so
+-- replay + index queries are fast.
+--
+-- One row per TaskEvent emitted by a SessionTask. The full event payload
+-- is stored as JSON in `payload_json`; `kind` + `source` are indexed for
+-- cheap rollup queries. `sequence` is monotonically assigned by the
+-- writer per (task_id, rollout_file) tuple so replay is deterministic.
+CREATE TABLE IF NOT EXISTS task_events_rollout (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id       TEXT NOT NULL,
+    intent_id     TEXT,
+    sequence      INTEGER NOT NULL,
+    ts            TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    source        TEXT NOT NULL,
+    payload_json  TEXT NOT NULL,
+    rollout_file  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_task_events_rollout_task ON task_events_rollout(task_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_task_events_rollout_kind ON task_events_rollout(kind, ts);
+CREATE INDEX IF NOT EXISTS idx_task_events_rollout_source ON task_events_rollout(source, ts);
+CREATE INDEX IF NOT EXISTS idx_task_events_rollout_intent ON task_events_rollout(intent_id, sequence) WHERE intent_id IS NOT NULL;
+";
+
 pub const V44_L3_RETAINED_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS timeline_events (
     id                 TEXT PRIMARY KEY,
@@ -2439,6 +2465,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V47_TRIANGULATION_EVIDENCE.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V47 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V48: M1-T5 — task_events_rollout sidecar for the rollout JSONL writer.
+    tracing::debug!("Running migration V48: task_events_rollout");
+    for stmt in V48_TASK_EVENTS_ROLLOUT.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V48 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
