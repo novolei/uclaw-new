@@ -5,3 +5,4 @@
 
 pub mod chat_extractor;
 pub mod browse;
+pub mod scoped;

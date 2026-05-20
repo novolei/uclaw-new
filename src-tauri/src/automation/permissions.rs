@@ -32,6 +32,9 @@ fn required_for(tool: &str) -> Option<Permission> {
         "edit" | "file"           => Some(Permission::Filesystem),
         "web" | "web_fetch" | "http_request" => Some(Permission::Network),
         "notify_user"             => Some(Permission::Notification),
+        // Live-room gbrain tools are exposed only with the browser-capable built-in spec.
+        // A later protocol revision can split this into a dedicated Knowledge permission.
+        "gbrain_room_search" | "gbrain_room_get_page" | "gbrain_room_put_page" => Some(Permission::AiBrowser),
         t if t.starts_with("browser_") => Some(Permission::AiBrowser),
         "memory" | "report_to_user" | "request_escalation" => None,
         _ => None,    // unknown tools pass through (Phase 1 conservative; Phase 2 may flip to Unmapped)
@@ -68,5 +71,16 @@ mod tests {
         assert!(check(&[], &[], &[], "memory").is_ok());
         assert!(check(&[], &[], &[], "report_to_user").is_ok());
         assert!(check(&[], &[], &[], "request_escalation").is_ok());
+    }
+
+    #[test]
+    fn room_scoped_gbrain_tools_require_ai_browser_permission() {
+        let missing = check(&[], &[], &[], "gbrain_room_search");
+        assert!(matches!(missing, Err(PermissionError::NotGranted)));
+
+        let granted = check(&[Permission::AiBrowser], &[], &[], "gbrain_room_search");
+        assert!(granted.is_ok());
+        assert!(check(&[Permission::AiBrowser], &[], &[], "gbrain_room_get_page").is_ok());
+        assert!(check(&[Permission::AiBrowser], &[], &[], "gbrain_room_put_page").is_ok());
     }
 }
