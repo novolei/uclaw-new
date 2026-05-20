@@ -1273,15 +1273,37 @@ impl LoopDelegate for ChatDelegate {
                                     "slug": proposal.slug,
                                     "content": proposal.content,
                                 });
-                                let mgr = mcp_mgr.read().await;
-                                if let Err(e) =
+                                let result = {
+                                    let mgr = mcp_mgr.read().await;
                                     mgr.call_tool("gbrain", "put_page", args).await
-                                {
-                                    tracing::warn!(
-                                        slug = %proposal.slug,
-                                        error = %e,
-                                        "[ChatDelegate] gbrain extractor — put_page failed"
-                                    );
+                                };
+                                match result {
+                                    Ok(result) if result.is_error => {
+                                        let text = result
+                                            .content
+                                            .iter()
+                                            .filter_map(|block| match block {
+                                                crate::mcp::ContentBlock::Text { text } => Some(text.as_str()),
+                                                _ => None,
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join("\n");
+                                        let mut mgr = mcp_mgr.write().await;
+                                        mgr.set_error("gbrain", Some(text));
+                                    }
+                                    Ok(_) => {
+                                        let mut mgr = mcp_mgr.write().await;
+                                        mgr.set_error("gbrain", None);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            slug = %proposal.slug,
+                                            error = %e,
+                                            "[ChatDelegate] gbrain extractor — put_page failed"
+                                        );
+                                        let mut mgr = mcp_mgr.write().await;
+                                        mgr.set_error("gbrain", Some(e.to_string()));
+                                    }
                                 }
                             }
                         });

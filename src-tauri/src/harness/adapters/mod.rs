@@ -1,5 +1,9 @@
 use crate::harness::case::HarnessSubject;
 
+pub mod agent_loop;
+pub mod browser;
+pub mod memory;
+
 pub trait HarnessAdapter: Send + Sync {
     fn subject(&self) -> HarnessSubject;
     fn adapter_id(&self) -> &'static str;

@@ -44,4 +44,19 @@ describe('ToolResultRenderer dispatch', () => {
     render(<ToolResultRenderer toolName="some_mcp_tool" {...baseProps} result="result text" />)
     expect(screen.getByText('result text')).toBeInTheDocument()
   })
+
+  it('renders structured gbrain errors with recovery hints', () => {
+    render(
+      <ToolResultRenderer
+        toolName="mcp__gbrain__get_page"
+        input={{ slug: 'aknowledge/openai-gpt5' }}
+        isError={true}
+        result={'Server error: {"ok":false,"source":"gbrain","tool":"get_page","kind":"page_not_found","status":"exit status: 1","message":"gbrain page not found","hint":"Pick an existing slug from the suggestions or retry with fuzzy=true/include_deleted=true.","nearest_slugs":["knowledge/openai-gpt5"]}'}
+      />,
+    )
+
+    expect(screen.getByText(/页面不存在/)).toBeInTheDocument()
+    expect(screen.getByText('knowledge/openai-gpt5')).toBeInTheDocument()
+    expect(screen.getByText(/fuzzy=true/)).toBeInTheDocument()
+  })
 })

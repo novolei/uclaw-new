@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { ChevronDown, ChevronUp, RefreshCw, RotateCcw, Power } from 'lucide-react'
+import { Activity, ChevronDown, ChevronUp, PlayCircle, RefreshCw, RotateCcw, Power } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { EmbeddingEndpointSection } from './EmbeddingEndpointSection'
 import { DeveloperOptionsSection } from './DeveloperOptionsSection'
@@ -25,6 +25,10 @@ interface ServiceHealth {
 interface MemUBridgeStatus {
   running: boolean
   pid: number | null
+  reason: string | null
+  python_path: string | null
+  script_path: string | null
+  db_path: string | null
 }
 
 interface GbrainStatus {
@@ -32,6 +36,18 @@ interface GbrainStatus {
   tool_count: number
   pgdata_ready: boolean
   error: string | null
+  status: string
+  error_kind: string | null
+  suggested_action: string | null
+  home_path: string
+  launcher_path: string
+  pgdata_path: string
+  config_command: string | null
+  config_entry_path: string | null
+  config_command_exists: boolean
+  config_entry_exists: boolean
+  config_gbrain_home: string | null
+  path_stale: boolean
 }
 
 // Sprint 2.2.5b — mirror of Rust's `mcp::GbrainInitStatus`. Discriminated
@@ -62,6 +78,28 @@ interface SystemDiagnosticsReport {
   gbrain_init: GbrainInitStatus
 }
 
+interface HarnessCheckResult {
+  id: string
+  passed: boolean
+  score: number
+  message: string
+}
+
+interface HarnessScorecard {
+  caseId: string
+  title: string
+  passed: boolean
+  score: number
+  checks: HarnessCheckResult[]
+}
+
+interface HarnessSuiteReport {
+  passed: boolean
+  averageScore: number
+  runIds: string[]
+  scorecards: HarnessScorecard[]
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function formatUptime(secs: number): string {
@@ -90,6 +128,29 @@ function serviceStatusDot(s: ServiceStatus): string {
   return 'bg-yellow-400' // Starting
 }
 
+function formatReason(reason: string): string {
+  const map: Record<string, string> = {
+    client_not_initialized: '客户端未初始化',
+    python_subprocess_not_alive: 'Python 进程未存活',
+    health_check_returned_false: '健康检查失败',
+    pglite_lock_timeout: 'PGLite 锁超时',
+    mcp_connect_timeout: 'MCP 连接超时',
+    process_killed: '进程被系统终止',
+    page_not_found: '页面不存在',
+    pglite_not_ready: 'PGLite 未就绪',
+    permission_denied: '权限不足',
+    path_mismatch: '路径不匹配',
+    launcher_missing_or_unusable: '启动器缺失或不可用',
+    not_registered: '未注册',
+    disconnected: '已断开',
+    connecting: '连接中',
+    connected: '已连接',
+    error: '错误',
+    unknown: '未知错误',
+  }
+  return map[reason] ?? reason
+}
+
 // ── Main component ───────────────────────────────────────────────────
 
 export function SystemTab() {
@@ -102,6 +163,11 @@ export function SystemTab() {
   const [busyReset, setBusyReset] = React.useState(false)
   const [busyRestart, setBusyRestart] = React.useState(false)
   const [actionError, setActionError] = React.useState<string | null>(null)
+  const [harnessBusy, setHarnessBusy] = React.useState<string | null>(null)
+  const [harnessReports, setHarnessReports] = React.useState<Record<string, HarnessSuiteReport | null>>({
+    memory: null,
+    agent: null,
+  })
 
   const runDiagnostics = React.useCallback(async () => {
     setLoading(true)
@@ -122,9 +188,27 @@ export function SystemTab() {
       && !report.services.some(s => s.status.status === 'Failed')
       && report.memu.running
       && report.gbrain.connected
+      && report.gbrain.tool_count > 0
+      && report.gbrain.pgdata_ready
+      && !report.gbrain.error_kind
+      && !report.gbrain.path_stale
     : true
 
   const failedServices = report?.services.filter(s => s.status.status === 'Failed') ?? []
+  const hasGbrainIssue = report
+    ? !report.gbrain.connected
+      || report.gbrain.tool_count === 0
+      || !report.gbrain.pgdata_ready
+      || Boolean(report.gbrain.error_kind)
+      || report.gbrain.path_stale
+    : false
+  const gbrainOperational = report
+    ? report.gbrain.connected
+      && report.gbrain.tool_count > 0
+      && report.gbrain.pgdata_ready
+      && !report.gbrain.error_kind
+      && !report.gbrain.path_stale
+    : false
 
   async function handleBridgeAction(
     command: string,
@@ -139,6 +223,19 @@ export function SystemTab() {
       setActionError(String(e))
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function handleHarnessRun(kind: 'memory' | 'agent', command: string) {
+    setHarnessBusy(kind)
+    setActionError(null)
+    try {
+      const result = await invoke<HarnessSuiteReport>(command)
+      setHarnessReports(prev => ({ ...prev, [kind]: result }))
+    } catch (e) {
+      setActionError(String(e))
+    } finally {
+      setHarnessBusy(null)
     }
   }
 
@@ -208,15 +305,20 @@ export function SystemTab() {
             </div>
             {healthExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </div>
-          {healthExpanded && (failedServices.length > 0 || !report.memu.running || !report.gbrain.connected) && (
+          {healthExpanded && (failedServices.length > 0 || !report.memu.running || hasGbrainIssue) && (
             <ul className="mt-2 text-xs text-red-400 space-y-0.5">
               {failedServices.map(s => (
                 <li key={s.name}>• {s.name}: {serviceStatusLabel(s.status)}</li>
               ))}
-              {!report.memu.running && <li>• memU: Python Bridge 未运行或健康检查失败</li>}
-              {!report.gbrain.connected && (
-                <li>• gbrain: MCP 未连接{report.gbrain.error ? ` — ${report.gbrain.error.slice(0, 140)}` : ''}</li>
+              {!report.memu.running && (
+                <li>• memU: {report.memu.reason ? formatReason(report.memu.reason) : 'Python Bridge 未运行或健康检查失败'}</li>
               )}
+              {!report.gbrain.connected && (
+                <li>• gbrain: MCP 未连接{report.gbrain.suggested_action ? ` — ${report.gbrain.suggested_action}` : ''}</li>
+              )}
+              {report.gbrain.connected && report.gbrain.tool_count === 0 && <li>• gbrain: MCP 已连接但没有可用工具</li>}
+              {report.gbrain.connected && !report.gbrain.pgdata_ready && <li>• gbrain: PGLite 未就绪</li>}
+              {report.gbrain.path_stale && <li>• gbrain: MCP 配置路径与当前数据目录不一致</li>}
             </ul>
           )}
         </div>
@@ -253,15 +355,32 @@ export function SystemTab() {
                 running={report.memu.running}
                 detail={report.memu.running
                   ? (report.memu.pid ? `PID ${report.memu.pid}` : '运行中')
-                  : '未运行'}
+                  : `未运行${report.memu.reason ? `: ${formatReason(report.memu.reason)}` : ''}`}
+                diagnostics={[
+                  report.memu.python_path ? `Python: ${report.memu.python_path}` : null,
+                  report.memu.script_path ? `Bridge: ${report.memu.script_path}` : null,
+                  report.memu.db_path ? `DB: ${report.memu.db_path}` : null,
+                ]}
               />
               <BridgeCard
                 name="gbrain"
                 subtitle="Bun MCP"
-                running={report.gbrain.connected}
-                detail={report.gbrain.connected
+                running={gbrainOperational}
+                detail={gbrainOperational
                   ? `${report.gbrain.tool_count} 工具 · PGlite pgdata ${report.gbrain.pgdata_ready ? '已就绪' : '未就绪'}`
-                  : (report.gbrain.error ? `未连接: ${report.gbrain.error.slice(0, 90)}` : '未连接')}
+                  : `不可用${report.gbrain.error_kind ? `: ${formatReason(report.gbrain.error_kind)}` : report.gbrain.connected ? '' : ': MCP 未连接'}`}
+                diagnostics={[
+                  `MCP: ${formatReason(report.gbrain.status)}`,
+                  `Home: ${report.gbrain.home_path}`,
+                  `Launcher: ${report.gbrain.launcher_path}`,
+                  `PGlite: ${report.gbrain.pgdata_path}`,
+                  report.gbrain.config_command ? `Config command: ${report.gbrain.config_command} (${report.gbrain.config_command_exists ? 'exists' : 'missing'})` : null,
+                  report.gbrain.config_entry_path ? `Config entry: ${report.gbrain.config_entry_path} (${report.gbrain.config_entry_exists ? 'exists' : 'missing'})` : null,
+                  report.gbrain.config_gbrain_home ? `Config GBRAIN_HOME: ${report.gbrain.config_gbrain_home}` : null,
+                  report.gbrain.path_stale ? '路径状态: 配置已过期' : '路径状态: 当前',
+                  report.gbrain.suggested_action ? `建议: ${report.gbrain.suggested_action}` : null,
+                  report.gbrain.error ? `错误: ${report.gbrain.error.slice(0, 220)}` : null,
+                ]}
               />
             </div>
             {/* Sprint 2.2.5b — init status row.
@@ -285,6 +404,44 @@ export function SystemTab() {
                   <span className="text-xs text-muted-foreground">{serviceStatusLabel(svc.status)}</span>
                 </div>
               ))}
+            </div>
+          </Section>
+
+          {/* Harness 评估 */}
+          <Section title="Harness 评估">
+            <div className="rounded-lg border border-border/50 bg-muted/20">
+              <div className="flex items-center justify-between gap-3 border-b border-border/50 px-3 py-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Activity size={14} className="text-muted-foreground" />
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-foreground">自治回归套件</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      运行 memory/gbrain 与 agent control-plane scorecard
+                    </div>
+                  </div>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <HarnessButton
+                    label="Memory"
+                    busy={harnessBusy === 'memory'}
+                    onClick={() => handleHarnessRun('memory', 'run_memory_gbrain_eval_harness')}
+                  />
+                  <HarnessButton
+                    label="Agent"
+                    busy={harnessBusy === 'agent'}
+                    onClick={() => handleHarnessRun('agent', 'run_agent_control_plane_harness')}
+                  />
+                </div>
+              </div>
+              <div className="space-y-2 p-3">
+                <HarnessSummary name="memory/gbrain" report={harnessReports.memory} />
+                <HarnessSummary name="agent control-plane" report={harnessReports.agent} />
+                {!harnessReports.memory && !harnessReports.agent && (
+                  <div className="text-xs text-muted-foreground">
+                    尚未运行。结果会显示通过率、平均分和失败 case 的具体检查项。
+                  </div>
+                )}
+              </div>
             </div>
           </Section>
 
@@ -361,6 +518,71 @@ export function SystemTab() {
   )
 }
 
+function HarnessButton({ label, busy, onClick }: {
+  label: string; busy: boolean; onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      className="flex min-h-8 items-center gap-1.5 rounded-md border border-border/60 bg-background px-2.5 text-xs text-foreground transition-colors hover:bg-accent disabled:opacity-50"
+    >
+      {busy ? <RefreshCw size={12} className="animate-spin" /> : <PlayCircle size={12} />}
+      {label}
+    </button>
+  )
+}
+
+function HarnessSummary({ name, report }: { name: string; report: HarnessSuiteReport | null }) {
+  if (!report) return null
+  const failed = report.scorecards.filter(card => !card.passed)
+  return (
+    <div className="rounded-md bg-background/70 px-3 py-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium text-foreground">{name}</div>
+          <div className="text-[11px] text-muted-foreground">
+            {report.scorecards.length} cases · {report.runIds.length} runs
+          </div>
+        </div>
+        <div className="shrink-0 text-right">
+          <div className={cn('text-xs font-medium', report.passed ? 'text-green-400' : 'text-red-400')}>
+            {report.passed ? '通过' : '失败'}
+          </div>
+          <div className="font-mono text-[11px] text-muted-foreground">
+            {(report.averageScore * 100).toFixed(0)}%
+          </div>
+        </div>
+      </div>
+      <div className="mt-2 overflow-hidden rounded border border-border/40">
+        {report.scorecards.map(card => (
+          <div
+            key={card.caseId}
+            className="grid grid-cols-[1fr_auto] gap-2 border-b border-border/40 px-2 py-1.5 last:border-b-0"
+          >
+            <div className="min-w-0">
+              <div className="truncate text-xs text-foreground">{card.title}</div>
+              {!card.passed && (
+                <div className="mt-0.5 text-[11px] text-red-400">
+                  {card.checks.filter(check => !check.passed).map(check => check.id).join(', ')}
+                </div>
+              )}
+            </div>
+            <div className={cn('font-mono text-[11px]', card.passed ? 'text-green-400' : 'text-red-400')}>
+              {(card.score * 100).toFixed(0)}%
+            </div>
+          </div>
+        ))}
+      </div>
+      {failed.length > 0 && (
+        <div className="mt-2 text-[11px] leading-4 text-muted-foreground">
+          首个失败：{failed[0].checks.find(check => !check.passed)?.message ?? failed[0].title}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Sub-components ───────────────────────────────────────────────────
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -385,17 +607,29 @@ function InfoCell({ label, value }: { label: string; value: string }) {
   )
 }
 
-function BridgeCard({ name, subtitle, running, detail }: {
-  name: string; subtitle: string; running: boolean; detail: string
+function BridgeCard({ name, subtitle, running, detail, diagnostics = [] }: {
+  name: string; subtitle: string; running: boolean; detail: string; diagnostics?: Array<string | null>
 }) {
+  const visibleDiagnostics = diagnostics.filter(Boolean) as string[]
   return (
-    <div className="rounded-lg bg-muted/40 px-3 py-2.5 flex items-center justify-between">
-      <div className="flex items-center gap-2">
-        <span className={cn('size-2 rounded-full flex-shrink-0', running ? 'bg-green-500' : 'bg-muted-foreground/40')} />
-        <span className="text-sm font-medium text-foreground">{name}</span>
-        <span className="text-xs text-muted-foreground">({subtitle})</span>
+    <div className="rounded-lg bg-muted/40 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <span className={cn('size-2 rounded-full flex-shrink-0', running ? 'bg-green-500' : 'bg-muted-foreground/40')} />
+          <span className="text-sm font-medium text-foreground">{name}</span>
+          <span className="text-xs text-muted-foreground">({subtitle})</span>
+        </div>
+        <span className={cn('text-xs text-right', running ? 'text-green-400' : 'text-muted-foreground')}>{detail}</span>
       </div>
-      <span className={cn('text-xs', running ? 'text-green-400' : 'text-muted-foreground')}>{detail}</span>
+      {visibleDiagnostics.length > 0 && (
+        <div className="mt-2 space-y-0.5 border-t border-border/40 pt-2">
+          {visibleDiagnostics.map((line, idx) => (
+            <div key={idx} className="break-all text-[11px] leading-4 text-muted-foreground">
+              {line}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
