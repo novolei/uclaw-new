@@ -1,0 +1,43 @@
+uClaw
+
+Copyright (c) 2026 uClaw contributors.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this product except in compliance with the License. You may obtain a copy
+of the License at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+See the LICENSE file in the repository root, or licenses/apache-2.0.txt, for
+the full license text.
+
+================================================================================
+Derivation: This product is being prepared to include software derived (with or
+without modifications) from the openai/codex repository
+(https://github.com/openai/codex), which is licensed under the Apache License,
+Version 2.0.
+
+  Upstream repository:  https://github.com/openai/codex
+  Upstream commit pin:  05e171094d058bcda38ee19a6f9401185a991718
+  Upstream commit date: 2026-05-19
+  Reviewed by:          uClaw maintainers on 2026-05-20
+
+The following derived crates will be added in subsequent Phase 0.5 PRs and
+each will be listed below as it lands. Until then this list is intentionally
+empty — no derived code has been imported yet at the time of this commit.
+
+  (no derived crates yet)
+
+When new derived crates land:
+  - the crate must be listed here with its upstream path
+  - each file in the crate must carry a SPDX-License-Identifier header
+  - any modification relative to upstream must be noted in this file
+  - see docs/THIRD_PARTY.md for the full procedure
+
+================================================================================
+
+No part of this product is endorsed by, sponsored by, or affiliated with
+OpenAI. The "Codex" name and any associated trademarks remain the property of
+their respective owners. uClaw is an independent project that aims to learn
+from and selectively absorb engineering patterns from openai/codex under the
+permissions granted by the Apache License, Version 2.0.
