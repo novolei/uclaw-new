@@ -6,6 +6,7 @@ import {
   setAutomationPermission,
   updateAutomationUserConfig,
 } from '@/lib/tauri-bridge'
+import { openAutomationLoginWindow } from '@/lib/automation-login-window'
 
 vi.mock('@/lib/tauri-bridge', () => ({
   setAutomationEnabled: vi.fn().mockResolvedValue(undefined),
@@ -14,6 +15,10 @@ vi.mock('@/lib/tauri-bridge', () => ({
   listSpecChannelBindings: vi.fn(() => new Promise(() => {})),
   updateSpecChannelBindings: vi.fn().mockResolvedValue(undefined),
   updateSpecImSettings: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock('@/lib/automation-login-window', () => ({
+  openAutomationLoginWindow: vi.fn().mockResolvedValue(undefined),
 }))
 
 function liveSpec(overrides: Partial<HumaneSpecRow> = {}): HumaneSpecRow {
@@ -113,5 +118,19 @@ describe('SpecSettingsView Halo-compatible controls', () => {
     expect(screen.getByText('Douyin')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /AI Browser.*登录/ })).toBeInTheDocument()
     expect(screen.queryByLabelText(/password|密码/i)).not.toBeInTheDocument()
+  })
+
+  it('opens browser login in a dedicated Halo-style window', async () => {
+    render(<SpecSettingsView spec={liveSpec()} onSpecChange={() => {}} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /AI Browser.*登录/ }))
+
+    await waitFor(() => {
+      expect(openAutomationLoginWindow).toHaveBeenCalledWith({
+        specId: 'spec-1',
+        label: 'Douyin',
+        url: 'https://www.douyin.com/',
+      })
+    })
   })
 })

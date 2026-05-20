@@ -10,6 +10,7 @@ import { useSetAtom, useAtomValue } from 'jotai'
 import {
   listenNavState,
   browserGetDOMState,
+  browserUINavigate,
 } from '@/lib/tauri-bridge'
 import {
   browserDOMStateAtom,
@@ -27,9 +28,10 @@ import { BrowserTaskMonitor } from './BrowserTaskMonitor'
 
 interface BrowserPanelProps {
   agentSessionId: string
+  initialUrl?: string
 }
 
-export function BrowserPanel({ agentSessionId }: BrowserPanelProps): React.ReactElement {
+export function BrowserPanel({ agentSessionId, initialUrl }: BrowserPanelProps): React.ReactElement {
   const setDomMap = useSetAtom(browserDOMStateAtom)
   const setNavState = useSetAtom(browserNavStateAtom)
   const setPreviewMap = useSetAtom(sessionBrowserPreviewMapAtom)
@@ -46,6 +48,25 @@ export function BrowserPanel({ agentSessionId }: BrowserPanelProps): React.React
   const displayUrl = domEntry?.url ?? currentUrl
 
   useBrowserScreencast(agentSessionId, activeTabId)
+
+  React.useEffect(() => {
+    const target = initialUrl?.trim()
+    if (!target) return
+    if (activeTabId || currentUrl) return
+    browserUINavigate(agentSessionId, 'new', target)
+      .then((tabId) => {
+        setPreviewMap((prev) => {
+          const existing = prev.get(agentSessionId)
+          const base: BrowserPreviewState = existing ?? {
+            url: null, tabId: null, screenshotData: null, visible: true, minimized: false,
+          }
+          const next = new Map(prev)
+          next.set(agentSessionId, { ...base, tabId, url: target })
+          return next
+        })
+      })
+      .catch(console.error)
+  }, [activeTabId, agentSessionId, currentUrl, initialUrl, setPreviewMap])
 
   // Subscribe to navigation state events for this session.
   //

@@ -27,6 +27,7 @@ import {
 } from './atoms/theme'
 import { Toaster } from './components/ui/sonner'
 import { GlobalShortcuts } from './components/shortcuts/GlobalShortcuts'
+import { AutomationLoginBrowserWindow } from './components/automation/AutomationLoginBrowserWindow'
 import './styles/globals.css'
 
 // App-wide right-click bridge — ensures the contextmenu event fires for
@@ -132,14 +133,25 @@ class RootErrorBoundary extends React.Component<
   }
 }
 
-// ===== 主窗口：完整渲染 =====
+const isAutomationLoginBrowserWindow =
+  new URLSearchParams(window.location.search).get('uclawWindow') === 'automation-login-browser'
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <RootErrorBoundary>
       <ThemeInitializer />
-      <GlobalShortcuts />
-      <App />
-      <Toaster />
+      {isAutomationLoginBrowserWindow ? (
+        <>
+          <AutomationLoginBrowserWindow />
+          <Toaster />
+        </>
+      ) : (
+        <>
+          <GlobalShortcuts />
+          <App />
+          <Toaster />
+        </>
+      )}
     </RootErrorBoundary>
   </React.StrictMode>
 )

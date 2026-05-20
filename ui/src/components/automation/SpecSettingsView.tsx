@@ -10,7 +10,7 @@ import {
 } from '@/lib/tauri-bridge'
 import type { HumaneSpecRow, SpecChannelBinding } from '@/lib/tauri-bridge'
 import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
-import { openBrowserTabAction } from '@/atoms/preview-panel-atoms'
+import { openAutomationLoginWindow } from '@/lib/automation-login-window'
 
 interface Props {
   spec: HumaneSpecRow
@@ -94,7 +94,6 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [savingPermission, setSavingPermission] = useState<string | null>(null)
   const [savingLiveConfig, setSavingLiveConfig] = useState(false)
-  const openBrowserTab = useSetAtom(openBrowserTabAction)
 
   async function handleToggleEnabled() {
     setSaving(true)
@@ -267,9 +266,12 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
                     key={`${entry.label}:${entry.url}`}
                     type="button"
                     onClick={() => {
-                      openBrowserTab({
-                        agentSessionId: `automation-login:${spec.id}`,
-                        initialUrl: entry.url,
+                      openAutomationLoginWindow({
+                        specId: spec.id,
+                        label: entry.label,
+                        url: entry.url,
+                      }).catch((err) => {
+                        setError((err as { message?: string })?.message ?? '打开登录窗口失败')
                       })
                     }}
                     className="titlebar-no-drag flex items-center justify-between gap-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-left hover:bg-muted/60"

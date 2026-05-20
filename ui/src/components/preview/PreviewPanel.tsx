@@ -42,7 +42,10 @@ export function PreviewPanel(): React.ReactElement | null {
       <PreviewTabBar />
 
       {activeTab?.type === 'browser' && activeTab.browser ? (
-        <BrowserPanel agentSessionId={activeTab.browser.agentSessionId} />
+        <BrowserPanel
+          agentSessionId={activeTab.browser.agentSessionId}
+          initialUrl={activeTab.browser.initialUrl}
+        />
       ) : (
         <>
           <PreviewHeader target={target} />
