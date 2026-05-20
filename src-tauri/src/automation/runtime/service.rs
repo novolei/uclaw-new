@@ -16,6 +16,7 @@
 //! returns `Ok(())` rather than panicking.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
 use std::time::Instant;
 
@@ -52,6 +53,52 @@ const BUILTIN_DOUYIN_LIVE_MODERATOR_SOURCE_REF: &str =
     "builtin://automation-specs/douyin-live-moderator";
 const BUILTIN_DOUYIN_LIVE_MODERATOR_YAML: &str =
     include_str!("../../../resources/automation-specs/douyin-live-moderator.yaml");
+const BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_SOURCE_REF: &str =
+    "builtin://automation-specs/bilibili-comment-auto-reply";
+const BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_YAML: &str =
+    include_str!("../../../resources/automation-specs/bilibili-comment-auto-reply.yaml");
+const BUILTIN_BILI_GET_MESSAGES_JS: &str =
+    include_str!("../../../resources/automation-skills/bilibili-comment-auto-reply/bili-get-messages/index.js");
+const BUILTIN_BILI_REPLY_JS: &str =
+    include_str!("../../../resources/automation-skills/bilibili-comment-auto-reply/bili-reply/index.js");
+
+struct BuiltinSkillFile {
+    skill_id: &'static str,
+    filename: &'static str,
+    body: &'static str,
+}
+
+struct BuiltinAutomationSpec {
+    source_ref: &'static str,
+    yaml: &'static str,
+    skills: &'static [BuiltinSkillFile],
+}
+
+const BUILTIN_BILIBILI_SKILLS: &[BuiltinSkillFile] = &[
+    BuiltinSkillFile {
+        skill_id: "bili-get-messages",
+        filename: "index.js",
+        body: BUILTIN_BILI_GET_MESSAGES_JS,
+    },
+    BuiltinSkillFile {
+        skill_id: "bili-reply",
+        filename: "index.js",
+        body: BUILTIN_BILI_REPLY_JS,
+    },
+];
+
+const BUILTIN_AUTOMATION_SPECS: &[BuiltinAutomationSpec] = &[
+    BuiltinAutomationSpec {
+        source_ref: BUILTIN_DOUYIN_LIVE_MODERATOR_SOURCE_REF,
+        yaml: BUILTIN_DOUYIN_LIVE_MODERATOR_YAML,
+        skills: &[],
+    },
+    BuiltinAutomationSpec {
+        source_ref: BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_SOURCE_REF,
+        yaml: BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_YAML,
+        skills: BUILTIN_BILIBILI_SKILLS,
+    },
+];
 
 pub(crate) fn automation_executor_kind(spec_json: &serde_json::Value) -> &'static str {
     if spec_json
@@ -71,6 +118,13 @@ fn spec_declares_gbrain(spec: &HumaneAutomationSpec) -> bool {
         .as_ref()
         .map(|value| value.to_string().contains("gbrain"))
         .unwrap_or(false)
+}
+
+fn builtin_automation_workspace_root(spec_id: &str) -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| Path::new(".").to_path_buf())
+        .join("Documents/workground/automations")
+        .join(spec_id)
 }
 
 // ─── EscalationRow ───────────────────────────────────────────────────────────
@@ -930,13 +984,16 @@ impl AppRuntimeService {
     /// user_config_values, granted permissions, enabled/status, and run history
     /// are left untouched.
     pub fn seed_builtin_specs(&self) -> anyhow::Result<usize> {
-        self.seed_builtin_spec(
-            BUILTIN_DOUYIN_LIVE_MODERATOR_YAML,
-            BUILTIN_DOUYIN_LIVE_MODERATOR_SOURCE_REF,
-        )
+        let mut inserted = 0;
+        for builtin in BUILTIN_AUTOMATION_SPECS {
+            inserted += self.seed_builtin_spec(builtin)?;
+        }
+        Ok(inserted)
     }
 
-    fn seed_builtin_spec(&self, yaml: &str, source_ref: &str) -> anyhow::Result<usize> {
+    fn seed_builtin_spec(&self, builtin: &BuiltinAutomationSpec) -> anyhow::Result<usize> {
+        let yaml = builtin.yaml;
+        let source_ref = builtin.source_ref;
         let parsed = parse_humane_v1(yaml)
             .map_err(|e| anyhow::anyhow!("builtin spec parse error for {}: {}", source_ref, e))?;
         let spec = &parsed.spec;
@@ -981,6 +1038,7 @@ impl AppRuntimeService {
                     ],
                 )
                 .map_err(|e| anyhow::anyhow!("update builtin spec {}: {}", source_ref, e))?;
+                self.sync_builtin_spec_skills(&id, builtin.skills)?;
                 Ok(0)
             }
             None => {
@@ -1008,9 +1066,35 @@ impl AppRuntimeService {
                     ],
                 )
                 .map_err(|e| anyhow::anyhow!("insert builtin spec {}: {}", source_ref, e))?;
+                self.sync_builtin_spec_skills(&spec_id, builtin.skills)?;
                 Ok(1)
             }
         }
+    }
+
+    fn sync_builtin_spec_skills(
+        &self,
+        spec_id: &str,
+        skills: &[BuiltinSkillFile],
+    ) -> anyhow::Result<()> {
+        if skills.is_empty() {
+            return Ok(());
+        }
+
+        let workspace_root = builtin_automation_workspace_root(spec_id);
+        let skills_root = workspace_root.join(".claude").join("skills");
+        for skill in skills {
+            if skill.filename.contains('/') || skill.filename.contains('\\') || skill.filename.contains("..") {
+                anyhow::bail!("rejecting suspicious builtin skill filename: {}", skill.filename);
+            }
+            let dir = skills_root.join(skill.skill_id);
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| anyhow::anyhow!("create builtin skill dir {}: {}", dir.display(), e))?;
+            let file_path = dir.join(skill.filename);
+            std::fs::write(&file_path, skill.body)
+                .map_err(|e| anyhow::anyhow!("write builtin skill {}: {}", file_path.display(), e))?;
+        }
+        Ok(())
     }
 
     /// Read a file from disk and install it as a Humane spec.
@@ -1910,7 +1994,7 @@ mod tests {
         let conn = open_test_db();
         let svc = make_service(conn);
 
-        assert_eq!(svc.seed_builtin_specs().unwrap(), 1);
+        assert_eq!(svc.seed_builtin_specs().unwrap(), 2);
         let rows = svc.list_specs().unwrap();
         let row = rows
             .iter()
@@ -1926,6 +2010,19 @@ mod tests {
             Some("live_room_moderator")
         );
         assert_eq!(spec_json["config"]["platform"].as_str(), Some("douyin"));
+
+        let bili = rows
+            .iter()
+            .find(|row| row.source_ref.as_deref() == Some(BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_SOURCE_REF))
+            .expect("builtin Bilibili comment auto reply must be present");
+        assert_eq!(bili.source, "builtin");
+        assert_eq!(bili.name, "B站评论自动回复");
+        assert_eq!(bili.source_version.as_deref(), Some("2.0.0"));
+        let bili_json: serde_json::Value = serde_json::from_str(&bili.spec_json).unwrap();
+        assert_eq!(
+            bili_json["requires"]["skills"][0]["id"].as_str(),
+            Some("bili-get-messages")
+        );
     }
 
     #[test]
@@ -1933,7 +2030,7 @@ mod tests {
         let conn = open_test_db();
         let svc = make_service(conn);
 
-        assert_eq!(svc.seed_builtin_specs().unwrap(), 1);
+        assert_eq!(svc.seed_builtin_specs().unwrap(), 2);
         let row = svc
             .list_specs()
             .unwrap()
