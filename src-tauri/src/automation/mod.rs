@@ -1,6 +1,7 @@
 pub mod activity;
 pub mod capability_map;
 pub mod filters;
+pub mod live_room;
 pub mod manager;
 pub mod marketplace;
 pub mod memory;
