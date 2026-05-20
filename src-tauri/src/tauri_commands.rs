@@ -7016,6 +7016,83 @@ pub async fn memory_lint_run_now(
     serde_json::to_value(&outcome).map_err(|e| format!("serialize: {}", e))
 }
 
+// ─── Memory OS L3 — Drift Detection + Importance Decay IPC ────────────
+
+#[tauri::command]
+pub async fn memory_drift_list_events(
+    state: State<'_, AppState>,
+    input: crate::ipc::DriftListInput,
+) -> Result<Vec<crate::ipc::DriftEventDto>, String> {
+    ensure_memory_health_enabled(&state).await?;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let limit = input.limit.unwrap_or(100);
+    let conn = state
+        .memory_graph_store
+        .conn
+        .lock()
+        .map_err(|e| format!("DB lock: {e}"))?;
+    let rows = crate::memory_graph::drift_detection::list_open_drift_events(&conn, &space_id, limit)
+        .map_err(|e| format!("list drift: {e}"))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| crate::ipc::DriftEventDto {
+            id: r.id,
+            node_id: r.node_id,
+            title: r.title,
+            score: r.score,
+            computed_at: r.computed_at,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn memory_drift_resolve_event(
+    state: State<'_, AppState>,
+    input: crate::ipc::DriftResolveInput,
+) -> Result<(), String> {
+    ensure_memory_health_enabled(&state).await?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let conn = state
+        .memory_graph_store
+        .conn
+        .lock()
+        .map_err(|e| format!("DB lock: {e}"))?;
+    crate::memory_graph::drift_detection::resolve_drift_event(
+        &conn,
+        &input.event_id,
+        input.note.as_deref(),
+        now_ms,
+    )
+    .map_err(|e| format!("resolve drift: {e}"))
+}
+
+#[tauri::command]
+pub async fn memory_importance_list_candidates(
+    state: State<'_, AppState>,
+    input: crate::ipc::ImportanceListInput,
+) -> Result<Vec<crate::ipc::ImportanceCandidateDto>, String> {
+    ensure_memory_health_enabled(&state).await?;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let limit = input.limit.unwrap_or(100);
+    let conn = state
+        .memory_graph_store
+        .conn
+        .lock()
+        .map_err(|e| format!("DB lock: {e}"))?;
+    let rows = crate::memory_graph::importance_decay::list_decay_candidates(&conn, &space_id, limit)
+        .map_err(|e| format!("list importance: {e}"))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| crate::ipc::ImportanceCandidateDto {
+            node_id: r.node_id,
+            title: r.title,
+            importance: r.importance,
+            archive_pending_since: r.archive_pending_since,
+            last_computed_at: r.last_computed_at,
+        })
+        .collect())
+}
+
 // ─── Memory OS Phase 6.2 / 6.3 — EntityPage synth IPC ──────────────────────
 //
 // `memory_entity_page_synthesize_now` is the manual trigger behind the

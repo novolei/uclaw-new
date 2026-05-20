@@ -914,6 +914,10 @@ fn main() {
             uclaw_core::tauri_commands::memory_health_run_now,
             // Lint scan (Memory OS Foundation Phase 5)
             uclaw_core::tauri_commands::memory_lint_run_now,
+            // Drift Detection + Importance Decay (Memory OS L3)
+            uclaw_core::tauri_commands::memory_drift_list_events,
+            uclaw_core::tauri_commands::memory_drift_resolve_event,
+            uclaw_core::tauri_commands::memory_importance_list_candidates,
             // EntityPage synthesis (Memory OS Foundation Phase 6.2/6.3)
             uclaw_core::tauri_commands::memory_entity_page_synthesize_now,
             // Markdown export (Memory OS Foundation Phase 7.1)
