@@ -35,13 +35,17 @@ function startLoginCompletionPolling({
     inFlight = true
     browserWebviewCompleteLogin(windowLabel, specId, label, url)
       .then(async (result) => {
+        if (!result.completed && result.message) {
+          console.debug(`[automation-login] ${label}: ${result.message}`)
+        }
         if (!result.completed) return
         window.clearInterval(timer)
         const loginWindow = await WebviewWindow.getByLabel(windowLabel)
         await loginWindow?.close()
       })
-      .catch(() => {
+      .catch((err) => {
         // The login window may still be starting; keep polling until timeout.
+        console.debug(`[automation-login] ${label}: 登录态检查暂不可用`, err)
       })
       .finally(() => {
         inFlight = false

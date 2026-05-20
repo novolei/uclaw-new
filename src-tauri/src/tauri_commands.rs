@@ -10956,6 +10956,26 @@ pub struct BrowserLoginCompletionProbe {
     pub message: Option<String>,
 }
 
+fn webview_cookie_to_cookie_info(
+    cookie: &tauri::webview::Cookie<'_>,
+    fallback_host: &str,
+    fallback_secure: bool,
+) -> crate::browser::context::CookieInfo {
+    crate::browser::context::CookieInfo {
+        name: cookie.name().to_string(),
+        value: cookie.value().to_string(),
+        domain: cookie
+            .domain()
+            .map(|domain| domain.to_string())
+            .unwrap_or_else(|| fallback_host.to_string()),
+        path: cookie.path().unwrap_or("/").to_string(),
+        secure: cookie.secure().unwrap_or(fallback_secure),
+        http_only: cookie.http_only().unwrap_or(false),
+        same_site: cookie.same_site().map(|same_site| format!("{same_site:?}")),
+        expires: 0.0,
+    }
+}
+
 #[tauri::command]
 pub async fn browser_ui_complete_login(
     session_id: String,
@@ -10992,33 +11012,47 @@ pub async fn browser_webview_complete_login(
     state: State<'_, AppState>,
 ) -> Result<BrowserLoginCompletionProbe, String> {
     let parsed_url = url::Url::parse(&url).map_err(|e| e.to_string())?;
+    let fallback_host = parsed_url.host_str().unwrap_or_default();
+    let fallback_secure = parsed_url.scheme() == "https";
     let webview = app_handle
         .get_webview_window(&webview_label)
         .ok_or_else(|| format!("login webview not found: {webview_label}"))?;
-    let cookies = webview.cookies_for_url(parsed_url.clone()).map_err(|e| e.to_string())?;
-    let cookie_infos: Vec<crate::browser::context::CookieInfo> = cookies
+    let scoped_cookies = webview.cookies_for_url(parsed_url.clone()).map_err(|e| e.to_string())?;
+    let mut cookie_infos: Vec<crate::browser::context::CookieInfo> = scoped_cookies
         .iter()
-        .map(|cookie| crate::browser::context::CookieInfo {
-            name: cookie.name().to_string(),
-            value: cookie.value().to_string(),
-            domain: cookie
-                .domain()
-                .map(|domain| domain.to_string())
-                .unwrap_or_else(|| parsed_url.host_str().unwrap_or_default().to_string()),
-            path: cookie.path().unwrap_or("/").to_string(),
-            secure: cookie.secure().unwrap_or(parsed_url.scheme() == "https"),
-            http_only: cookie.http_only().unwrap_or(false),
-            same_site: cookie.same_site().map(|same_site| format!("{same_site:?}")),
-            expires: 0.0,
-        })
+        .map(|cookie| webview_cookie_to_cookie_info(cookie, fallback_host, fallback_secure))
         .collect();
 
     if !is_likely_authenticated_cookie(&url, &cookie_infos) {
-        return Ok(BrowserLoginCompletionProbe {
-            completed: false,
-            payload: None,
-            message: Some("等待站点写入登录态...".to_string()),
-        });
+        let all_cookies = webview.cookies().map_err(|e| e.to_string())?;
+        cookie_infos = all_cookies
+            .iter()
+            .map(|cookie| webview_cookie_to_cookie_info(cookie, fallback_host, fallback_secure))
+            .filter(|cookie| cookie_matches_login_host(&cookie.domain, fallback_host))
+            .collect();
+        if !is_likely_authenticated_cookie(&url, &cookie_infos) {
+            let cookie_names = cookie_infos
+                .iter()
+                .take(12)
+                .map(|cookie| cookie.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            tracing::debug!(
+                webview_label = %webview_label,
+                url = %url,
+                cookie_count = cookie_infos.len(),
+                cookie_names = %cookie_names,
+                "browser webview login probe did not detect auth cookies"
+            );
+            return Ok(BrowserLoginCompletionProbe {
+                completed: false,
+                payload: None,
+                message: Some(format!(
+                    "等待站点写入登录态... 已读取 {} 个同站点 cookie",
+                    cookie_infos.len()
+                )),
+            });
+        }
     }
 
     let state_snapshot = crate::browser::identity::PlaywrightStorageState {
@@ -11117,6 +11151,29 @@ fn origin_pattern_for_url(raw_url: &str) -> Option<String> {
     Some(format!("{}://{}", parsed.scheme(), host))
 }
 
+fn cookie_matches_login_host(cookie_domain: &str, login_host: &str) -> bool {
+    let cookie_domain = cookie_domain.trim_start_matches('.').to_ascii_lowercase();
+    let login_host = login_host.to_ascii_lowercase();
+    !cookie_domain.is_empty()
+        && !login_host.is_empty()
+        && (login_host == cookie_domain
+            || login_host.ends_with(&format!(".{cookie_domain}"))
+            || cookie_domain.ends_with(&format!(".{login_host}"))
+            || same_site_suffix_matches(&cookie_domain, &login_host))
+}
+
+fn same_site_suffix_matches(left: &str, right: &str) -> bool {
+    fn site_suffix(host: &str) -> Option<String> {
+        let mut parts = host.rsplit('.');
+        let tld = parts.next()?;
+        let registrable = parts.next()?;
+        Some(format!("{registrable}.{tld}"))
+    }
+    site_suffix(left)
+        .zip(site_suffix(right))
+        .is_some_and(|(left, right)| left == right)
+}
+
 fn is_likely_authenticated_cookie(url: &str, cookies: &[crate::browser::context::CookieInfo]) -> bool {
     let host = url::Url::parse(url)
         .ok()
@@ -11125,7 +11182,24 @@ fn is_likely_authenticated_cookie(url: &str, cookies: &[crate::browser::context:
     let strong_names: &[&str] = if host.contains("bilibili.com") {
         &["sessdata", "dedeuserid", "bili_jct"]
     } else if host.contains("douyin.com") {
-        &["sessionid", "sid_guard", "uid_tt", "uid_tt_ss", "sid_tt"]
+        &[
+            "sessionid",
+            "sessionid_ss",
+            "sid_guard",
+            "uid_tt",
+            "uid_tt_ss",
+            "sid_tt",
+            "sid_ucp_v1",
+            "ssid_ucp_v1",
+            "sid_ucp_sso_v1",
+            "ssid_ucp_sso_v1",
+            "passport_auth_status",
+            "passport_auth_status_ss",
+            "sso_uid_tt",
+            "sso_uid_tt_ss",
+            "toutiao_sso_user",
+            "toutiao_sso_user_ss",
+        ]
     } else {
         &["session", "auth", "token", "login", "user"]
     };
@@ -11174,6 +11248,29 @@ mod browser_login_completion_tests {
             "https://www.bilibili.com",
             &[cookie("buvid3")]
         ));
+    }
+
+    #[test]
+    fn detects_douyin_authenticated_cookie_variants() {
+        assert!(is_likely_authenticated_cookie(
+            "https://www.douyin.com/",
+            &[cookie("sessionid_ss")]
+        ));
+        assert!(is_likely_authenticated_cookie(
+            "https://www.douyin.com/",
+            &[cookie("passport_auth_status")]
+        ));
+        assert!(is_likely_authenticated_cookie(
+            "https://www.douyin.com/",
+            &[cookie("sid_ucp_sso_v1")]
+        ));
+    }
+
+    #[test]
+    fn matches_same_site_cookie_domains_for_login_host() {
+        assert!(cookie_matches_login_host(".douyin.com", "www.douyin.com"));
+        assert!(cookie_matches_login_host("passport.douyin.com", "www.douyin.com"));
+        assert!(!cookie_matches_login_host("example.com", "www.douyin.com"));
     }
 
     #[test]
