@@ -44,6 +44,8 @@ export function WikiView({ className }: WikiViewProps): React.ReactElement {
   const [loadingDetail, setLoadingDetail] = React.useState(false)
   const [notConnected, setNotConnected] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  // 防竞态：仅最后一次 openPage 的响应能写入 detail/backlinks。
+  const latestSlugRef = React.useRef<string | null>(null)
 
   const loadList = React.useCallback(async () => {
     setLoadingList(true)
@@ -81,18 +83,21 @@ export function WikiView({ className }: WikiViewProps): React.ReactElement {
     setSelectedSlug(slug)
     setLoadingDetail(true)
     setError(null)
+    latestSlugRef.current = slug
     try {
       const [d, bl] = await Promise.all([
         gbrainGetPage(slug),
         gbrainGetBacklinks(slug).catch(() => [] as Backlink[]),
       ])
+      if (latestSlugRef.current !== slug) return
       setDetail(d)
       setBacklinks(bl)
     } catch (e) {
+      if (latestSlugRef.current !== slug) return
       setError(`加载页面失败: ${String(e)}`)
       setDetail(null)
     } finally {
-      setLoadingDetail(false)
+      if (latestSlugRef.current === slug) setLoadingDetail(false)
     }
   }, [])
 
@@ -102,6 +107,7 @@ export function WikiView({ className }: WikiViewProps): React.ReactElement {
       setSearchHits(null)
       return
     }
+    setError(null)
     try {
       setSearchHits(await gbrainSearch(q, 30))
     } catch (e) {
@@ -166,6 +172,7 @@ export function WikiView({ className }: WikiViewProps): React.ReactElement {
           <input
             className="flex-1 bg-muted/20 rounded px-2 py-1 text-xs outline-none focus:bg-muted/40"
             placeholder="搜索知识库…"
+            aria-label="搜索知识库"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -211,9 +218,10 @@ export function WikiView({ className }: WikiViewProps): React.ReactElement {
               searchHits.length === 0 ? (
                 <p className="p-3 text-xs text-muted-foreground">无搜索结果</p>
               ) : (
-                searchHits.map((h) => (
+                searchHits.map((h, i) => (
                   <button
-                    key={`${h.slug}-${h.snippet.slice(0, 8)}`}
+                    type="button"
+                    key={`${h.slug}-${i}`}
                     className={cn(
                       'w-full text-left px-3 py-1.5 text-xs hover:bg-muted/60',
                       selectedSlug === h.slug && 'bg-accent text-accent-foreground',
@@ -230,6 +238,7 @@ export function WikiView({ className }: WikiViewProps): React.ReactElement {
             ) : (
               filteredPages.map((p) => (
                 <button
+                  type="button"
                   key={p.slug}
                   className={cn(
                     'w-full text-left px-3 py-1.5 text-xs hover:bg-muted/60',
@@ -267,9 +276,10 @@ export function WikiView({ className }: WikiViewProps): React.ReactElement {
                     <p className="text-xs text-muted-foreground">无反向链接</p>
                   ) : (
                     <div className="flex flex-col gap-0.5" data-testid="wiki-backlinks">
-                      {backlinks.map((b) => (
+                      {backlinks.map((b, i) => (
                         <button
-                          key={`${b.from_slug}-${b.link_type}`}
+                          type="button"
+                          key={`${b.from_slug}-${b.link_type}-${i}`}
                           className="text-left text-xs text-muted-foreground hover:text-foreground hover:underline"
                           onClick={() => void openPage(b.from_slug)}
                         >
