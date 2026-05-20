@@ -7,6 +7,10 @@
 
 ---
 
+## Numbering Note
+
+The rows named `#248` through `#252` below are the original planned harness slice labels from the autonomy rollout plan, not the final GitHub PR numbers. The implementation batch for those slices was merged as GitHub PR #282 (`feat(harness): add autonomy eval and self-improvement gates`). The frontend connector that exposes Browser and Self alongside Memory and Agent in System Diagnostics was merged later as GitHub PR #285 (`feat(harness): connect autonomy suites in diagnostics`).
+
 ## Status
 
 | # | Task | Status | Review | Verification | Notes |
@@ -18,7 +22,7 @@
 | #248 | Browser parity harness | completed | reviewer-gated | `cargo test --manifest-path src-tauri/Cargo.toml harness::adapters::browser --lib`; `cargo test --manifest-path src-tauri/Cargo.toml browser:: --lib`; `cargo check --manifest-path src-tauri/Cargo.toml --bin uclaw`; `git diff --check` | Added executable browser parity adapter, deterministic fixture materialization, real `BrowserAgentLoop` executor bridge, deterministic auth-profile seeding, and scorecard artifacts. |
 | #249 | Memory/gbrain eval harness | implemented | self-reviewed; reviewer slot unavailable | `cargo test --manifest-path src-tauri/Cargo.toml harness::adapters::memory --lib`; `cargo test --manifest-path src-tauri/Cargo.toml memory_gbrain_eval_harness_command_tests --lib`; `cargo test --manifest-path src-tauri/Cargo.toml harness::memory_inventory --lib`; `cargo check --manifest-path src-tauri/Cargo.toml --bin uclaw`; `git diff --check` | Added memory/gbrain harness adapter, app-native Tauri command entrypoint, scorecard artifacts, live write/recall probe, and recall-grounding/hallucination scoring. |
 | #250 | Agent loop control-plane harness | implemented | pending review | `cargo test --manifest-path src-tauri/Cargo.toml harness::adapters::agent_loop --lib`; `cargo check --manifest-path src-tauri/Cargo.toml --bin uclaw`; `git diff --check` | Added normalized agent-loop control-plane trace harness for tool/result pairing, permission boundaries, checkpoints, and non-running final status. |
-| #251 | Harness UI/reporting | implemented | self-reviewed | `npm test -- --run src/components/settings/SystemTab.test.tsx`; `npm run build` | Added System tab harness reporting surface with explicit Memory and Agent suite buttons plus compact scorecard summaries. Used `ui-ux-pro-max` guidance for dense operational UI, accessible buttons, and non-decorative status cues. |
+| #251 | Harness UI/reporting | implemented; expanded in GitHub #285 | self-reviewed | `npm test -- --run src/components/settings/SystemTab.test.tsx`; `npm run build` | Initial slice added Memory and Agent suite buttons. GitHub #285 expanded the same System tab surface to `All`, `Browser`, `Memory`, `Agent`, and `Self`, wiring Browser parity and self-improvement gates into the frontend scorecard UI. Used `ui-ux-pro-max` guidance for dense operational UI, accessible buttons, and non-decorative status cues. |
 | #252 | Self-improvement gates | implemented | self-reviewed; reviewer slot unavailable | `cargo test --manifest-path src-tauri/Cargo.toml harness::self_improvement --lib`; `cargo check --manifest-path src-tauri/Cargo.toml --bin uclaw`; `git diff --check` | Added self-improvement candidate gates for memory/gbrain/skill/prompt/hook promotion. Candidates must carry evidence, pass required suites, meet score threshold, avoid blockers, and include rollback references. |
 
 ---
@@ -52,3 +56,4 @@ For every task:
 - 2026-05-20: PR #250 implemented control-plane trace harness. It normalizes model turns, tool calls/results, permission requests, checkpoints, and final loop status into harness events and scorecards. The app command `run_agent_control_plane_harness` runs deterministic fixture traces and writes artifacts.
 - 2026-05-20: PR #251 implemented Harness UI/reporting in the System tab. Added explicit Memory and Agent harness run buttons, pass/fail/score summaries, failed check surfacing, and a focused component test around the Agent scorecard path.
 - 2026-05-20: PR #252 implemented self-improvement gates. Added deterministic promotion/hold/reject policy checks for mutable memory, gbrain, skill, prompt, and hook candidates, plus the app command `run_self_improvement_gate_harness` and scorecard documentation.
+- 2026-05-20: GitHub PR #285 connected the remaining harnesses to the System tab. Added the app command `run_browser_parity_harness`, deterministic `BrowserFixtureParityExecutor`, `All`/`Browser`/`Memory`/`Agent`/`Self` controls, self-improvement scorecard normalization, and `harness-ui-connectors-scorecard.md`. Boundary: the Browser UI button is a deterministic parity fixture run, while live browser autonomy remains verified through chat `browser_task`, Browser panel, and Browser Task Monitor.

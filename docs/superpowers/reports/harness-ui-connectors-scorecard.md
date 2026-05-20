@@ -2,6 +2,7 @@
 
 Date: 2026-05-20
 Branch: `codex/harness-ui-connectors`
+Merged: GitHub PR #285, merge commit `c1a57cf`
 
 ## Scope
 

@@ -1,8 +1,10 @@
 # Browser Parity Scorecard
 
-Status: implemented for PR #248 as an app-native harness adapter.
+Status: implemented in the planned PR-248 slice and merged via GitHub PR #282. The System Diagnostics frontend connector was added later in GitHub PR #285.
 
-The browser parity harness now runs browser-use-aligned cases through a `BrowserParityExecutor`, records each case as a `HarnessRuntime` episode, and writes a `browser_parity_scorecard` JSON artifact for pass/fail review. `BrowserAgentLoop` implements the executor trait, so the same adapter can run against the real `browser_task` loop.
+The browser parity harness now runs browser-use-aligned cases through a `BrowserParityExecutor`, records each case as a `HarnessRuntime` episode, and writes a `browser_parity_scorecard` JSON artifact for pass/fail review. `BrowserAgentLoop` implements the executor trait, so the same adapter can run against the real `browser_task` loop in targeted backend tests or future live smoke runs.
+
+The System Diagnostics `Browser` button added in PR #285 intentionally uses `BrowserFixtureParityExecutor`, a deterministic fixture executor. That UI path validates browser-agent contract shape, scoring, checkpoint/intervention states, auth-profile ordering, multi-tab expectations, file-upload evidence, and recovery semantics without launching live external browsing or calling an LLM. Live browser autonomy remains verified through chat `browser_task`, the Browser panel, and Browser Task Monitor.
 
 | Capability | Case | Primary Signals |
 |---|---|---|
@@ -21,6 +23,7 @@ Runtime fixture support:
 - `run_builtin_suite()` materializes cases against that server and runs them through the supplied executor.
 - `run_builtin_suite_with_context()` supports externally managed fixture servers for CI.
 - `BrowserAgentLoopParityExecutor` can seed deterministic fake storageState into an injected auth-profile broker before the auth restore case runs.
+- `BrowserFixtureParityExecutor` backs the System Diagnostics `Browser` harness button for stable local regression feedback.
 - Executor errors are recorded as failed harness episodes with `execution_error` scorecards instead of leaving partial runs.
 - URL checks only trust observed page-state phases, not `Decide` plans or raw action attempts.
 
