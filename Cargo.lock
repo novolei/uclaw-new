@@ -7659,6 +7659,7 @@ dependencies = [
  "tracing-subscriber",
  "uclaw-utils-async-utils",
  "uclaw-utils-home",
+ "uclaw-utils-template",
  "url",
  "urlencoding",
  "uuid",
