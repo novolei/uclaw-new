@@ -18,6 +18,9 @@ pub mod infra;
 // Phase 0.5 M1-T1 — IntentSpec/TaskSpec/TaskEvent runtime contracts.
 pub mod runtime;
 
+// M3-T7 — IM channel adapter types (Slack/Discord/Telegram/...).
+pub mod im_channels;
+
 // B2: Infrastructure modules
 pub mod memory;
 pub mod memory_graph;
