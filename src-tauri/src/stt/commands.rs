@@ -220,6 +220,18 @@ pub async fn stt_download_model(
     Ok(result_dir.to_string_lossy().to_string())
 }
 
+// ── 后台管线辅助（摄入子项目 B 复用）──────────────────────────────────────
+
+/// 后台管线用:直接喂 PCM f32 → 文本(摄入子项目 B 复用)。
+pub async fn transcribe_samples(
+    audio: Vec<f32>,
+    sample_rate: u32,
+    language: Option<&str>,
+) -> Result<crate::stt::TranscribeResult, String> {
+    let engine = ensure_openflow_engine().await?;
+    engine.transcribe(audio, sample_rate, language).await
+}
+
 // ── Microphones (browser-side enumeration in v0; Tauri stub for future) ─
 
 #[derive(Debug, Clone, Serialize)]

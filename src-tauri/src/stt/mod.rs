@@ -13,6 +13,8 @@ pub mod commands;
 pub mod openflow;
 pub mod settings;
 
+pub use commands::transcribe_samples;
+
 /// STT 转写结果（OpenFlow / SenseVoice engine 共享）。
 #[derive(Debug, Clone)]
 pub struct TranscribeResult {

@@ -3,6 +3,7 @@
 pub mod text;
 pub mod url;
 pub mod pdf;
+pub mod media;
 
 use crate::ingestion::job::{IngestError, IngestionSource};
 
@@ -57,7 +58,9 @@ pub async fn extract_text(source: &IngestionSource) -> Result<ExtractedDoc, Inge
         (SourceKind::Url, IngestionSource::Url(u)) => {
             Ok(ExtractedDoc { text: url::fetch_readable(u).await?, source_label: label })
         }
-        (SourceKind::Media, _) => Err(IngestError::Unsupported("media (wired in Task 3)".into())),
+        (SourceKind::Media, IngestionSource::File(p)) => {
+            Ok(ExtractedDoc { text: media::transcribe_media(p).await?, source_label: label })
+        }
         _ => Err(IngestError::Unsupported(label)),
     }
 }
