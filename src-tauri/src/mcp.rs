@@ -1212,6 +1212,47 @@ impl GbrainCliTransport {
                 argv.push("--content".to_string());
                 argv.push(content);
             }
+            "get_backlinks" => {
+                let slug = required_string(&arguments, "slug")?;
+                argv.push("backlinks".to_string());
+                argv.push(slug);
+            }
+            "traverse_graph" => {
+                let slug = required_string(&arguments, "slug")?;
+                argv.push("graph".to_string());
+                argv.push(slug);
+                push_number_flag(&mut argv, &arguments, "depth", "--depth");
+                push_string_flag(&mut argv, &arguments, "direction", "--direction");
+            }
+            "get_links" => {
+                let slug = required_string(&arguments, "slug")?;
+                argv.push("graph".to_string());
+                argv.push(slug);
+                argv.push("--depth".to_string());
+                argv.push("1".to_string());
+            }
+            "get_versions" => {
+                let slug = required_string(&arguments, "slug")?;
+                argv.push("history".to_string());
+                argv.push(slug);
+            }
+            "get_stats" => {
+                argv.push("stats".to_string());
+            }
+            "find_orphans" => {
+                argv.push("orphans".to_string());
+                argv.push("--json".to_string());
+            }
+            "revert_version" => {
+                let slug = required_string(&arguments, "slug")?;
+                let vid = arguments
+                    .get("version_id")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| McpError::Server("revert_version: version_id (number) required".into()))?;
+                argv.push("revert".to_string());
+                argv.push(slug);
+                argv.push(vid.to_string());
+            }
             other => {
                 return Err(McpError::Server(format!(
                     "gbrain CLI transport does not support tool '{}'",
@@ -1250,10 +1291,9 @@ impl GbrainCliTransport {
             )));
         }
         if stdout.is_empty() && !stderr.is_empty() {
-            Ok(stderr)
-        } else {
-            Ok(stdout)
+            return Ok(stderr);
         }
+        crate::gbrain::cli_format::to_mcp_json(tool, &arguments, &stdout)
     }
 
     async fn suggest_page_slugs(&self, missing_slug: &str) -> Vec<String> {
