@@ -92,11 +92,36 @@ pub struct BrowserRunTool {
 
 // ── 0. BrowserRunScriptTool ──────────────────────────────────────────────────
 
+fn browser_run_failure_output(
+    start: Instant,
+    session_id: &str,
+    file: Option<&str>,
+    error: impl ToString,
+) -> ToolOutput {
+    let duration_ms = start.elapsed().as_millis() as u64;
+    ToolOutput::new(
+        serde_json::json!({
+            "ok": false,
+            "error": error.to_string(),
+            "sessionId": session_id,
+            "file": file.unwrap_or(""),
+            "durationMs": duration_ms,
+        }),
+        duration_ms,
+    )
+}
+
 impl BrowserRunScriptTool {
     async fn execute_run_script(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
-        let file = params["file"].as_str()
-            .ok_or_else(|| ToolError::InvalidParams("file is required".to_string()))?;
+        let Some(file) = params["file"].as_str() else {
+            return Ok(browser_run_failure_output(
+                start,
+                &self.session_id,
+                None,
+                "file is required",
+            ));
+        };
         let adapter_params = params
             .get("params")
             .cloned()
@@ -112,14 +137,39 @@ impl BrowserRunScriptTool {
             self.workspace_root.clone(),
             home_dir,
         );
-        let resolved = policy.resolve(file)
-            .map_err(|e| ToolError::InvalidParams(e.to_string()))?;
-        let source = std::fs::read_to_string(&resolved)?;
-        let ctx = self
-            .ctx_mgr
-            .get_or_create(&self.session_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let resolved = match policy.resolve(file) {
+            Ok(path) => path,
+            Err(error) => {
+                return Ok(browser_run_failure_output(
+                    start,
+                    &self.session_id,
+                    Some(file),
+                    error,
+                ))
+            }
+        };
+        let source = match std::fs::read_to_string(&resolved) {
+            Ok(source) => source,
+            Err(error) => {
+                return Ok(browser_run_failure_output(
+                    start,
+                    &self.session_id,
+                    Some(file),
+                    error,
+                ))
+            }
+        };
+        let ctx = match self.ctx_mgr.get_or_create(&self.session_id).await {
+            Ok(ctx) => ctx,
+            Err(error) => {
+                return Ok(browser_run_failure_output(
+                    start,
+                    &self.session_id,
+                    Some(file),
+                    error,
+                ))
+            }
+        };
         let tab_id = adapter_params
             .get("tab_id")
             .or_else(|| adapter_params.get("tabId"))
@@ -134,10 +184,17 @@ impl BrowserRunScriptTool {
             });
         let tab_id = match tab_id {
             Some(tab_id) => tab_id,
-            None => ctx
-                .active_or_first_tab_id()
-                .await
-                .ok_or_else(|| ToolError::Execution("no browser tab available".to_string()))?,
+            None => match ctx.active_or_first_tab_id().await {
+                Some(tab_id) => tab_id,
+                None => {
+                    return Ok(browser_run_failure_output(
+                        start,
+                        &self.session_id,
+                        Some(file),
+                        "no browser tab available",
+                    ))
+                }
+            },
         };
 
         let duration = || start.elapsed().as_millis() as u64;
@@ -154,19 +211,12 @@ impl BrowserRunScriptTool {
                 }),
                 duration(),
             )),
-            Err(error) => {
-                let duration_ms = duration();
-                Ok(ToolOutput::new(
-                    serde_json::json!({
-                        "ok": false,
-                        "error": error.to_string(),
-                        "sessionId": self.session_id,
-                        "file": file,
-                        "durationMs": duration_ms,
-                    }),
-                    duration_ms,
-                ))
-            }
+            Err(error) => Ok(browser_run_failure_output(
+                start,
+                &self.session_id,
+                Some(file),
+                error,
+            )),
         }
     }
 }
@@ -1667,6 +1717,10 @@ impl Tool for RetryWithBrowserAgentTool {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
+    use super::browser_run_failure_output;
+
     #[test]
     fn hover_script_escapes_index() {
         let index: u32 = 42;
@@ -1724,5 +1778,24 @@ mod tests {
         let params = serde_json::json!({"tab_id": "t1"});
         let timeout_ms = params["timeout_ms"].as_u64().unwrap_or(10_000);
         assert_eq!(timeout_ms, 10_000);
+    }
+
+    #[test]
+    fn browser_run_failure_output_has_required_envelope() {
+        let output = browser_run_failure_output(
+            Instant::now(),
+            "automation:spec:activity",
+            Some("missing.js"),
+            "not found",
+        );
+
+        assert_eq!(output.result["ok"], serde_json::json!(false));
+        assert_eq!(
+            output.result["sessionId"],
+            serde_json::json!("automation:spec:activity")
+        );
+        assert_eq!(output.result["file"], serde_json::json!("missing.js"));
+        assert_eq!(output.result["error"], serde_json::json!("not found"));
+        assert!(output.result["durationMs"].is_u64());
     }
 }
