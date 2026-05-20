@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
 use std::time::Instant;
 
 use async_trait::async_trait;
+use tauri::Manager;
 use tokio::sync::{Mutex as TokioMutex, RwLock, Semaphore};
 
 use crate::agent::types::{AgenticLoopConfig, ChatMessage, LoopOutcome, ReasoningContext};
@@ -84,10 +85,27 @@ fn builtin_automation_workspace_root(spec_id: &str) -> PathBuf {
         .join(spec_id)
 }
 
-fn builtin_automations_resource_root() -> PathBuf {
+fn builtin_automations_repo_resource_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
         .join("builtin-automations")
+}
+
+fn builtin_automations_resource_dir_root(resource_dir: &Path) -> PathBuf {
+    resource_dir.join("builtin-automations")
+}
+
+fn builtin_automations_resource_root(app_handle: Option<&tauri::AppHandle>) -> PathBuf {
+    if let Some(app_handle) = app_handle {
+        if let Ok(resource_dir) = app_handle.path().resource_dir() {
+            let bundled = builtin_automations_resource_dir_root(&resource_dir);
+            if bundled.exists() {
+                return bundled;
+            }
+        }
+    }
+
+    builtin_automations_repo_resource_root()
 }
 
 fn builtin_source_ref(app_id: &str) -> String {
@@ -956,7 +974,7 @@ impl AppRuntimeService {
     /// are left untouched.
     pub fn seed_builtin_specs(&self) -> anyhow::Result<usize> {
         let mut inserted = 0;
-        for app in load_builtin_apps(builtin_automations_resource_root())? {
+        for app in load_builtin_apps(builtin_automations_resource_root(self.app_handle.as_ref()))? {
             inserted += self.seed_builtin_spec(&app)?;
         }
         Ok(inserted)
@@ -1745,6 +1763,22 @@ mod tests {
             "system_prompt": "you are a test agent",
             "subscriptions": []
         }"#
+    }
+
+    #[test]
+    fn builtin_automations_root_uses_packaged_shape_and_repo_fallback() {
+        let resource_dir = tempfile::tempdir().unwrap();
+        let bundled_root = resource_dir.path().join("builtin-automations");
+        std::fs::create_dir_all(&bundled_root).unwrap();
+
+        assert_eq!(
+            builtin_automations_resource_dir_root(resource_dir.path()),
+            bundled_root
+        );
+
+        let fallback = builtin_automations_resource_root(None);
+        assert!(fallback.join("manifest.json").is_file());
+        assert!(fallback.ends_with("resources/builtin-automations"));
     }
 
     #[test]
