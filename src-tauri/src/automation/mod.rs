@@ -1,4 +1,5 @@
 pub mod activity;
+pub mod builtin_apps;
 pub mod capability_map;
 pub mod compat;
 pub mod filters;

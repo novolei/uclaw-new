@@ -27,6 +27,9 @@ use crate::agent::types::{AgenticLoopConfig, ChatMessage, LoopOutcome, Reasoning
 use crate::automation::activity::{
     insert_activity, AutomationActivity, ActivityStatus, TriggerSource,
 };
+use crate::automation::builtin_apps::{
+    load_builtin_apps, sync_builtin_skills, BuiltinAutomationApp,
+};
 use crate::automation::filters;
 use crate::automation::manager::HumaneSpecRow;
 use crate::automation::memory::MemoryStore as AutomationMemoryStore;
@@ -51,54 +54,8 @@ use crate::services::{ManagedService, ServiceHealth, ServiceStatus};
 const PER_SPEC_CONCURRENCY: usize = 2;
 const BUILTIN_DOUYIN_LIVE_MODERATOR_SOURCE_REF: &str =
     "builtin://automation-specs/douyin-live-moderator";
-const BUILTIN_DOUYIN_LIVE_MODERATOR_YAML: &str =
-    include_str!("../../../resources/automation-specs/douyin-live-moderator.yaml");
 const BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_SOURCE_REF: &str =
     "builtin://automation-specs/bilibili-comment-auto-reply";
-const BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_YAML: &str =
-    include_str!("../../../resources/automation-specs/bilibili-comment-auto-reply.yaml");
-const BUILTIN_BILI_GET_MESSAGES_JS: &str =
-    include_str!("../../../resources/automation-skills/bilibili-comment-auto-reply/bili-get-messages/index.js");
-const BUILTIN_BILI_REPLY_JS: &str =
-    include_str!("../../../resources/automation-skills/bilibili-comment-auto-reply/bili-reply/index.js");
-
-struct BuiltinSkillFile {
-    skill_id: &'static str,
-    filename: &'static str,
-    body: &'static str,
-}
-
-struct BuiltinAutomationSpec {
-    source_ref: &'static str,
-    yaml: &'static str,
-    skills: &'static [BuiltinSkillFile],
-}
-
-const BUILTIN_BILIBILI_SKILLS: &[BuiltinSkillFile] = &[
-    BuiltinSkillFile {
-        skill_id: "bili-get-messages",
-        filename: "index.js",
-        body: BUILTIN_BILI_GET_MESSAGES_JS,
-    },
-    BuiltinSkillFile {
-        skill_id: "bili-reply",
-        filename: "index.js",
-        body: BUILTIN_BILI_REPLY_JS,
-    },
-];
-
-const BUILTIN_AUTOMATION_SPECS: &[BuiltinAutomationSpec] = &[
-    BuiltinAutomationSpec {
-        source_ref: BUILTIN_DOUYIN_LIVE_MODERATOR_SOURCE_REF,
-        yaml: BUILTIN_DOUYIN_LIVE_MODERATOR_YAML,
-        skills: &[],
-    },
-    BuiltinAutomationSpec {
-        source_ref: BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_SOURCE_REF,
-        yaml: BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_YAML,
-        skills: BUILTIN_BILIBILI_SKILLS,
-    },
-];
 
 pub(crate) fn automation_executor_kind(spec_json: &serde_json::Value) -> &'static str {
     if spec_json
@@ -125,6 +82,20 @@ fn builtin_automation_workspace_root(spec_id: &str) -> PathBuf {
         .unwrap_or_else(|| Path::new(".").to_path_buf())
         .join("Documents/workground/automations")
         .join(spec_id)
+}
+
+fn builtin_automations_resource_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("builtin-automations")
+}
+
+fn builtin_source_ref(app_id: &str) -> String {
+    match app_id {
+        "douyin-live-room-moderator" => BUILTIN_DOUYIN_LIVE_MODERATOR_SOURCE_REF.to_string(),
+        "bilibili-comment-auto-reply" => BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_SOURCE_REF.to_string(),
+        _ => format!("builtin://automation-specs/{app_id}"),
+    }
 }
 
 // ─── EscalationRow ───────────────────────────────────────────────────────────
@@ -985,15 +956,15 @@ impl AppRuntimeService {
     /// are left untouched.
     pub fn seed_builtin_specs(&self) -> anyhow::Result<usize> {
         let mut inserted = 0;
-        for builtin in BUILTIN_AUTOMATION_SPECS {
-            inserted += self.seed_builtin_spec(builtin)?;
+        for app in load_builtin_apps(builtin_automations_resource_root())? {
+            inserted += self.seed_builtin_spec(&app)?;
         }
         Ok(inserted)
     }
 
-    fn seed_builtin_spec(&self, builtin: &BuiltinAutomationSpec) -> anyhow::Result<usize> {
-        let yaml = builtin.yaml;
-        let source_ref = builtin.source_ref;
+    fn seed_builtin_spec(&self, builtin: &BuiltinAutomationApp) -> anyhow::Result<usize> {
+        let yaml = builtin.spec_yaml.as_str();
+        let source_ref = builtin_source_ref(&builtin.id);
         let parsed = parse_humane_v1(yaml)
             .map_err(|e| anyhow::anyhow!("builtin spec parse error for {}: {}", source_ref, e))?;
         let spec = &parsed.spec;
@@ -1002,16 +973,22 @@ impl AppRuntimeService {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
 
-        let existing_id: Option<String> = conn
+        let existing_row: Option<(String, Option<i64>)> = conn
             .query_row(
-                "SELECT id FROM automation_specs WHERE source = 'builtin' AND source_ref = ?1",
+                "SELECT id, uninstalled_at
+                 FROM automation_specs
+                 WHERE source = 'builtin'
+                   AND source_ref = ?1
+                 ORDER BY CASE WHEN uninstalled_at IS NULL THEN 0 ELSE 1 END
+                 LIMIT 1",
                 rusqlite::params![source_ref],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .ok();
 
-        match existing_id {
-            Some(id) => {
+        match existing_row {
+            Some((_id, Some(_))) => Ok(0),
+            Some((id, None)) => {
                 conn.execute(
                     "UPDATE automation_specs
                      SET name = ?2,
@@ -1038,7 +1015,7 @@ impl AppRuntimeService {
                     ],
                 )
                 .map_err(|e| anyhow::anyhow!("update builtin spec {}: {}", source_ref, e))?;
-                self.sync_builtin_spec_skills(&id, builtin.skills)?;
+                self.sync_builtin_spec_skills(&id, builtin)?;
                 Ok(0)
             }
             None => {
@@ -1066,7 +1043,7 @@ impl AppRuntimeService {
                     ],
                 )
                 .map_err(|e| anyhow::anyhow!("insert builtin spec {}: {}", source_ref, e))?;
-                self.sync_builtin_spec_skills(&spec_id, builtin.skills)?;
+                self.sync_builtin_spec_skills(&spec_id, builtin)?;
                 Ok(1)
             }
         }
@@ -1075,26 +1052,14 @@ impl AppRuntimeService {
     fn sync_builtin_spec_skills(
         &self,
         spec_id: &str,
-        skills: &[BuiltinSkillFile],
+        builtin: &BuiltinAutomationApp,
     ) -> anyhow::Result<()> {
-        if skills.is_empty() {
+        if builtin.skills.is_empty() {
             return Ok(());
         }
 
         let workspace_root = builtin_automation_workspace_root(spec_id);
-        let skills_root = workspace_root.join(".claude").join("skills");
-        for skill in skills {
-            if skill.filename.contains('/') || skill.filename.contains('\\') || skill.filename.contains("..") {
-                anyhow::bail!("rejecting suspicious builtin skill filename: {}", skill.filename);
-            }
-            let dir = skills_root.join(skill.skill_id);
-            std::fs::create_dir_all(&dir)
-                .map_err(|e| anyhow::anyhow!("create builtin skill dir {}: {}", dir.display(), e))?;
-            let file_path = dir.join(skill.filename);
-            std::fs::write(&file_path, skill.body)
-                .map_err(|e| anyhow::anyhow!("write builtin skill {}: {}", file_path.display(), e))?;
-        }
-        Ok(())
+        sync_builtin_skills(builtin, workspace_root)
     }
 
     /// Read a file from disk and install it as a Humane spec.
@@ -2067,6 +2032,47 @@ mod tests {
         assert_eq!(seeded[0].status, "paused");
         assert_eq!(seeded[0].user_config_values, r#"{"room_id":"room-a"}"#);
         assert_eq!(seeded[0].permissions_granted, r#"["ai_browser"]"#);
+    }
+
+    #[test]
+    fn seed_builtin_specs_skips_uninstalled_builtin_rows() {
+        let conn = open_test_db();
+        let svc = make_service(conn);
+
+        assert_eq!(svc.seed_builtin_specs().unwrap(), 2);
+        let bili = svc
+            .list_specs()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.source_ref.as_deref() == Some(BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_SOURCE_REF))
+            .unwrap();
+
+        {
+            let db = svc.db.lock().unwrap();
+            db.execute(
+                "UPDATE automation_specs
+                 SET status = 'uninstalled',
+                     enabled = 0,
+                     uninstalled_at = ?2
+                 WHERE id = ?1",
+                rusqlite::params![bili.id, chrono::Utc::now().timestamp_millis()],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(svc.seed_builtin_specs().unwrap(), 0);
+        let db = svc.db.lock().unwrap();
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM automation_specs
+                 WHERE source = 'builtin'
+                   AND source_ref = ?1",
+                rusqlite::params![BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_SOURCE_REF],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     // ── Test §7.3-2: list_specs_returns_inserted_specs_in_order ────────────
