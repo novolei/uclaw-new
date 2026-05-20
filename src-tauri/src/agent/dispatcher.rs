@@ -2335,20 +2335,24 @@ impl LoopDelegate for ChatDelegate {
         }
 
         // Summarization prompt: ask the LLM to produce a concise summary.
-        let summary_prompt = format!(
-            "You are a conversation summarizer. Below is a transcript of earlier conversation \
-             turns that have been compacted from the active context window.\n\n\
-             Produce a concise summary (3-8 sentences) covering:\n\
-             - Key decisions made and their rationale\n\
-             - Files that were read, modified, or created (with paths)\n\
-             - Tools that were used and their outcomes\n\
-             - The current task state and what remains to be done\n\
-             - Any important constraints, preferences, or edge cases discovered\n\n\
-             Write the summary in the same language as the conversation.\n\
-             Be specific — include file paths, tool names, and concrete details.\n\n\
-             Conversation transcript:\n{}",
-            transcript
-        );
+        // M2-T1b — render via uclaw_utils_template instead of format!() for
+        // the same reasons as M2-T1a (#324): testable, fail-safe, ready for
+        // the M2-A baseline.md rewrite.
+        const SUMMARY_TEMPLATE: &str = "You are a conversation summarizer. Below is a transcript of earlier conversation turns that have been compacted from the active context window.\n\nProduce a concise summary (3-8 sentences) covering:\n- Key decisions made and their rationale\n- Files that were read, modified, or created (with paths)\n- Tools that were used and their outcomes\n- The current task state and what remains to be done\n- Any important constraints, preferences, or edge cases discovered\n\nWrite the summary in the same language as the conversation.\nBe specific — include file paths, tool names, and concrete details.\n\nConversation transcript:\n{{transcript}}";
+        let summary_prompt = uclaw_utils_template::render(
+            SUMMARY_TEMPLATE,
+            [("transcript", transcript.as_str())],
+        )
+        .unwrap_or_else(|e| {
+            // Fall back to the literal template — losing the {{transcript}}
+            // substitution but keeping the instruction body. Better than
+            // panicking the agent loop on a typo.
+            tracing::warn!(
+                "M2-T1b: summary template render failed: {e}; \
+                 falling back to literal template (without transcript)"
+            );
+            SUMMARY_TEMPLATE.to_string()
+        });
 
         let config = crate::llm::CompletionConfig {
             model: self.model.clone(),
