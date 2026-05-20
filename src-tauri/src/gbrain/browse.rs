@@ -5,6 +5,7 @@
 //! 纯 `parse_*` 函数与 IO 分离，便于单测（mock JSON 文本即可）。
 
 use serde::{Deserialize, Serialize};
+use crate::mcp::{ContentBlock, JsonRpcRequest, McpServerStatus, SharedMcpManager};
 
 /// 代理层归一化错误。Tauri 命令把它转成稳定字符串返回前端。
 #[derive(Debug, Clone)]
@@ -173,6 +174,134 @@ pub fn build_raw_markdown(frontmatter: &serde_json::Value, body: &str) -> String
         Ok(yaml) if !yaml.trim().is_empty() => format!("---\n{yaml}---\n\n{body}"),
         _ => body.to_string(),
     }
+}
+
+// ─── MCP 调用助手 ────────────────────────────────────────────────────────────
+
+/// 调一个 gbrain MCP op，返回拼接后的文本内容（JSON）。
+/// 沿用 tauri_commands.rs::call_gbrain_eval_tool 的 get_transport 模式：
+/// 克隆 transport + req_id 后释放管理器读锁，再做网络 await。
+async fn call_gbrain(
+    mcp_manager: &SharedMcpManager,
+    op: &str,
+    arguments: serde_json::Value,
+) -> Result<String, GbrainError> {
+    let (transport, req_id) = {
+        let manager = mcp_manager.read().await;
+        if !matches!(manager.status("gbrain"), Some(McpServerStatus::Connected)) {
+            return Err(GbrainError::NotConnected);
+        }
+        manager
+            .get_transport("gbrain")
+            .map_err(|_| GbrainError::NotConnected)?
+    };
+    let request = JsonRpcRequest::call_tool(req_id, op, arguments);
+    let response = transport
+        .send(&request)
+        .await
+        .map_err(|e| GbrainError::CallFailed(e.to_string()))?;
+    if let Some(err) = response.error {
+        return Err(GbrainError::CallFailed(format!("{err:?}")));
+    }
+    let result_value = response
+        .result
+        .ok_or_else(|| GbrainError::CallFailed("empty MCP result".to_string()))?;
+    let result: crate::mcp::CallToolResult = serde_json::from_value(result_value)
+        .map_err(|e| GbrainError::ParseFailed(e.to_string()))?;
+    // gbrain 错误（page_not_found 等）→ is_error=true，在这里短路成 CallFailed，
+    // 所以数组返回型 op 的 parser 永远不会看到 {error:...} 信封——只有 get_page
+    // 的 ambiguous_slug（is_error=false + error 字段）需要 reject_error_envelope。
+    if result.is_error {
+        let text = join_text(&result.content);
+        return Err(GbrainError::CallFailed(text));
+    }
+    Ok(join_text(&result.content))
+}
+
+fn join_text(content: &[ContentBlock]) -> String {
+    content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// ─── 读取侧异步函数 ──────────────────────────────────────────────────────────
+
+pub async fn list_pages(
+    mcp: &SharedMcpManager,
+    limit: u32,
+    sort: Option<String>,
+    page_type: Option<String>,
+    tag: Option<String>,
+    updated_after: Option<String>,
+) -> Result<Vec<PageSummary>, GbrainError> {
+    let mut args = serde_json::Map::new();
+    args.insert("limit".into(), serde_json::json!(limit));
+    if let Some(s) = sort { args.insert("sort".into(), serde_json::json!(s)); }
+    if let Some(t) = page_type { args.insert("type".into(), serde_json::json!(t)); }
+    if let Some(t) = tag { args.insert("tag".into(), serde_json::json!(t)); }
+    if let Some(d) = updated_after { args.insert("updated_after".into(), serde_json::json!(d)); }
+    let text = call_gbrain(mcp, "list_pages", serde_json::Value::Object(args)).await?;
+    parse_list_pages(&text)
+}
+
+pub async fn get_page(mcp: &SharedMcpManager, slug: &str) -> Result<PageDetail, GbrainError> {
+    let text = call_gbrain(mcp, "get_page", serde_json::json!({ "slug": slug, "fuzzy": true })).await?;
+    parse_page_detail(&text)
+}
+
+pub async fn search(
+    mcp: &SharedMcpManager,
+    query: &str,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<SearchHit>, GbrainError> {
+    let text = call_gbrain(
+        mcp,
+        "search",
+        serde_json::json!({ "query": query, "limit": limit, "offset": offset }),
+    )
+    .await?;
+    parse_search(&text)
+}
+
+pub async fn get_backlinks(mcp: &SharedMcpManager, slug: &str) -> Result<Vec<Backlink>, GbrainError> {
+    let text = call_gbrain(mcp, "get_backlinks", serde_json::json!({ "slug": slug })).await?;
+    parse_backlinks(&text)
+}
+
+/// A 只建命令不渲染（留给 C）。返回原始 JSON 文本，前端 V1 不解析。
+pub async fn traverse_graph(
+    mcp: &SharedMcpManager,
+    slug: &str,
+    depth: u32,
+    direction: Option<String>,
+) -> Result<serde_json::Value, GbrainError> {
+    let mut args = serde_json::Map::new();
+    args.insert("slug".into(), serde_json::json!(slug));
+    args.insert("depth".into(), serde_json::json!(depth));
+    if let Some(d) = direction { args.insert("direction".into(), serde_json::json!(d)); }
+    let text = call_gbrain(mcp, "traverse_graph", serde_json::Value::Object(args)).await?;
+    serde_json::from_str(&text).map_err(|e| GbrainError::ParseFailed(e.to_string()))
+}
+
+pub async fn get_versions(mcp: &SharedMcpManager, slug: &str) -> Result<Vec<VersionMeta>, GbrainError> {
+    let text = call_gbrain(mcp, "get_versions", serde_json::json!({ "slug": slug })).await?;
+    parse_versions(&text)
+}
+
+pub async fn get_stats(mcp: &SharedMcpManager) -> Result<BrainStats, GbrainError> {
+    let text = call_gbrain(mcp, "get_stats", serde_json::json!({})).await?;
+    parse_stats(&text)
+}
+
+pub async fn find_orphans(mcp: &SharedMcpManager) -> Result<OrphanSummary, GbrainError> {
+    let text = call_gbrain(mcp, "find_orphans", serde_json::json!({})).await?;
+    parse_orphans(&text)
 }
 
 #[cfg(test)]
