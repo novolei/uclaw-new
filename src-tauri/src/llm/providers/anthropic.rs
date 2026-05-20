@@ -424,6 +424,14 @@ impl LlmProvider for AnthropicProvider {
                     .and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                 cache_creation_tokens: u.get("cache_creation_input_tokens")
                     .and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                // M1-T6 — reasoning tokens (Claude extended thinking).
+                // Anthropic exposes them under usage.output_tokens already (thinking
+                // is metered as output); we keep a separate field for parity with
+                // OpenAI o1-style reasoning attribution. Pre-M1-T6 callers can
+                // upgrade by reading u.get("thinking_output_tokens") if Anthropic
+                // exposes it. Default 0 for now.
+                reasoning_output_tokens: u.get("thinking_output_tokens")
+                    .and_then(|v| v.as_u64()).unwrap_or(0) as u32,
             }),
         };
 
@@ -712,6 +720,8 @@ impl SseParserState {
                                 .and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                             cache_creation_tokens: u.get("cache_creation_input_tokens")
                                 .and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                            reasoning_output_tokens: u.get("thinking_output_tokens")
+                                .and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                         };
                         self.accumulated_usage = Some(usage);
                     }
@@ -811,6 +821,7 @@ impl SseParserState {
                                 output_tokens,
                                 cache_read_tokens: 0,
                                 cache_creation_tokens: 0,
+                                reasoning_output_tokens: 0,
                             });
                         }
                     }

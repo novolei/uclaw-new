@@ -85,6 +85,20 @@ pub async fn run_agentic_loop(
             LoopSignal::Continue => {}
         }
 
+        // M1-T2d (R-6) — observe cancellation token between stages so the
+        // loop can exit cleanly after each in-flight call completes,
+        // rather than waiting for the next iteration's check_signals poll.
+        // See docs/superpowers/specs/2026-05-20-agentic-loop-state-audit.md
+        // §C for the full R-6 surface.
+        if reason_ctx.is_cancelled() {
+            tracing::info!("Agent loop cancelled mid-iteration (post check_signals)");
+            reason_ctx.thread_state = ThreadState::Interrupted;
+            let partial_code = reason_ctx.partial_code_buffer.as_ref().map(|(lang, content)| {
+                format!("```{}\n{}\n```", lang, content)
+            });
+            return LoopOutcome::Cancelled { partial_code };
+        }
+
         // ── 2. Context compression ───────────────────────────────────
         compress_context_if_needed(reason_ctx, config, delegate).await;
 
@@ -119,6 +133,18 @@ pub async fn run_agentic_loop(
                 };
             }
         };
+
+        // M1-T2d (R-6) — check cancellation after the LLM call returns.
+        // Without this, a cancel signal that arrives during a 30s
+        // streaming response would only be observed at the next iteration.
+        if reason_ctx.is_cancelled() {
+            tracing::info!("Agent loop cancelled after call_llm");
+            reason_ctx.thread_state = ThreadState::Interrupted;
+            let partial_code = reason_ctx.partial_code_buffer.as_ref().map(|(lang, content)| {
+                format!("```{}\n{}\n```", lang, content)
+            });
+            return LoopOutcome::Cancelled { partial_code };
+        }
 
         // ── 5. Handle response ───────────────────────────────────────
         match output {

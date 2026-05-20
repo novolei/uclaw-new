@@ -1897,12 +1897,12 @@ CREATE INDEX IF NOT EXISTS idx_spaced_rep_due
     WHERE enabled = 1;
 ";
 
-/// V49 — Halo-compatible automation app metadata.
+/// V50 — Halo-compatible automation app metadata.
 ///
 /// Additive only: `automation_specs.status` already exists on V20+
 /// databases, so duplicate-column errors are tolerated by the migration
 /// runner just like the earlier automation_specs ALTER migrations.
-pub const V49_HALO_AUTOMATION_METADATA: &str = "
+pub const V50_HALO_AUTOMATION_METADATA: &str = "
 ALTER TABLE automation_specs ADD COLUMN status TEXT;
 ALTER TABLE automation_specs ADD COLUMN user_overrides_json TEXT;
 ALTER TABLE automation_specs ADD COLUMN browser_login TEXT;
@@ -2014,6 +2014,16 @@ CREATE INDEX IF NOT EXISTS idx_facets_last_seen
 /// `page_content_hashes` / `analysis_cache` pattern). Tables stay empty
 /// until consumers (Timeline Engine scenario in a follow-up PR;
 /// Importance Decay algorithm in P2) start populating them.
+pub const V49_COST_RECORDS_6D: &str = "
+-- M1-T6 — extend cost_records (V13) with the 6-dimension TokenUsage shape.
+--   * cached_input_tokens — prompt-cache reads (cheaper than fresh input)
+--   * reasoning_output_tokens — extended-thinking output (Claude / o1)
+-- Existing rows default the new columns to 0 (no semantic change for
+-- pre-M1-T6 data). Cost recalculation against new pricing is a follow-up.
+ALTER TABLE cost_records ADD COLUMN cached_input_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE cost_records ADD COLUMN reasoning_output_tokens INTEGER NOT NULL DEFAULT 0;
+";
+
 pub const V48_TASK_EVENTS_ROLLOUT: &str = "
 -- M1-T5 (Phase 0.5 / Runtime Contracts) — rollout sidecar for task event
 -- stream. Mirrors the JSONL at `~/.uclaw/sessions/rollout-*.jsonl` so
@@ -2486,11 +2496,19 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             tracing::warn!("V48 stmt skipped: {} :: {}", e, stmt);
         }
     }
-    // V49: Halo-compatible automation app metadata.
-    tracing::debug!("Running migration V49: Halo automation metadata");
-    for stmt in V49_HALO_AUTOMATION_METADATA.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    // V49: M1-T6 — cost_records gains cached_input_tokens + reasoning_output_tokens.
+    tracing::debug!("Running migration V49: cost_records 6-D");
+    for stmt in V49_COST_RECORDS_6D.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
-            tracing::warn!("V49 stmt skipped: {} :: {}", e, stmt);
+            // Already-applied ADD COLUMN raises "duplicate column" — that's expected.
+            tracing::debug!("V49 stmt skipped (likely already applied): {} :: {}", e, stmt);
+        }
+    }
+    // V50: Halo-compatible automation app metadata.
+    tracing::debug!("Running migration V50: Halo automation metadata");
+    for stmt in V50_HALO_AUTOMATION_METADATA.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V50 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -4535,5 +4553,42 @@ mod tests {
         assert_eq!(enabled, 1);
         assert_eq!(total, 0);
         assert_eq!(passed, 0);
+    }
+/// V49 — cost_records gains 6-D token columns.
+    #[test]
+    fn v49_adds_cached_input_and_reasoning_output_columns() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        // Both new columns must exist and accept INSERT with explicit 0s.
+        conn.execute(
+            "INSERT INTO cost_records                 (id, session_id, model, input_tokens, output_tokens,                  cost_usd, created_at, cached_input_tokens, reasoning_output_tokens)              VALUES ('c1', 's1', 'test-model', 100, 50, 0.01, 1700000000000, 30, 12)",
+            [],
+        )
+        .unwrap();
+        let (input, output, cached, reasoning): (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens                  FROM cost_records WHERE id = 'c1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!((input, output, cached, reasoning), (100, 50, 30, 12));
+    }
+
+    /// V49 is idempotent — running run() twice must not error.
+    #[test]
+    fn v49_is_idempotent() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error");
+        // Columns still present.
+        let row: (Option<String>,) = conn
+            .query_row(
+                "SELECT name FROM pragma_table_info('cost_records')                  WHERE name = 'reasoning_output_tokens'",
+                [],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        assert_eq!(row.0.as_deref(), Some("reasoning_output_tokens"));
     }
 }

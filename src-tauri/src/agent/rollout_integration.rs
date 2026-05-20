@@ -65,6 +65,11 @@ pub async fn run_with_rollout(
 
     // R-1 HIGH fix — same reset RegularTask::run performs.
     reason_ctx.force_text = false;
+    // M1-T2d (R-6) — currently no token is threaded through this entry
+    // point (the chat-send Tauri command has no per-call cancellation).
+    // Future M1-T2e wires it from the dispatcher's cancel button. For
+    // now, callers that need cancellation should use RegularTask
+    // directly via the SessionTask scheduler.
 
     let outcome = run_agentic_loop(delegate, reason_ctx, config).await;
 
@@ -83,8 +88,12 @@ pub async fn run_with_rollout(
                         input_tokens: usage.input_tokens,
                         cached_input_tokens: usage.cache_read_tokens,
                         output_tokens: usage.output_tokens,
-                        reasoning_output_tokens: 0,
-                        total_tokens: usage.input_tokens.saturating_add(usage.output_tokens),
+                        // M1-T6 — real reasoning tokens from the provider if reported.
+                        reasoning_output_tokens: usage.reasoning_output_tokens,
+                        total_tokens: usage
+                            .input_tokens
+                            .saturating_add(usage.output_tokens)
+                            .saturating_add(usage.reasoning_output_tokens),
                         cost_usd_micros: None,
                     },
                 });
@@ -159,6 +168,7 @@ mod tests {
                         output_tokens: 10,
                         cache_read_tokens: 20,
                         cache_creation_tokens: 0,
+                        reasoning_output_tokens: 0,
                     }),
                 },
             })

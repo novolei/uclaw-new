@@ -119,6 +119,12 @@ impl SessionTask for RegularTask {
         // benefited from the constraint.
         ctx.force_text = false;
 
+        // M1-T2d (R-6) — install the task's cancellation token into the
+        // ReasoningContext so the agent loop can observe it between
+        // stages. Same token the scheduler holds — preemption flows in
+        // exactly once through `TaskScheduler::abort_all_tasks`.
+        ctx.cancellation_token = Some(token.clone());
+
         let outcome = run_agentic_loop(
             self.inputs.delegate.as_ref(),
             &mut ctx,
@@ -152,9 +158,12 @@ impl SessionTask for RegularTask {
                         input_tokens: usage.input_tokens,
                         cached_input_tokens: usage.cache_read_tokens,
                         output_tokens: usage.output_tokens,
-                        reasoning_output_tokens: 0,
-                        total_tokens: usage.input_tokens
-                            .saturating_add(usage.output_tokens),
+                        // M1-T6 — real reasoning tokens from the provider if reported.
+                        reasoning_output_tokens: usage.reasoning_output_tokens,
+                        total_tokens: usage
+                            .input_tokens
+                            .saturating_add(usage.output_tokens)
+                            .saturating_add(usage.reasoning_output_tokens),
                         cost_usd_micros: None,
                     },
                 });
@@ -508,6 +517,7 @@ mod tests {
                         output_tokens: 25,
                         cache_read_tokens: 40,
                         cache_creation_tokens: 0,
+                        reasoning_output_tokens: 0,
                     }),
                 },
             })
@@ -627,6 +637,99 @@ mod tests {
         async fn after_iteration(&self, _: usize) {}
     }
 
+    /// M1-T6 — verify reasoning_output_tokens flows from agent::types::TokenUsage
+    /// through into runtime::contracts::TokenUsage on the ModelTurn event,
+    /// and that total_tokens accounts for it.
+    struct ReasoningResponseDelegate;
+
+    #[async_trait]
+    impl LoopDelegate for ReasoningResponseDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(
+            &self,
+            _ctx: &mut ReasoningContext,
+            _iter: usize,
+        ) -> Option<LoopOutcome> {
+            None
+        }
+        async fn call_llm(
+            &self,
+            _ctx: &mut ReasoningContext,
+            _iter: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            Ok(RespondOutput::Text {
+                text: "thought + answer".into(),
+                thinking: Some("internal reasoning".into()),
+                thinking_signature: None,
+                metadata: ResponseMetadata {
+                    model: "claude-opus-thinking".into(),
+                    finish_reason: Some("stop".into()),
+                    usage: Some(crate::agent::types::TokenUsage {
+                        input_tokens: 80,
+                        output_tokens: 20,
+                        cache_read_tokens: 10,
+                        cache_creation_tokens: 0,
+                        reasoning_output_tokens: 200,
+                    }),
+                },
+            })
+        }
+        async fn handle_text_response(
+            &self,
+            _: &str,
+            meta: ResponseMetadata,
+            _: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Return(LoopOutcome::Response {
+                text: "thought + answer".into(),
+                usage: meta.usage,
+                truncated: false,
+            })
+        }
+        async fn execute_tool_calls(
+            &self,
+            _: Vec<ToolCall>,
+            _: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            Ok(None)
+        }
+        async fn on_usage(
+            &self,
+            _: &crate::agent::types::TokenUsage,
+            _: &ReasoningContext,
+        ) {
+        }
+        async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}
+        async fn after_iteration(&self, _: usize) {}
+    }
+
+    #[tokio::test]
+    async fn model_turn_token_usage_includes_reasoning_in_total() {
+        let ctx = make_ctx(false);
+        let task = Arc::new(RegularTask::new(
+            task_spec("reasoning-1"),
+            RegularTaskInputs {
+                delegate: Arc::new(ReasoningResponseDelegate),
+                reason_ctx: ctx,
+                config: AgenticLoopConfig::default(),
+            },
+        ));
+        let events = task.run(CancellationToken::new()).await;
+        match &events[1] {
+            TaskEvent::ModelTurn { token_usage, .. } => {
+                assert_eq!(token_usage.input_tokens, 80);
+                assert_eq!(token_usage.cached_input_tokens, 10);
+                assert_eq!(token_usage.output_tokens, 20);
+                assert_eq!(token_usage.reasoning_output_tokens, 200);
+                // total = input + output + reasoning = 80 + 20 + 200 = 300
+                assert_eq!(token_usage.total_tokens, 300);
+            }
+            other => panic!("expected ModelTurn at index 1, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn task_emits_warning_then_failed_on_loop_failure() {
         let ctx = make_ctx(false);
@@ -654,5 +757,105 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ── M1-T2d — R-6 cancellation token observed between stages ─────
+
+    /// LoopDelegate that cancels the context's token from inside `call_llm`.
+    /// Used to verify the agentic_loop observes cancellation after the
+    /// LLM call returns (the R-6 HIGH gap from the audit spec).
+    struct CancelFromInsideCallLlmDelegate {
+        token: CancellationToken,
+    }
+
+    #[async_trait]
+    impl LoopDelegate for CancelFromInsideCallLlmDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(
+            &self,
+            _ctx: &mut ReasoningContext,
+            _iter: usize,
+        ) -> Option<LoopOutcome> {
+            None
+        }
+        async fn call_llm(
+            &self,
+            _ctx: &mut ReasoningContext,
+            _iter: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            // Simulate a cancel signal that arrives during the LLM call.
+            self.token.cancel();
+            Ok(RespondOutput::Text {
+                text: "interrupted".into(),
+                thinking: None,
+                thinking_signature: None,
+                metadata: ResponseMetadata {
+                    model: "test".into(),
+                    finish_reason: None,
+                    usage: None,
+                },
+            })
+        }
+        async fn handle_text_response(
+            &self,
+            _t: &str,
+            _meta: ResponseMetadata,
+            _c: &mut ReasoningContext,
+        ) -> TextAction {
+            // Should NEVER be called — the post-call_llm cancellation check
+            // bails out of the loop before handle_text_response runs.
+            panic!(
+                "handle_text_response should not have been reached — R-6                  cancellation check should have fired"
+            );
+        }
+        async fn execute_tool_calls(
+            &self,
+            _: Vec<ToolCall>,
+            _: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            Ok(None)
+        }
+        async fn on_usage(
+            &self,
+            _: &crate::agent::types::TokenUsage,
+            _: &ReasoningContext,
+        ) {
+        }
+        async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}
+        async fn after_iteration(&self, _: usize) {}
+    }
+
+    #[tokio::test]
+    async fn r6_cancel_during_llm_call_short_circuits_at_next_check() {
+        let ctx = make_ctx(false);
+        let token = CancellationToken::new();
+        let task = Arc::new(RegularTask::new(
+            task_spec("r6-mid"),
+            RegularTaskInputs {
+                delegate: Arc::new(CancelFromInsideCallLlmDelegate {
+                    token: token.clone(),
+                }),
+                reason_ctx: ctx,
+                config: AgenticLoopConfig::default(),
+            },
+        ));
+        let events = task.run(token).await;
+        // Started + Finished{Cancelled}; no ModelTurn / no Warning.
+        assert_eq!(
+            events.len(),
+            2,
+            "expected exactly Started + Finished, got {events:?}"
+        );
+        match &events[1] {
+            TaskEvent::TaskFinished {
+                verdict: TaskVerdict::Cancelled { reason },
+                ..
+            } => {
+                assert!(reason.is_some());
+            }
+            other => panic!("expected TaskFinished/Cancelled, got {other:?}"),
+        }
     }
 }
