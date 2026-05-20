@@ -128,6 +128,19 @@ pub struct ReasoningContext {
     /// After MAX_PLAN_GUARD_NUDGES, the guard gives up and returns the
     /// response as-is to avoid infinite text-only loops.
     pub consecutive_plan_guard_nudges: usize,
+    /// M1-T2d (R-6 HIGH fix) — optional cancellation token observed at
+    /// every stage boundary in `run_agentic_loop`. When set + cancelled,
+    /// the loop returns `LoopOutcome::Cancelled` at the next checkpoint
+    /// (after `call_llm` completes, after `execute_tool_calls` completes,
+    /// at iteration top). Mid-stream cancellation requires extending
+    /// `LoopDelegate` trait signatures with `&CancellationToken` and
+    /// is deferred to M1-T2e.
+    ///
+    /// Tokens aren't persisted; they're per-run state injected by the
+    /// `RegularTask` / `run_with_rollout` wrapper at the start of each
+    /// turn. (ReasoningContext doesn't derive Serialize/Deserialize, so
+    /// no serde annotation needed.)
+    pub cancellation_token: Option<tokio_util::sync::CancellationToken>,
 }
 
 impl ReasoningContext {
@@ -144,7 +157,24 @@ impl ReasoningContext {
             consecutive_length_truncations: 0,
             partial_code_buffer: None,
             consecutive_plan_guard_nudges: 0,
+            cancellation_token: None,
         }
+    }
+
+    /// Builder — install a cancellation token observed at every stage
+    /// boundary in `run_agentic_loop`. See the field docstring for
+    /// semantics. Added M1-T2d.
+    pub fn with_cancellation(mut self, token: tokio_util::sync::CancellationToken) -> Self {
+        self.cancellation_token = Some(token);
+        self
+    }
+
+    /// True when the installed token has been fired. False if no token
+    /// is installed or the token hasn't been cancelled yet.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation_token
+            .as_ref()
+            .is_some_and(|t| t.is_cancelled())
     }
 
     /// Token count estimate using CJK-aware per-character weighting.
