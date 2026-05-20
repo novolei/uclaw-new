@@ -56,6 +56,27 @@ uClaw's version should map these ideas to the existing Rust/Tauri browser stack:
 
 ## Architecture
 
+### 0. Runtime Boundary Correction
+
+This feature must remain inside the current automation runtime. It should not introduce a second scheduler, a second activity ledger, or a Douyin-specific automation runtime.
+
+The live-room moderator is a specialized executor path selected by explicit spec metadata:
+
+```yaml
+x_uclaw_runtime:
+  kind: live_room_moderator
+  poll_interval_seconds: 30
+  action_mode_default: real
+```
+
+Runtime behavior:
+
+- `execute_run` creates the normal automation activity and run session.
+- If `x_uclaw_runtime.kind = live_room_moderator`, `execute_run` dispatches to the live-room executor instead of the generic one-shot `run_agentic_loop`.
+- The live-room executor owns one long-running loop and sleeps for `poll_interval_seconds` between ticks.
+- The loop reuses existing provider resolution, permission checks, tool registry, activity status, cost limits where applicable, and stop/deactivate semantics.
+- A 30-second monitor must not be implemented as a schedule subscription that launches a fresh run every 30 seconds.
+
 ### 1. Automation Runtime Capability Bridge
 
 Automation runs must be able to register browser and gbrain tools when a spec declares the relevant capability.
@@ -277,6 +298,11 @@ Each installed spec instance targets exactly one live platform and one live room
 ### Config
 
 ```yaml
+x_uclaw_runtime:
+  kind: live_room_moderator
+  poll_interval_seconds: 30
+  action_mode_default: real
+
 config_schema:
   - key: live_platform
     label: Live platform
@@ -646,6 +672,23 @@ Agent/Browser panel:
   - two warnings lead to mute
   - severe case can remove when enabled
   - no raw auth material appears in trace or gbrain page content
+
+### Controlled Douyin Smoke
+
+Before claiming the first version is complete, run a controlled Douyin room smoke with a test moderator account and consenting test users.
+
+Required assertions:
+
+- Login notice opens a real login window and produces or resolves a usable `BrowserIdentityProfile`.
+- The live-room executor enters the room with `auth_origin = "https://www.douyin.com"`.
+- `scan_comments` sees only new comments after cursor advancement.
+- `send_reply` posts one visible room comment.
+- `warn_user` posts a visible warning.
+- `mute_user` acts on the re-verified target user, not a DOM index.
+- `remove_user` acts on the re-verified target user when enabled.
+- If deterministic scripts cannot find the action affordance, the adapter falls back to constrained `browser_task`.
+- The adapter records `action_denied`, `target_not_verified`, or `insufficient_permissions` instead of fake success.
+- No password, SMS code, cookie, localStorage payload, or raw storage state appears in automation trace, gbrain, or diagnostics.
 
 ## Rollout Plan
 

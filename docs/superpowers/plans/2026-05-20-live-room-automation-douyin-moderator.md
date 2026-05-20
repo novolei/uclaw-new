@@ -6,6 +6,10 @@
 
 **Architecture:** Add a browser/gbrain capability bridge for automation, then build a platform-neutral live-room contract with a Douyin adapter implemented through restricted page-context scripts. Each installed spec instance targets exactly one platform/room and runs concurrently with isolated browser context, cursor, moderation ledger, gbrain namespace, and rate limits.
 
+**Self-review correction:** This must not become a parallel automation framework. The live-room loop is a specialized executor path inside the existing automation runtime, selected by explicit spec metadata. It creates one run session, one scoped browser context, and one activity row for the live session, then ticks every `poll_interval_seconds` inside that run until stopped. Do not model the 30-second monitor as repeated schedule-triggered automation runs.
+
+**Real-action correction:** The user confirmed first-version room-manager actions default to real execution. The implementation may keep strong verification gates, but `send_reply`, `warn_user`, `mute_user`, and `remove_user` must have an executable path before the feature is considered complete. If a deterministic script cannot verify the target/action, the adapter must fall back to a constrained `browser_task` action and only return success after the page confirms the intended action.
+
 **Tech Stack:** Rust/Tauri v2, chromiumoxide browser tools, existing automation runtime, gbrain MCP, rusqlite, React 18 + Jotai, Vitest, Rust unit tests, uClaw harness fixtures.
 
 ---
@@ -13,6 +17,7 @@
 ## File Structure
 
 - Modify `src-tauri/src/automation/runtime/service.rs`: register browser/gbrain tools for automation when the spec declares capabilities.
+- Modify `src-tauri/src/automation/runtime/service.rs`: dispatch the live-room executor for specs with `x_uclaw_runtime.kind = live_room_moderator`.
 - Create `src-tauri/src/automation/runtime/tool_registry.rs`: focused builder for automation tool registries, split out of `service.rs`.
 - Modify `src-tauri/src/automation/permissions.rs`: map new live-room and scoped gbrain tool names to permissions.
 - Create `src-tauri/src/browser/script_runner.rs`: restricted `browser_run_script` path validation and execution helper.
@@ -797,6 +802,7 @@ git commit -m "feat(automation): add live room moderation policy"
 **Files:**
 - Create: `src-tauri/src/automation/live_room/runtime.rs`
 - Modify: `src-tauri/src/automation/live_room/mod.rs`
+- Modify: `src-tauri/src/automation/runtime/service.rs`
 - Test: `src-tauri/src/automation/live_room/runtime.rs`
 
 - [ ] **Step 1: Write state-key tests**
@@ -817,6 +823,19 @@ mod tests {
         let a = LiveRunKey::new("spec-a", "run-1", "douyin", "room-a");
         let b = LiveRunKey::new("spec-a", "run-1", "douyin", "room-b");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn live_runtime_metadata_is_explicit() {
+        let spec = serde_json::json!({
+            "x_uclaw_runtime": {
+                "kind": "live_room_moderator",
+                "poll_interval_seconds": 30
+            }
+        });
+        let runtime = LiveRuntimeMetadata::from_spec_json(&spec).unwrap();
+        assert_eq!(runtime.kind, "live_room_moderator");
+        assert_eq!(runtime.poll_interval_seconds, 30);
     }
 }
 ```
@@ -868,6 +887,30 @@ pub struct LiveRunState {
     pub comment_cursor: Option<String>,
     pub last_tick_ms: Option<i64>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveRuntimeMetadata {
+    pub kind: String,
+    pub poll_interval_seconds: u64,
+}
+
+impl LiveRuntimeMetadata {
+    pub fn from_spec_json(spec: &serde_json::Value) -> anyhow::Result<Self> {
+        let raw = spec
+            .get("x_uclaw_runtime")
+            .ok_or_else(|| anyhow::anyhow!("x_uclaw_runtime_missing"))?;
+        let kind = raw
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let poll_interval_seconds = raw
+            .get("poll_interval_seconds")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(30);
+        Ok(Self { kind, poll_interval_seconds })
+    }
+}
 ```
 
 Modify `live_room/mod.rs`:
@@ -876,7 +919,57 @@ Modify `live_room/mod.rs`:
 pub mod runtime;
 ```
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 4: Add service dispatch test for live-room specs**
+
+Add a pure helper in `service.rs` and test it beside the existing runtime tests:
+
+```rust
+fn automation_executor_kind(spec_json: &serde_json::Value) -> &'static str {
+    if spec_json
+        .get("x_uclaw_runtime")
+        .and_then(|v| v.get("kind"))
+        .and_then(|v| v.as_str())
+        == Some("live_room_moderator")
+    {
+        "live_room_moderator"
+    } else {
+        "agentic_loop"
+    }
+}
+```
+
+Test:
+
+```rust
+#[test]
+fn live_room_spec_uses_live_room_executor() {
+    let spec = serde_json::json!({
+        "type": "automation",
+        "x_uclaw_runtime": { "kind": "live_room_moderator" }
+    });
+    assert_eq!(automation_executor_kind(&spec), "live_room_moderator");
+}
+```
+
+Then branch inside `execute_run` after run-session/activity creation and before the generic `run_agentic_loop` call:
+
+```rust
+if automation_executor_kind(&spec_value) == "live_room_moderator" {
+    return crate::automation::live_room::runtime::execute_live_room_run(
+        self,
+        spec_id,
+        activity_id,
+        session_id,
+        spec_value,
+        payload,
+        workspace_root,
+    ).await;
+}
+```
+
+The executor must reuse the existing activity row, permission set, provider resolution, tool registry, and stop/deactivation semantics. It must not start a separate scheduler or create a second activity ledger.
+
+- [ ] **Step 5: Run tests**
 
 Run:
 
@@ -886,10 +979,10 @@ cd src-tauri && cargo test --lib automation::live_room::runtime::tests -- --noca
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src-tauri/src/automation/live_room/runtime.rs src-tauri/src/automation/live_room/mod.rs
+git add src-tauri/src/automation/live_room/runtime.rs src-tauri/src/automation/live_room/mod.rs src-tauri/src/automation/runtime/service.rs
 git commit -m "feat(automation): isolate concurrent live room state"
 ```
 
@@ -1089,64 +1182,114 @@ async (params) => {
 }
 ```
 
-Create `send_reply.js`:
+Create `send_reply.js` with an executable path:
 
 ```javascript
 async (params) => {
-  return {
-    ok: false,
-    action: 'send_reply',
-    text: params.text || '',
-    error: 'not_verified_on_real_douyin'
-  }
+  const text = String(params.text || '').trim()
+  if (!text) return { ok: false, action: 'send_reply', error: 'empty_text' }
+  const box = document.querySelector('[contenteditable="true"], textarea, input[type="text"]')
+  if (!box) return { ok: false, action: 'send_reply', needsBrowserTask: true, error: 'input_not_found' }
+  box.focus()
+  if ('value' in box) box.value = text
+  else box.textContent = text
+  box.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }))
+  const send = Array.from(document.querySelectorAll('button, [role="button"]'))
+    .find((el) => /发送|send/i.test(el.innerText || el.getAttribute('aria-label') || ''))
+  if (!send) return { ok: false, action: 'send_reply', needsBrowserTask: true, error: 'send_button_not_found' }
+  send.click()
+  return { ok: true, action: 'send_reply', text }
 }
 ```
 
-Create `warn_user.js`:
+Create `warn_user.js` as a real public warning action:
 
 ```javascript
 async (params) => {
-  return {
-    ok: false,
-    action: 'warn_user',
-    authorId: params.authorId || null,
-    reason: params.reason || '',
-    error: 'not_verified_on_real_douyin'
-  }
+  const name = params.authorName || params.authorId || '这位朋友'
+  const reason = params.reason || '直播间规则'
+  const text = `@${name} 请注意${reason}，请不要继续刷屏或发布不当内容。`
+  return await (async (p) => {
+    const box = document.querySelector('[contenteditable="true"], textarea, input[type="text"]')
+    if (!box) return { ok: false, action: 'warn_user', needsBrowserTask: true, error: 'input_not_found', text }
+    box.focus()
+    if ('value' in box) box.value = p.text
+    else box.textContent = p.text
+    box.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: p.text }))
+    const send = Array.from(document.querySelectorAll('button, [role="button"]'))
+      .find((el) => /发送|send/i.test(el.innerText || el.getAttribute('aria-label') || ''))
+    if (!send) return { ok: false, action: 'warn_user', needsBrowserTask: true, error: 'send_button_not_found', text }
+    send.click()
+    return { ok: true, action: 'warn_user', text }
+  })({ text })
 }
 ```
 
-Create `mute_user.js`:
+Create `mute_user.js` with verified-user semantics:
 
 ```javascript
 async (params) => {
+  const authorId = params.authorId || null
+  const authorName = params.authorName || ''
+  const candidates = Array.from(document.querySelectorAll('[data-user-id], [data-id], [class*="comment"], [class*="chat"]'))
+  const target = candidates.find((node) => {
+    const uid = node.getAttribute('data-user-id') || node.querySelector('[data-user-id]')?.getAttribute('data-user-id')
+    const text = node.innerText || ''
+    return (authorId && uid === authorId) || (authorName && text.includes(authorName))
+  })
+  if (!target) return { ok: false, action: 'mute_user', authorId, needsBrowserTask: true, error: 'target_not_found' }
+  target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+  target.click()
+  const action = Array.from(document.querySelectorAll('button, [role="button"], [role="menuitem"]'))
+    .find((el) => /禁言|mute/i.test(el.innerText || el.getAttribute('aria-label') || ''))
+  if (!action) return { ok: false, action: 'mute_user', authorId, needsBrowserTask: true, error: 'mute_action_not_found' }
+  action.click()
   return {
-    ok: false,
+    ok: true,
     action: 'mute_user',
-    authorId: params.authorId || null,
+    authorId,
     reason: params.reason || '',
-    verifiedAuthorId: null,
-    error: 'not_verified_on_real_douyin'
+    verifiedAuthorId: authorId
   }
 }
 ```
 
-Create `remove_user.js`:
+Create `remove_user.js` with verified-user semantics:
 
 ```javascript
 async (params) => {
+  const authorId = params.authorId || null
+  const authorName = params.authorName || ''
+  const candidates = Array.from(document.querySelectorAll('[data-user-id], [data-id], [class*="comment"], [class*="chat"]'))
+  const target = candidates.find((node) => {
+    const uid = node.getAttribute('data-user-id') || node.querySelector('[data-user-id]')?.getAttribute('data-user-id')
+    const text = node.innerText || ''
+    return (authorId && uid === authorId) || (authorName && text.includes(authorName))
+  })
+  if (!target) return { ok: false, action: 'remove_user', authorId, needsBrowserTask: true, error: 'target_not_found' }
+  target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+  target.click()
+  const action = Array.from(document.querySelectorAll('button, [role="button"], [role="menuitem"]'))
+    .find((el) => /踢出|移出|remove|kick/i.test(el.innerText || el.getAttribute('aria-label') || ''))
+  if (!action) return { ok: false, action: 'remove_user', authorId, needsBrowserTask: true, error: 'remove_action_not_found' }
+  action.click()
   return {
-    ok: false,
+    ok: true,
     action: 'remove_user',
-    authorId: params.authorId || null,
+    authorId,
     reason: params.reason || '',
-    verifiedAuthorId: null,
-    error: 'not_verified_on_real_douyin'
+    verifiedAuthorId: authorId
   }
 }
 ```
 
-The action scripts deliberately return `ok: false` until a controlled Douyin room smoke validates the actual DOM actions. This prevents the adapter from reporting fake success while still locking the file contracts.
+When any action script returns `{ needsBrowserTask: true }`, the Douyin adapter must call `browser_task` with a constrained task such as:
+
+```text
+In the already opened Douyin live room tab, perform only this moderator action: mute author_id=<id> author_name=<name> for reason=<reason>. Re-read the target identity before clicking. Do not act on any other user. Stop and report action_denied if the target or moderator menu cannot be verified.
+```
+
+The adapter returns success only when either the script or fallback reports a verified target and the intended action. It returns `action_denied`, `target_not_verified`, or `insufficient_permissions` otherwise.
 
 - [ ] **Step 4: Add built-in spec YAML**
 
@@ -1170,6 +1313,10 @@ requires:
 browser_login:
   - url: https://www.douyin.com/
     label: Douyin
+x_uclaw_runtime:
+  kind: live_room_moderator
+  poll_interval_seconds: 30
+  action_mode_default: real
 ```
 
 - [ ] **Step 5: Run tests**
