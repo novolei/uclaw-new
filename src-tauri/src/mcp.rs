@@ -191,6 +191,68 @@ fn diagnostic_error_summary(s: &str, env: &HashMap<String, String>) -> String {
     }
 }
 
+fn classify_gbrain_cli_failure(stderr: &str, status: &str) -> String {
+    let lower = format!("{} {}", stderr, status).to_lowercase();
+    if lower.contains("timed out waiting for pglite lock") {
+        "pglite_lock_timeout"
+    } else if lower.contains("no brain configured") || lower.contains("pg_version") {
+        "pglite_not_ready"
+    } else if lower.contains("permission denied") {
+        "permission_denied"
+    } else if lower.contains("gbrain_home") || lower.contains("pglite_data_dir") {
+        "path_mismatch"
+    } else if lower.contains("sigkill") || lower.contains("signal: 9") {
+        "process_killed"
+    } else if lower.contains("page_not_found") {
+        "page_not_found"
+    } else if lower.contains("failed to spawn") || lower.contains("no such file") {
+        "launcher_missing_or_unusable"
+    } else if lower.contains("timed out") {
+        "timeout"
+    } else {
+        "unknown"
+    }
+    .to_string()
+}
+
+fn gbrain_cli_error_hint(kind: &str) -> &'static str {
+    match kind {
+        "page_not_found" => "Pick an existing slug from the suggestions or retry with fuzzy=true/include_deleted=true.",
+        "process_killed" => "The gbrain CLI was killed by the OS. Retry with a smaller query/list size and check memory pressure if it repeats.",
+        "timeout" => "The gbrain CLI timed out. Retry once, then restart gbrain if the problem repeats.",
+        "pglite_lock_timeout" => "Stop stale gbrain processes and wait for the PGLite lock to clear, then retry.",
+        "pglite_not_ready" => "Run gbrain init or restart the app so PGLite storage is ready.",
+        "permission_denied" => "Fix permissions on the gbrain home directory or bundled launcher.",
+        "path_mismatch" => "Refresh bundled gbrain configuration from System Diagnostics and restart gbrain.",
+        "launcher_missing_or_unusable" => "Refresh bundled runtime paths and restart gbrain.",
+        _ => "Open System Diagnostics for gbrain runtime details, then retry.",
+    }
+}
+
+fn gbrain_cli_error_payload(tool: &str, kind: &str, status: &str, nearest_slugs: Vec<String>) -> String {
+    serde_json::json!({
+        "ok": false,
+        "source": "gbrain",
+        "tool": tool,
+        "kind": kind,
+        "status": status,
+        "message": match kind {
+            "page_not_found" => "gbrain page not found",
+            "process_killed" => "gbrain process was killed",
+            "timeout" => "gbrain CLI timed out",
+            "pglite_lock_timeout" => "gbrain PGLite lock timed out",
+            "pglite_not_ready" => "gbrain PGLite storage is not ready",
+            "permission_denied" => "gbrain permission denied",
+            "path_mismatch" => "gbrain runtime path mismatch",
+            "launcher_missing_or_unusable" => "gbrain launcher missing or unusable",
+            _ => "gbrain CLI failed",
+        },
+        "hint": gbrain_cli_error_hint(kind),
+        "nearest_slugs": nearest_slugs,
+    })
+    .to_string()
+}
+
 /// Kinds of events written to `mcp_audit`. Stored as the literal
 /// string in the `event_kind` column; new variants are append-only so
 /// historical rows stay parseable.
@@ -954,6 +1016,402 @@ impl McpTransport for HttpTransport {
     async fn shutdown(&self) -> Result<(), McpError> {
         tracing::debug!("[{}] HTTP transport shut down", self.server_name);
         Ok(())
+    }
+}
+
+// ─── Bundled gbrain CLI Transport ──────────────────────────────────────
+
+/// The bundled gbrain source currently runs on the embedded Bun runtime.
+/// Its CLI one-shot commands are reliable, but the MCP SDK stdio server
+/// can hang during the persistent `initialize` handshake under Bun pipes.
+///
+/// For uClaw's bundled local brain we keep the existing MCP-facing shape
+/// (`mcp__gbrain__search`, etc.) while executing each tool call through
+/// `bun <gbrain>/src/cli.ts <command> ...`. This makes the bridge
+/// deterministic and avoids long-lived PGLite lock holders.
+struct GbrainCliTransport {
+    command: String,
+    base_args: Vec<String>,
+    env: HashMap<String, String>,
+}
+
+impl GbrainCliTransport {
+    fn new(_server_name: &str, command: &str, args: &[String], env: &HashMap<String, String>) -> Self {
+        let mut base_args = args.to_vec();
+        if base_args.last().map(|s| s.as_str()) == Some("serve") {
+            base_args.pop();
+        }
+        Self {
+            command: command.to_string(),
+            base_args,
+            env: env.clone(),
+        }
+    }
+
+    fn tools() -> Vec<McpRemoteTool> {
+        vec![
+            Self::tool(
+                "search",
+                "Keyword search using gbrain full-text search.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "number"},
+                        "offset": {"type": "number"}
+                    },
+                    "required": ["query"]
+                }),
+            ),
+            Self::tool(
+                "query",
+                "Hybrid semantic search across the local gbrain knowledge base.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "number"},
+                        "offset": {"type": "number"},
+                        "expand": {"type": "boolean"},
+                        "detail": {"type": "string"},
+                        "salience": {"type": "string"},
+                        "recency": {"type": "string"},
+                        "since": {"type": "string"},
+                        "until": {"type": "string"},
+                        "source_id": {"type": "string"}
+                    }
+                }),
+            ),
+            Self::tool(
+                "list_pages",
+                "List gbrain pages. Use this for 'what memories/knowledge do you have' and inventory questions instead of query('*').",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string"},
+                        "tag": {"type": "string"},
+                        "limit": {"type": "number"},
+                        "updated_after": {"type": "string"},
+                        "sort": {
+                            "type": "string",
+                            "enum": ["updated_desc", "updated_asc", "created_desc", "slug"]
+                        },
+                        "include_deleted": {"type": "boolean"}
+                    }
+                }),
+            ),
+            Self::tool(
+                "think",
+                "Multi-hop synthesis across pages, takes, and graph evidence.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string"},
+                        "anchor": {"type": "string"},
+                        "rounds": {"type": "number"},
+                        "since": {"type": "string"},
+                        "until": {"type": "string"}
+                    },
+                    "required": ["question"]
+                }),
+            ),
+            Self::tool(
+                "get_page",
+                "Read a gbrain page by slug.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "slug": {"type": "string"},
+                        "fuzzy": {"type": "boolean"},
+                        "include_deleted": {"type": "boolean"}
+                    },
+                    "required": ["slug"]
+                }),
+            ),
+            Self::tool(
+                "put_page",
+                "Write or update a gbrain page from markdown content.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "slug": {"type": "string"},
+                        "content": {"type": "string"}
+                    },
+                    "required": ["slug", "content"]
+                }),
+            ),
+        ]
+    }
+
+    fn tool(name: &str, description: &str, input_schema: serde_json::Value) -> McpRemoteTool {
+        McpRemoteTool {
+            name: name.to_string(),
+            description: description.to_string(),
+            input_schema,
+        }
+    }
+
+    async fn call_cli(&self, tool: &str, arguments: serde_json::Value) -> Result<String, McpError> {
+        cleanup_stale_pglite_lock(&self.env);
+
+        let mut argv = self.base_args.clone();
+        let mut requested_slug: Option<String> = None;
+        match tool {
+            "search" => {
+                let query = required_string(&arguments, "query")?;
+                argv.push("search".to_string());
+                argv.push(query);
+                push_number_flag(&mut argv, &arguments, "limit", "--limit");
+                push_number_flag(&mut argv, &arguments, "offset", "--offset");
+            }
+            "query" => {
+                let query = optional_string(&arguments, "query").unwrap_or_default();
+                argv.push("query".to_string());
+                argv.push(query);
+                push_number_flag(&mut argv, &arguments, "limit", "--limit");
+                push_number_flag(&mut argv, &arguments, "offset", "--offset");
+                push_bool_flag(&mut argv, &arguments, "expand", "--expand");
+                push_string_flag(&mut argv, &arguments, "detail", "--detail");
+                push_string_flag(&mut argv, &arguments, "salience", "--salience");
+                push_string_flag(&mut argv, &arguments, "recency", "--recency");
+                push_string_flag(&mut argv, &arguments, "since", "--since");
+                push_string_flag(&mut argv, &arguments, "until", "--until");
+                push_string_flag(&mut argv, &arguments, "source_id", "--source-id");
+            }
+            "list_pages" => {
+                argv.push("list".to_string());
+                push_string_flag(&mut argv, &arguments, "type", "--type");
+                push_string_flag(&mut argv, &arguments, "tag", "--tag");
+                push_number_flag(&mut argv, &arguments, "limit", "--limit");
+                push_string_flag(&mut argv, &arguments, "updated_after", "--updated-after");
+                push_string_flag(&mut argv, &arguments, "sort", "--sort");
+                push_bool_flag(&mut argv, &arguments, "include_deleted", "--include-deleted");
+            }
+            "think" => {
+                let question = required_string(&arguments, "question")?;
+                argv.push("think".to_string());
+                argv.push(question);
+                push_string_flag(&mut argv, &arguments, "anchor", "--anchor");
+                push_number_flag(&mut argv, &arguments, "rounds", "--rounds");
+                push_string_flag(&mut argv, &arguments, "since", "--since");
+                push_string_flag(&mut argv, &arguments, "until", "--until");
+            }
+            "get_page" => {
+                let slug = required_string(&arguments, "slug")?;
+                requested_slug = Some(slug.clone());
+                argv.push("get".to_string());
+                argv.push(slug);
+                push_bool_flag(&mut argv, &arguments, "fuzzy", "--fuzzy");
+                push_bool_flag(&mut argv, &arguments, "include_deleted", "--include-deleted");
+            }
+            "put_page" => {
+                let slug = required_string(&arguments, "slug")?;
+                let content = required_string(&arguments, "content")?;
+                argv.push("put".to_string());
+                argv.push(slug);
+                argv.push("--content".to_string());
+                argv.push(content);
+            }
+            other => {
+                return Err(McpError::Server(format!(
+                    "gbrain CLI transport does not support tool '{}'",
+                    other
+                )));
+            }
+        }
+
+        let mut cmd = tokio::process::Command::new(&self.command);
+        cmd.args(&argv)
+            .envs(&self.env)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+
+        let output = tokio::time::timeout(Duration::from_secs(45), cmd.output())
+            .await
+            .map_err(|_| McpError::Server(gbrain_cli_error_payload(tool, "timeout", "timed out", Vec::new())))?
+            .map_err(|e| McpError::Io(e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if !output.status.success() {
+            let mut suggestions = Vec::new();
+            if tool == "get_page" && stderr.contains("page_not_found") {
+                if let Some(slug) = requested_slug.as_deref() {
+                    suggestions = self.suggest_page_slugs(slug).await;
+                }
+            }
+            return Err(McpError::Server(gbrain_cli_error_payload(
+                tool,
+                &classify_gbrain_cli_failure(&stderr, &output.status.to_string()),
+                &output.status.to_string(),
+                suggestions,
+            )));
+        }
+        if stdout.is_empty() && !stderr.is_empty() {
+            Ok(stderr)
+        } else {
+            Ok(stdout)
+        }
+    }
+
+    async fn suggest_page_slugs(&self, missing_slug: &str) -> Vec<String> {
+        let mut argv = self.base_args.clone();
+        argv.push("list".to_string());
+        argv.push("--limit".to_string());
+        argv.push("200".to_string());
+
+        let mut cmd = tokio::process::Command::new(&self.command);
+        cmd.args(&argv)
+            .envs(&self.env)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+
+        let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(10), cmd.output()).await else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut candidates: Vec<(usize, String)> = stdout
+            .lines()
+            .filter_map(|line| line.split('\t').next())
+            .filter(|slug| !slug.trim().is_empty())
+            .map(|slug| (slug_distance(missing_slug, slug), slug.to_string()))
+            .collect();
+        candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        candidates
+            .into_iter()
+            .take(3)
+            .map(|(_, slug)| slug)
+            .collect()
+    }
+
+}
+
+#[async_trait]
+impl McpTransport for GbrainCliTransport {
+    async fn send(&self, request: &JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
+        match request.method.as_str() {
+            "initialize" => Ok(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: request.id,
+                result: Some(serde_json::json!({
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "gbrain-cli", "version": env!("CARGO_PKG_VERSION")}
+                })),
+                error: None,
+            }),
+            "notifications/initialized" => Ok(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: request.id,
+                result: Some(serde_json::Value::Null),
+                error: None,
+            }),
+            "tools/list" => Ok(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: request.id,
+                result: Some(serde_json::json!({ "tools": Self::tools() })),
+                error: None,
+            }),
+            "tools/call" => {
+                let params = request.params.as_ref().ok_or_else(|| {
+                    McpError::Protocol("tools/call missing params".into())
+                })?;
+                let name = params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::Protocol("tools/call missing name".into()))?;
+                let args = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let text = self.call_cli(name, args).await?;
+                Ok(JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: request.id,
+                    result: Some(serde_json::json!({
+                        "content": [{"type": "text", "text": text}],
+                        "isError": false
+                    })),
+                    error: None,
+                })
+            }
+            "ping" => Ok(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: request.id,
+                result: Some(serde_json::json!({})),
+                error: None,
+            }),
+            other => Err(McpError::Protocol(format!(
+                "gbrain CLI transport does not implement method '{}'",
+                other
+            ))),
+        }
+    }
+
+    async fn shutdown(&self) -> Result<(), McpError> {
+        Ok(())
+    }
+}
+
+fn required_string(args: &serde_json::Value, key: &str) -> Result<String, McpError> {
+    optional_string(args, key)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| McpError::Protocol(format!("missing required argument '{}'", key)))
+}
+
+fn slug_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr = vec![0; b.len() + 1];
+
+    for (i, ca) in a.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let substitution = prev[j] + usize::from(ca != cb);
+            let insertion = curr[j] + 1;
+            let deletion = prev[j + 1] + 1;
+            curr[j + 1] = substitution.min(insertion).min(deletion);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    prev[b.len()]
+}
+
+fn optional_string(args: &serde_json::Value, key: &str) -> Option<String> {
+    args.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+}
+
+fn push_string_flag(argv: &mut Vec<String>, args: &serde_json::Value, key: &str, flag: &str) {
+    if let Some(value) = optional_string(args, key).filter(|s| !s.is_empty()) {
+        argv.push(flag.to_string());
+        argv.push(value);
+    }
+}
+
+fn push_number_flag(argv: &mut Vec<String>, args: &serde_json::Value, key: &str, flag: &str) {
+    if let Some(value) = args.get(key).and_then(|v| v.as_f64()) {
+        argv.push(flag.to_string());
+        argv.push(if value.fract() == 0.0 {
+            format!("{}", value as i64)
+        } else {
+            value.to_string()
+        });
+    }
+}
+
+fn push_bool_flag(argv: &mut Vec<String>, args: &serde_json::Value, key: &str, flag: &str) {
+    if args.get(key).and_then(|v| v.as_bool()) == Some(true) {
+        argv.push(flag.to_string());
     }
 }
 
@@ -2423,6 +2881,23 @@ mod tests {
     }
 
     #[test]
+    fn gbrain_cli_error_payload_is_structured_for_recovery_ui() {
+        let payload = gbrain_cli_error_payload(
+            "get_page",
+            "page_not_found",
+            "exit status: 1",
+            vec!["knowledge/openai-gpt5".to_string()],
+        );
+        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["source"], "gbrain");
+        assert_eq!(value["tool"], "get_page");
+        assert_eq!(value["kind"], "page_not_found");
+        assert_eq!(value["nearest_slugs"][0], "knowledge/openai-gpt5");
+        assert!(value["hint"].as_str().unwrap().contains("suggestions"));
+    }
+
+    #[test]
     fn update_server_rewrites_config_and_persists_to_disk() {
         let dir = tempfile::tempdir().unwrap();
         {
@@ -2552,6 +3027,14 @@ mod tests {
         );
         assert!(!stored.enabled);
         assert!(!stored.auto_approve);
+    }
+
+    #[test]
+    fn slug_distance_ranks_one_character_slug_typo_close() {
+        assert!(
+            slug_distance("aknowledge/openai-gpt5", "knowledge/openai-gpt5")
+                < slug_distance("aknowledge/openai-gpt5", "ai-models/gpt-5")
+        );
     }
 
     #[test]
