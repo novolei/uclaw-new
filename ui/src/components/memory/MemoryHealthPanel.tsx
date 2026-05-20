@@ -312,7 +312,7 @@ export function MemoryHealthPanel({
             title="概念漂移"
             icon={<Activity className="size-3" />}
             count={drift.length}
-            defaultOpen={drift.length > 0}
+            defaultOpen
           >
             {driftError ? (
               <p className="text-[10px] text-destructive">{driftError}</p>
@@ -567,6 +567,7 @@ function CollapsibleSection({
     <div className="border-t border-border/40 pt-2">
       <button
         type="button"
+        aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center gap-1.5 text-[10px] uppercase tracking-wide font-medium text-muted-foreground hover:text-foreground transition-colors"
       >
