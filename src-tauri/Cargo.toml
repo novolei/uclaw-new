@@ -164,6 +164,10 @@ urlencoding = "2"
 security-framework = "3"
 objc2-app-kit = { version = "0.3.2", features = ["NSColor", "NSView", "NSWindow"] }
 
+# Knowledge ingestion pipeline (sub-project B)
+pdf-extract = "0.7"
+symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "pcm", "wav"] }
+
 # File operations
 tempfile = "3"
 
