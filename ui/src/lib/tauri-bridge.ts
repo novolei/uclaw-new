@@ -1955,6 +1955,9 @@ export const uninstallAutomation = (specId: string): Promise<void> =>
 export const triggerAutomationManualHumane = (specId: string): Promise<void> =>
   invoke<void>('trigger_automation_manual', { specId })
 
+export const stopAutomationRuns = (specId: string): Promise<number> =>
+  invoke<number>('stop_automation_runs', { specId })
+
 export const resolveEscalation = (escalationId: string, choice: string, note?: string): Promise<void> =>
   invoke<void>('resolve_escalation', { escalationId, choice, note })
 

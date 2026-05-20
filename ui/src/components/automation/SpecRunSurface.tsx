@@ -6,7 +6,7 @@ import {
   type AutomationTab,
 } from '@/atoms/automation-ui'
 import { automationActivitiesAtom, humaneSpecsAtom } from '@/atoms/automation'
-import { triggerAutomationManualHumane, getAutomationActivity } from '@/lib/tauri-bridge'
+import { triggerAutomationManualHumane, getAutomationActivity, stopAutomationRuns } from '@/lib/tauri-bridge'
 import type { HumaneSpecRow } from '@/lib/tauri-bridge'
 import { SpecRunHeader } from './SpecRunHeader'
 import { HomeThreadView } from './HomeThreadView'
@@ -49,6 +49,7 @@ export function SpecRunSurface({ specId }: Props) {
   const setActivitiesMap = useSetAtom(automationActivitiesAtom)
   const [showRightPanel, setShowRightPanel] = useState(false)
   const [isRunning, setIsRunning] = useState(false)
+  const [isStopping, setIsStopping] = useState(false)
 
   const spec = specs.find((s) => s.id === specId)
   const activities = activitiesMap[specId] ?? []
@@ -90,13 +91,32 @@ export function SpecRunSurface({ specId }: Props) {
     }
   }
 
+  async function handleStop() {
+    if (!hasActiveRun || isStopping) return
+    setIsStopping(true)
+    try {
+      await stopAutomationRuns(specId)
+      setActiveTab('activity')
+      await refreshActivities()
+    } finally {
+      setIsStopping(false)
+    }
+  }
+
   const showPanel =
     showRightPanel &&
     (activeTab === 'chat' || (activeTab === 'activity' && runSessionId != null))
 
   return (
     <div className="flex flex-col flex-1 h-full overflow-hidden">
-      <SpecRunHeader specName={spec.name} onRun={handleRun} isRunning={isRunning} />
+      <SpecRunHeader
+        specName={spec.name}
+        onRun={handleRun}
+        onStop={handleStop}
+        isRunning={isRunning}
+        hasActiveRun={hasActiveRun}
+        isStopping={isStopping}
+      />
 
       {liveMeta && (
         <div className="flex items-center gap-3 px-3 py-2 border-b border-border/50 text-xs text-muted-foreground shrink-0">
