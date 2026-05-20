@@ -63,6 +63,7 @@ impl MemoryGraphStore {
     // ── Node CRUD ───────────────────────────────────────────────────────
 
     pub fn create_node(&self, node: &MemoryNode) -> Result<(), crate::error::Error> {
+        crate::memory_graph::enforce_freeze("MemoryGraphStore::create_node");
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
         let metadata_str = node.metadata.as_ref().map(|m| serde_json::to_string(m).unwrap_or_default());
         conn.execute(
@@ -111,6 +112,7 @@ impl MemoryGraphStore {
         kind: Option<MemoryNodeKind>,
         metadata: Option<&serde_json::Value>,
     ) -> Result<(), crate::error::Error> {
+        crate::memory_graph::enforce_freeze("MemoryGraphStore::update_node");
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
         let now = chrono::Utc::now().to_rfc3339();
 
@@ -145,6 +147,7 @@ impl MemoryGraphStore {
     }
 
     pub fn delete_node(&self, id: &str) -> Result<(), crate::error::Error> {
+        crate::memory_graph::enforce_freeze("MemoryGraphStore::delete_node");
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
         // Delete related data first
         conn.execute("DELETE FROM memory_keywords WHERE node_id = ?1", params![id])
@@ -482,6 +485,7 @@ impl MemoryGraphStore {
     // ── Version CRUD ────────────────────────────────────────────────────
 
     pub fn create_version(&self, version: &MemoryVersion) -> Result<(), crate::error::Error> {
+        crate::memory_graph::enforce_freeze("MemoryGraphStore::create_version");
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
         let metadata_str = version.metadata.as_ref().map(|m| serde_json::to_string(m).unwrap_or_default());
         conn.execute(
@@ -582,6 +586,7 @@ impl MemoryGraphStore {
     // ── Edge CRUD ───────────────────────────────────────────────────────
 
     pub fn create_edge(&self, edge: &MemoryEdge) -> Result<(), crate::error::Error> {
+        crate::memory_graph::enforce_freeze("MemoryGraphStore::create_edge");
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
         conn.execute(
             "INSERT INTO memory_edges (id, space_id, parent_node_id, child_node_id, relation_kind, visibility, priority, trigger_text, created_at, updated_at)
@@ -683,6 +688,7 @@ impl MemoryGraphStore {
     }
 
     pub fn delete_edge(&self, id: &str) -> Result<(), crate::error::Error> {
+        crate::memory_graph::enforce_freeze("MemoryGraphStore::delete_edge");
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
         conn.execute("DELETE FROM memory_edges WHERE id = ?1", params![id])
             .map_err(crate::error::Error::Database)?;
@@ -814,6 +820,7 @@ impl MemoryGraphStore {
     // ── Route CRUD ──────────────────────────────────────────────────────
 
     pub fn create_route(&self, route: &MemoryRoute) -> Result<(), crate::error::Error> {
+        crate::memory_graph::enforce_freeze("MemoryGraphStore::create_route");
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
         conn.execute(
             "INSERT INTO memory_routes (id, space_id, edge_id, node_id, domain, path, is_primary, created_at, updated_at)
@@ -874,6 +881,7 @@ impl MemoryGraphStore {
     }
 
     pub fn delete_route(&self, id: &str) -> Result<(), crate::error::Error> {
+        crate::memory_graph::enforce_freeze("MemoryGraphStore::delete_route");
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
         conn.execute("DELETE FROM memory_routes WHERE id = ?1", params![id])
             .map_err(crate::error::Error::Database)?;
@@ -897,6 +905,7 @@ impl MemoryGraphStore {
     // ── Keyword CRUD ────────────────────────────────────────────────────
 
     pub fn create_keyword(&self, keyword: &MemoryKeyword) -> Result<(), crate::error::Error> {
+        crate::memory_graph::enforce_freeze("MemoryGraphStore::create_keyword");
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
         conn.execute(
             "INSERT INTO memory_keywords (id, space_id, node_id, keyword, created_at)
@@ -944,6 +953,7 @@ impl MemoryGraphStore {
     }
 
     pub fn delete_keywords_for_node(&self, node_id: &str) -> Result<(), crate::error::Error> {
+        crate::memory_graph::enforce_freeze("MemoryGraphStore::delete_keywords_for_node");
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
         conn.execute("DELETE FROM memory_keywords WHERE node_id = ?1", params![node_id])
             .map_err(crate::error::Error::Database)?;
@@ -959,6 +969,7 @@ impl MemoryGraphStore {
         node_id: &str,
         priority: i32,
     ) -> Result<(), crate::error::Error> {
+        crate::memory_graph::enforce_freeze("MemoryGraphStore::add_to_boot");
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
         let now = chrono::Utc::now().to_rfc3339();
         // Update the node kind to Boot
@@ -982,6 +993,7 @@ impl MemoryGraphStore {
         space_id: &str,
         node_id: &str,
     ) -> Result<(), crate::error::Error> {
+        crate::memory_graph::enforce_freeze("MemoryGraphStore::remove_from_boot");
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
         let now = chrono::Utc::now().to_rfc3339();
         // Remove boot kind → revert to reference
@@ -1011,6 +1023,7 @@ impl MemoryGraphStore {
         version_id: &str,
         embedding_json: &str,
     ) -> Result<(), crate::error::Error> {
+        crate::memory_graph::enforce_freeze("MemoryGraphStore::update_version_embedding");
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
         conn.execute(
             "UPDATE memory_versions SET embedding_json = ?1 WHERE id = ?2",
@@ -1085,6 +1098,7 @@ impl MemoryGraphStore {
         compiled_truth: &str,
         mut metadata: super::entity_page::EntityPageMetadata,
     ) -> Result<MemoryNodeDetail, crate::error::Error> {
+        crate::memory_graph::enforce_freeze("MemoryGraphStore::create_entity_page");
         let normalized_slug = slug.trim().to_lowercase();
         if normalized_slug.is_empty() {
             return Err(crate::error::Error::Internal(
