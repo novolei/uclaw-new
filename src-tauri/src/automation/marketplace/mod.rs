@@ -391,9 +391,8 @@ pub fn list_installed_inner(
 pub async fn list_installed(
     runtime: &crate::automation::runtime::AppRuntimeService,
 ) -> Result<Vec<types::InstalledAutomation>> {
-    let skills_root = dirs::home_dir()
-        .ok_or_else(|| anyhow!("no home dir"))?
-        .join(".uclaw")
+    let skills_root = uclaw_utils_home::uclaw_home_pathbuf()
+        .map_err(|_| anyhow!("no home dir"))?
         .join("skills");
     let conn = runtime.db.lock().unwrap();
     list_installed_inner(&conn, &skills_root)
@@ -432,9 +431,8 @@ pub async fn uninstall_human(
     skills_registry: Arc<RwLock<SkillsRegistry>>,
     slug: &str,
 ) -> Result<()> {
-    let skills_root = dirs::home_dir()
-        .ok_or_else(|| anyhow!("no home dir"))?
-        .join(".uclaw")
+    let skills_root = uclaw_utils_home::uclaw_home_pathbuf()
+        .map_err(|_| anyhow!("no home dir"))?
         .join("skills");
     {
         let conn = runtime.db.lock().unwrap();
@@ -604,8 +602,8 @@ async fn install_standalone_skill(
 
     emit("installing", 70, Some("写入 SKILL.md"));
     let skill_md = standalone_install::render_skill_md(&spec);
-    let skills_root = dirs::home_dir().ok_or_else(|| anyhow!("no home dir"))?
-        .join(".uclaw").join("skills");
+    let skills_root = uclaw_utils_home::uclaw_home_pathbuf()
+        .map_err(|_| anyhow!("no home dir"))?.join("skills");
     let install_dir = standalone_install::install_skill_files(slug, &skill_md, &skills_root)?;
 
     emit("registering_skills", 85, Some("注册 skill 扫描目录"));
@@ -755,9 +753,8 @@ pub async fn install_automation(
 
     // NEW: fetching_skills phase
     emit("fetching_skills", 25, Some("拉取依赖 skill 文件"));
-    let skills_root = dirs::home_dir()
-        .ok_or_else(|| anyhow!("no home dir"))?
-        .join(".uclaw")
+    let skills_root = uclaw_utils_home::uclaw_home_pathbuf()
+        .map_err(|_| anyhow!("no home dir"))?
         .join("skills");
     // Parse spec here so we can inspect requires.skills before installing.
     let parsed = match crate::automation::protocol::parse::parse_humane_v1(&yaml) {
@@ -937,8 +934,8 @@ pub async fn uninstall_marketplace_item(
     };
     match standalone {
         Some((ref item_type, _)) if item_type == "skill" => {
-            let skills_root = dirs::home_dir().ok_or_else(|| anyhow!("no home dir"))?
-                .join(".uclaw").join("skills");
+            let skills_root = uclaw_utils_home::uclaw_home_pathbuf()
+                .map_err(|_| anyhow!("no home dir"))?.join("skills");
             {
                 let conn = runtime.db.lock().unwrap();
                 uninstall_standalone_skill_inner(&conn, &skills_root, slug)?;

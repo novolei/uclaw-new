@@ -940,7 +940,7 @@ mod diagnostics_status_tests {
 
     #[test]
     fn redact_diagnostic_path_hides_home_and_data_dir() {
-        let data_dir = dirs::home_dir().unwrap().join(".uclaw");
+        let data_dir = uclaw_utils_home::uclaw_home_pathbuf().unwrap();
         let path = data_dir.join("gbrain").join("run.sh").display().to_string();
         assert_eq!(redact_diagnostic_path(&path, &data_dir), "$UCLAW_DATA/gbrain/run.sh");
     }
@@ -4611,9 +4611,8 @@ pub async fn fork_skill_to_user(
         loaded.manifest.path.clone()
     };
 
-    let dest_dir = dirs::home_dir()
-        .ok_or_else(|| Error::Internal("Home directory unavailable".into()))?
-        .join(".uclaw")
+    let dest_dir = uclaw_utils_home::uclaw_home_pathbuf()
+        .map_err(|_| Error::Internal("Home directory unavailable".into()))?
         .join("skills")
         .join(&name);
 

@@ -296,9 +296,8 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(app_handle: &tauri::AppHandle) -> Result<Self, crate::error::Error> {
-        let data_dir = dirs::home_dir()
-            .ok_or_else(|| crate::error::Error::Internal("Cannot find home directory".into()))?
-            .join(".uclaw");
+        let data_dir = uclaw_utils_home::uclaw_home_pathbuf()
+            .map_err(|_| crate::error::Error::Internal("Cannot find home directory".into()))?;
 
         std::fs::create_dir_all(&data_dir).ok();
         tracing::info!(data_dir = %data_dir.display(), "Initializing application state");

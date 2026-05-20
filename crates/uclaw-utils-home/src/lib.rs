@@ -76,6 +76,14 @@ fn uclaw_home_from_env(env_override: Option<&str>) -> std::io::Result<AbsolutePa
     }
 }
 
+/// Convenience wrapper: same as [`uclaw_home`] but returns a `PathBuf`
+/// rather than an `AbsolutePathBuf`. Most call sites in `src-tauri/` historically
+/// returned a `PathBuf` from `dirs::home_dir().join(".uclaw")` and this helper
+/// preserves their downstream type signature during the Phase 0.5-T6 sweep.
+pub fn uclaw_home_pathbuf() -> std::io::Result<PathBuf> {
+    uclaw_home().map(|abs| abs.into_path_buf())
+}
+
 #[cfg(test)]
 mod tests {
     use super::uclaw_home_from_env;
