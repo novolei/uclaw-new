@@ -484,6 +484,15 @@ pub struct MemoryOsConfig {
     /// knowledge bases; set to 0 to disable the loop without flipping
     /// the bool (the loop short-circuits on limit=0).
     pub importance_decay_batch_size: u32,
+    /// L3 §4.12.4 R1 — gates the periodic Concept Drift Detection
+    /// scan. When ON, every 480 ticks (~4h @ 30s) the scenario scans
+    /// EntityPages with multiple versions, computes content drift, and
+    /// records a `drift_events` row when drift crosses threshold.
+    /// Zero LLM cost. Default ON.
+    pub drift_detection_enabled: bool,
+    /// L3 §4.12.4 R1 — per-scan cap on candidate EntityPages.
+    /// Default 50. Set to 0 to disable without flipping the bool.
+    pub drift_detection_batch_size: u32,
 }
 
 impl Default for MemoryOsConfig {
@@ -550,6 +559,10 @@ impl Default for MemoryOsConfig {
             // base. Set to 0 to disable the loop without flipping the
             // boolean.
             importance_decay_batch_size: 100,
+            // L3 §4.12.4 R1 default ON. Zero-LLM content scan; ~4h cadence.
+            drift_detection_enabled: true,
+            // L3 §4.12.4 R1 default 50 EntityPages/scan.
+            drift_detection_batch_size: 50,
         }
     }
 }
@@ -906,6 +919,21 @@ mod tests {
             c.importance_decay_batch_size, 100,
             "default batch size should be 100"
         );
+    }
+
+    #[test]
+    fn memory_os_config_default_has_drift_detection_enabled() {
+        let c = MemoryOsConfig::default();
+        assert!(c.drift_detection_enabled, "Drift Detection (L3 §4.12.4) default on");
+        assert_eq!(c.drift_detection_batch_size, 50);
+    }
+
+    #[test]
+    fn memory_os_config_drift_detection_partial_json_keeps_defaults() {
+        let json = r#"{"memory_os":{"wiki_view_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(config.memory_os.drift_detection_enabled);
+        assert_eq!(config.memory_os.drift_detection_batch_size, 50);
     }
 
     #[test]

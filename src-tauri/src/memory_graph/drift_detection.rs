@@ -147,6 +147,130 @@ pub fn record_drift_event(
     Ok(id.to_string())
 }
 
+/// Max number of recent version contents to sample per node when
+/// computing drift. Caps memory + Levenshtein cost on pages with
+/// long histories; the most recent versions carry the most signal.
+pub const MAX_VERSIONS_SAMPLED: usize = 6;
+
+/// Outcome of one `scan_and_record_drift` batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DriftScanOutcome {
+    /// EntityPages examined (had >= MIN_VERSIONS_FOR_DRIFT versions).
+    pub scanned: usize,
+    /// Drift events recorded (score >= DRIFT_THRESHOLD).
+    pub flagged: usize,
+}
+
+/// Scan up to `batch_size` EntityPages that have multiple recent
+/// versions, compute drift over their content history, and record a
+/// `drift_events` row when the score crosses [`DRIFT_THRESHOLD`].
+///
+/// Zero-LLM: pure content comparison. The scheduler hook (Q1c-style)
+/// calls this on a timer. Only considers EntityPages (kind =
+/// 'entity_page') with at least [`MIN_VERSIONS_FOR_DRIFT`] versions.
+///
+/// To avoid re-flagging the same drift every run, a node is skipped
+/// if it already has an `open` drift_event whose `computed_at` is
+/// newer than its latest version's creation — i.e. we only flag
+/// fresh drift since the last open signal. (Simpler heuristic for
+/// V1: skip if ANY open event exists for the node. The resolve/
+/// dismiss flow clears it so the next drift can re-flag.)
+pub fn scan_and_record_drift(
+    conn: &Connection,
+    batch_size: usize,
+    now_ms: i64,
+) -> rusqlite::Result<DriftScanOutcome> {
+    if batch_size == 0 {
+        return Ok(DriftScanOutcome { scanned: 0, flagged: 0 });
+    }
+
+    // Candidate nodes: entity_page kind, with >= MIN_VERSIONS_FOR_DRIFT
+    // versions, NOT already carrying an open drift event. Ordered by
+    // most-recently-updated so active pages are checked first.
+    let candidate_ids: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT n.id
+             FROM memory_nodes n
+             WHERE n.kind = 'entity_page'
+               AND (SELECT COUNT(*) FROM memory_versions v WHERE v.node_id = n.id) >= ?1
+               AND NOT EXISTS (
+                   SELECT 1 FROM drift_events d
+                   WHERE d.node_id = n.id AND d.status = 'open'
+               )
+             ORDER BY n.updated_at DESC
+             LIMIT ?2",
+        )?;
+        let ids: Vec<String> = stmt
+            .query_map(
+                params![MIN_VERSIONS_FOR_DRIFT as i64, batch_size as i64],
+                |r| r.get::<_, String>(0),
+            )?
+            .filter_map(Result::ok)
+            .collect();
+        ids
+    };
+
+    let mut scanned = 0usize;
+    let mut flagged = 0usize;
+    for node_id in candidate_ids {
+        scanned += 1;
+        // Pull the most recent N versions, chronological order.
+        let versions: Vec<(String, String)> = {
+            let mut stmt = match conn.prepare(
+                "SELECT id, content FROM memory_versions
+                 WHERE node_id = ?1
+                 ORDER BY created_at DESC
+                 LIMIT ?2",
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(node_id = %node_id, error = %e, "drift scan: prepare failed");
+                    continue;
+                }
+            };
+            let mut rows: Vec<(String, String)> = match stmt.query_map(
+                params![node_id, MAX_VERSIONS_SAMPLED as i64],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            ) {
+                Ok(it) => it.filter_map(Result::ok).collect(),
+                Err(e) => {
+                    tracing::warn!(node_id = %node_id, error = %e, "drift scan: query failed");
+                    continue;
+                }
+            };
+            // We fetched DESC (newest first); reverse to chronological.
+            rows.reverse();
+            rows
+        };
+
+        if versions.len() < MIN_VERSIONS_FOR_DRIFT {
+            continue;
+        }
+        let contents: Vec<String> = versions.iter().map(|(_, c)| c.clone()).collect();
+        let version_ids: Vec<String> = versions.iter().map(|(id, _)| id.clone()).collect();
+
+        if let Some(result) = compute_drift_score(&contents) {
+            if result.above_threshold {
+                let event_id = format!("drift-{}", uuid::Uuid::new_v4());
+                if let Err(e) = record_drift_event(
+                    conn,
+                    &event_id,
+                    &node_id,
+                    result.score,
+                    &version_ids,
+                    now_ms,
+                ) {
+                    tracing::warn!(node_id = %node_id, error = %e, "drift scan: record failed");
+                } else {
+                    flagged += 1;
+                }
+            }
+        }
+    }
+
+    Ok(DriftScanOutcome { scanned, flagged })
+}
+
 /// List `open` drift events for one node, newest first. Useful for
 /// a future UI panel that shows "drift signals on this entity".
 pub fn list_open_events_for_node(
@@ -325,5 +449,116 @@ mod tests {
         .unwrap();
         let result = list_open_events_for_node(&conn, "n1", 10).unwrap();
         assert!(result.is_empty(), "resolved events excluded");
+    }
+
+    // ─── R1 — scan_and_record_drift driver ────────────────────────
+
+    fn seed_entity_node(conn: &Connection, id: &str) {
+        conn.execute(
+            "INSERT INTO memory_nodes (id, space_id, kind, title) \
+             VALUES (?1, 'default', 'entity_page', ?2)",
+            params![id, format!("title-{}", id)],
+        )
+        .unwrap();
+    }
+
+    fn seed_node_version(conn: &Connection, ver_id: &str, node_id: &str, content: &str, created_at: &str) {
+        conn.execute(
+            "INSERT INTO memory_versions (id, node_id, status, content, created_at) \
+             VALUES (?1, ?2, 'active', ?3, ?4)",
+            params![ver_id, node_id, content, created_at],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn scan_zero_batch_is_noop() {
+        let conn = fresh_conn();
+        let out = scan_and_record_drift(&conn, 0, 1_700_000_000_000).unwrap();
+        assert_eq!(out, DriftScanOutcome { scanned: 0, flagged: 0 });
+    }
+
+    #[test]
+    fn scan_flags_node_with_high_drift() {
+        let conn = fresh_conn();
+        seed_entity_node(&conn, "n-drift");
+        // 3 wildly different versions → high drift.
+        seed_node_version(&conn, "v1", "n-drift", "Alice is a software engineer at OpenAI.", "2026-05-01 00:00:00");
+        seed_node_version(&conn, "v2", "n-drift", "Bob runs a bakery in Paris.", "2026-05-02 00:00:00");
+        seed_node_version(&conn, "v3", "n-drift", "The quarterly revenue was 4 million dollars.", "2026-05-03 00:00:00");
+
+        let out = scan_and_record_drift(&conn, 100, 1_700_000_000_000).unwrap();
+        assert_eq!(out.scanned, 1);
+        assert_eq!(out.flagged, 1, "wildly-different versions should flag");
+
+        let events = list_open_events_for_node(&conn, "n-drift", 10).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].1 >= DRIFT_THRESHOLD);
+    }
+
+    #[test]
+    fn scan_skips_node_with_stable_versions() {
+        let conn = fresh_conn();
+        seed_entity_node(&conn, "n-stable");
+        seed_node_version(&conn, "v1", "n-stable", "Alice is a software engineer at OpenAI.", "2026-05-01 00:00:00");
+        seed_node_version(&conn, "v2", "n-stable", "Alice is a software engineer at OpenAI.", "2026-05-02 00:00:00");
+        let out = scan_and_record_drift(&conn, 100, 1_700_000_000_000).unwrap();
+        assert_eq!(out.scanned, 1, "node is scanned");
+        assert_eq!(out.flagged, 0, "identical versions don't flag");
+    }
+
+    #[test]
+    fn scan_skips_single_version_nodes() {
+        let conn = fresh_conn();
+        seed_entity_node(&conn, "n-single");
+        seed_node_version(&conn, "v1", "n-single", "only one version", "2026-05-01 00:00:00");
+        let out = scan_and_record_drift(&conn, 100, 1_700_000_000_000).unwrap();
+        assert_eq!(out.scanned, 0, "single-version node below MIN_VERSIONS_FOR_DRIFT");
+    }
+
+    #[test]
+    fn scan_skips_node_with_existing_open_event() {
+        // Don't re-flag a node that already has an open drift signal.
+        let conn = fresh_conn();
+        seed_entity_node(&conn, "n-flagged");
+        seed_node_version(&conn, "v1", "n-flagged", "Alice the engineer.", "2026-05-01 00:00:00");
+        seed_node_version(&conn, "v2", "n-flagged", "Bob the baker entirely different.", "2026-05-02 00:00:00");
+        // Pre-existing open event.
+        record_drift_event(&conn, "pre-existing", "n-flagged", 0.9, &["v1".into()], 1).unwrap();
+
+        let out = scan_and_record_drift(&conn, 100, 1_700_000_000_000).unwrap();
+        assert_eq!(out.scanned, 0, "node with open event is excluded from scan");
+        // After resolving the open event, it becomes eligible again.
+        conn.execute("UPDATE drift_events SET status = 'resolved' WHERE id = 'pre-existing'", []).unwrap();
+        let out2 = scan_and_record_drift(&conn, 100, 1_700_000_000_000).unwrap();
+        assert_eq!(out2.scanned, 1, "resolved event re-opens eligibility");
+        assert_eq!(out2.flagged, 1);
+    }
+
+    #[test]
+    fn scan_only_considers_entity_page_kind() {
+        let conn = fresh_conn();
+        // A 'reference' node with drifting versions — should be ignored.
+        conn.execute(
+            "INSERT INTO memory_nodes (id, space_id, kind, title) VALUES ('n-ref', 'default', 'reference', 't')",
+            [],
+        ).unwrap();
+        seed_node_version(&conn, "v1", "n-ref", "Alice engineer.", "2026-05-01 00:00:00");
+        seed_node_version(&conn, "v2", "n-ref", "Bob baker different.", "2026-05-02 00:00:00");
+        let out = scan_and_record_drift(&conn, 100, 1_700_000_000_000).unwrap();
+        assert_eq!(out.scanned, 0, "non-entity_page kinds are not scanned");
+    }
+
+    #[test]
+    fn scan_respects_batch_size() {
+        let conn = fresh_conn();
+        for i in 0..5 {
+            let nid = format!("n-{}", i);
+            seed_entity_node(&conn, &nid);
+            seed_node_version(&conn, &format!("{}-v1", nid), &nid, "Alice the engineer here.", "2026-05-01 00:00:00");
+            seed_node_version(&conn, &format!("{}-v2", nid), &nid, "Bob the baker totally different.", "2026-05-02 00:00:00");
+        }
+        let out = scan_and_record_drift(&conn, 2, 1_700_000_000_000).unwrap();
+        assert_eq!(out.scanned, 2, "batch size caps scanned nodes");
     }
 }
