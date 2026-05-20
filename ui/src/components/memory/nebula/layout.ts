@@ -1,7 +1,7 @@
 // ─── Layout types ────────────────────────────────────────────────────────
 
 export interface LayoutNode { id: string; kind: string }
-export interface LayoutEdge { from: string; to: string }
+export interface LayoutEdge { from: string; to: string; id?: string }
 
 export interface NodePosition {
   id: string

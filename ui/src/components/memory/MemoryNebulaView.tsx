@@ -90,6 +90,7 @@ function MemoryNodesMesh({ nodes, positions, hoveredId, onHover, onClick, themeC
             noiseAmp={config.noiseAmp}
             flowSpeed={config.flowSpeed}
             opacity={node.kind === 'reference' ? 0.6 : 1.0}
+            segments={['boot', 'directive', 'identity', 'procedure'].includes(node.kind) ? 16 : 12}
             isHovered={hoveredId === node.id}
             onHover={onHover}
             onClick={onClick}
@@ -115,7 +116,7 @@ interface SceneContentProps {
 
 function SceneContent({ graphData, positions, hoveredId, onHover, onClick, themeConfig, resolvedTheme }: SceneContentProps): React.ReactElement {
   const normalizedEdges = React.useMemo<LayoutEdge[]>(
-    () => graphData.edges.map(e => ({ from: e.parentNodeId ?? '', to: e.childNodeId })),
+    () => graphData.edges.map(e => ({ from: e.parentNodeId ?? '', to: e.childNodeId, id: e.id })),
     [graphData.edges],
   )
 
@@ -169,7 +170,7 @@ export function MemoryNebulaView({ graphData, onSelectNode, className }: MemoryN
     if (!graphData) return []
     return computeGalaxyLayout(
       graphData.nodes.map(n => ({ id: n.id, kind: n.kind })),
-      graphData.edges.map(e => ({ from: e.parentNodeId ?? '', to: e.childNodeId })),
+      graphData.edges.map(e => ({ from: e.parentNodeId ?? '', to: e.childNodeId, id: e.id })),
     )
   }, [graphData])
 

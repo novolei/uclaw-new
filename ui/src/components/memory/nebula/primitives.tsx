@@ -108,7 +108,7 @@ export function AutoRotateControls(): React.ReactElement {
 // ─── 边连线 ─────────────────────────────────────────────────────────────
 
 export interface EdgeLinesProps {
-  edges: { from: string; to: string }[]
+  edges: { from: string; to: string; id?: string }[]
   positions: NodePosition[]
   hoveredNodeId: string | null
   themeConfig: NebulaThemeConfig
@@ -136,7 +136,7 @@ export function EdgeLines({ edges, positions, hoveredNodeId, themeConfig, resolv
         const isHighlighted = hoveredNodeId === edge.from || hoveredNodeId === edge.to
         return (
           <Line
-            key={idx}
+            key={edge.id ?? idx}
             points={[from, to]}
             color={edgeColor}
             opacity={isHighlighted ? themeConfig.edgeHighlightOpacity : themeConfig.edgeOpacity}
@@ -163,19 +163,21 @@ export interface StarNodeProps {
   noiseAmp?: number              // default 0.7
   flowSpeed?: number             // default 0.2
   opacity?: number               // default 1.0
+  segments?: number              // sphere segments; default 12, pass 16 for large-kind nodes
   isHovered: boolean
   onHover: (id: string | null) => void
   onClick: (id: string) => void
   themeConfig: NebulaThemeConfig
 }
 
-export function StarNode({ id, label, position, color, emissive, radius, emissiveIntensity, noiseFreq, noiseAmp, flowSpeed, opacity, isHovered, onHover, onClick, themeConfig }: StarNodeProps): React.ReactElement {
+export function StarNode({ id, label, position, color, emissive, radius, emissiveIntensity, noiseFreq, noiseAmp, flowSpeed, opacity, segments, isHovered, onHover, onClick, themeConfig }: StarNodeProps): React.ReactElement {
   const groupRef = React.useRef<THREE.Group>(null)
   const coreRef = React.useRef<THREE.Mesh>(null)
   const coreMaterialRef = React.useRef<THREE.ShaderMaterial>(null)
   const glowRef = React.useRef<THREE.ShaderMaterial>(null)
   const phase = React.useMemo(() => hashCode(id) % 100, [id])
 
+  const resolvedSegments = segments ?? 12
   const resolvedNoiseFreq = noiseFreq ?? 1.5
   const resolvedNoiseAmp = noiseAmp ?? 0.7
   const resolvedFlowSpeed = flowSpeed ?? 0.2
@@ -229,7 +231,7 @@ export function StarNode({ id, label, position, color, emissive, radius, emissiv
         onPointerOut={() => onHover(null)}
         onClick={(e: ThreeEvent<MouseEvent>) => { e.stopPropagation(); onClick(id) }}
       >
-        <sphereGeometry args={[radius, 12, 12]} />
+        <sphereGeometry args={[radius, resolvedSegments, resolvedSegments]} />
         <shaderMaterial
           ref={coreMaterialRef}
           vertexShader={starVertexShader}
