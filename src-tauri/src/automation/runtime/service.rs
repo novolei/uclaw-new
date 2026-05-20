@@ -144,6 +144,34 @@ fn builtin_source_ref(app_id: &str) -> String {
     }
 }
 
+fn merge_user_config_into_spec_value(
+    spec_value: &mut serde_json::Value,
+    overrides: &serde_json::Value,
+) {
+    let Some(overrides) = overrides.as_object() else {
+        return;
+    };
+    if overrides.is_empty() {
+        return;
+    }
+
+    let Some(spec_obj) = spec_value.as_object_mut() else {
+        return;
+    };
+    let config = spec_obj
+        .entry("config".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(config_obj) = config.as_object_mut() else {
+        return;
+    };
+
+    for (key, value) in overrides {
+        if !value.is_null() {
+            config_obj.insert(key.clone(), value.clone());
+        }
+    }
+}
+
 // ─── EscalationRow ───────────────────────────────────────────────────────────
 
 /// A row from `automation_escalations` returned by `list_pending_escalations`.
@@ -555,13 +583,16 @@ impl AppRuntimeService {
         );
 
         // ── 3. load spec for filter evaluation ──────────────────────────────
-        let (spec_json, spec_value) = match self.load_spec_json(spec_id) {
+        let (spec_json, mut spec_value) = match self.load_spec_json(spec_id) {
             Ok(pair) => pair,
             Err(e) => {
                 self.update_activity_status(&activity_id, "failed", Some(&e.to_string()))?;
                 return Err(e);
             }
         };
+        if let Ok(overrides) = self.load_user_config_values(spec_id) {
+            merge_user_config_into_spec_value(&mut spec_value, &overrides);
+        }
         let spec = match Self::parse_humane_spec(&spec_json) {
                 Ok(s) => s,
                 Err(e) => {
@@ -1195,6 +1226,17 @@ impl AppRuntimeService {
         Ok(())
     }
 
+    fn load_user_config_values(&self, spec_id: &str) -> anyhow::Result<serde_json::Value> {
+        let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+        let json: String = conn.query_row(
+            "SELECT user_config_values FROM automation_specs WHERE id = ?1",
+            rusqlite::params![spec_id],
+            |r| r.get(0),
+        )?;
+        serde_json::from_str(&json)
+            .map_err(|e| anyhow::anyhow!("parse user_config_values: {}", e))
+    }
+
     /// Grant or deny a single permission; writes to `permission_audit_log`.
     pub async fn set_permission(
         &self,
@@ -1304,6 +1346,59 @@ impl AppRuntimeService {
     pub async fn trigger_manual(&self, spec_id: &str) -> anyhow::Result<()> {
         self.execute_run(spec_id, None, serde_json::json!({"trigger": "manual"}))
             .await
+    }
+
+    /// Mark active runs as user-stopped and tear down any run-scoped browser sessions.
+    pub async fn stop_active_runs(&self, spec_id: &str) -> anyhow::Result<usize> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let active: Vec<(String, Option<String>)> = {
+            let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+            let mut stmt = conn.prepare(
+                "SELECT id, session_id
+                 FROM automation_activities
+                 WHERE spec_id = ?1 AND status IN ('queued', 'running')
+                 ORDER BY queued_at DESC",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![spec_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+
+        if active.is_empty() {
+            return Ok(0);
+        }
+
+        {
+            let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+            for (activity_id, _) in &active {
+                conn.execute(
+                    "UPDATE automation_activities
+                     SET status = 'cancelled',
+                         error_text = 'user_stopped',
+                         completed_at = ?2,
+                         report_text = COALESCE(report_text, ?3),
+                         report_outcome = COALESCE(report_outcome, 'stopped')
+                     WHERE id = ?1 AND status IN ('queued', 'running')",
+                    rusqlite::params![
+                        activity_id,
+                        now_ms,
+                        "# Automation Run Report\n\n- Stop reason: `user_stopped`\n"
+                    ],
+                )?;
+            }
+        }
+
+        if let Some(ctx_mgr) = self.browser_context_manager.as_ref() {
+            for (_, session_id) in &active {
+                if let Some(session_id) = session_id {
+                    ctx_mgr.destroy(session_id).await;
+                }
+            }
+        }
+
+        Ok(active.len())
     }
 
     /// List activity rows for a spec, newest first.
@@ -1834,6 +1929,81 @@ mod tests {
         let fallback = builtin_automations_resource_root(None);
         assert!(fallback.join("manifest.json").is_file());
         assert!(fallback.ends_with("resources/builtin-automations"));
+    }
+
+    #[test]
+    fn user_config_overrides_merge_into_spec_config_only() {
+        let mut spec = serde_json::json!({
+            "type": "automation",
+            "config": {
+                "platform": "douyin",
+                "room_id": "old-room"
+            }
+        });
+        merge_user_config_into_spec_value(
+            &mut spec,
+            &serde_json::json!({
+                "room_id": "new-room",
+                "live_url": "https://live.example/room",
+                "ignored": null
+            }),
+        );
+
+        assert_eq!(spec["config"]["platform"], serde_json::json!("douyin"));
+        assert_eq!(spec["config"]["room_id"], serde_json::json!("new-room"));
+        assert_eq!(
+            spec["config"]["live_url"],
+            serde_json::json!("https://live.example/room")
+        );
+        assert!(spec["config"].get("ignored").is_none());
+    }
+
+    #[tokio::test]
+    async fn stop_active_runs_marks_running_rows_cancelled_with_report() {
+        let conn = open_test_db();
+        insert_test_spec(&conn, "stop-spec", minimal_spec_json());
+        conn.execute(
+            "INSERT INTO automation_activities
+             (id, spec_id, trigger_source_type, trigger_payload_json,
+              status, queued_at, started_at, duration_ms, llm_iterations,
+              llm_tokens_in, llm_tokens_out, session_id)
+             VALUES ('run-a','stop-spec','manual','{}','running',1,2,0,0,0,0,'automation:stop-spec:run-a')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO automation_activities
+             (id, spec_id, trigger_source_type, trigger_payload_json,
+              status, queued_at, duration_ms, llm_iterations,
+              llm_tokens_in, llm_tokens_out)
+             VALUES ('run-b','stop-spec','manual','{}','queued',3,0,0,0,0)",
+            [],
+        )
+        .unwrap();
+        let svc = make_service(conn);
+
+        let stopped = svc.stop_active_runs("stop-spec").await.unwrap();
+        assert_eq!(stopped, 2);
+
+        let conn = svc.db.lock().unwrap();
+        let statuses: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT status FROM automation_activities ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(statuses, vec!["cancelled", "cancelled"]);
+        let report: String = conn
+            .query_row(
+                "SELECT report_text FROM automation_activities WHERE id='run-a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(report.contains("user_stopped"));
     }
 
     #[test]
