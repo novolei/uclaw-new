@@ -1776,6 +1776,30 @@ export const browserUICloseTab = (sessionId: string, tabId: string): Promise<voi
 export const browserUIClick = (sessionId: string, tabId: string, x: number, y: number): Promise<void> =>
   invoke<void>('browser_ui_click', { sessionId, tabId, x, y })
 
+export interface BrowserLoginCompletionPayload {
+  specId: string
+  label: string
+  url: string
+  profileId: string
+  status: 'live'
+  completedAt: number
+}
+
+export interface BrowserLoginCompletionProbe {
+  completed: boolean
+  payload?: BrowserLoginCompletionPayload
+  message?: string
+}
+
+export const browserUICompleteLogin = (
+  sessionId: string,
+  tabId: string,
+  specId: string,
+  label: string,
+  url: string,
+): Promise<BrowserLoginCompletionProbe> =>
+  invoke<BrowserLoginCompletionProbe>('browser_ui_complete_login', { sessionId, tabId, specId, label, url })
+
 export const browserGetDOMState = (sessionId: string, tabId: string): Promise<DOMStateResponse> =>
   invoke<DOMStateResponse>('browser_get_dom_state', { sessionId, tabId })
 
@@ -1809,6 +1833,11 @@ export const listenNavState = (
   handler: (payload: NavStatePayload) => void,
 ): Promise<UnlistenFn> =>
   listen<NavStatePayload>('browser:nav-state', ({ payload }) => handler(payload))
+
+export const listenAutomationBrowserLoginCompleted = (
+  handler: (payload: BrowserLoginCompletionPayload) => void,
+): Promise<UnlistenFn> =>
+  listen<BrowserLoginCompletionPayload>('automation:browser-login-completed', ({ payload }) => handler(payload))
 
 export type BrowserTaskStatus =
   | 'running'

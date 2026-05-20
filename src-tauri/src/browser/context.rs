@@ -27,7 +27,9 @@ use tokio::time::sleep;
 use uuid::Uuid;
 
 use crate::browser::dom_state::{dom_state_from_raw, DOM_QUERY_SCRIPT};
-use crate::browser::identity::{PlaywrightOrigin, PlaywrightStorageState};
+use crate::browser::identity::{
+    PlaywrightCookie, PlaywrightLocalStorageEntry, PlaywrightOrigin, PlaywrightStorageState,
+};
 use crate::browser::perception::{NoopVisualPerceptionProvider, VisualPerceptionProvider};
 use crate::browser::types::{DOMState, DomStateRaw, NavStatePayload, ScreencastFramePayload, TabInfo};
 
@@ -843,6 +845,54 @@ impl BrowserContext {
             expires: c.expires,
         }).collect();
         Ok(cookies)
+    }
+
+    pub async fn capture_storage_state(
+        &self,
+        tab_id: &str,
+        url_filter: &str,
+    ) -> Result<PlaywrightStorageState> {
+        let cookies = self.get_cookies(tab_id, Some(url_filter)).await?;
+        let page = self.get_page(tab_id).await?;
+        let origin = page
+            .evaluate("window.location.origin")
+            .await
+            .ok()
+            .and_then(|v| v.into_value::<String>().ok())
+            .unwrap_or_default();
+        let local_storage = page
+            .evaluate(
+                r#"(function() {
+                    return Object.keys(window.localStorage || {}).map(function(name) {
+                        return { name: name, value: window.localStorage.getItem(name) || "" };
+                    });
+                })()"#,
+            )
+            .await
+            .ok()
+            .and_then(|v| v.into_value::<Vec<PlaywrightLocalStorageEntry>>().ok())
+            .unwrap_or_default();
+
+        Ok(PlaywrightStorageState {
+            cookies: cookies
+                .into_iter()
+                .map(|cookie| PlaywrightCookie {
+                    name: cookie.name,
+                    value: cookie.value,
+                    domain: cookie.domain,
+                    path: cookie.path,
+                    expires: Some(cookie.expires),
+                    http_only: cookie.http_only,
+                    secure: cookie.secure,
+                    same_site: cookie.same_site,
+                })
+                .collect(),
+            origins: if origin.is_empty() || local_storage.is_empty() {
+                Vec::new()
+            } else {
+                vec![PlaywrightOrigin { origin, local_storage }]
+            },
+        })
     }
 
     pub async fn set_cookie(

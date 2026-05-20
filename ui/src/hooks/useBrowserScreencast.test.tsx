@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, renderHook } from '@testing-library/react'
+import { act, cleanup, renderHook } from '@testing-library/react'
 import { Provider, createStore } from 'jotai'
 import { browserScreencastActiveAtom, browserScreencastFrameAtom } from '@/atoms/browser-atoms'
 import { useBrowserScreencast } from './useBrowserScreencast'
@@ -25,6 +25,8 @@ async function flush(): Promise<void> {
 }
 
 afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
   vi.clearAllMocks()
 })
 
@@ -79,5 +81,24 @@ describe('useBrowserScreencast', () => {
     })
 
     expect(store.get(browserScreencastFrameAtom).get('sess-1')?.dataB64).toBe('abc')
+  })
+
+  it('uses screenshot fallback only once while waiting for the first live frame', async () => {
+    vi.useFakeTimers()
+    const store = createStore()
+    renderHook(() => useBrowserScreencast('sess-fallback', 'tab-fallback'), { wrapper: wrapper(store) })
+    await flush()
+
+    expect(bridge.browserCaptureScreenshot).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_500)
+    })
+    expect(bridge.browserCaptureScreenshot).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_000)
+    })
+    expect(bridge.browserCaptureScreenshot).toHaveBeenCalledTimes(1)
   })
 })

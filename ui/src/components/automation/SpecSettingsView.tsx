@@ -7,6 +7,7 @@ import {
   listSpecChannelBindings,
   updateSpecChannelBindings,
   updateSpecImSettings,
+  listenAutomationBrowserLoginCompleted,
 } from '@/lib/tauri-bridge'
 import type { HumaneSpecRow, SpecChannelBinding } from '@/lib/tauri-bridge'
 import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
@@ -88,6 +89,11 @@ function readBrowserLogins(spec: HumaneSpecRow): Array<{ url: string; label: str
     .filter((entry) => entry.url || entry.label)
 }
 
+function readBrowserLoginProfiles(spec: HumaneSpecRow): Record<string, { status?: string; profileId?: string; completedAt?: number }> {
+  const raw = parseJsonRecord(spec.userConfigValues)
+  return parseJsonRecord(raw.browser_login_profiles) as Record<string, { status?: string; profileId?: string; completedAt?: number }>
+}
+
 export function SpecSettingsView({ spec, onSpecChange }: Props) {
   const [view, setView] = useState<'settings' | 'yaml'>('settings')
   const [saving, setSaving] = useState(false)
@@ -112,6 +118,7 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
   const permissionsDenied = parseJsonArray(spec.permissionsDenied)
   const liveConfig = readLiveConfig(spec)
   const browserLogins = readBrowserLogins(spec)
+  const browserLoginProfiles = readBrowserLoginProfiles(spec)
   const [liveDraft, setLiveDraft] = useState<LiveConfigDraft>(() => ({
     platform: liveConfig?.platform ?? 'douyin',
     room_id: liveConfig?.room_id ?? '',
@@ -135,6 +142,32 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
     liveConfig?.action_mode,
     liveConfig?.poll_interval_seconds,
   ])
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+    listenAutomationBrowserLoginCompleted((payload) => {
+      if (payload.specId !== spec.id) return
+      const current = parseJsonRecord(spec.userConfigValues)
+      const profiles = parseJsonRecord(current.browser_login_profiles)
+      const nextValues = {
+        ...current,
+        browser_login_profiles: {
+          ...profiles,
+          [payload.url]: {
+            status: payload.status,
+            profileId: payload.profileId,
+            label: payload.label,
+            completedAt: payload.completedAt,
+          },
+        },
+      }
+      onSpecChange({
+        ...spec,
+        userConfigValues: JSON.stringify(nextValues),
+      })
+    }).then((fn) => { unlisten = fn })
+    return () => { unlisten?.() }
+  }, [onSpecChange, spec])
 
   async function handleSetPermission(permission: string, granted: boolean) {
     setSavingPermission(permission)
@@ -262,8 +295,8 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
             <Section title="浏览器登录">
               <div className="flex flex-col gap-2">
                 {browserLogins.map((entry) => (
+                  <div key={`${entry.label}:${entry.url}`} className="flex flex-col gap-1">
                   <button
-                    key={`${entry.label}:${entry.url}`}
                     type="button"
                     onClick={() => {
                       openAutomationLoginWindow({
@@ -283,6 +316,12 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
                     </span>
                     <span className="text-xs text-primary shrink-0">AI Browser 登录</span>
                   </button>
+                  {browserLoginProfiles[entry.url]?.status === 'live' && (
+                    <span className="px-1 text-[11px] text-emerald-600">
+                      已登录 · auth profile {browserLoginProfiles[entry.url]?.profileId}
+                    </span>
+                  )}
+                  </div>
                 ))}
               </div>
             </Section>

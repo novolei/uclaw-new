@@ -5,6 +5,7 @@ import type { HumaneSpecRow } from '@/lib/tauri-bridge'
 import {
   setAutomationPermission,
   updateAutomationUserConfig,
+  listenAutomationBrowserLoginCompleted,
 } from '@/lib/tauri-bridge'
 import { openAutomationLoginWindow } from '@/lib/automation-login-window'
 
@@ -15,6 +16,7 @@ vi.mock('@/lib/tauri-bridge', () => ({
   listSpecChannelBindings: vi.fn(() => new Promise(() => {})),
   updateSpecChannelBindings: vi.fn().mockResolvedValue(undefined),
   updateSpecImSettings: vi.fn().mockResolvedValue(undefined),
+  listenAutomationBrowserLoginCompleted: vi.fn().mockResolvedValue(() => {}),
 }))
 
 vi.mock('@/lib/automation-login-window', () => ({
@@ -132,5 +134,31 @@ describe('SpecSettingsView Halo-compatible controls', () => {
         url: 'https://www.douyin.com/',
       })
     })
+  })
+
+  it('updates browser login status from the completion callback', async () => {
+    let handler: ((payload: any) => void) | null = null
+    vi.mocked(listenAutomationBrowserLoginCompleted).mockImplementationOnce((fn) => {
+      handler = fn
+      return Promise.resolve(() => {})
+    })
+    const onSpecChange = vi.fn()
+    render(<SpecSettingsView spec={liveSpec()} onSpecChange={onSpecChange} />)
+
+    await waitFor(() => {
+      expect(listenAutomationBrowserLoginCompleted).toHaveBeenCalled()
+    })
+    handler?.({
+      specId: 'spec-1',
+      label: 'Douyin',
+      url: 'https://www.douyin.com/',
+      profileId: 'auth-1',
+      status: 'live',
+      completedAt: 123,
+    })
+
+    expect(onSpecChange).toHaveBeenCalledWith(expect.objectContaining({
+      userConfigValues: expect.stringContaining('auth-1'),
+    }))
   })
 })

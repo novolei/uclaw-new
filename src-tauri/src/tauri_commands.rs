@@ -10907,6 +10907,177 @@ pub async fn browser_ui_click(
     ctx.click_at(&tab_id, x, y).await.map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserLoginCompletionPayload {
+    pub spec_id: String,
+    pub label: String,
+    pub url: String,
+    pub profile_id: String,
+    pub status: String,
+    pub completed_at: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserLoginCompletionProbe {
+    pub completed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<BrowserLoginCompletionPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[tauri::command]
+pub async fn browser_ui_complete_login(
+    session_id: String,
+    tab_id: String,
+    spec_id: String,
+    label: String,
+    url: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<BrowserLoginCompletionProbe, String> {
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    let cookies = ctx.get_cookies(&tab_id, Some(&url)).await.map_err(|e| e.to_string())?;
+    if !is_likely_authenticated_cookie(&url, &cookies) {
+        return Ok(BrowserLoginCompletionProbe {
+            completed: false,
+            payload: None,
+            message: Some("等待站点写入登录态...".to_string()),
+        });
+    }
+
+    let state_snapshot = ctx.capture_storage_state(&tab_id, &url).await
+        .map_err(|e| e.to_string())?;
+    let broker = crate::browser::identity::BrowserAuthProfileBroker::system_default()
+        .map_err(|e| e.to_string())?;
+    let origin_pattern = origin_pattern_for_url(&url).unwrap_or_else(|| url.clone());
+    let profile = broker
+        .import_playwright_storage_state(
+            crate::browser::identity::BrowserIdentityProfileInput {
+                label: format!("{label} ({spec_id})"),
+                origin_pattern,
+                kind: crate::browser::identity::BrowserIdentityKind::StorageState,
+                provider: crate::browser::identity::BrowserIdentityProvider::Playwright,
+                scope: crate::browser::identity::BrowserIdentityScope::Workspace,
+            },
+            &state_snapshot.to_json_string().map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+
+    let completed_at = chrono::Utc::now().timestamp_millis();
+    let payload = BrowserLoginCompletionPayload {
+        spec_id: spec_id.clone(),
+        label: label.clone(),
+        url: url.clone(),
+        profile_id: profile.id.clone(),
+        status: "live".to_string(),
+        completed_at,
+    };
+
+    let spec = state.runtime_service.get_spec(&spec_id).map_err(|e| e.to_string())?;
+    let mut values = serde_json::from_str::<serde_json::Value>(&spec.user_config_values)
+        .unwrap_or_else(|_| serde_json::json!({}));
+    if !values.is_object() {
+        values = serde_json::json!({});
+    }
+    let values_obj = values.as_object_mut().expect("object initialized");
+    let profiles = values_obj
+        .entry("browser_login_profiles".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !profiles.is_object() {
+        *profiles = serde_json::json!({});
+    }
+    profiles
+        .as_object_mut()
+        .expect("profiles object initialized")
+        .insert(
+            url.clone(),
+            serde_json::json!({
+                "status": "live",
+                "profileId": profile.id,
+                "label": label,
+                "completedAt": completed_at,
+            }),
+        );
+    state.runtime_service.update_user_config(&spec_id, &values)
+        .map_err(|e| e.to_string())?;
+
+    let _ = app_handle.emit("automation:browser-login-completed", &payload);
+    Ok(BrowserLoginCompletionProbe {
+        completed: true,
+        payload: Some(payload),
+        message: None,
+    })
+}
+
+fn origin_pattern_for_url(raw_url: &str) -> Option<String> {
+    let parsed = url::Url::parse(raw_url).ok()?;
+    let host = parsed.host_str()?;
+    Some(format!("{}://{}", parsed.scheme(), host))
+}
+
+fn is_likely_authenticated_cookie(url: &str, cookies: &[crate::browser::context::CookieInfo]) -> bool {
+    let host = url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()))
+        .unwrap_or_default();
+    let strong_names: &[&str] = if host.contains("bilibili.com") {
+        &["sessdata", "dedeuserid", "bili_jct"]
+    } else if host.contains("douyin.com") {
+        &["sessionid", "sid_guard", "uid_tt", "uid_tt_ss", "sid_tt"]
+    } else {
+        &["session", "auth", "token", "login", "user"]
+    };
+
+    cookies.iter().any(|cookie| {
+        let name = cookie.name.to_ascii_lowercase();
+        strong_names.iter().any(|needle| {
+            if host.contains("bilibili.com") || host.contains("douyin.com") {
+                name == *needle
+            } else {
+                name.contains(needle)
+            }
+        })
+    })
+}
+
+#[cfg(test)]
+mod browser_login_completion_tests {
+    use super::*;
+
+    fn cookie(name: &str) -> crate::browser::context::CookieInfo {
+        crate::browser::context::CookieInfo {
+            name: name.to_string(),
+            value: "value".to_string(),
+            domain: ".bilibili.com".to_string(),
+            path: "/".to_string(),
+            secure: true,
+            http_only: true,
+            same_site: None,
+            expires: 0.0,
+        }
+    }
+
+    #[test]
+    fn detects_bilibili_authenticated_cookie() {
+        assert!(is_likely_authenticated_cookie(
+            "https://www.bilibili.com",
+            &[cookie("SESSDATA")]
+        ));
+    }
+
+    #[test]
+    fn ignores_bilibili_anonymous_cookie() {
+        assert!(!is_likely_authenticated_cookie(
+            "https://www.bilibili.com",
+            &[cookie("buvid3")]
+        ));
+    }
+}
+
 // ─── System Tray / Badge Commands (Phase 3) ─────────────────────────────────
 
 #[tauri::command]

@@ -66,9 +66,11 @@ export function useBrowserScreencast(sessionId: string, tabId: string | null): v
       }
 
       let stopped = false
+      let fallbackTried = false
       const captureFallback = () => {
         const lastLiveFrame = liveFrameSeen.get(key) ?? 0
-        if (stopped || Date.now() - lastLiveFrame < 2_000) return
+        if (stopped || fallbackTried || lastLiveFrame > 0 || Date.now() - lastLiveFrame < 2_000) return
+        fallbackTried = true
         browserCaptureScreenshot(sessionId, tabId)
           .then((dataB64) => {
             if (stopped) return
@@ -87,8 +89,7 @@ export function useBrowserScreencast(sessionId: string, tabId: string | null): v
           })
           .catch(console.error)
       }
-      captureFallback()
-      const fallbackTimer = window.setInterval(captureFallback, 1_500)
+      const fallbackTimer = window.setInterval(captureFallback, 500)
       const prevUnlisten = unlisten
       unlisten = () => {
         stopped = true
