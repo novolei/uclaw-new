@@ -61,7 +61,8 @@ export function WikiView({ className }: WikiViewProps): React.ReactElement {
     setLoadingList(true)
     setError(null)
     try {
-      const list = await gbrainListPages({ limit: 200, sort: 'updated_desc' })
+      // gbrain 服务端把 list 上限钳到 100；V1 不做分页/“加载更多”（留待后续）。
+      const list = await gbrainListPages({ limit: 100, sort: 'updated_desc' })
       setPages(list)
       setNotConnected(false)
     } catch (e) {
