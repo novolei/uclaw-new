@@ -18,6 +18,9 @@ pub mod infra;
 // Phase 0.5 M1-T1 — IntentSpec/TaskSpec/TaskEvent runtime contracts.
 pub mod runtime;
 
+// M6-T1 — Memory graph contract (typed adapter layer over memory_graph).
+pub mod memory_contract;
+
 // B2: Infrastructure modules
 pub mod memory;
 pub mod memory_graph;
