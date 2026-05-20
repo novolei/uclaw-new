@@ -272,14 +272,29 @@ The adapter must not make policy decisions such as whether a comment deserves pu
 
 ## Built-In Spec: Douyin Live Moderator
 
+Each installed spec instance targets exactly one live platform and one live room. Multiple installed spec instances may run at the same time, each with its own browser session, room cursor, moderation ledger, and gbrain namespace.
+
 ### Config
 
 ```yaml
 config_schema:
+  - key: live_platform
+    label: Live platform
+    type: select
+    default: douyin
+    required: true
+    options:
+      - label: Douyin
+        value: douyin
   - key: live_url
     label: Live room URL
     type: url
     required: true
+  - key: configured_room_id
+    label: Room ID
+    type: string
+    required: false
+    description: Optional stable platform room ID. If omitted, the adapter resolves it from live_url during enter_room.
   - key: poll_interval_seconds
     label: Poll interval
     type: number
@@ -349,16 +364,33 @@ This spec is a long-running live run, not a fresh scheduled run every 30 seconds
 Lifecycle:
 
 1. User starts the automation.
-2. Runtime enters the room with the Douyin adapter.
-3. Runtime stores `room_id`, `tab_id`, and `comment_cursor` in run memory.
-4. Runtime repeats every `poll_interval_seconds`:
+2. Runtime resolves `live_platform` and selects the matching live-room adapter.
+3. Runtime enters the configured room using `live_url` and optional `configured_room_id`.
+4. Runtime stores `platform`, `room_id`, `host_id`, `tab_id`, and `comment_cursor` in run memory.
+5. Runtime repeats every `poll_interval_seconds`:
    - scan comments
    - classify comments
    - answer selected questions
    - update gbrain
    - execute moderation actions
    - write trace
-5. Run stops when the user stops it, the room ends, login becomes stale, permissions are insufficient, or a fatal adapter error occurs.
+6. Run stops when the user stops it, the room ends, login becomes stale, permissions are insufficient, or a fatal adapter error occurs.
+
+### Concurrent Spec Instances
+
+Multiple live-room specs may run at the same time. The runtime must key state by `spec_id + run_id + platform + room_id`, not by platform alone.
+
+Isolation requirements:
+
+- Browser context: each running spec instance uses its own automation browser session/context. It may reuse the same authorized identity profile, but active tabs, task runs, checkpoints, and screencast state are isolated.
+- Comment cursor: stored per spec instance and room. A cursor from one room must never be reused in another room.
+- Moderation ledger: warning counts and punishments are keyed by `spec_id + platform + room_id + author_id`.
+- gbrain namespace: recall/write prefixes include platform and room ID, e.g. `live/douyin/<room_id>/...`.
+- Rate limits: `max_replies_per_minute` and `punishment_rate_limit_per_5m` apply per spec instance and room, not globally.
+- UI: Automation Hub shows each live-room spec instance with platform, room title/ID, run status, and recent tick summary.
+- Stop/restart: stopping one live-room spec instance does not close another instance's browser context or clear its cursor.
+
+The first implementation supports multiple installed spec instances, each targeting one room. One spec instance controlling multiple rooms remains deferred.
 
 ## Moderation Policy
 
@@ -552,6 +584,7 @@ Agent/Browser panel:
 - Generic live-room adapter contract.
 - Douyin adapter v1.
 - Built-in Douyin Live Moderator spec.
+- Multiple concurrently running spec instances, one room per spec instance.
 - gbrain recall and writeback tools for automation.
 - Long-running 30-second tick loop.
 - Real default moderation actions with hard gates.
@@ -564,7 +597,7 @@ Agent/Browser panel:
 - Automatic CAPTCHA solving.
 - Password or SMS-code storage.
 - Perfect Douyin API stability guarantees.
-- Multi-room concurrent moderation for one spec instance.
+- One spec instance controlling multiple rooms.
 - Human approval queue for moderation, since first version intentionally defaults to real execution.
 
 ## Testing
@@ -581,11 +614,13 @@ Agent/Browser panel:
 - moderation policy never punishes whitelisted users.
 - moderation policy refuses punishment when target identity cannot be re-verified.
 - rate limit blocks excess punishments.
+- concurrent live-room run state is keyed by spec, run, platform, and room.
 
 ### Adapter Tests
 
 - Douyin `scan_comments` normalizes fixture JSON/DOM into contract comments.
 - Cursor dedup prevents repeat processing.
+- two concurrent Douyin room fixtures keep separate cursors and room IDs.
 - `send_reply` returns success/error with stable error kinds.
 - `mute_user` and `remove_user` require stable `author_id`.
 
@@ -593,6 +628,7 @@ Agent/Browser panel:
 
 - Automation detail shows `browser_login` status and login action.
 - Long-running run surface shows tick summary.
+- Automation Hub distinguishes concurrent live-room specs by platform and room.
 - Moderation action trace renders without exposing secrets.
 
 ### Harness / Smoke
@@ -602,6 +638,7 @@ Agent/Browser panel:
 - Assert:
   - room entered
   - comments scanned incrementally
+  - two concurrently running specs do not share cursor, browser context, or moderation ledger
   - gbrain queried for a question
   - gbrain recall is limited to the current room namespace by default
   - useful knowledge written
