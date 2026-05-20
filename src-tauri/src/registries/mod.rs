@@ -38,6 +38,7 @@
 pub mod connectors;
 pub mod entry;
 pub mod models;
+pub mod resolver;
 pub mod skills;
 pub mod store;
 pub mod themes;
@@ -46,6 +47,7 @@ pub mod tools;
 pub use connectors::ConnectorEntry;
 pub use entry::{RegistryEntry, RegistryError};
 pub use models::ModelEntry;
+pub use resolver::{resolve, ResolveResult, ResolvedMatch};
 pub use skills::SkillEntry;
 pub use store::Registry;
 pub use themes::ThemeEntry;
