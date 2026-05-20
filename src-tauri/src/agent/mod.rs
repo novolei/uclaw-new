@@ -1,4 +1,6 @@
 pub mod agentic_loop;
+// M1-T2c — RegularTask: SessionTask wrap of run_agentic_loop.
+pub mod regular_task;
 pub mod code_rescue;
 pub mod context;
 pub mod dispatcher;
