@@ -1,6 +1,8 @@
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 
 use crate::automation::runtime::service::AppRuntimeService;
+use crate::browser::identity::BrowserAuthProfileBroker;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LiveRunKey {
@@ -151,8 +153,17 @@ impl LiveRunReport {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
+        let errors = if self.error_kinds.is_empty() {
+            "- none".to_string()
+        } else {
+            self.error_kinds
+                .iter()
+                .map(|kind| format!("- `{kind}`"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
         format!(
-            "# Live Room Run Report\n\n- Platform: `{}`\n- Room: `{}`\n- Stop reason: `{}`\n- Comments scanned: {}\n- Replies sent: {}\n- Warnings: {}\n- Mutes: {}\n- Removals: {}\n- gbrain recalls: {}\n- gbrain writes: {}\n\n## gbrain pages\n{}\n",
+            "# Live Room Run Report\n\n- Platform: `{}`\n- Room: `{}`\n- Stop reason: `{}`\n- Comments scanned: {}\n- Replies sent: {}\n- Warnings: {}\n- Mutes: {}\n- Removals: {}\n- gbrain recalls: {}\n- gbrain writes: {}\n\n## gbrain pages\n{}\n\n## errors\n{}\n",
             self.platform,
             self.room_id,
             stop_reason,
@@ -163,7 +174,8 @@ impl LiveRunReport {
             self.removals_executed,
             self.gbrain_recalls,
             self.gbrain_writes,
-            slugs
+            slugs,
+            errors
         )
     }
 }
@@ -186,11 +198,11 @@ pub async fn execute_live_room_run(
         .or_else(|| live_value(&spec_value, &payload, "liveUrl"))
         .unwrap_or_default();
 
-    let report = LiveRunReport {
-        platform,
-        room_id,
+    let mut report = LiveRunReport {
+        platform: platform.clone(),
+        room_id: room_id.clone(),
         room_title: None,
-        live_url,
+        live_url: live_url.clone(),
         started_at_ms,
         ended_at_ms: chrono::Utc::now().timestamp_millis(),
         stop_reason: LiveStopReason::FatalAdapterError,
@@ -202,9 +214,30 @@ pub async fn execute_live_room_run(
         gbrain_recalls: 0,
         gbrain_writes: 0,
         gbrain_slugs: Vec::new(),
-        error_kinds: vec!["live_room_executor_not_connected".to_string()],
+        error_kinds: Vec::new(),
     };
+    let result =
+        run_live_room_adapter_loop(service, spec_id, &activity_id, &spec_value, &mut report).await;
+    if let Err(error) = result {
+        report.stop_reason = LiveStopReason::FatalAdapterError;
+        report.error_kinds.push(error.to_string());
+    }
+    report.ended_at_ms = chrono::Utc::now().timestamp_millis();
     persist_final_report(&service.db, &activity_id, &report).await?;
+    let (status, error_text) = match report.stop_reason {
+        LiveStopReason::FatalAdapterError
+        | LiveStopReason::LoginRequired
+        | LiveStopReason::Blocked
+        | LiveStopReason::InsufficientPermissions => (
+            "failed",
+            report
+                .error_kinds
+                .first()
+                .map(String::as_str)
+                .or(Some("live_room_adapter_error")),
+        ),
+        LiveStopReason::UserStopped | LiveStopReason::RoomEnded => ("completed", None),
+    };
     {
         let conn = service
             .db
@@ -212,25 +245,213 @@ pub async fn execute_live_room_run(
             .map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
         conn.execute(
             "UPDATE automation_activities
-             SET status = 'failed', error_text = ?2, completed_at = ?3
+             SET status = ?2, error_text = ?3, completed_at = ?4
              WHERE id = ?1 AND status != 'cancelled'",
-            rusqlite::params![
-                activity_id,
-                "live_room_executor_not_connected",
-                report.ended_at_ms
-            ],
+            rusqlite::params![activity_id, status, error_text, report.ended_at_ms],
         )?;
         crate::automation::runtime::run_session::persist_transcript(
             &conn,
             &session_id,
             &[crate::agent::types::ChatMessage::user(&format!(
-                "Live-room automation `{}` ended before adapter execution was connected.",
-                spec_id
+                "Live-room automation `{}` ended with {:?}.",
+                spec_id, report.stop_reason
             ))],
         )
         .ok();
     }
+    if let Some(ctx_mgr) = service.browser_context_manager.as_ref() {
+        ctx_mgr
+            .destroy(
+                &crate::automation::runtime::service::automation_browser_session_id(
+                    spec_id,
+                    &activity_id,
+                ),
+            )
+            .await;
+    }
     Ok(())
+}
+
+async fn run_live_room_adapter_loop(
+    service: &AppRuntimeService,
+    spec_id: &str,
+    activity_id: &str,
+    spec_value: &serde_json::Value,
+    report: &mut LiveRunReport,
+) -> anyhow::Result<()> {
+    if report.platform != "douyin" {
+        anyhow::bail!("unsupported_live_room_platform:{}", report.platform);
+    }
+    if report.live_url.trim().is_empty() {
+        anyhow::bail!("missing_live_url");
+    }
+    let ctx_mgr = service
+        .browser_context_manager
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("browser_context_manager_unavailable"))?;
+    let app_handle = ctx_mgr.app_handle();
+    let browser_session_id =
+        crate::automation::runtime::service::automation_browser_session_id(spec_id, activity_id);
+    let ctx = ctx_mgr.get_or_create(&browser_session_id).await?;
+    let mut tab_id = ctx.navigate("new", &report.live_url, app_handle).await?;
+
+    if let Some(profile_id) = configured_auth_profile_id(spec_value) {
+        let broker = BrowserAuthProfileBroker::system_default()
+            .map_err(|e| anyhow::anyhow!("browser_auth_profile_broker:{e}"))?;
+        let (_profile, state) = broker
+            .load_storage_state_for_profile(&profile_id)
+            .map_err(|e| anyhow::anyhow!("browser_auth_profile_load:{e}"))?;
+        ctx.apply_storage_state(&tab_id, &state, app_handle).await?;
+        tab_id = ctx.navigate(&tab_id, &report.live_url, app_handle).await?;
+    } else {
+        anyhow::bail!("browser_auth_profile_missing");
+    }
+
+    let script_root = service.browser_builtin_root.join(&report.platform);
+    let enter = run_script(
+        &ctx,
+        &tab_id,
+        &script_root,
+        "enter_room.js",
+        serde_json::json!({
+            "configuredRoomId": report.room_id,
+            "liveUrl": report.live_url,
+        }),
+    )
+    .await?;
+    report.room_title = enter
+        .get("roomTitle")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    let runtime = LiveRuntimeMetadata::from_spec_json(spec_value).unwrap_or(LiveRuntimeMetadata {
+        kind: "live_room_moderator".into(),
+        poll_interval_seconds: 30,
+    });
+    let poll_interval = runtime.poll_interval_seconds.clamp(5, 300);
+    let mut state = LiveRunState {
+        platform: report.platform.clone(),
+        room_id: report.room_id.clone(),
+        host_id: enter
+            .get("hostId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        tab_id: Some(tab_id.clone()),
+        ..LiveRunState::default()
+    };
+
+    loop {
+        if activity_cancelled(&service.db, activity_id)? {
+            report.stop_reason = LiveStopReason::UserStopped;
+            break;
+        }
+
+        let raw_status = run_script(
+            &ctx,
+            &tab_id,
+            &script_root,
+            "check_room_status.js",
+            serde_json::json!({}),
+        )
+        .await?;
+        let room_status = parse_room_status(raw_status)?;
+        if let Some(reason) = should_stop_for_room_status(&room_status, &mut state) {
+            report.stop_reason = reason;
+            if let Some(detail) = room_status.reason {
+                report.error_kinds.push(detail);
+            }
+            break;
+        }
+
+        let raw_comments = run_script(
+            &ctx,
+            &tab_id,
+            &script_root,
+            "scan_comments.js",
+            serde_json::json!({ "cursor": state.comment_cursor }),
+        )
+        .await?;
+        let batch =
+            crate::automation::live_room::adapters::douyin::parse_scan_comments(raw_comments)
+                .map_err(|e| anyhow::anyhow!("scan_comments_parse:{e}"))?;
+        report.comments_scanned = report
+            .comments_scanned
+            .saturating_add(batch.comments.len() as u64);
+        state.comment_cursor = batch.next_cursor;
+        state.last_tick_ms = Some(chrono::Utc::now().timestamp_millis());
+
+        tokio::time::sleep(Duration::from_secs(poll_interval)).await;
+    }
+
+    Ok(())
+}
+
+async fn run_script(
+    ctx: &crate::browser::context::BrowserContext,
+    tab_id: &str,
+    script_root: &std::path::Path,
+    script_name: &str,
+    params: serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let path = script_root.join(script_name);
+    let source = std::fs::read_to_string(&path)
+        .map_err(|e| anyhow::anyhow!("read_live_room_script:{}:{e}", path.display()))?;
+    ctx.evaluate_script_with_params(tab_id, &source, params, 15_000)
+        .await
+        .map_err(|e| anyhow::anyhow!("run_live_room_script:{script_name}:{e}"))
+}
+
+fn configured_auth_profile_id(spec_value: &serde_json::Value) -> Option<String> {
+    let config = spec_value.get("config")?;
+    let profiles = config.get("browser_login_profiles")?.as_object()?;
+    profiles.values().find_map(|value| {
+        if value.get("status").and_then(|v| v.as_str()) == Some("live") {
+            value
+                .get("profileId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        } else {
+            None
+        }
+    })
+}
+
+fn parse_room_status(raw: serde_json::Value) -> anyhow::Result<LiveRoomStatus> {
+    Ok(LiveRoomStatus {
+        status: raw
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        signals: raw
+            .get("signals")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        reason: raw
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+            .map(str::to_string),
+    })
+}
+
+fn activity_cancelled(
+    db: &Arc<StdMutex<rusqlite::Connection>>,
+    activity_id: &str,
+) -> anyhow::Result<bool> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    conn.query_row(
+        "SELECT status = 'cancelled' FROM automation_activities WHERE id = ?1",
+        rusqlite::params![activity_id],
+        |row| row.get::<_, bool>(0),
+    )
+    .map_err(|e| anyhow::anyhow!("activity status lookup: {e}"))
 }
 
 pub async fn persist_final_report(
@@ -344,6 +565,66 @@ mod tests {
     }
 
     #[test]
+    fn final_report_includes_adapter_error_details() {
+        let report = LiveRunReport {
+            platform: "douyin".into(),
+            room_id: "room-1".into(),
+            room_title: None,
+            live_url: "https://live.douyin.com/room-1".into(),
+            started_at_ms: 1000,
+            ended_at_ms: 2000,
+            stop_reason: LiveStopReason::FatalAdapterError,
+            comments_scanned: 0,
+            replies_sent: 0,
+            warnings_sent: 0,
+            mutes_executed: 0,
+            removals_executed: 0,
+            gbrain_recalls: 0,
+            gbrain_writes: 0,
+            gbrain_slugs: Vec::new(),
+            error_kinds: vec!["browser_auth_profile_missing".into()],
+        };
+        let text = report.to_markdown();
+        assert!(text.contains("## errors"));
+        assert!(text.contains("browser_auth_profile_missing"));
+    }
+
+    #[test]
+    fn configured_auth_profile_prefers_live_profile() {
+        let spec = serde_json::json!({
+            "config": {
+                "browser_login_profiles": {
+                    "https://www.douyin.com/": {
+                        "status": "expired",
+                        "profileId": "old-profile"
+                    },
+                    "https://live.douyin.com/": {
+                        "status": "live",
+                        "profileId": "live-profile"
+                    }
+                }
+            }
+        });
+        assert_eq!(
+            configured_auth_profile_id(&spec).as_deref(),
+            Some("live-profile")
+        );
+    }
+
+    #[test]
+    fn parse_room_status_keeps_signals_and_reason() {
+        let status = parse_room_status(serde_json::json!({
+            "status": "ended",
+            "signals": ["ended_text", "no_comment_input"],
+            "reason": "room ended text detected"
+        }))
+        .unwrap();
+        assert_eq!(status.status, "ended");
+        assert_eq!(status.signals, vec!["ended_text", "no_comment_input"]);
+        assert_eq!(status.reason.as_deref(), Some("room ended text detected"));
+    }
+
+    #[test]
     fn room_ended_requires_two_consecutive_signals() {
         let mut state = LiveRunState::default();
         let ended = LiveRoomStatus {
@@ -375,7 +656,9 @@ mod tests {
 
     #[tokio::test]
     async fn persist_final_report_updates_activity_report_fields() {
-        let db = Arc::new(StdMutex::new(rusqlite::Connection::open_in_memory().unwrap()));
+        let db = Arc::new(StdMutex::new(
+            rusqlite::Connection::open_in_memory().unwrap(),
+        ));
         {
             let conn = db.lock().unwrap();
             conn.execute(

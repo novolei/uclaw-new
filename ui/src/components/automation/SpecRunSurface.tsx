@@ -68,6 +68,7 @@ export function SpecRunSurface({ specId }: Props) {
   const [showRightPanel, setShowRightPanel] = useState(false)
   const [isRunning, setIsRunning] = useState(false)
   const [isStopping, setIsStopping] = useState(false)
+  const [optimisticActiveRun, setOptimisticActiveRun] = useState(false)
 
   const spec = specs.find((s) => s.id === specId)
   const activities = activitiesMap[specId] ?? []
@@ -82,7 +83,7 @@ export function SpecRunSurface({ specId }: Props) {
   // Poll every 3 s while any activity is running or queued.
   const hasActiveRun = activities.some(
     (a) => a.status === 'running' || a.status === 'queued'
-  )
+  ) || optimisticActiveRun
   useEffect(() => {
     if (!hasActiveRun) return
     const id = setInterval(() => { void refreshActivities() }, 3000)
@@ -98,9 +99,22 @@ export function SpecRunSurface({ specId }: Props) {
 
   async function handleRun() {
     setIsRunning(true)
+    setActiveTab('activity')
+    if (liveMeta) {
+      setOptimisticActiveRun(true)
+      triggerAutomationManualHumane(specId)
+        .catch(() => { /* surfaced by activity/error report after refresh */ })
+        .finally(() => {
+          setIsRunning(false)
+          setOptimisticActiveRun(false)
+          void refreshActivities()
+        })
+      window.setTimeout(() => { void refreshActivities() }, 250)
+      window.setTimeout(() => { void refreshActivities() }, 1000)
+      return
+    }
     try {
       await triggerAutomationManualHumane(specId)
-      setActiveTab('activity')
       // The queued activity row is already in the DB when the command returns —
       // fetch immediately so the new row appears without waiting for the poller.
       await refreshActivities()
@@ -112,6 +126,7 @@ export function SpecRunSurface({ specId }: Props) {
   async function handleStop() {
     if (!hasActiveRun || isStopping) return
     setIsStopping(true)
+    setOptimisticActiveRun(false)
     try {
       await stopAutomationRuns(specId)
       setActiveTab('activity')

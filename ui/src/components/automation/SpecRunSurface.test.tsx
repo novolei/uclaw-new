@@ -7,6 +7,7 @@ import type { AutomationActivity, HumaneSpecRow } from '@/lib/tauri-bridge'
 import {
   getAutomationActivity,
   stopAutomationRuns,
+  triggerAutomationManualHumane,
 } from '@/lib/tauri-bridge'
 
 vi.mock('@/lib/tauri-bridge', () => ({
@@ -97,6 +98,28 @@ describe('SpecRunSurface stop control', () => {
 
     await waitFor(() => {
       expect(stopAutomationRuns).toHaveBeenCalledWith('spec-1')
+      expect(getAutomationActivity).toHaveBeenCalledWith('spec-1', 50)
+    })
+  })
+
+  it('shows stop immediately while a live-room run command is pending', async () => {
+    const store = createStore()
+    store.set(humaneSpecsAtom, [spec])
+    store.set(automationActivitiesAtom, { 'spec-1': [] })
+    vi.mocked(triggerAutomationManualHumane).mockImplementationOnce(
+      () => new Promise<void>(() => {})
+    )
+
+    render(
+      <Provider store={store}>
+        <SpecRunSurface specId="spec-1" />
+      </Provider>
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /运行/ }))
+
+    expect(screen.getByRole('button', { name: /停止/ })).toBeInTheDocument()
+    await waitFor(() => {
       expect(getAutomationActivity).toHaveBeenCalledWith('spec-1', 50)
     })
   })
