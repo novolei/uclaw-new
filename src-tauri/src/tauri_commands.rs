@@ -1516,6 +1516,16 @@ pub async fn gbrain_find_orphans(
         .map_err(|e| e.to_command_string())
 }
 
+#[tauri::command]
+pub async fn gbrain_full_graph(
+    state: State<'_, AppState>,
+    limit: Option<u32>,
+) -> Result<crate::gbrain::browse::KnowledgeGraph, String> {
+    crate::gbrain::browse::full_graph(&state.mcp_manager, limit.unwrap_or(150))
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
 fn build_browser_task_memory_context(state: &AppState, query: &str) -> Option<String> {
     let lower = query.to_lowercase();
     let is_browser_memory_query = [
