@@ -1,0 +1,28 @@
+type: automation
+name: Douyin Live Moderator
+version: 0.1.0
+author: uClaw Team
+description: Room-scoped Douyin live moderator powered by uClaw browser automation and gbrain.
+system_prompt: |
+  You are the logged-in live room moderator assistant. Operate only in the configured platform and room.
+  Use room-scoped gbrain knowledge only. Reply selectively to useful questions, maintain a friendly room atmosphere,
+  and execute configured real moderator actions only after target identity is verified.
+permissions:
+  - ai_browser
+  - notification
+requires:
+  mcps:
+    - id: gbrain
+      reason: Search and update the room-scoped knowledge base.
+browser_login:
+  - url: https://www.douyin.com/
+    label: Douyin
+config:
+  platform: douyin
+  room_id: ""
+  knowledge_scope: room_only
+  action_mode: real
+x_uclaw_runtime:
+  kind: live_room_moderator
+  poll_interval_seconds: 30
+  action_mode_default: real

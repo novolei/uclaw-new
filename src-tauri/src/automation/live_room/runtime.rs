@@ -88,9 +88,15 @@ impl LiveRuntimeMetadata {
             .and_then(|v| v.as_str())
             .ok_or_else(|| "missing_live_runtime_kind".to_string())?
             .to_string();
-        let poll_interval_seconds = runtime
-            .get("poll_interval_seconds")
+        let poll_interval_seconds = spec
+            .get("config")
+            .and_then(|v| v.get("poll_interval_seconds"))
             .and_then(|v| v.as_u64())
+            .or_else(|| {
+                runtime
+                    .get("poll_interval_seconds")
+                    .and_then(|v| v.as_u64())
+            })
             .unwrap_or(30);
         Ok(Self {
             kind,
@@ -207,7 +213,7 @@ pub async fn execute_live_room_run(
         conn.execute(
             "UPDATE automation_activities
              SET status = 'failed', error_text = ?2, completed_at = ?3
-             WHERE id = ?1",
+             WHERE id = ?1 AND status != 'cancelled'",
             rusqlite::params![
                 activity_id,
                 "live_room_executor_not_connected",
@@ -243,7 +249,7 @@ pub async fn persist_final_report(
     conn.execute(
         "UPDATE automation_activities
          SET report_text = ?1, report_artifacts_json = ?2
-         WHERE id = ?3",
+         WHERE id = ?3 AND status != 'cancelled'",
         rusqlite::params![text, artifacts.to_string(), activity_id],
     )?;
     Ok(())
@@ -294,6 +300,21 @@ mod tests {
         let runtime = LiveRuntimeMetadata::from_spec_json(&spec).unwrap();
         assert_eq!(runtime.kind, "live_room_moderator");
         assert_eq!(runtime.poll_interval_seconds, 30);
+    }
+
+    #[test]
+    fn live_runtime_metadata_prefers_config_poll_interval_override() {
+        let spec = serde_json::json!({
+            "x_uclaw_runtime": {
+                "kind": "live_room_moderator",
+                "poll_interval_seconds": 30
+            },
+            "config": {
+                "poll_interval_seconds": 12
+            }
+        });
+        let runtime = LiveRuntimeMetadata::from_spec_json(&spec).unwrap();
+        assert_eq!(runtime.poll_interval_seconds, 12);
     }
 
     #[test]
@@ -360,6 +381,7 @@ mod tests {
             conn.execute(
                 "CREATE TABLE automation_activities (
                     id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'running',
                     report_text TEXT,
                     report_artifacts_json TEXT NOT NULL DEFAULT '[]'
                 )",

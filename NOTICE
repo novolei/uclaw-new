@@ -1,0 +1,63 @@
+uClaw
+
+Copyright (c) 2026 uClaw contributors.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this product except in compliance with the License. You may obtain a copy
+of the License at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+See the LICENSE file in the repository root, or licenses/apache-2.0.txt, for
+the full license text.
+
+================================================================================
+Derivation: This product is being prepared to include software derived (with or
+without modifications) from the openai/codex repository
+(https://github.com/openai/codex), which is licensed under the Apache License,
+Version 2.0.
+
+  Upstream repository:  https://github.com/openai/codex
+  Upstream commit pin:  05e171094d058bcda38ee19a6f9401185a991718
+  Upstream commit date: 2026-05-19
+  Reviewed by:          uClaw maintainers on 2026-05-20
+
+The following derived crates are present in the repository, each carrying the
+SPDX-License-Identifier + "Derived from codex-rs/<path>" attribution in every
+.rs file:
+
+  Phase 0.5-T3 (first batch — small independent utility crates):
+  - crates/uclaw-utils-async-utils/         ← codex-rs/async-utils/         (PR #299)
+  - crates/uclaw-utils-terminal-detection/  ← codex-rs/terminal-detection/  (PR #299)
+  - crates/uclaw-utils-file-watcher/        ← codex-rs/file-watcher/        (PR #299)
+
+  Phase 0.5-T4 (second batch — independent utility crates from codex-rs/utils/):
+  - crates/uclaw-utils-absolute-path/       ← codex-rs/utils/absolute-path/   (PR #300)
+  - crates/uclaw-utils-elapsed/             ← codex-rs/utils/elapsed/         (PR #300)
+  - crates/uclaw-utils-readiness/           ← codex-rs/utils/readiness/       (PR #300)
+  - crates/uclaw-utils-string/              ← codex-rs/utils/string/          (PR #300)
+  - crates/uclaw-utils-stream-parser/       ← codex-rs/utils/stream-parser/   (PR #300)
+  - crates/uclaw-utils-fuzzy-match/         ← codex-rs/utils/fuzzy-match/     (PR #300)
+  - crates/uclaw-utils-cache/               ← codex-rs/utils/cache/           (PR #300)
+  - crates/uclaw-utils-sleep-inhibitor/     ← codex-rs/utils/sleep-inhibitor/ (PR #300)
+  - crates/uclaw-utils-template/            ← codex-rs/utils/template/        (PR #300)
+
+  Phase 0.5-T5a (derived utility crates — depend on T4 absolute-path/cache):
+  - crates/uclaw-utils-home/        ← codex-rs/utils/home-dir/   (PR #301)
+      MODIFIED: CODEX_HOME→UCLAW_HOME, .codex→.uclaw, find_codex_home()→uclaw_home()
+  - crates/uclaw-utils-path-utils/  ← codex-rs/utils/path-utils/ (PR #301)
+  - crates/uclaw-utils-image/       ← codex-rs/utils/image/      (PR #301)
+
+When new derived crates land:
+  - the crate must be listed here with its upstream path
+  - each file in the crate must carry a SPDX-License-Identifier header
+  - any modification relative to upstream must be noted in this file
+  - see docs/THIRD_PARTY.md for the full procedure
+
+================================================================================
+
+No part of this product is endorsed by, sponsored by, or affiliated with
+OpenAI. The "Codex" name and any associated trademarks remain the property of
+their respective owners. uClaw is an independent project that aims to learn
+from and selectively absorb engineering patterns from openai/codex under the
+permissions granted by the Apache License, Version 2.0.

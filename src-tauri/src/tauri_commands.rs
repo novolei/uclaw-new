@@ -940,7 +940,7 @@ mod diagnostics_status_tests {
 
     #[test]
     fn redact_diagnostic_path_hides_home_and_data_dir() {
-        let data_dir = dirs::home_dir().unwrap().join(".uclaw");
+        let data_dir = uclaw_utils_home::uclaw_home_pathbuf().unwrap();
         let path = data_dir.join("gbrain").join("run.sh").display().to_string();
         assert_eq!(redact_diagnostic_path(&path, &data_dir), "$UCLAW_DATA/gbrain/run.sh");
     }
@@ -2295,8 +2295,40 @@ pub async fn send_message(
 
     let config = AgenticLoopConfig::from_model(&llm_config.model);
 
-    // Run the agent loop
-    let outcome = crate::agent::agentic_loop::run_agentic_loop(&delegate, &mut reason_ctx, &config).await;
+    // M1-T4b — optionally route through rollout_integration if the
+    // UCLAW_ROLLOUT_ENABLED env var is set. The helper writes
+    // TaskStarted / ModelTurn / Warning / TaskFinished events to
+    // ~/.uclaw/sessions/rollout-*.jsonl + task_events_rollout (V48)
+    // and returns the same LoopOutcome the loop would have produced.
+    // When the var is unset (the default), behavior is identical to
+    // the direct run_agentic_loop call.
+    let outcome = if crate::agent::rollout_integration::rollout_enabled_by_env() {
+        let rollout = match crate::runtime::rollout::RolloutWriter::spawn(
+            uclaw_utils_home::uclaw_home_pathbuf()
+                .map(|p| p.join("sessions"))
+                .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.uclaw/sessions")),
+            None, // SQLite mirror wiring lands in a follow-up — JSONL only for now.
+        )
+        .await
+        {
+            Ok(h) => Some(h),
+            Err(e) => {
+                tracing::warn!("M1-T4b: failed to spawn RolloutWriter, falling back to direct loop: {e}");
+                None
+            }
+        };
+        crate::agent::rollout_integration::run_with_rollout(
+            &delegate,
+            &mut reason_ctx,
+            &config,
+            rollout.as_ref(),
+            &input.conversation_id,
+            &input.conversation_id,
+        )
+        .await
+    } else {
+        crate::agent::agentic_loop::run_agentic_loop(&delegate, &mut reason_ctx, &config).await
+    };
 
     let response_text = match &outcome {
         LoopOutcome::Response { text, .. } => text.clone(),
@@ -4611,9 +4643,8 @@ pub async fn fork_skill_to_user(
         loaded.manifest.path.clone()
     };
 
-    let dest_dir = dirs::home_dir()
-        .ok_or_else(|| Error::Internal("Home directory unavailable".into()))?
-        .join(".uclaw")
+    let dest_dir = uclaw_utils_home::uclaw_home_pathbuf()
+        .map_err(|_| Error::Internal("Home directory unavailable".into()))?
         .join("skills")
         .join(&name);
 
@@ -10889,6 +10920,15 @@ pub async fn trigger_automation_manual(
     spec_id: String,
 ) -> Result<(), Error> {
     state.runtime_service.trigger_manual(&spec_id).await
+        .map_err(|e| Error::Internal(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn stop_automation_runs(
+    state: State<'_, AppState>,
+    spec_id: String,
+) -> Result<usize, Error> {
+    state.runtime_service.stop_active_runs(&spec_id).await
         .map_err(|e| Error::Internal(e.to_string()))
 }
 

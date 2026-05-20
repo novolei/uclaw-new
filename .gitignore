@@ -13,6 +13,8 @@ src-tauri/gbrain-source
 
 # Rust build artifacts
 src-tauri/target/
+# Workspace root build artifacts (post Phase 0.5-T2)
+/target/
 
 # Frontend
 # 不带尾斜杠 — 同时捕获目录和 git worktree 创建的 symlink
@@ -44,8 +46,12 @@ package-lock.json
 .vscode/settings.json
 *.swp
 .claire/
+# .claude/ — team-curated config (settings.json + hooks/ + skills/uclaw-*) is
+# checked in; everything below is machine-local or session-scoped.
+.claude/settings.local.json
 .claude/worktrees/
-.claude/
+.claude/cache/
+.claude/skills/uclaw-private-*/
 
 # Superpowers brainstorming session files (visual companion mockups)
 .superpowers/

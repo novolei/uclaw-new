@@ -2,12 +2,18 @@
 //!
 //! Each spec can have multiple chat threads — one per identity. Identities:
 //!   - "local"                   → spec owner
-//!   - "{channel_type}:{chat_id}" → per-IM-user thread
+//!   - "app-chat:{spec_id}:{channel_type}:{chat_id}" → per-IM-user thread
 //!
 //! See spec: docs/superpowers/specs/2026-05-18-automation-phase2b-messaging-design.md
 
 use anyhow::Result;
 use rusqlite::Connection;
+
+/// Build the canonical Halo-compatible identity key for an IM-triggered
+/// automation chat thread.
+pub fn automation_im_identity_key(spec_id: &str, channel_type: &str, chat_id: &str) -> String {
+    format!("app-chat:{spec_id}:{channel_type}:{chat_id}")
+}
 
 /// Idempotently get-or-create the agent_session for this (spec_id, identity_key)
 /// pair. Returns the agent_session id.
@@ -112,8 +118,10 @@ mod tests {
     fn get_or_create_chat_session_creates_distinct_for_different_identities() {
         let conn = setup_db();
         let local = get_or_create_chat_session(&conn, "spec1", "local", "default").unwrap();
-        let im_a = get_or_create_chat_session(&conn, "spec1", "wechat_ilink:UIN_a", "default").unwrap();
-        let im_b = get_or_create_chat_session(&conn, "spec1", "wechat_ilink:UIN_b", "default").unwrap();
+        let im_a_key = automation_im_identity_key("spec1", "wechat_ilink", "UIN_a");
+        let im_b_key = automation_im_identity_key("spec1", "wechat_ilink", "UIN_b");
+        let im_a = get_or_create_chat_session(&conn, "spec1", &im_a_key, "default").unwrap();
+        let im_b = get_or_create_chat_session(&conn, "spec1", &im_b_key, "default").unwrap();
 
         assert_ne!(local, im_a);
         assert_ne!(local, im_b);
@@ -144,6 +152,18 @@ mod tests {
         assert_eq!(v["origin"], "automation:chat");
         assert_eq!(v["spec_id"], "spec1");
         assert_eq!(v["identity_key"], "local");
+    }
+
+    #[test]
+    fn automation_im_identity_key_is_app_scoped() {
+        assert_eq!(
+            automation_im_identity_key("spec1", "wechat_ilink", "UIN_a"),
+            "app-chat:spec1:wechat_ilink:UIN_a"
+        );
+        assert_eq!(
+            automation_im_identity_key("spec1", "unknown", "chat:with:colon"),
+            "app-chat:spec1:unknown:chat:with:colon"
+        );
     }
 
     #[test]

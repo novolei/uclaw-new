@@ -42,6 +42,21 @@ use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::{Mutex, RwLock};
 
+fn activity_is_cancelled(
+    db: &Arc<std::sync::Mutex<rusqlite::Connection>>,
+    activity_id: &str,
+) -> bool {
+    let Ok(conn) = db.lock() else {
+        return false;
+    };
+    conn.query_row(
+        "SELECT status = 'cancelled' FROM automation_activities WHERE id = ?1",
+        rusqlite::params![activity_id],
+        |row| row.get::<_, bool>(0),
+    )
+    .unwrap_or(false)
+}
+
 /// LoopDelegate for headless runs (automation and IM close-loop).
 ///
 /// Drives `run_agentic_loop` with no Tauri AppHandle for interactive UI:
@@ -107,6 +122,9 @@ fn channel_type_for_name(name: &str) -> Option<crate::channels::ChannelType> {
 #[async_trait]
 impl crate::agent::types::LoopDelegate for HeadlessDelegate {
     async fn check_signals(&self) -> LoopSignal {
+        if activity_is_cancelled(&self.db, &self.activity_id) {
+            return LoopSignal::Stop;
+        }
         LoopSignal::Continue
     }
 
@@ -232,6 +250,12 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
         reason_ctx: &mut ReasoningContext,
     ) -> Result<Option<LoopOutcome>, Error> {
         for call in tool_calls {
+            if activity_is_cancelled(&self.db, &self.activity_id) {
+                *self.gate.lock().await =
+                    Some(CompletionGate::ErrorTerminal("user_stopped".to_string()));
+                return Ok(Some(LoopOutcome::Stopped));
+            }
+
             // Permission gate: deny-list beats grant-list beats spec default.
             if let Err(e) = permissions::check(
                 &self.permissions.spec,
@@ -258,7 +282,7 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                             "UPDATE automation_activities \
                              SET status='completed', report_text=?1, report_outcome=?2, \
                                  report_artifacts_json=?3, completed_at=?4 \
-                             WHERE id=?5",
+                             WHERE id=?5 AND status != 'cancelled'",
                             rusqlite::params![
                                 input.text,
                                 input.outcome,
@@ -267,6 +291,35 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                                 self.activity_id,
                             ],
                         )?;
+                    }
+
+                    // M1-T4f — fire-and-forget rollout emit when enabled.
+                    // Re-reads the freshly-updated activity from DB so the
+                    // TaskEvent stream sees the final terminal state (status,
+                    // report_text, report_outcome). Helper bails internally
+                    // if UCLAW_ROLLOUT_ENABLED is not set, so this is cheap
+                    // when rollout is disabled.
+                    {
+                        let activity_id = self.activity_id.clone();
+                        let spec_id = self.spec_id.clone();
+                        let db = std::sync::Arc::clone(&self.db);
+                        tokio::spawn(async move {
+                            let activity = {
+                                let conn = match db.lock() {
+                                    Ok(c) => c,
+                                    Err(_) => return,
+                                };
+                                match crate::automation::activity::get_activity(&conn, &activity_id) {
+                                    Ok(Some(a)) => a,
+                                    _ => return,
+                                }
+                            };
+                            crate::automation::rollout_bridge::emit_activity_into_session_dir(
+                                &activity,
+                                &spec_id,
+                            )
+                            .await;
+                        });
                     }
                     *self.gate.lock().await = Some(CompletionGate::Reported {
                         text: input.text.clone(),

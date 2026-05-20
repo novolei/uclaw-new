@@ -1,0 +1,17 @@
+[package]
+name = "uclaw-utils-cache"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+
+[dependencies]
+lru = "0.12"
+sha1 = "0.10"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "sync", "fs", "io-util"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "sync", "fs", "io-util"] }
+
+[lib]
+doctest = false

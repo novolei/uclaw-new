@@ -9,6 +9,9 @@ pub struct AutomationToolRegistryDeps {
     pub workspace_root: PathBuf,
     pub spec_permissions: Vec<Permission>,
     pub gbrain_declared: bool,
+    pub browser_context_manager: Option<Arc<crate::browser::BrowserContextManager>>,
+    pub browser_session_id: Option<String>,
+    pub browser_builtin_root: Option<PathBuf>,
 }
 
 pub fn planned_tool_names(spec_permissions: &[Permission], gbrain_declared: bool) -> Vec<String> {
@@ -29,9 +32,14 @@ pub fn planned_tool_names(spec_permissions: &[Permission], gbrain_declared: bool
     if spec_permissions.contains(&Permission::AiBrowser) {
         names.extend(
             [
+                "browser_navigate",
+                "browser_evaluate",
+                "browser_wait",
+                "browser_list_tabs",
                 "browser_task",
                 "browser_task_resume",
                 "retry_with_browser_agent",
+                "browser_run",
                 "browser_run_script",
             ]
             .into_iter()
@@ -65,13 +73,64 @@ pub fn build_registry_with_capabilities(deps: AutomationToolRegistryDeps) -> Arc
     register_automation_schema_tools(&mut tools);
 
     if deps.spec_permissions.contains(&Permission::AiBrowser) {
-        let builtin_root =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/live-room");
-        tools.register(crate::browser::tools::BrowserRunScriptTool {
-            session_id: "automation-live-room".to_string(),
-            workspace_root: deps.workspace_root.clone(),
-            builtin_root,
-        });
+        if let (Some(ctx_mgr), Some(session_id)) =
+            (deps.browser_context_manager.clone(), deps.browser_session_id.clone())
+        {
+            let builtin_root = deps.browser_builtin_root.clone().unwrap_or_else(|| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/live-room")
+            });
+            let browser_run_script = crate::browser::tools::BrowserRunScriptTool {
+                ctx_mgr: ctx_mgr.clone(),
+                session_id: session_id.clone(),
+                workspace_root: deps.workspace_root.clone(),
+                builtin_root,
+            };
+            tools.register(crate::browser::tools::BrowserRunTool {
+                inner: browser_run_script.clone(),
+            });
+            tools.register(browser_run_script);
+            tools.register(crate::browser::tools::BrowserNavigateTool {
+                ctx_mgr: ctx_mgr.clone(),
+                session_id: session_id.clone(),
+            });
+            tools.register(crate::browser::tools::BrowserEvaluateTool {
+                ctx_mgr: ctx_mgr.clone(),
+                session_id: session_id.clone(),
+            });
+            tools.register(crate::browser::tools::BrowserWaitTool {
+                ctx_mgr: ctx_mgr.clone(),
+                session_id: session_id.clone(),
+            });
+            tools.register(crate::browser::tools::BrowserListTabsTool {
+                ctx_mgr,
+                session_id,
+            });
+        } else {
+            tools.register(CapabilitySchemaTool::new(
+                "browser_navigate",
+                "Navigate to a browser URL. Execution is connected by AppRuntimeService when a browser session is available.",
+            ));
+            tools.register(CapabilitySchemaTool::new(
+                "browser_evaluate",
+                "Evaluate JavaScript in a browser tab. Execution is connected by AppRuntimeService when a browser session is available.",
+            ));
+            tools.register(CapabilitySchemaTool::new(
+                "browser_wait",
+                "Wait for a browser selector or duration. Execution is connected by AppRuntimeService when a browser session is available.",
+            ));
+            tools.register(CapabilitySchemaTool::new(
+                "browser_list_tabs",
+                "List browser tabs. Execution is connected by AppRuntimeService when a browser session is available.",
+            ));
+            tools.register(CapabilitySchemaTool::new(
+                "browser_run",
+                "Run a restricted browser adapter JavaScript file. Execution is connected by AppRuntimeService.",
+            ));
+            tools.register(CapabilitySchemaTool::new(
+                "browser_run_script",
+                "Run a restricted browser adapter JavaScript file. Execution is connected by AppRuntimeService.",
+            ));
+        }
         tools.register(CapabilitySchemaTool::new(
             "browser_task",
             "Run a constrained browser fallback task. Execution is connected by the live browser bridge.",
@@ -272,6 +331,7 @@ mod tests {
         assert!(names.contains(&"browser_task".to_string()));
         assert!(names.contains(&"browser_task_resume".to_string()));
         assert!(names.contains(&"retry_with_browser_agent".to_string()));
+        assert!(names.contains(&"browser_run".to_string()));
         assert!(names.contains(&"browser_run_script".to_string()));
     }
 
@@ -291,6 +351,9 @@ mod tests {
             workspace_root: tmp.path().to_path_buf(),
             spec_permissions: Vec::new(),
             gbrain_declared: false,
+            browser_context_manager: None,
+            browser_session_id: None,
+            browser_builtin_root: None,
         });
         let names = registry
             .list_definitions()
@@ -311,10 +374,55 @@ mod tests {
             workspace_root: tmp.path().to_path_buf(),
             spec_permissions: vec![Permission::AiBrowser],
             gbrain_declared: true,
+            browser_context_manager: None,
+            browser_session_id: None,
+            browser_builtin_root: None,
         });
         let defs = registry.list_definitions();
         assert!(defs.iter().any(|tool| tool.name == "browser_task"));
+        assert!(defs.iter().any(|tool| tool.name == "browser_navigate"));
+        assert!(defs.iter().any(|tool| tool.name == "browser_evaluate"));
+        assert!(defs.iter().any(|tool| tool.name == "browser_wait"));
+        assert!(defs.iter().any(|tool| tool.name == "browser_list_tabs"));
+        assert!(defs.iter().any(|tool| tool.name == "browser_run"));
         assert!(defs.iter().any(|tool| tool.name == "browser_run_script"));
         assert!(defs.iter().any(|tool| tool.name == "gbrain_room_search"));
+    }
+
+    #[test]
+    fn capable_registry_registers_real_browser_run_when_session_is_available() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx_mgr = Arc::new(crate::browser::BrowserContextManager::new_for_test(
+            tmp.path().join("profiles"),
+        ));
+        let registry = build_registry_with_capabilities(AutomationToolRegistryDeps {
+            workspace_root: tmp.path().to_path_buf(),
+            spec_permissions: vec![Permission::AiBrowser],
+            gbrain_declared: false,
+            browser_context_manager: Some(ctx_mgr),
+            browser_session_id: Some("automation:spec:activity".to_string()),
+            browser_builtin_root: Some(tmp.path().join("live-room")),
+        });
+
+        let browser_run = registry
+            .get("browser_run")
+            .expect("browser_run should be registered");
+        assert!(
+            browser_run
+                .description()
+                .contains("Validate and run a restricted browser adapter JavaScript file"),
+            "expected real browser_run tool, got schema fallback description: {}",
+            browser_run.description()
+        );
+        let browser_navigate = registry
+            .get("browser_navigate")
+            .expect("browser_navigate should be registered");
+        assert!(
+            browser_navigate
+                .description()
+                .contains("Navigate to a URL in the browser"),
+            "expected real browser_navigate tool, got schema fallback description: {}",
+            browser_navigate.description()
+        );
     }
 }

@@ -20,19 +20,27 @@ pub struct BrowserContextManager {
     /// Base directory for per-session Chrome profiles.
     profile_base: PathBuf,
     /// Tauri app handle, used to emit screencast events.
-    app_handle: tauri::AppHandle,
+    app_handle: Option<tauri::AppHandle>,
 }
 
 impl BrowserContextManager {
     pub fn new(app_handle: tauri::AppHandle) -> Self {
-        let profile_base = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(".uclaw")
+        let profile_base = uclaw_utils_home::uclaw_home_pathbuf()
+            .unwrap_or_else(|_| PathBuf::from("/tmp/.uclaw"))
             .join("browser-profiles");
         Self {
             contexts: Arc::new(RwLock::new(HashMap::new())),
             profile_base,
-            app_handle,
+            app_handle: Some(app_handle),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test(profile_base: PathBuf) -> Self {
+        Self {
+            contexts: Arc::new(RwLock::new(HashMap::new())),
+            profile_base,
+            app_handle: None,
         }
     }
 
@@ -145,7 +153,9 @@ impl BrowserContextManager {
 
     /// Expose the app handle to callers that need to start a screencast.
     pub fn app_handle(&self) -> &tauri::AppHandle {
-        &self.app_handle
+        self.app_handle
+            .as_ref()
+            .expect("BrowserContextManager app_handle is unavailable in this test instance")
     }
 }
 

@@ -19,6 +19,8 @@ pub mod task_store;
 pub mod tools;
 pub mod types;
 
+// M1-T4c — bridge BrowserTaskRun to runtime::contracts::TaskEvent.
+pub mod rollout_bridge;
 // Re-export the two primary public types so callers can write
 // `crate::browser::BrowserContextManager` without the extra path.
 pub use context_manager::BrowserContextManager;
@@ -70,9 +72,9 @@ impl BrowserService {
     pub async fn launch(&self) -> Result<(), Error> {
         let mut guard = self.inner.write().await;
         if guard.is_some() { return Ok(()); }
-        let profile_dir = dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-            .join(".uclaw").join("browser-profile");
+        let profile_dir = uclaw_utils_home::uclaw_home_pathbuf()
+            .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.uclaw"))
+            .join("browser-profile");
         if let Err(e) = std::fs::create_dir_all(&profile_dir) {
             tracing::warn!("Could not create browser profile dir: {}", e);
         }

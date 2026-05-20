@@ -6,7 +6,7 @@ import {
   type AutomationTab,
 } from '@/atoms/automation-ui'
 import { automationActivitiesAtom, humaneSpecsAtom } from '@/atoms/automation'
-import { triggerAutomationManualHumane, getAutomationActivity } from '@/lib/tauri-bridge'
+import { triggerAutomationManualHumane, getAutomationActivity, stopAutomationRuns } from '@/lib/tauri-bridge'
 import type { HumaneSpecRow } from '@/lib/tauri-bridge'
 import { SpecRunHeader } from './SpecRunHeader'
 import { HomeThreadView } from './HomeThreadView'
@@ -22,15 +22,33 @@ const TAB_LABELS: Record<AutomationTab, string> = {
   settings: '设置',
 }
 
+function parseJsonRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+  if (typeof value !== 'string' || value.trim() === '') return {}
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {}
+  } catch {
+    return {}
+  }
+}
+
 function liveSpecMeta(spec: HumaneSpecRow): { platform?: string; roomId?: string; roomTitle?: string } | null {
   try {
     const raw = JSON.parse(spec.specJson)
     if (raw?.x_uclaw_runtime?.kind !== 'live_room_moderator') return null
-    const config = raw.config ?? {}
+    const config = parseJsonRecord(raw.config)
+    const overrides = parseJsonRecord(spec.userConfigValues)
+    const read = (snake: string, camel?: string): string | undefined => {
+      const value = overrides[snake] ?? (camel ? overrides[camel] : undefined) ?? config[snake] ?? (camel ? config[camel] : undefined)
+      return value == null ? undefined : String(value)
+    }
     return {
-      platform: config.platform ?? 'douyin',
-      roomId: config.room_id ?? config.roomId,
-      roomTitle: config.room_title ?? config.roomTitle,
+      platform: read('platform') ?? 'douyin',
+      roomId: read('room_id', 'roomId'),
+      roomTitle: read('room_title', 'roomTitle'),
     }
   } catch {
     return null
@@ -49,6 +67,7 @@ export function SpecRunSurface({ specId }: Props) {
   const setActivitiesMap = useSetAtom(automationActivitiesAtom)
   const [showRightPanel, setShowRightPanel] = useState(false)
   const [isRunning, setIsRunning] = useState(false)
+  const [isStopping, setIsStopping] = useState(false)
 
   const spec = specs.find((s) => s.id === specId)
   const activities = activitiesMap[specId] ?? []
@@ -90,13 +109,32 @@ export function SpecRunSurface({ specId }: Props) {
     }
   }
 
+  async function handleStop() {
+    if (!hasActiveRun || isStopping) return
+    setIsStopping(true)
+    try {
+      await stopAutomationRuns(specId)
+      setActiveTab('activity')
+      await refreshActivities()
+    } finally {
+      setIsStopping(false)
+    }
+  }
+
   const showPanel =
     showRightPanel &&
     (activeTab === 'chat' || (activeTab === 'activity' && runSessionId != null))
 
   return (
     <div className="flex flex-col flex-1 h-full overflow-hidden">
-      <SpecRunHeader specName={spec.name} onRun={handleRun} isRunning={isRunning} />
+      <SpecRunHeader
+        specName={spec.name}
+        onRun={handleRun}
+        onStop={handleStop}
+        isRunning={isRunning}
+        hasActiveRun={hasActiveRun}
+        isStopping={isStopping}
+      />
 
       {liveMeta && (
         <div className="flex items-center gap-3 px-3 py-2 border-b border-border/50 text-xs text-muted-foreground shrink-0">

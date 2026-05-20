@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# uClaw workspace root — Phase 0.5-T2.
+#
+# Layout:
+#   src-tauri/    Tauri desktop app + uclaw_core library (the existing monolith)
+#   crates/       uClaw-specific + codex-derived utility crates, populated by
+#                 Phase 0.5-T3 (first 6) and Phase 0.5-T5 (next 11) per
+#                 `uclaw-upgrade-implementation-plan.md` §18 + `uclaw-codex-
+#                 comparison-and-design.md` §17.
+#
+# All derived crates carry the SPDX header documented in `docs/THIRD_PARTY.md`
+# §3.2; the `.claude/hooks/check-codex-spdx.sh` + git pre-commit mirror enforce it.
+
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    # Phase 0.5-T3 — first batch
+    "crates/uclaw-utils-async-utils",
+    "crates/uclaw-utils-terminal-detection",
+    "crates/uclaw-utils-file-watcher",
+    # Phase 0.5-T4 — independent utility crates (no internal codex deps)
+    "crates/uclaw-utils-absolute-path",
+    "crates/uclaw-utils-elapsed",
+    "crates/uclaw-utils-readiness",
+    "crates/uclaw-utils-string",
+    "crates/uclaw-utils-stream-parser",
+    "crates/uclaw-utils-fuzzy-match",
+    "crates/uclaw-utils-cache",
+    "crates/uclaw-utils-sleep-inhibitor",
+    "crates/uclaw-utils-template",
+    # Phase 0.5-T5a — derived utility crates (depend on T4 absolute-path/cache)
+    "crates/uclaw-utils-home",
+    "crates/uclaw-utils-path-utils",
+    "crates/uclaw-utils-image",
+    # T5b/T6 crates land here.
+]
+# Exclude any temporary or in-progress trees. Keeping this explicit lets
+# `cargo metadata` stay deterministic while crates/ is still empty.
+exclude = []
+
+[workspace.package]
+edition       = "2021"
+license       = "Apache-2.0"
+authors       = ["Ryan Liu <ryanclaudemax@gmail.com>"]
+repository    = "https://github.com/novolei/uclaw-new"
+rust-version  = "1.78"
+
+# Release profile lives at the workspace root (Cargo emits a warning if it's in
+# a member Cargo.toml of a virtual workspace). Strip debug symbols to keep the
+# bundled binary lean — was ~80 MB unstripped, ~50 MB stripped.
+[profile.release]
+strip = true

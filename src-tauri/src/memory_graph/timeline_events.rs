@@ -144,6 +144,7 @@ impl TimelineEvent {
 /// log + swallow errors with `tracing::warn!` — a timeline write
 /// failure must NEVER fail the underlying user action.
 pub fn insert_event(conn: &Connection, event: &TimelineEvent) -> rusqlite::Result<String> {
+    crate::memory_graph::enforce_freeze("timeline_events::insert_event");
     let related_json = serde_json::to_string(&event.related_entity_ids)
         .unwrap_or_else(|_| "[]".to_string());
     let now_ms = chrono::Utc::now().timestamp_millis();
@@ -173,6 +174,7 @@ pub fn insert_event(conn: &Connection, event: &TimelineEvent) -> rusqlite::Resul
 /// action (e.g. EntityPage create) never fails because of a
 /// timeline-write hiccup.
 pub fn insert_event_best_effort(conn: &Connection, event: &TimelineEvent) {
+    crate::memory_graph::enforce_freeze("timeline_events::insert_event_best_effort");
     if let Err(e) = insert_event(conn, event) {
         tracing::warn!(
             event_id = %event.id,

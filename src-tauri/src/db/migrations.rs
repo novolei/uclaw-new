@@ -1897,6 +1897,18 @@ CREATE INDEX IF NOT EXISTS idx_spaced_rep_due
     WHERE enabled = 1;
 ";
 
+/// V50 — Halo-compatible automation app metadata.
+///
+/// Additive only: `automation_specs.status` already exists on V20+
+/// databases, so duplicate-column errors are tolerated by the migration
+/// runner just like the earlier automation_specs ALTER migrations.
+pub const V50_HALO_AUTOMATION_METADATA: &str = "
+ALTER TABLE automation_specs ADD COLUMN status TEXT;
+ALTER TABLE automation_specs ADD COLUMN user_overrides_json TEXT;
+ALTER TABLE automation_specs ADD COLUMN browser_login TEXT;
+ALTER TABLE automation_specs ADD COLUMN uninstalled_at INTEGER;
+";
+
 /// V43 seed — Phase 8.2: 7 default rows in `wiki_page_templates`, one
 /// per subkind defined in Cognitive Spec §2.2. `INSERT OR IGNORE` keeps
 /// the seed re-runnable: users / agents can tune the prompts in the
@@ -2002,6 +2014,42 @@ CREATE INDEX IF NOT EXISTS idx_facets_last_seen
 /// `page_content_hashes` / `analysis_cache` pattern). Tables stay empty
 /// until consumers (Timeline Engine scenario in a follow-up PR;
 /// Importance Decay algorithm in P2) start populating them.
+pub const V49_COST_RECORDS_6D: &str = "
+-- M1-T6 — extend cost_records (V13) with the 6-dimension TokenUsage shape.
+--   * cached_input_tokens — prompt-cache reads (cheaper than fresh input)
+--   * reasoning_output_tokens — extended-thinking output (Claude / o1)
+-- Existing rows default the new columns to 0 (no semantic change for
+-- pre-M1-T6 data). Cost recalculation against new pricing is a follow-up.
+ALTER TABLE cost_records ADD COLUMN cached_input_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE cost_records ADD COLUMN reasoning_output_tokens INTEGER NOT NULL DEFAULT 0;
+";
+
+pub const V48_TASK_EVENTS_ROLLOUT: &str = "
+-- M1-T5 (Phase 0.5 / Runtime Contracts) — rollout sidecar for task event
+-- stream. Mirrors the JSONL at `~/.uclaw/sessions/rollout-*.jsonl` so
+-- replay + index queries are fast.
+--
+-- One row per TaskEvent emitted by a SessionTask. The full event payload
+-- is stored as JSON in `payload_json`; `kind` + `source` are indexed for
+-- cheap rollup queries. `sequence` is monotonically assigned by the
+-- writer per (task_id, rollout_file) tuple so replay is deterministic.
+CREATE TABLE IF NOT EXISTS task_events_rollout (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id       TEXT NOT NULL,
+    intent_id     TEXT,
+    sequence      INTEGER NOT NULL,
+    ts            TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    source        TEXT NOT NULL,
+    payload_json  TEXT NOT NULL,
+    rollout_file  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_task_events_rollout_task ON task_events_rollout(task_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_task_events_rollout_kind ON task_events_rollout(kind, ts);
+CREATE INDEX IF NOT EXISTS idx_task_events_rollout_source ON task_events_rollout(source, ts);
+CREATE INDEX IF NOT EXISTS idx_task_events_rollout_intent ON task_events_rollout(intent_id, sequence) WHERE intent_id IS NOT NULL;
+";
+
 pub const V44_L3_RETAINED_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS timeline_events (
     id                 TEXT PRIMARY KEY,
@@ -2439,6 +2487,28 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V47_TRIANGULATION_EVIDENCE.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V47 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V48: M1-T5 — task_events_rollout sidecar for the rollout JSONL writer.
+    tracing::debug!("Running migration V48: task_events_rollout");
+    for stmt in V48_TASK_EVENTS_ROLLOUT.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V48 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V49: M1-T6 — cost_records gains cached_input_tokens + reasoning_output_tokens.
+    tracing::debug!("Running migration V49: cost_records 6-D");
+    for stmt in V49_COST_RECORDS_6D.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            // Already-applied ADD COLUMN raises "duplicate column" — that's expected.
+            tracing::debug!("V49 stmt skipped (likely already applied): {} :: {}", e, stmt);
+        }
+    }
+    // V50: Halo-compatible automation app metadata.
+    tracing::debug!("Running migration V50: Halo automation metadata");
+    for stmt in V50_HALO_AUTOMATION_METADATA.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V50 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -3195,6 +3265,32 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn halo_metadata_columns_are_additive_to_automation_specs() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('automation_specs')")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        for column in [
+            "status",
+            "user_overrides_json",
+            "browser_login",
+            "uninstalled_at",
+        ] {
+            assert!(
+                columns.iter().any(|name| name == column),
+                "missing automation_specs column: {column}; columns present: {columns:?}"
+            );
+        }
     }
 
     // ─── V33: Symphony schema ─────────────────────────────────────────────
@@ -4457,5 +4553,42 @@ mod tests {
         assert_eq!(enabled, 1);
         assert_eq!(total, 0);
         assert_eq!(passed, 0);
+    }
+/// V49 — cost_records gains 6-D token columns.
+    #[test]
+    fn v49_adds_cached_input_and_reasoning_output_columns() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        // Both new columns must exist and accept INSERT with explicit 0s.
+        conn.execute(
+            "INSERT INTO cost_records                 (id, session_id, model, input_tokens, output_tokens,                  cost_usd, created_at, cached_input_tokens, reasoning_output_tokens)              VALUES ('c1', 's1', 'test-model', 100, 50, 0.01, 1700000000000, 30, 12)",
+            [],
+        )
+        .unwrap();
+        let (input, output, cached, reasoning): (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens                  FROM cost_records WHERE id = 'c1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!((input, output, cached, reasoning), (100, 50, 30, 12));
+    }
+
+    /// V49 is idempotent — running run() twice must not error.
+    #[test]
+    fn v49_is_idempotent() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error");
+        // Columns still present.
+        let row: (Option<String>,) = conn
+            .query_row(
+                "SELECT name FROM pragma_table_info('cost_records')                  WHERE name = 'reasoning_output_tokens'",
+                [],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        assert_eq!(row.0.as_deref(), Some("reasoning_output_tokens"));
     }
 }

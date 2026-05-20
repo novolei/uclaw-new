@@ -15,6 +15,8 @@ pub mod api;
 pub mod background;
 pub mod notifications;
 pub mod infra;
+// Phase 0.5 M1-T1 — IntentSpec/TaskSpec/TaskEvent runtime contracts.
+pub mod runtime;
 
 // B2: Infrastructure modules
 pub mod memory;

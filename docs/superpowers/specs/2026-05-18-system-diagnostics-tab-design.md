@@ -2,13 +2,23 @@
 
 **Date:** 2026-05-18  
 **Branch:** TBD (new feature branch)  
-**Status:** Approved, pending implementation plan
+**Status:** Implemented. Later autonomy harness controls were added to this same System Diagnostics tab in GitHub PR #285.
 
 ---
 
 ## Overview
 
 Add a new **「系统诊断」(System Diagnostics)** settings tab to the uClaw settings window. The page surfaces app health, bridge service status (memU Python bridge + gbrain Bun MCP), all registered background services, and per-service recovery actions — all on demand via a "运行诊断" button.
+
+As of GitHub PR #285, the tab also contains the **自治回归套件** section. This section exposes `All`, `Browser`, `Memory`, `Agent`, and `Self` controls for app-native harness scorecards:
+
+- `Browser` calls `run_browser_parity_harness`.
+- `Memory` calls `run_memory_gbrain_eval_harness`.
+- `Agent` calls `run_agent_control_plane_harness`.
+- `Self` calls `run_self_improvement_gate_harness`.
+- `All` runs those four harnesses sequentially from the UI.
+
+The Browser harness button is a deterministic parity fixture run. It is not a live arbitrary website browsing run and does not call an LLM. Real browser autonomy remains verified through chat `browser_task`, the Browser panel, and Browser Task Monitor.
 
 ---
 
