@@ -134,6 +134,7 @@ pub fn record_fail(conn: &Connection, node_id: &str, now_ms: i64) -> rusqlite::R
 /// Toggle enabled/disabled. Disabled rows are excluded from the
 /// `due_now` query but their counter history is preserved.
 pub fn set_enabled(conn: &Connection, node_id: &str, enabled: bool) -> rusqlite::Result<()> {
+    crate::memory_graph::enforce_freeze("spaced_repetition::set_enabled");
     let v = if enabled { 1 } else { 0 };
     conn.execute(
         "UPDATE spaced_repetition_state SET enabled = ?1 WHERE node_id = ?2",
