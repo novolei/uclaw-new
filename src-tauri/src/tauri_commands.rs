@@ -1394,6 +1394,128 @@ pub async fn restart_gbrain_mcp(
         .map_err(|e| e.to_string())
 }
 
+// ─── 子项目 A — gbrain 知识浏览器代理命令 ────────────────────────────────
+
+#[tauri::command]
+pub async fn gbrain_list_pages(
+    state: State<'_, AppState>,
+    limit: Option<u32>,
+    sort: Option<String>,
+    page_type: Option<String>,
+    tag: Option<String>,
+    updated_after: Option<String>,
+) -> Result<Vec<crate::gbrain::browse::PageSummary>, String> {
+    crate::gbrain::browse::list_pages(
+        &state.mcp_manager,
+        limit.unwrap_or(200),
+        sort,
+        page_type,
+        tag,
+        updated_after,
+    )
+    .await
+    .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_get_page(
+    state: State<'_, AppState>,
+    slug: String,
+) -> Result<crate::gbrain::browse::PageDetail, String> {
+    crate::gbrain::browse::get_page(&state.mcp_manager, &slug)
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_search(
+    state: State<'_, AppState>,
+    query: String,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<Vec<crate::gbrain::browse::SearchHit>, String> {
+    crate::gbrain::browse::search(
+        &state.mcp_manager,
+        &query,
+        limit.unwrap_or(20),
+        offset.unwrap_or(0),
+    )
+    .await
+    .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_get_backlinks(
+    state: State<'_, AppState>,
+    slug: String,
+) -> Result<Vec<crate::gbrain::browse::Backlink>, String> {
+    crate::gbrain::browse::get_backlinks(&state.mcp_manager, &slug)
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_traverse_graph(
+    state: State<'_, AppState>,
+    slug: String,
+    depth: Option<u32>,
+    direction: Option<String>,
+) -> Result<serde_json::Value, String> {
+    crate::gbrain::browse::traverse_graph(&state.mcp_manager, &slug, depth.unwrap_or(2), direction)
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_get_versions(
+    state: State<'_, AppState>,
+    slug: String,
+) -> Result<Vec<crate::gbrain::browse::VersionMeta>, String> {
+    crate::gbrain::browse::get_versions(&state.mcp_manager, &slug)
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_revert_version(
+    state: State<'_, AppState>,
+    slug: String,
+    version_id: i64,
+) -> Result<crate::gbrain::browse::PageDetail, String> {
+    crate::gbrain::browse::revert_version(&state.mcp_manager, &slug, version_id)
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_put_page(
+    state: State<'_, AppState>,
+    slug: String,
+    content: String,
+) -> Result<crate::gbrain::browse::PageDetail, String> {
+    crate::gbrain::browse::put_page(&state.mcp_manager, &slug, &content)
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_get_stats(
+    state: State<'_, AppState>,
+) -> Result<crate::gbrain::browse::BrainStats, String> {
+    crate::gbrain::browse::get_stats(&state.mcp_manager)
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
+#[tauri::command]
+pub async fn gbrain_find_orphans(
+    state: State<'_, AppState>,
+) -> Result<crate::gbrain::browse::OrphanSummary, String> {
+    crate::gbrain::browse::find_orphans(&state.mcp_manager)
+        .await
+        .map_err(|e| e.to_command_string())
+}
+
 fn build_browser_task_memory_context(state: &AppState, query: &str) -> Option<String> {
     let lower = query.to_lowercase();
     let is_browser_memory_query = [
