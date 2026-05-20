@@ -229,6 +229,7 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                 text: text.to_string(),
                 usage: None,
                 truncated: false,
+                model: None, // M1-backlog #3 — non-LLM-response terminator
             });
         }
         // IM close-loop: non-streaming reply path — text response is also terminal.
@@ -239,6 +240,7 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                 text: text.to_string(),
                 usage: None,
                 truncated: false,
+                model: None, // M1-backlog #3 — non-LLM-response terminator
             });
         }
         TextAction::Continue
@@ -342,6 +344,7 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                         text: input.text,
                         usage: None,
                         truncated: false,
+                        model: None, // M1-backlog #3 — tool-result terminator
                     }));
                 }
 
@@ -391,6 +394,7 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                         text: "escalated".into(),
                         usage: None,
                         truncated: false,
+                        model: None, // M1-backlog #3 — escalation terminator
                     }));
                 }
 

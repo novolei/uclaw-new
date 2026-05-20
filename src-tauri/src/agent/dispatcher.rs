@@ -1693,7 +1693,13 @@ impl LoopDelegate for ChatDelegate {
         }
 
         self.emit_done(text, was_truncated);
-        TextAction::Return(LoopOutcome::Response { text: text.to_string(), usage: metadata.usage, truncated: was_truncated })
+        TextAction::Return(LoopOutcome::Response {
+            text: text.to_string(),
+            usage: metadata.usage,
+            truncated: was_truncated,
+            // M1-backlog #3 — real provider/model attribution into ModelTurn.
+            model: Some(metadata.model.clone()),
+        })
     }
 
     async fn execute_tool_calls(

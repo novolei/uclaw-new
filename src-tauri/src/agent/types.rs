@@ -402,7 +402,17 @@ pub enum LoopSignal {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LoopOutcome {
-    Response { text: String, usage: Option<TokenUsage>, truncated: bool },
+    Response {
+        text: String,
+        usage: Option<TokenUsage>,
+        truncated: bool,
+        /// M1-backlog #3 — the provider's model identifier that produced
+        /// this response. `None` for non-LLM-response paths (tool result
+        /// terminators, escalation paths). Surfaced into the `ModelTurn`
+        /// rollout event so cost / usage analyses can attribute by model.
+        #[serde(default)]
+        model: Option<String>,
+    },
     ToolResult { results: Vec<String> },
     Stopped,
     Cancelled { partial_code: Option<String> },

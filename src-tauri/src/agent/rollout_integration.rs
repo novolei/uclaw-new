@@ -76,14 +76,20 @@ pub async fn run_with_rollout(
     if let Some(handle) = rollout {
         match &outcome {
             LoopOutcome::Response {
-                usage: Some(usage), ..
+                usage: Some(usage),
+                model: outcome_model,
+                ..
             } => {
                 handle.emit(TaskEvent::ModelTurn {
                     ts: now(),
                     source: TaskEventSource::AgentLoop,
                     task_id: task_id.to_string(),
                     provider: "agent_loop".into(),
-                    model: "aggregated".into(),
+                    // M1-backlog #3 — real model from the outcome if the loop
+                    // attached it; otherwise fall back to the aggregated label.
+                    model: outcome_model
+                        .clone()
+                        .unwrap_or_else(|| "aggregated".into()),
                     token_usage: TokenUsage {
                         input_tokens: usage.input_tokens,
                         cached_input_tokens: usage.cache_read_tokens,
@@ -183,6 +189,7 @@ mod tests {
                 text: "ok".into(),
                 usage: meta.usage,
                 truncated: false,
+                model: meta.model.into(), // M1-backlog #3 — propagate from metadata
             })
         }
         async fn execute_tool_calls(
