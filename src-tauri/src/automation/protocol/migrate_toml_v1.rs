@@ -86,6 +86,8 @@ pub fn migrate_legacy_toml(toml_content: &str) -> Result<MigratedSpec, MigrateEr
         system_prompt: legacy.task,
         subscriptions,
         config_schema: vec![],
+        config: serde_json::Value::Null,
+        x_uclaw_runtime: serde_json::Value::Null,
         requires: None,
         filters: vec![],
         memory_schema: None,

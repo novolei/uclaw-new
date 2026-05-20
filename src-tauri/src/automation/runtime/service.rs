@@ -48,6 +48,10 @@ use crate::services::{ManagedService, ServiceHealth, ServiceStatus};
 /// Maximum concurrent runs per spec (Phase 1 hard-code; Phase 2 makes this
 /// configurable via `HumaneAutomationSpec.config_schema`).
 const PER_SPEC_CONCURRENCY: usize = 2;
+const BUILTIN_DOUYIN_LIVE_MODERATOR_SOURCE_REF: &str =
+    "builtin://automation-specs/douyin-live-moderator";
+const BUILTIN_DOUYIN_LIVE_MODERATOR_YAML: &str =
+    include_str!("../../../resources/automation-specs/douyin-live-moderator.yaml");
 
 pub(crate) fn automation_executor_kind(spec_json: &serde_json::Value) -> &'static str {
     if spec_json
@@ -919,6 +923,96 @@ impl AppRuntimeService {
         self.get_spec(&spec_id)
     }
 
+    /// Ensure shipped automation specs are present in `automation_specs`.
+    ///
+    /// This is idempotent and preserves user-owned runtime state. If a bundled
+    /// row already exists, only the shipped spec metadata/content is refreshed;
+    /// user_config_values, granted permissions, enabled/status, and run history
+    /// are left untouched.
+    pub fn seed_builtin_specs(&self) -> anyhow::Result<usize> {
+        self.seed_builtin_spec(
+            BUILTIN_DOUYIN_LIVE_MODERATOR_YAML,
+            BUILTIN_DOUYIN_LIVE_MODERATOR_SOURCE_REF,
+        )
+    }
+
+    fn seed_builtin_spec(&self, yaml: &str, source_ref: &str) -> anyhow::Result<usize> {
+        let parsed = parse_humane_v1(yaml)
+            .map_err(|e| anyhow::anyhow!("builtin spec parse error for {}: {}", source_ref, e))?;
+        let spec = &parsed.spec;
+        let spec_json = serde_json::to_string(spec)
+            .map_err(|e| anyhow::anyhow!("builtin spec_json serialise for {}: {}", source_ref, e))?;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+
+        let existing_id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM automation_specs WHERE source = 'builtin' AND source_ref = ?1",
+                rusqlite::params![source_ref],
+                |r| r.get(0),
+            )
+            .ok();
+
+        match existing_id {
+            Some(id) => {
+                conn.execute(
+                    "UPDATE automation_specs
+                     SET name = ?2,
+                         version = ?3,
+                         author = ?4,
+                         description = ?5,
+                         system_prompt = ?6,
+                         spec_format = 'humane-yaml-v1',
+                         spec_yaml = ?7,
+                         spec_json = ?8,
+                         source_version = ?3,
+                         updated_at = ?9
+                     WHERE id = ?1",
+                    rusqlite::params![
+                        id,
+                        spec.name,
+                        spec.version,
+                        spec.author,
+                        spec.description,
+                        spec.system_prompt,
+                        yaml,
+                        spec_json,
+                        now_ms,
+                    ],
+                )
+                .map_err(|e| anyhow::anyhow!("update builtin spec {}: {}", source_ref, e))?;
+                Ok(0)
+            }
+            None => {
+                let spec_id = uuid::Uuid::new_v4().to_string();
+                conn.execute(
+                    "INSERT INTO automation_specs
+                     (id, name, version, author, description, system_prompt,
+                      spec_format, spec_yaml, spec_json,
+                      user_config_values, permissions_granted, permissions_denied,
+                      status, enabled, source, source_ref, source_version,
+                      created_at, updated_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,'humane-yaml-v1',?7,?8,'{}','[]','[]',
+                             'active',1,'builtin',?9,?3,?10,?10)",
+                    rusqlite::params![
+                        spec_id,
+                        spec.name,
+                        spec.version,
+                        spec.author,
+                        spec.description,
+                        spec.system_prompt,
+                        yaml,
+                        spec_json,
+                        source_ref,
+                        now_ms,
+                    ],
+                )
+                .map_err(|e| anyhow::anyhow!("insert builtin spec {}: {}", source_ref, e))?;
+                Ok(1)
+            }
+        }
+    }
+
     /// Read a file from disk and install it as a Humane spec.
     pub async fn import_humane_spec_file(
         &self,
@@ -932,6 +1026,9 @@ impl AppRuntimeService {
 
     /// List all specs ordered by creation time descending.
     pub fn list_specs(&self) -> anyhow::Result<Vec<HumaneSpecRow>> {
+        if let Err(e) = self.seed_builtin_specs() {
+            tracing::warn!("[AppRuntimeService] list_specs: builtin seed failed: {}", e);
+        }
         let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
         let mut stmt = conn
             .prepare(
@@ -1453,6 +1550,20 @@ impl ManagedService for AppRuntimeService {
             *s = ServiceStatus::Starting;
         }
 
+        match self.seed_builtin_specs() {
+            Ok(inserted) => {
+                if inserted > 0 {
+                    tracing::info!(
+                        "[AppRuntimeService] start: seeded {} builtin automation spec(s)",
+                        inserted
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("[AppRuntimeService] start: builtin spec seed failed: {}", e);
+            }
+        }
+
         let spec_ids = match self.load_enabled_spec_ids() {
             Ok(ids) => ids,
             Err(e) => {
@@ -1794,6 +1905,73 @@ mod tests {
         assert_eq!(row.source, "local");
     }
 
+    #[test]
+    fn seed_builtin_specs_installs_douyin_live_moderator() {
+        let conn = open_test_db();
+        let svc = make_service(conn);
+
+        assert_eq!(svc.seed_builtin_specs().unwrap(), 1);
+        let rows = svc.list_specs().unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row.source_ref.as_deref() == Some(BUILTIN_DOUYIN_LIVE_MODERATOR_SOURCE_REF))
+            .expect("builtin Douyin live moderator must be present");
+
+        assert_eq!(row.source, "builtin");
+        assert_eq!(row.name, "Douyin Live Moderator");
+        assert_eq!(row.source_version.as_deref(), Some("0.1.0"));
+        let spec_json: serde_json::Value = serde_json::from_str(&row.spec_json).unwrap();
+        assert_eq!(
+            spec_json["x_uclaw_runtime"]["kind"].as_str(),
+            Some("live_room_moderator")
+        );
+        assert_eq!(spec_json["config"]["platform"].as_str(), Some("douyin"));
+    }
+
+    #[test]
+    fn seed_builtin_specs_is_idempotent_and_preserves_user_state() {
+        let conn = open_test_db();
+        let svc = make_service(conn);
+
+        assert_eq!(svc.seed_builtin_specs().unwrap(), 1);
+        let row = svc
+            .list_specs()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.source_ref.as_deref() == Some(BUILTIN_DOUYIN_LIVE_MODERATOR_SOURCE_REF))
+            .unwrap();
+
+        {
+            let db = svc.db.lock().unwrap();
+            db.execute(
+                "UPDATE automation_specs
+                 SET enabled = 0,
+                     status = 'paused',
+                     user_config_values = ?2,
+                     permissions_granted = ?3
+                 WHERE id = ?1",
+                rusqlite::params![
+                    row.id,
+                    serde_json::json!({ "room_id": "room-a" }).to_string(),
+                    serde_json::json!(["ai_browser"]).to_string(),
+                ],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(svc.seed_builtin_specs().unwrap(), 0);
+        let rows = svc.list_specs().unwrap();
+        let seeded = rows
+            .iter()
+            .filter(|row| row.source_ref.as_deref() == Some(BUILTIN_DOUYIN_LIVE_MODERATOR_SOURCE_REF))
+            .collect::<Vec<_>>();
+        assert_eq!(seeded.len(), 1);
+        assert!(!seeded[0].enabled);
+        assert_eq!(seeded[0].status, "paused");
+        assert_eq!(seeded[0].user_config_values, r#"{"room_id":"room-a"}"#);
+        assert_eq!(seeded[0].permissions_granted, r#"["ai_browser"]"#);
+    }
+
     // ── Test §7.3-2: list_specs_returns_inserted_specs_in_order ────────────
 
     #[tokio::test]
@@ -1809,7 +1987,12 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         svc.install_humane_spec(yaml_b, None).await.unwrap();
 
-        let rows = svc.list_specs().unwrap();
+        let rows = svc
+            .list_specs()
+            .unwrap()
+            .into_iter()
+            .filter(|row| row.source == "local")
+            .collect::<Vec<_>>();
         assert_eq!(rows.len(), 2);
         // DESC order: b first
         assert_eq!(rows[0].name, "spec-b");
