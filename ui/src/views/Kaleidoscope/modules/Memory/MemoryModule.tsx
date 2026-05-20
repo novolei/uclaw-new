@@ -52,6 +52,7 @@ export function MemoryModule(): React.ReactElement {
   const [graphData, setGraphData] = React.useState<MemoryGraphData | null>(null)
   const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>(null)
   const [knowledgeGraph, setKnowledgeGraph] = React.useState<KnowledgeGraph | null>(null)
+  const [knowledgeError, setKnowledgeError] = React.useState(false)
   const [pendingWikiSlug, setPendingWikiSlug] = React.useState<string | undefined>(undefined)
 
   // 一次性加载图数据
@@ -71,13 +72,22 @@ export function MemoryModule(): React.ReactElement {
     return () => { cancelled = true }
   }, [])
 
-  // 懒加载 knowledge graph — 仅在 dual tab 首次激活时请求
+  // 懒加载 knowledge graph — 仅在 dual tab 首次激活时请求。
+  // 失败后设置 knowledgeError=true，避免重试紧循环。
   React.useEffect(() => {
-    if (activeTab !== 'dual' || knowledgeGraph !== null) return
+    if (activeTab !== 'dual' || knowledgeGraph !== null || knowledgeError) return
     let cancelled = false
-    gbrainFullGraph(150).then((g) => { if (!cancelled) setKnowledgeGraph(g) }).catch(() => {})
+    gbrainFullGraph(150)
+      .then((g) => { if (!cancelled) setKnowledgeGraph(g) })
+      .catch(() => { if (!cancelled) setKnowledgeError(true) })
     return () => { cancelled = true }
-  }, [activeTab, knowledgeGraph])
+  }, [activeTab, knowledgeGraph, knowledgeError])
+
+  // 离开 wiki tab 时清除 pendingWikiSlug，防止重新切回时重打开旧页面。
+  // 注意：dual→wiki 同批次切换时，activeTab 已是 'wiki'，此 effect 不会清除。
+  React.useEffect(() => {
+    if (activeTab !== 'wiki' && pendingWikiSlug !== undefined) setPendingWikiSlug(undefined)
+  }, [activeTab, pendingWikiSlug])
 
   // 统计信息
   const subtitle = React.useMemo(() => {
@@ -164,15 +174,22 @@ export function MemoryModule(): React.ReactElement {
           <WikiView initialSlug={pendingWikiSlug} className="h-full w-full rounded-xl overflow-hidden border border-border/40" />
         )}
         {activeTab === 'dual' && (
-          <DualNebulaView
-            memory={graphData}
-            knowledge={knowledgeGraph}
-            onSelect={(id, layer) => {
-              if (layer === 'memory') setSelectedNodeId(id)
-              else { setPendingWikiSlug(id); setActiveTab('wiki') }
-            }}
-            className="h-full w-full rounded-xl overflow-hidden border border-border/40"
-          />
+          <div className="relative h-full w-full">
+            <DualNebulaView
+              memory={graphData}
+              knowledge={knowledgeGraph}
+              onSelect={(id, layer) => {
+                if (layer === 'memory') setSelectedNodeId(id)
+                else { setPendingWikiSlug(id); setActiveTab('wiki') }
+              }}
+              className="h-full w-full rounded-xl overflow-hidden border border-border/40"
+            />
+            {knowledgeError && (
+              <div className="absolute top-2 right-2 text-[10px] px-2 py-1 rounded bg-destructive/10 text-destructive border border-destructive/30">
+                知识层未连接
+              </div>
+            )}
+          </div>
         )}
         {activeTab === 'health' && (
           <MemoryHealthPanel
