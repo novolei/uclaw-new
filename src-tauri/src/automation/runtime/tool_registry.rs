@@ -348,4 +348,31 @@ mod tests {
         assert!(defs.iter().any(|tool| tool.name == "browser_run_script"));
         assert!(defs.iter().any(|tool| tool.name == "gbrain_room_search"));
     }
+
+    #[test]
+    fn capable_registry_registers_real_browser_run_when_session_is_available() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx_mgr = Arc::new(crate::browser::BrowserContextManager::new_for_test(
+            tmp.path().join("profiles"),
+        ));
+        let registry = build_registry_with_capabilities(AutomationToolRegistryDeps {
+            workspace_root: tmp.path().to_path_buf(),
+            spec_permissions: vec![Permission::AiBrowser],
+            gbrain_declared: false,
+            browser_context_manager: Some(ctx_mgr),
+            browser_session_id: Some("automation:spec:activity".to_string()),
+            browser_builtin_root: Some(tmp.path().join("live-room")),
+        });
+
+        let browser_run = registry
+            .get("browser_run")
+            .expect("browser_run should be registered");
+        assert!(
+            browser_run
+                .description()
+                .contains("Validate and run a restricted browser adapter JavaScript file"),
+            "expected real browser_run tool, got schema fallback description: {}",
+            browser_run.description()
+        );
+    }
 }

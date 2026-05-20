@@ -111,6 +111,25 @@ fn browser_run_failure_output(
     )
 }
 
+fn browser_run_success_output(
+    start: Instant,
+    session_id: &str,
+    file: &str,
+    result: serde_json::Value,
+) -> ToolOutput {
+    let duration_ms = start.elapsed().as_millis() as u64;
+    ToolOutput::new(
+        serde_json::json!({
+            "ok": true,
+            "sessionId": session_id,
+            "file": file,
+            "result": result,
+            "durationMs": duration_ms,
+        }),
+        duration_ms,
+    )
+}
+
 impl BrowserRunScriptTool {
     async fn execute_run_script(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
@@ -197,19 +216,15 @@ impl BrowserRunScriptTool {
             },
         };
 
-        let duration = || start.elapsed().as_millis() as u64;
         match ctx
             .evaluate_script_with_params(&tab_id, &source, adapter_params, timeout_ms)
             .await
         {
-            Ok(result) => Ok(ToolOutput::new(
-                serde_json::json!({
-                    "ok": true,
-                    "sessionId": self.session_id,
-                    "file": file,
-                    "result": result,
-                }),
-                duration(),
+            Ok(result) => Ok(browser_run_success_output(
+                start,
+                &self.session_id,
+                file,
+                result,
             )),
             Err(error) => Ok(browser_run_failure_output(
                 start,
@@ -1719,7 +1734,7 @@ impl Tool for RetryWithBrowserAgentTool {
 mod tests {
     use std::time::Instant;
 
-    use super::browser_run_failure_output;
+    use super::{browser_run_failure_output, browser_run_success_output};
 
     #[test]
     fn hover_script_escapes_index() {
@@ -1796,6 +1811,28 @@ mod tests {
         );
         assert_eq!(output.result["file"], serde_json::json!("missing.js"));
         assert_eq!(output.result["error"], serde_json::json!("not found"));
+        assert!(output.result["durationMs"].is_u64());
+    }
+
+    #[test]
+    fn browser_run_success_output_has_required_envelope() {
+        let output = browser_run_success_output(
+            Instant::now(),
+            "automation:spec:activity",
+            "douyin/scan_comments.js",
+            serde_json::json!({"comments": []}),
+        );
+
+        assert_eq!(output.result["ok"], serde_json::json!(true));
+        assert_eq!(
+            output.result["sessionId"],
+            serde_json::json!("automation:spec:activity")
+        );
+        assert_eq!(
+            output.result["file"],
+            serde_json::json!("douyin/scan_comments.js")
+        );
+        assert_eq!(output.result["result"], serde_json::json!({"comments": []}));
         assert!(output.result["durationMs"].is_u64());
     }
 }

@@ -607,6 +607,18 @@ impl BrowserContext {
         Ok(s)
     }
 
+    pub(crate) fn browser_run_invocation_script(
+        source: &str,
+        params: &serde_json::Value,
+    ) -> Result<String> {
+        let source = source.trim().trim_end_matches(';');
+        let params_json = serde_json::to_string(params)
+            .map_err(|e| anyhow!("serialize browser_run params: {}", e))?;
+        Ok(format!(
+            "(async () => {{ const __uclawParams = {params_json}; const __uclawUserFn = {source}; return await __uclawUserFn(__uclawParams); }})()"
+        ))
+    }
+
     /// Execute a Halo-compatible browser adapter function with JSON params.
     pub async fn evaluate_script_with_params(
         &self,
@@ -616,12 +628,7 @@ impl BrowserContext {
         timeout_ms: u64,
     ) -> Result<serde_json::Value> {
         let page = self.get_page(tab_id).await?;
-        let source = source.trim().trim_end_matches(';');
-        let params_json = serde_json::to_string(&params)
-            .map_err(|e| anyhow!("serialize browser_run params: {}", e))?;
-        let script = format!(
-            "(async () => {{ const __uclawParams = {params_json}; const __uclawUserFn = {source}; return await __uclawUserFn(__uclawParams); }})()"
-        );
+        let script = Self::browser_run_invocation_script(source, &params)?;
         let val = tokio::time::timeout(
             Duration::from_millis(timeout_ms),
             page.evaluate(script),
@@ -1011,5 +1018,21 @@ mod tests {
         assert_eq!(DevicePreset::Desktop.viewport_width(), 1280);
         assert_eq!(DevicePreset::Desktop.viewport_height(), 800);
         assert!(DevicePreset::Desktop.user_agent().contains("Macintosh"));
+    }
+
+    #[test]
+    fn browser_run_invocation_script_injects_params_into_adapter_function() {
+        let script = BrowserContext::browser_run_invocation_script(
+            "(async (params) => ({ room: params.roomId, nested: params.options.enabled }));",
+            &serde_json::json!({
+                "roomId": "douyin-room-1",
+                "options": { "enabled": true }
+            }),
+        )
+        .unwrap();
+
+        assert!(script.contains("const __uclawParams = {\"options\":{\"enabled\":true},\"roomId\":\"douyin-room-1\"};"));
+        assert!(script.contains("const __uclawUserFn = (async (params) =>"));
+        assert!(script.contains("return await __uclawUserFn(__uclawParams);"));
     }
 }
