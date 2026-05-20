@@ -282,6 +282,9 @@ pub struct AppState {
     /// App launch instant — used to compute uptime_secs in diagnostics.
     pub boot_time: std::time::Instant,
 
+    /// Knowledge ingestion service — drives ingest_files / ingest_url Tauri commands.
+    pub ingestion: Arc<crate::ingestion::IngestionService>,
+
     /// gbrain MCP server ID stored after seed_bundled_gbrain succeeds.
     /// "gbrain" when seeded; None when bun/gbrain binaries are missing.
     pub gbrain_mcp_id: Arc<std::sync::Mutex<Option<String>>>,
@@ -721,6 +724,13 @@ impl AppState {
             None
         };
 
+        // Knowledge ingestion service — constructed after provider_service and mcp_manager
+        // are ready. Drives the ingest_* Tauri commands added in Task 8.
+        let ingestion = Arc::new(crate::ingestion::IngestionService::new(
+            provider_service.clone(),
+            mcp_manager.clone(),
+        ));
+
         tracing::info!("Application state initialized successfully (phased boot)");
 
         Ok(Self {
@@ -780,6 +790,7 @@ impl AppState {
             proactive_service: Arc::new(tokio::sync::RwLock::new(None)),
             symphony_service: Arc::new(tokio::sync::RwLock::new(None)),
             boot_time: std::time::Instant::now(),
+            ingestion,
             gbrain_mcp_id: Arc::new(std::sync::Mutex::new(None)),
             gbrain_init_status: Arc::new(std::sync::Mutex::new(
                 crate::mcp::GbrainInitStatus::default(),
