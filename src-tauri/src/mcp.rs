@@ -1048,15 +1048,6 @@ impl GbrainCliTransport {
         }
     }
 
-    fn is_bundled_gbrain(config: &McpServerConfig) -> bool {
-        config.id == "gbrain"
-            && config.transport_type == TransportType::Stdio
-            && config.args.last().map(|s| s.as_str()) == Some("serve")
-            && config.args.iter().any(|arg| {
-                arg.ends_with("gbrain/src/cli.ts") || arg.ends_with("gbrain-source/src/cli.ts")
-            })
-    }
-
     fn tools() -> Vec<McpRemoteTool> {
         vec![
             Self::tool(
@@ -1161,7 +1152,7 @@ impl GbrainCliTransport {
     }
 
     async fn call_cli(&self, tool: &str, arguments: serde_json::Value) -> Result<String, McpError> {
-        self.cleanup_stale_pglite_lock();
+        cleanup_stale_pglite_lock(&self.env);
 
         let mut argv = self.base_args.clone();
         let mut requested_slug: Option<String> = None;
@@ -1301,40 +1292,6 @@ impl GbrainCliTransport {
             .collect()
     }
 
-    fn cleanup_stale_pglite_lock(&self) {
-        let Some(home) = self.env.get("GBRAIN_HOME") else {
-            return;
-        };
-        let lock_dir = std::path::Path::new(home)
-            .join(".gbrain")
-            .join("brain.pglite")
-            .join(".gbrain-lock");
-        let lock_file = lock_dir.join("lock");
-        let Ok(raw) = std::fs::read_to_string(&lock_file) else {
-            return;
-        };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-            return;
-        };
-        let Some(pid) = v.get("pid").and_then(|p| p.as_i64()) else {
-            return;
-        };
-        if !pid_is_alive(pid) {
-            if let Err(e) = std::fs::remove_dir_all(&lock_dir) {
-                tracing::warn!(
-                    lock = %lock_dir.display(),
-                    error = %e,
-                    "Failed to remove stale gbrain PGLite lock"
-                );
-            } else {
-                tracing::warn!(
-                    pid,
-                    lock = %lock_dir.display(),
-                    "Removed stale gbrain PGLite lock for dead process"
-                );
-            }
-        }
-    }
 }
 
 #[async_trait]
@@ -1470,6 +1427,37 @@ fn pid_is_alive(pid: i64) -> bool {
         .output()
         .map(|out| out.status.success() && !String::from_utf8_lossy(&out.stdout).trim().is_empty())
         .unwrap_or(false)
+}
+
+fn is_bundled_gbrain(config: &McpServerConfig) -> bool {
+    config.id == "gbrain"
+        && config.transport_type == TransportType::Stdio
+        && config.args.last().map(|s| s.as_str()) == Some("serve")
+        && config.args.iter().any(|arg| {
+            arg.ends_with("gbrain/src/cli.ts") || arg.ends_with("gbrain-source/src/cli.ts")
+        })
+}
+
+/// 清掉 gbrain PGLite 的崩溃残留单写锁(锁文件里的 PID 已不存活时删除)。
+/// 在 spawn 持久 `gbrain serve` 前调用,避免上次 serve 崩溃留下的锁让新 serve
+/// 卡在 "Timed out waiting for PGLite lock"。
+fn cleanup_stale_pglite_lock(env: &HashMap<String, String>) {
+    let Some(home) = env.get("GBRAIN_HOME") else { return; };
+    let lock_dir = std::path::Path::new(home)
+        .join(".gbrain")
+        .join("brain.pglite")
+        .join(".gbrain-lock");
+    let lock_file = lock_dir.join("lock");
+    let Ok(raw) = std::fs::read_to_string(&lock_file) else { return; };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else { return; };
+    let Some(pid) = v.get("pid").and_then(|p| p.as_i64()) else { return; };
+    if !pid_is_alive(pid) {
+        if let Err(e) = std::fs::remove_dir_all(&lock_dir) {
+            tracing::warn!(lock = %lock_dir.display(), error = %e, "Failed to remove stale gbrain PGLite lock");
+        } else {
+            tracing::warn!(pid, lock = %lock_dir.display(), "Removed stale gbrain PGLite lock for dead process");
+        }
+    }
 }
 
 // ─── MCP Client (per-server connection) ─────────────────────────────────
@@ -1960,7 +1948,7 @@ impl McpManager {
                 );
                 return Ok(true);
             }
-            if GbrainCliTransport::is_bundled_gbrain(&state.config) {
+            if is_bundled_gbrain(&state.config) {
                 let enabled = state.config.enabled;
                 let auto_approve = state.config.auto_approve;
                 let mut desired_config = bundled_gbrain_config(bun_path, entry_path, gbrain_home);
@@ -2531,7 +2519,7 @@ pub(crate) async fn connect_server_shared(
     let io_result: Result<McpConnection, McpError> = async {
         let transport: Arc<dyn McpTransport> = match config.transport_type {
             TransportType::Stdio => {
-                if GbrainCliTransport::is_bundled_gbrain(&config) {
+                if is_bundled_gbrain(&config) {
                     tracing::warn!(
                         server_id = %id,
                         "Using bundled gbrain CLI-backed MCP transport instead of Bun stdio"
