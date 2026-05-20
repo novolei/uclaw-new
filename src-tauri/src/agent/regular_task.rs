@@ -119,6 +119,12 @@ impl SessionTask for RegularTask {
         // benefited from the constraint.
         ctx.force_text = false;
 
+        // M1-T2d (R-6) — install the task's cancellation token into the
+        // ReasoningContext so the agent loop can observe it between
+        // stages. Same token the scheduler holds — preemption flows in
+        // exactly once through `TaskScheduler::abort_all_tasks`.
+        ctx.cancellation_token = Some(token.clone());
+
         let outcome = run_agentic_loop(
             self.inputs.delegate.as_ref(),
             &mut ctx,
@@ -751,5 +757,105 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ── M1-T2d — R-6 cancellation token observed between stages ─────
+
+    /// LoopDelegate that cancels the context's token from inside `call_llm`.
+    /// Used to verify the agentic_loop observes cancellation after the
+    /// LLM call returns (the R-6 HIGH gap from the audit spec).
+    struct CancelFromInsideCallLlmDelegate {
+        token: CancellationToken,
+    }
+
+    #[async_trait]
+    impl LoopDelegate for CancelFromInsideCallLlmDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(
+            &self,
+            _ctx: &mut ReasoningContext,
+            _iter: usize,
+        ) -> Option<LoopOutcome> {
+            None
+        }
+        async fn call_llm(
+            &self,
+            _ctx: &mut ReasoningContext,
+            _iter: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            // Simulate a cancel signal that arrives during the LLM call.
+            self.token.cancel();
+            Ok(RespondOutput::Text {
+                text: "interrupted".into(),
+                thinking: None,
+                thinking_signature: None,
+                metadata: ResponseMetadata {
+                    model: "test".into(),
+                    finish_reason: None,
+                    usage: None,
+                },
+            })
+        }
+        async fn handle_text_response(
+            &self,
+            _t: &str,
+            _meta: ResponseMetadata,
+            _c: &mut ReasoningContext,
+        ) -> TextAction {
+            // Should NEVER be called — the post-call_llm cancellation check
+            // bails out of the loop before handle_text_response runs.
+            panic!(
+                "handle_text_response should not have been reached — R-6                  cancellation check should have fired"
+            );
+        }
+        async fn execute_tool_calls(
+            &self,
+            _: Vec<ToolCall>,
+            _: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            Ok(None)
+        }
+        async fn on_usage(
+            &self,
+            _: &crate::agent::types::TokenUsage,
+            _: &ReasoningContext,
+        ) {
+        }
+        async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}
+        async fn after_iteration(&self, _: usize) {}
+    }
+
+    #[tokio::test]
+    async fn r6_cancel_during_llm_call_short_circuits_at_next_check() {
+        let ctx = make_ctx(false);
+        let token = CancellationToken::new();
+        let task = Arc::new(RegularTask::new(
+            task_spec("r6-mid"),
+            RegularTaskInputs {
+                delegate: Arc::new(CancelFromInsideCallLlmDelegate {
+                    token: token.clone(),
+                }),
+                reason_ctx: ctx,
+                config: AgenticLoopConfig::default(),
+            },
+        ));
+        let events = task.run(token).await;
+        // Started + Finished{Cancelled}; no ModelTurn / no Warning.
+        assert_eq!(
+            events.len(),
+            2,
+            "expected exactly Started + Finished, got {events:?}"
+        );
+        match &events[1] {
+            TaskEvent::TaskFinished {
+                verdict: TaskVerdict::Cancelled { reason },
+                ..
+            } => {
+                assert!(reason.is_some());
+            }
+            other => panic!("expected TaskFinished/Cancelled, got {other:?}"),
+        }
     }
 }
