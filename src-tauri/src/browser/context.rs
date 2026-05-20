@@ -509,6 +509,36 @@ impl BrowserContext {
         Ok(())
     }
 
+    pub async fn mouse_event_at(
+        &self,
+        tab_id: &str,
+        event_type: DispatchMouseEventType,
+        x: f64,
+        y: f64,
+    ) -> Result<()> {
+        let page = self.get_page(tab_id).await?;
+        let (button, buttons, click_count) = match event_type {
+            DispatchMouseEventType::MousePressed => (MouseButton::Left, 1, 1),
+            DispatchMouseEventType::MouseReleased => (MouseButton::Left, 0, 1),
+            DispatchMouseEventType::MouseMoved => (MouseButton::None, 1, 0),
+            _ => (MouseButton::None, 0, 0),
+        };
+        let event = DispatchMouseEventParams::builder()
+            .r#type(event_type)
+            .x(x)
+            .y(y)
+            .button(button)
+            .buttons(buttons)
+            .click_count(click_count)
+            .build()
+            .map_err(|e| anyhow!("mouse_event params: {e}"))?;
+        page.execute(event)
+            .await
+            .map_err(|e| anyhow!("mouse_event: {e}"))?;
+        self.invalidate_dom_cache(tab_id).await;
+        Ok(())
+    }
+
     pub async fn type_text(&self, tab_id: &str, index: u32, text: &str) -> Result<()> {
         let selector = Self::index_selector(index);
         let page = self.get_page(tab_id).await?;

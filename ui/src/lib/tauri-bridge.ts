@@ -1776,6 +1776,17 @@ export const browserUICloseTab = (sessionId: string, tabId: string): Promise<voi
 export const browserUIClick = (sessionId: string, tabId: string, x: number, y: number): Promise<void> =>
   invoke<void>('browser_ui_click', { sessionId, tabId, x, y })
 
+export type BrowserUIMouseEventType = 'mousePressed' | 'mouseMoved' | 'mouseReleased'
+
+export const browserUIMouseEvent = (
+  sessionId: string,
+  tabId: string,
+  eventType: BrowserUIMouseEventType,
+  x: number,
+  y: number,
+): Promise<void> =>
+  invoke<void>('browser_ui_mouse_event', { sessionId, tabId, eventType, x, y })
+
 export interface BrowserLoginCompletionPayload {
   specId: string
   label: string
@@ -1799,6 +1810,14 @@ export const browserUICompleteLogin = (
   url: string,
 ): Promise<BrowserLoginCompletionProbe> =>
   invoke<BrowserLoginCompletionProbe>('browser_ui_complete_login', { sessionId, tabId, specId, label, url })
+
+export const browserWebviewCompleteLogin = (
+  webviewLabel: string,
+  specId: string,
+  label: string,
+  url: string,
+): Promise<BrowserLoginCompletionProbe> =>
+  invoke<BrowserLoginCompletionProbe>('browser_webview_complete_login', { webviewLabel, specId, label, url })
 
 export const browserGetDOMState = (sessionId: string, tabId: string): Promise<DOMStateResponse> =>
   invoke<DOMStateResponse>('browser_get_dom_state', { sessionId, tabId })

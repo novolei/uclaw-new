@@ -7,7 +7,7 @@ import {
   browserDOMOverlayVisibleAtom,
 } from '@/atoms/browser-atoms'
 import { BrowserDOMOverlay } from './BrowserDOMOverlay'
-import { browserUIClick } from '@/lib/tauri-bridge'
+import { browserUIMouseEvent, type BrowserUIMouseEventType } from '@/lib/tauri-bridge'
 
 interface BrowserScreencastViewProps {
   sessionId: string
@@ -20,6 +20,16 @@ interface CanvasPointMappingInput {
   canvasRect: Pick<DOMRect, 'left' | 'top' | 'width' | 'height'>
   pageWidth: number
   pageHeight: number
+}
+
+interface CanvasPointerMappingInput extends CanvasPointMappingInput {
+  eventType: BrowserUIMouseEventType
+}
+
+interface BrowserMouseEventPayload {
+  eventType: BrowserUIMouseEventType
+  x: number
+  y: number
 }
 
 export function mapCanvasPointToPagePoint(input: CanvasPointMappingInput): { x: number; y: number } | null {
@@ -46,12 +56,19 @@ export function mapCanvasPointToPagePoint(input: CanvasPointMappingInput): { x: 
   }
 }
 
+export function mapCanvasPointerToBrowserMouseEvent(input: CanvasPointerMappingInput): BrowserMouseEventPayload | null {
+  const point = mapCanvasPointToPagePoint(input)
+  return point ? { eventType: input.eventType, ...point } : null
+}
+
 export function BrowserScreencastView({ sessionId, tabId }: BrowserScreencastViewProps): React.ReactElement {
   const frameMap = useAtomValue(browserScreencastFrameAtom)
   const domMap = useAtomValue(browserDOMStateAtom)
   const overlayVisible = useAtomValue(browserDOMOverlayVisibleAtom)
 
   const canvasRef = React.useRef<HTMLCanvasElement>(null)
+  const isPointerDownRef = React.useRef(false)
+  const mouseEventQueueRef = React.useRef<Promise<void>>(Promise.resolve())
   const [displaySize, setDisplaySize] = React.useState({ w: 0, h: 0 })
   const lastDimsRef = React.useRef({ w: 0, h: 0 })
 
@@ -95,21 +112,66 @@ export function BrowserScreencastView({ sessionId, tabId }: BrowserScreencastVie
     return () => { cancelled = true }
   }, [frame])
 
-  const handleCanvasClick = React.useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
+  const enqueueMouseEvent = React.useCallback((payload: BrowserMouseEventPayload) => {
+    if (!tabId) return
+    mouseEventQueueRef.current = mouseEventQueueRef.current
+      .catch(() => undefined)
+      .then(() => browserUIMouseEvent(sessionId, tabId, payload.eventType, payload.x, payload.y))
+      .catch(console.error)
+  }, [sessionId, tabId])
+
+  const mapPointerEvent = React.useCallback((
+    event: React.PointerEvent<HTMLCanvasElement>,
+    eventType: BrowserUIMouseEventType,
+  ): BrowserMouseEventPayload | null => {
     const canvas = canvasRef.current
     if (!canvas || !frame || !tabId) return
-
-    const point = mapCanvasPointToPagePoint({
+    return mapCanvasPointerToBrowserMouseEvent({
+      eventType,
       clientX: event.clientX,
       clientY: event.clientY,
       canvasRect: canvas.getBoundingClientRect(),
       pageWidth: frame.pageWidth,
       pageHeight: frame.pageHeight,
     })
-    if (!point) return
+  }, [frame, tabId])
 
-    void browserUIClick(sessionId, tabId, point.x, point.y)
-  }, [frame, sessionId, tabId])
+  const handlePointerDown = React.useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (event.button !== 0) return
+    const canvas = canvasRef.current
+    const payload = mapPointerEvent(event, 'mousePressed')
+    if (!payload) return
+    event.preventDefault()
+    isPointerDownRef.current = true
+    canvas?.setPointerCapture?.(event.pointerId)
+    enqueueMouseEvent(payload)
+  }, [enqueueMouseEvent, mapPointerEvent])
+
+  const handlePointerMove = React.useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isPointerDownRef.current) return
+    const payload = mapPointerEvent(event, 'mouseMoved')
+    if (!payload) return
+    event.preventDefault()
+    enqueueMouseEvent(payload)
+  }, [enqueueMouseEvent, mapPointerEvent])
+
+  const handlePointerUp = React.useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isPointerDownRef.current) return
+    const canvas = canvasRef.current
+    const payload = mapPointerEvent(event, 'mouseReleased')
+    isPointerDownRef.current = false
+    canvas?.releasePointerCapture?.(event.pointerId)
+    if (!payload) return
+    event.preventDefault()
+    enqueueMouseEvent(payload)
+  }, [enqueueMouseEvent, mapPointerEvent])
+
+  const handlePointerLeave = React.useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isPointerDownRef.current) return
+    const payload = mapPointerEvent(event, 'mouseReleased')
+    isPointerDownRef.current = false
+    if (payload) enqueueMouseEvent(payload)
+  }, [enqueueMouseEvent, mapPointerEvent])
 
   if (!frame) {
     return (
@@ -125,8 +187,12 @@ export function BrowserScreencastView({ sessionId, tabId }: BrowserScreencastVie
       <canvas
         ref={canvasRef}
         className="w-full h-full object-contain"
-        style={{ display: 'block', cursor: tabId ? 'pointer' : 'default' }}
-        onClick={handleCanvasClick}
+        style={{ display: 'block', cursor: tabId ? 'default' : 'not-allowed', touchAction: 'none' }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerLeave}
+        onPointerLeave={handlePointerLeave}
       />
       {overlayVisible && domEntry && displaySize.w > 0 && (
         <BrowserDOMOverlay

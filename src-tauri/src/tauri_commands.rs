@@ -10,6 +10,7 @@ use crate::llm;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
+use tauri::Manager;
 
 // ─── Files Rail Commands (re-exported from files_rail::commands) ──────────────
 
@@ -10907,6 +10908,33 @@ pub async fn browser_ui_click(
     ctx.click_at(&tab_id, x, y).await.map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn browser_ui_mouse_event(
+    session_id: String,
+    tab_id: String,
+    event_type: String,
+    x: f64,
+    y: f64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let event_type = parse_browser_mouse_event_type(&event_type)?;
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    ctx.mouse_event_at(&tab_id, event_type, x, y).await.map_err(|e| e.to_string())
+}
+
+fn parse_browser_mouse_event_type(
+    value: &str,
+) -> Result<chromiumoxide::cdp::browser_protocol::input::DispatchMouseEventType, String> {
+    use chromiumoxide::cdp::browser_protocol::input::DispatchMouseEventType;
+    match value {
+        "mousePressed" => Ok(DispatchMouseEventType::MousePressed),
+        "mouseMoved" => Ok(DispatchMouseEventType::MouseMoved),
+        "mouseReleased" => Ok(DispatchMouseEventType::MouseReleased),
+        other => Err(format!("unsupported mouse event type: {other}")),
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserLoginCompletionPayload {
@@ -10951,6 +10979,76 @@ pub async fn browser_ui_complete_login(
 
     let state_snapshot = ctx.capture_storage_state(&tab_id, &url).await
         .map_err(|e| e.to_string())?;
+    complete_browser_login_from_storage_state(spec_id, label, url, state_snapshot, app_handle, state).await
+}
+
+#[tauri::command]
+pub async fn browser_webview_complete_login(
+    webview_label: String,
+    spec_id: String,
+    label: String,
+    url: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<BrowserLoginCompletionProbe, String> {
+    let parsed_url = url::Url::parse(&url).map_err(|e| e.to_string())?;
+    let webview = app_handle
+        .get_webview_window(&webview_label)
+        .ok_or_else(|| format!("login webview not found: {webview_label}"))?;
+    let cookies = webview.cookies_for_url(parsed_url.clone()).map_err(|e| e.to_string())?;
+    let cookie_infos: Vec<crate::browser::context::CookieInfo> = cookies
+        .iter()
+        .map(|cookie| crate::browser::context::CookieInfo {
+            name: cookie.name().to_string(),
+            value: cookie.value().to_string(),
+            domain: cookie
+                .domain()
+                .map(|domain| domain.to_string())
+                .unwrap_or_else(|| parsed_url.host_str().unwrap_or_default().to_string()),
+            path: cookie.path().unwrap_or("/").to_string(),
+            secure: cookie.secure().unwrap_or(parsed_url.scheme() == "https"),
+            http_only: cookie.http_only().unwrap_or(false),
+            same_site: cookie.same_site().map(|same_site| format!("{same_site:?}")),
+            expires: 0.0,
+        })
+        .collect();
+
+    if !is_likely_authenticated_cookie(&url, &cookie_infos) {
+        return Ok(BrowserLoginCompletionProbe {
+            completed: false,
+            payload: None,
+            message: Some("等待站点写入登录态...".to_string()),
+        });
+    }
+
+    let state_snapshot = crate::browser::identity::PlaywrightStorageState {
+        cookies: cookie_infos
+            .into_iter()
+            .filter(|cookie| !cookie.name.trim().is_empty())
+            .map(|cookie| crate::browser::identity::PlaywrightCookie {
+                name: cookie.name,
+                value: cookie.value,
+                domain: cookie.domain,
+                path: cookie.path,
+                expires: None,
+                http_only: cookie.http_only,
+                secure: cookie.secure,
+                same_site: cookie.same_site,
+            })
+            .collect(),
+        origins: Vec::new(),
+    };
+    complete_browser_login_from_storage_state(spec_id, label, url, state_snapshot, app_handle, state).await
+}
+
+async fn complete_browser_login_from_storage_state(
+    spec_id: String,
+    label: String,
+    url: String,
+    state_snapshot: crate::browser::identity::PlaywrightStorageState,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<BrowserLoginCompletionProbe, String> {
     let broker = crate::browser::identity::BrowserAuthProfileBroker::system_default()
         .map_err(|e| e.to_string())?;
     let origin_pattern = origin_pattern_for_url(&url).unwrap_or_else(|| url.clone());
@@ -11047,6 +11145,7 @@ fn is_likely_authenticated_cookie(url: &str, cookies: &[crate::browser::context:
 #[cfg(test)]
 mod browser_login_completion_tests {
     use super::*;
+    use chromiumoxide::cdp::browser_protocol::input::DispatchMouseEventType;
 
     fn cookie(name: &str) -> crate::browser::context::CookieInfo {
         crate::browser::context::CookieInfo {
@@ -11075,6 +11174,15 @@ mod browser_login_completion_tests {
             "https://www.bilibili.com",
             &[cookie("buvid3")]
         ));
+    }
+
+    #[test]
+    fn parses_supported_browser_mouse_event_types() {
+        assert_eq!(
+            parse_browser_mouse_event_type("mouseMoved").unwrap(),
+            DispatchMouseEventType::MouseMoved,
+        );
+        assert!(parse_browser_mouse_event_type("dragStart").is_err());
     }
 }
 

@@ -1,11 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { openAutomationLoginWindow } from './automation-login-window'
 
 const mocks = vi.hoisted(() => {
   const getByLabel = vi.fn()
   const focus = vi.fn()
   const WebviewWindowCtor = vi.fn()
-  return { getByLabel, focus, WebviewWindowCtor }
+  const browserWebviewCompleteLogin = vi.fn()
+  return { getByLabel, focus, WebviewWindowCtor, browserWebviewCompleteLogin }
 })
 
 vi.mock('@tauri-apps/api/webviewWindow', () => ({
@@ -14,14 +15,25 @@ vi.mock('@tauri-apps/api/webviewWindow', () => ({
   }),
 }))
 
+vi.mock('./tauri-bridge', () => ({
+  browserWebviewCompleteLogin: mocks.browserWebviewCompleteLogin,
+}))
+
 describe('openAutomationLoginWindow', () => {
   beforeEach(() => {
+    vi.useFakeTimers()
     vi.clearAllMocks()
     mocks.getByLabel.mockResolvedValue(null)
     mocks.focus.mockResolvedValue(undefined)
+    mocks.browserWebviewCompleteLogin.mockResolvedValue({ completed: false })
   })
 
-  it('creates a dedicated login window routed to the browser shell with encoded target url', async () => {
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+  })
+
+  it('creates a dedicated login window that opens the target site directly', async () => {
     await openAutomationLoginWindow({
       specId: 'builtin://automation-specs/bilibili-comment-auto-reply',
       label: 'Bilibili',
@@ -32,13 +44,10 @@ describe('openAutomationLoginWindow', () => {
       expect.stringMatching(/^automation-login-/),
       expect.objectContaining({
         title: 'Bilibili 登录',
-        url: expect.stringContaining('/?uclawWindow=automation-login-browser'),
+        url: 'https://www.bilibili.com',
         width: 1180,
         height: 820,
       }),
-    )
-    expect(mocks.WebviewWindowCtor.mock.calls[0][1].url).toContain(
-      'targetUrl=https%3A%2F%2Fwww.bilibili.com',
     )
   })
 

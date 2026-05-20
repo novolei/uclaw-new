@@ -1,4 +1,5 @@
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
+import { browserWebviewCompleteLogin } from './tauri-bridge'
 
 export interface AutomationLoginWindowRequest {
   specId: string
@@ -15,6 +16,39 @@ function safeWindowSegment(value: string): string {
   return cleaned || 'login'
 }
 
+function startLoginCompletionPolling({
+  windowLabel,
+  specId,
+  label,
+  url,
+}: AutomationLoginWindowRequest & { windowLabel: string }): void {
+  let inFlight = false
+  let attempts = 0
+  const maxAttempts = 300
+  const timer = window.setInterval(() => {
+    if (inFlight) return
+    attempts += 1
+    if (attempts > maxAttempts) {
+      window.clearInterval(timer)
+      return
+    }
+    inFlight = true
+    browserWebviewCompleteLogin(windowLabel, specId, label, url)
+      .then(async (result) => {
+        if (!result.completed) return
+        window.clearInterval(timer)
+        const loginWindow = await WebviewWindow.getByLabel(windowLabel)
+        await loginWindow?.close()
+      })
+      .catch(() => {
+        // The login window may still be starting; keep polling until timeout.
+      })
+      .finally(() => {
+        inFlight = false
+      })
+  }, 2_000)
+}
+
 export async function openAutomationLoginWindow({
   specId,
   label,
@@ -24,19 +58,13 @@ export async function openAutomationLoginWindow({
   const existing = await WebviewWindow.getByLabel(windowLabel)
   if (existing) {
     await existing.focus()
+    startLoginCompletionPolling({ windowLabel, specId, label, url })
     return
   }
 
-  const params = new URLSearchParams({
-    uclawWindow: 'automation-login-browser',
-    specId,
-    label,
-    targetUrl: url,
-  })
-
   new WebviewWindow(windowLabel, {
     title: `${label} 登录`,
-    url: `/?${params.toString()}`,
+    url,
     width: 1180,
     height: 820,
     minWidth: 860,
@@ -44,5 +72,7 @@ export async function openAutomationLoginWindow({
     resizable: true,
     center: true,
     focus: true,
+    acceptFirstMouse: true,
   })
+  startLoginCompletionPolling({ windowLabel, specId, label, url })
 }
