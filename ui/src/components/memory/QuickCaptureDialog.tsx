@@ -7,7 +7,7 @@
  */
 import * as React from 'react'
 import { useAtom } from 'jotai'
-import { Mic, ClipboardPaste, Loader2, Zap, FileText } from 'lucide-react'
+import { Mic, ClipboardPaste, Loader2, Zap, FileText, Inbox } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   Dialog,
@@ -23,6 +23,7 @@ import {
   memoryGraphQuickCapture,
   memoryEntityPageCreate,
 } from '@/lib/tauri-bridge'
+import { FeedPanel } from './FeedPanel'
 
 // Memory OS Foundation Phase 3 — capture mode selector.
 //
@@ -30,7 +31,7 @@ import {
 // (Episode subtype). "entity_page" path goes through the Phase 1
 // memory_entity_page_create command (creates an EntityPage node with
 // compiled_truth + auto-link side-effects via Phase 2 hook).
-type CaptureMode = 'fragment' | 'entity_page'
+type CaptureMode = 'fragment' | 'entity_page' | 'feed'
 
 // EntityPage subkinds available in the UI. Mirrors the canonical set
 // in `memory_graph::wiki_synth` so the wiki index can group correctly.
@@ -242,7 +243,23 @@ export function QuickCaptureDialog(): React.ReactElement | null {
               <FileText className="size-3" />
               EntityPage
             </button>
+            <button
+              type="button"
+              onClick={() => setMode('feed')}
+              className={cn(
+                'flex-1 px-3 py-1.5 text-xs rounded-sm transition-colors flex items-center justify-center gap-1.5',
+                mode === 'feed'
+                  ? 'bg-popover text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              <Inbox className="size-3" />
+              喂资料
+            </button>
           </div>
+
+          {/* ── Feed mode body ───────────────────────────────────── */}
+          {mode === 'feed' && <FeedPanel onClose={() => setOpen(false)} />}
 
           {/* ── EntityPage fields (only in entity_page mode) ────── */}
           {mode === 'entity_page' && (
@@ -288,102 +305,107 @@ export function QuickCaptureDialog(): React.ReactElement | null {
             </div>
           )}
 
-          {/* ── Textarea 区域 ──────────────────────────────────── */}
-          <div className="relative">
-            <textarea
-              ref={textareaRef}
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={
-                mode === 'entity_page'
-                  ? 'compiled_truth (markdown — initial synthesis for this entity)…'
-                  : '输入或粘贴你想记住的内容…'
-              }
-              rows={4}
-              className={cn(
-                'w-full resize-none rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-sm',
-                'placeholder:text-muted-foreground/60',
-                'focus:outline-none focus:ring-2 focus:ring-pink-500/40 focus:border-pink-500/50',
-                'transition-colors',
-              )}
-            />
-            {/* 右下角麦克风按钮 */}
-            <button
-              type="button"
-              onClick={handleVoiceSwitch}
-              title="切换到语音记忆"
-              className={cn(
-                'absolute right-2 bottom-2 p-1.5 rounded-md',
-                'text-muted-foreground/60 hover:text-pink-500 hover:bg-pink-500/10',
-                'transition-colors',
-              )}
-            >
-              <Mic className="h-4 w-4" />
-            </button>
-          </div>
-
-          {/* ── 快速标签 ──────────────────────────────────────── */}
-          <div className="space-y-1.5">
-            <p className="text-xs text-muted-foreground/70 font-medium">快速标签</p>
-            <div className="flex flex-wrap gap-1.5">
-              {FRAGMENT_SUBTYPES.map((tag) => (
-                <button
-                  key={tag.id}
-                  type="button"
-                  onClick={() => toggleTag(tag.id)}
+          {/* ── Textarea / tags / save (hidden in feed mode) ──── */}
+          {mode !== 'feed' && (
+            <>
+              {/* ── Textarea 区域 ──────────────────────────────────── */}
+              <div className="relative">
+                <textarea
+                  ref={textareaRef}
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder={
+                    mode === 'entity_page'
+                      ? 'compiled_truth (markdown — initial synthesis for this entity)…'
+                      : '输入或粘贴你想记住的内容…'
+                  }
+                  rows={4}
                   className={cn(
-                    'inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-all',
-                    'border',
-                    selectedTag === tag.id
-                      ? 'border-pink-500/50 bg-pink-500/15 text-pink-600 dark:text-pink-400'
-                      : 'border-border/50 bg-muted/40 text-muted-foreground hover:border-border hover:bg-muted/70',
+                    'w-full resize-none rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-sm',
+                    'placeholder:text-muted-foreground/60',
+                    'focus:outline-none focus:ring-2 focus:ring-pink-500/40 focus:border-pink-500/50',
+                    'transition-colors',
+                  )}
+                />
+                {/* 右下角麦克风按钮 */}
+                <button
+                  type="button"
+                  onClick={handleVoiceSwitch}
+                  title="切换到语音记忆"
+                  className={cn(
+                    'absolute right-2 bottom-2 p-1.5 rounded-md',
+                    'text-muted-foreground/60 hover:text-pink-500 hover:bg-pink-500/10',
+                    'transition-colors',
                   )}
                 >
-                  <span>{tag.icon}</span>
-                  <span>{tag.label}</span>
+                  <Mic className="h-4 w-4" />
                 </button>
-              ))}
-            </div>
-          </div>
+              </div>
 
-          {/* ── 粘贴剪贴板按钮 ────────────────────────────────── */}
-          {clipboardText && (
-            <button
-              type="button"
-              onClick={handlePasteClipboard}
-              className={cn(
-                'flex items-center gap-2 w-full rounded-lg px-3 py-2 text-xs text-left',
-                'border border-dashed border-border/60 bg-muted/20',
-                'text-muted-foreground hover:bg-muted/40 hover:border-border',
-                'transition-colors',
+              {/* ── 快速标签 ──────────────────────────────────────── */}
+              <div className="space-y-1.5">
+                <p className="text-xs text-muted-foreground/70 font-medium">快速标签</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {FRAGMENT_SUBTYPES.map((tag) => (
+                    <button
+                      key={tag.id}
+                      type="button"
+                      onClick={() => toggleTag(tag.id)}
+                      className={cn(
+                        'inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-all',
+                        'border',
+                        selectedTag === tag.id
+                          ? 'border-pink-500/50 bg-pink-500/15 text-pink-600 dark:text-pink-400'
+                          : 'border-border/50 bg-muted/40 text-muted-foreground hover:border-border hover:bg-muted/70',
+                      )}
+                    >
+                      <span>{tag.icon}</span>
+                      <span>{tag.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* ── 粘贴剪贴板按钮 ────────────────────────────────── */}
+              {clipboardText && (
+                <button
+                  type="button"
+                  onClick={handlePasteClipboard}
+                  className={cn(
+                    'flex items-center gap-2 w-full rounded-lg px-3 py-2 text-xs text-left',
+                    'border border-dashed border-border/60 bg-muted/20',
+                    'text-muted-foreground hover:bg-muted/40 hover:border-border',
+                    'transition-colors',
+                  )}
+                >
+                  <ClipboardPaste className="h-3.5 w-3.5 flex-shrink-0 text-pink-500/70" />
+                  <span className="truncate">
+                    粘贴剪贴板内容：{clipboardText.length > 60 ? `${clipboardText.slice(0, 60)}…` : clipboardText}
+                  </span>
+                </button>
               )}
-            >
-              <ClipboardPaste className="h-3.5 w-3.5 flex-shrink-0 text-pink-500/70" />
-              <span className="truncate">
-                粘贴剪贴板内容：{clipboardText.length > 60 ? `${clipboardText.slice(0, 60)}…` : clipboardText}
-              </span>
-            </button>
+
+              {/* ── 保存按钮 ──────────────────────────────────────── */}
+              <div className="flex justify-end">
+                <Button
+                  onClick={() => void handleSave()}
+                  disabled={!content.trim() || saving}
+                  size="sm"
+                  className={cn(
+                    'bg-pink-500 text-white hover:bg-pink-600',
+                    'disabled:bg-pink-500/40 disabled:text-white/60',
+                  )}
+                >
+                  {saving ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <span className="text-xs">{saveShortcut}</span>
+                  )}
+                </Button>
+              </div>
+            </>
           )}
-
-          {/* ── 保存按钮 ──────────────────────────────────────── */}
-          <div className="flex justify-end">
-            <Button
-              onClick={() => void handleSave()}
-              disabled={!content.trim() || saving}
-              size="sm"
-              className={cn(
-                'bg-pink-500 text-white hover:bg-pink-600',
-                'disabled:bg-pink-500/40 disabled:text-white/60',
-              )}
-            >
-              {saving ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <span className="text-xs">{saveShortcut}</span>
-              )}
-            </Button>
-          </div>
         </div>
       </DialogContent>
     </Dialog>
