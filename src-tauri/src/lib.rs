@@ -18,6 +18,9 @@ pub mod infra;
 // Phase 0.5 M1-T1 — IntentSpec/TaskSpec/TaskEvent runtime contracts.
 pub mod runtime;
 
+// M3-T6 — Policy evaluator (PolicySpec rules → HookDecision).
+pub mod policy_eval;
+
 // B2: Infrastructure modules
 pub mod memory;
 pub mod memory_graph;
