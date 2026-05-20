@@ -53,6 +53,7 @@
             "pyembed/python": "python",
             "src/memu/memu_bridge.py": "memu_bridge.py",
             "resources/builtin-automations": "builtin-automations",
+            "resources/live-room": "live-room",
             "../skills": "skills",
             "bunembed/bun": "bun",
             "gbrain-source": "gbrain"

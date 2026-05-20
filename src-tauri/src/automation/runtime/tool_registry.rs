@@ -11,6 +11,7 @@ pub struct AutomationToolRegistryDeps {
     pub gbrain_declared: bool,
     pub browser_context_manager: Option<Arc<crate::browser::BrowserContextManager>>,
     pub browser_session_id: Option<String>,
+    pub browser_builtin_root: Option<PathBuf>,
 }
 
 pub fn planned_tool_names(spec_permissions: &[Permission], gbrain_declared: bool) -> Vec<String> {
@@ -71,8 +72,9 @@ pub fn build_registry_with_capabilities(deps: AutomationToolRegistryDeps) -> Arc
         if let (Some(ctx_mgr), Some(session_id)) =
             (deps.browser_context_manager.clone(), deps.browser_session_id.clone())
         {
-            let builtin_root =
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/live-room");
+            let builtin_root = deps.browser_builtin_root.clone().unwrap_or_else(|| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/live-room")
+            });
             let browser_run_script = crate::browser::tools::BrowserRunScriptTool {
                 ctx_mgr,
                 session_id,
@@ -315,6 +317,7 @@ mod tests {
             gbrain_declared: false,
             browser_context_manager: None,
             browser_session_id: None,
+            browser_builtin_root: None,
         });
         let names = registry
             .list_definitions()
@@ -337,6 +340,7 @@ mod tests {
             gbrain_declared: true,
             browser_context_manager: None,
             browser_session_id: None,
+            browser_builtin_root: None,
         });
         let defs = registry.list_definitions();
         assert!(defs.iter().any(|tool| tool.name == "browser_task"));

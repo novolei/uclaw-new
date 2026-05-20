@@ -113,6 +113,29 @@ fn builtin_automations_resource_root(app_handle: Option<&tauri::AppHandle>) -> P
     builtin_automations_repo_resource_root()
 }
 
+fn live_room_scripts_repo_resource_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("live-room")
+}
+
+fn live_room_scripts_resource_dir_root(resource_dir: &Path) -> PathBuf {
+    resource_dir.join("live-room")
+}
+
+fn live_room_scripts_resource_root(app_handle: Option<&tauri::AppHandle>) -> PathBuf {
+    if let Some(app_handle) = app_handle {
+        if let Ok(resource_dir) = app_handle.path().resource_dir() {
+            let bundled = live_room_scripts_resource_dir_root(&resource_dir);
+            if bundled.exists() {
+                return bundled;
+            }
+        }
+    }
+
+    live_room_scripts_repo_resource_root()
+}
+
 fn builtin_source_ref(app_id: &str) -> String {
     match app_id {
         "douyin-live-room-moderator" => BUILTIN_DOUYIN_LIVE_MODERATOR_SOURCE_REF.to_string(),
@@ -195,6 +218,8 @@ pub struct AppRuntimeService {
     pub channel_manager: Option<Arc<tokio::sync::RwLock<crate::channels::ChannelManager>>>,
     /// Shared browser context manager used by real automation browser tools.
     pub browser_context_manager: Option<Arc<BrowserContextManager>>,
+    /// Packaged/development live-room adapter script root for `browser_run`.
+    pub browser_builtin_root: PathBuf,
 }
 
 impl AppRuntimeService {
@@ -214,6 +239,7 @@ impl AppRuntimeService {
         channel_manager: Option<Arc<tokio::sync::RwLock<crate::channels::ChannelManager>>>,
         browser_context_manager: Option<Arc<BrowserContextManager>>,
     ) -> Arc<Self> {
+        let browser_builtin_root = live_room_scripts_resource_root(app_handle.as_ref());
         let svc = Arc::new(Self {
             db,
             schedule,
@@ -236,6 +262,7 @@ impl AppRuntimeService {
             app_handle,
             channel_manager,
             browser_context_manager,
+            browser_builtin_root,
         });
         let _ = svc.self_weak.set(Arc::downgrade(&svc));
         svc
@@ -1577,6 +1604,7 @@ impl AppRuntimeService {
                 gbrain_declared,
                 browser_context_manager: self.browser_context_manager.clone(),
                 browser_session_id,
+                browser_builtin_root: Some(self.browser_builtin_root.clone()),
             },
         )
     }
@@ -1806,6 +1834,22 @@ mod tests {
         let fallback = builtin_automations_resource_root(None);
         assert!(fallback.join("manifest.json").is_file());
         assert!(fallback.ends_with("resources/builtin-automations"));
+    }
+
+    #[test]
+    fn live_room_scripts_root_uses_packaged_shape_and_repo_fallback() {
+        let resource_dir = tempfile::tempdir().unwrap();
+        let bundled_root = resource_dir.path().join("live-room");
+        std::fs::create_dir_all(&bundled_root).unwrap();
+
+        assert_eq!(
+            live_room_scripts_resource_dir_root(resource_dir.path()),
+            bundled_root
+        );
+
+        let fallback = live_room_scripts_resource_root(None);
+        assert!(fallback.join("douyin/enter_room.js").is_file());
+        assert!(fallback.ends_with("resources/live-room"));
     }
 
     #[test]
