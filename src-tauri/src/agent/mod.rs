@@ -1,6 +1,8 @@
 pub mod agentic_loop;
 // M1-T2c — RegularTask: SessionTask wrap of run_agentic_loop.
 pub mod regular_task;
+// M1-T4b — opt-in rollout bridge for direct run_agentic_loop callsites.
+pub mod rollout_integration;
 pub mod code_rescue;
 pub mod context;
 pub mod dispatcher;
