@@ -3,6 +3,8 @@ pub mod agentic_loop;
 pub mod regular_task;
 // M2-A pilot — BaselineBlock trait + 3-block registry.
 pub mod baseline_blocks;
+// M2-I pilot — Prompt caching policy (4 cache breakpoint placement).
+pub mod cache_policy;
 // M1-T4b — opt-in rollout bridge for direct run_agentic_loop callsites.
 pub mod rollout_integration;
 pub mod code_rescue;
