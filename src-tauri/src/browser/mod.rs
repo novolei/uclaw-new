@@ -19,6 +19,8 @@ pub mod task_store;
 pub mod tools;
 pub mod types;
 
+// M1-T4c — bridge BrowserTaskRun to runtime::contracts::TaskEvent.
+pub mod rollout_bridge;
 // Re-export the two primary public types so callers can write
 // `crate::browser::BrowserContextManager` without the extra path.
 pub use context_manager::BrowserContextManager;
