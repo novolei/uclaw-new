@@ -80,10 +80,16 @@ function MemoryNodesMesh({ nodes, positions, hoveredId, onHover, onClick, themeC
           <StarNode
             key={node.id}
             id={node.id}
+            label={node.title}
             position={pos}
             color={config.color}
             emissive={config.emissive}
             radius={config.radius}
+            emissiveIntensity={config.emissiveIntensity}
+            noiseFreq={config.noiseFreq}
+            noiseAmp={config.noiseAmp}
+            flowSpeed={config.flowSpeed}
+            opacity={node.kind === 'reference' ? 0.6 : 1.0}
             isHovered={hoveredId === node.id}
             onHover={onHover}
             onClick={onClick}

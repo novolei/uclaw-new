@@ -153,23 +153,35 @@ export function EdgeLines({ edges, positions, hoveredNodeId, themeConfig, resolv
 
 export interface StarNodeProps {
   id: string
+  label?: string                 // tooltip text; falls back to id when absent
   position: [number, number, number]
   color: string
   emissive: string
   radius: number
+  emissiveIntensity?: number     // default: 1.0; multiplied by themeConfig.emissiveScale
+  noiseFreq?: number             // default 1.5
+  noiseAmp?: number              // default 0.7
+  flowSpeed?: number             // default 0.2
+  opacity?: number               // default 1.0
   isHovered: boolean
   onHover: (id: string | null) => void
   onClick: (id: string) => void
   themeConfig: NebulaThemeConfig
 }
 
-export function StarNode({ id, position, color, emissive, radius, isHovered, onHover, onClick, themeConfig }: StarNodeProps): React.ReactElement {
+export function StarNode({ id, label, position, color, emissive, radius, emissiveIntensity, noiseFreq, noiseAmp, flowSpeed, opacity, isHovered, onHover, onClick, themeConfig }: StarNodeProps): React.ReactElement {
   const groupRef = React.useRef<THREE.Group>(null)
   const coreRef = React.useRef<THREE.Mesh>(null)
   const coreMaterialRef = React.useRef<THREE.ShaderMaterial>(null)
   const glowRef = React.useRef<THREE.ShaderMaterial>(null)
   const phase = React.useMemo(() => hashCode(id) % 100, [id])
-  const baseEmissive = themeConfig.emissiveScale
+
+  const resolvedNoiseFreq = noiseFreq ?? 1.5
+  const resolvedNoiseAmp = noiseAmp ?? 0.7
+  const resolvedFlowSpeed = flowSpeed ?? 0.2
+  const resolvedOpacity = opacity ?? 1.0
+  const resolvedEmissiveIntensity = emissiveIntensity ?? 1.0
+  const baseEmissive = resolvedEmissiveIntensity * themeConfig.emissiveScale
 
   const baseColorVec = React.useMemo(() => new THREE.Color(color), [color])
   const emissiveColorVec = React.useMemo(() => new THREE.Color(emissive), [emissive])
@@ -181,10 +193,10 @@ export function StarNode({ id, position, color, emissive, radius, isHovered, onH
     emissiveColor: { value: emissiveColorVec },
     emissiveIntensity: { value: baseEmissive },
     time: { value: 0.0 },
-    noiseFreq: { value: 1.5 },
-    noiseAmp: { value: 0.7 },
-    flowSpeed: { value: 0.2 },
-    opacity: { value: 1.0 },
+    noiseFreq: { value: resolvedNoiseFreq },
+    noiseAmp: { value: resolvedNoiseAmp },
+    flowSpeed: { value: resolvedFlowSpeed },
+    opacity: { value: resolvedOpacity },
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [])
 
@@ -223,7 +235,7 @@ export function StarNode({ id, position, color, emissive, radius, isHovered, onH
           vertexShader={starVertexShader}
           fragmentShader={starFragmentShader}
           uniforms={coreUniforms}
-          transparent={false}
+          transparent={resolvedOpacity < 1.0}
           toneMapped={false}
         />
       </mesh>
@@ -251,7 +263,7 @@ export function StarNode({ id, position, color, emissive, radius, isHovered, onH
       {isHovered && (
         <Html center distanceFactor={200} style={{ pointerEvents: 'none' }}>
           <div className="bg-popover/95 backdrop-blur-md text-popover-foreground text-[11px] px-2 py-1 rounded-md shadow-lg whitespace-nowrap border border-border/50 max-w-[180px] truncate">
-            {id}
+            {label ?? id}
           </div>
         </Html>
       )}
