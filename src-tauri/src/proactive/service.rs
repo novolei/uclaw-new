@@ -192,6 +192,10 @@ pub struct MemoryOsRuntimeConfig {
     /// L3 §4.12.1 RETAINED — per-batch cap on node count. Bounds
     /// per-tick work so the service stays responsive on slow disks.
     pub importance_decay_batch_size: u32,
+    /// L3 §4.12.4 R1 — gates the periodic Concept Drift Detection scan.
+    pub drift_detection_enabled: bool,
+    /// L3 §4.12.4 R1 — per-scan cap on candidate EntityPages.
+    pub drift_detection_batch_size: u32,
     /// Sprint 1 — gates the openhuman-style stability_detector +
     /// PROFILE.md rebuild. Default ON; rebuild itself is zero cost
     /// when the candidate buffer is empty.
@@ -232,6 +236,8 @@ impl MemoryOsRuntimeConfig {
             tier_escalator_daily_cap: cfg.tier_escalator_daily_cap,
             importance_decay_enabled: cfg.importance_decay_enabled,
             importance_decay_batch_size: cfg.importance_decay_batch_size,
+            drift_detection_enabled: cfg.drift_detection_enabled,
+            drift_detection_batch_size: cfg.drift_detection_batch_size,
             learning_enabled: cfg.learning_enabled,
             learning_scheduler: None,  // wired in AppState bootstrap
             facet_cache: None,         // wired in AppState bootstrap
@@ -255,6 +261,8 @@ impl MemoryOsRuntimeConfig {
             tier_escalator_daily_cap: 10,
             importance_decay_enabled: false,  // off in tests; tests opt-in
             importance_decay_batch_size: 100,
+            drift_detection_enabled: false,  // off in tests; tests opt-in
+            drift_detection_batch_size: 50,
             learning_enabled: false,  // off in tests by default — tests opt-in by setting handles
             learning_scheduler: None,
             facet_cache: None,
@@ -276,6 +284,8 @@ impl Default for MemoryOsRuntimeConfig {
             tier_escalator_daily_cap: 10,
             importance_decay_enabled: true,
             importance_decay_batch_size: 100,
+            drift_detection_enabled: true,
+            drift_detection_batch_size: 50,
             learning_enabled: true,
             learning_scheduler: None,
             facet_cache: None,
@@ -1326,6 +1336,54 @@ impl ProactiveService {
                         tracing::warn!(
                             error = %e,
                             "[ProactiveService] importance_decay: batch failed"
+                        );
+                    }
+                }
+            });
+        }
+
+        // L3 §4.12.4 R1 — Concept Drift Detection scan. Every 480 ticks
+        // (~4h @ 30s tick interval). Zero LLM cost. Scans EntityPages
+        // with multiple versions, computes content drift, records a
+        // `drift_events` row when drift crosses threshold. Offset from
+        // importance_decay (360) so the two heavy memory_graph scans
+        // rarely co-fire.
+        if refs.memory_os.drift_detection_enabled
+            && refs.memory_os.drift_detection_batch_size > 0
+            && refs.tick_count.load(Ordering::SeqCst) % 480 == 0
+        {
+            let store = refs.memory_graph_store.clone();
+            let batch_size = refs.memory_os.drift_detection_batch_size as usize;
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            tokio::task::spawn_blocking(move || {
+                let conn = match store.conn.lock() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "[ProactiveService] drift_detection: DB lock failed");
+                        return;
+                    }
+                };
+                match crate::memory_graph::drift_detection::scan_and_record_drift(
+                    &conn, batch_size, now_ms,
+                ) {
+                    Ok(outcome) => {
+                        if outcome.flagged > 0 {
+                            tracing::info!(
+                                scanned = outcome.scanned,
+                                flagged = outcome.flagged,
+                                "[ProactiveService] drift_detection: scan done"
+                            );
+                        } else {
+                            tracing::debug!(
+                                scanned = outcome.scanned,
+                                "[ProactiveService] drift_detection: no drift flagged"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "[ProactiveService] drift_detection: scan failed"
                         );
                     }
                 }
