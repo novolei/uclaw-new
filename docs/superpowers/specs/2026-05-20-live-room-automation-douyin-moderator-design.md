@@ -312,6 +312,15 @@ config_schema:
     label: Allow removing users
     type: boolean
     default: true
+  - key: knowledge_scope
+    label: Knowledge scope
+    type: select
+    default: room_only
+    options:
+      - label: Current room only
+        value: room_only
+      - label: Current room plus platform shared knowledge
+        value: room_plus_platform
 ```
 
 ### Permissions
@@ -412,13 +421,44 @@ Rules:
 
 The spec uses gbrain for both recall and learning.
 
+### Scope Isolation
+
+The live-room moderator must not expose the full global gbrain knowledge base to the room agent. Knowledge access is scoped by platform and room.
+
+Scope keys:
+
+- `platform`: `douyin`
+- `room_id`: stable platform room ID when available
+- `host_id`: stable host/account ID when available
+- `knowledge_scope`: `room_only` by default, or `room_plus_platform` when the user explicitly enables shared platform knowledge
+
+Read policy:
+
+- Default recall searches only the current room namespace: `live/douyin/<room_id>/...`.
+- If `knowledge_scope = room_plus_platform`, recall may also search `live/douyin/shared/...`.
+- The agent must never receive an unrestricted `gbrain_search` result set across the whole brain.
+- The tool layer should enforce scoped query filters or slug prefixes, not rely only on prompt wording.
+- Cross-room recall is disabled unless a later product setting explicitly maps rooms into a shared campaign/brand scope.
+
+Write policy:
+
+- Room-specific facts, FAQ, feedback, and moderation records write only under the current room prefix.
+- Platform-wide reusable rules may write under `live/douyin/shared/...` only when the spec or user config marks the knowledge as platform-shared.
+- Moderation ledger is always room-scoped and must not be promoted to global/shared knowledge.
+
+Implementation requirement:
+
+- Add scoped gbrain automation helpers such as `gbrain_room_search`, `gbrain_room_get_page`, and `gbrain_room_put_page`, or add required `scope`/`slug_prefix` parameters to the narrow gbrain tools.
+- The built-in Douyin spec should use the room-scoped helpers exclusively.
+- Direct unscoped `gbrain_search` and arbitrary `gbrain_get_page` should not be exposed to this automation run.
+
 ### Recall
 
 For question-like comments:
 
 1. Build a search query from the comment and room context.
-2. Call `gbrain_search`.
-3. Optionally call `gbrain_get_page` for the strongest hits.
+2. Call scoped room recall, e.g. `gbrain_room_search` with `platform = "douyin"` and `room_id`.
+3. Optionally call scoped page read for the strongest hits.
 4. Generate a short reply grounded in returned knowledge.
 
 ### Writeback
@@ -438,6 +478,7 @@ Suggested slugs:
 - `live/douyin/<room_id>/feedback/<yyyy-mm-dd>`
 - `live/douyin/<room_id>/facts/<topic>`
 - `live/douyin/<room_id>/moderation/<yyyy-mm-dd>`
+- `live/douyin/shared/<topic>` only for explicitly platform-shared knowledge
 
 Avoid storing:
 
@@ -535,6 +576,7 @@ Agent/Browser panel:
 - `browser_run_script` accepts allowed paths and rejects arbitrary absolute paths.
 - `browser_run_script` times out and truncates large results safely.
 - gbrain automation tools map to `search`, `get_page`, and `put_page`.
+- room-scoped gbrain tools enforce platform/room slug prefixes and reject unscoped searches.
 - live-room moderation policy increments warnings and escalates to mute after two warnings.
 - moderation policy never punishes whitelisted users.
 - moderation policy refuses punishment when target identity cannot be re-verified.
@@ -561,7 +603,9 @@ Agent/Browser panel:
   - room entered
   - comments scanned incrementally
   - gbrain queried for a question
+  - gbrain recall is limited to the current room namespace by default
   - useful knowledge written
+  - room-specific writes land under `live/douyin/<room_id>/...`
   - two warnings lead to mute
   - severe case can remove when enabled
   - no raw auth material appears in trace or gbrain page content
@@ -576,4 +620,3 @@ Agent/Browser panel:
 6. Add Douyin Live Moderator built-in spec.
 7. Add harness fixture and scorecard.
 8. Run real Douyin smoke with a controlled room/moderator account before enabling broad use.
-
