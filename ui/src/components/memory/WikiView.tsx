@@ -93,6 +93,11 @@ export function WikiView({ className }: WikiViewProps): React.ReactElement {
     setSelectedSlug(slug)
     setLoadingDetail(true)
     setError(null)
+    // 切页时丢弃未保存的编辑态与版本抽屉，避免把 A 页草稿存到 B 页。
+    setEditing(false)
+    setDraft('')
+    setVersionsOpen(false)
+    setVersions([])
     latestSlugRef.current = slug
     try {
       const [d, bl] = await Promise.all([
@@ -336,9 +341,11 @@ export function WikiView({ className }: WikiViewProps): React.ReactElement {
                   </div>
                 </div>
                 {editing ? (
-                  <div className="flex flex-col gap-2" data-testid="wiki-editor">
+                  <div className="flex flex-col gap-2">
                     <textarea
                       className="w-full min-h-[300px] bg-muted/20 rounded p-2 text-xs font-mono outline-none focus:bg-muted/30"
+                      aria-label="编辑页面 markdown"
+                      data-testid="wiki-editor"
                       value={draft}
                       onChange={(e) => setDraft(e.target.value)}
                     />
@@ -390,7 +397,7 @@ export function WikiView({ className }: WikiViewProps): React.ReactElement {
           <div className="w-80 h-full bg-popover border-l border-border/50 flex flex-col">
             <div className="flex items-center justify-between px-3 py-2 border-b border-border/50">
               <span className="text-xs font-medium">版本史</span>
-              <Button type="button" size="sm" variant="ghost" className="h-6 w-6 p-0" onClick={() => setVersionsOpen(false)}>
+              <Button type="button" size="sm" variant="ghost" className="h-6 w-6 p-0" aria-label="关闭版本史" onClick={() => setVersionsOpen(false)}>
                 <X className="size-3" />
               </Button>
             </div>
