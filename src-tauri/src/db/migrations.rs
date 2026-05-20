@@ -3811,21 +3811,32 @@ mod tests {
 
     #[test]
     fn v43_wiki_page_templates_subkind_is_unique() {
-        // subkind is PRIMARY KEY — second INSERT with same subkind must fail.
-        // Defends against a future schema edit that demotes the PK without
-        // adding a UNIQUE constraint, which would silently allow duplicate
-        // templates for the same subkind and make wiki_compile pick non-
-        // deterministically.
+        // subkind is PRIMARY KEY — a second INSERT with a subkind that
+        // already exists must fail. Defends against a future schema edit
+        // that demotes the PK without adding a UNIQUE constraint, which
+        // would silently allow duplicate templates for the same subkind
+        // and make wiki_compile pick non-deterministically.
+        //
+        // NOTE: V43_SEED_TEMPLATES already inserts an 'entity' row during
+        // `run()`, so we test the constraint against that seeded row
+        // directly — a plain `INSERT` of 'entity' (not OR IGNORE / OR
+        // REPLACE) must error. (Earlier this test inserted 'entity'
+        // first, which collided with the seed on the FIRST insert; fixed
+        // to rely on the seed instead.)
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         super::run(&conn).unwrap();
 
-        conn.execute(
-            "INSERT INTO wiki_page_templates \
-             (subkind, display_name, compile_prompt, sections_json, updated_at) \
-             VALUES ('entity', '实体', '...', '[]', ?1)",
-            [1_700_000_000_000_i64],
-        )
-        .unwrap();
+        // Sanity: the seed put an 'entity' row there.
+        let seeded: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wiki_page_templates WHERE subkind = 'entity'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(seeded, 1, "V43 seed should have exactly one 'entity' row");
+
+        // A plain INSERT of the same subkind must violate the PK.
         let err = conn.execute(
             "INSERT INTO wiki_page_templates \
              (subkind, display_name, compile_prompt, sections_json, updated_at) \
