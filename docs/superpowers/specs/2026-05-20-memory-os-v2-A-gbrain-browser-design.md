@@ -75,7 +75,9 @@ gbrain MCP server (已连接的持久连接, server_id = "gbrain")
 
 ## 5. 编辑 + 版本流
 
-- 详情区"编辑" → 行内 markdown 编辑器（V1 用 textarea；TipTap 端口未来 W4）→ "保存" 调 `gbrain_put_page`（传回 slug/type/title/编辑后 body）。保存成功后重渲染详情。
+**编辑回写语义（消除 north-star §6 开放问题）**：gbrain 页模型对外只返回 `compiled_truth`（编译后的综述正文），不单独暴露"原始 body"。因此 V1 的编辑对象**就是 `compiled_truth`** —— `gbrain_get_page` 拿到的 `compiled_truth` 直接进编辑器，保存时作为 `put_page` 的 `body` 回传，由 gbrain 重新编译。对人工综述页（agent/用户写的散文页）`body ≈ compiled_truth`，往返无损；对未来"多源自动编译页"这会丢失下层 provenance —— 那类页在 V1 标记为只读（详情区隐藏"编辑"按钮，依据 `frontmatter` 里的来源标记判断），编辑能力只开放给人工页。这条边界写进验证清单。
+
+- 详情区"编辑" → 行内 markdown 编辑器（V1 用 textarea；TipTap 端口未来 W4）→ "保存" 调 `gbrain_put_page`（传回 slug/type/title/编辑后 body=原 `compiled_truth` 的修改版）。保存成功后重渲染详情。
 - gbrain **自动**为每次 `put_page` 建版本 → 编辑零数据风险。
 - "版本史"抽屉：`gbrain_get_versions` 列出（version_id + created_at + created_by）→ 点某版本可预览 → "回滚"调 `gbrain_revert_version`。
 - 这实现 goal 3 的"可编辑 + 可版本控制"，主要靠 gbrain 内建。
