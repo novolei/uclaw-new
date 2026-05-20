@@ -304,6 +304,37 @@ pub async fn find_orphans(mcp: &SharedMcpManager) -> Result<OrphanSummary, Gbrai
     parse_orphans(&text)
 }
 
+/// 保存编辑：put_page(slug, content=完整 markdown) → re-fetch 返回新页。
+/// 不依赖 put_page 的返回 shape（gbrain put_page 返回 status，不是页）。
+pub async fn put_page(
+    mcp: &SharedMcpManager,
+    slug: &str,
+    content: &str,
+) -> Result<PageDetail, GbrainError> {
+    call_gbrain(
+        mcp,
+        "put_page",
+        serde_json::json!({ "slug": slug, "content": content }),
+    )
+    .await?;
+    get_page(mcp, slug).await
+}
+
+/// 回滚到某版本：revert_version(slug, version_id:number) → re-fetch 返回新页。
+pub async fn revert_version(
+    mcp: &SharedMcpManager,
+    slug: &str,
+    version_id: i64,
+) -> Result<PageDetail, GbrainError> {
+    call_gbrain(
+        mcp,
+        "revert_version",
+        serde_json::json!({ "slug": slug, "version_id": version_id }),
+    )
+    .await?;
+    get_page(mcp, slug).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
