@@ -18,6 +18,9 @@ pub mod infra;
 // Phase 0.5 M1-T1 — IntentSpec/TaskSpec/TaskEvent runtime contracts.
 pub mod runtime;
 
+// M3-T4 — Task scheduler queue + priority types.
+pub mod task_scheduler;
+
 // B2: Infrastructure modules
 pub mod memory;
 pub mod memory_graph;
