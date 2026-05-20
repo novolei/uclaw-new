@@ -1,4 +1,6 @@
 pub mod activity;
+// M1-T4e — bridge AutomationActivity → runtime::contracts::TaskEvent.
+pub mod rollout_bridge;
 pub mod builtin_apps;
 pub mod capability_map;
 pub mod compat;
