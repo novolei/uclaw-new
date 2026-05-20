@@ -78,13 +78,98 @@ pub struct RetryWithBrowserAgentTool {
     pub long_term_memory: Option<Arc<BrowserLongTermMemoryAdapter>>,
 }
 
+#[derive(Clone)]
 pub struct BrowserRunScriptTool {
+    pub ctx_mgr: Arc<BrowserContextManager>,
     pub session_id: String,
     pub workspace_root: PathBuf,
     pub builtin_root: PathBuf,
 }
 
+pub struct BrowserRunTool {
+    pub inner: BrowserRunScriptTool,
+}
+
 // ── 0. BrowserRunScriptTool ──────────────────────────────────────────────────
+
+impl BrowserRunScriptTool {
+    async fn execute_run_script(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let start = Instant::now();
+        let file = params["file"].as_str()
+            .ok_or_else(|| ToolError::InvalidParams("file is required".to_string()))?;
+        let adapter_params = params
+            .get("params")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let timeout_ms = params
+            .get("timeout_ms")
+            .or_else(|| params.get("timeoutMs"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(30_000);
+        let home_dir = dirs::home_dir().unwrap_or_else(|| self.workspace_root.clone());
+        let policy = ScriptPathPolicy::new(
+            self.builtin_root.clone(),
+            self.workspace_root.clone(),
+            home_dir,
+        );
+        let resolved = policy.resolve(file)
+            .map_err(|e| ToolError::InvalidParams(e.to_string()))?;
+        let source = std::fs::read_to_string(&resolved)?;
+        let ctx = self
+            .ctx_mgr
+            .get_or_create(&self.session_id)
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let tab_id = adapter_params
+            .get("tab_id")
+            .or_else(|| adapter_params.get("tabId"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                params
+                    .get("tab_id")
+                    .or_else(|| params.get("tabId"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            });
+        let tab_id = match tab_id {
+            Some(tab_id) => tab_id,
+            None => ctx
+                .active_or_first_tab_id()
+                .await
+                .ok_or_else(|| ToolError::Execution("no browser tab available".to_string()))?,
+        };
+
+        let duration = || start.elapsed().as_millis() as u64;
+        match ctx
+            .evaluate_script_with_params(&tab_id, &source, adapter_params, timeout_ms)
+            .await
+        {
+            Ok(result) => Ok(ToolOutput::new(
+                serde_json::json!({
+                    "ok": true,
+                    "sessionId": self.session_id,
+                    "file": file,
+                    "result": result,
+                }),
+                duration(),
+            )),
+            Err(error) => {
+                let duration_ms = duration();
+                Ok(ToolOutput::new(
+                    serde_json::json!({
+                        "ok": false,
+                        "error": error.to_string(),
+                        "sessionId": self.session_id,
+                        "file": file,
+                        "durationMs": duration_ms,
+                    }),
+                    duration_ms,
+                ))
+            }
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for BrowserRunScriptTool {
@@ -119,30 +204,24 @@ impl Tool for BrowserRunScriptTool {
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let start = Instant::now();
-        let file = params["file"].as_str()
-            .ok_or_else(|| ToolError::InvalidParams("file is required".to_string()))?;
-        let home_dir = dirs::home_dir().unwrap_or_else(|| self.workspace_root.clone());
-        let policy = ScriptPathPolicy::new(
-            self.builtin_root.clone(),
-            self.workspace_root.clone(),
-            home_dir,
-        );
-        let resolved = policy.resolve(file)
-            .map_err(|e| ToolError::InvalidParams(e.to_string()))?;
+        self.execute_run_script(params).await
+    }
+}
 
-        Ok(ToolOutput::new(
-            serde_json::json!({
-                "ok": false,
-                "error": "browser_run_script_execution_not_connected",
-                "sessionId": self.session_id,
-                "file": file,
-                "resolvedPath": resolved.display().to_string(),
-                "params": params.get("params").cloned().unwrap_or_else(|| serde_json::json!({})),
-                "timeoutMs": params.get("timeout_ms").cloned().unwrap_or_else(|| serde_json::json!(null)),
-            }),
-            start.elapsed().as_millis() as u64,
-        ))
+#[async_trait]
+impl Tool for BrowserRunTool {
+    fn name(&self) -> &str { "browser_run" }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.inner.parameters_schema()
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        self.inner.execute_run_script(params).await
     }
 }
 

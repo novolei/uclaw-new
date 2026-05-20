@@ -9,6 +9,8 @@ pub struct AutomationToolRegistryDeps {
     pub workspace_root: PathBuf,
     pub spec_permissions: Vec<Permission>,
     pub gbrain_declared: bool,
+    pub browser_context_manager: Option<Arc<crate::browser::BrowserContextManager>>,
+    pub browser_session_id: Option<String>,
 }
 
 pub fn planned_tool_names(spec_permissions: &[Permission], gbrain_declared: bool) -> Vec<String> {
@@ -32,6 +34,7 @@ pub fn planned_tool_names(spec_permissions: &[Permission], gbrain_declared: bool
                 "browser_task",
                 "browser_task_resume",
                 "retry_with_browser_agent",
+                "browser_run",
                 "browser_run_script",
             ]
             .into_iter()
@@ -65,13 +68,31 @@ pub fn build_registry_with_capabilities(deps: AutomationToolRegistryDeps) -> Arc
     register_automation_schema_tools(&mut tools);
 
     if deps.spec_permissions.contains(&Permission::AiBrowser) {
-        let builtin_root =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/live-room");
-        tools.register(crate::browser::tools::BrowserRunScriptTool {
-            session_id: "automation-live-room".to_string(),
-            workspace_root: deps.workspace_root.clone(),
-            builtin_root,
-        });
+        if let (Some(ctx_mgr), Some(session_id)) =
+            (deps.browser_context_manager.clone(), deps.browser_session_id.clone())
+        {
+            let builtin_root =
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/live-room");
+            let browser_run_script = crate::browser::tools::BrowserRunScriptTool {
+                ctx_mgr,
+                session_id,
+                workspace_root: deps.workspace_root.clone(),
+                builtin_root,
+            };
+            tools.register(crate::browser::tools::BrowserRunTool {
+                inner: browser_run_script.clone(),
+            });
+            tools.register(browser_run_script);
+        } else {
+            tools.register(CapabilitySchemaTool::new(
+                "browser_run",
+                "Run a restricted browser adapter JavaScript file. Execution is connected by AppRuntimeService.",
+            ));
+            tools.register(CapabilitySchemaTool::new(
+                "browser_run_script",
+                "Run a restricted browser adapter JavaScript file. Execution is connected by AppRuntimeService.",
+            ));
+        }
         tools.register(CapabilitySchemaTool::new(
             "browser_task",
             "Run a constrained browser fallback task. Execution is connected by the live browser bridge.",
@@ -272,6 +293,7 @@ mod tests {
         assert!(names.contains(&"browser_task".to_string()));
         assert!(names.contains(&"browser_task_resume".to_string()));
         assert!(names.contains(&"retry_with_browser_agent".to_string()));
+        assert!(names.contains(&"browser_run".to_string()));
         assert!(names.contains(&"browser_run_script".to_string()));
     }
 
@@ -291,6 +313,8 @@ mod tests {
             workspace_root: tmp.path().to_path_buf(),
             spec_permissions: Vec::new(),
             gbrain_declared: false,
+            browser_context_manager: None,
+            browser_session_id: None,
         });
         let names = registry
             .list_definitions()
@@ -311,9 +335,12 @@ mod tests {
             workspace_root: tmp.path().to_path_buf(),
             spec_permissions: vec![Permission::AiBrowser],
             gbrain_declared: true,
+            browser_context_manager: None,
+            browser_session_id: None,
         });
         let defs = registry.list_definitions();
         assert!(defs.iter().any(|tool| tool.name == "browser_task"));
+        assert!(defs.iter().any(|tool| tool.name == "browser_run"));
         assert!(defs.iter().any(|tool| tool.name == "browser_run_script"));
         assert!(defs.iter().any(|tool| tool.name == "gbrain_room_search"));
     }

@@ -607,6 +607,32 @@ impl BrowserContext {
         Ok(s)
     }
 
+    /// Execute a Halo-compatible browser adapter function with JSON params.
+    pub async fn evaluate_script_with_params(
+        &self,
+        tab_id: &str,
+        source: &str,
+        params: serde_json::Value,
+        timeout_ms: u64,
+    ) -> Result<serde_json::Value> {
+        let page = self.get_page(tab_id).await?;
+        let source = source.trim().trim_end_matches(';');
+        let params_json = serde_json::to_string(&params)
+            .map_err(|e| anyhow!("serialize browser_run params: {}", e))?;
+        let script = format!(
+            "(async () => {{ const __uclawParams = {params_json}; const __uclawUserFn = {source}; return await __uclawUserFn(__uclawParams); }})()"
+        );
+        let val = tokio::time::timeout(
+            Duration::from_millis(timeout_ms),
+            page.evaluate(script),
+        )
+        .await
+        .map_err(|_| anyhow!("script timed out after {timeout_ms}ms"))?
+        .map_err(|e| anyhow!("evaluate_script_with_params: {}", e))?;
+        val.into_value::<serde_json::Value>()
+            .map_err(|e| anyhow!("decode browser_run result: {}", e))
+    }
+
     // ── Tab management ────────────────────────────────────────────────────────
 
     pub async fn get_all_tabs(&self) -> Vec<TabInfo> {

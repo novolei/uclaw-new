@@ -12,54 +12,47 @@ pub enum BrowserScriptError {
 pub struct ScriptPathPolicy {
     builtin_root: PathBuf,
     workspace_root: PathBuf,
-    home_dir: PathBuf,
 }
 
 impl ScriptPathPolicy {
-    pub fn new(builtin_root: PathBuf, workspace_root: PathBuf, home_dir: PathBuf) -> Self {
+    pub fn new(builtin_root: PathBuf, workspace_root: PathBuf, _home_dir: PathBuf) -> Self {
         Self {
-            builtin_root: normalize_path(&builtin_root),
-            workspace_root: normalize_path(&workspace_root),
-            home_dir: normalize_path(&home_dir),
+            builtin_root: canonical_or_normalized(&builtin_root),
+            workspace_root: canonical_or_normalized(&workspace_root),
         }
     }
 
     pub fn resolve(&self, file: &str) -> Result<PathBuf, BrowserScriptError> {
         let raw = Path::new(file);
         let resolved = if raw.is_absolute() {
-            normalize_path(raw)
+            canonical_or_normalized(raw)
         } else if file.starts_with("douyin/") || file.starts_with("shared/") {
-            normalize_path(self.builtin_root.join(file))
+            canonical_or_normalized(self.builtin_root.join(file))
         } else {
-            normalize_path(self.workspace_root.join(file))
+            canonical_or_normalized(self.workspace_root.join(file))
         };
         if resolved.extension().and_then(|e| e.to_str()) != Some("js") {
             return Err(BrowserScriptError::ExpectedJsFile);
         }
-        if is_under(&resolved, &self.builtin_root)
-            || is_under(&resolved, &self.workspace_root)
-            || is_allowed_skill_path(&resolved, &self.workspace_root, &self.home_dir)
-        {
+        if self.allowed_roots().iter().any(|root| is_under(&resolved, root)) {
             return Ok(resolved);
         }
         Err(BrowserScriptError::PathNotAllowed(
             resolved.display().to_string(),
         ))
     }
+
+    fn allowed_roots(&self) -> Vec<PathBuf> {
+        vec![
+            self.builtin_root.clone(),
+            canonical_or_normalized(self.workspace_root.join(".claude/skills")),
+            canonical_or_normalized(self.workspace_root.join(".uclaw/skills")),
+        ]
+    }
 }
 
 fn is_under(path: &Path, root: &Path) -> bool {
     path == root || path.starts_with(root)
-}
-
-fn is_allowed_skill_path(path: &Path, workspace_root: &Path, home_dir: &Path) -> bool {
-    let text = path.to_string_lossy();
-    let marker = "/.claude/skills/";
-    let Some(idx) = text.find(marker) else {
-        return false;
-    };
-    let root = normalize_path(Path::new(&text[..idx]));
-    root == home_dir || workspace_root == root || workspace_root.starts_with(root)
 }
 
 fn normalize_path(path: impl AsRef<Path>) -> PathBuf {
@@ -74,6 +67,10 @@ fn normalize_path(path: impl AsRef<Path>) -> PathBuf {
         }
     }
     normalized
+}
+
+fn canonical_or_normalized(path: impl AsRef<Path>) -> PathBuf {
+    std::fs::canonicalize(path.as_ref()).unwrap_or_else(|_| normalize_path(path))
 }
 
 #[cfg(test)]
@@ -92,16 +89,45 @@ mod tests {
     }
 
     #[test]
-    fn allows_workspace_relative_script() {
+    fn rejects_workspace_relative_script_outside_allowed_roots() {
         let policy = ScriptPathPolicy::new(
             "/app/resources/live-room".into(),
             "/workspace".into(),
             "/Users/example".into(),
         );
-        let resolved = policy.resolve("./scripts/live.js").unwrap();
+        let err = policy.resolve("./scripts/live.js").unwrap_err().to_string();
+        assert!(err.contains("path_not_allowed"));
+    }
+
+    #[test]
+    fn allows_workspace_claude_skill_script() {
+        let policy = ScriptPathPolicy::new(
+            "/app/resources/live-room".into(),
+            "/workspace".into(),
+            "/Users/example".into(),
+        );
+        let resolved = policy
+            .resolve(".claude/skills/bili-get-messages/index.js")
+            .unwrap();
         assert_eq!(
             resolved,
-            std::path::PathBuf::from("/workspace/scripts/live.js")
+            std::path::PathBuf::from("/workspace/.claude/skills/bili-get-messages/index.js")
+        );
+    }
+
+    #[test]
+    fn allows_workspace_uclaw_skill_script() {
+        let policy = ScriptPathPolicy::new(
+            "/app/resources/live-room".into(),
+            "/workspace".into(),
+            "/Users/example".into(),
+        );
+        let resolved = policy
+            .resolve(".uclaw/skills/bili-get-messages/index.js")
+            .unwrap();
+        assert_eq!(
+            resolved,
+            std::path::PathBuf::from("/workspace/.uclaw/skills/bili-get-messages/index.js")
         );
     }
 
@@ -138,6 +164,20 @@ mod tests {
             "/Users/example".into(),
         );
         let err = policy.resolve("../tmp/steal.js").unwrap_err().to_string();
+        assert!(err.contains("path_not_allowed"));
+    }
+
+    #[test]
+    fn rejects_skill_path_traversal_escape() {
+        let policy = ScriptPathPolicy::new(
+            "/app/resources/live-room".into(),
+            "/workspace".into(),
+            "/Users/example".into(),
+        );
+        let err = policy
+            .resolve(".claude/skills/../../secret.js")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("path_not_allowed"));
     }
 }

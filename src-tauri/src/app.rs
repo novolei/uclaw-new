@@ -526,6 +526,7 @@ impl AppState {
 
         // Files rail service — created here, registered into ServiceManager in main.rs Stage 3.
         let files_rail_service = Arc::new(crate::files_rail::FilesRailService::new(app_handle.clone()));
+        let browser_context_manager = Arc::new(crate::browser::BrowserContextManager::new(app_handle.clone()));
 
         // AppRuntimeService — constructed here so it is available to Tauri commands via
         // AppState.  main.rs Stage 3 calls `state.runtime_service.clone()` to register it
@@ -553,6 +554,7 @@ impl AppState {
                 provider_service.clone(),
                 Some(app_handle.clone()),
                 Some(channel_manager.clone()),
+                Some(browser_context_manager.clone()),
             )
         };
 
@@ -772,7 +774,7 @@ impl AppState {
             memubot_config: Arc::new(tokio::sync::RwLock::new(memubot_config)),
             running_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             browser_service: Arc::new(crate::browser::BrowserService::new()),
-            browser_context_manager: Arc::new(crate::browser::BrowserContextManager::new(app_handle.clone())),
+            browser_context_manager,
             trajectory_store,
             tool_budget,
             files_rail_service,

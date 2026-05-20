@@ -43,6 +43,7 @@ use crate::automation::sources::{
     CustomSource, FileSource, RssSource, ScheduleSource, SubscriptionSource,
     TriggerCallback, WebhookSource, WebpageSource, WecomSource,
 };
+use crate::browser::BrowserContextManager;
 use crate::infra::InfraService;
 use crate::memubot_config::AutomationConfig;
 use crate::providers::service::ProviderService;
@@ -76,6 +77,10 @@ fn spec_declares_gbrain(spec: &HumaneAutomationSpec) -> bool {
         .as_ref()
         .map(|value| value.to_string().contains("gbrain"))
         .unwrap_or(false)
+}
+
+pub(crate) fn automation_browser_session_id(spec_id: &str, activity_id: &str) -> String {
+    format!("automation:{spec_id}:{activity_id}")
 }
 
 fn builtin_automation_workspace_root(spec_id: &str) -> PathBuf {
@@ -188,6 +193,8 @@ pub struct AppRuntimeService {
     pub app_handle: Option<tauri::AppHandle>,
     /// Channel manager for extended notification types. Passed to HeadlessDelegate.
     pub channel_manager: Option<Arc<tokio::sync::RwLock<crate::channels::ChannelManager>>>,
+    /// Shared browser context manager used by real automation browser tools.
+    pub browser_context_manager: Option<Arc<BrowserContextManager>>,
 }
 
 impl AppRuntimeService {
@@ -205,6 +212,7 @@ impl AppRuntimeService {
         provider_service: Arc<ProviderService>,
         app_handle: Option<tauri::AppHandle>,
         channel_manager: Option<Arc<tokio::sync::RwLock<crate::channels::ChannelManager>>>,
+        browser_context_manager: Option<Arc<BrowserContextManager>>,
     ) -> Arc<Self> {
         let svc = Arc::new(Self {
             db,
@@ -227,6 +235,7 @@ impl AppRuntimeService {
             self_weak: OnceLock::new(),
             app_handle,
             channel_manager,
+            browser_context_manager,
         });
         let _ = svc.self_weak.set(Arc::downgrade(&svc));
         svc
@@ -709,10 +718,11 @@ impl AppRuntimeService {
         let mut reason_ctx = ReasoningContext::new(system_prompt);
         reason_ctx.messages.push(ChatMessage::user(&initial_message));
 
-        let tools = self.build_automation_tool_registry(
+        let tools = self.build_automation_tool_registry_for_session(
             &workspace_root,
             &permissions.spec,
             spec_declares_gbrain(&spec),
+            Some(automation_browser_session_id(spec_id, &activity_id)),
         );
 
         // Phase 2b cluster A: if we're in a chat-session run, drain the
@@ -1545,11 +1555,28 @@ impl AppRuntimeService {
         spec_permissions: &[Permission],
         gbrain_declared: bool,
     ) -> Arc<crate::agent::tools::tool::ToolRegistry> {
+        self.build_automation_tool_registry_for_session(
+            workspace_root,
+            spec_permissions,
+            gbrain_declared,
+            None,
+        )
+    }
+
+    fn build_automation_tool_registry_for_session(
+        &self,
+        workspace_root: &std::path::Path,
+        spec_permissions: &[Permission],
+        gbrain_declared: bool,
+        browser_session_id: Option<String>,
+    ) -> Arc<crate::agent::tools::tool::ToolRegistry> {
         crate::automation::runtime::tool_registry::build_registry_with_capabilities(
             crate::automation::runtime::tool_registry::AutomationToolRegistryDeps {
                 workspace_root: workspace_root.to_path_buf(),
                 spec_permissions: spec_permissions.to_vec(),
                 gbrain_declared,
+                browser_context_manager: self.browser_context_manager.clone(),
+                browser_session_id,
             },
         )
     }
@@ -1816,6 +1843,7 @@ mod tests {
             Arc::new(ProviderService::new(&tmp).expect("test provider service")),
             None, // app_handle not available in tests
             None, // channel_manager not available in tests
+            None, // browser_context_manager not available in tests
         )
     }
 
