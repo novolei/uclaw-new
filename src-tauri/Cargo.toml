@@ -3,6 +3,7 @@ name = "uclaw"
 version = "0.1.0"
 edition = "2021"
 description = "AI-powered desktop coworker — uClaw"
+license = "Apache-2.0"
 
 [lib]
 name = "uclaw_core"
