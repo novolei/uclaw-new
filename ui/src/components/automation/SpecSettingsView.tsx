@@ -32,6 +32,22 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
     if (Array.isArray(spec.permissionsGranted)) return spec.permissionsGranted as unknown as string[]
     try { return JSON.parse(spec.permissionsGranted as string) } catch { return [] }
   })()
+  const liveMeta = (() => {
+    try {
+      const raw = JSON.parse(spec.specJson)
+      if (raw?.x_uclaw_runtime?.kind !== 'live_room_moderator') return null
+      const config = raw.config ?? {}
+      return {
+        platform: config.platform ?? 'douyin',
+        roomId: config.room_id ?? config.roomId ?? '',
+        knowledgeScope: config.knowledge_scope ?? config.knowledgeScope ?? 'room_only',
+        actionMode: config.action_mode ?? config.actionMode ?? raw.x_uclaw_runtime?.action_mode_default ?? 'real',
+        interval: raw.x_uclaw_runtime?.poll_interval_seconds ?? 30,
+      }
+    } catch {
+      return null
+    }
+  })()
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
@@ -93,6 +109,26 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
               </Row>
             ))}
           </Section>
+
+          {liveMeta && (
+            <Section title="直播间">
+              <Row label="平台" description="">
+                <span className="text-xs text-muted-foreground">{liveMeta.platform}</span>
+              </Row>
+              <Row label="房间" description="">
+                <span className="text-xs text-muted-foreground">{liveMeta.roomId || '未设置'}</span>
+              </Row>
+              <Row label="知识库" description="仅使用直播间隔离命名空间">
+                <span className="text-xs text-muted-foreground">{liveMeta.knowledgeScope}</span>
+              </Row>
+              <Row label="房管动作" description="第一版默认真实执行">
+                <span className="text-xs text-muted-foreground">{liveMeta.actionMode}</span>
+              </Row>
+              <Row label="扫描间隔" description="">
+                <span className="text-xs text-muted-foreground">{liveMeta.interval}s</span>
+              </Row>
+            </Section>
+          )}
 
           {/* info */}
           <Section title="关于">

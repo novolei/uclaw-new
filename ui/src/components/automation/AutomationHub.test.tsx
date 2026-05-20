@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { ActivityRow } from './AutomationHub'
-import type { AutomationActivity } from '@/lib/tauri-bridge'
+import { ActivityRow, AutomationHub } from './AutomationHub'
+import type { AutomationActivity, HumaneSpecRow } from '@/lib/tauri-bridge'
 
 const baseActivity: AutomationActivity = {
   id: 'act-1', specId: 's1', subscriptionId: null,
@@ -13,6 +13,39 @@ const baseActivity: AutomationActivity = {
   reportText: 'done', reportOutcome: 'useful',
   escalationId: null, resumedFromActivityId: null, resumedFromEscalationId: null,
   workingDir: '',
+}
+
+function liveSpec(id: string, name: string, roomId: string): HumaneSpecRow {
+  return {
+    id,
+    name,
+    version: '0.1.0',
+    author: 'uClaw',
+    description: 'Live room spec',
+    systemPrompt: 'moderate',
+    specFormat: 'humane_v1',
+    specYaml: '',
+    specJson: JSON.stringify({
+      type: 'automation',
+      x_uclaw_runtime: { kind: 'live_room_moderator' },
+      config: { platform: 'douyin', room_id: roomId },
+    }),
+    userConfigValues: '{}',
+    permissionsGranted: '[]',
+    permissionsDenied: '[]',
+    status: 'active',
+    enabled: true,
+    spaceId: null,
+    source: 'builtin',
+    sourceRef: null,
+    sourceVersion: null,
+    createdAt: 1,
+    updatedAt: 1,
+    lastRunAt: null,
+    lastRunOutcome: null,
+    triggerPhrase: '',
+    systemPromptOverride: '',
+  }
 }
 
 describe('ActivityRow', () => {
@@ -37,5 +70,16 @@ describe('ActivityRow', () => {
     expect(row).not.toBeNull()
     fireEvent.keyDown(row!, { key: 'Enter' })
     expect(onOpen).toHaveBeenCalledWith('sess-1')
+  })
+})
+
+describe('AutomationHub live room specs', () => {
+  it('distinguishes concurrent live room specs by platform and room', () => {
+    render(<AutomationHub initialSpecs={[
+      liveSpec('a', 'Room A', 'room-a'),
+      liveSpec('b', 'Room B', 'room-b'),
+    ]} />)
+    expect(screen.getAllByText(/room-a/i).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/room-b/i).length).toBeGreaterThan(0)
   })
 })

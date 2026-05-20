@@ -22,6 +22,21 @@ const TAB_LABELS: Record<AutomationTab, string> = {
   settings: '设置',
 }
 
+function liveSpecMeta(spec: HumaneSpecRow): { platform?: string; roomId?: string; roomTitle?: string } | null {
+  try {
+    const raw = JSON.parse(spec.specJson)
+    if (raw?.x_uclaw_runtime?.kind !== 'live_room_moderator') return null
+    const config = raw.config ?? {}
+    return {
+      platform: config.platform ?? 'douyin',
+      roomId: config.room_id ?? config.roomId,
+      roomTitle: config.room_title ?? config.roomTitle,
+    }
+  } catch {
+    return null
+  }
+}
+
 interface Props {
   specId: string
 }
@@ -56,6 +71,11 @@ export function SpecRunSurface({ specId }: Props) {
   }, [hasActiveRun, refreshActivities])
 
   if (!spec) return null
+  const liveMeta = liveSpecMeta(spec)
+  const activeLiveRuns = liveMeta
+    ? activities.filter((a) => a.status === 'running' || a.status === 'queued').length
+    : 0
+  const latestLiveReport = activities.find((a) => a.reportText?.includes('Live Room Run Report'))
 
   async function handleRun() {
     setIsRunning(true)
@@ -77,6 +97,15 @@ export function SpecRunSurface({ specId }: Props) {
   return (
     <div className="flex flex-col flex-1 h-full overflow-hidden">
       <SpecRunHeader specName={spec.name} onRun={handleRun} isRunning={isRunning} />
+
+      {liveMeta && (
+        <div className="flex items-center gap-3 px-3 py-2 border-b border-border/50 text-xs text-muted-foreground shrink-0">
+          <span className="font-medium text-foreground">{liveMeta.platform}</span>
+          <span>{liveMeta.roomTitle || liveMeta.roomId || '未设置房间'}</span>
+          <span>{activeLiveRuns} active</span>
+          {latestLiveReport?.reportText && <span>report ready</span>}
+        </div>
+      )}
 
       {/* tab bar */}
       <div className="flex gap-0 border-b border-border/50 px-3 shrink-0">
