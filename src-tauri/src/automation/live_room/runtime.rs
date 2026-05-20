@@ -1,3 +1,7 @@
+use std::sync::{Arc, Mutex as StdMutex};
+
+use crate::automation::runtime::service::AppRuntimeService;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LiveRunKey {
     pub spec_id: String,
@@ -37,6 +41,35 @@ pub struct LiveRunState {
     pub last_tick_ms: Option<i64>,
     pub ended_signal_count: u8,
     pub stop_requested: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveRoomStatus {
+    pub status: String,
+    pub signals: Vec<String>,
+    pub reason: Option<String>,
+}
+
+pub fn should_stop_for_room_status(
+    status: &LiveRoomStatus,
+    state: &mut LiveRunState,
+) -> Option<LiveStopReason> {
+    match status.status.as_str() {
+        "ended" => {
+            state.ended_signal_count = state.ended_signal_count.saturating_add(1);
+            if state.ended_signal_count >= 2 {
+                Some(LiveStopReason::RoomEnded)
+            } else {
+                None
+            }
+        }
+        "login_required" => Some(LiveStopReason::LoginRequired),
+        "blocked" => Some(LiveStopReason::Blocked),
+        _ => {
+            state.ended_signal_count = 0;
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -129,6 +162,110 @@ impl LiveRunReport {
     }
 }
 
+pub async fn execute_live_room_run(
+    service: &AppRuntimeService,
+    spec_id: &str,
+    activity_id: String,
+    session_id: String,
+    spec_value: serde_json::Value,
+    payload: serde_json::Value,
+    _workspace_root: std::path::PathBuf,
+) -> anyhow::Result<()> {
+    let started_at_ms = chrono::Utc::now().timestamp_millis();
+    let platform = live_value(&spec_value, &payload, "platform").unwrap_or_else(|| "douyin".into());
+    let room_id = live_value(&spec_value, &payload, "room_id")
+        .or_else(|| live_value(&spec_value, &payload, "roomId"))
+        .unwrap_or_else(|| "unknown-room".into());
+    let live_url = live_value(&spec_value, &payload, "live_url")
+        .or_else(|| live_value(&spec_value, &payload, "liveUrl"))
+        .unwrap_or_default();
+
+    let report = LiveRunReport {
+        platform,
+        room_id,
+        room_title: None,
+        live_url,
+        started_at_ms,
+        ended_at_ms: chrono::Utc::now().timestamp_millis(),
+        stop_reason: LiveStopReason::FatalAdapterError,
+        comments_scanned: 0,
+        replies_sent: 0,
+        warnings_sent: 0,
+        mutes_executed: 0,
+        removals_executed: 0,
+        gbrain_recalls: 0,
+        gbrain_writes: 0,
+        gbrain_slugs: Vec::new(),
+        error_kinds: vec!["live_room_executor_not_connected".to_string()],
+    };
+    persist_final_report(&service.db, &activity_id, &report).await?;
+    {
+        let conn = service
+            .db
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+        conn.execute(
+            "UPDATE automation_activities
+             SET status = 'failed', error_text = ?2, completed_at = ?3
+             WHERE id = ?1",
+            rusqlite::params![
+                activity_id,
+                "live_room_executor_not_connected",
+                report.ended_at_ms
+            ],
+        )?;
+        crate::automation::runtime::run_session::persist_transcript(
+            &conn,
+            &session_id,
+            &[crate::agent::types::ChatMessage::user(&format!(
+                "Live-room automation `{}` ended before adapter execution was connected.",
+                spec_id
+            ))],
+        )
+        .ok();
+    }
+    Ok(())
+}
+
+pub async fn persist_final_report(
+    db: &Arc<StdMutex<rusqlite::Connection>>,
+    activity_id: &str,
+    report: &LiveRunReport,
+) -> anyhow::Result<()> {
+    let text = report.to_markdown();
+    let artifacts = serde_json::json!([{
+        "kind": "live_room_report",
+        "platform": report.platform,
+        "room_id": report.room_id,
+        "stop_reason": report.stop_reason,
+    }]);
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    conn.execute(
+        "UPDATE automation_activities
+         SET report_text = ?1, report_artifacts_json = ?2
+         WHERE id = ?3",
+        rusqlite::params![text, artifacts.to_string(), activity_id],
+    )?;
+    Ok(())
+}
+
+fn live_value(
+    spec_value: &serde_json::Value,
+    payload: &serde_json::Value,
+    key: &str,
+) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            spec_value
+                .get("config")
+                .and_then(|v| v.get(key))
+                .and_then(|v| v.as_str())
+        })
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,5 +320,86 @@ mod tests {
         assert!(text.contains("Stop reason: `room_ended`"));
         assert!(text.contains("Comments scanned: 42"));
         assert!(text.contains("live/douyin/room-1/facts/topic"));
+    }
+
+    #[test]
+    fn room_ended_requires_two_consecutive_signals() {
+        let mut state = LiveRunState::default();
+        let ended = LiveRoomStatus {
+            status: "ended".into(),
+            signals: vec!["ended_text".into(), "no_comment_input".into()],
+            reason: Some("room ended".into()),
+        };
+        assert_eq!(should_stop_for_room_status(&ended, &mut state), None);
+        assert_eq!(
+            should_stop_for_room_status(&ended, &mut state),
+            Some(LiveStopReason::RoomEnded)
+        );
+    }
+
+    #[test]
+    fn live_status_resets_ended_signal_count() {
+        let mut state = LiveRunState {
+            ended_signal_count: 1,
+            ..LiveRunState::default()
+        };
+        let live = LiveRoomStatus {
+            status: "live".into(),
+            signals: vec![],
+            reason: None,
+        };
+        assert_eq!(should_stop_for_room_status(&live, &mut state), None);
+        assert_eq!(state.ended_signal_count, 0);
+    }
+
+    #[tokio::test]
+    async fn persist_final_report_updates_activity_report_fields() {
+        let db = Arc::new(StdMutex::new(rusqlite::Connection::open_in_memory().unwrap()));
+        {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "CREATE TABLE automation_activities (
+                    id TEXT PRIMARY KEY,
+                    report_text TEXT,
+                    report_artifacts_json TEXT NOT NULL DEFAULT '[]'
+                )",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO automation_activities (id, report_artifacts_json) VALUES ('a1', '[]')",
+                [],
+            )
+            .unwrap();
+        }
+        let report = LiveRunReport {
+            platform: "douyin".into(),
+            room_id: "room-1".into(),
+            room_title: None,
+            live_url: "".into(),
+            started_at_ms: 1000,
+            ended_at_ms: 2000,
+            stop_reason: LiveStopReason::UserStopped,
+            comments_scanned: 1,
+            replies_sent: 0,
+            warnings_sent: 0,
+            mutes_executed: 0,
+            removals_executed: 0,
+            gbrain_recalls: 0,
+            gbrain_writes: 0,
+            gbrain_slugs: Vec::new(),
+            error_kinds: Vec::new(),
+        };
+        persist_final_report(&db, "a1", &report).await.unwrap();
+        let conn = db.lock().unwrap();
+        let (text, artifacts): (String, String) = conn
+            .query_row(
+                "SELECT report_text, report_artifacts_json FROM automation_activities WHERE id='a1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(text.contains("Stop reason: `user_stopped`"));
+        assert!(artifacts.contains("live_room_report"));
     }
 }

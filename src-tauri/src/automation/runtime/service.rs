@@ -49,6 +49,19 @@ use crate::services::{ManagedService, ServiceHealth, ServiceStatus};
 /// configurable via `HumaneAutomationSpec.config_schema`).
 const PER_SPEC_CONCURRENCY: usize = 2;
 
+pub(crate) fn automation_executor_kind(spec_json: &serde_json::Value) -> &'static str {
+    if spec_json
+        .get("x_uclaw_runtime")
+        .and_then(|v| v.get("kind"))
+        .and_then(|v| v.as_str())
+        == Some("live_room_moderator")
+    {
+        "live_room_moderator"
+    } else {
+        "agentic_loop"
+    }
+}
+
 // ─── EscalationRow ───────────────────────────────────────────────────────────
 
 /// A row from `automation_escalations` returned by `list_pending_escalations`.
@@ -452,18 +465,19 @@ impl AppRuntimeService {
         );
 
         // ── 3. load spec for filter evaluation ──────────────────────────────
-        let spec = match self.load_spec_json(spec_id) {
-            Ok((json, _)) => match Self::parse_humane_spec(&json) {
+        let (spec_json, spec_value) = match self.load_spec_json(spec_id) {
+            Ok(pair) => pair,
+            Err(e) => {
+                self.update_activity_status(&activity_id, "failed", Some(&e.to_string()))?;
+                return Err(e);
+            }
+        };
+        let spec = match Self::parse_humane_spec(&spec_json) {
                 Ok(s) => s,
                 Err(e) => {
                     self.update_activity_status(&activity_id, "failed", Some(&e.to_string()))?;
                     return Err(e);
                 }
-            },
-            Err(e) => {
-                self.update_activity_status(&activity_id, "failed", Some(&e.to_string()))?;
-                return Err(e);
-            }
         };
 
         // ── 4. evaluate filters ──────────────────────────────────────────────
@@ -578,6 +592,19 @@ impl AppRuntimeService {
             "[AppRuntimeService] run-session {} created for spec {} (activity {})",
             session_id, spec_id, activity_id
         );
+
+        if automation_executor_kind(&spec_value) == "live_room_moderator" {
+            return crate::automation::live_room::runtime::execute_live_room_run(
+                self,
+                spec_id,
+                activity_id,
+                session_id,
+                spec_value,
+                payload,
+                workspace_root,
+            )
+            .await;
+        }
 
         // ── 8. resolve the LLM provider + model ──────────────────────────────
         // A resolution failure (no active model / no API key) is NOT fatal to
@@ -1545,6 +1572,21 @@ mod tests {
             "system_prompt": "you are a test agent",
             "subscriptions": []
         }"#
+    }
+
+    #[test]
+    fn live_room_spec_uses_live_room_executor() {
+        let spec = serde_json::json!({
+            "type": "automation",
+            "x_uclaw_runtime": { "kind": "live_room_moderator" }
+        });
+        assert_eq!(automation_executor_kind(&spec), "live_room_moderator");
+    }
+
+    #[test]
+    fn default_spec_uses_agentic_loop_executor() {
+        let spec = serde_json::json!({ "type": "automation" });
+        assert_eq!(automation_executor_kind(&spec), "agentic_loop");
     }
 
     fn make_service(conn: rusqlite::Connection) -> Arc<AppRuntimeService> {
