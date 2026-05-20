@@ -63,4 +63,21 @@ mod tests {
         assert_eq!(batch.comments[0].author_id, "u1");
         assert_eq!(batch.comments[0].text, "价格多少");
     }
+
+    #[test]
+    fn built_in_douyin_scripts_exist() {
+        let root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/live-room/douyin");
+        for name in [
+            "enter_room.js",
+            "check_room_status.js",
+            "scan_comments.js",
+            "send_reply.js",
+            "warn_user.js",
+            "mute_user.js",
+            "remove_user.js",
+        ] {
+            assert!(root.join(name).is_file(), "missing script {name}");
+        }
+    }
 }
