@@ -249,14 +249,16 @@ mod tests {
 
     #[test]
     fn deserialize_page_detail_from_gbrain_json() {
-        let json = r#"{
+        // r##"..."## delimiter: the JSON contains `"# Alice` whose `"#`
+        // would prematurely close a plain r#"..."# raw string.
+        let json = r##"{
             "id": 1, "slug": "person-alice", "type": "person",
             "title": "Alice", "compiled_truth": "# Alice\nFounder.",
             "frontmatter": {"type":"person","title":"Alice"},
             "created_at": "2026-05-01T00:00:00Z",
             "updated_at": "2026-05-10T00:00:00Z",
             "tags": ["founder","yc"]
-        }"#;
+        }"##;
         let d = parse_page_detail(json).expect("should parse");
         assert_eq!(d.slug, "person-alice");
         assert_eq!(d.page_type, "person");
