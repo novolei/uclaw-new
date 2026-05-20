@@ -163,9 +163,10 @@ impl LiveRunReport {
                 .join("\n")
         };
         format!(
-            "# Live Room Run Report\n\n- Platform: `{}`\n- Room: `{}`\n- Stop reason: `{}`\n- Comments scanned: {}\n- Replies sent: {}\n- Warnings: {}\n- Mutes: {}\n- Removals: {}\n- gbrain recalls: {}\n- gbrain writes: {}\n\n## gbrain pages\n{}\n\n## errors\n{}\n",
+            "# Live Room Run Report\n\n- Platform: `{}`\n- Room: `{}`\n- Live URL: `{}`\n- Stop reason: `{}`\n- Comments scanned: {}\n- Replies sent: {}\n- Warnings: {}\n- Mutes: {}\n- Removals: {}\n- gbrain recalls: {}\n- gbrain writes: {}\n\n## gbrain pages\n{}\n\n## errors\n{}\n",
             self.platform,
             self.room_id,
+            self.live_url,
             stop_reason,
             self.comments_scanned,
             self.replies_sent,
@@ -294,6 +295,14 @@ async fn run_live_room_adapter_loop(
         crate::automation::runtime::service::automation_browser_session_id(spec_id, activity_id);
     let ctx = ctx_mgr.get_or_create(&browser_session_id).await?;
     let mut tab_id = ctx.navigate("new", &report.live_url, app_handle).await?;
+    persist_live_progress_report(
+        &service.db,
+        activity_id,
+        report,
+        &browser_session_id,
+        &tab_id,
+    )
+    .await?;
 
     if let Some(profile_id) = configured_auth_profile_id(spec_value) {
         let broker = BrowserAuthProfileBroker::system_default()
@@ -303,6 +312,14 @@ async fn run_live_room_adapter_loop(
             .map_err(|e| anyhow::anyhow!("browser_auth_profile_load:{e}"))?;
         ctx.apply_storage_state(&tab_id, &state, app_handle).await?;
         tab_id = ctx.navigate(&tab_id, &report.live_url, app_handle).await?;
+        persist_live_progress_report(
+            &service.db,
+            activity_id,
+            report,
+            &browser_session_id,
+            &tab_id,
+        )
+        .await?;
     } else {
         anyhow::bail!("browser_auth_profile_missing");
     }
@@ -323,6 +340,14 @@ async fn run_live_room_adapter_loop(
         .get("roomTitle")
         .and_then(|v| v.as_str())
         .map(str::to_string);
+    persist_live_progress_report(
+        &service.db,
+        activity_id,
+        report,
+        &browser_session_id,
+        &tab_id,
+    )
+    .await?;
 
     let runtime = LiveRuntimeMetadata::from_spec_json(spec_value).unwrap_or(LiveRuntimeMetadata {
         kind: "live_room_moderator".into(),
@@ -462,8 +487,10 @@ pub async fn persist_final_report(
     let text = report.to_markdown();
     let artifacts = serde_json::json!([{
         "kind": "live_room_report",
+        "title": "Live room report",
         "platform": report.platform,
         "room_id": report.room_id,
+        "live_url": report.live_url,
         "stop_reason": report.stop_reason,
     }]);
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
@@ -471,6 +498,54 @@ pub async fn persist_final_report(
         "UPDATE automation_activities
          SET report_text = ?1, report_artifacts_json = ?2
          WHERE id = ?3 AND status != 'cancelled'",
+        rusqlite::params![text, artifacts.to_string(), activity_id],
+    )?;
+    Ok(())
+}
+
+async fn persist_live_progress_report(
+    db: &Arc<StdMutex<rusqlite::Connection>>,
+    activity_id: &str,
+    report: &LiveRunReport,
+    browser_session_id: &str,
+    tab_id: &str,
+) -> anyhow::Result<()> {
+    let text = format!(
+        "# Live Room Run Report\n\n- Platform: `{}`\n- Room: `{}`\n- Live URL: `{}`\n- Status: `running`\n- Comments scanned: {}\n\n## browser\n- Browser session: `{}`\n- Tab: `{}`\n",
+        report.platform,
+        report.room_id,
+        report.live_url,
+        report.comments_scanned,
+        browser_session_id,
+        tab_id,
+    );
+    let artifacts = serde_json::json!([
+        {
+            "kind": "live_room_report",
+            "title": "Live room report",
+            "platform": report.platform,
+            "room_id": report.room_id,
+            "live_url": report.live_url,
+            "stop_reason": report.stop_reason,
+        },
+        {
+            "kind": "url",
+            "title": report.live_url,
+            "path": report.live_url,
+        },
+        {
+            "kind": "live_room_browser",
+            "title": "Live room browser",
+            "browser_session_id": browser_session_id,
+            "tab_id": tab_id,
+            "live_url": report.live_url,
+        }
+    ]);
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    conn.execute(
+        "UPDATE automation_activities
+         SET report_text = ?1, report_artifacts_json = ?2
+         WHERE id = ?3 AND status IN ('queued', 'running')",
         rusqlite::params![text, artifacts.to_string(), activity_id],
     )?;
     Ok(())
@@ -560,6 +635,7 @@ mod tests {
         };
         let text = report.to_markdown();
         assert!(text.contains("Stop reason: `room_ended`"));
+        assert!(text.contains("Live URL: `https://www.douyin.com/live/room-1`"));
         assert!(text.contains("Comments scanned: 42"));
         assert!(text.contains("live/douyin/room-1/facts/topic"));
     }
@@ -706,5 +782,64 @@ mod tests {
             .unwrap();
         assert!(text.contains("Stop reason: `user_stopped`"));
         assert!(artifacts.contains("live_room_report"));
+        assert!(artifacts.contains("Live room report"));
+    }
+
+    #[tokio::test]
+    async fn persist_live_progress_report_records_url_and_browser_artifact() {
+        let db = Arc::new(StdMutex::new(
+            rusqlite::Connection::open_in_memory().unwrap(),
+        ));
+        {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "CREATE TABLE automation_activities (
+                    id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    report_text TEXT,
+                    report_artifacts_json TEXT NOT NULL DEFAULT '[]'
+                )",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO automation_activities (id, status, report_artifacts_json) VALUES ('a1', 'running', '[]')",
+                [],
+            )
+            .unwrap();
+        }
+        let report = LiveRunReport {
+            platform: "douyin".into(),
+            room_id: "room-1".into(),
+            room_title: None,
+            live_url: "https://live.douyin.com/room-1".into(),
+            started_at_ms: 1000,
+            ended_at_ms: 2000,
+            stop_reason: LiveStopReason::FatalAdapterError,
+            comments_scanned: 0,
+            replies_sent: 0,
+            warnings_sent: 0,
+            mutes_executed: 0,
+            removals_executed: 0,
+            gbrain_recalls: 0,
+            gbrain_writes: 0,
+            gbrain_slugs: Vec::new(),
+            error_kinds: Vec::new(),
+        };
+        persist_live_progress_report(&db, "a1", &report, "browser-session", "tab-1")
+            .await
+            .unwrap();
+        let conn = db.lock().unwrap();
+        let (text, artifacts): (String, String) = conn
+            .query_row(
+                "SELECT report_text, report_artifacts_json FROM automation_activities WHERE id='a1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(text.contains("Live URL: `https://live.douyin.com/room-1`"));
+        assert!(text.contains("Status: `running`"));
+        assert!(artifacts.contains("live_room_browser"));
+        assert!(artifacts.contains("browser-session"));
     }
 }
