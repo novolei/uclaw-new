@@ -3,6 +3,8 @@ pub mod agentic_loop;
 pub mod regular_task;
 // M2-A pilot — BaselineBlock trait + 3-block registry.
 pub mod baseline_blocks;
+// M2-G pilot — StructuredFold 8-field compact representation.
+pub mod compact;
 // M1-T4b — opt-in rollout bridge for direct run_agentic_loop callsites.
 pub mod rollout_integration;
 pub mod code_rescue;
