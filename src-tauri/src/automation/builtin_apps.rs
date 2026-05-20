@@ -401,6 +401,31 @@ mod tests {
     }
 
     #[test]
+    fn bundled_douyin_live_moderator_declares_copyable_skills() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("builtin-automations");
+        let apps = load_builtin_apps(root).unwrap();
+        let app = apps
+            .into_iter()
+            .find(|app| app.id == "douyin-live-room-moderator")
+            .expect("douyin live room moderator app");
+        let skill_ids: Vec<_> = app.skills.iter().map(|skill| skill.id.as_str()).collect();
+        assert_eq!(
+            skill_ids,
+            vec![
+                "douyin-check-room-status",
+                "douyin-enter-room",
+                "douyin-mute-user",
+                "douyin-remove-user",
+                "douyin-scan-comments",
+                "douyin-send-reply",
+                "douyin-warn-user",
+            ]
+        );
+    }
+
+    #[test]
     fn sync_builtin_skills_rejects_symlink_escape() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("skill");

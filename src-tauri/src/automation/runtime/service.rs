@@ -2344,6 +2344,32 @@ mod tests {
             Some("live_room_moderator")
         );
         assert_eq!(spec_json["config"]["platform"].as_str(), Some("douyin"));
+        assert_eq!(
+            spec_json["requires"]["mcps"][0]["id"].as_str(),
+            Some("ai-browser")
+        );
+        assert_eq!(
+            spec_json["requires"]["mcps"][1]["id"].as_str(),
+            Some("gbrain")
+        );
+        let skill_ids: Vec<_> = spec_json["requires"]["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|skill| skill["id"].as_str())
+            .collect();
+        assert_eq!(
+            skill_ids,
+            vec![
+                "douyin-enter-room",
+                "douyin-scan-comments",
+                "douyin-check-room-status",
+                "douyin-send-reply",
+                "douyin-warn-user",
+                "douyin-mute-user",
+                "douyin-remove-user",
+            ]
+        );
 
         let bili = rows
             .iter()
