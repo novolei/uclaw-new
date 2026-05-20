@@ -9,6 +9,7 @@ LOG_DIR="${UCLAW_UI_DEBUG_LOG_DIR:-/tmp/uclaw-ui-debug-$STAMP}"
 VITE_HOST="${UCLAW_UI_DEBUG_HOST:-127.0.0.1}"
 VITE_PORT="${UCLAW_UI_DEBUG_PORT:-5173}"
 VITE_URL="http://${VITE_HOST}:${VITE_PORT}/"
+TAURI_DEV_CONFIG="$LOG_DIR/tauri-dev-config.json"
 PIDS=()
 
 cleanup() {
@@ -38,6 +39,14 @@ print_process_truth() {
 }
 
 mkdir -p "$LOG_DIR"
+cat >"$TAURI_DEV_CONFIG" <<JSON
+{
+  "build": {
+    "beforeDevCommand": null,
+    "devUrl": "$VITE_URL"
+  }
+}
+JSON
 
 print_header "preflight"
 echo "[ui-debug] root=$ROOT_DIR"
@@ -71,7 +80,7 @@ fi
 print_header "start tauri"
 (
   cd "$TAURI_DIR"
-  cargo tauri dev
+  cargo tauri dev --config "$TAURI_DEV_CONFIG"
 ) >"$LOG_DIR/tauri.log" 2>&1 &
 PIDS+=("$!")
 
