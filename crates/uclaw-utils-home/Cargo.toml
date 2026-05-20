@@ -1,0 +1,16 @@
+[package]
+name = "uclaw-utils-home"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+uclaw-utils-absolute-path = { path = "../uclaw-utils-absolute-path", version = "0.1" }
+dirs = "6"
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"
+
+[lib]
+doctest = false

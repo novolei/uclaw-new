@@ -16,8 +16,8 @@ for f in "${STAGED[@]}"; do
     case "$f" in
         src-tauri/src/tauri_commands.rs) continue ;;
         src-tauri/src/memubot_config.rs) continue ;;
-        src-tauri/uclaw-utils-home/*) continue ;;       # the crate that defines uclaw_home()
-        src-tauri/uclaw-utils-abs-path/*) continue ;;
+        crates/uclaw-utils-home/*) continue ;;          # the crate that defines uclaw_home() (Phase 0.5-T5a)
+        crates/uclaw-utils-absolute-path/*) continue ;; # AbsolutePathBuf (Phase 0.5-T4)
     esac
 
     added=$(git diff --cached -U0 -- "$f" | grep -E '^\+' | grep -vE '^\+\+\+' || true)

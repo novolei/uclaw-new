@@ -30,7 +30,11 @@ members = [
     "crates/uclaw-utils-cache",
     "crates/uclaw-utils-sleep-inhibitor",
     "crates/uclaw-utils-template",
-    # T5/T6 crates land here.
+    # Phase 0.5-T5a — derived utility crates (depend on T4 absolute-path/cache)
+    "crates/uclaw-utils-home",
+    "crates/uclaw-utils-path-utils",
+    "crates/uclaw-utils-image",
+    # T5b/T6 crates land here.
 ]
 # Exclude any temporary or in-progress trees. Keeping this explicit lets
 # `cargo metadata` stay deterministic while crates/ is still empty.
