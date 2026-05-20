@@ -1773,6 +1773,9 @@ export const browserUIReload = (sessionId: string, tabId: string): Promise<void>
 export const browserUICloseTab = (sessionId: string, tabId: string): Promise<void> =>
   invoke<void>('browser_ui_close_tab', { sessionId, tabId })
 
+export const browserUIClick = (sessionId: string, tabId: string, x: number, y: number): Promise<void> =>
+  invoke<void>('browser_ui_click', { sessionId, tabId, x, y })
+
 export const browserGetDOMState = (sessionId: string, tabId: string): Promise<DOMStateResponse> =>
   invoke<DOMStateResponse>('browser_get_dom_state', { sessionId, tabId })
 

@@ -1065,6 +1065,7 @@ fn main() {
             uclaw_core::tauri_commands::browser_ui_switch_tab,
             uclaw_core::tauri_commands::browser_ui_reload,
             uclaw_core::tauri_commands::browser_ui_close_tab,
+            uclaw_core::tauri_commands::browser_ui_click,
             // System Tray / Badge Commands (Phase 3)
             uclaw_core::tauri_commands::update_badge_count,
             // Automation Commands (Phase 3)

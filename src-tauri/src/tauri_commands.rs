@@ -10894,6 +10894,19 @@ pub async fn browser_ui_close_tab(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn browser_ui_click(
+    session_id: String,
+    tab_id: String,
+    x: f64,
+    y: f64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let ctx = state.browser_context_manager.get_or_create(&session_id).await
+        .map_err(|e| e.to_string())?;
+    ctx.click_at(&tab_id, x, y).await.map_err(|e| e.to_string())
+}
+
 // ─── System Tray / Badge Commands (Phase 3) ─────────────────────────────────
 
 #[tauri::command]

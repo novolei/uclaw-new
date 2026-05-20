@@ -12,7 +12,8 @@ use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chromiumoxide::browser::BrowserConfig;
 use chromiumoxide::cdp::browser_protocol::input::{
-    DispatchKeyEventParams, DispatchKeyEventType,
+    DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams, DispatchMouseEventType,
+    MouseButton,
 };
 use chromiumoxide::cdp::browser_protocol::page::{
     ScreencastFrameAckParams, StartScreencastFormat, StartScreencastParams,
@@ -472,6 +473,37 @@ impl BrowserContext {
             .click()
             .await
             .map_err(|e| anyhow!("Click [{}] failed: {}", index, e))?;
+        Ok(())
+    }
+
+    pub async fn click_at(&self, tab_id: &str, x: f64, y: f64) -> Result<()> {
+        let page = self.get_page(tab_id).await?;
+        let press = DispatchMouseEventParams::builder()
+            .r#type(DispatchMouseEventType::MousePressed)
+            .x(x)
+            .y(y)
+            .button(MouseButton::Left)
+            .buttons(1)
+            .click_count(1)
+            .build()
+            .map_err(|e| anyhow!("mouse_pressed params: {e}"))?;
+        let release = DispatchMouseEventParams::builder()
+            .r#type(DispatchMouseEventType::MouseReleased)
+            .x(x)
+            .y(y)
+            .button(MouseButton::Left)
+            .buttons(0)
+            .click_count(1)
+            .build()
+            .map_err(|e| anyhow!("mouse_released params: {e}"))?;
+
+        page.execute(press)
+            .await
+            .map_err(|e| anyhow!("mouse_pressed: {e}"))?;
+        page.execute(release)
+            .await
+            .map_err(|e| anyhow!("mouse_released: {e}"))?;
+        self.invalidate_dom_cache(tab_id).await;
         Ok(())
     }
 

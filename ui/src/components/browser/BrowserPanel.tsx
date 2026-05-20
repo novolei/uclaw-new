@@ -155,7 +155,7 @@ export function BrowserPanel({ agentSessionId, initialUrl }: BrowserPanelProps):
         tabId={activeTabId}
         url={displayUrl}
       />
-      <BrowserScreencastView sessionId={agentSessionId} />
+      <BrowserScreencastView sessionId={agentSessionId} tabId={activeTabId} />
       <BrowserTaskMonitor sessionId={agentSessionId} />
       <BrowserStatusBar sessionId={agentSessionId} />
     </div>

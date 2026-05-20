@@ -9,7 +9,7 @@ export interface AutomationLoginWindowRequest {
 function safeWindowSegment(value: string): string {
   const cleaned = value
     .trim()
-    .replace(/[^a-zA-Z0-9:_/-]+/g, '-')
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
     .replace(/-+/g, '-')
     .slice(0, 80)
   return cleaned || 'login'

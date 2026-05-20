@@ -7,12 +7,46 @@ import {
   browserDOMOverlayVisibleAtom,
 } from '@/atoms/browser-atoms'
 import { BrowserDOMOverlay } from './BrowserDOMOverlay'
+import { browserUIClick } from '@/lib/tauri-bridge'
 
 interface BrowserScreencastViewProps {
   sessionId: string
+  tabId?: string | null
 }
 
-export function BrowserScreencastView({ sessionId }: BrowserScreencastViewProps): React.ReactElement {
+interface CanvasPointMappingInput {
+  clientX: number
+  clientY: number
+  canvasRect: Pick<DOMRect, 'left' | 'top' | 'width' | 'height'>
+  pageWidth: number
+  pageHeight: number
+}
+
+export function mapCanvasPointToPagePoint(input: CanvasPointMappingInput): { x: number; y: number } | null {
+  const { clientX, clientY, canvasRect, pageWidth, pageHeight } = input
+  if (canvasRect.width <= 0 || canvasRect.height <= 0 || pageWidth <= 0 || pageHeight <= 0) {
+    return null
+  }
+
+  const scale = Math.min(canvasRect.width / pageWidth, canvasRect.height / pageHeight)
+  const renderedWidth = pageWidth * scale
+  const renderedHeight = pageHeight * scale
+  const offsetX = (canvasRect.width - renderedWidth) / 2
+  const offsetY = (canvasRect.height - renderedHeight) / 2
+  const localX = clientX - canvasRect.left - offsetX
+  const localY = clientY - canvasRect.top - offsetY
+
+  if (localX < 0 || localY < 0 || localX > renderedWidth || localY > renderedHeight) {
+    return null
+  }
+
+  return {
+    x: localX / scale,
+    y: localY / scale,
+  }
+}
+
+export function BrowserScreencastView({ sessionId, tabId }: BrowserScreencastViewProps): React.ReactElement {
   const frameMap = useAtomValue(browserScreencastFrameAtom)
   const domMap = useAtomValue(browserDOMStateAtom)
   const overlayVisible = useAtomValue(browserDOMOverlayVisibleAtom)
@@ -61,6 +95,22 @@ export function BrowserScreencastView({ sessionId }: BrowserScreencastViewProps)
     return () => { cancelled = true }
   }, [frame])
 
+  const handleCanvasClick = React.useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current
+    if (!canvas || !frame || !tabId) return
+
+    const point = mapCanvasPointToPagePoint({
+      clientX: event.clientX,
+      clientY: event.clientY,
+      canvasRect: canvas.getBoundingClientRect(),
+      pageWidth: frame.pageWidth,
+      pageHeight: frame.pageHeight,
+    })
+    if (!point) return
+
+    void browserUIClick(sessionId, tabId, point.x, point.y)
+  }, [frame, sessionId, tabId])
+
   if (!frame) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground bg-muted/10">
@@ -75,7 +125,8 @@ export function BrowserScreencastView({ sessionId }: BrowserScreencastViewProps)
       <canvas
         ref={canvasRef}
         className="w-full h-full object-contain"
-        style={{ display: 'block' }}
+        style={{ display: 'block', cursor: tabId ? 'pointer' : 'default' }}
+        onClick={handleCanvasClick}
       />
       {overlayVisible && domEntry && displaySize.w > 0 && (
         <BrowserDOMOverlay
