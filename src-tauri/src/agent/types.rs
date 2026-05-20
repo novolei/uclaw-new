@@ -202,6 +202,11 @@ pub struct TokenUsage {
     pub output_tokens: u32,
     pub cache_read_tokens: u32,
     pub cache_creation_tokens: u32,
+    /// Reasoning / "thinking" tokens — Claude extended thinking, o1, etc.
+    /// Added in M1-T6; existing providers that don't emit this set 0 and
+    /// downstream consumers (cost calc, rollout) treat 0 as absent.
+    #[serde(default)]
+    pub reasoning_output_tokens: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

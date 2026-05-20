@@ -956,6 +956,7 @@ mod integration {
                         output_tokens: 5,
                         cache_read_tokens: 0,
                         cache_creation_tokens: 0,
+                        reasoning_output_tokens: 0,
                     }),
                 },
             })
@@ -980,6 +981,7 @@ mod integration {
                 output_tokens: 5,
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
+                reasoning_output_tokens: 0,
             };
             let deltas: Vec<Result<StreamDelta, crate::error::Error>> = vec![
                 Ok(StreamDelta::TextDelta { text: self.text.clone() }),

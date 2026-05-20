@@ -83,8 +83,12 @@ pub async fn run_with_rollout(
                         input_tokens: usage.input_tokens,
                         cached_input_tokens: usage.cache_read_tokens,
                         output_tokens: usage.output_tokens,
-                        reasoning_output_tokens: 0,
-                        total_tokens: usage.input_tokens.saturating_add(usage.output_tokens),
+                        // M1-T6 — real reasoning tokens from the provider if reported.
+                        reasoning_output_tokens: usage.reasoning_output_tokens,
+                        total_tokens: usage
+                            .input_tokens
+                            .saturating_add(usage.output_tokens)
+                            .saturating_add(usage.reasoning_output_tokens),
                         cost_usd_micros: None,
                     },
                 });
@@ -159,6 +163,7 @@ mod tests {
                         output_tokens: 10,
                         cache_read_tokens: 20,
                         cache_creation_tokens: 0,
+                        reasoning_output_tokens: 0,
                     }),
                 },
             })

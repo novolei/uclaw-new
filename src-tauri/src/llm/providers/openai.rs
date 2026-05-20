@@ -341,6 +341,12 @@ impl LlmProvider for OpenAIProvider {
                     .or_else(|| u.get("prompt_cache_hit_tokens").and_then(|v| v.as_u64()))
                     .unwrap_or(0) as u32,
                 cache_creation_tokens: 0,
+                // M1-T6 — OpenAI o1-style reasoning attribution.
+                // OpenAI exposes it under usage.completion_tokens_details.reasoning_tokens.
+                reasoning_output_tokens: u.get("completion_tokens_details")
+                    .and_then(|d| d.as_object())
+                    .and_then(|d| d.get("reasoning_tokens"))
+                    .and_then(|v| v.as_u64()).unwrap_or(0) as u32,
             }),
         };
 
@@ -598,6 +604,12 @@ impl OpenAiSseState {
                     .or_else(|| u.get("prompt_cache_hit_tokens").and_then(|v| v.as_u64()))
                     .unwrap_or(0) as u32,
                 cache_creation_tokens: 0,
+                // M1-T6 — OpenAI o1-style reasoning attribution.
+                // OpenAI exposes it under usage.completion_tokens_details.reasoning_tokens.
+                reasoning_output_tokens: u.get("completion_tokens_details")
+                    .and_then(|d| d.as_object())
+                    .and_then(|d| d.get("reasoning_tokens"))
+                    .and_then(|v| v.as_u64()).unwrap_or(0) as u32,
             }
         };
 
