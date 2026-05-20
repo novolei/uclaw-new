@@ -292,6 +292,35 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                             ],
                         )?;
                     }
+
+                    // M1-T4f — fire-and-forget rollout emit when enabled.
+                    // Re-reads the freshly-updated activity from DB so the
+                    // TaskEvent stream sees the final terminal state (status,
+                    // report_text, report_outcome). Helper bails internally
+                    // if UCLAW_ROLLOUT_ENABLED is not set, so this is cheap
+                    // when rollout is disabled.
+                    {
+                        let activity_id = self.activity_id.clone();
+                        let spec_id = self.spec_id.clone();
+                        let db = std::sync::Arc::clone(&self.db);
+                        tokio::spawn(async move {
+                            let activity = {
+                                let conn = match db.lock() {
+                                    Ok(c) => c,
+                                    Err(_) => return,
+                                };
+                                match crate::automation::activity::get_activity(&conn, &activity_id) {
+                                    Ok(Some(a)) => a,
+                                    _ => return,
+                                }
+                            };
+                            crate::automation::rollout_bridge::emit_activity_into_session_dir(
+                                &activity,
+                                &spec_id,
+                            )
+                            .await;
+                        });
+                    }
                     *self.gate.lock().await = Some(CompletionGate::Reported {
                         text: input.text.clone(),
                         outcome: input.outcome.clone(),
