@@ -22,15 +22,33 @@ const TAB_LABELS: Record<AutomationTab, string> = {
   settings: '设置',
 }
 
+function parseJsonRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+  if (typeof value !== 'string' || value.trim() === '') return {}
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {}
+  } catch {
+    return {}
+  }
+}
+
 function liveSpecMeta(spec: HumaneSpecRow): { platform?: string; roomId?: string; roomTitle?: string } | null {
   try {
     const raw = JSON.parse(spec.specJson)
     if (raw?.x_uclaw_runtime?.kind !== 'live_room_moderator') return null
-    const config = raw.config ?? {}
+    const config = parseJsonRecord(raw.config)
+    const overrides = parseJsonRecord(spec.userConfigValues)
+    const read = (snake: string, camel?: string): string | undefined => {
+      const value = overrides[snake] ?? (camel ? overrides[camel] : undefined) ?? config[snake] ?? (camel ? config[camel] : undefined)
+      return value == null ? undefined : String(value)
+    }
     return {
-      platform: config.platform ?? 'douyin',
-      roomId: config.room_id ?? config.roomId,
-      roomTitle: config.room_title ?? config.roomTitle,
+      platform: read('platform') ?? 'douyin',
+      roomId: read('room_id', 'roomId'),
+      roomTitle: read('room_title', 'roomTitle'),
     }
   } catch {
     return null

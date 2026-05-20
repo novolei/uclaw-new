@@ -100,4 +100,25 @@ describe('SpecRunSurface stop control', () => {
       expect(getAutomationActivity).toHaveBeenCalledWith('spec-1', 50)
     })
   })
+
+  it('shows live-room user config overrides in the run header', () => {
+    const store = createStore()
+    store.set(humaneSpecsAtom, [
+      {
+        ...spec,
+        userConfigValues: JSON.stringify({
+          platform: 'douyin',
+          room_id: 'room-override',
+        }),
+      },
+    ])
+
+    render(
+      <Provider store={store}>
+        <SpecRunSurface specId="spec-1" />
+      </Provider>
+    )
+
+    expect(screen.getByText('room-override')).toBeInTheDocument()
+  })
 })

@@ -170,6 +170,15 @@ fn merge_user_config_into_spec_value(
             config_obj.insert(key.clone(), value.clone());
         }
     }
+
+    if let Some(poll_interval) = overrides.get("poll_interval_seconds") {
+        let runtime = spec_obj
+            .entry("x_uclaw_runtime".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(runtime_obj) = runtime.as_object_mut() {
+            runtime_obj.insert("poll_interval_seconds".to_string(), poll_interval.clone());
+        }
+    }
 }
 
 // ─── EscalationRow ───────────────────────────────────────────────────────────
@@ -617,6 +626,15 @@ impl AppRuntimeService {
         let sem = self.semaphore_for(spec_id).await;
         let _permit = sem.acquire().await.map_err(|e| anyhow::anyhow!("semaphore: {}", e))?;
 
+        if self.is_activity_cancelled(&activity_id)? {
+            tracing::info!(
+                "[AppRuntimeService] activity {} for spec {} was stopped before execution",
+                activity_id,
+                spec_id
+            );
+            return Ok(());
+        }
+
         // ── 6. per-day cost cap check ────────────────────────────────────────
         // TODO(2b): read caps from MemubotConfig.automation once threaded into
         // AppRuntimeService — for now use the AutomationConfig defaults.
@@ -677,13 +695,30 @@ impl AppRuntimeService {
                 )
                 .map_err(|e| anyhow::anyhow!("create run session: {}", e))?,
             };
-            conn.execute(
+            let updated = conn.execute(
                 "UPDATE automation_activities
                  SET session_id = ?2, status = 'running', started_at = ?3
-                 WHERE id = ?1",
+                 WHERE id = ?1 AND status = 'queued'",
                 rusqlite::params![activity_id, session_id, started_ms],
             )
             .map_err(|e| anyhow::anyhow!("link session to activity: {}", e))?;
+            if updated == 0 {
+                let status: Option<String> = conn
+                    .query_row(
+                        "SELECT status FROM automation_activities WHERE id = ?1",
+                        rusqlite::params![activity_id],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                if status.as_deref() == Some("cancelled") {
+                    return Ok(());
+                }
+                anyhow::bail!(
+                    "activity {} could not transition from queued to running (status={:?})",
+                    activity_id,
+                    status
+                );
+            }
 
             // Resolve the run's working directory: the space's path if it has
             // one, else a per-spec dir under ~/Documents/workground/automations.
@@ -889,7 +924,7 @@ impl AppRuntimeService {
                     conn.execute(
                         "UPDATE automation_activities
                          SET status = 'waiting_user', escalation_id = ?2, completed_at = ?3
-                         WHERE id = ?1",
+                         WHERE id = ?1 AND status != 'cancelled'",
                         rusqlite::params![activity_id, escalation_id, completed_ms],
                     )
                     .map_err(|e| anyhow::anyhow!("activity escalation update: {}", e))?;
@@ -897,12 +932,13 @@ impl AppRuntimeService {
                 // ErrorTerminal / LoopExhausted / no gate → failed; failure_text
                 // was derived above.
                 _ => {
-                    let err_text =
-                        failure_text.as_deref().unwrap_or("loop ended without report");
+                    let err_text = failure_text
+                        .as_deref()
+                        .unwrap_or("loop ended without report");
                     conn.execute(
                         "UPDATE automation_activities
                          SET status = 'failed', error_text = ?2, completed_at = ?3
-                         WHERE id = ?1",
+                         WHERE id = ?1 AND status != 'cancelled'",
                         rusqlite::params![activity_id, err_text, completed_ms],
                     )
                     .map_err(|e| anyhow::anyhow!("activity failure update: {}", e))?;
@@ -1351,16 +1387,16 @@ impl AppRuntimeService {
     /// Mark active runs as user-stopped and tear down any run-scoped browser sessions.
     pub async fn stop_active_runs(&self, spec_id: &str) -> anyhow::Result<usize> {
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let active: Vec<(String, Option<String>)> = {
+        let active: Vec<String> = {
             let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
             let mut stmt = conn.prepare(
-                "SELECT id, session_id
+                "SELECT id
                  FROM automation_activities
                  WHERE spec_id = ?1 AND status IN ('queued', 'running')
                  ORDER BY queued_at DESC",
             )?;
             let rows = stmt.query_map(rusqlite::params![spec_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                row.get::<_, String>(0)
             })?
             .collect::<Result<Vec<_>, _>>()?;
             rows
@@ -1372,7 +1408,7 @@ impl AppRuntimeService {
 
         {
             let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
-            for (activity_id, _) in &active {
+            for activity_id in &active {
                 conn.execute(
                     "UPDATE automation_activities
                      SET status = 'cancelled',
@@ -1391,10 +1427,10 @@ impl AppRuntimeService {
         }
 
         if let Some(ctx_mgr) = self.browser_context_manager.as_ref() {
-            for (_, session_id) in &active {
-                if let Some(session_id) = session_id {
-                    ctx_mgr.destroy(session_id).await;
-                }
+            for activity_id in &active {
+                ctx_mgr
+                    .destroy(&automation_browser_session_id(spec_id, activity_id))
+                    .await;
             }
         }
 
@@ -1525,11 +1561,21 @@ impl AppRuntimeService {
         conn.execute(
             "UPDATE automation_activities
              SET status = ?2, error_text = ?3, completed_at = ?4
-             WHERE id = ?1",
+             WHERE id = ?1 AND status != 'cancelled'",
             rusqlite::params![activity_id, status, error_text, now_ms],
         )
         .map_err(|e| anyhow::anyhow!("activity status update: {}", e))?;
         Ok(())
+    }
+
+    fn is_activity_cancelled(&self, activity_id: &str) -> anyhow::Result<bool> {
+        let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+        conn.query_row(
+            "SELECT status = 'cancelled' FROM automation_activities WHERE id = ?1",
+            rusqlite::params![activity_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|e| anyhow::anyhow!("activity status lookup: {}", e))
     }
 
     // ── run-pipeline helpers (Phase 2a, design §D4) ─────────────────────────
@@ -1945,6 +1991,7 @@ mod tests {
             &serde_json::json!({
                 "room_id": "new-room",
                 "live_url": "https://live.example/room",
+                "poll_interval_seconds": 15,
                 "ignored": null
             }),
         );
@@ -1954,6 +2001,14 @@ mod tests {
         assert_eq!(
             spec["config"]["live_url"],
             serde_json::json!("https://live.example/room")
+        );
+        assert_eq!(
+            spec["config"]["poll_interval_seconds"],
+            serde_json::json!(15)
+        );
+        assert_eq!(
+            spec["x_uclaw_runtime"]["poll_interval_seconds"],
+            serde_json::json!(15)
         );
         assert!(spec["config"].get("ignored").is_none());
     }
@@ -2004,6 +2059,36 @@ mod tests {
             )
             .unwrap();
         assert!(report.contains("user_stopped"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_activity_is_not_overwritten_by_late_terminal_updates() {
+        let conn = open_test_db();
+        insert_test_spec(&conn, "stop-spec-late", minimal_spec_json());
+        conn.execute(
+            "INSERT INTO automation_activities
+             (id, spec_id, trigger_source_type, trigger_payload_json,
+              status, queued_at, started_at, duration_ms, llm_iterations,
+              llm_tokens_in, llm_tokens_out)
+             VALUES ('run-late','stop-spec-late','manual','{}','running',1,2,0,0,0,0)",
+            [],
+        )
+        .unwrap();
+        let svc = make_service(conn);
+
+        assert_eq!(svc.stop_active_runs("stop-spec-late").await.unwrap(), 1);
+        svc.update_activity_status("run-late", "failed", Some("late failure"))
+            .unwrap();
+
+        let conn = svc.db.lock().unwrap();
+        let row: (String, String) = conn
+            .query_row(
+                "SELECT status, error_text FROM automation_activities WHERE id='run-late'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("cancelled".to_string(), "user_stopped".to_string()));
     }
 
     #[test]
