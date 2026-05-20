@@ -2307,7 +2307,11 @@ pub async fn send_message(
             uclaw_utils_home::uclaw_home_pathbuf()
                 .map(|p| p.join("sessions"))
                 .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.uclaw/sessions")),
-            None, // SQLite mirror wiring lands in a follow-up — JSONL only for now.
+            // M1-backlog #4 — pass the uclaw.db path so the rollout writer
+            // mirrors every TaskEvent into task_events_rollout (V48 SQLite
+            // schema). Lets the UI run indexed queries instead of grep-ing
+            // the JSONL files.
+            Some(state.db_path.clone()),
         )
         .await
         {

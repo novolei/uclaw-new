@@ -170,6 +170,7 @@ pub fn browser_run_to_events(run: &BrowserTaskRun, intent_id: &str) -> Vec<TaskE
 pub async fn emit_browser_run_into_session_dir(
     run: &crate::browser::session_state::BrowserTaskRun,
     intent_id: &str,
+    db_path: Option<std::path::PathBuf>,
 ) {
     if !crate::agent::rollout_integration::rollout_enabled_by_env() {
         return;
@@ -177,7 +178,7 @@ pub async fn emit_browser_run_into_session_dir(
     let sessions_dir = uclaw_utils_home::uclaw_home_pathbuf()
         .map(|p| p.join("sessions"))
         .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.uclaw/sessions"));
-    let handle = match crate::runtime::rollout::RolloutWriter::spawn(sessions_dir, None).await {
+    let handle = match crate::runtime::rollout::RolloutWriter::spawn(sessions_dir, db_path).await {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!(
