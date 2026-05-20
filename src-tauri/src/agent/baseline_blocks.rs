@@ -115,6 +115,123 @@ impl BaselineBlock for SurgicalChanges {
     }
 }
 
+pub struct GoalDrivenExecution;
+impl BaselineBlock for GoalDrivenExecution {
+    fn id(&self) -> &'static str {
+        "guardrail.goal-driven-execution"
+    }
+    fn title(&self) -> &'static str {
+        "Goal-driven execution"
+    }
+    fn topics(&self) -> &'static [&'static str] {
+        &["guardrail", "discipline", "plan-loop"]
+    }
+    fn render(&self) -> String {
+        "4. GOAL-DRIVEN EXECUTION. Transform vague requests into verifiable goals.\n   For multi-step work, state your plan as `1. step → verify: check`.\n   Loop until verify passes; don't stop at \"I think it works\".".into()
+    }
+}
+
+pub struct NeverFakeProgress;
+impl BaselineBlock for NeverFakeProgress {
+    fn id(&self) -> &'static str {
+        "guardrail.never-fake-progress"
+    }
+    fn title(&self) -> &'static str {
+        "Never fake progress"
+    }
+    fn topics(&self) -> &'static [&'static str] {
+        &["guardrail", "discipline", "plan-loop", "honesty"]
+    }
+    fn render(&self) -> String {
+        "5. NEVER FAKE PROGRESS. Bookkeeping tools (`plan_update`, `plan_write`,\n   `TodoWrite`) ONLY update tracking files — they do NOT execute work.\n   NEVER mark a step `done:true` unless you have already called the\n   tool that actually does the work (`edit`, `write_file`, `bash`, etc.)\n   and verified it succeeded. The user sees the artifacts on disk,\n   not your checkmarks. If the artifact is missing, the step is not done.".into()
+    }
+}
+
+pub struct NoFileContentAsText;
+impl BaselineBlock for NoFileContentAsText {
+    fn id(&self) -> &'static str {
+        "guardrail.no-file-content-as-text"
+    }
+    fn title(&self) -> &'static str {
+        "Never output file content as text"
+    }
+    fn topics(&self) -> &'static [&'static str] {
+        &["guardrail", "tool-call-shape", "file-io"]
+    }
+    fn render(&self) -> String {
+        "6. NEVER OUTPUT FILE CONTENT AS TEXT. To create or modify a file you\n   MUST call `write_file` or `edit`. Putting code or file content in\n   your reply text does NOT create or modify any file — the user cannot\n   use text output as actual code. Always call the tool, never describe\n   what you would write.".into()
+    }
+}
+
+pub struct ChunkedLargeFiles;
+impl BaselineBlock for ChunkedLargeFiles {
+    fn id(&self) -> &'static str {
+        "guardrail.chunked-large-files"
+    }
+    fn title(&self) -> &'static str {
+        "For large files, write in chunks"
+    }
+    fn topics(&self) -> &'static [&'static str] {
+        &["guardrail", "tool-call-shape", "file-io", "output-budget"]
+    }
+    fn render(&self) -> String {
+        "7. FOR LARGE FILES, WRITE IN CHUNKS. A single tool call can hold roughly\n   250-300 lines before hitting output limits. For larger files: call\n   `write_file` with the first 250-300 lines, then call `write_file`\n   again (or `edit`) for each subsequent section. Never attempt to write\n   an 800-line file in one shot — it will be truncated. Plan how many\n   chunks you need before you start, then execute them one tool call at\n   a time.".into()
+    }
+}
+
+pub struct ModeChangeSuggestions;
+impl BaselineBlock for ModeChangeSuggestions {
+    fn id(&self) -> &'static str {
+        "section.mode-change-suggestions"
+    }
+    fn title(&self) -> &'static str {
+        "Mode-change suggestions"
+    }
+    fn topics(&self) -> &'static [&'static str] {
+        &["section", "mode", "tool-call-shape"]
+    }
+    fn render(&self) -> String {
+        "## Mode-change suggestions\n\nYou can request a mode change with `request_plan_mode_switch` when the\nuser's request is multi-step build/refactor/design work AND they're\ncurrently in Supervised or Yolo mode. Call it BEFORE other tool calls.\nDon't call it for: bug fixes you already understand, single-file edits,\nread-only questions, or after the user has explicitly said \"just do it\".\nThe tool is fire-and-forget; the agent continues regardless.".into()
+    }
+}
+
+pub struct WhenToCallAskUser;
+impl BaselineBlock for WhenToCallAskUser {
+    fn id(&self) -> &'static str {
+        "section.when-to-call-ask-user"
+    }
+    fn title(&self) -> &'static str {
+        "When to call ask_user"
+    }
+    fn topics(&self) -> &'static [&'static str] {
+        &["section", "ask-user", "policy"]
+    }
+    fn render(&self) -> String {
+        "## When to call ask_user\n\nCall `ask_user` when you need a decision from the user before continuing:\n- The request has 2+ plausible interpretations and your guess could be\n  wrong by 50%+\n- You're about to do something destructive (delete, force-push, drop\n  table) without an explicit prior OK\n- A critical design choice depends on user preference (library choice,\n  API contract shape, file structure)\n\nDo NOT call ask_user for:\n- Trivial yes/no answerable from project context (CLAUDE.md, code)\n- Clarifying typos or grammar\n- Asking permission for things that are already auto-approved by mode".into()
+    }
+}
+
+pub struct HeaderBlock;
+impl BaselineBlock for HeaderBlock {
+    fn id(&self) -> &'static str {
+        "header.attribution"
+    }
+    fn title(&self) -> &'static str {
+        "Header + attribution"
+    }
+    fn topics(&self) -> &'static [&'static str] {
+        &["header", "attribution"]
+    }
+    fn render(&self) -> String {
+        // The HTML comment is preserved verbatim so future template
+        // operators can update attribution / source URL via this block.
+        // The "[Behavioral guardrails — apply to every action]" tag
+        // line follows immediately so the rendered output matches the
+        // existing baseline.md byte-for-byte.
+        "<!-- Behavioral guardrails adapted from Andrej Karpathy's observations on LLM\n     coding pitfalls. Source: https://github.com/forrestchang/andrej-karpathy-skills\n     License: MIT. Editable via Settings → 提示词 → 行为护栏 (read-only preview only). -->\n\n[Behavioral guardrails — apply to every action]".into()
+    }
+}
+
 // ────────────────────────────────────────────────────────────────────────
 // Registry — process-wide singleton listing every block uClaw knows about.
 // ────────────────────────────────────────────────────────────────────────
@@ -126,9 +243,16 @@ pub fn registry() -> &'static [&'static dyn BaselineBlock] {
     static REGISTRY: OnceLock<Vec<&'static dyn BaselineBlock>> = OnceLock::new();
     REGISTRY.get_or_init(|| {
         let blocks: Vec<&'static dyn BaselineBlock> = vec![
+            &HeaderBlock,
             &ThinkBeforeCoding,
             &SimplicityFirst,
             &SurgicalChanges,
+            &GoalDrivenExecution,
+            &NeverFakeProgress,
+            &NoFileContentAsText,
+            &ChunkedLargeFiles,
+            &ModeChangeSuggestions,
+            &WhenToCallAskUser,
         ];
         blocks
     })
@@ -156,12 +280,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_has_three_blocks_in_order() {
+    fn registry_has_ten_blocks_in_canonical_order() {
         let r = registry();
-        assert_eq!(r.len(), 3);
-        assert_eq!(r[0].id(), "guardrail.think-before-coding");
-        assert_eq!(r[1].id(), "guardrail.simplicity-first");
-        assert_eq!(r[2].id(), "guardrail.surgical-changes");
+        assert_eq!(r.len(), 10);
+        let ids: Vec<&str> = r.iter().map(|b| b.id()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "header.attribution",
+                "guardrail.think-before-coding",
+                "guardrail.simplicity-first",
+                "guardrail.surgical-changes",
+                "guardrail.goal-driven-execution",
+                "guardrail.never-fake-progress",
+                "guardrail.no-file-content-as-text",
+                "guardrail.chunked-large-files",
+                "section.mode-change-suggestions",
+                "section.when-to-call-ask-user",
+            ]
+        );
     }
 
     #[test]
@@ -219,32 +356,33 @@ mod tests {
         assert!(find("guardrail.does-not-exist").is_none());
     }
 
+    /// **Strongest M2-A invariant.** The registry's `render_all()` output
+    /// must equal `baseline.md` (trimmed) byte-for-byte. This is the
+    /// trip-wire that will guarantee the upcoming follow-up PR (which
+    /// swaps `KARPATHY_BASELINE` to call `render_all()`) is a safe
+    /// drop-in: if either side drifts, this test fails immediately.
     #[test]
-    fn render_all_matches_first_three_guardrails_in_baseline_md() {
-        let combined = render_all();
-        // First three guardrails of baseline.md, joined with blank lines.
-        // M2-A invariant: as long as this matches verbatim, the registry
-        // is a drop-in replacement candidate for guardrails 1-3.
-        let baseline = crate::agent::mode_prompts::KARPATHY_BASELINE;
-        for needle in [
-            "1. THINK BEFORE CODING.",
-            "2. SIMPLICITY FIRST.",
-            "3. SURGICAL CHANGES.",
-        ] {
-            assert!(
-                combined.contains(needle),
-                "render_all() missing guardrail prefix: {needle}"
-            );
-            assert!(
-                baseline.contains(needle),
-                "baseline.md missing guardrail prefix: {needle} (test fixture drift)"
+    fn render_all_equals_baseline_md_trimmed_byte_for_byte() {
+        let from_registry = render_all();
+        let from_file = crate::agent::mode_prompts::KARPATHY_BASELINE.trim();
+        if from_registry != from_file {
+            // On mismatch, print a short diff hint so the reviewer can
+            // see *where* the registry diverges from the file without
+            // grokking the full ~1.5KB string blob.
+            let common = from_registry
+                .chars()
+                .zip(from_file.chars())
+                .take_while(|(a, b)| a == b)
+                .count();
+            panic!(
+                "render_all() != baseline.md.trim()\n\
+                 first {} chars match; divergence starts here:\n\
+                 ── registry side ───────\n{}\n\
+                 ── baseline file ───────\n{}\n",
+                common,
+                &from_registry.chars().skip(common).take(120).collect::<String>(),
+                &from_file.chars().skip(common).take(120).collect::<String>(),
             );
         }
-        // The exact byte sequence of the 3 guardrails — concatenated with
-        // double-newlines — must match the registry's render output.
-        // If baseline.md is reworded, this assertion is the trip-wire
-        // that forces us to update the block content alongside.
-        let want = "1. THINK BEFORE CODING. State your assumptions. If a request has multiple\n   interpretations, present them — don't silently pick one. When unclear,\n   call `ask_user` to surface the question instead of guessing.\n\n2. SIMPLICITY FIRST. Minimum code that solves the problem. No speculative\n   features. No abstractions for single-use code. If you'd write 200 lines\n   and it could be 50, rewrite it.\n\n3. SURGICAL CHANGES. Touch only what the user asked you to touch. Don't\n   \"improve\" adjacent code, comments, or formatting. Match existing style.\n   If you notice unrelated issues, mention them — don't fix them inline.";
-        assert_eq!(combined, want);
     }
 }
