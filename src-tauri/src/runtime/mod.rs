@@ -21,6 +21,8 @@
 //!
 //! - [`contracts`] — type definitions (M1-T1, PR #304)
 //! - [`task`]      — SessionTask trait + TaskScheduler (M1-T2a, PR #305)
+//! - [`rollout`]   — JSONL writer + task_events_rollout mirror (M1-T5, PR #310)
 
 pub mod contracts;
+pub mod rollout;
 pub mod task;
