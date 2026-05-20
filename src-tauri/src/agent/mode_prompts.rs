@@ -15,6 +15,30 @@ use tauri::Emitter;
 
 pub const KARPATHY_BASELINE: &str = include_str!("prompts/baseline.md");
 
+/// M2-A wire-up — process-wide cached output of the
+/// `baseline_blocks::render_all()` registry. Used by `compose_system_prompt`
+/// instead of `KARPATHY_BASELINE.trim()` directly.
+///
+/// Why both? `KARPATHY_BASELINE` remains the include_str!() of the source
+/// `baseline.md` file: (a) the Settings UI in
+/// `tauri_commands::list_prompt_sources` renders it raw so the user can
+/// see attribution + the source-of-truth Markdown; (b) the byte-equal
+/// invariant test in `baseline_blocks` anchors against it.
+///
+/// The trip-wire test
+/// `baseline_blocks::tests::render_all_equals_baseline_md_trimmed_byte_for_byte`
+/// ensures `karpathy_baseline()` and `KARPATHY_BASELINE.trim()` produce
+/// identical bytes — so flipping the const → fn-call here is a no-op in
+/// output but unlocks future per-block opt-in / opt-out (M2-H L3 budget
+/// gating).
+pub fn karpathy_baseline() -> &'static str {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<String> = OnceLock::new();
+    CACHED
+        .get_or_init(crate::agent::baseline_blocks::render_all)
+        .as_str()
+}
+
 const MODE_ASK: &str = include_str!("prompts/mode_ask.md");
 const MODE_ACCEPT_EDITS: &str = include_str!("prompts/mode_accept_edits.md");
 const MODE_PLAN: &str = include_str!("prompts/mode_plan.md");
@@ -152,7 +176,9 @@ pub fn compose_system_prompt(
         user_global_base.trim(),
         workspace_md.as_str(),
         workspace_path_block.as_str(),
-        KARPATHY_BASELINE.trim(),
+        // M2-A wire-up — registry-rendered baseline (output identical to
+        // KARPATHY_BASELINE.trim() by invariant test, see baseline_blocks).
+        karpathy_baseline(),
         mode_part,
     ]
     .iter()
