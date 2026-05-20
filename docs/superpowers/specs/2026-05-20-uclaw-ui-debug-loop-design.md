@@ -260,3 +260,13 @@ Every UI debug run should end with:
 - Plain Playwright Tauri IPC errors are interpreted correctly.
 - The workflow always produces screenshot, console/log, and process evidence.
 - The workflow leaves no self-created test residue.
+
+---
+
+## Implemented By
+
+- `scripts/ui_debug_smoke.sh` launches Vite + Tauri dev, captures logs, prints process identity, and cleans spawned processes.
+- `ui/src/lib/dev-tauri-mock.ts` enables browser-only UI debugging with official Tauri mocks when `VITE_UCLAW_MOCK_TAURI=1`.
+- `npm run dev:mock-tauri` opens the React app in browser-debug mode without requiring a Tauri WebView.
+
+Use Computer Use for real desktop proof. Use Playwright or the in-app browser for mock bridge UI iteration. Treat the two paths as complementary evidence, not substitutes.
