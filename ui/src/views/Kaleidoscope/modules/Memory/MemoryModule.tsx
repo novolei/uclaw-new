@@ -5,7 +5,7 @@
  * 星云图 / Boot / 时间线 / 搜索。数据一次性加载后传递给子组件。
  */
 import * as React from 'react'
-import { Network, Star, Clock, Search, Sparkles, BookOpen, FileText, ShieldCheck } from 'lucide-react'
+import { Network, Star, Clock, Search, Sparkles, BookOpen, FileText, ShieldCheck, Orbit } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -25,10 +25,12 @@ import { DailySummaryView } from '@/components/memory/DailySummaryView'
 import { MemoryNodeCard } from '@/components/memory/MemoryNodeCard'
 import { WikiView } from '@/components/memory/WikiView'
 import { MemoryHealthPanel } from '@/components/memory/MemoryHealthPanel'
+import { DualNebulaView } from '@/components/memory/DualNebulaView'
+import { gbrainFullGraph, type KnowledgeGraph } from '@/lib/gbrain-browse'
 
 // ─── Tab 定义 ───────────────────────────────────────────────────────────
 
-type MemoryTab = 'nebula' | 'boot' | 'timeline' | 'search' | 'fragments' | 'daily' | 'wiki' | 'health'
+type MemoryTab = 'nebula' | 'boot' | 'timeline' | 'search' | 'fragments' | 'daily' | 'wiki' | 'health' | 'dual'
 
 const TABS: { value: MemoryTab; label: string; icon: React.ElementType }[] = [
   { value: 'nebula', label: '星云图', icon: Network },
@@ -39,6 +41,8 @@ const TABS: { value: MemoryTab; label: string; icon: React.ElementType }[] = [
   { value: 'daily', label: '日记', icon: BookOpen },
   // Memory OS Foundation Phase 3 — AI Wiki view.
   { value: 'wiki', label: 'Wiki', icon: FileText },
+  // Dual nebula — fused memory + knowledge graph.
+  { value: 'dual', label: '双星云', icon: Orbit },
   // Memory OS Foundation Phase 4 — Health findings panel.
   { value: 'health', label: 'Health', icon: ShieldCheck },
 ]
@@ -47,6 +51,8 @@ export function MemoryModule(): React.ReactElement {
   const [activeTab, setActiveTab] = React.useState<MemoryTab>('nebula')
   const [graphData, setGraphData] = React.useState<MemoryGraphData | null>(null)
   const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>(null)
+  const [knowledgeGraph, setKnowledgeGraph] = React.useState<KnowledgeGraph | null>(null)
+  const [pendingWikiSlug, setPendingWikiSlug] = React.useState<string | undefined>(undefined)
 
   // 一次性加载图数据
   React.useEffect(() => {
@@ -64,6 +70,14 @@ export function MemoryModule(): React.ReactElement {
     void load()
     return () => { cancelled = true }
   }, [])
+
+  // 懒加载 knowledge graph — 仅在 dual tab 首次激活时请求
+  React.useEffect(() => {
+    if (activeTab !== 'dual' || knowledgeGraph !== null) return
+    let cancelled = false
+    gbrainFullGraph(150).then((g) => { if (!cancelled) setKnowledgeGraph(g) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [activeTab, knowledgeGraph])
 
   // 统计信息
   const subtitle = React.useMemo(() => {
@@ -147,7 +161,18 @@ export function MemoryModule(): React.ReactElement {
           <DailySummaryView />
         )}
         {activeTab === 'wiki' && (
-          <WikiView className="h-full w-full rounded-xl overflow-hidden border border-border/40" />
+          <WikiView initialSlug={pendingWikiSlug} className="h-full w-full rounded-xl overflow-hidden border border-border/40" />
+        )}
+        {activeTab === 'dual' && (
+          <DualNebulaView
+            memory={graphData}
+            knowledge={knowledgeGraph}
+            onSelect={(id, layer) => {
+              if (layer === 'memory') setSelectedNodeId(id)
+              else { setPendingWikiSlug(id); setActiveTab('wiki') }
+            }}
+            className="h-full w-full rounded-xl overflow-hidden border border-border/40"
+          />
         )}
         {activeTab === 'health' && (
           <MemoryHealthPanel

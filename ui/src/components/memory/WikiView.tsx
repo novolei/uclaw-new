@@ -28,13 +28,14 @@ import {
 interface WikiViewProps {
   spaceId?: string
   className?: string
+  initialSlug?: string
 }
 
 function isNotConnected(e: unknown): boolean {
   return String(e).includes(GBRAIN_NOT_CONNECTED)
 }
 
-export function WikiView({ className }: WikiViewProps): React.ReactElement {
+export function WikiView({ className, initialSlug }: WikiViewProps): React.ReactElement {
   const [pages, setPages] = React.useState<PageSummary[]>([])
   const [stats, setStats] = React.useState<BrainStats | null>(null)
   const [orphans, setOrphans] = React.useState<OrphanSummary | null>(null)
@@ -116,6 +117,10 @@ export function WikiView({ className }: WikiViewProps): React.ReactElement {
       if (latestSlugRef.current === slug) setLoadingDetail(false)
     }
   }, [])
+
+  React.useEffect(() => {
+    if (initialSlug) void openPage(initialSlug)
+  }, [initialSlug, openPage])
 
   const runSearch = React.useCallback(async () => {
     const q = searchQuery.trim()

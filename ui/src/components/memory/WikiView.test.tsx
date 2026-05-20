@@ -92,4 +92,9 @@ describe('WikiView', () => {
     renderWithProviders(<WikiView />)
     expect(await screen.findByText('gbrain 未连接')).toBeInTheDocument()
   })
+
+  it('opens initialSlug on mount', async () => {
+    renderWithProviders(<WikiView initialSlug="person-alice" />)
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('gbrain_get_page', { slug: 'person-alice' }))
+  })
 })
