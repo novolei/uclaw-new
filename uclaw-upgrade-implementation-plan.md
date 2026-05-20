@@ -2592,3 +2592,480 @@ pub struct WorkerNode {
 **之后**：按 §20.10 + 风险窗口推进 M3-M9
 
 按此路径，**18-24 个月达到 ADR 100% 实现 + 最佳商业可行性**。
+
+---
+
+# 第四部分：Claude Code / Cowork 操作手册（v2.3 新增）
+
+> **本部分背景**：用户委托研究当下社区与官方推荐的 Claude Code / Cowork 长周期 long-context coding best practices，应用到 v2.2 计划。本章综合 Anthropic 官方文档（[Best practices](https://code.claude.com/docs/en/best-practices) / [Worktrees](https://code.claude.com/docs/en/worktrees) / [大型代码库博客 2026-05-14](https://claude.com/blog/how-claude-code-works-in-large-codebases-best-practices-and-where-to-start) / [Compaction docs](https://platform.claude.com/docs/en/build-with-claude/compaction)）+ 社区高质量博客（DataCamp、Builder.io、ClaudeLog、Mindwired、Karoz Zieminski 等）。
+>
+> 这是一次**治理层升级**——不改 v2.2 的技术方案，但重塑 Cowork ↔ IDE ↔ uclaw 三方的协作纪律。
+
+---
+
+## 22. 核心原则（官方文档原话）<a id="22-claude-code-核心原则"></a>
+
+> **"Claude's context window fills up fast, and performance degrades as it fills. The context window is the most important resource to manage."**
+> — [Claude Code 官方 Best practices](https://code.claude.com/docs/en/best-practices)
+
+> **"The harness matters as much as the model."**
+> — [Anthropic 大型代码库部署博客](https://claude.com/blog/how-claude-code-works-in-large-codebases-best-practices-and-where-to-start)
+
+把这两句话当成本章一切建议的根：
+1. **上下文是稀缺资源**——任何动作的最高优先级都是"省 context"
+2. **Harness（CLAUDE.md + Hooks + Skills + Plugins + MCP + Subagents + LSP）的工程化比单次 prompt 重要**
+
+---
+
+## 23. v2.2 计划必须采纳的 10 项核心实践 <a id="23-10-项核心实践"></a>
+
+下表把官方/社区 best practice 一一映射到 uclaw v2.2 的具体 Milestone：
+
+| # | Best Practice | 来源 | 应用到 uclaw 的哪里 | v2.2 是否已对位 |
+|---|---|---|---|---|
+| 1 | **Plan Mode 4 阶段**（Explore → Plan → Implement → Commit） | 官方 best-practices | 每个 M*-T* 任务开始时强制走 Plan Mode；按 ADR §18 的 11 问 build plan；plan 入 `docs/superpowers/plans/<M*-T*>.md` | ✅ 与 CLAUDE.md 现有 superpowers 工作流自然契合 |
+| 2 | **CLAUDE.md ≤ ~100 lines** | 官方 + Mindwired 博客 | uclaw 当前 CLAUDE.md 远超 100 行 —— **必须重构**，分层化（root 仅指针；细节下沉到 `CONTEXT.md` 或子目录 CLAUDE.md） | ❌ 缺 —— **新增 Phase 0.5-T8** |
+| 3 | **Skills 作 progressive disclosure** | 官方博客 | 把 uclaw 现有 7 个 proactive scenarios + Memory OS 知识改为 `.claude/skills/` 下的 SKILL.md（按需加载，不占常驻 context） | ⏳ 部分 |
+| 4 | **Subagents 分离 exploration 与 editing** | 官方 | M1+M2 重构期间，所有"探索 codebase"动作走 subagent（已用于本次 v2.2 自审）；editing 主 session 保持 clean | ⏳ 已用，需固化为规约 |
+| 5 | **Git Worktree 并行隔离**（`--worktree` 内置 flag） | 官方 worktrees doc | 我之前 §1 已提议手工 `git worktree add`；**官方 Claude Code CLI 现已内置 `--worktree=<name>` flag**，自动 `.claude/worktrees/<name>/` | ⏳ 升级我先前的建议 |
+| 6 | **/compact at 60% utilization, /clear between tasks** | Sitepoint + 官方 cookbook | Cowork session 主动 /compact 节奏：30-45 分钟 或 60% context 时；不同 M*-T* 之间 /clear | ❌ 缺 —— 新增 §25 session 协议 |
+| 7 | **Verification is highest-leverage practice** | 官方 best-practices | 每个 PR description 必须含：测试命令 + 期望输出 + screenshots（如涉及 UI） | ⏳ 已在 Quality Gates 但需强化 |
+| 8 | **Writer/Reviewer 双 session pattern** | 官方 best-practices | 实施每个 M*-T* 时：Cowork session A 写代码 + Cowork session B（fresh context）做 review | ❌ 缺 —— 新增 §26 |
+| 9 | **Hooks for deterministic enforcement** | 官方博客 | 把"NEVER `dirs::home_dir`"、"NEVER `memory_graph::write`"、"NEVER `format!()` 拼 prompt"等从 CI lint 升级到 Claude Code **PreToolUse hook**（在 Edit/Write 之前阻止） | ❌ 缺 —— 新增 §27 |
+| 10 | **DRI / Agent Manager 角色** | 官方博客 | 用户即此角色；显式分配权责（plugin marketplace 决策、CLAUDE.md 维护、配置审查 3-6 月节奏） | ⏳ 隐含，需显式 |
+
+---
+
+## 24. CLAUDE.md 重构 → Phase 0.5-T8（**P0**，0.5 天）<a id="24-claudemd-重构"></a>
+
+### 24.1 现状诊断
+
+uclaw 当前 `CLAUDE.md` 体量远超官方推荐的 ~100 行（社区共识："the file is probably too long and the rule is getting lost"）。这造成：
+- Claude 每次 session 开头加载 → 大量 token 浪费
+- Rules 互相竞争 attention → 关键规则可能被忽略
+- 团队成员（含 AI）难以记住所有内容
+
+### 24.2 重构方案（仿官方 best practice）
+
+**Step 1：拆分**
+
+```
+CLAUDE.md (root)                  → ≤ 100 行，仅保留：
+                                      - 全局 build 命令（cargo tauri dev 等）
+                                      - critical 工作流（superpowers 触发条件）
+                                      - 必读 ADR 链接（baseline）
+                                      - Active migration registry（仅占用情况，详细规则下沉）
+
+CONTEXT.md (root, 新增)            → 项目级深度参考（按需读取，非每 session 加载）：
+                                      - 完整项目结构（Part 2 现有内容下沉至此）
+                                      - 模块详细说明
+                                      - 历史决策记录
+
+src-tauri/src/agent/CLAUDE.md     → agent 子目录约定（按需加载）
+src-tauri/src/browser/CLAUDE.md   → browser 子目录约定
+src-tauri/src/automation/CLAUDE.md → automation 子目录约定
+docs/adr/CLAUDE.md                → ADR 规约 + 创建新 ADR 模板
+```
+
+**Step 2：每行问"删了会出错吗？"**
+
+对 CLAUDE.md 每行做这个测试 —— 如果删了 Claude 也能从 codebase / 标准约定推断出来，删掉。
+
+**Step 3：用 `@path/to/file` import 而非内联**
+
+```markdown
+# CLAUDE.md (root, 精简版)
+
+# uClaw — concise project guidance
+
+See @CONTEXT.md for full project reference.
+See @docs/adr/2026-05-20-uclaw-agent-platform-north-star.md for north-star baseline.
+See @docs/THIRD_PARTY.md for license + crate derivation rules.
+
+## Critical rules
+- **memory_graph is FROZEN** (ADR §11.2). Never write to it.
+- **License = Apache-2.0**. New derived code requires NOTICE update.
+- **No `dirs::home_dir().unwrap().join(".uclaw")`** — use `uclaw_utils_home::uclaw_home()`.
+- **Active migration registry**: V40 (mcp_audit) is the latest merged. Reserve V41+ via PR.
+
+## Build & test
+- `cd src-tauri && cargo build` — backend
+- `cd ui && npm run dev` — frontend
+- `cd src-tauri && cargo test` — unit tests
+- (full reference: @CONTEXT.md §Build)
+
+## Workflow
+- Non-trivial → superpowers (brainstorming → writing-plans → subagent-driven-development)
+- Trivial → direct fix
+- One plan = one PR, bisectable commits, 11-question answer in PR description.
+```
+
+**DoD（Phase 0.5-T8）**：
+- [ ] root CLAUDE.md ≤ 120 行（含 import 行）
+- [ ] CONTEXT.md 接收所有详细内容
+- [ ] 每个主要 src-tauri/src/<module>/ 下有自己的 CLAUDE.md（≤ 50 行）
+- [ ] 子代理 / fresh session 启动效率提升（自测：每次 session 启动 token 数 ↓ ≥40%）
+
+---
+
+## 25. Cowork Session 协议（**采纳官方 4 阶段 + 60% 阈值**）<a id="25-session-协议"></a>
+
+每次 Cowork session **必走** 4 阶段（官方 [best practices](https://code.claude.com/docs/en/best-practices)）：
+
+### 25.1 阶段 1：Pre-flight（开 session 前 30 秒）
+
+```bash
+# Cowork worktree 端
+cd ~/Documents/uclaw-cowork           # 物理隔离的 worktree
+git fetch && git rebase origin/main   # 拉最新
+git status                            # 必须 clean
+
+# 同时你在 IDE 端
+git stash                             # 你 in-progress 改动暂存
+# 或 commit 到你自己分支
+```
+
+### 25.2 阶段 2：Explore (Plan Mode)
+
+我（Cowork）开 Plan Mode：
+- 读关键文件（不改）
+- 问澄清问题（用 AskUserQuestion）
+- 输出 `docs/superpowers/plans/<M*-T*>-<topic>.md`
+- 含 ADR §18 11 问完整回答
+
+**关键纪律**：**plan 不写代码**。这阶段 token 全用在理解 + 设计，避免下文阶段"探索 + 实现"混用 context 污染。
+
+### 25.3 阶段 3：Implement
+
+切出 Plan Mode → 实施。
+- 小步 commit（每个独立可编译）
+- 每 30-45 分钟 或 context 达 60% 时 → **手动 `/compact`**（保留最优结构化 summary）
+- 不同子任务之间 → **`/clear`**（彻底重置）
+- 用 `Esc` 立即纠错，**别让错误堆积**（"correcting over and over"是官方 5 大失败模式之一）
+
+### 25.4 阶段 4：Verify + Commit + PR
+
+- 必跑：`cargo build` + `cargo test -p <crate>` + `cargo clippy`
+- PR description 必含：
+  - 验证步骤 + 期望输出
+  - ADR §18 11 问回答（至少 5 问）
+  - Touch list（动了哪些文件）
+  - Migration registry 更新（如涉及）
+  - NOTICE 更新（如复制 codex 代码）
+- Push → 我交链接给你
+
+### 25.5 5 大常见失败模式（官方列举）—— Cowork 端必须自检
+
+| 失败模式 | 触发信号 | Cowork 端反应 |
+|---|---|---|
+| **The kitchen sink session** | 一个 session 跨多任务 | 立即 `/clear`，分裂为多个 session |
+| **Correcting over and over** | 同一问题纠错 ≥ 2 次 | `/clear` + 重写更精确的 prompt（incorporating what learned） |
+| **Over-specified CLAUDE.md** | Claude 忽略明文规则 | CLAUDE.md 必须重构（§24 已做） |
+| **Trust-then-verify gap** | 代码看上去对但有 edge case | 必须 verification 命令；无法验证就不交付 |
+| **Infinite exploration** | "investigate" 无 scope | Subagent + 显式 scope（"only look at agent/agentic_loop.rs"） |
+
+---
+
+## 26. Writer / Reviewer 双 Session 模式 <a id="26-writer-reviewer"></a>
+
+[官方明确推荐](https://code.claude.com/docs/en/best-practices)："a fresh context improves code review since Claude won't be biased toward code it just wrote"。
+
+### 26.1 协议
+
+| 阶段 | Session | 任务 |
+|---|---|---|
+| 1 | Cowork-A（Writer） | 实施 M*-T* + push 分支 |
+| 2 | Cowork-B（Reviewer，**fresh /clear**） | 拉分支 + 不读 Cowork-A 对话 + 独立 review |
+| 3 | Cowork-A | 根据 Reviewer 反馈修复 |
+| 4 | Cowork-B（fresh） | 再次 review |
+| 5 | 你 | 最终 merge |
+
+### 26.2 适用范围
+
+强制走 Writer/Reviewer 的任务：
+- **所有 P0 + 部分 P1**（M1-T1 / M2-A / M2-H L1 / M3-T1 / M5-T1 / M7-T5a / Phase 0.5-T7 memory_graph freeze）
+- 任何涉及 **🔴 DMZ 文件** 的改动
+
+可跳过的任务：
+- crate 复制（Phase 0.5-T3/T4/T5，机械动作）
+- pure 类型定义（M1-T1 IntentSpec 等）
+- 文档（M0 / ADR）
+
+### 26.3 Reviewer Session 的 Prompt 模板
+
+```
+Review the changes in branch claude/codex-absorption-v2.2/<branch>.
+
+Specifically check:
+1. ADR §18 11 questions answered in PR description?
+2. memory_graph::write — any new occurrences?
+3. dirs::home_dir().unwrap().join(".uclaw") — any new occurrences?
+4. format!() prompt concatenation — any new occurrences?
+5. Tool handler output truncation present?
+6. Test coverage adequate (unit + integration)?
+7. Per-turn state explicitly reset (R-6)?
+8. Migration V-number reserved in CLAUDE.md registry?
+9. NOTICE updated if new codex code derived?
+10. Edge cases: empty input / cancellation / concurrent modification?
+
+Don't read the Writer session transcript. Form your own assessment from the diff.
+Report findings as: CRITICAL / MAJOR / MINOR / NIT.
+```
+
+---
+
+## 27. Claude Code Hooks 工程化（**v2.2 §M5 升级**）<a id="27-claude-code-hooks"></a>
+
+**重要区分**：
+
+| 类型 | 性质 | 落地位置 |
+|---|---|---|
+| **ADR §10 HookEventName（13 events）** | uclaw 内部 runtime 的 PolicyHook，由 HookBus 调度，治理 agent loop（PreToolUse/PostToolUse/PreMemoryWrite 等） | uclaw 自己的 Rust 代码 |
+| **Claude Code Hooks（本节新增）** | Claude Code CLI 本身的 hook 系统，治理 **我（Cowork）** 在 uclaw 仓库内的行为 | `.claude/hooks.json` + 脚本 |
+
+**两者不冲突**——一个是产品功能，一个是开发治理。
+
+### 27.1 推荐 Claude Code Hooks（写入 `.claude/hooks.json`）
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/block_memory_graph_write.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/block_dirs_home_dir.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/block_codex_derived_without_notice.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/cargo_check_modified_crate.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/session_recap_to_claude_md.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### 27.2 关键 hook 脚本
+
+```bash
+# .claude/hooks/block_memory_graph_write.sh
+#!/bin/bash
+# Block any Edit/Write that adds memory_graph::write calls (ADR §11.2 freeze).
+input=$(cat)
+file=$(echo "$input" | jq -r '.tool_input.file_path // .tool_input.path // ""')
+new=$(echo "$input"  | jq -r '.tool_input.new_string // .tool_input.content // ""')
+
+# allowlist: legacy migration only
+if [[ "$file" == *"memory_graph/legacy_migration"* ]]; then exit 0; fi
+
+if echo "$new" | grep -qE '\bmemory_graph::write[a-z_]*\s*\('; then
+  echo '{"continue": false, "stopReason": "ADR §11.2: memory_graph is frozen. Use gbrain instead."}' >&2
+  exit 2
+fi
+exit 0
+```
+
+```bash
+# .claude/hooks/block_dirs_home_dir.sh
+# Block re-introduction of `dirs::home_dir().unwrap().join(".uclaw")`.
+input=$(cat)
+new=$(echo "$input" | jq -r '.tool_input.new_string // .tool_input.content // ""')
+if echo "$new" | grep -qE 'dirs::home_dir\(\)\s*\.\s*unwrap\(\)\s*\.\s*join\(\s*"\.uclaw"'; then
+  echo '{"continue": false, "stopReason": "Use uclaw_utils_home::uclaw_home() instead (Phase 0.5-T6 sweep)."}' >&2
+  exit 2
+fi
+exit 0
+```
+
+### 27.3 这些 hooks 的价值
+
+- **Deterministic**：不依赖我"记得"规则——hook 拒绝就拒绝
+- **Trace-visible**：阻断会进 Claude Code session 历史，让用户看到为什么
+- **Self-improving**：Stop hook 让我每个 session 末尾把学到的写入 CLAUDE.md
+
+---
+
+## 28. 长上下文 / 长周期 项目专项实践 <a id="28-长上下文专项"></a>
+
+### 28.1 Compaction 节奏（[官方 Cookbook](https://platform.claude.com/cookbook/tool-use-automatic-context-compaction)）
+
+| Context 利用率 | 推荐动作 |
+|---|---|
+| 0-30% | 正常实施 |
+| 30-60% | 继续，但避免触发新的 subagent / 大文件读 |
+| **60-80%** | **手动 `/compact <focus>`**，e.g. `/compact Focus on M1-T1 progress: types defined, tests written, file paths` |
+| 80-90% | 自动 compaction 触发；如此时未完成关键决策，立即停手手动 compact |
+| 90%+ | 已危险；切勿在此时做关键 commit / push（context 可能丢失上下文） |
+
+**关键**：**主动 compact 优于被动**——主动时模型记得全貌，summary 质量好；被动时模型已开始"忘"，summary 会丢关键信息。
+
+### 28.2 多 session 衔接（Resume + Named sessions）
+
+```bash
+# 命名 session（官方 best-practices §Resume conversations）
+claude --resume m1-t1-runtime-contracts
+claude --resume m2-h-l1-truncation-policy
+claude --resume m5-t1-hookbus-13-events
+```
+
+每个 Milestone-Task 一个长寿 session，跨多天 resume。这样 task context 累积但不污染其他 task。
+
+### 28.3 Skills 化 uclaw 知识
+
+新增 `.claude/skills/` 下：
+
+```
+.claude/skills/
+├── adr-baseline/SKILL.md           # ADR §1-§19 摘要，按需展开
+├── milestone-execution/SKILL.md    # M*-T* 通用流程（plan mode → write → review）
+├── codex-crate-integration/SKILL.md # 17 crate 集成规则
+├── memory-write-discipline/SKILL.md # PreMemoryWrite + gbrain 唯一路径
+├── tauri-rust-conventions/SKILL.md  # uclaw Rust 风格 + tauri 集成
+├── prompt-engineering/SKILL.md     # 12-block baseline + 7 context tools
+└── token-budget-discipline/SKILL.md # 7 层防线 + TruncationPolicy
+```
+
+每个 SKILL.md 仅在该领域 task 触发时加载，**不占常驻 context**。
+
+### 28.4 长周期项目（8-11 个月）的节奏
+
+| 周期 | 动作 |
+|---|---|
+| **每 session 末** | 把关键学习写入 `docs/superpowers/learnings/<date>.md`；不要塞 CLAUDE.md |
+| **每周一次** | 审阅 Migration registry 占用 + Active plans 状态；剪枝过期 plan |
+| **每 milestone 末** | 跑 v2.2 §26 三向 audit（fidelity / gap / risk）；产出 audit report |
+| **每 3-6 月** | 全量 CLAUDE.md 审查 + Skills 审查 + Hooks 审查（官方推荐 cadence——model 升级后旧 workaround 可能反成限制） |
+
+---
+
+## 29. 与 v2.2 §20 风险注册表的交叉绑定 <a id="29-风险绑定"></a>
+
+把官方 5 大失败模式 + 本章纪律 绑定到 v2.2 §20 已识别风险：
+
+| v2.2 风险 | 对应 best practice 缓解 |
+|---|---|
+| R-1 agentic_loop 重构陷阱 | §24 CLAUDE.md 重构 + §26 Writer/Reviewer + Plan Mode 4 阶段（强制 Explore 第 1 阶段读完 882 行） |
+| R-6 per-turn state 跨 turn 泄漏 | §25 阶段 4 verify 强制 + §27 PostToolUse hook 跑 cargo check |
+| R-7 双重压缩状态机 | §28.1 60% utilization 主动 compact（避免重写 compact 时已超 80% context） |
+| R-8 Registry 循环初始化 | §26 Writer/Reviewer 双 session（Reviewer 必须从 diff 推断初始化顺序）+ DAG CI check |
+| R-13 V41-V55 迁移一致性 | §27 PreToolUse hook：禁止新 V 号占用未通过 CLAUDE.md registry 同步 |
+| 全部风险 | §28.4 每 milestone audit cadence（早发现） |
+
+---
+
+## 30. Phased Rollout（官方推荐三阶段）<a id="30-phased-rollout"></a>
+
+官方博客 [How Claude Code works in large codebases](https://claude.com/blog/how-claude-code-works-in-large-codebases-best-practices-and-where-to-start) 推荐三阶段 rollout：
+
+| Phase | 内容 | uclaw 对应 |
+|---|---|---|
+| **1. Infrastructure first** | 在 broad 使用前建好 CLAUDE.md + hooks + skills + plugins | **Phase 0.5 已完成本章后**（§24 CLAUDE.md 重构 + §27 hooks 建立 + §28.3 skills 创建） |
+| **2. Small group adoption** | 1-3 个工程师先跑通 → 找问题 → 迭代 | M1 + M2 主要由你 + Cowork 主导执行（小组试运行） |
+| **3. Org-wide rollout** | 文档化 + DRI 角色 + 治理 | M3+ 开始邀请其他 contributor（如有）；DRI = 你 |
+
+**关键洞察**：99% 的失败案例是跳过 Phase 1 直接进 Phase 3。**uclaw 必须先把 §24 + §27 + §28.3 三件事做完，再进 M1**。
+
+---
+
+## 31. v2.3 Phase 0.5 增补任务清单 <a id="31-phase-05-增补"></a>
+
+v2.2 §2 Phase 0.5 原有 T1-T7。v2.3 增补 T8-T10：
+
+| 任务 | 内容 | 工作量 | DoD |
+|---|---|---|---|
+| **T8** | CLAUDE.md 重构（≤ 120 行 root + 拆 CONTEXT.md + 子目录 CLAUDE.md） | 0.5 天 | §24 |
+| **T9** | `.claude/hooks.json` + hook 脚本（block memory_graph / dirs_home_dir / 缺失 NOTICE） | 0.5 天 | §27 |
+| **T10** | `.claude/skills/` 7 个 uclaw 专属 skill 创建（adr-baseline / milestone-execution / 等） | 1 天 | §28.3 |
+
+**Phase 0.5 总工作量**：从 v2.2 的 3-5 天 → v2.3 的 **5-7 天**（增加 ~2 天用于 best practice 基础设施）。
+
+**ROI**：这 2 天是**所有后续 M1-M9 时长的杠杆**。官方原话："Teams that invest in codebase setup see better results"。
+
+---
+
+## 32. v2.3 文档版本变更说明
+
+**v2.2 → v2.3 关键变更**：
+
+1. **新增第 22-31 章**：Claude Code / Cowork 操作手册
+2. **Phase 0.5 工作量**：3-5 天 → **5-7 天**（+T8/T9/T10）
+3. **新增协作纪律**：
+   - Plan Mode 4 阶段强制（每个 M*-T*）
+   - Writer/Reviewer 双 session（P0 任务必走）
+   - 60% context 主动 compact
+   - /clear 跨任务边界
+   - Skills progressive disclosure
+   - Claude Code Hooks 治理我（Cowork）的行为
+4. **Phased rollout 强调**：**先建 infrastructure 再 broad use**（避免跳级）
+5. **3-6 月 audit cadence 写入**：长周期项目维护规则
+6. **风险注册表绑定**：v2.2 R-1/R-6/R-7/R-8/R-13 都明确对应 best practice 缓解
+
+**单一真相**：本章是 Cowork 操作纪律的唯一源。对比文档 v2.2 §26.9 红线不变；本章是**执行层**红线，不与设计层冲突。
+
+**ADR Baseline 对齐**：100%。本章治理"我（Cowork）如何工作"，不改 uclaw 产品架构。
+
+---
+
+## 33. 立即可执行的下一步
+
+按 §30 phased rollout + §31 Phase 0.5 增补：
+
+| 序 | 动作 | 谁做 | 时长 |
+|---|---|---|---|
+| 1 | 你 IDE 端：把当前 in-progress 改动 commit / stash | 你 | 5 分钟 |
+| 2 | Cowork: `git worktree add ~/Documents/uclaw-cowork -b claude/codex-absorption-v2.2` | Cowork（我）| 5 分钟 |
+| 3 | Cowork: Phase 0.5-T1 (LICENSE + NOTICE)，单独 PR | Cowork | 0.5 天 |
+| 4 | Cowork: **Phase 0.5-T8 CLAUDE.md 重构**（最先做这个，因为它影响所有后续 session 启动效率）| Cowork | 0.5 天 |
+| 5 | Cowork: Phase 0.5-T9 `.claude/hooks.json` + 脚本 | Cowork | 0.5 天 |
+| 6 | Cowork: Phase 0.5-T10 7 个 SKILL.md | Cowork | 1 天 |
+| 7 | Cowork: Phase 0.5-T2 + T3（workspace + 6 crate）| Cowork | 0.5-1 天 |
+| 8 | Cowork: Phase 0.5-T4 output-truncation | Cowork | 0.5 天 |
+| 9 | Cowork: Phase 0.5-T6 + T7（home sweep + memory_graph freeze）| Cowork | 0.5 天 |
+| 10 | Cowork+你: Phase 0.5 收尾 PR 全 merge → 进 M1 | 双方 | 0.5 天 |
+
+**总时长**：5-7 天 Phase 0.5 全套（含 best practice infra）→ 然后稳定推进 M1-M8 共 9 月。
+
+---
+
+> **Sources**（本部分研究依据）：
+> - [Best practices for Claude Code（官方）](https://code.claude.com/docs/en/best-practices)
+> - [Run parallel sessions with worktrees（官方）](https://code.claude.com/docs/en/worktrees)
+> - [How Claude Code works in large codebases（Anthropic 博客）](https://claude.com/blog/how-claude-code-works-in-large-codebases-best-practices-and-where-to-start)
+> - [Compaction（API docs）](https://platform.claude.com/docs/en/build-with-claude/compaction)
+> - [Context engineering（Cookbook）](https://platform.claude.com/cookbook/tool-use-context-engineering-context-engineering-tools)
+> - [Claude Cowork（产品页）](https://www.anthropic.com/product/claude-cowork)
+> - [Plan Mode 指南（codewithmukesh）](https://codewithmukesh.com/blog/plan-mode-claude-code/)
+> - [50 Claude Code Tips（Builder.io）](https://www.builder.io/blog/claude-code-tips-best-practices)
+> - [Context Management Guide（Sitepoint）](https://www.sitepoint.com/claude-code-context-management/)
+> - [Claude Code Best Practices: Planning, Context Transfer, TDD（DataCamp）](https://www.datacamp.com/tutorial/claude-code-best-practices)
+> - [Worktrees Guide（ClaudeDirectory）](https://www.claudedirectory.org/blog/claude-code-worktrees-guide)
+> - [Claude Code Creator's 100-Line Workflow（Mindwired）](https://mindwiredai.com/2026/03/25/claude-code-creator-workflow-claudemd/)
