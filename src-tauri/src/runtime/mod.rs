@@ -19,6 +19,8 @@
 //!
 //! Layout:
 //!
-//! - [`contracts`] — type definitions (this milestone, M1-T1)
+//! - [`contracts`] — type definitions (M1-T1, PR #304)
+//! - [`task`]      — SessionTask trait + TaskScheduler (M1-T2a, PR #305)
 
 pub mod contracts;
+pub mod task;
