@@ -2295,8 +2295,40 @@ pub async fn send_message(
 
     let config = AgenticLoopConfig::from_model(&llm_config.model);
 
-    // Run the agent loop
-    let outcome = crate::agent::agentic_loop::run_agentic_loop(&delegate, &mut reason_ctx, &config).await;
+    // M1-T4b — optionally route through rollout_integration if the
+    // UCLAW_ROLLOUT_ENABLED env var is set. The helper writes
+    // TaskStarted / ModelTurn / Warning / TaskFinished events to
+    // ~/.uclaw/sessions/rollout-*.jsonl + task_events_rollout (V48)
+    // and returns the same LoopOutcome the loop would have produced.
+    // When the var is unset (the default), behavior is identical to
+    // the direct run_agentic_loop call.
+    let outcome = if crate::agent::rollout_integration::rollout_enabled_by_env() {
+        let rollout = match crate::runtime::rollout::RolloutWriter::spawn(
+            uclaw_utils_home::uclaw_home_pathbuf()
+                .map(|p| p.join("sessions"))
+                .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.uclaw/sessions")),
+            None, // SQLite mirror wiring lands in a follow-up — JSONL only for now.
+        )
+        .await
+        {
+            Ok(h) => Some(h),
+            Err(e) => {
+                tracing::warn!("M1-T4b: failed to spawn RolloutWriter, falling back to direct loop: {e}");
+                None
+            }
+        };
+        crate::agent::rollout_integration::run_with_rollout(
+            &delegate,
+            &mut reason_ctx,
+            &config,
+            rollout.as_ref(),
+            &input.conversation_id,
+            &input.conversation_id,
+        )
+        .await
+    } else {
+        crate::agent::agentic_loop::run_agentic_loop(&delegate, &mut reason_ctx, &config).await
+    };
 
     let response_text = match &outcome {
         LoopOutcome::Response { text, .. } => text.clone(),
