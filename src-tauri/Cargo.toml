@@ -23,6 +23,8 @@ tauri-build = { version = "2.0.0", features = [] }
 [dependencies]
 # Phase 0.5-T6 — canonical resolver for ~/.uclaw (sweep target)
 uclaw-utils-home = { path = "../crates/uclaw-utils-home", version = "0.1" }
+# M1-T2a — OrCancelExt for cancellation-aware async
+uclaw-utils-async-utils = { path = "../crates/uclaw-utils-async-utils", version = "0.1" }
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
