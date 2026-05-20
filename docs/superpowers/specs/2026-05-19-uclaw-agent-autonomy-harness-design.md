@@ -8,6 +8,14 @@
 
 uClaw 的最终目标不是单点实现一个 browser agent，而是构建一个能长期自治、自我学习、自我进化的 agent product runtime。Browser 能力、Memory OS、gbrain、Skill 提取、Automation、Permissions、Hooks、Tools、Prompts 都应该接入同一个 harness，而不是各自维护一套局部状态、局部日志和局部评估。
 
+本文中的 **Harness** 指的是全局 **UCLAW Agent Harness Control Plane**，不是 Browser 专用测试套件，也不是 System Diagnostics 里的几个按钮。Browser parity、Memory/gbrain eval、Agent control-plane eval、Self-improvement gates 都只是这个全局控制面的 subject adapter 或 early slice。
+
+Harness 的职责是把所有 agentic runtime 统一成一条闭环：
+
+`production trace -> episode -> eval -> learning candidate -> gate -> promotion -> regression replay -> production monitoring`
+
+只有这条链路闭合后，才能诚实地说 uClaw 进入“越用越聪明”的阶段。当前实现已经有 runtime core、若干 fixture/eval adapter、System Diagnostics scorecard 入口和 self-improvement gate 雏形；还没有把所有生产事件自动纳入 episode，也没有自动把真实失败转成可 gated 的 skill/prompt/memory/hook candidate。
+
 本设计选择 **reuse-first** 原则：
 
 - 身份与会话管理复用 Playwright / browser-use 的 profile 与 storage state 机制，不自研 cookie/session 系统。
@@ -16,6 +24,28 @@ uClaw 的最终目标不是单点实现一个 browser agent，而是构建一个
 - Harness 参考 OpenHarness 的模块化思想，覆盖 `agent_loop`、`tools`、`skills`、`plugins`、`permissions`、`hooks`、`memory`、`gbrain`、`tasks`、`coordinator`、`prompts`。
 
 核心判断：**自治能力不是让 agent 更大胆，而是让 agent 每一步更可观察、更可验证、更可恢复、更可学习。**
+
+### 1.1 Current Implementation Truth
+
+As of GitHub PR #285:
+
+- Implemented and app-visible:
+  - harness runtime core,
+  - Browser parity scorecards,
+  - Memory/gbrain inventory and recall scorecards,
+  - Agent control-plane fixture scorecards,
+  - Self-improvement gate fixture reports,
+  - System Diagnostics buttons for `All`, `Browser`, `Memory`, `Agent`, and `Self`.
+- Implemented but not fully live-looped:
+  - `browser_task` production traces are persisted and some long-term browser events write to Memory/gbrain,
+  - Browser harness has a real `BrowserAgentLoop` executor path in backend code,
+  - System Diagnostics `Browser` currently uses deterministic `BrowserFixtureParityExecutor`, not a live arbitrary website run.
+- Not implemented yet:
+  - global production trace ingestion across every agent loop/message/tool/automation surface,
+  - automatic production run mining into harness episodes,
+  - automatic failure-to-candidate generation,
+  - promotion that mutates production skills/prompts/hooks/memory after passing gates,
+  - historical trend dashboards and regression delta analysis.
 
 ---
 
@@ -31,13 +61,15 @@ uClaw 不应该单独造身份认证、session、OCR、captcha、eval runner 的
 - OCR 使用 provider adapter 接 PaddleOCR / EasyOCR / local VLM。
 - Harness 复用现有 agent/tool/memory/gbrain 运行时事件，不另起平行真相源。
 
-### 2.2 One Harness, Many Subjects
+### 2.2 One Global Harness, Many Subjects
 
-Harness 的 subject 不是 browser，而是所有自治模块：
+Harness 的 subject 不是 browser，而是所有自治模块。Browser 是最早需要高强度 eval 的 subject，但不是 harness 的边界。
 
 ```ts
 type HarnessSubject =
   | 'agent_loop'
+  | 'agent_message'
+  | 'context'
   | 'browser'
   | 'tools'
   | 'skills'
@@ -46,12 +78,47 @@ type HarnessSubject =
   | 'hooks'
   | 'memory'
   | 'gbrain'
+  | 'automation'
   | 'tasks'
   | 'coordinator'
   | 'prompts'
+  | 'ui_projection'
+  | 'runtime_health'
 ```
 
 每个 subject 通过 adapter 接入同一套 case、episode、trace、artifact、grader、scorecard。
+
+### 2.2.1 HarnessSubject Coverage Matrix
+
+| Subject | Production source | Eval purpose | Current state | Next required connector |
+| --- | --- | --- | --- | --- |
+| `agent_loop` | Main chat/agent run lifecycle | Tool/result pairing, final run status, stuck-loop recovery, checkpoint correctness | Fixture adapter exists | Ingest real agent run events into `HarnessEpisode` |
+| `agent_message` | User/assistant/system message assembly | Prompt correctness, tool-call visibility, ask_user transcript, model output parseability | Not implemented | Capture normalized message envelope before provider call |
+| `context` | Context builder / memory injection / compaction | Grounded context selection, token budget, stale context exclusion | Not implemented | Add context snapshot artifact and grader |
+| `browser` | `browser_task`, browser tools, Browser Task Monitor | Browser-use parity, DOM action success, boundary precision, checkpoint resume | Adapter exists; UI uses deterministic fixture executor | Add live local-fixture smoke executor and production run mining |
+| `tools` | Tool broker and tool renderers | Tool call/result pairing, crash recovery, output schema correctness | Partially represented through agent fixture | Add generic tool adapter over production tool events |
+| `permissions` | Permission mode, ask_user, human boundary | Correct blocking, no silent unsafe action, visible user response | Partially represented through Browser ask_user and agent fixture | Add permission trace subject independent of Browser |
+| `automation` | Cron/heartbeat automation runs | Schedule correctness, idempotency, checkpoint, run isolation | Not implemented | Adapter over automation run records |
+| `tasks` | Long-running task monitor / checkpoints | Pause/resume correctness, cancellation truth, timeout behavior | Browser-specific only | Generic task episode adapter |
+| `memory` | MemoryStore / memU | Write/recall precision, stale recall, correction adoption | Eval adapter exists | Link production memory reads/writes into episodes |
+| `gbrain` | gbrain MCP pages/entities | Page grounding, entity consistency, recall traceability | Eval adapter exists | Add durable gbrain artifact refs and failure classification |
+| `skills` | Skill extraction and skill registry | Skill usefulness, reuse rate, regression rate | Gate fixture only | Candidate extraction from failed episodes |
+| `prompts` | System/developer/policy prompt revisions | Output correctness, safety, token/cost regression | Gate schema only | Prompt patch candidate + replay gate |
+| `hooks` | Runtime hooks and policy hooks | Hook side effects, ordering, rollback | Gate schema only | Hook trace adapter |
+| `plugins` | MCP/plugin connectors | Availability, tool exposure, schema drift | gbrain/memU only | Generic MCP/plugin health subject |
+| `coordinator` | Multi-agent routing / delegation | Correct routing, no duplicate work, merge safety | Not implemented | Coordinator decision trace |
+| `ui_projection` | Frontend running state, task monitor, tool-call UI | UI truth matches backend runtime | Not implemented | UI projection snapshot and event consistency grader |
+| `runtime_health` | Diagnostics, bridge services, MCP health | Service availability, startup recovery, crash classification | System Diagnostics exists | Convert diagnostics snapshots into harness episodes |
+
+### 2.2.2 Global Ownership Rule
+
+Every agentic subsystem should answer three questions through the same harness interface:
+
+1. **What happened?** A normalized trace event and artifact reference.
+2. **Was it good?** A grader result with explicit pass/fail/blocked/partial semantics.
+3. **What should change?** A candidate, checkpoint, or rollback-safe no-op.
+
+If a subsystem cannot answer those questions, it is not yet fully harnessed.
 
 ### 2.3 Boundary Is a Feature
 
@@ -196,6 +263,13 @@ This keeps the product useful for legitimate automation and QA while avoiding a 
 
 ## 4. UCLAW Harness Runtime
 
+Harness Runtime is the global control plane for evaluation and learning. Its runtime contract is broader than test execution:
+
+- In **eval mode**, it runs deterministic fixtures or local live smoke tasks and emits scorecards.
+- In **production observer mode**, it records normalized runtime events from real user sessions, automations, browser tasks, tool calls, memory writes, and UI projections.
+- In **learning mode**, it turns failed or partial episodes into candidate changes.
+- In **gate mode**, it blocks or promotes candidates based on regression evidence, rollback metadata, and safety constraints.
+
 ### 4.1 Core Types
 
 ```ts
@@ -215,6 +289,8 @@ type HarnessEpisode = {
   runId: string
   caseId: string
   subject: HarnessSubject
+  origin: 'fixture' | 'live_smoke' | 'production'
+  parentRunId?: string
   startedAt: string
   finishedAt?: string
   trace: HarnessEvent[]
@@ -222,21 +298,131 @@ type HarnessEpisode = {
   scores: Record<string, number>
   verdict: 'pass' | 'fail' | 'partial' | 'blocked'
 }
-
-type HarnessEvent =
-  | { kind: 'run_started'; ts: string; caseId: string }
-  | { kind: 'model_turn'; ts: string; model: string; tokenUsage?: TokenUsage }
-  | { kind: 'tool_call'; ts: string; toolName: string; inputRef: string }
-  | { kind: 'tool_result'; ts: string; toolName: string; outputRef: string; ok: boolean }
-  | { kind: 'permission_request'; ts: string; requestId: string; reason: string }
-  | { kind: 'boundary_event'; ts: string; boundary: BrowserBoundaryEvent }
-  | { kind: 'memory_write'; ts: string; target: 'memory' | 'gbrain'; artifactRef: string }
-  | { kind: 'memory_recall'; ts: string; target: 'memory' | 'gbrain'; artifactRef: string }
-  | { kind: 'checkpoint'; ts: string; checkpointRef: string }
-  | { kind: 'run_finished'; ts: string; verdict: HarnessEpisode['verdict'] }
 ```
 
-### 4.2 Runtime Modules
+### 4.2 Global Event Schema
+
+Every module writes through a shared envelope. Module-specific payloads live in artifacts or typed sub-payloads, but the top-level identity fields stay stable so scorecards can compare Browser, Agent, Automation, Memory, and UI events.
+
+```ts
+type HarnessEventEnvelope<TPayload = unknown> = {
+  id: string
+  ts: string
+  source:
+    | 'agent_loop'
+    | 'agent_message'
+    | 'context'
+    | 'browser'
+    | 'tool_broker'
+    | 'permission'
+    | 'automation'
+    | 'memory'
+    | 'gbrain'
+    | 'skill'
+    | 'prompt'
+    | 'hook'
+    | 'plugin'
+    | 'coordinator'
+    | 'ui_projection'
+    | 'runtime_health'
+  subject: HarnessSubject
+  sessionId?: string
+  runId?: string
+  parentRunId?: string
+  taskId?: string
+  correlationId?: string
+  artifactRefs: string[]
+  payload: TPayload
+  privacy: {
+    containsSecret: boolean
+    redaction: 'none' | 'summary_only' | 'hash_only' | 'dropped'
+  }
+}
+```
+
+Canonical event kinds:
+
+```ts
+type HarnessEvent =
+  | { kind: 'run_started'; caseId?: string; promptRef?: string }
+  | { kind: 'agent_message'; role: 'system' | 'developer' | 'user' | 'assistant' | 'tool'; messageRef: string }
+  | { kind: 'context_snapshot'; contextRef: string; tokenUsage?: TokenUsage }
+  | { kind: 'model_turn'; model: string; inputRef: string; outputRef: string; tokenUsage?: TokenUsage }
+  | { kind: 'tool_call'; toolName: string; callId: string; inputRef: string }
+  | { kind: 'tool_result'; toolName: string; callId: string; outputRef: string; ok: boolean }
+  | { kind: 'permission_request'; requestId: string; reason: string; mode: string }
+  | { kind: 'permission_result'; requestId: string; decision: 'approved' | 'denied' | 'expired' }
+  | { kind: 'browser_observation'; tabId: string; observationRef: string }
+  | { kind: 'browser_action'; actionName: string; actionRef: string; ok: boolean }
+  | { kind: 'boundary_event'; boundaryRef: string; kind: string; canResume: boolean }
+  | { kind: 'automation_tick'; automationId: string; scheduledFor: string }
+  | { kind: 'automation_result'; automationId: string; ok: boolean; outputRef: string }
+  | { kind: 'memory_write'; target: 'memory' | 'gbrain'; artifactRef: string }
+  | { kind: 'memory_recall'; target: 'memory' | 'gbrain'; queryRef: string; resultRef: string }
+  | { kind: 'candidate_created'; candidateId: string; candidateRef: string }
+  | { kind: 'gate_result'; candidateId: string; verdict: 'promote' | 'hold' | 'reject'; score: number }
+  | { kind: 'promotion_applied'; candidateId: string; rollbackRef: string }
+  | { kind: 'checkpoint'; checkpointRef: string; resumable: boolean }
+  | { kind: 'ui_projection'; surface: string; stateRef: string }
+  | { kind: 'runtime_health'; service: string; status: 'running' | 'stopped' | 'failed' | 'degraded' }
+  | { kind: 'run_finished'; verdict: HarnessEpisode['verdict']; finalRef?: string }
+```
+
+Rules:
+
+- Raw secrets, cookies, bearer tokens, passwords, CAPTCHA images, and raw screenshot base64 must not be stored directly in ordinary trace payloads.
+- Large values go into artifacts with redaction metadata; events carry refs.
+- `tool_call` and `tool_result` must share a stable `callId`.
+- UI state is an evaluable projection, not a truth source. Backend run state remains authoritative.
+
+### 4.3 Production Trace to Promotion Loop
+
+The intended closed loop is:
+
+1. **Capture:** production runtime emits `HarnessEventEnvelope` for agent messages, context snapshots, model turns, tools, browser observations/actions, permissions, automation ticks, memory writes/recalls, and UI projections.
+2. **Episode assembly:** event router groups related events by `sessionId`, `runId`, `taskId`, and `correlationId` into a `HarnessEpisode`.
+3. **Evaluation:** subject adapters run graders over the episode and attach scorecards.
+4. **Failure classification:** failed/partial/blocked episodes are labeled as browser DOM failure, bad prompt, missing memory, stale gbrain, tool crash, permission mismatch, automation schedule drift, UI projection drift, or coordinator routing error.
+5. **Candidate extraction:** classifiers generate proposed memory corrections, gbrain page updates, skill candidates, prompt patches, hook changes, automation policy changes, or browser policy changes.
+6. **Gate:** self-improvement gate requires evidence, passing regression suites, no blockers, and rollback refs.
+7. **Promotion:** approved candidates mutate production registries only through typed promotion handlers.
+8. **Regression replay:** promoted changes rerun relevant harness suites.
+9. **Production monitoring:** future production episodes compare success rate, step count, ask_user frequency, tool failure rate, and cost against pre-promotion baseline.
+
+Until steps 1-9 are wired end-to-end, Harness should be described as **evaluation infrastructure**, not as a completed self-improving intelligence loop.
+
+### 4.4 Adapter Classes
+
+Adapters fall into three classes:
+
+| Class | Purpose | Example current implementation |
+| --- | --- | --- |
+| Fixture adapter | Deterministic, fast regression over synthetic traces or synthetic browser runs | Agent control-plane fixture, self-improvement fixture, System Diagnostics Browser fixture |
+| Live smoke adapter | Bounded real runtime execution against local fixtures or allowlisted targets | BrowserAgentLoop executor path exists, but System Diagnostics does not use it yet |
+| Production observer adapter | Converts real user/session/automation events into episodes | Browser task store and memory adapter exist; global event ingestion is not complete |
+
+All three are useful, but they answer different questions:
+
+- Fixture answers: did our contract and scoring code regress?
+- Live smoke answers: does the real runtime work on bounded deterministic tasks?
+- Production observer answers: are users getting better outcomes over time?
+
+### 4.5 Current Implementation State
+
+| Area | Current state | Honest interpretation |
+| --- | --- | --- |
+| Runtime core | `HarnessRuntime`, episodes, events, artifacts, graders exist | Good substrate, but in-memory episode registry and limited query/report APIs |
+| Browser parity | 7 built-in cases, scorecards, fixture executor, real executor trait | Measures browser contract; UI path is deterministic fixture, not live web autonomy |
+| Memory/gbrain eval | Inventory and recall probes via explicit command | Useful service/retrieval check; not yet continuous memory quality monitoring |
+| Agent control-plane | Fixture traces for tool pairing, permissions, checkpoints, failure final state | Good contract test; not yet real agent-loop ingestion |
+| System Diagnostics UI | Buttons for `All`, `Browser`, `Memory`, `Agent`, `Self` | Developer-facing runner, not full harness dashboard |
+| Self-improvement gates | Candidate policy evaluator and fixture candidates | Gate semantics exist; automatic candidate generation and promotion handlers are not implemented |
+| Browser production memory | Browser task events can write Memory/gbrain with cooldown and redaction | Useful retention path, but not guaranteed complete or used as eval input automatically |
+| Automation | No adapter yet | Must be added for global harness claim |
+| Agent messages/context | No adapter yet | Major missing piece for prompt/context quality eval |
+| UI projection | No adapter yet | Important because prior bugs included frontend running-state drift |
+
+### 4.6 Runtime Modules
 
 Backend:
 
@@ -269,7 +455,7 @@ Frontend:
 - `ui/src/components/harness/HarnessScorecard.tsx`
 - `ui/src/atoms/harness-atoms.ts`
 
-### 4.3 Memory Adapter and gbrain Adapter
+### 4.7 Memory Adapter and gbrain Adapter
 
 Memory Adapter must connect both the Memory System and gbrain. They are separate truth layers with a unified grader.
 
@@ -374,6 +560,24 @@ Unified Memory Grader answers:
 ---
 
 ## 6. Implementation Roadmap
+
+### PR 0: Global Agent Harness Control Plane Definition
+
+Goal: correct the abstraction so Harness is defined as the global agentic runtime control plane, not a Browser-only or diagnostics-only test surface.
+
+Scope:
+
+- global subject coverage,
+- global event envelope,
+- production trace to episode assembly,
+- eval to candidate to gate to promotion loop,
+- current implementation truth table,
+- explicit distinction between fixture, live smoke, and production observer adapters.
+
+Verification:
+
+- documentation review confirms Browser, Agent Loop, Agent Message, Context, Automation, Memory/gbrain, Skills, Prompts, Hooks, Permissions, Tools, Plugins, Coordinator, UI Projection, and Runtime Health are covered by the global model.
+- no current fixture-only implementation is described as completed self-improvement.
 
 ### PR 1: Browser Identity Broker
 
@@ -505,25 +709,21 @@ Verification:
 
 ## 7. Recommended Next Step
 
-The next task should be **writing-plans**, not brainstorming.
+The next implementation task should be **Global Trace Envelope and Subject Registry**, not another local Browser-only case.
 
 Reason:
 
-- The architecture direction is already chosen.
-- Major technical decisions are known.
-- The risk is implementation sprawl, not lack of ideas.
-- A `writing-plans` document should split PR 1 and PR 4 into executable, test-first tasks.
+- Browser, Memory/gbrain, Agent control-plane, and Self gates now have early slices.
+- The remaining architectural gap is that production events do not enter one global episode model.
+- Without global trace ingestion, Harness remains a set of useful eval buttons rather than a learning control plane.
 
 Recommended immediate plan:
 
-1. Write `docs/superpowers/plans/2026-05-19-browser-identity-broker.md`.
-2. Write `docs/superpowers/plans/2026-05-19-uclaw-harness-runtime-core.md`.
-3. Implement PR 1 first if the next product focus is Browser autonomy.
-4. Implement PR 4 first if the next product focus is whole-agent self-evolution.
-
-My recommendation: **PR 4 first, then PR 1.**
-
-Why: Harness Runtime Core becomes the evaluation substrate for Browser Identity, Challenge Broker, Memory/gbrain, and Skill promotion. If we build identity first without harness, we still rely on manual smoke tests. If we build harness first, every later Browser PR lands with a measurable regression suite.
+1. Extend `HarnessSubject` in Rust to include `agent_message`, `context`, `automation`, `ui_projection`, `runtime_health`, and other global subjects from this spec.
+2. Add a stable `HarnessEventEnvelope` Rust type with redaction metadata and artifact refs.
+3. Add a lightweight event router that can receive production events without running graders synchronously.
+4. Add one real production connector first: agent message/context snapshots or automation run records.
+5. Keep Browser live smoke as the next Browser-specific follow-up, but do not let Browser consume the entire Harness abstraction.
 
 ---
 
