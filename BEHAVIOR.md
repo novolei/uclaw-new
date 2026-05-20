@@ -150,8 +150,9 @@ two enforcement layers:
   SPDX header in derived crates. Advisory: `gitnexus detect-changes` risk
   surfacing.
 - **Claude Code hooks** (in-session real-time feedback): `.claude/settings.json`
-  registers `PreToolUse` hooks. Same rule set; faster feedback than waiting
-  until commit.
+  registers `PreToolUse` hooks; the scripts live in `.claude/hooks/` (see
+  `.claude/hooks/README.md` for the catalog). Same rule set as the git
+  layer; faster feedback than waiting until commit.
 
 To bypass for an emergency: `git commit --no-verify`. Use sparingly. Every
 bypass should be paired with a follow-up commit that fixes the violation or
