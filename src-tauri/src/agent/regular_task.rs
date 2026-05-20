@@ -152,9 +152,12 @@ impl SessionTask for RegularTask {
                         input_tokens: usage.input_tokens,
                         cached_input_tokens: usage.cache_read_tokens,
                         output_tokens: usage.output_tokens,
-                        reasoning_output_tokens: 0,
-                        total_tokens: usage.input_tokens
-                            .saturating_add(usage.output_tokens),
+                        // M1-T6 — real reasoning tokens from the provider if reported.
+                        reasoning_output_tokens: usage.reasoning_output_tokens,
+                        total_tokens: usage
+                            .input_tokens
+                            .saturating_add(usage.output_tokens)
+                            .saturating_add(usage.reasoning_output_tokens),
                         cost_usd_micros: None,
                     },
                 });
@@ -508,6 +511,7 @@ mod tests {
                         output_tokens: 25,
                         cache_read_tokens: 40,
                         cache_creation_tokens: 0,
+                        reasoning_output_tokens: 0,
                     }),
                 },
             })
@@ -625,6 +629,99 @@ mod tests {
         }
         async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}
         async fn after_iteration(&self, _: usize) {}
+    }
+
+    /// M1-T6 — verify reasoning_output_tokens flows from agent::types::TokenUsage
+    /// through into runtime::contracts::TokenUsage on the ModelTurn event,
+    /// and that total_tokens accounts for it.
+    struct ReasoningResponseDelegate;
+
+    #[async_trait]
+    impl LoopDelegate for ReasoningResponseDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(
+            &self,
+            _ctx: &mut ReasoningContext,
+            _iter: usize,
+        ) -> Option<LoopOutcome> {
+            None
+        }
+        async fn call_llm(
+            &self,
+            _ctx: &mut ReasoningContext,
+            _iter: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            Ok(RespondOutput::Text {
+                text: "thought + answer".into(),
+                thinking: Some("internal reasoning".into()),
+                thinking_signature: None,
+                metadata: ResponseMetadata {
+                    model: "claude-opus-thinking".into(),
+                    finish_reason: Some("stop".into()),
+                    usage: Some(crate::agent::types::TokenUsage {
+                        input_tokens: 80,
+                        output_tokens: 20,
+                        cache_read_tokens: 10,
+                        cache_creation_tokens: 0,
+                        reasoning_output_tokens: 200,
+                    }),
+                },
+            })
+        }
+        async fn handle_text_response(
+            &self,
+            _: &str,
+            meta: ResponseMetadata,
+            _: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Return(LoopOutcome::Response {
+                text: "thought + answer".into(),
+                usage: meta.usage,
+                truncated: false,
+            })
+        }
+        async fn execute_tool_calls(
+            &self,
+            _: Vec<ToolCall>,
+            _: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            Ok(None)
+        }
+        async fn on_usage(
+            &self,
+            _: &crate::agent::types::TokenUsage,
+            _: &ReasoningContext,
+        ) {
+        }
+        async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}
+        async fn after_iteration(&self, _: usize) {}
+    }
+
+    #[tokio::test]
+    async fn model_turn_token_usage_includes_reasoning_in_total() {
+        let ctx = make_ctx(false);
+        let task = Arc::new(RegularTask::new(
+            task_spec("reasoning-1"),
+            RegularTaskInputs {
+                delegate: Arc::new(ReasoningResponseDelegate),
+                reason_ctx: ctx,
+                config: AgenticLoopConfig::default(),
+            },
+        ));
+        let events = task.run(CancellationToken::new()).await;
+        match &events[1] {
+            TaskEvent::ModelTurn { token_usage, .. } => {
+                assert_eq!(token_usage.input_tokens, 80);
+                assert_eq!(token_usage.cached_input_tokens, 10);
+                assert_eq!(token_usage.output_tokens, 20);
+                assert_eq!(token_usage.reasoning_output_tokens, 200);
+                // total = input + output + reasoning = 80 + 20 + 200 = 300
+                assert_eq!(token_usage.total_tokens, 300);
+            }
+            other => panic!("expected ModelTurn at index 1, got {other:?}"),
+        }
     }
 
     #[tokio::test]
