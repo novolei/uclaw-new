@@ -146,6 +146,7 @@ impl SessionTask for RegularTask {
         match &outcome {
             LoopOutcome::Response {
                 usage: Some(usage),
+                model: outcome_model,
                 ..
             } => {
                 events.push(TaskEvent::ModelTurn {
@@ -153,7 +154,11 @@ impl SessionTask for RegularTask {
                     source: TaskEventSource::AgentLoop,
                     task_id: self.spec.id.clone(),
                     provider: "agent_loop".into(),
-                    model: "aggregated".into(),
+                    // M1-backlog #3 — real model from the outcome if the loop
+                    // attached it; otherwise fall back to the aggregated label.
+                    model: outcome_model
+                        .clone()
+                        .unwrap_or_else(|| "aggregated".into()),
                     token_usage: crate::runtime::contracts::TokenUsage {
                         input_tokens: usage.input_tokens,
                         cached_input_tokens: usage.cache_read_tokens,
@@ -311,6 +316,7 @@ mod tests {
                 text: "hello".into(),
                 usage: None,
                 truncated: false,
+                model: None,
             })
         }
         async fn execute_tool_calls(
@@ -532,6 +538,7 @@ mod tests {
                 text: "ok".into(),
                 usage: meta.usage,
                 truncated: false,
+                model: meta.model.into(), // M1-backlog #3 — propagate from metadata
             })
         }
         async fn execute_tool_calls(
@@ -686,6 +693,7 @@ mod tests {
                 text: "thought + answer".into(),
                 usage: meta.usage,
                 truncated: false,
+                model: meta.model.into(),
             })
         }
         async fn execute_tool_calls(
