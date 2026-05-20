@@ -1,6 +1,8 @@
 pub mod provider;
 pub mod providers;
 pub mod stream_error;
+// M1-T7 — eager prewarm of HTTP/2+TLS to the active LLM provider.
+pub mod prewarm;
 
 pub use provider::{CompletionConfig, LlmProvider};
 pub use providers::anthropic::AnthropicProvider;

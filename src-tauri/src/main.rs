@@ -122,6 +122,8 @@ fn main() {
                 let db = state.db.clone();
                 let app_handle = app.handle().clone();
                 let files_rail_service = state.files_rail_service.clone();
+                // M1-T7 — capture llm_config for the in-Stage-3 prewarm spawn.
+                let llm_config_arc = state.llm_config.clone();
 
                 // 在后台异步执行服务注册和启动
                 tauri::async_runtime::spawn(async move {
@@ -624,6 +626,24 @@ fn main() {
                                 ids.len()
                             );
                         });
+                    }
+
+                    // M1-T7 — Prewarm HTTP/2 + TLS to the active LLM provider.
+                    // Fire-and-forget: returns immediately so boot continues;
+                    // the connection lands in the reqwest client pool ~200-500ms
+                    // later, ready for the user's first chat message.
+                    {
+                        let llm_cfg = llm_config_arc.read().await.clone();
+                        if !llm_cfg.provider.is_empty() {
+                            tracing::info!(
+                                provider = %llm_cfg.provider,
+                                "[Stage 3] Spawning LLM prewarm"
+                            );
+                            uclaw_core::llm::prewarm::spawn_prewarm(
+                                llm_cfg.provider.clone(),
+                                llm_cfg.base_url.clone(),
+                            );
+                        }
                     }
 
                     // Stage 4: 启动所有已注册服务
