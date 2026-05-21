@@ -24,6 +24,8 @@ pub mod registries;
 pub mod world;
 // M3-T5 — Intent classifier (rule-based, risk + autonomy + capabilities).
 pub mod intent_classifier;
+// M3-T4 — Task scheduler queue + priority types.
+pub mod task_scheduler;
 
 // B2: Infrastructure modules
 pub mod memory;
