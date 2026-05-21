@@ -223,7 +223,7 @@ pub async fn resolve_chip_candidate(
         };
     }
 
-    let mounts = match state.files_rail_list_mounts(session_id).await {
+    let mounts = match state.files_rail_list_mounts(session_id.clone()).await {
         Ok(m) => m,
         Err(_) => Vec::new(),
     };
@@ -245,6 +245,38 @@ pub async fn resolve_chip_candidate(
             }
         }
     }
+
+    // Fallback chain for relative paths the LLM wrote into a non-mount
+    // directory (e.g. .memory.md in ~/.uclaw, dropped via the agent's
+    // own `write_file` to a path outside the workspace). Without this
+    // the chip strikes through and the user thinks the file was lost.
+    //
+    // Each fallback returns the absolute path only — mount_id stays
+    // None so the preview tab opens in "ad-hoc absolute" mode, which
+    // the renderer already handles.
+    for fallback in fallback_dirs(state, session_id.as_deref()) {
+        let candidate = fallback.join(bare);
+        if let Ok(meta) = fs::metadata(&candidate) {
+            if meta.is_file() {
+                let abs = candidate
+                    .canonicalize()
+                    .ok()
+                    .map(|c| c.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| candidate.to_string_lossy().into_owned());
+                return ChipResolution {
+                    input: raw.to_string(),
+                    exists: true,
+                    // No mount_id — the preview tab handles this as an
+                    // absolute-path resource, which doesn't need a mount
+                    // for read-only display.
+                    mount_id: None,
+                    rel_path: None,
+                    absolute_path: Some(abs),
+                };
+            }
+        }
+    }
+
     ChipResolution {
         input: raw.to_string(),
         exists: false,
@@ -252,6 +284,65 @@ pub async fn resolve_chip_candidate(
         rel_path: None,
         absolute_path: None,
     }
+}
+
+/// Directories the chip resolver tries AFTER the mount catalog comes
+/// up empty. Ordering matters — most-specific first (session workspace)
+/// → broad (home dir).
+///
+/// Order:
+///   1. Session's space.path from the DB (the workspace the agent loop
+///      considers "cwd"). When the agent uses a relative `write_file`
+///      this is the actual parent directory.
+///   2. ~/.uclaw — uclaw's persistent data dir; agent skills, memory,
+///      and rollout sidecar files all live under here.
+///   3. ~ (home) — last-resort for paths the agent dropped to the user
+///      home (e.g. ~/.bashrc edits triggered by a skill).
+fn fallback_dirs(state: &AppState, session_id: Option<&str>) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::with_capacity(3);
+
+    if let Some(sid) = session_id {
+        if let Some(ws) = session_space_path_blocking(state, sid) {
+            out.push(ws);
+        }
+    }
+
+    // ~/.uclaw — use the dedicated home-resolution crate so we honor
+    // whatever override the user's UCLAW_HOME env var is set to.
+    if let Ok(uclaw_home) = uclaw_utils_home::uclaw_home_pathbuf() {
+        out.push(uclaw_home);
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        out.push(home);
+    }
+
+    out
+}
+
+/// Synchronous DB lookup of `spaces.path` for the session.
+///
+/// Mirrors `tauri_commands::session_workspace_root` but lives here so
+/// the resolver can stay in the preview crate without an upward
+/// dependency on the Tauri command surface.
+fn session_space_path_blocking(state: &AppState, session_id: &str) -> Option<PathBuf> {
+    let conn = state.db.lock().ok()?;
+    let space_id: String = conn
+        .query_row(
+            "SELECT space_id FROM agent_sessions WHERE id = ?1",
+            rusqlite::params![session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()?;
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT path FROM spaces WHERE id = ?1",
+            rusqlite::params![space_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten();
+    raw.filter(|s| !s.trim().is_empty()).map(PathBuf::from)
 }
 
 /// Write `content` to `path` using direct write + fsync.
