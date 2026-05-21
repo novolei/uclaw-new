@@ -207,10 +207,27 @@ impl OpenAIProvider {
         config: &CompletionConfig,
         stream: bool,
     ) -> serde_json::Value {
+        // Bundle 7 — model-specific temperature constraints.
+        //
+        // Kimi K2 / K2.6 (and the broader "reasoning" family at moonshot)
+        // reject custom temperatures with:
+        //   "invalid temperature: only 1 is allowed for this model"
+        // OpenAI's o1 / o3 series have the same constraint. Rather than
+        // omit the field (some providers infer 0.7 by default, which
+        // changes behavior), we coerce to 1.0 when the model is in the
+        // locked-temperature set. Detection by model-name prefix keeps
+        // the check provider-agnostic — Kimi can ship via the official
+        // moonshot endpoint or via an OpenAI-compatible relay.
+        let effective_temperature = if model_requires_fixed_temperature(&config.model) {
+            1.0
+        } else {
+            config.temperature
+        };
+
         let mut body = serde_json::json!({
             "model": config.model,
             "max_tokens": config.max_tokens,
-            "temperature": config.temperature,
+            "temperature": effective_temperature,
             "messages": self.convert_messages(messages),
         });
 
@@ -693,4 +710,64 @@ fn normalize_base_url(raw: &str) -> String {
         }
     }
     trimmed.to_string()
+}
+
+/// Bundle 7 — return `true` when the LLM API rejects custom temperatures
+/// and demands a fixed value (typically 1.0).
+///
+/// Currently:
+/// - Kimi K2 / K2.6 / kimi-k* family (Moonshot)
+/// - OpenAI o1 / o3 / o4 reasoning series
+/// - Moonshot v1 reasoning models
+///
+/// Match is case-insensitive on the model name's prefix. Conservative
+/// by design — adding a model here means it loses temperature control,
+/// so prefer to only add models we've confirmed reject the field.
+fn model_requires_fixed_temperature(model: &str) -> bool {
+    let m = model.to_lowercase();
+    // Kimi K-series (kimi-k2, kimi-k2.6, kimi-k2-instruct, etc.)
+    if m.starts_with("kimi-k") {
+        return true;
+    }
+    // Moonshot reasoning series (some moonshot-v1 variants also lock temp)
+    if m.starts_with("moonshot-v1-") && m.contains("reasoning") {
+        return true;
+    }
+    // OpenAI reasoning series (o1, o1-mini, o1-preview, o3, o3-mini, o4-mini)
+    if m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4") {
+        return true;
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::model_requires_fixed_temperature;
+
+    #[test]
+    fn kimi_k_series_locks_temperature() {
+        assert!(model_requires_fixed_temperature("kimi-k2"));
+        assert!(model_requires_fixed_temperature("kimi-k2.6"));
+        assert!(model_requires_fixed_temperature("kimi-k2-instruct"));
+        assert!(model_requires_fixed_temperature("Kimi-K2"));
+    }
+
+    #[test]
+    fn openai_reasoning_series_locks_temperature() {
+        assert!(model_requires_fixed_temperature("o1"));
+        assert!(model_requires_fixed_temperature("o1-mini"));
+        assert!(model_requires_fixed_temperature("o1-preview"));
+        assert!(model_requires_fixed_temperature("o3-mini"));
+        assert!(model_requires_fixed_temperature("o4-mini"));
+    }
+
+    #[test]
+    fn standard_models_keep_custom_temperature() {
+        assert!(!model_requires_fixed_temperature("gpt-4o"));
+        assert!(!model_requires_fixed_temperature("gpt-4o-mini"));
+        assert!(!model_requires_fixed_temperature("deepseek-v4-pro"));
+        assert!(!model_requires_fixed_temperature("deepseek-chat"));
+        assert!(!model_requires_fixed_temperature("moonshot-v1-8k"));
+        assert!(!model_requires_fixed_temperature("claude-sonnet-4"));
+    }
 }
