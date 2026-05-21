@@ -388,6 +388,17 @@ struct ProactiveStateRefs {
     /// 的 `SkillsRegistry` 在下次启动时扫到，关闭"自演化 → 可见
     /// SKILL.md"循环。
     data_dir: std::path::PathBuf,
+    /// Bundle 23 — same-session skill visibility. After Bundle 22
+    /// writes a SKILL.md to disk, this handle lets the proactive
+    /// service trigger `skills_registry.discover()` immediately so
+    /// the newly persisted skill is discoverable by `skill_search`
+    /// in the same agent loop — no restart required.
+    skills_registry: std::sync::Arc<tokio::sync::RwLock<crate::skills::SkillsRegistry>>,
+    /// Bundle 23 — keeps the Capability Mesh hub's Skills slot in
+    /// lockstep with disk after auto-persistence. Same shape as the
+    /// boot-time sync in `main.rs::setup`, but runs incrementally
+    /// each time `skill_extraction` persists a new SKILL.md.
+    registry_hub: crate::registries::RegistryHub,
 }
 
 // ─── Gene Candidate Pool Helpers ───────────────────────────────────────────
@@ -529,6 +540,10 @@ pub struct ProactiveService {
 
     /// Bundle 22 — see ProactiveStateRefs::data_dir.
     data_dir: std::path::PathBuf,
+    /// Bundle 23 — see ProactiveStateRefs::skills_registry.
+    skills_registry: std::sync::Arc<tokio::sync::RwLock<crate::skills::SkillsRegistry>>,
+    /// Bundle 23 — see ProactiveStateRefs::registry_hub.
+    registry_hub: crate::registries::RegistryHub,
 
     /// 轮询循环任务句柄
     tick_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
@@ -587,6 +602,11 @@ impl ProactiveService {
         // arg (rather than deriving from gene_repo's base_path) so the
         // semantics stay obvious at call sites.
         data_dir: std::path::PathBuf,
+        // Bundle 23 — same-session skill visibility. Required to
+        // rescan disk after auto-extraction lands a new SKILL.md.
+        skills_registry: std::sync::Arc<tokio::sync::RwLock<crate::skills::SkillsRegistry>>,
+        // Bundle 23 — Capability Mesh hub, also kept in lockstep.
+        registry_hub: crate::registries::RegistryHub,
     ) -> Self {
         let task_memory_manager = Arc::new(TaskMemoryManager::new(memory_graph_store.clone()));
         let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(memory_graph_store.clone()));
@@ -657,6 +677,8 @@ impl ProactiveService {
             gene_candidate_pool: Arc::new(RwLock::new(VecDeque::new())),
             new_gene_candidates: Arc::new(AtomicBool::new(false)),
             data_dir,
+            skills_registry,
+            registry_hub,
             tick_handle: Arc::new(RwLock::new(None)),
             listener_handle: Arc::new(RwLock::new(None)),
         }
@@ -705,6 +727,8 @@ impl ProactiveService {
             gene_candidate_pool: self.gene_candidate_pool.clone(),
             new_gene_candidates: self.new_gene_candidates.clone(),
             data_dir: self.data_dir.clone(),
+            skills_registry: self.skills_registry.clone(),
+            registry_hub: self.registry_hub.clone(),
         }
     }
 
@@ -1934,9 +1958,39 @@ impl ProactiveService {
                                                                 skill_name = %skill.name,
                                                                 node_id = %node.id,
                                                                 path = %path.display(),
-                                                                "[Bundle 22] persisted learned skill to disk; \
-                                                                 SkillsRegistry will pick it up next session start"
+                                                                "[Bundle 22] persisted learned skill to disk"
                                                             );
+
+                                                            // Bundle 23 — same-session
+                                                            // visibility. Trigger disk-tier
+                                                            // rescan + hub sync so
+                                                            // skill_search picks the new skill
+                                                            // up THIS session, no restart.
+                                                            let discover_count = {
+                                                                let mut reg = refs.skills_registry.write().await;
+                                                                reg.discover().len()
+                                                            };
+                                                            let hub_count = match crate::registries::sync_skills_from_registry(
+                                                                &refs.registry_hub,
+                                                                &*refs.skills_registry.read().await,
+                                                            ).await {
+                                                                Ok(n) => n,
+                                                                Err(e) => {
+                                                                    tracing::warn!(
+                                                                        err = %e,
+                                                                        "[Bundle 23] hub Skills slot resync failed (disk-tier rescan still done)"
+                                                                    );
+                                                                    0
+                                                                }
+                                                            };
+                                                            tracing::info!(
+                                                                skill_name = %skill.name,
+                                                                path = %path.display(),
+                                                                discovered = discover_count,
+                                                                hub_total = hub_count,
+                                                                "[Bundle 23] same-session skill visibility: disk-tier rescan + hub Skills resync done"
+                                                            );
+
                                                             if let Some(ref app) = refs.app_handle {
                                                                 let _ = app.emit(
                                                                     "agent:learned-skill-persisted",
@@ -1945,6 +1999,9 @@ impl ProactiveService {
                                                                         "nodeId": node.id.clone(),
                                                                         "path": path.display().to_string(),
                                                                         "sessionId": session_id.clone(),
+                                                                        "registryDiscovered": discover_count,
+                                                                        "hubSkillTotal": hub_count,
+                                                                        "sameSessionVisible": true,
                                                                         "timestamp": chrono::Utc::now().to_rfc3339(),
                                                                     }),
                                                                 );
@@ -2933,6 +2990,13 @@ mod tests {
             // unique temp dir so concurrent tests don't collide on
             // _auto_extracted/ writes.
             std::env::temp_dir().join("uclaw_proactive_test"),
+            // Bundle 23 — fresh SkillsRegistry + empty hub for tests
+            // (the same-session rescan path is exercised by separate
+            // unit tests on `sync_skills_from_registry` itself).
+            std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::skills::SkillsRegistry::new(),
+            )),
+            crate::registries::RegistryHub::new(),
         )
     }
 

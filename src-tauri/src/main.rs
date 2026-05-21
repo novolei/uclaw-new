@@ -376,6 +376,19 @@ fn main() {
                                             let state_ref: tauri::State<'_, AppState> = app_handle.state();
                                             state_ref.data_dir.clone()
                                         },
+                                        // Bundle 23 — pass SkillsRegistry +
+                                        // RegistryHub handles so the
+                                        // proactive service can trigger an
+                                        // immediate disk-tier rescan + hub
+                                        // resync after auto-persistence.
+                                        {
+                                            let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                                            state_ref.skills_registry.clone()
+                                        },
+                                        {
+                                            let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                                            state_ref.registry_hub.clone()
+                                        },
                                     )
                                 );
                                 // Inject into AppState for tauri_commands access
