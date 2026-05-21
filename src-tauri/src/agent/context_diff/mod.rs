@@ -28,9 +28,18 @@
 //! Layout:
 //!
 //! - [`diff`] — `FragmentSnapshot`, `ContextDiff`, `diff_snapshots`
+//! - [`line_snapshot`] (Bundle 16-A) — `LineFragmentSnapshot`,
+//!   `LineDiff`, `line_diff`, `render_delta_annotation` — line-level
+//!   diff used by M2-D Phase 2 Track A for cross-turn
+//!   memory_context delta injection.
 
 pub mod diff;
+pub mod line_snapshot;
 
 pub use diff::{
     diff_snapshots, ChangedFragment, ContextDiff, DiffStats, FragmentSnapshot,
+};
+pub use line_snapshot::{
+    line_diff, render_delta_annotation, ChangedLine, LineDiff, LineDiffStats, LineEntry,
+    LineFragmentSnapshot,
 };
