@@ -91,6 +91,7 @@ fn main() {
                 let app_handle = app.handle().clone();
                 let flight_path =
                     uclaw_core::agent::heartbeat::default_flight_path();
+                let recovery_store = app_state.pending_recovery.clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(500))
                         .await;
@@ -98,6 +99,7 @@ fn main() {
                         &app_handle,
                         &flight_path,
                         Some(&prev_lock),
+                        Some(recovery_store),
                     ) {
                         Ok(report) => {
                             if report.recovered {
@@ -1232,6 +1234,8 @@ fn main() {
             uclaw_core::tauri_commands::move_agent_session_to_workspace,
             uclaw_core::tauri_commands::stop_agent,
             uclaw_core::tauri_commands::interrupt_current_agent_run,
+            uclaw_core::tauri_commands::consume_pending_recovery,
+            uclaw_core::tauri_commands::dismiss_pending_recovery,
             uclaw_core::tauri_commands::queue_agent_message,
             uclaw_core::tauri_commands::fork_agent_session,
             uclaw_core::tauri_commands::rewind_session,

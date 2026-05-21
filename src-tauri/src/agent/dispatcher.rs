@@ -925,18 +925,27 @@ impl ChatDelegate {
             "text": text,
             "truncated": truncated,
         }));
-        // Bundle 27-A — normal completion flushes the partial buffer
-        // and tears down the heartbeat ticker. Drop alone would also
-        // do this on the next stack unwind, but flushing here makes
-        // the order explicit: stream-complete event → partial
-        // cleared → ticker stops → flight record removed.
+        // Bundle 27-A fix (2026-05-22) — DO NOT call `hb.shutdown()` here.
+        // Earlier draft removed the flight file at emit_done, which meant
+        // the kill-recovery window was approximately zero: by the time the
+        // user reacted to "Agent's streaming, let me kill -9", emit_done
+        // had often already run.
+        //
+        // New behavior:
+        // - emit_done only marks the DONE stage so the heartbeat indicator
+        //   stops pulsing in the UI (heartbeat banner clears via the
+        //   `chat:stream-complete` listener anyway).
+        // - The supervisor's `Drop` impl (fired when `_hb_arc` goes out of
+        //   scope at the END of `send_agent_message`, AFTER post-loop
+        //   persistence) is the one place that removes the flight file.
+        //   This makes the recovery window cover the full
+        //   send_agent_message lifetime — from agent start to function
+        //   return — not just the streaming phase.
+        // - The partial buffer is no longer drained here either; Drop
+        //   handles cleanup. A residual partial in memory at Drop time
+        //   is harmless (the Arc owns the buffer).
         if let Some(ref hb) = self.heartbeat {
             hb.mark_activity(crate::agent::heartbeat::stages::DONE);
-            let hb = hb.clone();
-            tokio::spawn(async move {
-                let _ = hb.take_partial().await;
-                hb.shutdown();
-            });
         }
     }
 
@@ -1543,6 +1552,14 @@ impl LoopDelegate for ChatDelegate {
         reason_ctx: &mut ReasoningContext,
         _iteration: usize,
     ) -> Result<RespondOutput, Error> {
+        // Bundle 27-A fix (2026-05-22) — beat LLM_CALL at the top so the UI
+        // heartbeat indicator switches to "正在请求 LLM" immediately on the
+        // iteration boundary. Before this, the indicator stayed at the
+        // initial "starting" / "准备中" stage during prompt assembly +
+        // memory recall + first-byte wait, which felt unresponsive to the
+        // user even though the agent was working.
+        self.beat(crate::agent::heartbeat::stages::LLM_CALL);
+
         // Resolve mode once (per-session override > global policy) so the
         // system prompt actually reflects the user's chosen mode. Without
         // this, dispatcher.safety_mode is None for normal sessions and the

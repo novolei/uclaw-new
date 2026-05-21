@@ -10801,6 +10801,22 @@ pub async fn send_agent_message(
         delegate.set_token_budget_collector(token_budget_collector.clone());
         delegate.set_provider(llm_config.provider.clone());
 
+        // Bundle 27-A fix — install heartbeat supervisor for THIS path
+        // (send_agent_message — the Agent-mode entry point). Previously
+        // only the send_message (Chat-mode) path had it, which meant
+        // Agent mode never got heartbeat events / flight recorder /
+        // partial-reply recovery despite Bundle 27-A landing on main.
+        let _hb_arc = {
+            let hb = crate::agent::heartbeat::HeartbeatSupervisor::new(
+                app_handle.clone(),
+                session_id.clone(),
+                "default".to_string(),
+                crate::agent::heartbeat::default_flight_path(),
+            );
+            delegate.set_heartbeat(hb.clone());
+            hb
+        };
+
         // Build skill manifest and inject into system prompt (async: needs registry.read()).
         {
             use crate::skills_manifest::StrategyBias;
@@ -11285,6 +11301,72 @@ pub async fn queue_agent_message(
     input: SendAgentMessageInput,
 ) -> Result<(), Error> {
     send_agent_message(state, app_handle, input).await
+}
+
+/// Bundle 27-A2 — pull-model recovery consumer.
+///
+/// The UI's AgentHeartbeatBanner calls this on mount with its
+/// session_id. If a pending recovery payload exists AND its
+/// `conversationId` matches the caller's session_id, return the
+/// payload AND clear the slot (one-shot). Otherwise return None.
+///
+/// Reason: the event-based push (`agent:interrupted-recovered`) is
+/// raced by React mount in dev mode. Pull-on-mount eliminates the
+/// timing problem — banner shows whenever the user navigates to the
+/// affected conversation, regardless of when emit happened.
+#[tauri::command]
+pub async fn consume_pending_recovery(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<serde_json::Value>, Error> {
+    // Bundle 27-A2 fix (2nd pass) — this is now a READ-ONLY peek.
+    // The first version cleared the payload on the first matching
+    // read, which made hard-refresh (Cmd+Shift+R) lose the banner:
+    // first mount consumed, React state set; refresh wiped React
+    // state; second mount got null.
+    //
+    // New semantics: keep the payload in AppState until the user
+    // explicitly dismisses it (X button → dismiss_pending_recovery
+    // command). Any number of UI mounts can peek and render the
+    // banner; only an explicit dismiss removes it.
+    let guard = state
+        .pending_recovery
+        .lock()
+        .map_err(|e| Error::Internal(format!("pending_recovery lock: {e}")))?;
+    let payload = match guard.as_ref() {
+        Some(p) => p.clone(),
+        None => return Ok(None),
+    };
+    let stored_conv = payload
+        .get("conversationId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if stored_conv != session_id {
+        return Ok(None);
+    }
+    tracing::debug!(
+        session = %session_id,
+        "[Bundle 27-A2] peeked pending recovery payload for session"
+    );
+    Ok(Some(payload))
+}
+
+/// Bundle 27-A2 — explicit dismiss. Called from the recovery banner's
+/// X button. Removes the payload from AppState so future peeks return
+/// None.
+#[tauri::command]
+pub async fn dismiss_pending_recovery(
+    state: State<'_, AppState>,
+) -> Result<(), Error> {
+    let mut guard = state
+        .pending_recovery
+        .lock()
+        .map_err(|e| Error::Internal(format!("pending_recovery lock: {e}")))?;
+    if guard.is_some() {
+        *guard = None;
+        tracing::info!("[Bundle 27-A2] pending recovery payload dismissed by user");
+    }
+    Ok(())
 }
 
 /// Bundle 27-A — manual interrupt for a stalled agent run.

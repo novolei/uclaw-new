@@ -112,6 +112,12 @@ struct HeartbeatState {
     /// One-shot guard so we only emit `agent:stalled` once per stall
     /// period — flips back to false on the next mark_activity.
     stalled_emitted: std::sync::atomic::AtomicBool,
+    /// Bundle 27-A2 (3rd pass) — last time we persisted the flight
+    /// file from `append_partial`. Used to throttle per-chunk writes
+    /// to once per 200ms while keeping the 5s ticker for stage/event
+    /// emission. Closes the "kill 4.9s into streaming → flight has 0
+    /// partial chars" window from earlier testing.
+    last_flight_persist_at: AtomicI64,
 }
 
 impl HeartbeatSupervisor {
@@ -150,6 +156,7 @@ impl HeartbeatSupervisor {
             stage: std::sync::Mutex::new(stages::STARTING.to_string()),
             partial: Mutex::new(String::new()),
             stalled_emitted: std::sync::atomic::AtomicBool::new(false),
+            last_flight_persist_at: AtomicI64::new(0),
         });
         let cancel = CancellationToken::new();
         let sup = Arc::new(Self {
@@ -308,22 +315,75 @@ impl HeartbeatSupervisor {
     /// Append a streamed text chunk to the in-memory partial buffer.
     /// Caps at `PARTIAL_BUFFER_CAP_CHARS` (truncating middle) so a
     /// runaway model can't OOM us.
+    ///
+    /// Bundle 27-A2 (3rd pass) — also writes the flight record to
+    /// disk if last persist was > 200ms ago. The 5s ticker is fine
+    /// for stage updates + UI heartbeat, but for the
+    /// "kill -9 during streaming" recovery story we need the flight
+    /// file to be at most ~200ms behind reality. Throttled to avoid
+    /// fsync on every token.
     pub async fn append_partial(&self, chunk: &str) {
         if chunk.is_empty() {
             return;
         }
-        let mut buf = self.state.partial.lock().await;
-        buf.push_str(chunk);
-        let len = buf.chars().count();
-        if len > PARTIAL_BUFFER_CAP_CHARS {
-            // Keep head 32K + tail 32K, drop the middle.
-            let chars: Vec<char> = buf.chars().collect();
-            let keep = PARTIAL_BUFFER_CAP_CHARS / 2;
-            let head: String = chars.iter().take(keep).collect();
-            let tail: String = chars.iter().rev().take(keep).rev().collect();
-            *buf = format!(
-                "{head}\n\n[…{} chars truncated…]\n\n{tail}",
-                len - PARTIAL_BUFFER_CAP_CHARS
+        // Phase 1 — update the buffer.
+        let snapshot_after_append: String;
+        {
+            let mut buf = self.state.partial.lock().await;
+            buf.push_str(chunk);
+            let len = buf.chars().count();
+            if len > PARTIAL_BUFFER_CAP_CHARS {
+                // Keep head 32K + tail 32K, drop the middle.
+                let chars: Vec<char> = buf.chars().collect();
+                let keep = PARTIAL_BUFFER_CAP_CHARS / 2;
+                let head: String = chars.iter().take(keep).collect();
+                let tail: String = chars.iter().rev().take(keep).rev().collect();
+                *buf = format!(
+                    "{head}\n\n[…{} chars truncated…]\n\n{tail}",
+                    len - PARTIAL_BUFFER_CAP_CHARS
+                );
+            }
+            snapshot_after_append = buf.clone();
+        }
+
+        // Phase 2 — throttled persist (200ms gate). The flight file
+        // write itself is atomic (tempfile + fsync + rename).
+        let now = now_ms();
+        let last_persist = self.state.last_flight_persist_at.load(Ordering::Relaxed);
+        if now - last_persist < 200 {
+            return;
+        }
+        // Race-safe enough: another append_partial may slip through but
+        // they all write the same path; last-writer-wins is acceptable
+        // because each write contains the full current buffer.
+        self.state
+            .last_flight_persist_at
+            .store(now, Ordering::Relaxed);
+
+        let iteration = self.state.iteration.load(Ordering::Relaxed);
+        let stage = self
+            .state
+            .stage
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_else(|_| "unknown".to_string());
+        let started_at = self.state.started_at.load(Ordering::Relaxed);
+        let last_activity_at = self.state.last_activity_at.load(Ordering::Relaxed);
+        let record = FlightRecord {
+            schema_version: 1,
+            conversation_id: self.conversation_id.clone(),
+            space_id: self.space_id.clone(),
+            iteration,
+            stage,
+            started_at,
+            last_activity_at,
+            partial_text: snapshot_after_append,
+            pid: std::process::id(),
+        };
+        if let Err(e) = write_flight_atomic(&self.flight_path, &record) {
+            tracing::debug!(
+                error = %e,
+                "[heartbeat] inline flight persist (append_partial) failed"
             );
         }
     }

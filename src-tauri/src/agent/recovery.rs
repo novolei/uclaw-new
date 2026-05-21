@@ -61,6 +61,7 @@ pub fn recover_unclean_shutdown<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     flight_path: &Path,
     dead_lock: Option<&ProcessLock>,
+    pending_recovery_store: Option<std::sync::Arc<std::sync::Mutex<Option<serde_json::Value>>>>,
 ) -> std::io::Result<RecoveryReport> {
     let record = match crate::agent::heartbeat::read_flight(flight_path)? {
         Some(r) => r,
@@ -89,24 +90,31 @@ pub fn recover_unclean_shutdown<R: tauri::Runtime>(
         }
     }
 
+    // Bundle 27-A2 fix (2026-05-22) — surface the banner EVEN WHEN
+    // partial_text is empty. The user's primary signal is "my last run
+    // didn't complete cleanly" — that's valuable on its own. When the
+    // user kills during a tool-call phase (before any LLM text has
+    // streamed), partial_text IS empty, but the user still benefits
+    // from knowing where the agent stopped (which tool / which
+    // iteration). Synthesize a short status note for the partial_text
+    // payload in that case so the existing UI banner still has
+    // something meaningful to render.
     let partial_chars = record.partial_text.chars().count();
-    if partial_chars == 0 {
-        tracing::info!(
-            conversation_id = %record.conversation_id,
-            iteration = record.iteration,
-            stage = %record.stage,
-            "[Bundle 27-A] flight record present but partial_text empty — nothing to surface"
-        );
-        crate::agent::heartbeat::clear_flight(flight_path);
-        return Ok(RecoveryReport::none());
-    }
+    let partial_text_for_payload = if partial_chars > 0 {
+        record.partial_text.clone()
+    } else {
+        format!(
+            "⚠️ 上一轮 Agent 任务被异常中断 (iter={}, stage={})。LLM 还没开始流式输出，无文本可恢复 — 重新发送即可。",
+            record.iteration, record.stage
+        )
+    };
 
     tracing::warn!(
         conversation_id = %record.conversation_id,
         iteration = record.iteration,
         stage = %record.stage,
         partial_chars = partial_chars,
-        "[Bundle 27-A] recovering partial assistant reply from unclean shutdown"
+        "[Bundle 27-A] recovering interrupted run (partial_chars={partial_chars})"
     );
 
     let payload = serde_json::json!({
@@ -116,10 +124,21 @@ pub fn recover_unclean_shutdown<R: tauri::Runtime>(
         "stage": record.stage,
         "startedAt": record.started_at,
         "lastActivityAt": record.last_activity_at,
-        "partialText": record.partial_text,
+        "partialText": partial_text_for_payload,
         "partialChars": partial_chars,
         "deadPid": record.pid,
     });
+    // Bundle 27-A2 pull-model — store in AppState so UI can fetch on
+    // mount via `consume_pending_recovery` Tauri command. The push-via-
+    // event below is still emitted as belt-and-suspenders (covers the
+    // case where the listener was already registered when boot
+    // happened, e.g. when dev runs are restarted quickly).
+    if let Some(store) = pending_recovery_store {
+        if let Ok(mut guard) = store.lock() {
+            *guard = Some(payload.clone());
+            tracing::info!("[Bundle 27-A2] pending_recovery payload stored in AppState");
+        }
+    }
     let _ = app_handle.emit("agent:interrupted-recovered", &payload);
 
     // Clear the file so we don't re-recover the same record on the
