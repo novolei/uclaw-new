@@ -619,11 +619,25 @@ impl Default for ConversationLearningConfig {
 
 impl Default for SkillExtractionConfig {
     fn default() -> Self {
+        // Bundle 24 — extraction cadence doubled after Bundle 20/22/23
+        // proved the loop produces useful skills end-to-end. Old
+        // defaults (10 calls / 2 min) were a v0 safety belt; the
+        // pipeline is now stable (dedup at the Procedure-node layer
+        // catches near-duplicates, Bundle 22 persists to disk,
+        // Bundle 23 makes them same-session-visible). 5 calls /
+        // 60 s gives roughly 2× the learning surface without
+        // flooding the LLM budget — the extraction prompt size
+        // hasn't changed, only the call frequency.
+        //
+        // If junk skills start landing on disk in volume, tune
+        // these back via Settings → Memory OS (the field is
+        // hot-reloaded per tick from `memubot_config`, so no
+        // rebuild needed for an in-flight rollback).
         Self {
             enabled: true,
-            trigger_execution_count: 10,
+            trigger_execution_count: 5,
             trigger_on_failure: true,
-            min_interval_ms: 120_000, // 2 分钟
+            min_interval_ms: 60_000, // 1 分钟
             memory_types: vec!["skill".to_string(), "tool".to_string()],
             system_prompt: None,
         }
