@@ -146,18 +146,60 @@ export function AgentHeartbeatBanner({ sessionId }: AgentHeartbeatBannerProps) {
   }, [sessionId])
 
   // Listen to recovery events globally, then match on conversationId.
-  // The boot-time emit happens BEFORE any session is selected — keep
-  // the listener mounted at the AgentView level so it doesn't miss
-  // the only event.
+  // Combined push (event) + pull (invoke on mount) — see Bundle 27-A2.
+  // The event-only push was unreliable because boot-time emit (500ms
+  // after Tauri setup) can race with React mount in dev mode. The
+  // pull-on-mount path queries backend AppState directly, so it
+  // works even if the banner mounts AFTER the event fired.
   React.useEffect(() => {
     let unlisten: UnlistenFn | null = null
     listen<RecoveryPayload>('agent:interrupted-recovered', (e) => {
-      // Only surface for the matching session; if user is on a
-      // different session right now, the banner will appear when
-      // they navigate back.
       if (e.payload.conversationId !== sessionId) return
       setRecovery(e.payload)
       setRecoveryDismissed(false)
+    }).then((un) => {
+      unlisten = un
+    })
+    return () => {
+      if (unlisten) unlisten()
+    }
+  }, [sessionId])
+
+  // Bundle 27-A2 — pull-model recovery. On mount (or when sessionId
+  // changes), ask the backend "is there a pending recovery for THIS
+  // session?". If yes, render the banner. The backend's consume_*
+  // command is one-shot — first caller with the matching session_id
+  // wins.
+  React.useEffect(() => {
+    let cancelled = false
+    invoke('consume_pending_recovery', { sessionId })
+      .then((payload) => {
+        if (cancelled || !payload) return
+        // payload shape matches RecoveryPayload (camelCase from JSON).
+        setRecovery(payload as RecoveryPayload)
+        setRecoveryDismissed(false)
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error('[Bundle 27-A2] consume_pending_recovery failed', err)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId])
+
+  // Listen for stream completion — clear the heartbeat indicator
+  // immediately when the agent run ends, rather than waiting for the
+  // 15s stale-fade timer. Bundle 27-A initial draft only had the
+  // stale-fade; users found the 15s lag confusing because the
+  // streaming text was already done. `chat:stream-complete` is the
+  // canonical "run finished" signal from dispatcher::emit_done.
+  React.useEffect(() => {
+    let unlisten: UnlistenFn | null = null
+    listen<{ conversationId: string }>('chat:stream-complete', (e) => {
+      if (e.payload.conversationId !== sessionId) return
+      setBeat(null)
+      setStall({ kind: 'none' })
     }).then((un) => {
       unlisten = un
     })
@@ -251,7 +293,15 @@ export function AgentHeartbeatBanner({ sessionId }: AgentHeartbeatBannerProps) {
             <strong>上一轮被异常中断 — 已恢复部分回复</strong>
             <button
               type="button"
-              onClick={() => setRecoveryDismissed(true)}
+              onClick={() => {
+                setRecoveryDismissed(true)
+                // Bundle 27-A2 — also tell backend to drop the payload
+                // so it doesn't reappear on next mount.
+                invoke('dismiss_pending_recovery').catch((err) => {
+                  // eslint-disable-next-line no-console
+                  console.error('[Bundle 27-A2] dismiss_pending_recovery failed', err)
+                })
+              }}
               style={{
                 background: 'transparent',
                 border: 'none',

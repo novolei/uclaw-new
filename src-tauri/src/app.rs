@@ -156,6 +156,15 @@ pub struct AppState {
     pub db: Arc<std::sync::Mutex<rusqlite::Connection>>,
     pub session_manager: Arc<RwLock<SessionManager>>,
 
+    // Bundle 27-A2 (pull-model recovery) — recovery.rs writes the
+    // interrupted-recovery payload here on boot when Bundle 27-C
+    // reports Unclean. The UI's AgentHeartbeatBanner queries
+    // `consume_pending_recovery` on mount and renders the banner if
+    // the conversation_id matches. Push-via-`agent:interrupted-recovered`
+    // event was unreliable in dev mode because the event fires ~500ms
+    // after boot, possibly before the React listener is registered.
+    pub pending_recovery: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
+
     // B0: Infrastructure
     pub notifications: SharedNotificationManager,
     pub background_tasks: SharedBackgroundManager,
@@ -781,6 +790,9 @@ impl AppState {
             db_ready,
             db,
             session_manager: Arc::new(RwLock::new(session_manager)),
+            // Bundle 27-A2 — pending recovery payload, set on boot by
+            // recovery.rs when Bundle 27-C reports Unclean shutdown.
+            pending_recovery: Arc::new(std::sync::Mutex::new(None)),
             notifications,
             background_tasks,
             memory_store,
