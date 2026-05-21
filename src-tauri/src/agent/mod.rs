@@ -11,6 +11,8 @@ pub mod truncation;
 pub mod tool_shaping;
 // M2-H L6 pilot — orphan tool-call audit + "aborted" synthesis.
 pub mod call_audit;
+// M2-H L5 pilot — image stripping for image-blind providers.
+pub mod image_policy;
 // M1-T4b — opt-in rollout bridge for direct run_agentic_loop callsites.
 pub mod rollout_integration;
 pub mod code_rescue;
