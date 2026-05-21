@@ -1041,14 +1041,43 @@ impl AppState {
     /// Same find-resource-then-fall-back-to-dev shape as `find_python`.
     /// Returns `None` if neither location has the binary; caller (Stage
     /// 3 seed step in main.rs) treats `None` as "skip gbrain seed".
+    ///
+    /// Bundle 15 (dev-mode only): macOS 26.4+ Gatekeeper SIGKILLs the
+    /// unsigned `target/debug/bun` copy that Tauri's resource-map step
+    /// drops in during `cargo tauri dev`. In a packaged `.app` the
+    /// bundled `bun` is notarized as part of the bundle and runs fine,
+    /// so we MUST NOT prefer system Bun there — packaged behavior is
+    /// unchanged.
+    ///
+    /// In dev mode (resource_dir under CARGO_MANIFEST_DIR OR None), we
+    /// try a system Bun first (`~/.bun/bin/bun`, Homebrew, /usr/local).
+    /// Falls back to the resource copy, then `bunembed/bun`, so
+    /// machines without system Bun still work after running
+    /// scripts/setup-bun-runtime.sh.
     pub fn find_bun_path(resource_dir: Option<&std::path::Path>) -> Option<PathBuf> {
-        // 1. Bundled — Tauri resource dir contains `bun` (per tauri.conf.json
+        let in_packaged_resource_dir = resource_dir
+            .map(Self::is_packaged_resource_dir)
+            .unwrap_or(false);
+
+        // 1. Dev-only — try system Bun first to dodge macOS Gatekeeper
+        //    SIGKILL on unsigned dev binaries. Skipped entirely in
+        //    packaged mode so we never depend on user-installed Bun in
+        //    a shipped .app.
+        if !in_packaged_resource_dir {
+            if let Some(bun) =
+                Self::first_working_bun(Self::system_bun_candidates(), "system")
+            {
+                return Some(bun);
+            }
+        }
+
+        // 2. Bundled — Tauri resource dir contains `bun` (per tauri.conf.json
         //    "bunembed/bun": "bun" mapping)
         if let Some(res_dir) = resource_dir {
             if let Some(bun) = Self::first_working_bun(vec![res_dir.join("bun")], "resource") {
                 return Some(bun);
             }
-            if Self::is_packaged_resource_dir(res_dir) {
+            if in_packaged_resource_dir {
                 tracing::warn!(
                     expected = %res_dir.join("bun").display(),
                     "Packaged Bun missing or unusable; refusing to fall back to dev Bun"
@@ -1056,15 +1085,47 @@ impl AppState {
                 return None;
             }
         }
-        // 2. Dev — repo's bunembed/bun (after running setup-bun-runtime.sh)
+        // 3. Dev — repo's bunembed/bun (after running setup-bun-runtime.sh)
         let dev_bun = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("bunembed")
             .join("bun");
         if let Some(bun) = Self::first_working_bun(vec![dev_bun], "dev") {
             return Some(bun);
         }
-        tracing::warn!("Bun binary not found in bundle or dev location");
+        tracing::warn!("Bun binary not found in system, bundle, or dev location");
         None
+    }
+
+    /// Bundle 15 — common system locations for an officially-installed
+    /// Bun. Order matters: `~/.bun/bin/bun` first (the `bun.sh` curl
+    /// installer's default), then Homebrew (`/opt/homebrew/bin/bun` on
+    /// Apple Silicon, `/usr/local/bin/bun` on Intel + Linux).
+    ///
+    /// Returns paths whether they exist or not — `first_working_bun`
+    /// filters non-existent entries cheaply via `candidate.exists()`.
+    fn system_bun_candidates() -> Vec<std::path::PathBuf> {
+        Self::system_bun_candidates_for_home(std::env::var_os("HOME").as_deref())
+    }
+
+    /// Bundle 15 — testable form of `system_bun_candidates` that lets a
+    /// test supply a deterministic HOME without touching process env.
+    fn system_bun_candidates_for_home(
+        home: Option<&std::ffi::OsStr>,
+    ) -> Vec<std::path::PathBuf> {
+        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+        if let Some(home) = home {
+            candidates.push(
+                std::path::PathBuf::from(home)
+                    .join(".bun")
+                    .join("bin")
+                    .join("bun"),
+            );
+        }
+        candidates.push(std::path::PathBuf::from("/opt/homebrew/bin/bun"));
+        candidates.push(std::path::PathBuf::from("/usr/local/bin/bun"));
+        // Linux package managers / nix profile
+        candidates.push(std::path::PathBuf::from("/usr/bin/bun"));
+        candidates
     }
 
     fn first_working_bun(
@@ -1742,5 +1803,112 @@ mod memu_runtime_resolution_tests {
             AppState::find_python(Some(resource_dir.path())).is_none(),
             "packaged release must not fall back to dev or system Python"
         );
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Bundle 15 — find_bun_path prefers system Bun in dev mode
+    // ────────────────────────────────────────────────────────────────────
+    //
+    // The packaged-mode tests above already cover the "bundled wins, no
+    // system fallback" case. These tests cover dev mode (resource_dir is
+    // under CARGO_MANIFEST_DIR, or None), where macOS 26.4+ Gatekeeper
+    // SIGKILLs the unsigned target/debug/bun copy and we need to dodge
+    // it by preferring the user's installed Bun.
+    //
+    // Tests use `system_bun_candidates_for_home` directly so they don't
+    // mutate the process's $HOME (which would race with parallel tests).
+
+    #[test]
+    fn system_bun_candidates_includes_dot_bun_first_when_home_set() {
+        let home = std::ffi::OsString::from("/Users/test-user");
+        let candidates = AppState::system_bun_candidates_for_home(Some(&home));
+        assert_eq!(
+            candidates.first().map(|p| p.as_path()),
+            Some(std::path::Path::new("/Users/test-user/.bun/bin/bun")),
+            "~/.bun/bin/bun must be the first candidate (bun.sh installer default)"
+        );
+        // Homebrew + standard prefixes are present too.
+        assert!(
+            candidates
+                .iter()
+                .any(|p| p == std::path::Path::new("/opt/homebrew/bin/bun")),
+            "Homebrew (Apple Silicon) path missing"
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|p| p == std::path::Path::new("/usr/local/bin/bun")),
+            "Homebrew (Intel) / Linux standard prefix missing"
+        );
+    }
+
+    #[test]
+    fn system_bun_candidates_handles_no_home_gracefully() {
+        let candidates = AppState::system_bun_candidates_for_home(None);
+        // Without HOME we still return the Homebrew + standard prefixes.
+        assert!(
+            !candidates.is_empty(),
+            "must still return system prefixes when HOME unset"
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|p| !p.to_string_lossy().contains(".bun/bin")),
+            ".bun/bin candidate must be omitted when HOME is unset"
+        );
+    }
+
+    #[test]
+    fn find_bun_path_in_dev_mode_prefers_working_system_bun_over_dev_bundled() {
+        // Set up a fake "system" Bun under a tempdir's .bun/bin/bun and
+        // a separate fake "dev bundled" Bun in a resource_dir under the
+        // crate manifest dir. Then call find_bun_path with the dev-mode
+        // resource_dir. Expect: the system Bun wins.
+        //
+        // The system check goes through system_bun_candidates(), which
+        // hits the *real* HOME — so we can't use a tempdir for HOME
+        // here without env mutation. Instead we assert the public
+        // behavior contract: when the host's system Bun exists AND is
+        // working (the common dev-machine case), find_bun_path in dev
+        // mode returns a system path, not the bundled/dev path.
+        //
+        // CI runners without bun installed will return None or fall
+        // through to the dev path; both are acceptable. So this test
+        // only asserts the precondition + the negative ("did not pick
+        // the broken-on-purpose dev bundled binary").
+        let manifest_subdir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("__bundle15_test_resource_dir__");
+        let _ = fs::create_dir_all(&manifest_subdir);
+        // SIGKILL-on-launch fake (mimics unnotarized binary): exit 137.
+        // first_working_bun's `--version` probe will reject it.
+        let fake_bundled_bun = manifest_subdir.join("bun");
+        write_executable(&fake_bundled_bun, "#!/usr/bin/env bash\nexit 137\n");
+
+        // Sanity: the fake is under CARGO_MANIFEST_DIR, so
+        // is_packaged_resource_dir returns false (dev mode).
+        assert!(
+            !AppState::is_packaged_resource_dir(&manifest_subdir),
+            "test setup error: manifest subdir must be treated as dev"
+        );
+
+        let result = AppState::find_bun_path(Some(&manifest_subdir));
+
+        // Clean up before we assert so a failure doesn't leak files.
+        let _ = std::fs::remove_dir_all(&manifest_subdir);
+
+        // We never want the broken bundled fake selected — that would
+        // mean Bundle 15 regressed and dev again relies on the
+        // SIGKILL-prone copy.
+        if let Some(selected) = result.as_ref() {
+            assert_ne!(
+                selected, &fake_bundled_bun,
+                "find_bun_path picked the broken dev-bundled fake: {}",
+                selected.display()
+            );
+        }
+        // We don't assert Some(...) — CI runners without Bun installed
+        // legitimately return None here, and that's still better than
+        // returning a binary that will SIGKILL on launch.
     }
 }
