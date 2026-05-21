@@ -1137,7 +1137,17 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   )
 
   /** Steer = send now + interrupt current turn. Mirrors the legacy
-   *  streaming-append path from before the queue. */
+   *  streaming-append path from before the queue.
+   *
+   *  Fix for user-reported regression: after interrupting the previous
+   *  turn, the streaming-state listener flips running=false. The new
+   *  turn fires via queueAgentMessage(interrupt:true) but its
+   *  streaming-start event takes a tick to arrive — UI shows "no
+   *  streaming animation" in that gap. We pre-emptively set
+   *  running:true on the streamingStatesAtom so the indicator stays
+   *  continuous through the steer. The backend's actual streaming
+   *  events take over once they land.
+   */
   const handleSteerQueued = React.useCallback((msg: QueuedAgentMessage) => {
     if (!activeProviderModel) return
     // Remove from queue first so the banner closes before the network call.
@@ -1162,6 +1172,28 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       return map
     })
 
+    // Critical: keep the streaming-state running so the "Agent Running"
+    // indicator + 3×3 spinner don't blink off between the interrupt
+    // landing and the new turn's first stream chunk arriving.
+    const streamStartedAt = Date.now()
+    setStreamingStates((prev) => {
+      const map = new Map(prev)
+      const existing = prev.get(sessionId)
+      map.set(sessionId, {
+        running: true,
+        // Reset the bubble's accumulated content so the new turn starts
+        // with a clean slate visually.
+        content: '',
+        toolActivities: [],
+        teammates: existing?.teammates ?? [],
+        model: existing?.model ?? agentModelId ?? undefined,
+        startedAt: streamStartedAt,
+        inputTokens: existing?.inputTokens,
+        contextWindow: existing?.contextWindow,
+      })
+      return map
+    })
+
     queueAgentMessage({
       sessionId,
       userMessage: msg.text,
@@ -1180,7 +1212,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         return map
       })
     })
-  }, [sessionId, activeProviderModel, store])
+  }, [sessionId, activeProviderModel, store, setStreamingStates, agentModelId])
 
   /** Edit = pop from queue, restore to composer for further editing. */
   const handleEditQueued = React.useCallback((msg: QueuedAgentMessage) => {
@@ -1649,6 +1681,19 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         {/* 输入区域 — 交互横幅显示时隐藏，由横幅替代 */}
         {!hasBannerOverlay && (
         <div className="px-2.5 pb-2.5 md:px-[18px] md:pb-[18px]" data-input-mode="agent">
+          {/* Bundle 2-A — Codex / Claude App style queued-messages banner.
+              Sits as a SIBLING above the composer card (not inside it),
+              so the queue visually stacks with the input like in the
+              Claude app and codex CLI. The component itself returns null
+              when no messages are queued so this branch has zero cost on
+              the regular hot path. */}
+          <QueuedMessagesBanner
+            messages={currentQueue}
+            onSteer={handleSteerQueued}
+            onEdit={handleEditQueued}
+            onDelete={handleDeleteQueued}
+          />
+
           <div
             className={cn(
               'relative rounded-[17px] border-[0.5px] border-border bg-background/70 backdrop-blur-sm transition-all duration-200',
@@ -1712,15 +1757,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                 </button>
               </div>
             )}
-
-            {/* Bundle 2-A: Codex-style queued messages banner. Sits just
-                above the editor so the queue feels stacked with the input. */}
-            <QueuedMessagesBanner
-              messages={currentQueue}
-              onSteer={handleSteerQueued}
-              onEdit={handleEditQueued}
-              onDelete={handleDeleteQueued}
-            />
 
             <div className="relative">
               <RichTextInput
