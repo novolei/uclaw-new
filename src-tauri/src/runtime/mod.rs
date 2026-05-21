@@ -19,12 +19,14 @@
 //!
 //! Layout:
 //!
-//! - [`contracts`] — type definitions (M1-T1, PR #304)
-//! - [`task`]      — SessionTask trait + TaskScheduler (M1-T2a, PR #305)
-//! - [`rollout`]   — JSONL writer + task_events_rollout mirror (M1-T5, PR #310)
-//! - [`context`]   — ContextFragment / ContextSource / ContextRef (M2-C, PR #329)
+//! - [`contracts`]      — type definitions (M1-T1, PR #304)
+//! - [`task`]           — SessionTask trait + TaskScheduler (M1-T2a, PR #305)
+//! - [`rollout`]        — JSONL writer + task_events_rollout mirror (M1-T5, PR #310)
+//! - [`context`]        — ContextFragment / ContextSource / ContextRef (M2-C, PR #329)
+//! - [`context_tools`]  — ContextToolSet: search + read + pin/release/cite tools (M2-F pilot)
 
 pub mod context;
+pub mod context_tools;
 pub mod contracts;
 pub mod rollout;
 pub mod task;
