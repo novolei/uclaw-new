@@ -1,0 +1,14 @@
+# Union merge strategy for module-declaration files.
+#
+# These files are touched by many PRs that each add `pub mod X;` lines
+# in different positions. Union merge concatenates both sides on
+# conflict, which is exactly what we want — every PR's additions are
+# kept.
+#
+# After merging the agent-os-v2-foundations integration batch, the
+# union-merge directives can stay; they're stable across the project's
+# lifetime for these "pure registration" files.
+
+src-tauri/src/agent/mod.rs           merge=union
+src-tauri/src/lib.rs                 merge=union
+src-tauri/src/world/adapters/mod.rs  merge=union
