@@ -5,6 +5,8 @@ pub mod regular_task;
 pub mod baseline_blocks;
 // M2-G pilot — StructuredFold 8-field compact representation.
 pub mod compact;
+// M2-H L1 pilot — TruncationPolicy + per-handler budgets.
+pub mod truncation;
 // M1-T4b — opt-in rollout bridge for direct run_agentic_loop callsites.
 pub mod rollout_integration;
 pub mod code_rescue;
