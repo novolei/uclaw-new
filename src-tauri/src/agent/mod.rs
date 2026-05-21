@@ -15,6 +15,8 @@ pub mod call_audit;
 pub mod image_policy;
 // M2-H L3 pilot — per-turn skill selection (top-K under token budget).
 pub mod skill_selection;
+// M2-H L7 pilot — Compaction state machine.
+pub mod compression_state;
 // M1-T4b — opt-in rollout bridge for direct run_agentic_loop callsites.
 pub mod rollout_integration;
 pub mod code_rescue;
