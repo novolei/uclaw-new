@@ -22,6 +22,8 @@ pub mod runtime;
 pub mod registries;
 // M4-T1 — World projection types skeleton.
 pub mod world;
+// M3-T5 — Intent classifier (rule-based, risk + autonomy + capabilities).
+pub mod intent_classifier;
 
 // B2: Infrastructure modules
 pub mod memory;
