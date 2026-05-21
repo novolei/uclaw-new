@@ -388,7 +388,20 @@ impl MemUClient {
             }
         });
 
-        let result = self.bridge.send_request("retrieve_with_context", params).await?;
+        // retrieve_with_context runs an LLM-backed category enrichment pass
+        // when include_categories=true. The default 30s `send_request` timeout
+        // hits a hard cap during that LLM call (observed in dev as exact
+        // 30002ms duration on memu_memory tool calls). Use a 60s window — the
+        // enrichment is rarely above 20s, but tail-latency for cold-start
+        // FastEmbed inference + first-touch sqlite write can stretch.
+        let result = self
+            .bridge
+            .send_request_with_timeout(
+                "retrieve_with_context",
+                params,
+                std::time::Duration::from_secs(60),
+            )
+            .await?;
 
         // The result may be wrapped in {"items": [...]} or be a direct array
         let items_val = if let Some(items) = result.get("items") {

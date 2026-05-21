@@ -205,12 +205,32 @@ impl MemUBridge {
             Self::read_responses(inner_clone, stdout, alive_flag).await;
         });
 
-        // Spawn stderr reader task (for logging)
+        // Spawn stderr reader task (for logging).
+        //
+        // memu_bridge.py uses stderr for both startup INFO ("Initializing...",
+        // "FastEmbed model loaded", "Listening on stdin...") and actual error
+        // tracebacks. Tagging everything WARN misleads operators into thinking
+        // healthy startup is a failure (Issue 1 from the Slice 3-A E2E audit).
+        //
+        // Heuristic: lines containing common error markers ("ERROR", "CRITICAL",
+        // "Traceback", "Exception:", "[error]") route to WARN. Everything else
+        // is operational chatter → INFO.
         tokio::spawn(async move {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                tracing::warn!(target: "memu_bridge::stderr", "{}", line);
+                let lower = line.to_ascii_lowercase();
+                let is_error = lower.contains("error")
+                    || lower.contains("critical")
+                    || lower.contains("traceback")
+                    || lower.contains("exception:")
+                    || lower.contains("failed")
+                    || lower.contains("panic");
+                if is_error {
+                    tracing::warn!(target: "memu_bridge::stderr", "{}", line);
+                } else {
+                    tracing::info!(target: "memu_bridge::stderr", "{}", line);
+                }
             }
         });
 

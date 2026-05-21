@@ -1909,6 +1909,42 @@ ALTER TABLE automation_specs ADD COLUMN browser_login TEXT;
 ALTER TABLE automation_specs ADD COLUMN uninstalled_at INTEGER;
 ";
 
+/// V51 — `memorization_queue` shared schema in the main app DB.
+///
+/// `memorization::storage::MemorizationStorage::ensure_tables` creates
+/// this table on its own SQLite connection (which is the same file —
+/// `~/.uclaw/uclaw.db`), but the order of init relative to
+/// `proactive::conversation_bridge::enqueue_message` was racy: the
+/// bridge would INSERT before MemorizationStorage's setup ran, hitting
+/// `no such table: memorization_queue` in production.
+///
+/// Schema mirrors `MemorizationStorage::ensure_tables` plus the
+/// `metadata` column the conversation_bridge inserts (it was missing
+/// in the original ensure_tables — that's a separate gap also patched
+/// here so both writers agree on the column set).
+///
+/// Idempotent: CREATE TABLE IF NOT EXISTS + ALTER ADD COLUMN errors
+/// are skipped by the migration runner the same way V50 swallows
+/// duplicate-column errors.
+pub const V51_MEMORIZATION_QUEUE: &str = "
+CREATE TABLE IF NOT EXISTS memorization_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL DEFAULT 'local',
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    conversation_id TEXT,
+    space_id TEXT,
+    timestamp INTEGER NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+ALTER TABLE memorization_queue ADD COLUMN metadata TEXT;
+CREATE TABLE IF NOT EXISTS memorization_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+";
+
 /// V43 seed — Phase 8.2: 7 default rows in `wiki_page_templates`, one
 /// per subkind defined in Cognitive Spec §2.2. `INSERT OR IGNORE` keeps
 /// the seed re-runnable: users / agents can tune the prompts in the
@@ -2509,6 +2545,18 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V50_HALO_AUTOMATION_METADATA.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V50 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V51: memorization_queue shared schema (Slice 3 Bundle 1 Issue 6).
+    // Race-safe creation in the main DB so proactive::conversation_bridge's
+    // INSERT can run regardless of whether MemorizationStorage::new ran first.
+    tracing::debug!("Running migration V51: memorization_queue");
+    for stmt in V51_MEMORIZATION_QUEUE.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            // ALTER ADD COLUMN errors when the column already exists are expected
+            // on databases that ran MemorizationStorage::ensure_tables first —
+            // log at DEBUG so they don't fill the operator's stderr with noise.
+            tracing::debug!("V51 stmt skipped (likely already applied): {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
