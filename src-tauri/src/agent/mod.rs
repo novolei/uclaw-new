@@ -19,6 +19,8 @@ pub mod skill_selection;
 pub mod compression_state;
 // M2-B pilot — ContextManager per-turn composition skeleton.
 pub mod context_manager;
+// M2-I pilot — Prompt caching policy (4 cache breakpoint placement).
+pub mod cache_policy;
 // M1-T4b — opt-in rollout bridge for direct run_agentic_loop callsites.
 pub mod rollout_integration;
 pub mod code_rescue;
