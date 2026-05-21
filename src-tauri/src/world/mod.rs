@@ -19,6 +19,11 @@
 
 pub mod entity;
 pub mod snapshot;
+pub mod store;
 
 pub use entity::{EntityRef, WorldEntity, WorldEntityKind, WorldEntityState};
 pub use snapshot::{ProjectionStats, WorldSnapshot};
+pub use store::{
+    DuplicateSubscriberId, ProjectionEvent, ProjectionStore, ProjectionSubscriber,
+    ProjectionSubscriberId,
+};
