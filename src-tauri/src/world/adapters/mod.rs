@@ -16,6 +16,8 @@
 //! - [`filesystem`] — `FileSystemAdapter` + `scan_directory`
 
 pub mod filesystem;
+// M4-T4 — Git projection adapter (parsers + entity emitters).
+pub mod git;
 
 pub use filesystem::{scan_directory, FileSystemAdapter, ScanOptions, ScanResult};
 //! Projection adapters.
@@ -88,3 +90,7 @@ pub use dataset::{
     dataset_to_entity, DatasetAdapter, DatasetEvent,
 };
 pub use document::{document_to_entity, DocEvent, DocumentAdapter};
+pub use git::{
+    branch_to_entity, commit_to_entity, parse_branch_listing, parse_log_one_line,
+    parse_status_porcelain, wtchange_to_entity, GitBranch, GitCommit, GitWorkTreeChange,
+};
