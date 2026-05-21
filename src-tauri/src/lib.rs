@@ -18,12 +18,36 @@ pub mod infra;
 // Phase 0.5 M1-T1 — IntentSpec/TaskSpec/TaskEvent runtime contracts.
 pub mod runtime;
 
+// M3-T1 — Five-registry skeleton (skills/connectors/tools/models/themes).
+pub mod registries;
+// M4-T1 — World projection types skeleton.
+pub mod world;
+// M3-T5 — Intent classifier (rule-based, risk + autonomy + capabilities).
+pub mod intent_classifier;
+// M3-T4 — Task scheduler queue + priority types.
+pub mod task_scheduler;
+// M3-T7 — IM channel adapter types (Slack/Discord/Telegram/...).
+pub mod im_channels;
+// M6-T1 — Memory graph contract (typed adapter layer over memory_graph).
+pub mod memory_contract;
+// M3-T8 — SKILL.md frontmatter schema + parser (distinct from the
+// existing `skills_manifest` module handling a different format).
+pub mod skill_md_parse;
+// M7-T1 — Plugin manifest schema + TOML loader.
+pub mod plugin_manifest;
+// M3-T6 — Policy evaluator (PolicySpec rules → HookDecision).
+pub mod policy_eval;
+// M3-T3 — Worker / sub-agent type skeleton.
+pub mod workers;
+
 // B2: Infrastructure modules
 pub mod memory;
 pub mod memory_graph;
 pub mod skills;
 pub mod skills_manifest;
 pub mod mcp;
+// M3-T9 — MCP server: uclaw exposes its own capabilities via MCP.
+pub mod mcp_server;
 pub mod gbrain;
 pub mod channels;
 pub mod providers;

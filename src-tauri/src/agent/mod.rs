@@ -3,6 +3,30 @@ pub mod agentic_loop;
 pub mod regular_task;
 // M2-A pilot — BaselineBlock trait + 3-block registry.
 pub mod baseline_blocks;
+// M2-G pilot — StructuredFold 8-field compact representation.
+pub mod compact;
+// M2-H L1 pilot — TruncationPolicy + per-handler budgets.
+pub mod truncation;
+// M2-H L2 pilot — ToolExposure + normalize_tool_schema.
+pub mod tool_shaping;
+// M2-H L6 pilot — orphan tool-call audit + "aborted" synthesis.
+pub mod call_audit;
+// M2-H L5 pilot — image stripping for image-blind providers.
+pub mod image_policy;
+// M2-H L3 pilot — per-turn skill selection (top-K under token budget).
+pub mod skill_selection;
+// M2-H L7 pilot — Compaction state machine.
+pub mod compression_state;
+// M2-B pilot — ContextManager per-turn composition skeleton.
+pub mod context_manager;
+// M2-I pilot — Prompt caching policy (4 cache breakpoint placement).
+pub mod cache_policy;
+// M2-J pilot — TokenBudgetSnapshot UI backend contract.
+pub mod token_budget;
+// M5 pilot — HookBus 13-event type skeleton.
+pub mod hook_bus;
+// M2-D pilot — Diff-based context re-injection.
+pub mod context_diff;
 // M1-T4b — opt-in rollout bridge for direct run_agentic_loop callsites.
 pub mod rollout_integration;
 pub mod code_rescue;
