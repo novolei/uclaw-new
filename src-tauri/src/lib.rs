@@ -33,6 +33,8 @@ pub mod memory_contract;
 // M3-T8 — SKILL.md frontmatter schema + parser (distinct from the
 // existing `skills_manifest` module handling a different format).
 pub mod skill_md_parse;
+// M7-T1 — Plugin manifest schema + TOML loader.
+pub mod plugin_manifest;
 
 // B2: Infrastructure modules
 pub mod memory;
