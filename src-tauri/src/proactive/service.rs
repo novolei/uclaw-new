@@ -1387,6 +1387,151 @@ impl ProactiveService {
         // L3 §4.12.4 R1 — Concept Drift Detection scan. Every 480 ticks
         // (~4h @ 30s tick interval). Zero LLM cost. Scans EntityPages
         // with multiple versions, computes content drift, records a
+        // Bundle 26-B — skill-distillation prune. Every ~2 hours
+        // (at default 30s tick), scan `_auto_extracted/` and move
+        // skills that have been on disk > 7 days WITHOUT EVER being
+        // returned by `skill_search` to `_archive/`. Safe to run
+        // anytime — operates only on never-used skills, doesn't
+        // touch in-flight extraction directories. v2 (Bundle 26-B2)
+        // will add LLM-driven merge of similar skills; v1 is prune
+        // only.
+        if refs.tick_count.load(Ordering::SeqCst) % 240 == 0 {
+            let data_dir = refs.data_dir.clone();
+            tokio::task::spawn_blocking(move || {
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                match crate::proactive::skill_distillation::run_prune_pass(
+                    &data_dir, now_ms, 7.0,
+                ) {
+                    Ok(report) => {
+                        if !report.archived.is_empty() || !report.errors.is_empty() {
+                            tracing::info!(
+                                scanned = report.scanned,
+                                archived = report.archived.len(),
+                                kept = report.skipped_kept,
+                                errors = report.errors.len(),
+                                "[Bundle 26-B] skill prune pass complete"
+                            );
+                        } else {
+                            tracing::debug!(
+                                scanned = report.scanned,
+                                "[Bundle 26-B] skill prune: nothing to archive"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "[Bundle 26-B] skill prune pass failed"
+                        );
+                    }
+                }
+            });
+        }
+
+        // Bundle 26-D — Skill → Gene promotion. Every ~60 ticks
+        // (~30 min at 30s tick), scan `_auto_extracted/` for skills
+        // with `returned_count >= 3` and no `promoted_at`. Push each
+        // as a GeneCandidate (source="skill_promotion") into the
+        // existing gene_candidate_pool — the GeneEvolutionScenario
+        // already in place will distill them into Genes on its next
+        // trigger. After successful push, stamp `promoted_at` to
+        // prevent re-promotion on every tick.
+        //
+        // v1 uses `returned_count >= 3` as the eligibility signal.
+        // v2 (when Bundle 26-A2 wires record_outcome) will add
+        // `success_rate >= 0.7 && observed_outcomes >= 3` to filter
+        // out skills the LLM finds but consistently fails with.
+        if refs.tick_count.load(Ordering::SeqCst) % 60 == 0 {
+            let data_dir = refs.data_dir.clone();
+            let gene_pool = refs.gene_candidate_pool.clone();
+            let new_gene_flag = refs.new_gene_candidates.clone();
+            let has_new = refs.has_new_context.clone();
+            tokio::spawn(async move {
+                let candidates = tokio::task::spawn_blocking(move || {
+                    crate::proactive::skill_distillation::find_promotion_candidates(
+                        &data_dir, 3, 2000,
+                    )
+                })
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .unwrap_or_default();
+
+                if candidates.is_empty() {
+                    return;
+                }
+
+                let mut pushed = 0;
+                for cand in &candidates {
+                    // Dedup against the pool by content prefix
+                    // (same heuristic as the existing tool_failure
+                    // injection path). Skip if a near-match is
+                    // already pending distillation.
+                    let dedup_key = cand
+                        .skill_md_excerpt
+                        .chars()
+                        .take(40)
+                        .collect::<String>();
+                    {
+                        let pool = gene_pool.read().await;
+                        let exists = pool.iter().any(|c| c.content.contains(&dedup_key));
+                        if exists {
+                            continue;
+                        }
+                    }
+
+                    let candidate = crate::agent::gep::types::GeneCandidate {
+                        source: "skill_promotion".to_string(),
+                        content: format!(
+                            "[Bundle 26-D] Promoted skill {} (returned_count={}):\n\n{}",
+                            cand.slug, cand.returned_count, cand.skill_md_excerpt
+                        ),
+                        card_type: Some(
+                            crate::agent::gep::types::LearningCardType::SuccessPattern,
+                        ),
+                        score: Some(0.65), // moderate-high distillation priority
+                        session_id: None,
+                        reasoning: Some(format!(
+                            "Skill returned by skill_search {} times — pattern is empirically useful, ready for promotion to a Gene (passive injection via system prompt).",
+                            cand.returned_count
+                        )),
+                        timestamp: chrono::Utc::now(),
+                    };
+
+                    {
+                        let mut pool = gene_pool.write().await;
+                        pool.push_back(candidate);
+                    }
+                    pushed += 1;
+
+                    // Mark promoted_at so we don't re-inject on the
+                    // next tick. Best-effort: a failed stamp means
+                    // we'll push again next time, which is wasteful
+                    // but the dedup above absorbs it.
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    if let Err(e) =
+                        crate::proactive::skill_distillation::mark_promoted(&cand.dir, now_ms)
+                    {
+                        tracing::warn!(
+                            slug = %cand.slug,
+                            error = %e,
+                            "[Bundle 26-D] mark_promoted failed (will re-attempt next tick)"
+                        );
+                    }
+                }
+
+                if pushed > 0 {
+                    new_gene_flag.store(true, Ordering::SeqCst);
+                    has_new.store(true, Ordering::SeqCst);
+                    tracing::info!(
+                        candidates_found = candidates.len(),
+                        pushed = pushed,
+                        "[Bundle 26-D] promoted skills to gene_candidate_pool"
+                    );
+                }
+            });
+        }
+
         // `drift_events` row when drift crosses threshold. Offset from
         // importance_decay (360) so the two heavy memory_graph scans
         // rarely co-fire.

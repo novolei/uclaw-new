@@ -64,6 +64,17 @@ pub struct SkillMeta {
     /// Schema version — bump if we add non-additive fields later.
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
+
+    /// Bundle 26-D — Unix ms when this skill was pushed to the GEP
+    /// gene_candidate_pool for promotion to a Gene. None = never
+    /// promoted; the scanner uses this as an idempotency guard so
+    /// the same skill isn't injected on every tick after it crosses
+    /// the threshold. Once a Gene is distilled and Active in GEP,
+    /// Gene retrieval (passive injection via system prompt) becomes
+    /// the primary path; the skill itself stays put as the
+    /// skill_search-route backup.
+    #[serde(default)]
+    pub promoted_at: Option<i64>,
 }
 
 fn default_schema_version() -> u32 {
@@ -92,6 +103,7 @@ impl SkillMeta {
             failure_count: 0,
             last_used_at: None,
             schema_version: default_schema_version(),
+            promoted_at: None,
         }
     }
 
