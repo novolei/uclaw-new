@@ -1432,6 +1432,78 @@ impl LoopDelegate for ChatDelegate {
         // but must not consume LLM context budget. (P1 logical-marking)
         messages.extend(reason_ctx.messages.iter().filter(|m| !m.compacted).cloned());
 
+        // M2-H L6 — orphan tool-call defense.
+        // If a previous turn was cancelled mid-call (M1-T2d), a tool handler
+        // crashed, or context compaction (M2-G) dropped a tool_result while
+        // keeping its tool_use, the history can contain `ToolUse` blocks
+        // without a matching `ToolResult`. Anthropic/OpenAI both 400 on that
+        // shape. Splice a synthetic ToolResult with "aborted" content so
+        // the request is well-formed and the model sees the orphan.
+        //
+        // The system message stays at index 0 — we only audit the
+        // conversation portion to keep the algorithm focused.
+        let conversation: Vec<ChatMessage> = messages.drain(1..).collect();
+        let (patched, audit_stats) =
+            crate::agent::call_audit::audit_chat_history(conversation);
+        messages.extend(patched);
+        if !audit_stats.is_clean() {
+            tracing::warn!(
+                orphans = audit_stats.orphans_synthesized,
+                first_call_id = %audit_stats
+                    .orphan_calls
+                    .first()
+                    .map(|o| o.call_id.as_str())
+                    .unwrap_or(""),
+                "[L6] synthesized aborted ToolResults for orphan tool calls",
+            );
+        }
+
+        // M2-H L5 — image stripping for image-blind providers.
+        // browser_screenshot tool results are JSON-encoded blobs containing
+        // base64 image data. The Anthropic adapter (anthropic.rs:152-168)
+        // re-encodes those into vision content blocks when serializing —
+        // but on image-blind models (DeepSeek, gpt-3.5-turbo, plain Llama,
+        // etc.) this either 400s or wastes ~MB of tokens on opaque base64.
+        //
+        // Detect image-blind (provider, model) up front and rewrite each
+        // browser_screenshot-shaped tool result to the placeholder text
+        // BEFORE the provider sees it. Bytes saved per stripped screenshot
+        // can run into millions; this also keeps the conversation's UI
+        // replay clean (the placeholder is human-readable).
+        if !crate::agent::image_policy::supports_images(&self.provider, &self.model) {
+            let mut stripped = 0_usize;
+            for m in messages.iter_mut().skip(1 /* system */) {
+                for block in m.content.iter_mut() {
+                    if let ContentBlock::ToolResult { content, .. } = block {
+                        // Recognize the browser_screenshot wire shape:
+                        // {"ok":true,"data":"<base64>","width":N,...}
+                        let is_screenshot = serde_json::from_str::<serde_json::Value>(content)
+                            .ok()
+                            .as_ref()
+                            .map(|v| {
+                                v.get("ok").and_then(|x| x.as_bool()) == Some(true)
+                                    && v.get("data").and_then(|x| x.as_str()).is_some()
+                                    && v.get("width").is_some()
+                            })
+                            .unwrap_or(false);
+                        if is_screenshot {
+                            *content = crate::agent::image_policy::DEFAULT_PLACEHOLDER
+                                .to_string();
+                            stripped += 1;
+                        }
+                    }
+                }
+            }
+            if stripped > 0 {
+                tracing::info!(
+                    stripped,
+                    provider = %self.provider,
+                    model = %self.model,
+                    "[L5] stripped browser_screenshot images for image-blind model",
+                );
+            }
+        }
+
         // Prepend dynamic context (workspace root) to the LAST user
         // message in this call. Mutates the clone only — the persisted
         // session messages stay clean so context isn't duplicated when the
@@ -1463,11 +1535,40 @@ impl LoopDelegate for ChatDelegate {
         let tools = if reason_ctx.force_text {
             Vec::new()
         } else {
-            let defs = self.tools.list_definitions();
+            let mut defs = self.tools.list_definitions();
+            // M2-H L2 — normalize tool schemas before announcing to LLM:
+            //   * drop description.examples (saves ~hundreds of tokens per tool)
+            //   * dedupe enum arrays
+            //   * cap nesting at depth 3 (MCP-generated schemas can balloon)
+            // Idempotent + non-mutating; running on already-normalized schemas
+            // is a no-op so re-invocation across loop iterations is cheap.
+            let mut total_stats = crate::agent::tool_shaping::normalize::NormalizeStats::default();
+            for def in defs.iter_mut() {
+                let raw = std::mem::replace(&mut def.parameters, serde_json::Value::Null);
+                let (rewritten, stats) = crate::agent::tool_shaping::normalize::normalize_tool_schema(
+                    raw,
+                    crate::agent::tool_shaping::normalize::DEFAULT_MAX_NESTING_DEPTH,
+                );
+                def.parameters = rewritten;
+                total_stats.examples_dropped += stats.examples_dropped;
+                total_stats.enums_deduped += stats.enums_deduped;
+                total_stats.deep_nests_pruned += stats.deep_nests_pruned;
+            }
+            if !total_stats.is_noop() {
+                tracing::info!(
+                    examples_dropped = total_stats.examples_dropped,
+                    enums_deduped = total_stats.enums_deduped,
+                    deep_nests_pruned = total_stats.deep_nests_pruned,
+                    tool_count = defs.len(),
+                    "[L2] normalized tool schemas",
+                );
+            }
             // Track tool list hash to detect unexpected changes mid-turn (e.g.
             // MCP reconnect during a multi-iteration turn). Anthropic's prompt
             // cache covers the tool list when it's byte-stable across iterations;
             // this logging surfaces cache-busting events for observability.
+            // Hashed AFTER normalization so the cache key reflects the actual
+            // payload the LLM sees, not the raw registry shape.
             let hash: u64 = {
                 use std::hash::{Hash, Hasher};
                 use std::collections::hash_map::DefaultHasher;

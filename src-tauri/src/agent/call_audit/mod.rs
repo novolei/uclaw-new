@@ -40,5 +40,7 @@
 //! - [`audit`] — `AuditMessage`, `audit_call_outputs`, `EnsureStats`
 
 pub mod audit;
+pub mod chat_history;
 
 pub use audit::{audit_call_outputs, AuditMessage, EnsureStats, OrphanCall};
+pub use chat_history::audit_chat_history;

@@ -33,4 +33,4 @@ pub mod exposure;
 pub mod normalize;
 
 pub use exposure::{ToolExposure, ToolExposurePolicy};
-pub use normalize::{normalize_tool_schema, NormalizeStats};
+pub use normalize::{normalize_tool_schema, NormalizeStats, DEFAULT_MAX_NESTING_DEPTH};
