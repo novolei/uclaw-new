@@ -1179,6 +1179,11 @@ fn main() {
             uclaw_core::tauri_commands::get_memu_status,
             // Global Shortcut
             update_global_shortcut,
+            // Slice 1 — Agent OS v2 introspection (M2-A baseline + M2-J telemetry)
+            uclaw_core::tauri_commands::inspect_baseline_blocks,
+            uclaw_core::tauri_commands::inspect_rendered_baseline,
+            uclaw_core::tauri_commands::get_latest_token_budget,
+            uclaw_core::tauri_commands::list_token_budget_task_ids,
         ]);
 
     // ─── Debug 菜单事件处理器（仅 debug 模式） ──────────────────────

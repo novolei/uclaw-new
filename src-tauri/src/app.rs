@@ -261,6 +261,12 @@ pub struct AppState {
     pub trajectory_store: Arc<crate::harness::TrajectoryStore>,
     pub tool_budget: Arc<crate::harness::ToolBudgetManager>,
 
+    // Slice 1 — per-task TokenBudgetSnapshot collector. Populated by
+    // the agent loop on every `delegate.on_usage()` tick; read by the
+    // M2-J UI via `get_latest_token_budget`. Cheap to clone (internal
+    // Arc<RwLock>).
+    pub token_budget_collector: crate::agent::telemetry::TokenBudgetCollector,
+
     /// Files rail service — owns the filesystem watcher for the WorkspaceRail UI.
     pub files_rail_service: Arc<crate::files_rail::FilesRailService>,
 
@@ -786,6 +792,7 @@ impl AppState {
             browser_context_manager,
             trajectory_store,
             tool_budget,
+            token_budget_collector: crate::agent::telemetry::TokenBudgetCollector::new(),
             files_rail_service,
             runtime_service,
             proactive_service: Arc::new(tokio::sync::RwLock::new(None)),
