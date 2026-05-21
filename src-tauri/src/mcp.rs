@@ -1033,6 +1033,26 @@ struct GbrainCliTransport {
     command: String,
     base_args: Vec<String>,
     env: HashMap<String, String>,
+    /// Bundle 7-B — serialize CLI invocations.
+    ///
+    /// Every `call_cli` spawns a fresh `bun gbrain/src/cli.ts` subprocess
+    /// (Bun runtime ~30–50 MB + PGLite init). When the agent runs
+    /// multiple gbrain tools in parallel (e.g. `list_pages` + `search` +
+    /// `get_page` in the same turn), each spawn lands at the same time
+    /// and macOS's memory pressure killer issues SIGKILL — observable
+    /// as `diagnostic_kind=process_killed; status=signal: 9` in the
+    /// settings panel.
+    ///
+    /// A per-transport Mutex caps concurrency at 1 in-flight subprocess.
+    /// Sequential is slightly slower under heavy parallel tool fan-out,
+    /// but a single 45s tool call is still much faster than every call
+    /// failing with SIGKILL and forcing the agent to retry.
+    ///
+    /// Note: this does NOT restore the persistent `gbrain serve` model
+    /// (Bundle 7-B explicitly avoids re-introducing the PGLite-lock /
+    /// serve-startup-timeout issues that motivated the original revert
+    /// at 3e49bc5). It's the cheapest safe fix for the SIGKILL symptom.
+    call_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl GbrainCliTransport {
@@ -1045,6 +1065,7 @@ impl GbrainCliTransport {
             command: command.to_string(),
             base_args,
             env: env.clone(),
+            call_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -1152,6 +1173,14 @@ impl GbrainCliTransport {
     }
 
     async fn call_cli(&self, tool: &str, arguments: serde_json::Value) -> Result<String, McpError> {
+        // Bundle 7-B — gate the whole CLI invocation behind the
+        // per-transport mutex. Held until `output.status` is read,
+        // which is also when the bun subprocess has fully exited
+        // (kill_on_drop guarantees cleanup on early return / panic).
+        // The PGLite lock cleanup inside the critical section then has
+        // race-free semantics: at most one cleanup + spawn at a time.
+        let _call_guard = self.call_lock.lock().await;
+
         cleanup_stale_pglite_lock(&self.env);
 
         let mut argv = self.base_args.clone();
@@ -1297,6 +1326,12 @@ impl GbrainCliTransport {
     }
 
     async fn suggest_page_slugs(&self, missing_slug: &str) -> Vec<String> {
+        // Bundle 7-B — no separate lock here: `suggest_page_slugs` is
+        // only called from inside `call_cli`, which already holds the
+        // per-transport mutex. Taking it again here would deadlock the
+        // same task. Externally-callable variants would need their own
+        // entry point that acquires the lock.
+
         let mut argv = self.base_args.clone();
         argv.push("list".to_string());
         argv.push("--limit".to_string());
