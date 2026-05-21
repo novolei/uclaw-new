@@ -31,6 +31,32 @@ fn main() {
         .setup(|app| {
             let app_state = AppState::new(app.handle())?;
 
+            // M3-T1 wire-up slice 1 — mirror the disk-tier
+            // `SkillsRegistry` discovered set into the hub's `skills`
+            // slot so the Capability Mesh resolver has something to
+            // query. Best-effort: a sync failure logs a warning but
+            // doesn't abort boot (the disk-tier registry still
+            // works for skill_search via its existing path).
+            {
+                let registry = app_state.skills_registry.clone();
+                let hub = app_state.registry_hub.clone();
+                tauri::async_runtime::spawn(async move {
+                    let reg = registry.read().await;
+                    match uclaw_core::registries::sync_skills_from_registry(&hub, &reg).await {
+                        Ok(n) => tracing::info!(
+                            count = n,
+                            "[M3-T1] synced {} skill entries into registry hub",
+                            n
+                        ),
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "[M3-T1] initial skill→hub sync failed (hub remains empty for skills slot; \
+                             disk-tier skill_search still works)"
+                        ),
+                    }
+                });
+            }
+
             // Attach AppHandle to MemUClient so consolidation events can emit
             if let Some(memu_client) = &app_state.memu_client {
                 let memu_client = memu_client.clone();

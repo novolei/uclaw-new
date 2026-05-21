@@ -251,6 +251,13 @@ pub struct AppState {
     /// Used by stop_agent_session to cancel a running loop.
     pub running_sessions: Arc<tokio::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>>,
 
+    /// M3-T1 wire-up — Capability Mesh registry hub. Aggregates the
+    /// five typed `Registry<E>` instances (skills / connectors / tools
+    /// / models / themes) the resolver runs queries against. Populated
+    /// during AppState::new (from `skills_reg` for Skills slot;
+    /// other slots are populated in M3-T1 slice 2+).
+    pub registry_hub: crate::registries::RegistryHub,
+
     /// Bundle 20 — per-session cached composed `memory_context` from
     /// the most recent **completed** background recall. The agent
     /// recall pipeline (Bundle 6) puts recall in `tokio::spawn` with
@@ -811,6 +818,12 @@ impl AppState {
             metrics_service,
             memubot_config: Arc::new(tokio::sync::RwLock::new(memubot_config)),
             running_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            // M3-T1 wire-up slice 1 — empty hub at construction time.
+            // We populate the Skills slot below from skills_reg after
+            // its initial discover() runs. Other slots stay empty
+            // until slice 2 (tools/models) and slice 3 (connectors)
+            // land.
+            registry_hub: crate::registries::RegistryHub::new(),
             // Bundle 20 — see `recall_ctx_cache` field doc.
             recall_ctx_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             browser_service: Arc::new(crate::browser::BrowserService::new()),

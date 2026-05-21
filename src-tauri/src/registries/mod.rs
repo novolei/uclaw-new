@@ -37,6 +37,7 @@
 
 pub mod connectors;
 pub mod entry;
+pub mod hub;
 pub mod models;
 pub mod resolver;
 pub mod skills;
@@ -46,6 +47,7 @@ pub mod tools;
 
 pub use connectors::ConnectorEntry;
 pub use entry::{RegistryEntry, RegistryError};
+pub use hub::{sync_skills_from_registry, RegistryHub, RegistryHubCounts};
 pub use models::ModelEntry;
 pub use resolver::{resolve, ResolveResult, ResolvedMatch};
 pub use skills::SkillEntry;
