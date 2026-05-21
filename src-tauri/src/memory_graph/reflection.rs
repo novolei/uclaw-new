@@ -308,6 +308,42 @@ impl ReflectionOrchestrator {
         let _ = self.app_handle.emit("agent:reflection", detail);
     }
 
+    /// Emit `agent:proactive-learning` so the AgentMessages chip surfaces a
+    /// "对话学习 · N 条 · [categories]" badge after a successful reflection.
+    ///
+    /// Bundle 4 — previously this only fired from `proactive::service.rs`
+    /// (the scenario-driven path), so the reflection-driven memorize (which
+    /// runs after every chat turn) was silent in the UI even when items
+    /// were extracted. With this hook the chip appears for both paths
+    /// and the frontend listener can dedup by timestamp if needed.
+    fn emit_proactive_learning_chip(
+        &self,
+        conversation_id: &str,
+        items_count: usize,
+        categories: Vec<String>,
+        summary: String,
+    ) {
+        if items_count == 0 {
+            return;
+        }
+        let payload = serde_json::json!({
+            "scenario": "conversation_learning",
+            "items_extracted": items_count,
+            "categories": categories,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "summary": summary,
+            // tauri_commands::send_message passes the chat conversation_id
+            // here; the chip filter is `ev.sessionId === sessionId || null`
+            // so this surfaces under the right session.
+            "sessionId": conversation_id,
+        });
+        info!(
+            items = items_count,
+            "reflection: emitting agent:proactive-learning chip event"
+        );
+        let _ = self.app_handle.emit("agent:proactive-learning", &payload);
+    }
+
     /// Async reflection flow, called after conversation completes.
     pub async fn reflect(
         &self,
@@ -717,6 +753,33 @@ impl ReflectionOrchestrator {
         } else {
             "本轮对话已处理，未发现需要记忆的内容".to_string()
         };
+
+        // Bundle 4 — fire the chip event before status. Only when we
+        // actually created/updated nodes (no_op cases don't produce a
+        // chip; the toast-style status panel already covers them).
+        if created_count > 0 || updated_count > 0 {
+            // Derive a category set from the memU items we processed. The
+            // chip shows up to 3 categories; surfacing the actual memU
+            // memory_type values (knowledge/profile/event/...) is more
+            // informative than a hardcoded "reflection" tag.
+            let mut categories: Vec<String> = items
+                .iter()
+                .filter_map(|item| {
+                    item.get("memory_type")
+                        .or_else(|| item.get("type"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect();
+            categories.sort();
+            categories.dedup();
+            self.emit_proactive_learning_chip(
+                _conversation_id,
+                (created_count as usize) + (updated_count as usize),
+                categories,
+                summary_text.clone(),
+            );
+        }
 
         self.emit_status(assistant_message_id, "completed");
         self.emit_reflection(&ReflectionDetail {
