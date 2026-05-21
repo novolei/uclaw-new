@@ -22,15 +22,17 @@ pub mod entity;
 pub mod snapshot;
 pub mod store;
 
-pub use adapters::{scan_directory, FileSystemAdapter, ScanOptions, ScanResult};
-pub use adapters::{tab_entity, BrowserAdapter, BrowserTabEvent};
-pub use adapters::{channel_to_entity, SlackAdapter, SlackEvent};
+// Consolidated re-exports from all M4 adapters (#354 #356 #359 #360 #361 #362).
+// Note: #356 (M4-T4 git) doesn't re-export from adapters::* but defines
+// its symbols at adapters::git::*; they're accessible via the path.
 pub use adapters::{
-    calendar_event_to_entity, email_to_entity, CalendarAdapter, CalendarChangeEvent,
-    EmailEvent, MailAdapter,
-pub use adapters::{
-    dataset_to_entity, document_to_entity, DatasetAdapter, DatasetEvent, DocEvent,
-    DocumentAdapter,
+    branch_to_entity, calendar_event_to_entity, channel_to_entity, commit_to_entity,
+    dataset_to_entity, document_to_entity, email_to_entity, parse_branch_listing,
+    parse_log_one_line, parse_status_porcelain, scan_directory, tab_entity,
+    wtchange_to_entity, BrowserAdapter, BrowserTabEvent, CalendarAdapter,
+    CalendarChangeEvent, DatasetAdapter, DatasetEvent, DocEvent, DocumentAdapter,
+    EmailEvent, FileSystemAdapter, GitBranch, GitCommit, GitWorkTreeChange,
+    MailAdapter, ScanOptions, ScanResult, SlackAdapter, SlackEvent,
 };
 pub use entity::{EntityRef, WorldEntity, WorldEntityKind, WorldEntityState};
 pub use snapshot::{ProjectionStats, WorldSnapshot};
