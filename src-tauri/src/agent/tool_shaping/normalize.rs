@@ -13,10 +13,21 @@
 //!    collapse them to a single dedup'd `enum` array. Common with
 //!    MCP-generated schemas that flatten oneOf-of-enums into both.
 //!
-//! 3. **Prune nested ≥ 3 layers deep** — replace a deeply-nested
-//!    sub-object with `{"truncated": true, "original_depth": N}`. The
-//!    depth counter starts at 0 at the root and increments on every
-//!    object/array descent.
+//! 3. **Prune nested ≥ 3 layers deep, type-preserving** — replace a
+//!    deeply-nested sub-tree with an EMPTY container of the same JSON
+//!    type. An Object becomes `{}`; an Array becomes `[]`. Type-
+//!    preserving because strict JSON-Schema validators (DeepSeek,
+//!    OpenAI tool mode) reject `{ "enum": {"truncated": true, ...} }`
+//!    — `enum` keyword's value must remain an Array. The depth counter
+//!    starts at 0 at the root and increments on every object/array
+//!    descent.
+//!
+//!    The previous implementation (Bundle 5 → followup) replaced both
+//!    Object and Array with a `{"truncated": true, "original_depth": N}`
+//!    Object marker; that broke schemas that had deep arrays (enum,
+//!    examples, allOf/oneOf). The current implementation drops the
+//!    marker and accepts that we lose the "original_depth" metadata —
+//!    in exchange for not breaking validators.
 //!
 //! The transform is **idempotent** and **non-mutating** — input
 //! `serde_json::Value` is consumed, a new `Value` is returned. A
@@ -65,63 +76,45 @@ pub fn normalize_tool_schema(schema: Value, max_depth: usize) -> (Value, Normali
 
 fn visit(v: Value, depth: usize, max_depth: usize, stats: &mut NormalizeStats) -> Value {
     if depth >= max_depth {
-        // Replace the entire sub-tree with a truncation marker, but
-        // ONLY if it's a compound type. Scalars at depth >= max are
-        // kept as-is — they're cheap and removing them breaks schema
-        // validity (e.g. an `enum: [...]` at depth 3).
+        // Type-preserving truncation:
+        // - Object → empty Object (`{}`)
+        // - Array  → empty Array  (`[]`)
+        // - Scalar → kept as-is (already cheap, and removing a scalar
+        //            keyword value would break the parent's schema —
+        //            e.g. `type: "string"` at depth 3 is a leaf).
         //
-        // Idempotency: if the sub-tree is *already* a truncation
-        // marker from a previous pass (`{truncated: true,
-        // original_depth: N}`), leave it alone. Otherwise running the
-        // normalizer twice would inflate `deep_nests_pruned` while
-        // producing identical output, breaking `is_noop()` invariants.
-        if is_truncation_marker(&v) {
-            return v;
-        }
-        match &v {
-            Value::Object(_) | Value::Array(_) => {
+        // Idempotency: an empty container is its own fixed point — a
+        // second pass over `{}` or `[]` re-enters the match at the
+        // same depth and finds no compound to prune, so
+        // `deep_nests_pruned` doesn't double-count.
+        match v {
+            Value::Object(map) => {
+                if map.is_empty() {
+                    return Value::Object(map);
+                }
                 stats.deep_nests_pruned += 1;
-                return Value::Object({
-                    let mut m = Map::new();
-                    m.insert("truncated".into(), Value::Bool(true));
-                    m.insert(
-                        "original_depth".into(),
-                        Value::Number(serde_json::Number::from(depth)),
-                    );
-                    m
-                });
+                Value::Object(Map::new())
             }
-            _ => return v,
+            Value::Array(items) => {
+                if items.is_empty() {
+                    return Value::Array(items);
+                }
+                stats.deep_nests_pruned += 1;
+                Value::Array(Vec::new())
+            }
+            scalar => scalar,
         }
-    }
-
-    match v {
-        Value::Object(map) => Value::Object(visit_object(map, depth, max_depth, stats)),
-        Value::Array(items) => Value::Array(
-            items
-                .into_iter()
-                .map(|item| visit(item, depth + 1, max_depth, stats))
-                .collect(),
-        ),
-        scalar => scalar,
-    }
-}
-
-/// `true` if `v` is the truncation marker `normalize_tool_schema`
-/// emits (`{truncated: true, original_depth: N}`). Used to keep the
-/// normalizer idempotent across repeated passes.
-fn is_truncation_marker(v: &Value) -> bool {
-    match v {
-        Value::Object(m) => {
-            m.get("truncated") == Some(&Value::Bool(true))
-                && m.get("original_depth")
-                    .map_or(false, |d| d.is_number())
-                // Only the two synthetic keys — anything else means
-                // this is a real schema field that happens to share
-                // the name. Be strict to avoid false positives.
-                && m.len() == 2
+    } else {
+        match v {
+            Value::Object(map) => Value::Object(visit_object(map, depth, max_depth, stats)),
+            Value::Array(items) => Value::Array(
+                items
+                    .into_iter()
+                    .map(|item| visit(item, depth + 1, max_depth, stats))
+                    .collect(),
+            ),
+            scalar => scalar,
         }
-        _ => false,
     }
 }
 
@@ -260,7 +253,7 @@ mod tests {
     // ── transform 3: prune deep nests ───────────────────────────────
 
     #[test]
-    fn prunes_objects_at_depth_3() {
+    fn prunes_objects_at_depth_3_type_preserving() {
         // Build a 5-level deep object.
         let schema = json!({
             "d0": {                            // depth 1 (root is 0)
@@ -273,10 +266,42 @@ mod tests {
         });
         let (out, stats) = normalize_tool_schema(schema, DEFAULT_MAX_NESTING_DEPTH);
         assert_eq!(stats.deep_nests_pruned, 1);
-        // d2 should now be a truncation marker.
+        // d2 should now be an empty Object — the Object TYPE is preserved
+        // so strict validators don't choke on a "should be object" field
+        // suddenly carrying a marker keyed `truncated`.
         let d2 = &out["d0"]["d1"]["d2"];
-        assert_eq!(d2["truncated"], json!(true));
-        assert_eq!(d2["original_depth"], json!(3));
+        assert_eq!(d2, &json!({}));
+        assert!(d2.is_object());
+    }
+
+    #[test]
+    fn prunes_arrays_at_depth_3_type_preserving() {
+        // The bug the previous implementation hit: a deeply-nested array
+        // (e.g. `enum: [...]` at depth 3) was replaced with an Object
+        // marker, breaking strict JSON-schema validators that demand the
+        // `enum` keyword's value remain an array.
+        let schema = json!({
+            "d0": {
+                "d1": {
+                    "enum": ["a", "b", "c"]  // depth 3 — REPLACED with []
+                }
+            }
+        });
+        let (out, stats) = normalize_tool_schema(schema, DEFAULT_MAX_NESTING_DEPTH);
+        assert_eq!(stats.deep_nests_pruned, 1);
+        let pruned = &out["d0"]["d1"]["enum"];
+        assert_eq!(pruned, &json!([]));
+        assert!(pruned.is_array(), "type must stay array, not become object");
+    }
+
+    #[test]
+    fn deeply_nested_scalar_kept_unchanged() {
+        // A leaf scalar at depth >= max_depth must NOT be replaced — it's
+        // typically a keyword's required scalar value (e.g. `type: "object"`).
+        let schema = json!({"d0": {"d1": {"d2": "string"}}});
+        let (out, stats) = normalize_tool_schema(schema, DEFAULT_MAX_NESTING_DEPTH);
+        assert_eq!(stats.deep_nests_pruned, 0);
+        assert_eq!(out["d0"]["d1"]["d2"], json!("string"));
     }
 
     #[test]
@@ -321,7 +346,9 @@ mod tests {
         // Spot-check each transform survived.
         assert!(out["description"].get("examples").is_none());
         assert_eq!(out["enum"], json!(["x", "y"]));
-        assert_eq!(out["deep"]["a"]["b"]["truncated"], json!(true));
+        // Bundle 9 — type-preserving: deep object becomes `{}`, not a marker.
+        assert_eq!(out["deep"]["a"]["b"], json!({}));
+        assert!(out["deep"]["a"]["b"].is_object());
     }
 
     #[test]
