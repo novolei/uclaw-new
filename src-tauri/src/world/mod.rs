@@ -17,10 +17,15 @@
 //! - [`entity`] — `WorldEntity` + `WorldEntityKind` + supporting refs
 //! - [`snapshot`] — `WorldSnapshot` + `ProjectionStats`
 
+pub mod adapters;
 pub mod entity;
 pub mod snapshot;
 pub mod store;
 
+pub use adapters::{
+    dataset_to_entity, document_to_entity, DatasetAdapter, DatasetEvent, DocEvent,
+    DocumentAdapter,
+};
 pub use entity::{EntityRef, WorldEntity, WorldEntityKind, WorldEntityState};
 pub use snapshot::{ProjectionStats, WorldSnapshot};
 pub use store::{
