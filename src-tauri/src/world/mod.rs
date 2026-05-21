@@ -17,10 +17,15 @@
 //! - [`entity`] — `WorldEntity` + `WorldEntityKind` + supporting refs
 //! - [`snapshot`] — `WorldSnapshot` + `ProjectionStats`
 
+pub mod adapters;
 pub mod entity;
 pub mod snapshot;
 pub mod store;
 
+pub use adapters::{
+    calendar_event_to_entity, email_to_entity, CalendarAdapter, CalendarChangeEvent,
+    EmailEvent, MailAdapter,
+};
 pub use entity::{EntityRef, WorldEntity, WorldEntityKind, WorldEntityState};
 pub use snapshot::{ProjectionStats, WorldSnapshot};
 pub use store::{
