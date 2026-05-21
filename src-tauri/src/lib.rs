@@ -35,6 +35,8 @@ pub mod memory_contract;
 pub mod skill_md_parse;
 // M7-T1 — Plugin manifest schema + TOML loader.
 pub mod plugin_manifest;
+// M3-T6 — Policy evaluator (PolicySpec rules → HookDecision).
+pub mod policy_eval;
 
 // B2: Infrastructure modules
 pub mod memory;
