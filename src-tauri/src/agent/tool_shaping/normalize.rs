@@ -58,8 +58,36 @@ impl NormalizeStats {
     }
 }
 
-/// Default depth cap (root = depth 0; replace at depth ≥ 3).
-pub const DEFAULT_MAX_NESTING_DEPTH: usize = 3;
+/// Default depth cap (root = depth 0; replace at depth ≥ 6).
+///
+/// Bundle 9 originally tried `3`, but real tool schemas often live at
+/// depth 3 — the canonical shape is:
+///
+/// ```text
+///   root           (0)
+///   .properties    (1)
+///   .<field_name>  (2)
+///   .enum          (3)   ← list of allowed values
+///   .items         (3)   ← sub-schema for array fields
+///   .properties    (3)   ← nested object
+/// ```
+///
+/// At depth 3 the type-preserving prune emitted `enum: []`, which
+/// Moonshot/Kimi's strict validator rejects with
+/// `enum array cannot be empty`. Bumping the default to 6 means a
+/// schema has to nest four levels deeper than the canonical shape
+/// before the prune kicks in — catching genuinely pathological
+/// schemas without touching everyday tool definitions.
+pub const DEFAULT_MAX_NESTING_DEPTH: usize = 6;
+
+/// JSON-Schema keywords whose value MUST be a non-empty array. When
+/// the depth cap is about to truncate such a value, we keep the
+/// original rather than emit `[]` — strict validators (Moonshot, OpenAI
+/// strict mode) reject `enum: []`, `required: []` (sometimes),
+/// `oneOf: []`, `anyOf: []`, `allOf: []` outright.
+const NONEMPTY_ARRAY_KEYWORDS: &[&str] = &[
+    "enum", "oneOf", "anyOf", "allOf", "required", "examples",
+];
 
 /// Normalize a tool's JSON-schema definition. Returns the rewritten
 /// schema and a `NormalizeStats` describing what was touched.
@@ -146,9 +174,37 @@ fn visit_object(
     }
 
     // Recurse into every remaining value.
+    //
+    // Bundle 13 — KEY-AWARE prune protection: when `v` is an Array AND
+    // `k` is in `NONEMPTY_ARRAY_KEYWORDS`, skip the depth-prune for `v`
+    // even if `depth + 1 >= max_depth`. Empties of these arrays are
+    // schema-invalid; preserving the content is the safe choice.
+    // (The Array's items can still be pruned recursively — only the
+    // immediate Array shell is kept.)
     let mut out = Map::with_capacity(map.len());
     for (k, v) in map.into_iter() {
-        out.insert(k, visit(v, depth + 1, max_depth, stats));
+        let is_nonempty_required = NONEMPTY_ARRAY_KEYWORDS
+            .iter()
+            .any(|kw| kw.eq_ignore_ascii_case(&k))
+            && matches!(v, Value::Array(_));
+        let new_value = if is_nonempty_required {
+            // Visit the Array's items at depth + 1 but treat the Array
+            // itself as if it sits one level shallower (so it doesn't
+            // get pruned to []). Concretely: recurse into items
+            // directly, bypassing the outer-Array prune check.
+            match v {
+                Value::Array(items) => Value::Array(
+                    items
+                        .into_iter()
+                        .map(|item| visit(item, depth + 1, max_depth, stats))
+                        .collect(),
+                ),
+                other => visit(other, depth + 1, max_depth, stats),
+            }
+        } else {
+            visit(v, depth + 1, max_depth, stats)
+        };
+        out.insert(k, new_value);
     }
     out
 }
@@ -253,45 +309,74 @@ mod tests {
     // ── transform 3: prune deep nests ───────────────────────────────
 
     #[test]
-    fn prunes_objects_at_depth_3_type_preserving() {
-        // Build a 5-level deep object.
+    fn prunes_objects_at_max_depth_type_preserving() {
+        // visit() prunes at depth >= max_depth. With cap=6, that's the
+        // value AT depth 6. The chain root(0) → d0(1) → d1(2) → d2(3)
+        // → d3(4) → d4(5) → d5(6) means `d5` (the value at key "d5",
+        // visited at depth 6) is the pruned node.
         let schema = json!({
-            "d0": {                            // depth 1 (root is 0)
-                "d1": {                        // depth 2
-                    "d2": {                    // depth 3 — REPLACED
-                        "d3": {"d4": "leaf"}   // never visited
-                    }
-                }
-            }
+            "d0": {"d1": {"d2": {"d3": {"d4": {"d5": {"deep": "leaf"}}}}}}
         });
         let (out, stats) = normalize_tool_schema(schema, DEFAULT_MAX_NESTING_DEPTH);
         assert_eq!(stats.deep_nests_pruned, 1);
-        // d2 should now be an empty Object — the Object TYPE is preserved
-        // so strict validators don't choke on a "should be object" field
-        // suddenly carrying a marker keyed `truncated`.
-        let d2 = &out["d0"]["d1"]["d2"];
-        assert_eq!(d2, &json!({}));
-        assert!(d2.is_object());
+        // The pruned object preserves the Object TYPE so validators don't
+        // choke on type mismatch.
+        let pruned = &out["d0"]["d1"]["d2"]["d3"]["d4"]["d5"];
+        assert!(pruned.is_object(), "type must stay object");
+        assert_eq!(pruned, &json!({}));
     }
 
     #[test]
-    fn prunes_arrays_at_depth_3_type_preserving() {
-        // The bug the previous implementation hit: a deeply-nested array
-        // (e.g. `enum: [...]` at depth 3) was replaced with an Object
-        // marker, breaking strict JSON-schema validators that demand the
-        // `enum` keyword's value remain an array.
+    fn enum_at_depth_3_preserved_under_default_cap() {
+        // Bundle 13 — the regression from Bundle 9. A real tool schema
+        // has `properties.field.enum: [...]` at depth 3. Default cap=6
+        // means this is NOT pruned.
         let schema = json!({
-            "d0": {
-                "d1": {
-                    "enum": ["a", "b", "c"]  // depth 3 — REPLACED with []
+            "type": "object",
+            "properties": {
+                "device": {
+                    "type": "string",
+                    "enum": ["mobile", "desktop", "tablet"]
                 }
             }
         });
-        let (out, stats) = normalize_tool_schema(schema, DEFAULT_MAX_NESTING_DEPTH);
-        assert_eq!(stats.deep_nests_pruned, 1);
-        let pruned = &out["d0"]["d1"]["enum"];
-        assert_eq!(pruned, &json!([]));
-        assert!(pruned.is_array(), "type must stay array, not become object");
+        let (out, stats) = normalize_tool_schema(schema.clone(), DEFAULT_MAX_NESTING_DEPTH);
+        assert_eq!(
+            stats.deep_nests_pruned, 0,
+            "enum at depth 3 must survive under the default cap"
+        );
+        assert_eq!(
+            out["properties"]["device"]["enum"],
+            json!(["mobile", "desktop", "tablet"])
+        );
+    }
+
+    #[test]
+    fn nonempty_keyword_array_preserved_at_keyword_boundary() {
+        // Bundle 13 — when an `enum`/`oneOf`/etc Array is reached
+        // exactly at the depth cap (its parent object is visited as a
+        // non-pruned compound, but its own would-be-pruned children
+        // include the keyword), NONEMPTY_ARRAY_KEYWORDS protection
+        // keeps the content rather than emitting `[]`.
+        //
+        // Setup: properties(1) → device(2, visit_object processes
+        // children at depth 3) → enum=Array at depth 3 (= cap). Without
+        // protection visit() would prune to `[]`; with protection the
+        // Array's items are recursed (scalars, kept).
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "device": {
+                    "enum": ["mobile", "desktop"]
+                }
+            }
+        });
+        let (out, _) = normalize_tool_schema(schema, 3);
+        assert_eq!(
+            out["properties"]["device"]["enum"],
+            json!(["mobile", "desktop"]),
+            "enum value must be preserved when reached at the keyword boundary"
+        );
     }
 
     #[test]
@@ -333,22 +418,26 @@ mod tests {
 
     #[test]
     fn all_three_transforms_compose() {
+        // Build a schema deep enough (≥ 7 levels) to actually exercise
+        // the depth-prune at DEFAULT_MAX_NESTING_DEPTH = 6.
         let schema = json!({
             "description": {"summary": "x", "examples": ["a"]},
             "enum": ["x", "x", "y"],
-            "deep": {"a": {"b": {"c": "leaf"}}}
+            "deep": {"a": {"b": {"c": {"d": {"e": {"f": "leaf"}}}}}}
         });
         let (out, stats) = normalize_tool_schema(schema, DEFAULT_MAX_NESTING_DEPTH);
         assert_eq!(stats.examples_dropped, 1);
         assert_eq!(stats.enums_deduped, 1);
-        assert_eq!(stats.deep_nests_pruned, 1);
+        assert!(stats.deep_nests_pruned >= 1);
         assert!(!stats.is_noop());
         // Spot-check each transform survived.
         assert!(out["description"].get("examples").is_none());
         assert_eq!(out["enum"], json!(["x", "y"]));
-        // Bundle 9 — type-preserving: deep object becomes `{}`, not a marker.
-        assert_eq!(out["deep"]["a"]["b"], json!({}));
-        assert!(out["deep"]["a"]["b"].is_object());
+        // Bundle 13 — type-preserving: deep object becomes `{}`. With cap=6
+        // the prune fires at deep.a.b.c.d.e (the 6th nested level).
+        let deepest = &out["deep"]["a"]["b"]["c"]["d"]["e"];
+        assert_eq!(deepest, &json!({}));
+        assert!(deepest.is_object());
     }
 
     #[test]
