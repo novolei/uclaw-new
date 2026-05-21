@@ -203,6 +203,61 @@ def _map_to_non_reasoning_model(model_id: str) -> str:
     return model_id
 
 
+# Bundle 7 followup — temperature-locked models reject custom temperature
+# with `invalid temperature: only 1 is allowed for this model`. memU's LLM
+# client sends temperature=0 by default, so any of these models crash every
+# memorize / retrieve call (observed with kimi-k2.6 today).
+#
+# We can't easily monkey-patch the temperature inside memU's OpenAISDKClient
+# without forking the library — so instead we substitute the chat_model
+# with a safe sibling on the same provider. memU's enrichment doesn't need
+# a high-end reasoning model; a fast chat model is preferable anyway.
+TEMP_LOCKED_MODEL_MAP: dict[str, str] = {
+    # Moonshot Kimi K-series (reject temperature != 1)
+    "kimi-k2": "moonshot-v1-8k",
+    "kimi-k2.6": "moonshot-v1-8k",
+    "kimi-k2-instruct": "moonshot-v1-8k",
+    # OpenAI reasoning series (reject temperature != 1)
+    "o1": "gpt-4o-mini",
+    "o1-mini": "gpt-4o-mini",
+    "o1-preview": "gpt-4o-mini",
+    "o3-mini": "gpt-4o-mini",
+    "o4-mini": "gpt-4o-mini",
+}
+
+
+def _map_to_temperature_friendly_model(model_id: str) -> str:
+    """Substitute temperature-locked models with a sibling that accepts custom temperatures.
+
+    memU's chat client sends temperature=0 (low determinism) by default, which
+    Kimi K-series / OpenAI o1-o4 reject outright. Falling back to a fast chat
+    model on the same provider keeps memU running without changing the user's
+    primary chat model selection.
+    """
+    mapped = TEMP_LOCKED_MODEL_MAP.get(model_id)
+    if mapped:
+        sys.stderr.write(
+            f"[memu_bridge] Mapped temperature-locked model '{model_id}' -> '{mapped}' "
+            f"(memU's LLM client sends custom temperatures which these models reject)\n"
+        )
+        return mapped
+    # Also match by lowercased prefix to cover variants like Kimi-K2-128k
+    lower = model_id.lower()
+    if lower.startswith("kimi-k"):
+        sys.stderr.write(
+            f"[memu_bridge] Mapped Kimi K-series '{model_id}' -> 'moonshot-v1-8k' "
+            f"(generic kimi-k* prefix match)\n"
+        )
+        return "moonshot-v1-8k"
+    if lower.startswith("o1") or lower.startswith("o3") or lower.startswith("o4"):
+        sys.stderr.write(
+            f"[memu_bridge] Mapped OpenAI reasoning series '{model_id}' -> 'gpt-4o-mini' "
+            f"(generic o1/o3/o4 prefix match)\n"
+        )
+        return "gpt-4o-mini"
+    return model_id
+
+
 # ─── Configuration ───────────────────────────────────────────────────────
 
 # uClaw custom 9 memory categories
@@ -308,6 +363,11 @@ def build_service():
     # Reasoning models (e.g. deepseek-v4-flash, deepseek-reasoner) return output
     # in reasoning_content instead of content, which memU's LLM client cannot parse.
     chat_model = _map_to_non_reasoning_model(chat_model)
+    # Bundle 7 followup — substitute temperature-locked models (Kimi K-series,
+    # OpenAI o1/o3/o4) with a sibling on the same provider. memU sends a
+    # custom temperature which these models reject; rather than fork memU
+    # to omit the field, we steer it to a friendlier model.
+    chat_model = _map_to_temperature_friendly_model(chat_model)
     embed_model = os.environ.get("MEMU_LLM_EMBED_MODEL", "text-embedding-3-small")
 
     llm_profiles = {
