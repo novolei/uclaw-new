@@ -42,14 +42,24 @@ pub struct ChatDelegate {
     conversation_id: String,
     /// Optional memory context to prepend to system prompt (from recall engine)
     memory_context: Option<String>,
-    /// M2-D — last-seen memory_context FragmentSnapshot, used to log a
-    /// per-iteration diff for observability. The diff currently fires
-    /// inside `effective_system_prompt` (sync), so callers/UIs can
-    /// correlate "context unchanged across iter N" with prompt-cache
-    /// hits. Uses std::sync::Mutex (matching the rest of the delegate's
-    /// short-lived locks) — never held across awaits.
-    memory_context_snapshot:
-        std::sync::Mutex<Option<crate::agent::context_diff::FragmentSnapshot>>,
+    /// M2-D Phase 2 (Bundle 16-B) — last successfully-injected
+    /// memory_context snapshot, kept **across turns** within a
+    /// session. Diffed against the current turn's snapshot inside
+    /// `build_dynamic_context` to decide whether to attach a
+    /// `<memory_context_changes>` delta annotation alongside the
+    /// full block. Replaces the per-iteration snapshot from Bundle
+    /// 10 / Slice 3-B — per-iter observability is redundant with
+    /// M2-I's prompt-cache breakpoint hits.
+    ///
+    /// Survives across turns; not cleared on iter boundaries.
+    /// Cleared on `/compact` since the structured fold becomes the
+    /// new baseline. Uses `std::sync::Mutex` for the same reason
+    /// the rest of the delegate's short-lived locks do: never held
+    /// across awaits.
+    last_memory_context_snapshot:
+        std::sync::Mutex<
+            Option<crate::agent::context_diff::LineFragmentSnapshot>,
+        >,
     /// InfraService for publishing tool execution events
     infra_service: Option<Arc<InfraService>>,
     /// Optional trajectory store for recording tool turns
@@ -181,7 +191,7 @@ impl ChatDelegate {
             pending_approvals,
             conversation_id,
             memory_context: None,
-            memory_context_snapshot: std::sync::Mutex::new(None),
+            last_memory_context_snapshot: std::sync::Mutex::new(None),
             infra_service: None,
             trajectory_store: None,
             tool_budget: None,
@@ -481,6 +491,16 @@ impl ChatDelegate {
         self.memory_context = Some(context);
     }
 
+    /// M2-D Phase 2 — clear the cross-turn memory_context anchor.
+    /// Called when a `/compact` runs so the next turn's diff baseline
+    /// is the post-fold state, not the pre-fold one. Safe to call
+    /// repeatedly; no-op when no anchor exists.
+    pub fn clear_memory_context_anchor(&self) {
+        if let Ok(mut slot) = self.last_memory_context_snapshot.lock() {
+            *slot = None;
+        }
+    }
+
     /// Append additional context to the existing memory context.
     /// If no memory context has been set yet, this creates one.
     pub fn append_memory_context(&mut self, extra: &str) {
@@ -643,71 +663,99 @@ impl ChatDelegate {
         // the system prompt) so Anthropic cache_control: ephemeral on the system
         // prompt block can hit reliably from iteration 2 onward.
         if let Some(ctx) = self.memory_context.as_deref().filter(|s| !s.is_empty()) {
-            // M2-D — observe memory_context drift across iterations.
-            // We compute a stable FragmentSnapshot (content_hash =
-            // djb2 of the rendered block, token_estimate = bytes/4),
-            // diff it against the snapshot we kept from the prior
-            // iteration, and log the result. Pure observability today;
-            // the same plumbing is what would feed a real diff-as-LLM-
-            // content re-injection later (send only `<changed>` /
-            // `<added>` deltas to the next iter, rather than the full
-            // memory_context block again).
-            let new_snapshot = {
-                use std::hash::Hasher;
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                h.write(ctx.as_bytes());
-                let content_hash = format!("{:x}", h.finish());
-                let token_estimate = ctx.len() / 4;
-                crate::agent::context_diff::FragmentSnapshot::new(
-                    crate::agent::compact::ArtifactRef::labeled(
-                        "context:memory_context",
-                        "Memory recall context",
-                    ),
-                    content_hash,
-                    token_estimate,
-                )
-            };
+            // M2-D Phase 2 Track A (Bundle 16-B) — cross-turn diff
+            // injection. We build a line-level snapshot of the
+            // current memory_context, diff against the prior turn's
+            // snapshot, and conditionally attach a
+            // `<memory_context_changes>` annotation block alongside
+            // the full block:
+            //
+            //   first turn / no prior → full block only (annotation
+            //     omitted; the LLM has nothing to compare against)
+            //   identical to prior   → full block only
+            //                          (Anthropic cache hit path)
+            //   small drift (≤40%)   → full block + delta annotation
+            //                          (LLM gets "what changed" signal)
+            //   significant drift    → full block only (delta would
+            //                          be noisy + cache misses anyway)
+            //
+            // We keep the full block even on small drift because
+            // un-cached providers (DeepSeek / Kimi) have no
+            // mechanism for "saw it last turn". The delta block is
+            // pure additional signal, not a replacement.
+            const SIGNIFICANT_DRIFT_THRESHOLD: f32 = 0.40;
+            let new_snapshot = crate::agent::context_diff::LineFragmentSnapshot::from_text(
+                "memory_context",
+                ctx,
+            );
             let prior = self
-                .memory_context_snapshot
+                .last_memory_context_snapshot
                 .lock()
                 .ok()
                 .and_then(|g| g.clone());
-            let diff = crate::agent::context_diff::diff_snapshots(
-                prior.as_ref().map(std::slice::from_ref).unwrap_or(&[]),
-                std::slice::from_ref(&new_snapshot),
-            );
-            let stats = diff.stats();
-            if diff.is_empty() {
-                // Same content as prior iteration — Anthropic prompt
-                // cache should hit. DEBUG level (every iter, very chatty).
-                tracing::debug!(
-                    content_hash = %new_snapshot.content_hash,
-                    token_estimate = new_snapshot.token_estimate,
-                    "[M2-D] memory_context unchanged vs prior iter (cache hit expected)",
-                );
-            } else if prior.is_none() {
-                tracing::info!(
-                    content_hash = %new_snapshot.content_hash,
-                    token_estimate = new_snapshot.token_estimate,
-                    "[M2-D] memory_context first injection",
-                );
-            } else {
-                tracing::info!(
-                    added = stats.added,
-                    removed = stats.removed,
-                    changed = stats.changed,
-                    added_or_changed_tokens = stats.added_or_changed_tokens,
-                    new_content_hash = %new_snapshot.content_hash,
-                    "[M2-D] memory_context drifted across iterations (cache will miss)",
-                );
-            }
-            if let Ok(mut slot) = self.memory_context_snapshot.lock() {
+
+            let delta_annotation: Option<String> = match prior.as_ref() {
+                None => {
+                    tracing::info!(
+                        line_count = new_snapshot.line_count(),
+                        token_estimate = new_snapshot.token_estimate,
+                        "[M2-D] turn=first memory_context first injection emitted=full",
+                    );
+                    None
+                }
+                Some(prior_snap) => {
+                    let diff = crate::agent::context_diff::line_diff(
+                        prior_snap,
+                        &new_snapshot,
+                    );
+                    let stats = diff.stats();
+                    if diff.is_empty() {
+                        tracing::debug!(
+                            line_count = new_snapshot.line_count(),
+                            unchanged = stats.unchanged,
+                            "[M2-D] turn=N memory_context unchanged emitted=full cache_state=hit-expected",
+                        );
+                        None
+                    } else if stats
+                        .is_significant_change(SIGNIFICANT_DRIFT_THRESHOLD)
+                    {
+                        tracing::info!(
+                            added = stats.added,
+                            removed = stats.removed,
+                            changed = stats.changed,
+                            unchanged = stats.unchanged,
+                            added_or_changed_tokens = stats.added_or_changed_tokens,
+                            "[M2-D] turn=N memory_context drift=significant emitted=full cache_state=miss",
+                        );
+                        None
+                    } else {
+                        let annotation =
+                            crate::agent::context_diff::render_delta_annotation(&diff);
+                        tracing::info!(
+                            added = stats.added,
+                            removed = stats.removed,
+                            changed = stats.changed,
+                            unchanged = stats.unchanged,
+                            added_or_changed_tokens = stats.added_or_changed_tokens,
+                            "[M2-D] turn=N memory_context drift=small emitted=full+delta cache_state=miss",
+                        );
+                        annotation
+                    }
+                }
+            };
+
+            if let Ok(mut slot) = self.last_memory_context_snapshot.lock() {
                 *slot = Some(new_snapshot);
             }
 
             block.push_str("\n\n<memory_context>\n");
             block.push_str(ctx);
             block.push_str("\n</memory_context>");
+
+            if let Some(annotation) = delta_annotation {
+                block.push_str("\n\n");
+                block.push_str(&annotation);
+            }
         }
 
         // Learned user profile (30-min rebuild cadence) — same rationale as
