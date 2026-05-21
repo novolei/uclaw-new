@@ -3309,3 +3309,213 @@ mod active_plan_history_tests {
         assert_eq!(extract_active_plan_from_history(&history), None);
     }
 }
+
+// ───────────────────────────────────────────────────────────────────
+// Bundle 16-C — memory_context cross-turn delta render-path tests.
+//
+// We pin the four render paths from `build_dynamic_context` without
+// constructing a full `LoopDelegate` (which would need an LLM
+// provider, safety manager, db handle, etc.). The helper below
+// mirrors the in-line logic exactly — any change to the dispatcher
+// branch order must be mirrored here, same convention as
+// `manifest_suppression_tests`.
+//
+// The four paths under test:
+//
+//  1. first turn (no prior anchor)  → full block, no annotation
+//  2. unchanged across turns        → full block, no annotation
+//  3. small drift (≤ 40%)           → full block + delta annotation
+//  4. significant drift (> 40%)     → full block, no annotation
+// ───────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod memory_context_delta_render_tests {
+    use crate::agent::context_diff::{
+        line_diff, render_delta_annotation, LineFragmentSnapshot,
+    };
+
+    /// Mirror of the dispatcher's render decision. Returns
+    /// `(emitted_block, kind_label)` where `kind_label` is one of
+    /// `"full"`, `"full+delta"`, used for assertions + telemetry
+    /// parity.
+    fn render_memory_context(
+        prior: Option<&LineFragmentSnapshot>,
+        current_text: &str,
+    ) -> (String, &'static str) {
+        const SIGNIFICANT_DRIFT_THRESHOLD: f32 = 0.40;
+        let current = LineFragmentSnapshot::from_text("memory_context", current_text);
+
+        let mut block = String::new();
+        let mut kind = "full";
+
+        let annotation: Option<String> = match prior {
+            None => None,
+            Some(p) => {
+                let d = line_diff(p, &current);
+                let stats = d.stats();
+                if d.is_empty() {
+                    None
+                } else if stats.is_significant_change(SIGNIFICANT_DRIFT_THRESHOLD) {
+                    None
+                } else {
+                    let a = render_delta_annotation(&d);
+                    if a.is_some() {
+                        kind = "full+delta";
+                    }
+                    a
+                }
+            }
+        };
+
+        block.push_str("<memory_context>\n");
+        block.push_str(current_text);
+        block.push_str("\n</memory_context>");
+        if let Some(a) = annotation {
+            block.push_str("\n\n");
+            block.push_str(&a);
+        }
+        (block, kind)
+    }
+
+    // ── Path 1: first turn ─────────────────────────────────────────
+
+    #[test]
+    fn dispatcher_first_turn_emits_full_memory_context_block_only() {
+        let ctx = "- preferred_language: zh\n- project: uClaw\n";
+        let (block, kind) = render_memory_context(None, ctx);
+        assert_eq!(kind, "full");
+        assert!(block.contains("<memory_context>"));
+        assert!(block.contains("preferred_language"));
+        assert!(
+            !block.contains("<memory_context_changes"),
+            "first turn must not emit delta annotation"
+        );
+    }
+
+    // ── Path 2: unchanged across turns ─────────────────────────────
+
+    #[test]
+    fn dispatcher_unchanged_turn_emits_full_block_no_delta_annotation() {
+        let ctx = "- preferred_language: zh\n- project: uClaw\n";
+        let prior = LineFragmentSnapshot::from_text("memory_context", ctx);
+        let (block, kind) = render_memory_context(Some(&prior), ctx);
+        assert_eq!(kind, "full");
+        assert!(block.contains("<memory_context>"));
+        assert!(
+            !block.contains("<memory_context_changes"),
+            "no drift → no annotation"
+        );
+    }
+
+    // ── Path 3: small drift → full + delta ─────────────────────────
+
+    #[test]
+    fn dispatcher_small_drift_emits_full_block_plus_delta_annotation() {
+        // Prior: 5 lines. New: 4 unchanged + 1 changed (value flip).
+        // Drift = 1/5 = 0.20, below 0.40 threshold → small drift path.
+        let prior_text =
+            "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- preferred_language: en\n";
+        let new_text =
+            "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- preferred_language: zh\n";
+        let prior = LineFragmentSnapshot::from_text("memory_context", prior_text);
+        let (block, kind) = render_memory_context(Some(&prior), new_text);
+        assert_eq!(kind, "full+delta");
+        // Full block present
+        assert!(block.contains("<memory_context>"));
+        assert!(block.contains("preferred_language: zh"));
+        // Delta annotation present
+        assert!(block.contains("<memory_context_changes"));
+        assert!(
+            block.contains("~ changed key=preferred_language"),
+            "delta must surface the changed line\nblock:\n{}",
+            block
+        );
+        // Block order: <memory_context> first, then <memory_context_changes>
+        let mc_pos = block.find("<memory_context>").unwrap();
+        let mcc_pos = block.find("<memory_context_changes").unwrap();
+        assert!(
+            mc_pos < mcc_pos,
+            "full block must precede the delta annotation"
+        );
+    }
+
+    #[test]
+    fn dispatcher_small_drift_one_added_line_emits_delta() {
+        // 5 prior lines, 1 line added → drift = 0/5 (added-only doesn't
+        // count toward drift fraction since it's not in prior).
+        // is_significant_change checks (removed + changed) / prior, so
+        // pure-add never crosses 40%. We expect full+delta.
+        let prior_text = "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- e: 5\n";
+        let new_text =
+            "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- e: 5\n- last_query: foo\n";
+        let prior = LineFragmentSnapshot::from_text("memory_context", prior_text);
+        let (block, kind) = render_memory_context(Some(&prior), new_text);
+        assert_eq!(kind, "full+delta");
+        assert!(block.contains("+ added: - last_query: foo"));
+    }
+
+    // ── Path 4: significant drift ──────────────────────────────────
+
+    #[test]
+    fn dispatcher_significant_drift_emits_full_block_no_annotation() {
+        // 4 prior lines, 3 removed (drift = 0.75) → above threshold.
+        let prior_text = "- a: 1\n- b: 2\n- c: 3\n- d: 4\n";
+        let new_text = "- a: 1\n- z: new\n";
+        let prior = LineFragmentSnapshot::from_text("memory_context", prior_text);
+        let (block, kind) = render_memory_context(Some(&prior), new_text);
+        assert_eq!(kind, "full");
+        assert!(block.contains("<memory_context>"));
+        assert!(
+            !block.contains("<memory_context_changes"),
+            "significant drift must NOT emit delta annotation (noisy + cache miss anyway)"
+        );
+    }
+
+    // ── Anchor reset via clear_memory_context_anchor() ─────────────
+
+    #[test]
+    fn clear_anchor_makes_next_turn_behave_like_first_turn() {
+        let prior_text = "- a: 1\n";
+        let new_text = "- a: 1\n- b: 2\n";
+        let prior = LineFragmentSnapshot::from_text("memory_context", prior_text);
+
+        // With anchor: small drift → delta
+        let (with_anchor, kind_with) = render_memory_context(Some(&prior), new_text);
+        assert_eq!(kind_with, "full+delta");
+        assert!(with_anchor.contains("<memory_context_changes"));
+
+        // After clear (None): treated as first turn → no delta
+        let (after_clear, kind_after) = render_memory_context(None, new_text);
+        assert_eq!(kind_after, "full");
+        assert!(!after_clear.contains("<memory_context_changes"));
+    }
+
+    // ── Reorder invariance: same key set, different order → no drift
+
+    #[test]
+    fn reordered_lines_emit_full_block_no_annotation() {
+        let prior_text = "- a: 1\n- b: 2\n- c: 3\n";
+        let new_text = "- c: 3\n- a: 1\n- b: 2\n";  // same keys, reordered
+        let prior = LineFragmentSnapshot::from_text("memory_context", prior_text);
+        let (block, kind) = render_memory_context(Some(&prior), new_text);
+        assert_eq!(kind, "full");
+        assert!(
+            !block.contains("<memory_context_changes"),
+            "reorder must not trigger delta annotation"
+        );
+    }
+
+    // ── Drift threshold is exactly 0.40 (boundary check) ──────────
+
+    #[test]
+    fn drift_exactly_at_40_percent_threshold_is_significant() {
+        // 5 prior, 2 removed → drift = 2/5 = 0.40 → meets `>=` cutoff
+        // in is_significant_change(0.40), so this is the "significant"
+        // path with `full` (no delta).
+        let prior_text = "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- e: 5\n";
+        let new_text = "- a: 1\n- b: 2\n- c: 3\n";
+        let prior = LineFragmentSnapshot::from_text("memory_context", prior_text);
+        let (block, kind) = render_memory_context(Some(&prior), new_text);
+        assert_eq!(kind, "full");
+        assert!(!block.contains("<memory_context_changes"));
+    }
+}
