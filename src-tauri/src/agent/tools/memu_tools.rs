@@ -71,11 +71,31 @@ struct MemuMemoryInput {
     /// 最大返回记忆数量，默认 10
     #[serde(default = "default_limit")]
     limit: usize,
+    /// Bundle 6 — opt-in for LLM-backed category enrichment.
+    /// Defaults to `false`: memU's `include_categories=true` runs a
+    /// per-result LLM call to classify each item, which observably took
+    /// 40s for a 10-item retrieve in dev (= 4s/item × 10). The category
+    /// fields are rarely consumed by the agent's downstream reasoning,
+    /// so the default is now off. Callers who genuinely need typed
+    /// category labels can pass `enrich_categories: true` and accept the
+    /// extra wall-clock cost.
+    #[serde(default)]
+    enrich_categories: bool,
 }
 
 fn default_limit() -> usize {
     10
 }
+
+/// Bundle 6 — hard wall-clock cap on the memu_memory tool itself.
+///
+/// memU's `retrieve_with_context` has its own bridge-level timeout (90s
+/// after Bundle 5) but a single tool call should never burn 90s of agent
+/// loop time. 15s is a generous-but-bounded ceiling: long enough for
+/// FastEmbed cold start + sqlite first-touch + 5–10 results without
+/// enrichment, short enough that even a stuck memU subprocess can't
+/// hold the user-visible turn hostage.
+const MEMU_TOOL_DEADLINE_MS: u64 = 15_000;
 
 #[async_trait]
 impl Tool for MemuMemoryTool {
@@ -84,7 +104,7 @@ impl Tool for MemuMemoryTool {
     }
 
     fn description(&self) -> &str {
-        "检索或列出用户的长期记忆。当用户询问“有什么长期记忆/所有记忆/全部记忆”时也使用此工具。"
+        "检索或列出用户的长期记忆。当用户询问『有什么长期记忆/所有记忆/全部记忆』时也使用此工具。默认快速模式（无 LLM 富化），如需类别标签可显式传 enrich_categories=true。"
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -99,6 +119,11 @@ impl Tool for MemuMemoryTool {
                     "type": "integer",
                     "description": "最大返回记忆数量，默认 10",
                     "default": 10
+                },
+                "enrich_categories": {
+                    "type": "boolean",
+                    "description": "是否对每条结果做 LLM 类别富化（默认 false，开启会显著拖慢：约 4 秒/条；仅在确实需要 category 标签时才设为 true）",
+                    "default": false
                 }
             },
             "required": ["query"]
@@ -245,10 +270,51 @@ impl Tool for MemuMemoryTool {
                     }
                 }
 
-                match client
-                    .retrieve_with_context(&input.query, None, input.limit, true)
-                    .await
-                {
+                // Bundle 6 — Two latency guards on the slow path:
+                //
+                //  1. `enrich_categories` defaults to false. The previous
+                //     hardcoded `true` triggered memU's per-result LLM
+                //     classification (4s/result × limit) — observed at
+                //     40s for a 10-item retrieve in dev. The agent rarely
+                //     reads the `categories` field, so the default flips
+                //     to off and the LLM can opt in via the input schema.
+                //
+                //  2. Tool-level wall-clock cap via `tokio::time::timeout`.
+                //     memU's bridge timeout is 90s (Bundle 5); 15s here
+                //     is the agent-loop budget — no single tool call
+                //     should burn 1.5 min of user-visible turn time.
+                let retrieve_fut = client.retrieve_with_context(
+                    &input.query,
+                    None,
+                    input.limit,
+                    input.enrich_categories,
+                );
+                let retrieve_result = tokio::time::timeout(
+                    std::time::Duration::from_millis(MEMU_TOOL_DEADLINE_MS),
+                    retrieve_fut,
+                )
+                .await;
+
+                let inner = match retrieve_result {
+                    Ok(inner) => inner,
+                    Err(_elapsed) => {
+                        warn!(
+                            deadline_ms = MEMU_TOOL_DEADLINE_MS,
+                            "[MemuMemoryTool] tool-level deadline exceeded; returning empty + hint"
+                        );
+                        let result = json!({
+                            "memories": [],
+                            "query": input.query,
+                            "count": 0,
+                            "error": format!("memu_memory exceeded {}ms tool-level deadline", MEMU_TOOL_DEADLINE_MS),
+                            "hint": "memU retrieve took too long. Skip this tool for the current turn and answer from existing context — or retry with a more specific query and lower limit.",
+                            "kind": "deadline",
+                        });
+                        return Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64));
+                    }
+                };
+
+                match inner {
                     Ok(items) => {
                         let result = json!({
                             "memories": items.iter().map(|item| {
@@ -261,7 +327,14 @@ impl Tool for MemuMemoryTool {
                             }).collect::<Vec<_>>(),
                             "query": input.query,
                             "count": items.len(),
+                            "enriched": input.enrich_categories,
                         });
+                        info!(
+                            duration_ms = start.elapsed().as_millis() as u64,
+                            count = items.len(),
+                            enriched = input.enrich_categories,
+                            "[memu_memory] retrieve returned"
+                        );
                         Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
                     }
                     Err(e) => {
@@ -442,8 +515,11 @@ impl Tool for MemuTodosTool {
                     _ => "all todos and tasks",
                 };
 
+                // Bundle 6 — drop the LLM-backed category enrichment
+                // here too (was `true`). Todo listings care about
+                // content/status, not category labels.
                 match client
-                    .retrieve_with_context(query, Some(&["event", "knowledge"]), 20, true)
+                    .retrieve_with_context(query, Some(&["event", "knowledge"]), 20, false)
                     .await
                 {
                     Ok(items) => {
