@@ -10251,6 +10251,29 @@ pub async fn send_agent_message(
         input.session_id.clone(),
         "default".into(),
     ));
+    // Bundle 21-A — `skill_write`: lets the agent author a new SKILL.md
+    // into the right registered directory (user vs project scope)
+    // instead of dropping a SKILL.md at the workspace root where
+    // SkillsRegistry never scans.
+    tools.register(builtin::skill_write::SkillWriteTool::new(
+        Arc::clone(&state.skills_registry),
+        state.data_dir.clone(),
+        Some(state.workspace_root.clone()),
+        app_handle.clone(),
+        input.session_id.clone(),
+    ));
+    // Bundle 21-E — `skill_marketplace_search`: query GitHub for
+    // SKILL.md files matching a free-text query. Read-only.
+    tools.register(builtin::skill_marketplace::SkillMarketplaceSearchTool::new());
+    // Bundle 21-D — `skill_install_from_marketplace`: install a
+    // specific owner/repo/<skill-dir> into
+    // ~/.uclaw/skills/_marketplace/. Approval-gated; persists.
+    tools.register(builtin::skill_marketplace::SkillInstallFromMarketplaceTool::new(
+        Arc::clone(&state.skills_registry),
+        state.data_dir.clone(),
+        app_handle.clone(),
+        input.session_id.clone(),
+    ));
     crate::agent::tools::memu_tools::register_memu_tools(
         &mut tools,
         state.memu_client.clone(),
