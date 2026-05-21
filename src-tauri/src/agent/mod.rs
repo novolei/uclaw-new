@@ -13,6 +13,8 @@ pub mod tool_shaping;
 pub mod call_audit;
 // M2-H L5 pilot — image stripping for image-blind providers.
 pub mod image_policy;
+// M2-H L3 pilot — per-turn skill selection (top-K under token budget).
+pub mod skill_selection;
 // M1-T4b — opt-in rollout bridge for direct run_agentic_loop callsites.
 pub mod rollout_integration;
 pub mod code_rescue;
