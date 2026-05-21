@@ -6,7 +6,7 @@
 
 use crate::agent::retry::{AgentRetryEvent, BudgetDecision, RetryBudget};
 use crate::agent::types::{ChatMessage, RespondOutput, ResponseMetadata, StreamDelta, ToolCall, ToolDefinition};
-use crate::error::Error;
+use crate::error::{Error, LlmError};
 use crate::llm::stream_error::{classify_stream_error, StreamErrorKind};
 use crate::llm::CompletionConfig;
 use crate::llm::LlmProvider;
@@ -14,6 +14,18 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::StreamExt;
 use std::time::Duration;
+
+/// Bundle 27-B — max idle time between two streaming chunks before we
+/// give up on the current stream and retry via the existing
+/// RetryBudget. Targets the "silent-drop" failure mode of national
+/// LLM providers (Kimi K series in particular) where the upstream
+/// load balancer drops the long-lived HTTP connection without sending
+/// a TCP FIN, leaving the stream consumer hung in `.next().await`
+/// forever. 90s is generous enough that legitimate slow responses
+/// (large prompts, deep reasoning) aren't false-positives, but short
+/// enough that the user sees a recovery attempt rather than a
+/// permanent hang.
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Side-effects a streaming completion produces. The interactive delegate
 /// emits IPC events; the headless automation delegate uses `NoopSink`.
@@ -69,7 +81,76 @@ pub async fn stream_completion(
                 let mut thinking_start_time: Option<std::time::Instant> = None;
                 let mut metadata: Option<ResponseMetadata> = None;
 
-                while let Some(item) = stream.next().await {
+                loop {
+                    // Bundle 27-B — wrap each chunk wait in an idle timeout.
+                    // National providers (Kimi K) sometimes drop the streaming
+                    // connection silently; without this, we'd block here
+                    // forever, leaving the user staring at a frozen agent.
+                    let next_result = tokio::time::timeout(
+                        STREAM_IDLE_TIMEOUT,
+                        stream.next(),
+                    )
+                    .await;
+                    let item_opt = match next_result {
+                        Ok(opt) => opt,
+                        Err(_elapsed) => {
+                            // Idle timeout fired — synthesize a "stalled"
+                            // error and route through the existing retry
+                            // budget, same shape as a real Stalled error
+                            // would take.
+                            let synthetic_err: Error = LlmError::ApiRequestFailed(
+                                format!(
+                                    "stream idle > {}s (Bundle 27-B fallback)",
+                                    STREAM_IDLE_TIMEOUT.as_secs()
+                                ),
+                            )
+                            .into();
+                            tracing::warn!(
+                                idle_secs = STREAM_IDLE_TIMEOUT.as_secs(),
+                                attempt = retry_budget.attempts(),
+                                "[Bundle 27-B] LLM stream idle for too long — treating as stalled"
+                            );
+                            match retry_budget.next_delay() {
+                                BudgetDecision::Sleep(delay) => {
+                                    let reason = format!(
+                                        "stream idle > {}s",
+                                        STREAM_IDLE_TIMEOUT.as_secs()
+                                    );
+                                    sink.on_stream_reset();
+                                    sink.on_retry_event(AgentRetryEvent::Starting {
+                                        attempt: retry_budget.attempts(),
+                                        max_attempts: retry_budget.max_attempts(),
+                                        delay_seconds: delay.as_secs_f64(),
+                                        reason: reason.clone(),
+                                    });
+                                    if sink.sleep_or_abort(delay).await {
+                                        sink.on_stream_reset();
+                                        return Err(synthetic_err);
+                                    }
+                                    sink.on_retry_event(AgentRetryEvent::Attempt {
+                                        attempt: retry_budget.attempts(),
+                                        timestamp_ms: Utc::now().timestamp_millis(),
+                                        reason,
+                                    });
+                                    continue 'stream_attempt;
+                                }
+                                BudgetDecision::Exhausted => {
+                                    tracing::error!(
+                                        attempts = retry_budget.attempts(),
+                                        elapsed_wait_ms = retry_budget.elapsed_wait().as_millis() as u64,
+                                        "[Bundle 27-B] stream idle exhausted retry budget"
+                                    );
+                                    sink.on_stream_reset();
+                                    sink.on_retry_event(AgentRetryEvent::Exhausted {
+                                        total_attempts: retry_budget.attempts(),
+                                        total_wait_ms: retry_budget.elapsed_wait().as_millis() as u64,
+                                    });
+                                    return Err(synthetic_err);
+                                }
+                            }
+                        }
+                    };
+                    let Some(item) = item_opt else { break };
                     match item {
                         Ok(StreamDelta::TextDelta { text }) => {
                             if thinking_started {

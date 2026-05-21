@@ -7612,6 +7612,7 @@ dependencies = [
  "hmac",
  "jsonwebtoken",
  "lettre",
+ "libc",
  "lru",
  "mockito",
  "ndarray",
