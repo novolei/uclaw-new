@@ -26,6 +26,8 @@ pub mod world;
 pub mod intent_classifier;
 // M3-T4 — Task scheduler queue + priority types.
 pub mod task_scheduler;
+// M3-T7 — IM channel adapter types (Slack/Discord/Telegram/...).
+pub mod im_channels;
 
 // B2: Infrastructure modules
 pub mod memory;
