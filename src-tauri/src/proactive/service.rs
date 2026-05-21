@@ -381,6 +381,13 @@ struct ProactiveStateRefs {
     gene_lifecycle: Arc<Mutex<GeneLifecycleManager>>,
     /// Gene 进化配置
     gene_evolution_config: GeneEvolutionConfig,
+    /// Bundle 22 — uClaw 数据根目录（典型 `~/.uclaw/`）。
+    /// `skill_extraction` 抽到合格新 skill 后，除了存为 memory_graph
+    /// `Procedure` 节点，还会同步落盘成
+    /// `<data_dir>/skills/_auto_extracted/<slug>/SKILL.md`，让 disk-tier
+    /// 的 `SkillsRegistry` 在下次启动时扫到，关闭"自演化 → 可见
+    /// SKILL.md"循环。
+    data_dir: std::path::PathBuf,
 }
 
 // ─── Gene Candidate Pool Helpers ───────────────────────────────────────────
@@ -520,6 +527,9 @@ pub struct ProactiveService {
     /// Gene 候选池有新候选的标记
     new_gene_candidates: Arc<AtomicBool>,
 
+    /// Bundle 22 — see ProactiveStateRefs::data_dir.
+    data_dir: std::path::PathBuf,
+
     /// 轮询循环任务句柄
     tick_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     /// 上下文监听任务句柄
@@ -571,6 +581,12 @@ impl ProactiveService {
         gene_repo: Arc<Mutex<GeneRepository>>,
         gene_evolution_config: GeneEvolutionConfig,
         memory_os: MemoryOsRuntimeConfig,
+        // Bundle 22 — root uClaw data dir (typically ~/.uclaw/).
+        // skill_extraction lands persisted SKILL.md under
+        // `<data_dir>/skills/_auto_extracted/`. Passing as an explicit
+        // arg (rather than deriving from gene_repo's base_path) so the
+        // semantics stay obvious at call sites.
+        data_dir: std::path::PathBuf,
     ) -> Self {
         let task_memory_manager = Arc::new(TaskMemoryManager::new(memory_graph_store.clone()));
         let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(memory_graph_store.clone()));
@@ -640,6 +656,7 @@ impl ProactiveService {
             gene_evolution_config,
             gene_candidate_pool: Arc::new(RwLock::new(VecDeque::new())),
             new_gene_candidates: Arc::new(AtomicBool::new(false)),
+            data_dir,
             tick_handle: Arc::new(RwLock::new(None)),
             listener_handle: Arc::new(RwLock::new(None)),
         }
@@ -687,6 +704,7 @@ impl ProactiveService {
             gene_evolution_config: self.gene_evolution_config.clone(),
             gene_candidate_pool: self.gene_candidate_pool.clone(),
             new_gene_candidates: self.new_gene_candidates.clone(),
+            data_dir: self.data_dir.clone(),
         }
     }
 
@@ -1895,6 +1913,55 @@ impl ProactiveService {
                                                     );
                                                     stored_count += 1;
 
+                                                    // ─── Bundle 22 — persist to disk as SKILL.md ───
+                                                    // The Procedure node above lives in
+                                                    // memory_graph only; the disk-tier
+                                                    // SkillsRegistry never sees it. Bundle 22
+                                                    // mirrors the skill out to
+                                                    // <data_dir>/skills/_auto_extracted/<slug>/
+                                                    // SKILL.md so it shows up in skill_search
+                                                    // on the next session start. Best-effort:
+                                                    // a write failure logs a warning but does
+                                                    // NOT roll back the Procedure node — disk
+                                                    // persistence is the bonus path, not the
+                                                    // source of truth.
+                                                    match crate::proactive::skill_parser::persist_learned_skill_to_disk(
+                                                        &refs.data_dir,
+                                                        skill,
+                                                    ) {
+                                                        Ok(path) => {
+                                                            tracing::info!(
+                                                                skill_name = %skill.name,
+                                                                node_id = %node.id,
+                                                                path = %path.display(),
+                                                                "[Bundle 22] persisted learned skill to disk; \
+                                                                 SkillsRegistry will pick it up next session start"
+                                                            );
+                                                            if let Some(ref app) = refs.app_handle {
+                                                                let _ = app.emit(
+                                                                    "agent:learned-skill-persisted",
+                                                                    serde_json::json!({
+                                                                        "skillName": skill.name,
+                                                                        "nodeId": node.id.clone(),
+                                                                        "path": path.display().to_string(),
+                                                                        "sessionId": session_id.clone(),
+                                                                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                                                                    }),
+                                                                );
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            tracing::warn!(
+                                                                skill_name = %skill.name,
+                                                                node_id = %node.id,
+                                                                err = %e,
+                                                                "[Bundle 22] failed to persist learned skill to disk \
+                                                                 (Procedure node already stored, so skill is still \
+                                                                 discoverable via recall)"
+                                                            );
+                                                        }
+                                                    }
+
                                                     // ─── Publish SkillLearned with learning_card ───
                                                     // Bridges skill_extraction → gene_candidate_pool:
                                                     // each extracted skill becomes a GeneCandidate,
@@ -2862,6 +2929,10 @@ mod tests {
             // MemoryOsConfig::default() so tests reflect production
             // happy-path behavior.
             MemoryOsRuntimeConfig::for_tests(),
+            // Bundle 22 — data_dir for test runs lands in a process-
+            // unique temp dir so concurrent tests don't collide on
+            // _auto_extracted/ writes.
+            std::env::temp_dir().join("uclaw_proactive_test"),
         )
     }
 

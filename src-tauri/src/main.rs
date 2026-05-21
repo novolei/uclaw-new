@@ -291,6 +291,14 @@ fn main() {
                                                 .map(|root| root.join("PROFILE.md"));
                                             cfg
                                         },
+                                        // Bundle 22 — pass uClaw data dir so
+                                        // skill_extraction can persist
+                                        // SKILL.md under <data_dir>/skills/
+                                        // _auto_extracted/.
+                                        {
+                                            let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                                            state_ref.data_dir.clone()
+                                        },
                                     )
                                 );
                                 // Inject into AppState for tauri_commands access
