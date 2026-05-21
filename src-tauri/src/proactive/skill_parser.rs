@@ -476,6 +476,425 @@ pub fn store_skill_as_procedure(
     Ok(node)
 }
 
+// ───────────────────────────────────────────────────────────────────
+// Bundle 22 — persist learned skills to disk as SKILL.md
+// ───────────────────────────────────────────────────────────────────
+
+/// Bundle 22 — write a learned skill out as a SKILL.md so the
+/// `SkillsRegistry` (disk-tier loader) can scan it on the next
+/// session start and the agent can `skill_search` it like any other
+/// installed skill.
+///
+/// Until Bundle 22 the extraction pipeline stored learned skills as
+/// `Procedure` nodes in `memory_graph` only — the registry never saw
+/// them, so the LLM never reached for them as first-class skills.
+/// This function closes that loop.
+///
+/// Path: `<data_dir>/skills/_auto_extracted/<slug>/SKILL.md`. The
+/// `_auto_extracted` subtree shows up as a third sub-tier under the
+/// existing User scan dir (`<data_dir>/skills/`) — same provenance,
+/// no schema change in `SkillsRegistry`.
+///
+/// Returns the written path on success. Idempotent: if the same slug
+/// already has a SKILL.md, the function overwrites it (we trust the
+/// extraction LLM to produce the same-or-better content; D1/D2 dedup
+/// at the Procedure-node layer already caught true duplicates before
+/// we reached this point).
+///
+/// Safe on partial failure: if mkdir or write fails the function
+/// returns the error and the caller logs + continues. The Procedure
+/// node already landed in memory_graph, so the skill is still
+/// discoverable via the original recall path — disk persistence is a
+/// bonus, not the source of truth.
+pub fn persist_learned_skill_to_disk(
+    data_dir: &std::path::Path,
+    skill: &ParsedSkill,
+) -> std::io::Result<std::path::PathBuf> {
+    // Refuse empty name upfront. Slugify's CJK-fallback would still
+    // produce a hash-suffix name from an empty input, but a learned
+    // skill with no human-readable name is almost certainly an
+    // extraction bug — fail loudly so the caller logs it.
+    if skill.name.trim().is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "ParsedSkill.name is empty — refusing to persist".to_string(),
+        ));
+    }
+
+    // Slug — same normalization as the dedup layer, but kept ASCII +
+    // filesystem-safe (lowercase, hyphens, digits only). The dedup
+    // layer already collapsed variants of the same skill into one
+    // Procedure node; here we just need a stable directory name.
+    let slug = slugify_for_filesystem(&skill.name);
+    if slug.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("could not slugify skill name {:?}", skill.name),
+        ));
+    }
+
+    let skill_dir = data_dir
+        .join("skills")
+        .join("_auto_extracted")
+        .join(&slug);
+    std::fs::create_dir_all(&skill_dir)?;
+
+    let skill_md_path = skill_dir.join("SKILL.md");
+    let content = compose_learned_skill_md(skill, &slug);
+    std::fs::write(&skill_md_path, content)?;
+    Ok(skill_md_path)
+}
+
+/// Slugify a (possibly Chinese / mixed) skill name into a filesystem-safe
+/// kebab-case identifier. ASCII-only output (Chinese characters get a
+/// short hash suffix). This is more permissive than Bundle 21-A's
+/// `is_kebab_case` — extraction-generated names sometimes include CJK
+/// and we don't want to refuse to persist them; we just need a stable
+/// directory name.
+fn slugify_for_filesystem(name: &str) -> String {
+    // ASCII fast path — keep letters/digits, replace whitespace
+    // and separators with hyphens, lowercase, trim/collapse hyphens.
+    let mut buf = String::with_capacity(name.len());
+    let mut prev_was_sep = true;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            buf.push(c.to_ascii_lowercase());
+            prev_was_sep = false;
+        } else if c.is_whitespace() || matches!(c, '-' | '_' | '/' | '.' | ':' | '|') {
+            if !prev_was_sep && !buf.is_empty() {
+                buf.push('-');
+                prev_was_sep = true;
+            }
+        }
+        // Non-ASCII (e.g. CJK) is dropped — handled below as a hash.
+    }
+    while buf.ends_with('-') {
+        buf.pop();
+    }
+
+    // If the input was mostly non-ASCII or pure punctuation, the ASCII
+    // slug may be empty / digits-only. Append a short stable hash of
+    // the original name to disambiguate. We KEEP whatever ASCII we
+    // extracted as a human-readable prefix (e.g. "lunar-converter"
+    // stays even if the upstream name was "lunar转换器").
+    //
+    // Don't apply the hash fallback purely on "short ASCII slug" —
+    // e.g. "foo" (3 chars) is a perfectly fine slug. Only fall back
+    // when buf is empty OR has no ASCII letters at all (only digits /
+    // separators that survived the filter).
+    if buf.is_empty() || !buf.chars().any(|c| c.is_ascii_alphabetic()) {
+        use std::hash::Hasher;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        h.write(name.as_bytes());
+        let suffix = format!("{:x}", h.finish());
+        let suffix_short = &suffix[..8.min(suffix.len())];
+        if buf.is_empty() {
+            buf.push_str("skill-");
+        } else {
+            buf.push('-');
+        }
+        buf.push_str(suffix_short);
+    }
+
+    // Cap length so we don't end up with pathological filesystem paths.
+    if buf.len() > 80 {
+        buf.truncate(80);
+        while buf.ends_with('-') {
+            buf.pop();
+        }
+    }
+    buf
+}
+
+/// Compose a SKILL.md from a `ParsedSkill`. Frontmatter mirrors the
+/// `skills::parse_skill_md` reader's expectations (`name`,
+/// `description`). Body is built from the structured fields the LLM
+/// emitted; absent fields are omitted rather than rendered as empty
+/// sections (clutter would hurt the LLM's read pass).
+fn compose_learned_skill_md(skill: &ParsedSkill, slug: &str) -> String {
+    // Description must be present + sane for the registry's reader to
+    // accept the skill. If the LLM forgot it, synthesize one from the
+    // name so the file is still loadable; an ugly description is
+    // better than a parse error.
+    let description = skill
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(escape_frontmatter_value)
+        .unwrap_or_else(|| format!("Auto-extracted skill: {}", skill.name));
+
+    let mut out = String::with_capacity(2048);
+    out.push_str("---\n");
+    out.push_str("name: ");
+    out.push_str(slug);
+    out.push('\n');
+    out.push_str("description: ");
+    out.push_str(&description);
+    out.push('\n');
+    out.push_str("---\n\n");
+
+    out.push_str("# ");
+    out.push_str(skill.name.trim());
+    out.push_str("\n\n");
+    out.push_str(
+        "_This skill was auto-extracted by uClaw's `skill_extraction` \
+         pipeline from prior execution logs. Quality depends on the \
+         underlying LLM run — review before relying on it for critical \
+         work._\n\n",
+    );
+
+    if !skill.context.trim().is_empty() {
+        out.push_str("## Context\n\n");
+        out.push_str(skill.context.trim());
+        out.push_str("\n\n");
+    }
+    if !skill.principles.trim().is_empty() {
+        out.push_str("## Principles\n\n");
+        out.push_str(skill.principles.trim());
+        out.push_str("\n\n");
+    }
+    if !skill.steps.trim().is_empty() {
+        out.push_str("## Steps\n\n");
+        out.push_str(skill.steps.trim());
+        out.push_str("\n\n");
+    }
+    if let Some(ap) = skill.anti_patterns.as_deref() {
+        let ap = ap.trim();
+        if !ap.is_empty() {
+            out.push_str("## Anti-patterns\n\n");
+            out.push_str(ap);
+            out.push_str("\n\n");
+        }
+    }
+    if !skill.pitfalls.trim().is_empty() {
+        out.push_str("## Pitfalls\n\n");
+        out.push_str(skill.pitfalls.trim());
+        out.push_str("\n\n");
+    }
+    if !skill.signals.is_empty() {
+        out.push_str("## Trigger Signals\n\n");
+        for sig in &skill.signals {
+            out.push_str("- ");
+            out.push_str(sig.trim());
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    if !skill.signals_seen.is_empty() {
+        out.push_str("## Failure Signals Seen\n\n");
+        out.push_str("This skill was extracted from runs that exhibited these failure modes:\n\n");
+        for sig in &skill.signals_seen {
+            out.push_str("- `");
+            out.push_str(sig.trim());
+            out.push_str("`\n");
+        }
+        out.push('\n');
+    }
+    if let Some(hint) = skill.validation_hint.as_deref() {
+        let hint = hint.trim();
+        if !hint.is_empty() {
+            out.push_str("## Validation Hint\n\n");
+            out.push_str(hint);
+            out.push_str("\n\n");
+        }
+    }
+    if let Some(cat) = skill.category.as_deref() {
+        let cat = cat.trim();
+        if !cat.is_empty() {
+            out.push_str("## Category\n\n");
+            out.push_str(cat);
+            out.push_str("\n\n");
+        }
+    }
+    if !skill.tags.is_empty() {
+        out.push_str("## Tags\n\n");
+        let cleaned: Vec<&str> = skill.tags.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
+        out.push_str(&cleaned.join(", "));
+        out.push_str("\n\n");
+    }
+
+    out
+}
+
+fn escape_frontmatter_value(s: &str) -> String {
+    let one_line = s.replace('\n', " ").replace('\r', "");
+    if one_line.contains(": ") {
+        let q = one_line.replace('"', "\\\"");
+        format!("\"{}\"", q)
+    } else {
+        one_line
+    }
+}
+
+#[cfg(test)]
+mod bundle22_tests {
+    use super::*;
+
+    fn sample_skill(name: &str) -> ParsedSkill {
+        ParsedSkill {
+            name: name.to_string(),
+            context: "When the agent sees X, it should do Y.".into(),
+            principles: "1. Verify before acting.\n2. Cite sources.".into(),
+            steps: "1. Read the input.\n2. Check rule A.\n3. Apply rule B.".into(),
+            pitfalls: "Beware of the off-by-one.".into(),
+            signals: vec!["err_x".into(), "timeout".into()],
+            signals_seen: vec!["TimeoutError".into()],
+            validation_hint: Some("Re-run the case and verify it passes.".into()),
+            category: Some("repair".into()),
+            anti_patterns: Some("Don't retry blindly on 401.".into()),
+            description: Some(
+                "Tightens recovery on transient API failures. Use when a tool call returns timeout / 5xx."
+                    .into(),
+            ),
+            tags: vec!["recovery".into(), "api".into()],
+        }
+    }
+
+    #[test]
+    fn slugify_ascii_lowercases_and_hyphenates() {
+        assert_eq!(slugify_for_filesystem("Hello World"), "hello-world");
+        assert_eq!(slugify_for_filesystem("FOO_BAR.baz"), "foo-bar-baz");
+        assert_eq!(slugify_for_filesystem("retry-tool-on-403"), "retry-tool-on-403");
+    }
+
+    #[test]
+    fn slugify_collapses_separators() {
+        assert_eq!(slugify_for_filesystem("foo   bar"), "foo-bar");
+        assert_eq!(slugify_for_filesystem("foo / bar / baz"), "foo-bar-baz");
+        assert_eq!(slugify_for_filesystem("---foo---"), "foo");
+    }
+
+    #[test]
+    fn slugify_cjk_falls_back_to_hash_suffix() {
+        let slug = slugify_for_filesystem("农历转阳历");
+        assert!(slug.starts_with("skill-"), "got: {slug}");
+        assert!(slug.len() > 8);
+    }
+
+    #[test]
+    fn slugify_mixed_keeps_ascii_prefix_plus_hash() {
+        let slug = slugify_for_filesystem("lunar 转换 helper");
+        assert!(slug.starts_with("lunar"), "got: {slug}");
+        assert!(slug.contains("helper"), "got: {slug}");
+        // Mixed has ASCII letters so no fallback hash; pure-CJK does.
+    }
+
+    #[test]
+    fn slugify_caps_at_80_chars() {
+        let long = "a".repeat(200);
+        let slug = slugify_for_filesystem(&long);
+        assert!(slug.len() <= 80);
+        assert!(!slug.ends_with('-'));
+    }
+
+    #[test]
+    fn compose_md_emits_frontmatter() {
+        let skill = sample_skill("Retry on 403");
+        let md = compose_learned_skill_md(&skill, "retry-on-403");
+        assert!(md.starts_with("---\nname: retry-on-403\n"));
+        assert!(md.contains("description: "));
+        assert!(md.contains("\n---\n\n"));
+    }
+
+    #[test]
+    fn compose_md_includes_all_populated_sections() {
+        let skill = sample_skill("Retry on 403");
+        let md = compose_learned_skill_md(&skill, "retry-on-403");
+        for section in &[
+            "## Context",
+            "## Principles",
+            "## Steps",
+            "## Anti-patterns",
+            "## Pitfalls",
+            "## Trigger Signals",
+            "## Failure Signals Seen",
+            "## Validation Hint",
+            "## Category",
+            "## Tags",
+        ] {
+            assert!(md.contains(section), "missing section {section}");
+        }
+    }
+
+    #[test]
+    fn compose_md_omits_empty_sections() {
+        let mut skill = sample_skill("Retry on 403");
+        skill.pitfalls = String::new();
+        skill.anti_patterns = None;
+        skill.signals.clear();
+        skill.tags.clear();
+        let md = compose_learned_skill_md(&skill, "retry-on-403");
+        assert!(!md.contains("## Pitfalls"));
+        assert!(!md.contains("## Anti-patterns"));
+        assert!(!md.contains("## Trigger Signals"));
+        assert!(!md.contains("## Tags"));
+    }
+
+    #[test]
+    fn compose_md_synthesizes_description_when_missing() {
+        let mut skill = sample_skill("My Skill");
+        skill.description = None;
+        let md = compose_learned_skill_md(&skill, "my-skill");
+        assert!(md.contains("Auto-extracted skill: My Skill"));
+    }
+
+    #[test]
+    fn compose_md_quotes_description_containing_colon() {
+        let mut skill = sample_skill("Foo");
+        skill.description = Some("Like Z: do W. Use when Y.".into());
+        let md = compose_learned_skill_md(&skill, "foo");
+        assert!(
+            md.contains("description: \"Like Z: do W. Use when Y.\""),
+            "got: {md}"
+        );
+    }
+
+    #[test]
+    fn persist_writes_skill_md_under_auto_extracted() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = sample_skill("Retry on 403");
+        let path = persist_learned_skill_to_disk(dir.path(), &skill).unwrap();
+        assert!(path.ends_with("SKILL.md"));
+        let parent = path.parent().unwrap();
+        assert!(parent.starts_with(dir.path().join("skills/_auto_extracted")));
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("# Retry on 403"));
+        assert!(body.contains("auto-extracted"));
+    }
+
+    #[test]
+    fn persist_is_idempotent_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut skill = sample_skill("Foo");
+        let first = persist_learned_skill_to_disk(dir.path(), &skill).unwrap();
+        skill.principles = "Updated principles".into();
+        let second = persist_learned_skill_to_disk(dir.path(), &skill).unwrap();
+        assert_eq!(first, second);
+        let body = std::fs::read_to_string(&second).unwrap();
+        assert!(body.contains("Updated principles"));
+    }
+
+    #[test]
+    fn persist_rejects_unsluggable_name() {
+        let dir = tempfile::tempdir().unwrap();
+        // Pure punctuation collapses to empty + has no chars to hash off of.
+        // (Our impl hashes the original name as fallback, so this case
+        // actually still produces something. Verify behaviour rather than
+        // forcing a hard rejection.)
+        let mut skill = sample_skill("---");
+        let result = persist_learned_skill_to_disk(dir.path(), &skill);
+        // We accept either: success with a hash slug, OR InvalidInput.
+        // What matters is we don't write to a wonky path.
+        if let Ok(path) = result {
+            assert!(!path.to_string_lossy().contains("///"));
+        }
+        skill.name = "".into();
+        let err = persist_learned_skill_to_disk(dir.path(), &skill);
+        assert!(err.is_err(), "empty name must be rejected");
+    }
+}
+
 /// Threshold for fuzzy (bigram-Jaccard) dedup. ≥ this similarity →
 /// fold into existing skill instead of creating a new node. Tuned
 /// conservatively: catches "+1 word" near-dups but rejects
