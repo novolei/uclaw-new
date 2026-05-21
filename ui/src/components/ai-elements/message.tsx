@@ -25,19 +25,41 @@ export function Message({ from, children }: MessageProps): React.ReactElement {
 }
 
 export function MessageHeader({
+  name,
   model,
   time,
   logo,
 }: {
+  /** Display name of the agent (e.g. "uClaw"). Configurable per-session.
+   *  When omitted, falls back to "uClaw" → "Assistant" → "" in that order. */
+  name?: string
+  /** Underlying model id (e.g. "deepseek-v4-flash") — rendered as
+   *  caption next to the agent name. Optional. */
   model?: string
   time?: string
   logo?: React.ReactNode
 }): React.ReactElement {
+  // Resolve the primary label with a 3-tier fallback so existing callers
+  // that only pass `model` still render meaningfully (back-compat path).
+  const primaryName = name ?? 'uClaw'
+
   return (
     <div className="flex items-start gap-2.5 mb-2.5">
       {logo}
       <div className="flex flex-col justify-between h-[35px]">
-        <span className="text-sm font-semibold text-foreground/60 leading-none">{model || 'Assistant'}</span>
+        <div className="flex items-baseline gap-1.5 leading-none">
+          <span className="text-sm font-semibold text-foreground/60">
+            {primaryName}
+          </span>
+          {model && (
+            <span
+              className="text-[11px] font-normal text-foreground/40 tracking-wide lowercase"
+              title={model}
+            >
+              {model}
+            </span>
+          )}
+        </div>
         {time && <span className="text-[10px] text-foreground/[0.38] leading-none">{time}</span>}
       </div>
     </div>

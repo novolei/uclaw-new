@@ -40,6 +40,7 @@ import { tabMinimapCacheAtom } from '@/atoms/tab-atoms'
 import { channelsAtom } from '@/atoms/chat-atoms'
 import { proactiveLearningEventsAtom, memoryRecallEventAtom, skillRecallsMapAtom } from '@/atoms/agent-atoms'
 import type { MemoryRecallEvent } from '@/atoms/agent-atoms'
+import { agentDisplayNameForAtom } from '@/atoms/agent-display-name'
 import { stickyUserMessageEnabledAtom } from '@/atoms/ui-preferences'
 import { ProactiveLearningChip } from '@/components/chat/ProactiveLearningChip'
 import { MemoryRecallChip } from '@/components/chat/MemoryRecallChip'
@@ -590,6 +591,7 @@ interface AgentMessageItemProps {
 function AgentMessageItem({ message, sessionPath, attachedDirs, sessionId }: AgentMessageItemProps): React.ReactElement | null {
   const userProfile = useAtomValue(userProfileAtom)
   const channels = useAtomValue(channelsAtom)
+  const agentNameLookup = useAtomValue(agentDisplayNameForAtom)
   const isCompacted = message.compacted === true
 
   if (message.role === 'user') {
@@ -640,6 +642,7 @@ function AgentMessageItem({ message, sessionPath, attachedDirs, sessionId }: Age
       <div className={isCompacted ? 'opacity-40 grayscale-[0.3]' : undefined}>
       <Message from="assistant">
         <MessageHeader
+          name={agentNameLookup(message.sessionId ?? sessionId)}
           model={message.model ? resolveModelDisplayName(message.model, channels) : undefined}
           time={formatMessageTime(message.createdAt)}
           logo={<AssistantLogo model={message.model} />}
@@ -775,6 +778,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
   const memoryRecallMap = useAtomValue(memoryRecallEventAtom)
   const skillRecallsMap = useAtomValue(skillRecallsMapAtom)
   const stickyUserMessageEnabled = useAtomValue(stickyUserMessageEnabledAtom)
+  const agentNameLookupOuter = useAtomValue(agentDisplayNameForAtom)
   /** 淡入控制：切换会话时先隐藏，等布局完成后再显示。 */
   const [ready, setReady] = React.useState(false)
   const prevSessionIdRef = React.useRef<string | null>(null)
@@ -968,6 +972,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
             {!suppressAgentRunning && (streaming || smoothContent || retrying || (streamState?.toolActivities?.length ?? 0) > 0 || streamState?.reasoning) && (
               <Message from="assistant">
                 <MessageHeader
+                  name={agentNameLookupOuter(sessionId)}
                   model={agentStreamingModel}
                   time={formatMessageTime(Date.now())}
                   logo={<AssistantLogo model={agentStreamingModel} />}

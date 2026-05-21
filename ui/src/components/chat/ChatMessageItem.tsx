@@ -33,6 +33,7 @@ import { UserAvatar } from './UserAvatar'
 import { getModelLogo, resolveModelDisplayName } from '@/lib/model-logo'
 import { userProfileAtom } from '@/atoms/user-profile'
 import { channelsAtom } from '@/atoms/chat-atoms'
+import { agentDisplayNameForAtom } from '@/atoms/agent-display-name'
 import type { ChatMessage } from '@/lib/chat-types'
 import type { InlineEditSubmitPayload } from './InlineEditForm'
 import { ChatToolActivityIndicator } from './ChatToolActivityIndicator'
@@ -93,6 +94,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
   const [deleteDialogOpen, setDeleteDialogOpen] = React.useState(false)
   const [isDeleting, setIsDeleting] = React.useState(false)
   const userProfile = useAtomValue(userProfileAtom)
+  const agentNameLookup = useAtomValue(agentDisplayNameForAtom)
   const channels = useAtomValue(channelsAtom)
 
   const handleDeleteConfirm = async (): Promise<void> => {
@@ -118,6 +120,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
       <Message from={messageFrom}>
         {message.role === 'assistant' && (
           <MessageHeader
+            name={agentNameLookup(conversationId)}
             model={message.model ? resolveModelDisplayName(message.model, channels) : undefined}
             time={formatMessageTime(message.createdAt)}
             logo={

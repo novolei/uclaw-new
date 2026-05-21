@@ -27,6 +27,7 @@ import {
   ReasoningContent,
 } from '@/components/ai-elements/reasoning'
 import { streamingModelAtom } from '@/atoms/chat-atoms'
+import { agentDisplayNameForAtom } from '@/atoms/agent-display-name'
 import { getModelLogo } from '@/lib/model-logo'
 import type { ChatMessage } from '@/lib/chat-types'
 
@@ -143,6 +144,7 @@ function MessageColumn({
   startedAt,
 }: MessageColumnProps): React.ReactElement {
   const streamingModel = useAtomValue(streamingModelAtom)
+  const agentNameLookup = useAtomValue(agentDisplayNameForAtom)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -186,6 +188,7 @@ function MessageColumn({
         {side === 'assistant' && (streaming || streamingContent || streamingReasoning) && (
           <Message from="assistant">
             <MessageHeader
+              name={agentNameLookup(conversationId)}
               model={streamingModel ?? undefined}
               time={formatMessageTime(Date.now())}
               logo={
