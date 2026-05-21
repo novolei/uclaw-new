@@ -18,6 +18,10 @@ pub mod infra;
 // Phase 0.5 M1-T1 — IntentSpec/TaskSpec/TaskEvent runtime contracts.
 pub mod runtime;
 
+// M3-T8 — SKILL.md frontmatter schema + parser (distinct from the
+// existing `skills_manifest` module handling a different format).
+pub mod skill_md_parse;
+
 // B2: Infrastructure modules
 pub mod memory;
 pub mod memory_graph;
