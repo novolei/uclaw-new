@@ -98,6 +98,14 @@ import {
   skillRecallsMapAtom,
 } from '@/atoms/agent-atoms'
 import type { AgentContextStatus } from '@/atoms/agent-atoms'
+import {
+  agentQueuedMessagesMapAtom,
+  enqueueAgentMessage,
+  popOldestQueuedMessage,
+  removeQueuedMessage,
+  type QueuedAgentMessage,
+} from '@/atoms/agent-queue-messages'
+import { QueuedMessagesBanner } from './QueuedMessagesBanner'
 import { activeProviderModelAtom } from '@/atoms/active-model'
 import { channelsAtom, thinkingExpandedAtom } from '@/atoms/chat-atoms'
 import { workspacesAtom } from '@/atoms/workspace'
@@ -879,37 +887,26 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       return
     }
 
-    // 上一条消息仍在处理中，直接追加发送
+    // Agent 正在 streaming —— 走 Codex 风格的队列机制，而不是立刻打断。
+    // 用户的消息进入 composer 上方的 QueuedMessagesBanner，他们可以：
+    //   - 点"引导"立即注入（对应原来的 interrupt:true 路径）
+    //   - 点"编辑"把消息回填到 composer 继续编辑
+    //   - 点"删除"丢弃
+    // 默认行为：等当前 turn 自然结束后 FIFO 自动 dispatch。
     if (streaming) {
-      // 流式追加时不处理附件（仅支持纯文本）
+      // 队列阶段不接受附件（保持与旧 streaming-append 一致）
       if (pendingFiles.length > 0) {
-        toast.info('Agent 运行中暂不支持追加发送附件', {
+        toast.info('Agent 运行中暂不支持排队带附件的消息', {
           description: '请等待完成后再发送附件，或先撤除附件仅发送文本',
         })
         return
       }
 
-      const localUuid = crypto.randomUUID()
+      store.set(agentQueuedMessagesMapAtom, (prev) =>
+        enqueueAgentMessage(prev, sessionId, effectiveText),
+      )
 
-      // 1. 立即注入 liveMessages（作为普通用户消息显示）
-      const syntheticMsg = {
-        type: 'user',
-        uuid: localUuid,
-        message: {
-          content: [{ type: 'text', text: effectiveText }],
-        },
-        parent_tool_use_id: null,
-        _createdAt: Date.now(),
-      }
-
-      store.set(liveMessagesMapAtom, (prev) => {
-        const map = new Map(prev)
-        const current = map.get(sessionId) ?? []
-        map.set(sessionId, [...current, syntheticMsg])
-        return map
-      })
-
-      // 2. 清空输入框
+      // 清空输入框 — banner 已经接管显示
       setInputContent('')
       setInputHtmlContent('')
       setComposerHasText(false)
@@ -918,42 +915,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         const map = new Map(prev)
         map.delete(sessionId)
         return map
-      })
-
-      // 3. 异步发送到后端（立即软中断当前 turn，再注入消息作为新一轮输入）
-      queueAgentMessage({
-        sessionId,
-        userMessage: effectiveText,
-        uuid: localUuid,
-        interrupt: true,
-      }).catch((error: unknown) => {
-        console.error('[AgentView] 追加消息失败:', error)
-        toast.error('追加消息失败', { description: String(error) })
-        // 回滚：从 liveMessages 移除
-        store.set(liveMessagesMapAtom, (prev) => {
-          const map = new Map(prev)
-          const current = (map.get(sessionId) ?? []).filter(
-            (m) => (m as unknown as { uuid?: string }).uuid !== localUuid
-          )
-          map.set(sessionId, current)
-          return map
-        })
-      })
-
-      // 清除当前会话的轮次徽章（新消息 = 新一轮 turn）
-      store.set(memoryRecallEventAtom, (prev) => {
-        const next = new Map(prev)
-        next.delete(sessionId)
-        next.delete('__global__')
-        return next
-      })
-      store.set(proactiveLearningEventsAtom, (prev) =>
-        prev.filter((ev) => ev.sessionId !== sessionId)
-      )
-      store.set(skillRecallsMapAtom, (prev) => {
-        const next = new Map(prev)
-        next.delete(sessionId)
-        return next
       })
       return
     }
@@ -1156,6 +1117,129 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         })
       })
   }, [inputContent, pendingFiles, sessionId, activeProviderModel, agentChannelId, agentModelId, currentWorkspaceId, workspaces, streaming, suggestion, currentStrategy, store, setStreamingStates, setPendingFiles, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, setMessages])
+
+  // ── Codex-style message queue (Bundle 2-A) ──────────────────────
+  //
+  // When the agent is streaming, new user messages go into a per-session
+  // queue surfaced as a banner above the composer. The queued message
+  // doesn't auto-fire — user decides:
+  //   - 引导 (steer)  → handleSteerQueued: send now + interrupt
+  //   - 编辑 (edit)   → handleEditQueued: pop back to composer
+  //   - 删除 (trash)  → handleDeleteQueued: discard
+  //
+  // After streaming finishes naturally, an effect below pops the oldest
+  // queued message and auto-dispatches it (no interrupt — current turn
+  // already done).
+  const queuedMessages = useAtomValue(agentQueuedMessagesMapAtom)
+  const currentQueue = React.useMemo(
+    () => queuedMessages[sessionId] ?? [],
+    [queuedMessages, sessionId],
+  )
+
+  /** Steer = send now + interrupt current turn. Mirrors the legacy
+   *  streaming-append path from before the queue. */
+  const handleSteerQueued = React.useCallback((msg: QueuedAgentMessage) => {
+    if (!activeProviderModel) return
+    // Remove from queue first so the banner closes before the network call.
+    store.set(agentQueuedMessagesMapAtom, (prev) =>
+      removeQueuedMessage(prev, sessionId, msg.id),
+    )
+
+    const localUuid = crypto.randomUUID()
+    // Inject the synthetic user message into liveMessages so the chat
+    // shows the steer immediately (no jank).
+    const syntheticMsg = {
+      type: 'user',
+      uuid: localUuid,
+      message: { content: [{ type: 'text', text: msg.text }] },
+      parent_tool_use_id: null,
+      _createdAt: Date.now(),
+    }
+    store.set(liveMessagesMapAtom, (prev) => {
+      const map = new Map(prev)
+      const current = map.get(sessionId) ?? []
+      map.set(sessionId, [...current, syntheticMsg])
+      return map
+    })
+
+    queueAgentMessage({
+      sessionId,
+      userMessage: msg.text,
+      uuid: localUuid,
+      interrupt: true,
+    }).catch((error: unknown) => {
+      console.error('[AgentView] steer queued message failed:', error)
+      toast.error('引导消息失败', { description: String(error) })
+      // Rollback the synthetic message
+      store.set(liveMessagesMapAtom, (prev) => {
+        const map = new Map(prev)
+        const current = (map.get(sessionId) ?? []).filter(
+          (m) => (m as unknown as { uuid?: string }).uuid !== localUuid,
+        )
+        map.set(sessionId, current)
+        return map
+      })
+    })
+  }, [sessionId, activeProviderModel, store])
+
+  /** Edit = pop from queue, restore to composer for further editing. */
+  const handleEditQueued = React.useCallback((msg: QueuedAgentMessage) => {
+    store.set(agentQueuedMessagesMapAtom, (prev) =>
+      removeQueuedMessage(prev, sessionId, msg.id),
+    )
+    setInputContent(msg.text)
+    setComposerHasText(msg.text.length > 0)
+  }, [sessionId, store, setInputContent, setComposerHasText])
+
+  /** Delete = silently discard. */
+  const handleDeleteQueued = React.useCallback((msg: QueuedAgentMessage) => {
+    store.set(agentQueuedMessagesMapAtom, (prev) =>
+      removeQueuedMessage(prev, sessionId, msg.id),
+    )
+  }, [sessionId, store])
+
+  // Auto-dispatch when streaming transitions true → false and queue
+  // is non-empty. FIFO. No interrupt — current turn already ended.
+  const prevStreamingRef = React.useRef(streaming)
+  React.useEffect(() => {
+    const wasStreaming = prevStreamingRef.current
+    prevStreamingRef.current = streaming
+    if (!wasStreaming || streaming) return
+    // Just finished streaming. Pop oldest queued msg if any.
+    if (currentQueue.length === 0) return
+    const oldest = currentQueue[0]
+    if (!oldest) return
+
+    store.set(agentQueuedMessagesMapAtom, (prev) => {
+      const { next } = popOldestQueuedMessage(prev, sessionId)
+      return next
+    })
+
+    // Dispatch as a brand-new turn (no interrupt — we're idle now).
+    const localUuid = crypto.randomUUID()
+    const syntheticMsg = {
+      type: 'user',
+      uuid: localUuid,
+      message: { content: [{ type: 'text', text: oldest.text }] },
+      parent_tool_use_id: null,
+      _createdAt: Date.now(),
+    }
+    store.set(liveMessagesMapAtom, (prev) => {
+      const map = new Map(prev)
+      const current = map.get(sessionId) ?? []
+      map.set(sessionId, [...current, syntheticMsg])
+      return map
+    })
+    queueAgentMessage({
+      sessionId,
+      userMessage: oldest.text,
+      uuid: localUuid,
+      interrupt: false,
+    }).catch((error: unknown) => {
+      console.error('[AgentView] queued auto-dispatch failed:', error)
+      toast.error('队列消息发送失败', { description: String(error) })
+    })
+  }, [streaming, currentQueue, sessionId, store])
 
   /** 停止生成 */
   const handleStop = React.useCallback((): void => {
@@ -1628,6 +1712,15 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                 </button>
               </div>
             )}
+
+            {/* Bundle 2-A: Codex-style queued messages banner. Sits just
+                above the editor so the queue feels stacked with the input. */}
+            <QueuedMessagesBanner
+              messages={currentQueue}
+              onSteer={handleSteerQueued}
+              onEdit={handleEditQueued}
+              onDelete={handleDeleteQueued}
+            />
 
             <div className="relative">
               <RichTextInput
