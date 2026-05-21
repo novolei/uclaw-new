@@ -30,8 +30,11 @@
 //! - [`fold`] — `StructuredFold` + 8 component types + serde roundtrip tests
 
 pub mod fold;
+pub mod render;
+pub mod summarize;
 
 pub use fold::{
     ArtifactRef, CheckpointRef, DecisionWithRationale, FactWithEvidence, FailedAttempt,
     StructuredFold,
 };
+pub use summarize::{summarize_to_fold, SummarizeError};
