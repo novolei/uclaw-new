@@ -21,6 +21,8 @@ pub mod compression_state;
 pub mod context_manager;
 // M2-I pilot — Prompt caching policy (4 cache breakpoint placement).
 pub mod cache_policy;
+// M2-J pilot — TokenBudgetSnapshot UI backend contract.
+pub mod token_budget;
 // M1-T4b — opt-in rollout bridge for direct run_agentic_loop callsites.
 pub mod rollout_integration;
 pub mod code_rescue;
