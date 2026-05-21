@@ -283,6 +283,84 @@ impl BashTool {
         None
     }
 
+    /// Spawn a fully detached daemon process and return immediately.
+    ///
+    /// Unlike the foreground path:
+    /// - Uses `std::process::Command` (not tokio) so we don't keep a Child handle the
+    ///   async runtime would have to manage. We `forget` the handle on success.
+    /// - On Unix, calls `setsid()` via `pre_exec` so the child runs in a new session
+    ///   and is not affected by SIGHUP when uClaw exits.
+    /// - Redirects stdin/stdout/stderr to `/dev/null` so closing the pipe from our end
+    ///   won't generate SIGPIPE on the child.
+    /// - Does NOT enable `kill_on_drop` — this is the whole point of daemon mode.
+    ///
+    /// Returns `{ ok, pid, daemon: true, command }`. Output capture is intentionally
+    /// disabled — use `tail -f` or a separate `bash` call to inspect logs.
+    fn spawn_daemon(
+        command: &str,
+        working_dir: &PathBuf,
+        start: std::time::Instant,
+    ) -> Result<ToolOutput, ToolError> {
+        use std::process::Command as StdCommand;
+
+        let mut cmd = StdCommand::new("sh");
+        cmd.arg("-c")
+            .arg(command)
+            .current_dir(working_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        // Detach from parent process group on Unix so SIGHUP from uClaw doesn't
+        // cascade into the daemon.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                cmd.pre_exec(|| {
+                    // Create a new session — child becomes session leader, has no
+                    // controlling terminal, won't receive SIGHUP from uClaw shell.
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+
+        let child = cmd.spawn().map_err(|e| {
+            let kind = if e.kind() == std::io::ErrorKind::NotFound {
+                ToolErrorKind::ResourceNotFound
+            } else if e.kind() == std::io::ErrorKind::PermissionDenied {
+                ToolErrorKind::PermissionDenied
+            } else {
+                ToolErrorKind::Other
+            };
+            ToolError::kinded_with_source(kind, "Failed to spawn daemon process", e.to_string())
+        })?;
+
+        let pid = child.id();
+        // Drop the Child handle without waiting — the OS will reap via init/launchd
+        // once the daemon exits. We don't want kill_on_drop semantics here.
+        std::mem::forget(child);
+
+        debug!(
+            pid = %pid,
+            command = %command,
+            working_dir = %working_dir.display(),
+            "bash: spawned daemon process"
+        );
+
+        let result = serde_json::json!({
+            "ok": true,
+            "pid": pid,
+            "daemon": true,
+            "command": command,
+            "note": "Daemon detached. Output not captured. Use `ps -p <pid>` or `tail -f <logfile>` to monitor.",
+        });
+        Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
+    }
+
     /// Truncate output if it exceeds MAX_OUTPUT_SIZE, appending a notice.
     fn truncate_output(output: String) -> String {
         if output.len() <= MAX_OUTPUT_SIZE {
@@ -310,7 +388,11 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command in the workspace. Returns combined stdout and stderr output."
+        "Execute a shell command in the workspace. Returns combined stdout and stderr output. \
+         For long-running servers (e.g. `python3 server.py`, `npm run dev`) set `daemon: true` — \
+         the process is fully detached via setsid, stdio is redirected to /dev/null, and the tool \
+         returns immediately with the PID. Do NOT use `&` for backgrounding; the bash tool's \
+         timeout will still kill the parent shell and orphan the child."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -327,7 +409,11 @@ impl Tool for BashTool {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "Timeout in milliseconds (optional, default 30000)"
+                    "description": "Timeout in milliseconds (optional, default 30000). Ignored when daemon=true."
+                },
+                "daemon": {
+                    "type": "boolean",
+                    "description": "If true, start the command as a detached background daemon (setsid + stdio→/dev/null), return immediately with the PID, no output capture. Use for long-running servers. Default false."
                 }
             },
             "required": ["command"]
@@ -373,9 +459,11 @@ impl Tool for BashTool {
             .map(|ms| Duration::from_millis(ms))
             .unwrap_or(DEFAULT_TIMEOUT);
 
-        debug!(command = %command, working_dir = %working_dir.display(), timeout_ms = %timeout.as_millis(), "bash: executing command");
+        let daemon = params["daemon"].as_bool().unwrap_or(false);
 
-        // --- Safety checks ---
+        debug!(command = %command, working_dir = %working_dir.display(), timeout_ms = %timeout.as_millis(), daemon = %daemon, "bash: executing command");
+
+        // --- Safety checks (apply to BOTH foreground and daemon mode) ---
         if let Some(reason) = Self::check_blocked(command) {
             warn!(command = %command, reason = %reason, "bash: command blocked");
             return Ok(ToolOutput::error(
@@ -398,6 +486,11 @@ impl Tool for BashTool {
                 &format!("Working directory does not exist: {}", working_dir.display()),
                 start.elapsed().as_millis() as u64,
             ));
+        }
+
+        // --- Daemon (detached) branch ---
+        if daemon {
+            return Self::spawn_daemon(command, &working_dir, start);
         }
 
         // --- Spawn process ---
@@ -610,6 +703,93 @@ mod tests {
         let truncated = BashTool::truncate_output(long);
         assert!(truncated.contains("OUTPUT TRUNCATED"));
         assert!(truncated.len() < MAX_OUTPUT_SIZE + 200);
+    }
+
+    // --- Bundle 25-A: daemon mode tests ---
+
+    /// Daemon mode returns immediately with a PID; the spawned process keeps running
+    /// after the tool call returns. We verify by spawning `sleep 30` as daemon, then
+    /// checking the returned PID is reachable via `kill -0`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_daemon_mode_returns_pid_and_process_alive() {
+        let tmp = std::env::temp_dir();
+        let tool = BashTool::new(tmp.clone());
+
+        let params = serde_json::json!({
+            "command": "sleep 30",
+            "daemon": true,
+        });
+
+        let t0 = std::time::Instant::now();
+        let out = tool.execute(params).await.expect("daemon execute");
+        let elapsed_ms = t0.elapsed().as_millis();
+
+        // Should return well under the foreground 30s timeout — daemon mode
+        // skips the wait entirely.
+        assert!(
+            elapsed_ms < 2000,
+            "daemon spawn should return immediately, took {elapsed_ms}ms"
+        );
+
+        let pid = out.result["pid"].as_u64().expect("pid in result");
+        assert!(pid > 0);
+        assert_eq!(out.result["daemon"], serde_json::Value::Bool(true));
+        assert_eq!(out.result["ok"], serde_json::Value::Bool(true));
+
+        // Verify the process is actually alive — kill -0 returns 0 for running pid.
+        let alive = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(alive, "daemon pid {pid} should be alive after spawn");
+
+        // Clean up — we spawned a real sleep process.
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+    }
+
+    /// Daemon mode still respects safety checks — `rm -rf /` is blocked even with daemon=true.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_daemon_mode_respects_blocked_commands() {
+        let tool = BashTool::new(std::env::temp_dir());
+        let params = serde_json::json!({
+            "command": "rm -rf /",
+            "daemon": true,
+        });
+        let out = tool.execute(params).await.expect("execute");
+        assert_eq!(out.result["ok"], serde_json::Value::Bool(false));
+        assert!(out
+            .result
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("blocked"));
+    }
+
+    /// `daemon: true` for a dangerous-but-allowed command still requires approval.
+    /// (Approval is decided by `requires_approval(params)`, not by `execute`.)
+    #[test]
+    fn test_daemon_mode_approval_unchanged() {
+        let tool = BashTool::new(PathBuf::from("/tmp"));
+
+        // Safe command + daemon=true → still Never approval
+        let safe_daemon = serde_json::json!({ "command": "echo hi", "daemon": true });
+        assert_eq!(
+            tool.requires_approval(&safe_daemon),
+            ApprovalRequirement::Never
+        );
+
+        // Unknown command + daemon=true → still Always approval
+        let unknown_daemon = serde_json::json!({ "command": "python3 server.py", "daemon": true });
+        assert_eq!(
+            tool.requires_approval(&unknown_daemon),
+            ApprovalRequirement::Always
+        );
     }
 }
 
