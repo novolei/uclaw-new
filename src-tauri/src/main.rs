@@ -31,29 +31,80 @@ fn main() {
         .setup(|app| {
             let app_state = AppState::new(app.handle())?;
 
-            // M3-T1 wire-up slice 1 — mirror the disk-tier
-            // `SkillsRegistry` discovered set into the hub's `skills`
-            // slot so the Capability Mesh resolver has something to
-            // query. Best-effort: a sync failure logs a warning but
-            // doesn't abort boot (the disk-tier registry still
-            // works for skill_search via its existing path).
+            // M3-T1 wire-up slice 1 + 2 — populate the Capability Mesh
+            // registry hub from the existing uClaw subsystems so the
+            // M3-T2 resolver has real data to query. All three syncs
+            // are best-effort: a failure logs a warning but doesn't
+            // abort boot (disk-tier paths still work).
+            //
+            // Slot coverage:
+            // - Skills (slice 1): SkillsRegistry → Registry<SkillEntry>
+            // - Models (slice 2): ProviderService → Registry<ModelEntry>
+            // - Tools  (slice 2): hard-coded builtin catalog → Registry<ToolEntry>
+            //
+            // Connectors (MCP) + Themes are still empty until slice 3/4.
             {
                 let registry = app_state.skills_registry.clone();
+                let provider_service = app_state.provider_service.clone();
                 let hub = app_state.registry_hub.clone();
                 tauri::async_runtime::spawn(async move {
-                    let reg = registry.read().await;
-                    match uclaw_core::registries::sync_skills_from_registry(&hub, &reg).await {
+                    // Skills slot
+                    {
+                        let reg = registry.read().await;
+                        match uclaw_core::registries::sync_skills_from_registry(&hub, &reg).await {
+                            Ok(n) => tracing::info!(
+                                count = n,
+                                "[M3-T1] synced {} skill entries into registry hub",
+                                n
+                            ),
+                            Err(e) => tracing::warn!(
+                                error = %e,
+                                "[M3-T1] initial skill→hub sync failed"
+                            ),
+                        }
+                    }
+                    // Models slot
+                    match uclaw_core::registries::sync_models_from_provider_service(
+                        &hub,
+                        &provider_service,
+                    )
+                    .await
+                    {
                         Ok(n) => tracing::info!(
                             count = n,
-                            "[M3-T1] synced {} skill entries into registry hub",
+                            "[M3-T1 slice 2] synced {} model entries into registry hub",
                             n
                         ),
                         Err(e) => tracing::warn!(
                             error = %e,
-                            "[M3-T1] initial skill→hub sync failed (hub remains empty for skills slot; \
-                             disk-tier skill_search still works)"
+                            "[M3-T1 slice 2] initial model→hub sync failed"
                         ),
                     }
+                    // Tools slot — static catalog of builtin tools.
+                    // MCP-provided tools land in slice 3.
+                    match uclaw_core::registries::register_builtin_tools(&hub).await {
+                        Ok(n) => tracing::info!(
+                            count = n,
+                            "[M3-T1 slice 2] registered {} builtin tools into registry hub",
+                            n
+                        ),
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "[M3-T1 slice 2] builtin tools registration failed"
+                        ),
+                    }
+                    // Single combined-counts line for ops visibility —
+                    // greppable as `\[M3-T1\] hub-counts`.
+                    let counts = hub.counts().await;
+                    tracing::info!(
+                        skills = counts.skills,
+                        models = counts.models,
+                        tools = counts.tools,
+                        connectors = counts.connectors,
+                        themes = counts.themes,
+                        total = counts.total(),
+                        "[M3-T1] hub-counts after boot"
+                    );
                 });
             }
 

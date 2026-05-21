@@ -216,6 +216,195 @@ fn extract_tags(
 }
 
 // ───────────────────────────────────────────────────────────────────
+// Slice 2 — Models bridge: ProviderService → Registry<ModelEntry>
+// ───────────────────────────────────────────────────────────────────
+
+/// Mirror the user's configured models (from `ProviderService`) into
+/// the hub's `models` slot. Idempotent — wipe + repopulate, same as
+/// the skills bridge.
+///
+/// Each `(provider_id, model_id)` pair from
+/// `ProviderService::get_all_configured_models` becomes one
+/// `ModelEntry` with:
+/// - `id` = `"{provider_id}::{model_id}"` (the canonical fully-
+///   qualified form the resolver uses)
+/// - `kind` = `provider_id` (so the resolver's `+50` kind-match
+///   boost works on "find me an Anthropic model" queries)
+/// - `display_name` = `model_id` (rich names live in
+///   `providers/registry.rs`; not surfaced here in slice 2 to keep
+///   the bridge sync — enrichment is a slice 3 follow-up)
+/// - `supports_prompt_cache` = `provider_id == "anthropic"` (the
+///   only provider with explicit cache_control today; OpenAI's
+///   automatic prompt cache is opaque to our path)
+/// - `tags`: `provider=<id>` so callers can also resolve by tag
+///
+/// Returns the number of entries written.
+pub async fn sync_models_from_provider_service(
+    hub: &RegistryHub,
+    provider_service: &crate::providers::service::ProviderService,
+) -> Result<usize, RegistryError> {
+    let configured = provider_service.get_all_configured_models().await;
+    let mut dst = hub.models.write().await;
+    *dst = Registry::new();
+
+    let mut count = 0usize;
+    for (provider_id, model_ids) in configured {
+        for model_id in model_ids {
+            let id = format!("{provider_id}::{model_id}");
+            let mut tags = std::collections::BTreeMap::new();
+            tags.insert("provider".to_string(), provider_id.clone());
+
+            let entry = ModelEntry {
+                id: id.clone(),
+                kind: provider_id.clone(),
+                display_name: model_id.clone(),
+                // Context window / image support / cost would come
+                // from `providers/registry.rs::all()` lookup. Slice 2
+                // ships the minimal sync; an enrichment pass on top
+                // of `KnownProvider::supports_model_list` lands in
+                // slice 3 alongside dynamic MCP-tool tracking.
+                context_window_tokens: 0,
+                supports_images: false,
+                supports_prompt_cache: provider_id == "anthropic",
+                input_cost_micros_per_mtok: None,
+                output_cost_micros_per_mtok: None,
+                tags,
+            };
+            match dst.register(entry) {
+                Ok(()) => count += 1,
+                Err(e) => {
+                    tracing::warn!(
+                        model_id = %id,
+                        error = %e,
+                        "[M3-T1 slice 2] model sync skipped duplicate id"
+                    );
+                }
+            }
+        }
+    }
+    Ok(count)
+}
+
+// ───────────────────────────────────────────────────────────────────
+// Slice 2 — Tools bridge: builtin tool catalog → Registry<ToolEntry>
+// ───────────────────────────────────────────────────────────────────
+
+/// Tools live in `agent::tools::ToolRegistry` which is per-session
+/// (rebuilt every `send_agent_message`). Plumbing the per-session
+/// registry into the hub would force the whole hub to be per-session
+/// or require an event-bus subscription. Slice 2 takes a simpler
+/// route: register a **static catalog** of the well-known builtin
+/// tools at boot. This gives the resolver enough information to
+/// answer "is there a tool named X" / "what kind of tool is X"
+/// without entangling the hub with the agent loop's lifecycle.
+///
+/// MCP-provided tools (dynamic) stay out of slice 2 — slice 3
+/// (Connectors wire-up) adds an event subscription on MCP
+/// connect/disconnect that mirrors changes into both Tools and
+/// Connectors slots.
+///
+/// The tool descriptors here are kept in lockstep with
+/// `agent/tools/builtin/mod.rs` — if you add a new builtin module
+/// there, add a matching entry here.
+pub async fn register_builtin_tools(hub: &RegistryHub) -> Result<usize, RegistryError> {
+    let mut dst = hub.tools.write().await;
+    *dst = Registry::new();
+
+    let catalog = builtin_tool_catalog();
+    let mut count = 0usize;
+    for (id, kind, description, requires_permission, tag_keys) in catalog {
+        let mut tags = std::collections::BTreeMap::new();
+        tags.insert("builtin".to_string(), "1".to_string());
+        for tag_key in tag_keys {
+            tags.insert(format!("tag:{}", tag_key), "1".to_string());
+        }
+        let entry = ToolEntry {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            description: description.to_string(),
+            // Slice 2 keeps schema as `null` — the real JSON Schema
+            // lives on the per-session `Tool::parameters_schema()`.
+            // The resolver doesn't score on schema content; if a
+            // later slice wants schema-aware matching, it can pull
+            // from `ToolRegistry::list_definitions()` and update
+            // this slot at session start.
+            schema: serde_json::Value::Null,
+            requires_permission,
+            tags,
+        };
+        match dst.register(entry) {
+            Ok(()) => count += 1,
+            Err(e) => {
+                tracing::warn!(
+                    tool_id = id,
+                    error = %e,
+                    "[M3-T1 slice 2] builtin tool register failed"
+                );
+            }
+        }
+    }
+    Ok(count)
+}
+
+/// The hard-coded list of builtin tools surfaced to the hub. Tuple
+/// shape: `(id, kind, description, requires_permission, &[tag_keys])`.
+/// `requires_permission` mirrors the real `Tool::requires_approval`
+/// shape from `agent/tools/tool.rs` — kept in lockstep with the
+/// per-session ToolRegistry's actual approval gating. Update this
+/// list when new builtin tools land under `agent/tools/builtin/`.
+fn builtin_tool_catalog()
+    -> Vec<(&'static str, &'static str, &'static str, bool, &'static [&'static str])>
+{
+    vec![
+        ("skill_search", "skill",
+            "Search learned and built-in skills by query.",
+            false, &["search", "skill"]),
+        ("load_skill", "skill",
+            "Load a specific skill into the current agent context.",
+            false, &["skill"]),
+        ("skill_write", "skill",
+            "Author a new skill file under the user or project scope.",
+            true, &["skill", "author"]),  // user-scope writes require approval
+        ("skill_marketplace_search", "skill",
+            "Search the public agent-skills ecosystem on GitHub / skills.sh.",
+            false, &["skill", "marketplace", "search"]),
+        ("skill_install_from_marketplace", "skill",
+            "Install a skill from a GitHub source into the marketplace tier.",
+            true, &["skill", "marketplace", "install"]),
+        ("ask_user", "interaction",
+            "Pose a clarifying question to the user mid-task.",
+            false, &["interaction"]),
+        ("plan", "planning",
+            "Draft / update a structured plan for the current task.",
+            false, &["plan"]),
+        ("exit_plan_mode", "planning",
+            "Leave plan mode after the user approves the drafted plan.",
+            false, &["plan"]),
+        ("plan_mode", "planning",
+            "Enter plan mode for non-trivial tasks before execution.",
+            false, &["plan"]),
+        ("search", "filesystem",
+            "Search file content / paths in the workspace.",
+            false, &["filesystem", "search"]),
+        ("shell", "filesystem",
+            "Run a shell command in the workspace sandbox.",
+            true, &["filesystem", "shell"]),
+        ("edit", "filesystem",
+            "Edit a file with surgical search-and-replace.",
+            true, &["filesystem", "edit"]),
+        ("file", "filesystem",
+            "Read or write a file in the workspace.",
+            true, &["filesystem"]),
+        ("web", "network",
+            "Fetch HTTP(S) content for the agent to read.",
+            false, &["network", "web"]),
+        ("self_eval", "meta",
+            "Run a structured self-evaluation on the recent turn.",
+            false, &["meta", "evaluation"]),
+    ]
+}
+
+// ───────────────────────────────────────────────────────────────────
 // Tests
 // ───────────────────────────────────────────────────────────────────
 
@@ -324,6 +513,67 @@ mod tests {
         };
         let result = crate::registries::resolve(&*hub.skills.read().await, &q);
         assert_eq!(result.best(), Some("lunar-converter"));
+    }
+
+    // ── slice 2 — builtin tools registration ────────────────────────
+
+    #[tokio::test]
+    async fn register_builtin_tools_populates_tools_slot() {
+        let hub = RegistryHub::new();
+        let n = register_builtin_tools(&hub).await.unwrap();
+        assert!(n >= 10, "expected at least 10 builtin tools, got {n}");
+        let counts = hub.counts().await;
+        assert_eq!(counts.tools, n);
+        // Spot-check a few canonical entries the agent loop relies on.
+        let tools = hub.tools.read().await;
+        assert!(tools.lookup("skill_search").is_ok());
+        assert!(tools.lookup("skill_write").is_ok());
+        assert!(tools.lookup("shell").is_ok());
+        // shell should be flagged as requires_permission=true.
+        let shell = tools.lookup("shell").unwrap();
+        assert!(shell.requires_permission);
+        // skill_search is read-only, requires_permission=false.
+        let search = tools.lookup("skill_search").unwrap();
+        assert!(!search.requires_permission);
+    }
+
+    #[tokio::test]
+    async fn register_builtin_tools_is_idempotent() {
+        let hub = RegistryHub::new();
+        let n1 = register_builtin_tools(&hub).await.unwrap();
+        let n2 = register_builtin_tools(&hub).await.unwrap();
+        assert_eq!(n1, n2);
+        assert_eq!(hub.counts().await.tools, n1);
+    }
+
+    #[tokio::test]
+    async fn resolver_finds_builtin_tool_by_kind_and_tag() {
+        let hub = RegistryHub::new();
+        register_builtin_tools(&hub).await.unwrap();
+
+        // Find tools by `kind=skill`.
+        let q = CapabilityQuery {
+            name: None,
+            kind: "skill".into(),
+            tags: Default::default(),
+        };
+        let result = crate::registries::resolve(&*hub.tools.read().await, &q);
+        // Expect at least skill_search, load_skill, skill_write,
+        // skill_marketplace_search, skill_install_from_marketplace.
+        assert!(result.matches.len() >= 5, "got {:?}", result);
+
+        // Find tools by tag.
+        let q = CapabilityQuery {
+            name: None,
+            kind: "filesystem".into(),
+            tags: {
+                let mut t = std::collections::BTreeMap::new();
+                t.insert("tag:shell".into(), "1".into());
+                t
+            },
+        };
+        let result = crate::registries::resolve(&*hub.tools.read().await, &q);
+        assert_eq!(result.best(), Some("shell"));
     }
 
     #[tokio::test]

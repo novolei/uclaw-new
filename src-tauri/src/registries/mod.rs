@@ -47,7 +47,10 @@ pub mod tools;
 
 pub use connectors::ConnectorEntry;
 pub use entry::{RegistryEntry, RegistryError};
-pub use hub::{sync_skills_from_registry, RegistryHub, RegistryHubCounts};
+pub use hub::{
+    register_builtin_tools, sync_models_from_provider_service,
+    sync_skills_from_registry, RegistryHub, RegistryHubCounts,
+};
 pub use models::ModelEntry;
 pub use resolver::{resolve, ResolveResult, ResolvedMatch};
 pub use skills::SkillEntry;
