@@ -28,6 +28,8 @@ pub mod intent_classifier;
 pub mod task_scheduler;
 // M3-T7 — IM channel adapter types (Slack/Discord/Telegram/...).
 pub mod im_channels;
+// M6-T1 — Memory graph contract (typed adapter layer over memory_graph).
+pub mod memory_contract;
 
 // B2: Infrastructure modules
 pub mod memory;
