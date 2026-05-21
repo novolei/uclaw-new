@@ -14,13 +14,21 @@ use std::time::Duration;
 /// many items can legitimately take a minute.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Timeout for LLM-backed memorize operations (2 minutes).
+/// Timeout for LLM-backed memorize operations (4 minutes).
 /// MemU's memorize pipeline runs an LLM extraction over the input that
 /// can yield 8-10+ memory items per call, each requiring a model
 /// invocation. 30s default produces "Request timed out" + orphan
 /// "Received response for unknown id" warnings — both indicate the
 /// Python side completed slightly after the Rust side gave up.
-pub const MEMORIZE_TIMEOUT: Duration = Duration::from_secs(120);
+///
+/// Bundle 4 — bumped 120s → 240s after dev verification showed
+/// `proactive::service::memorize_with_config` consistently hitting the
+/// 120s cap on multi-category extraction (4+ items with category
+/// hint enrichment). The Python side typically completes in 100–180s
+/// for those cases, so 240s gives a comfortable buffer without
+/// stalling the proactive loop indefinitely (the loop's own
+/// `is_running` flag will still cancel on shutdown).
+pub const MEMORIZE_TIMEOUT: Duration = Duration::from_secs(240);
 
 /// Maximum number of automatic restart attempts before giving up.
 const MAX_RESTART_ATTEMPTS: u32 = 3;

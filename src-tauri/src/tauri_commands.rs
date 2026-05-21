@@ -10318,6 +10318,135 @@ pub async fn send_agent_message(
         }
     };
 
+    // ── Memory Recall Integration (Agent path) ───────────────────────────
+    // Bundle 4 — mirror what Chat (`send_message`) does so Agent turns also:
+    //   1. inject memory context into the system prompt
+    //   2. emit `agent:memory-recall` IPC so the UI chip shows
+    //
+    // Done BEFORE the spawn because build_recall_plan needs `state.*`
+    // handles that don't survive `move`. The resulting Option<String> is
+    // moved into the spawn closure and applied via delegate.set_memory_context.
+    //
+    // Recall space_id mirrors the agent loop's hard-coded "default" (see
+    // skill_search/load_skill tools above) — once dynamic per-workspace
+    // recall lands we'll thread it through here too.
+    let memory_ctx_for_spawn: Option<String> = {
+        let recall_store = state.memory_graph_store.clone();
+        let recall_memu = state.memu_client.clone();
+        let recall_config = {
+            let s = state.settings.read().await;
+            s.memory_recall_config
+                .clone()
+                .map(crate::memory_graph::recall::MemoryRecallConfig::from)
+                .unwrap_or_default()
+        };
+        let recall_engine = crate::memory_graph::recall::MemoryRecallEngine::new(
+            recall_store,
+            recall_memu,
+            recall_config,
+        );
+        let recall_space_id = "default";
+        match recall_engine.build_recall_plan(recall_space_id, &input.user_message, false).await {
+            Ok(plan) => {
+                let total = plan.boot.len() + plan.triggered.len() + plan.relevant.len()
+                    + plan.expanded.len() + plan.recent.len();
+
+                // Session-scoped memory (LIKE match) — independent of graph total.
+                let session_memory_ctx = {
+                    let session_ns = format!("session:{}", input.session_id);
+                    let session_memories = state.memory_store.search(
+                        &input.user_message,
+                        Some(&session_ns),
+                        5,
+                    );
+                    if !session_memories.is_empty() {
+                        let mut ctx = String::from("<session_memories>\n");
+                        for m in &session_memories {
+                            ctx.push_str(&format!("- [{}] {}\n", m.kind, m.value));
+                        }
+                        ctx.push_str("</session_memories>\n");
+                        tracing::info!(
+                            session_memories = session_memories.len(),
+                            "Session-scoped memories injected (agent)"
+                        );
+                        Some(ctx)
+                    } else {
+                        None
+                    }
+                };
+                let browser_task_memory_ctx =
+                    build_browser_task_memory_context(&state, &input.user_message);
+
+                let composed = if total > 0 {
+                    let budget = recall_engine.config().token_budget;
+                    let mut memory_ctx =
+                        crate::memory_graph::recall::MemoryRecallEngine::format_recall_for_prompt(&plan, budget);
+                    if let Some(ref sess_ctx) = session_memory_ctx {
+                        memory_ctx.push_str(sess_ctx);
+                    }
+                    if let Some(ref browser_ctx) = browser_task_memory_ctx {
+                        memory_ctx.push_str(browser_ctx);
+                    }
+                    tracing::info!(total_candidates = total, "Memory recall injected into system prompt (agent)");
+
+                    // Emit recall summary so the AgentMessages chip renders.
+                    let skills_count = plan.boot.iter()
+                        .chain(plan.triggered.iter())
+                        .chain(plan.relevant.iter())
+                        .chain(plan.expanded.iter())
+                        .filter(|c| c.kind == crate::memory_graph::models::MemoryNodeKind::Procedure)
+                        .count();
+                    let items: Vec<serde_json::Value> = plan.boot.iter()
+                        .chain(plan.triggered.iter())
+                        .chain(plan.relevant.iter())
+                        .chain(plan.expanded.iter())
+                        .take(20)
+                        .map(|c| serde_json::json!({
+                            "nodeId": c.node_id,
+                            "title": c.title,
+                            "kind": c.kind,
+                            "source": c.source,
+                        }))
+                        .collect();
+                    let _ = app_handle.emit("agent:memory-recall", serde_json::json!({
+                        "totalCandidates": total,
+                        "skillsCount": skills_count,
+                        "bootCount": plan.boot.len(),
+                        "triggeredCount": plan.triggered.len(),
+                        "relevantCount": plan.relevant.len(),
+                        "expandedCount": plan.expanded.len(),
+                        "recentCount": plan.recent.len(),
+                        "items": items,
+                        "conversationId": input.session_id,
+                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                    }));
+                    recall_engine.record_used_skills(&plan);
+                    Some(memory_ctx)
+                } else {
+                    let mut memory_ctx = String::new();
+                    if let Some(sess_ctx) = session_memory_ctx {
+                        memory_ctx.push_str(&sess_ctx);
+                    }
+                    if let Some(browser_ctx) = browser_task_memory_ctx {
+                        memory_ctx.push_str(&browser_ctx);
+                    }
+                    if !memory_ctx.is_empty() {
+                        tracing::info!("Auxiliary memories injected (no graph recall, agent)");
+                        Some(memory_ctx)
+                    } else {
+                        tracing::info!("Memory recall returned no candidates (agent)");
+                        None
+                    }
+                };
+                composed
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Memory recall failed, proceeding without memory context (agent)");
+                None
+            }
+        }
+    };
+
     tokio::spawn(async move {
         // Build reasoning context from history
         let mut ctx = ReasoningContext::new(resolved_system_prompt.clone());
@@ -10411,6 +10540,13 @@ pub async fn send_agent_message(
             }
             // Inject DB for plan-suggest aggregate-rate GEP signal
             delegate.set_db(Arc::clone(&db));
+        }
+
+        // Bundle 4 — apply the pre-computed memory recall context. The
+        // build happened outside the spawn (state.* not move-friendly);
+        // here we just stamp it onto the delegate before the loop runs.
+        if let Some(memory_ctx) = memory_ctx_for_spawn {
+            delegate.set_memory_context(memory_ctx);
         }
 
         // ── Memory OS Sprint 2.0 — Learning Pipeline Wiring ─────────
