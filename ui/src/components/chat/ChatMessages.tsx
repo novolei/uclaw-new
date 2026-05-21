@@ -38,9 +38,10 @@ import {
 import { useSmoothStream } from '@/hooks/useSmoothStream'
 import { ScrollPositionManager } from '@/hooks/useScrollPositionMemory'
 import { useConversationParallelMode } from '@/hooks/useConversationSettings'
-import { getModelLogo } from '@/lib/model-logo'
+import { ProviderAvatar } from '@/components/ai-elements/provider-avatar'
 import { userProfileAtom } from '@/atoms/user-profile'
 import { tabMinimapCacheAtom, type TabMinimapItem } from '@/atoms/tab-atoms'
+import { agentDisplayNameForAtom } from '@/atoms/agent-display-name'
 import type { ChatMessage, ChatToolActivity } from '@/lib/chat-types'
 
 // ===== 滚动到顶部加载更多 =====
@@ -145,6 +146,7 @@ export function ChatMessages({
 }: ChatMessagesProps): React.ReactElement {
   const userProfile = useAtomValue(userProfileAtom)
   const setMinimapCache = useSetAtom(tabMinimapCacheAtom)
+  const agentNameLookup = useAtomValue(agentDisplayNameForAtom)
 
   // 平滑流式输出
   const { displayedContent: rawSmoothContent } = useSmoothStream({
@@ -311,15 +313,10 @@ export function ChatMessages({
             {(streaming || smoothContent || smoothReasoning) && (
               <Message from="assistant">
                 <MessageHeader
+                  name={agentNameLookup(conversationId)}
                   model={streamingModel ?? undefined}
                   time={formatMessageTime(Date.now())}
-                  logo={
-                    <img
-                      src={getModelLogo(streamingModel ?? '')}
-                      alt="AI"
-                      className="size-[35px] rounded-[25%] object-cover"
-                    />
-                  }
+                  logo={<ProviderAvatar model={streamingModel} />}
                 />
                 <MessageContent>
                   <ChatToolActivityIndicator activities={toolActivities} isStreaming={streaming} />

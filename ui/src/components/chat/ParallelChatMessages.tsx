@@ -27,7 +27,8 @@ import {
   ReasoningContent,
 } from '@/components/ai-elements/reasoning'
 import { streamingModelAtom } from '@/atoms/chat-atoms'
-import { getModelLogo } from '@/lib/model-logo'
+import { agentDisplayNameForAtom } from '@/atoms/agent-display-name'
+import { ProviderAvatar } from '@/components/ai-elements/provider-avatar'
 import type { ChatMessage } from '@/lib/chat-types'
 
 interface MessageSegment {
@@ -143,6 +144,7 @@ function MessageColumn({
   startedAt,
 }: MessageColumnProps): React.ReactElement {
   const streamingModel = useAtomValue(streamingModelAtom)
+  const agentNameLookup = useAtomValue(agentDisplayNameForAtom)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -186,15 +188,10 @@ function MessageColumn({
         {side === 'assistant' && (streaming || streamingContent || streamingReasoning) && (
           <Message from="assistant">
             <MessageHeader
+              name={agentNameLookup(conversationId)}
               model={streamingModel ?? undefined}
               time={formatMessageTime(Date.now())}
-              logo={
-                <img
-                  src={getModelLogo(streamingModel ?? '')}
-                  alt="AI"
-                  className="size-[35px] rounded-[25%] object-cover"
-                />
-              }
+              logo={<ProviderAvatar model={streamingModel} />}
             />
             <MessageContent>
               {streamingReasoning && (

@@ -40,6 +40,7 @@ import { tabMinimapCacheAtom } from '@/atoms/tab-atoms'
 import { channelsAtom } from '@/atoms/chat-atoms'
 import { proactiveLearningEventsAtom, memoryRecallEventAtom, skillRecallsMapAtom } from '@/atoms/agent-atoms'
 import type { MemoryRecallEvent } from '@/atoms/agent-atoms'
+import { agentDisplayNameForAtom } from '@/atoms/agent-display-name'
 import { stickyUserMessageEnabledAtom } from '@/atoms/ui-preferences'
 import { ProactiveLearningChip } from '@/components/chat/ProactiveLearningChip'
 import { MemoryRecallChip } from '@/components/chat/MemoryRecallChip'
@@ -87,12 +88,15 @@ function EmptyState(): React.ReactElement {
 }
 
 function AssistantLogo({ model }: { model?: string }): React.ReactElement {
-  if (model) {
+  // getModelLogo returns '' for unknown providers — fall back to Bot icon so we
+  // never render <img src=""> (broken image).
+  const logoUrl = model ? getModelLogo(model) : ''
+  if (logoUrl) {
     return (
       <img
-        src={getModelLogo(model)}
+        src={logoUrl}
         alt={model}
-        className="size-[35px] rounded-[25%] object-cover"
+        className="size-[35px] rounded-[25%] object-cover bg-muted/30"
       />
     )
   }
@@ -585,11 +589,14 @@ interface AgentMessageItemProps {
   attachedDirs?: string[]
   /** 外层会话 ID — message.sessionId 可能未设置（DB 未填充），作为回退 */
   sessionId: string
+  /** 会话当前选用的模型 ID — 当历史消息 message.model 未持久化时作为兜底 */
+  sessionModelId?: string
 }
 
-function AgentMessageItem({ message, sessionPath, attachedDirs, sessionId }: AgentMessageItemProps): React.ReactElement | null {
+function AgentMessageItem({ message, sessionPath, attachedDirs, sessionId, sessionModelId }: AgentMessageItemProps): React.ReactElement | null {
   const userProfile = useAtomValue(userProfileAtom)
   const channels = useAtomValue(channelsAtom)
+  const agentNameLookup = useAtomValue(agentDisplayNameForAtom)
   const isCompacted = message.compacted === true
 
   if (message.role === 'user') {
@@ -636,13 +643,16 @@ function AgentMessageItem({ message, sessionPath, attachedDirs, sessionId }: Age
       ? parseSkillCitations(normalizeAgentMarkdown(message.content))
       : { cleanedContent: '', citations: [] }
 
+    // model fallback chain: 持久化字段 → 会话当前选用模型；保证表头始终能显示 model caption + logo
+    const resolvedModelId = message.model ?? sessionModelId
     return (
       <div className={isCompacted ? 'opacity-40 grayscale-[0.3]' : undefined}>
       <Message from="assistant">
         <MessageHeader
-          model={message.model ? resolveModelDisplayName(message.model, channels) : undefined}
+          name={agentNameLookup(message.sessionId ?? sessionId)}
+          model={resolvedModelId ? resolveModelDisplayName(resolvedModelId, channels) : undefined}
           time={formatMessageTime(message.createdAt)}
-          logo={<AssistantLogo model={message.model} />}
+          logo={<AssistantLogo model={resolvedModelId} />}
         />
         <MessageContent>
           {message.contentBlocks && message.contentBlocks.length > 0 ? (
@@ -775,6 +785,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
   const memoryRecallMap = useAtomValue(memoryRecallEventAtom)
   const skillRecallsMap = useAtomValue(skillRecallsMapAtom)
   const stickyUserMessageEnabled = useAtomValue(stickyUserMessageEnabledAtom)
+  const agentNameLookupOuter = useAtomValue(agentDisplayNameForAtom)
   /** 淡入控制：切换会话时先隐藏，等布局完成后再显示。 */
   const [ready, setReady] = React.useState(false)
   const prevSessionIdRef = React.useRef<string | null>(null)
@@ -811,7 +822,9 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
 
   // 从 streamState 属性中计算派生值
   const streamingContent = streamState?.content ?? ''
-  const agentStreamingModel = streamState?.model ? resolveModelDisplayName(streamState.model, channels) : undefined
+  // streamState.model 在 SDK 首事件前未填充；此时回退到会话当前选用模型，避免 caption 空缺 + Bot 默认图标
+  const streamingModelId = streamState?.model ?? sessionModelId
+  const agentStreamingModel = streamingModelId ? resolveModelDisplayName(streamingModelId, channels) : undefined
   const retrying = streamState?.retrying
   const startedAt = streamState?.startedAt
 
@@ -867,6 +880,8 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
   const suppressAgentRunning = streamState?.isCompacting || streamState?.compactInFlight
 
   // 迷你地图数据 — 跳过 compacted 消息以减少噪音
+  // model 字段持久化前的历史 assistant 消息（DB 未填 model 列）回退到会话当前模型，
+  // 否则 ItemIcon 拿不到 model 就不渲染 logo。
   const minimapItems: MinimapItem[] = React.useMemo(
     () => {
       return messages
@@ -876,10 +891,10 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
         role: m.role === 'status' ? 'status' as const : m.role as MinimapItem['role'],
         preview: (m.content ?? '').replace(/<attached_files>[\s\S]*?<\/attached_files>\n*/, '').slice(0, 200),
         avatar: m.role === 'user' ? userProfile.avatar : undefined,
-        model: m.model,
+        model: m.role === 'assistant' ? (m.model ?? sessionModelId) : m.model,
       }))
     },
-    [messages, userProfile.avatar]
+    [messages, userProfile.avatar, sessionModelId]
   )
 
   // 将 liveMessages 中的 compact_boundary 按时间戳插入到消息列表的正确位置，
@@ -959,6 +974,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
                     sessionPath={sessionPath}
                     attachedDirs={attachedDirs}
                     sessionId={sessionId}
+                    sessionModelId={sessionModelId}
                   />
                 </div>
               )
@@ -968,9 +984,10 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
             {!suppressAgentRunning && (streaming || smoothContent || retrying || (streamState?.toolActivities?.length ?? 0) > 0 || streamState?.reasoning) && (
               <Message from="assistant">
                 <MessageHeader
+                  name={agentNameLookupOuter(sessionId)}
                   model={agentStreamingModel}
                   time={formatMessageTime(Date.now())}
-                  logo={<AssistantLogo model={agentStreamingModel} />}
+                  logo={<AssistantLogo model={streamingModelId} />}
                 />
                 <MessageContent>
                   {retrying && <RetryingNotice retrying={retrying} />}

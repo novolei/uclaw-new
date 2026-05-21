@@ -140,6 +140,16 @@ pub struct ChatDelegate {
     /// turn, the Anthropic cache should cover it — this tracks whether the
     /// list actually changed (e.g. after an MCP reconnect) so we can log it.
     last_tool_defs_hash: Mutex<Option<u64>>,
+    /// Slice 1 — optional collector for M2-J TokenBudgetSnapshot.
+    /// When present, every `on_usage` tick records a fresh snapshot
+    /// keyed on `conversation_id`. UI reads via
+    /// `get_latest_token_budget` Tauri command. None = telemetry off
+    /// (e.g. headless / harness contexts that don't need UI feed).
+    token_budget_collector: Option<crate::agent::telemetry::TokenBudgetCollector>,
+    /// Slice 1 — provider id ('anthropic' / 'openai' / 'deepseek' / etc.)
+    /// stamped on every TokenBudgetSnapshot. Default 'unknown' is
+    /// replaced by the caller via `set_provider`.
+    provider: String,
 }
 
 impl ChatDelegate {
@@ -190,7 +200,27 @@ impl ChatDelegate {
             gbrain_extract_daily_budget: 0,
             gbrain_extract_mcp_mgr: None,
             last_tool_defs_hash: Mutex::new(None),
+            token_budget_collector: None,
+            provider: "unknown".to_string(),
         }
+    }
+
+    /// Slice 1 — wire the M2-J TokenBudgetCollector. When set, every
+    /// `on_usage` tick records a fresh snapshot keyed on
+    /// `conversation_id` so the UI can subscribe via
+    /// `get_latest_token_budget`. Pass an `AppState::token_budget_collector`
+    /// clone from the Tauri command that builds the delegate.
+    pub fn set_token_budget_collector(
+        &mut self,
+        collector: crate::agent::telemetry::TokenBudgetCollector,
+    ) {
+        self.token_budget_collector = Some(collector);
+    }
+
+    /// Slice 1 — set the provider id stamped on TokenBudgetSnapshot.
+    /// Pass `llm_config.provider` from the Tauri command.
+    pub fn set_provider(&mut self, provider: String) {
+        self.provider = provider;
     }
 
     /// Set the GEP Gene retriever for control signal injection.
@@ -2283,6 +2313,31 @@ impl LoopDelegate for ChatDelegate {
             reason_ctx.total_input_tokens,
             reason_ctx.total_output_tokens,
         );
+        // Slice 1 — record TokenBudgetSnapshot for UI subscription.
+        // No-op when the collector isn't wired (headless / harness).
+        if let Some(ref collector) = self.token_budget_collector {
+            let turn = self.turn_index.load(Ordering::Relaxed);
+            let captured_at =
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            let mut snap = crate::agent::token_budget::TokenBudgetSnapshot::new(
+                self.conversation_id.clone(),
+                turn,
+                self.provider.clone(),
+                self.model.clone(),
+                captured_at,
+            );
+            snap.provider_input_tokens = usage.input_tokens as u64;
+            snap.provider_output_tokens = usage.output_tokens as u64;
+            // TokenUsage from M1-T6 fields. `cache_read_tokens` is
+            // the cache-hit count; `reasoning_output_tokens` is the
+            // Claude-extended-thinking / o1 reasoning count. Cost in
+            // micro-USD is computed downstream (M1-T6 cost_records
+            // pipeline) so we leave it None here for now.
+            snap.provider_cached_tokens = usage.cache_read_tokens as u64;
+            snap.provider_reasoning_tokens = usage.reasoning_output_tokens as u64;
+            // snap.cost_usd_micros stays None (M2-J commit 2 wires it).
+            collector.record(snap);
+        }
     }
 
     async fn on_tool_intent_nudge(&self, text: &str, _ctx: &mut ReasoningContext) {

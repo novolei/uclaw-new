@@ -171,12 +171,15 @@ function isUserInputMessage(message: SDKUserMessage): boolean {
 // ===== 助手头像 =====
 
 function AssistantLogo({ model }: { model?: string }): React.ReactElement {
-  if (model) {
+  // Same shape as AgentMessages/ChatMessages — empty URL means unknown
+  // provider, fall back to the Bot icon so we never render a broken <img>.
+  const logoUrl = model ? getModelLogo(model) : ''
+  if (logoUrl) {
     return (
       <img
-        src={getModelLogo(model)}
+        src={logoUrl}
         alt={model}
-        className="size-[35px] rounded-[25%] object-cover"
+        className="size-[35px] rounded-[25%] object-cover bg-muted/30"
       />
     )
   }

@@ -1985,6 +1985,12 @@ pub async fn send_message(
     delegate.set_trajectory_store(std::sync::Arc::clone(&state.trajectory_store));
     delegate.set_tool_budget(std::sync::Arc::clone(&state.tool_budget));
 
+    // Slice 1 — wire the M2-J telemetry collector so on_usage records
+    // a TokenBudgetSnapshot per turn. UI reads via
+    // `get_latest_token_budget` Tauri command.
+    delegate.set_token_budget_collector(state.token_budget_collector.clone());
+    delegate.set_provider(llm_config.provider.clone());
+
     // Wire thinking_enabled from the request
     delegate.set_thinking_enabled(input.thinking_enabled.unwrap_or(false));
 
@@ -10149,6 +10155,7 @@ pub async fn send_agent_message(
     let infra_service = Arc::clone(&state.infra_service);
     let trajectory_store = Arc::clone(&state.trajectory_store);
     let tool_budget = Arc::clone(&state.tool_budget);
+    let token_budget_collector = state.token_budget_collector.clone();
     let running_sessions = Arc::clone(&state.running_sessions);
     let skills_registry_for_manifest = Arc::clone(&state.skills_registry);
     let memory_graph_store_for_manifest = Arc::clone(&state.memory_graph_store);
@@ -10230,6 +10237,8 @@ pub async fn send_agent_message(
         delegate.set_infra_service(Arc::clone(&infra_service));
         delegate.set_trajectory_store(Arc::clone(&trajectory_store));
         delegate.set_tool_budget(Arc::clone(&tool_budget));
+        delegate.set_token_budget_collector(token_budget_collector.clone());
+        delegate.set_provider(llm_config.provider.clone());
 
         // Build skill manifest and inject into system prompt (async: needs registry.read()).
         {
@@ -10410,8 +10419,8 @@ pub async fn send_agent_message(
             if let Ok(conn) = db.lock() {
                 let _ = conn.execute(
                     "INSERT INTO agent_messages \
-                     (id, session_id, role, content, created_at, reasoning, tool_activities_json, duration_ms, input_tokens, output_tokens, cost_usd) \
-                     VALUES (?1,?2,'assistant',?3,?4,?5,?6,?7,?8,?9,?10)",
+                     (id, session_id, role, content, created_at, reasoning, tool_activities_json, duration_ms, input_tokens, output_tokens, cost_usd, model) \
+                     VALUES (?1,?2,'assistant',?3,?4,?5,?6,?7,?8,?9,?10,?11)",
                     rusqlite::params![
                         asst_msg_id,
                         session_id,
@@ -10423,6 +10432,7 @@ pub async fn send_agent_message(
                         turn_input,
                         turn_output,
                         cost_usd,
+                        &model,
                     ],
                 );
                 let _ = conn.execute(
@@ -13481,6 +13491,8 @@ pub async fn start_agent_teams(
     let app_for_factory = app_handle.clone();
     let safety_for_factory = Arc::clone(&safety_manager);
     let approvals_for_factory = Arc::clone(&pending_approvals);
+    let token_budget_collector_for_factory = state.token_budget_collector.clone();
+    let provider_for_factory = provider_id.clone();
     let proactive_service_for_teams = Arc::clone(&state.proactive_service);
     // Sprint 2.0 — learning pipeline snapshot for the orchestrator's
     // delegate_factory closure. Read config flags now so the captured
@@ -13593,6 +13605,8 @@ pub async fn start_agent_teams(
                     session_id_for_tools,
                     workspace_root_for_factory.clone(),
                 );
+                delegate.set_token_budget_collector(token_budget_collector_for_factory.clone());
+                delegate.set_provider(provider_for_factory.clone());
                 // Inject GeneRetriever if we have active genes
                 if !active_genes.is_empty() {
                     if let Some(retriever) = build_gene_retriever(active_genes.clone(), gene_repo_for_teams.as_ref()) {
@@ -15257,6 +15271,145 @@ mod mention_file_search_tests {
                 legit,
             );
         }
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// Slice 1 — Agent OS v2 introspection commands
+// ═════════════════════════════════════════════════════════════════════
+//
+// Three Tauri commands wire the M2-A baseline registry + the M2-J
+// TokenBudgetSnapshot into the UI:
+//
+// 1. `inspect_baseline_blocks` — what's in the system prompt?
+// 2. `inspect_rendered_baseline` — give me the rendered baseline text
+// 3. `get_latest_token_budget` — what did the last turn cost?
+//
+// Zero behavior change to the agent loop — these are pure read APIs.
+
+/// One row of the inspector view: a baseline block's metadata.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BaselineBlockInfo {
+    /// Stable id (the block's section header / topic).
+    pub id: String,
+    /// Topics this block claims to cover (kebab-lowercase).
+    pub topics: Vec<String>,
+    /// Rough token cost (caller / UI may refine via tokenizer).
+    pub token_estimate: usize,
+    /// First 200 chars of the rendered block — preview for UI rows.
+    pub preview: String,
+}
+
+/// Return metadata for each block in the M2-A baseline registry.
+///
+/// The UI's "System Prompt 检查器" page calls this on mount to list
+/// the 10 baseline blocks with their token estimates + previews.
+#[tauri::command]
+pub async fn inspect_baseline_blocks() -> Result<Vec<BaselineBlockInfo>, Error> {
+    use crate::agent::baseline_blocks::{registry, BaselineBlock};
+    const PREVIEW_BYTES: usize = 200;
+
+    let mut out = Vec::with_capacity(registry().len());
+    for block in registry() {
+        let rendered = block.render();
+        // UTF-8 safe truncation for preview.
+        let mut cut = PREVIEW_BYTES.min(rendered.len());
+        while cut > 0 && !rendered.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let preview = rendered[..cut].to_string();
+        out.push(BaselineBlockInfo {
+            id: block_id(block.render().as_str()),
+            topics: block.topics().iter().map(|s| (*s).to_string()).collect(),
+            token_estimate: block.token_estimate(),
+            preview,
+        });
+    }
+    Ok(out)
+}
+
+/// Derive a stable id from a block's rendered output. The first non-
+/// empty line after stripping leading whitespace is the id; falls
+/// back to "block-{n}" if empty. Matches the M2-A doc convention.
+fn block_id(rendered: &str) -> String {
+    for line in rendered.lines() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            // Strip markdown heading prefixes for cleaner ids.
+            let id: String = trimmed
+                .trim_start_matches('#')
+                .trim()
+                .chars()
+                .take(80)
+                .collect();
+            if !id.is_empty() {
+                return id;
+            }
+        }
+    }
+    "block-unknown".to_string()
+}
+
+/// Render the full baseline (all blocks joined) as the agent would
+/// see it. Useful for "preview my system prompt before sending" UI.
+#[tauri::command]
+pub async fn inspect_rendered_baseline() -> Result<String, Error> {
+    Ok(crate::agent::baseline_blocks::render_all())
+}
+
+/// Return the latest `TokenBudgetSnapshot` for `task_id`, if the
+/// agent loop has recorded one. UI polls this (or subscribes via
+/// future Tauri event) to drive the live token-budget dashboard.
+#[tauri::command]
+pub async fn get_latest_token_budget(
+    state: tauri::State<'_, AppState>,
+    task_id: String,
+) -> Result<Option<crate::agent::token_budget::TokenBudgetSnapshot>, Error> {
+    Ok(state.token_budget_collector.latest(&task_id))
+}
+
+/// List every task id the collector currently has a snapshot for.
+/// UI uses this to populate the task selector in the dashboard.
+#[tauri::command]
+pub async fn list_token_budget_task_ids(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, Error> {
+    Ok(state.token_budget_collector.task_ids())
+}
+
+#[cfg(test)]
+mod slice1_introspection_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn inspect_baseline_blocks_returns_10_entries() {
+        let blocks = inspect_baseline_blocks().await.expect("should not error");
+        // M2-A baseline has 10 blocks (registry size locked by #327).
+        assert_eq!(blocks.len(), 10, "baseline must have exactly 10 blocks");
+        for b in &blocks {
+            assert!(!b.id.is_empty(), "every block needs an id");
+            // Preview is UTF-8 valid (would have panicked above if not).
+            assert!(b.preview.len() <= 200);
+        }
+    }
+
+    #[tokio::test]
+    async fn inspect_rendered_baseline_returns_nonempty() {
+        let rendered = inspect_rendered_baseline().await.expect("should not error");
+        assert!(!rendered.is_empty(), "baseline render must be non-empty");
+        // Sanity: baseline is on the order of thousands of bytes
+        // (10 blocks × hundreds of bytes each).
+        assert!(rendered.len() > 500);
+    }
+
+    #[test]
+    fn block_id_strips_markdown_heading() {
+        assert_eq!(block_id("## Workspace Path\n\nbody"), "Workspace Path");
+        assert_eq!(block_id("# Header\nbody"), "Header");
+        assert_eq!(block_id("plain line\nbody"), "plain line");
+        assert_eq!(block_id(""), "block-unknown");
+        assert_eq!(block_id("\n  \n"), "block-unknown");
     }
 }
 

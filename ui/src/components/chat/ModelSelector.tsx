@@ -231,13 +231,14 @@ export function ModelSelector({
         onClick={() => setOpen(true)}
         className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
       >
-        {displayModelInfo ? (
-          <img
-            src={getModelLogo(displayModelInfo.modelId, displayModelInfo.provider)}
-            alt={displayModelInfo.modelName}
-            className="size-4 rounded object-cover"
-          />
-        ) : (
+        {displayModelInfo ? (() => {
+          const url = getModelLogo(displayModelInfo.modelId, displayModelInfo.provider)
+          return url ? (
+            <img src={url} alt={displayModelInfo.modelName} className="size-4 rounded object-cover" />
+          ) : (
+            <Cpu className="size-3.5" />
+          )
+        })() : (
           <Cpu className="size-3.5" />
         )}
         <span className="max-w-[200px] truncate">
@@ -284,11 +285,15 @@ export function ModelSelector({
                   <div key={channelId}>
                     {/* 供应商标题行 - 灰色背景 */}
                     <div className="flex items-center gap-2 px-4 py-2 bg-muted/50 border-b border-border/30">
-                      <img
-                        src={getChannelLogo(channels.find((c) => c.id === channelId)?.baseUrl ?? '')}
-                        alt={first.channelName}
-                        className="size-5 rounded object-cover"
-                      />
+                      {(() => {
+                        const ch = channels.find((c) => c.id === channelId)
+                        const url = getChannelLogo(ch?.baseUrl ?? '', ch?.provider)
+                        return url ? (
+                          <img src={url} alt={first.channelName} className="size-5 rounded object-cover" />
+                        ) : (
+                          <span className="size-5 rounded bg-muted-foreground/20" aria-hidden />
+                        )
+                      })()}
                       <span className="text-sm font-medium text-muted-foreground">
                         {first.channelName}
                       </span>
@@ -319,11 +324,14 @@ export function ModelSelector({
                             isSelected && 'bg-foreground/10 border-l-3 border-l-primary'
                           )}
                         >
-                          <img
-                            src={getModelLogo(option.modelId, option.provider)}
-                            alt={option.modelName}
-                            className="size-5 rounded object-cover flex-shrink-0"
-                          />
+                          {(() => {
+                            const url = getModelLogo(option.modelId, option.provider)
+                            return url ? (
+                              <img src={url} alt={option.modelName} className="size-5 rounded object-cover flex-shrink-0" />
+                            ) : (
+                              <span className="size-5 rounded bg-muted-foreground/20 flex-shrink-0" aria-hidden />
+                            )
+                          })()}
                           <span className={cn(
                             'flex-1 text-sm truncate',
                             isSelected ? 'font-medium text-foreground' : 'text-foreground/80'

@@ -23,6 +23,8 @@ pub mod context_manager;
 pub mod cache_policy;
 // M2-J pilot — TokenBudgetSnapshot UI backend contract.
 pub mod token_budget;
+// Slice 1 — Runtime telemetry collector (bridges agent loop to M2-J).
+pub mod telemetry;
 // M5 pilot — HookBus 13-event type skeleton.
 pub mod hook_bus;
 // M2-D pilot — Diff-based context re-injection.
