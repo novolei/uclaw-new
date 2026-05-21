@@ -25,6 +25,10 @@ pub mod store;
 pub use adapters::{scan_directory, FileSystemAdapter, ScanOptions, ScanResult};
 pub use adapters::{tab_entity, BrowserAdapter, BrowserTabEvent};
 pub use adapters::{channel_to_entity, SlackAdapter, SlackEvent};
+pub use adapters::{
+    calendar_event_to_entity, email_to_entity, CalendarAdapter, CalendarChangeEvent,
+    EmailEvent, MailAdapter,
+};
 pub use entity::{EntityRef, WorldEntity, WorldEntityKind, WorldEntityState};
 pub use snapshot::{ProjectionStats, WorldSnapshot};
 pub use store::{
