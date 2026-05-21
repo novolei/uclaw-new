@@ -16,8 +16,35 @@ import type { InvocableSkill, WorkspaceFileMatch } from '@/lib/types'
 import { useEditorMentionTrigger } from '@/hooks/useEditorMentionTrigger'
 import { ComposerMentionPopup } from './ComposerMentionPopup'
 import type { MentionChipKind } from './MentionChipNode'
-import { Sparkles, FileText, AlertTriangle } from 'lucide-react'
+import { Sparkles, FileText, AlertTriangle, Layers } from 'lucide-react'
 import { cn } from '@/lib/utils'
+
+/**
+ * Built-in slash commands that aren't backed by an InvocableSkill but
+ * should still be discoverable via the `/` autocompletion popup.
+ *
+ * Each entry has a fixed `name` (matched against the `/foo` literal in
+ * handleSend), a short `description`, and a Lucide icon component.
+ * Adding more entries here surfaces them in the popup with zero
+ * additional plumbing — `commitBuiltin` handles the text insert
+ * uniformly.
+ */
+const BUILTIN_SLASH_COMMANDS = [
+  {
+    name: 'compact',
+    description: '压缩历史对话为结构化摘要（M2-G StructuredFold）以节省 token',
+    aliases: ['compact', '压缩', '归纳'],
+  },
+] as const
+type BuiltinCommand = (typeof BUILTIN_SLASH_COMMANDS)[number]
+
+function matchBuiltinCommands(query: string): BuiltinCommand[] {
+  const q = query.toLowerCase().trim()
+  if (!q) return [...BUILTIN_SLASH_COMMANDS]
+  return BUILTIN_SLASH_COMMANDS.filter((cmd) =>
+    cmd.aliases.some((alias) => alias.toLowerCase().includes(q)),
+  )
+}
 
 interface Props {
   /** Ref to the TipTap editor this controller drives. Replaces the
@@ -48,6 +75,7 @@ export interface ComposerMentionControllerHandle {
 type Row =
   | { kind: 'skill'; data: InvocableSkill }
   | { kind: 'file'; data: WorkspaceFileMatch }
+  | { kind: 'builtin'; data: BuiltinCommand }
 
 export const ComposerMentionController = React.forwardRef<
   ComposerMentionControllerHandle,
@@ -89,6 +117,11 @@ export const ComposerMentionController = React.forwardRef<
     void (async () => {
       try {
         if (trigger.char === '/') {
+          // Built-in commands (e.g. /compact) are always candidates and
+          // sit at the TOP of the result list — they don't depend on the
+          // backend Skill registry and aren't subject to lifecycle
+          // checks. Skills come below.
+          const builtins = matchBuiltinCommands(trigger.query)
           const skills = await listInvocableSkills(activeWorkspaceId ?? undefined)
           if (seq !== fetchSeqRef.current) return
           const q = trigger.query.toLowerCase()
@@ -99,7 +132,11 @@ export const ComposerMentionController = React.forwardRef<
                   || (s.description?.toLowerCase().includes(q) ?? false),
               )
             : skills
-          setRows(filtered.slice(0, 30).map((s) => ({ kind: 'skill' as const, data: s })))
+          const rows: Row[] = [
+            ...builtins.map((b) => ({ kind: 'builtin' as const, data: b })),
+            ...filtered.slice(0, 30).map((s) => ({ kind: 'skill' as const, data: s })),
+          ]
+          setRows(rows)
           setSelectedIndex(0)
         } else {
           // '@' — files + learned-skill fallback (the CJK-title fallback
@@ -142,14 +179,29 @@ export const ComposerMentionController = React.forwardRef<
   const open = !disabled && trigger != null
   const hasRows = rows.length > 0
 
-  // Commit: dispatch TipTap's insertMentionChip command. It replaces
-  // the trigger char + query span with an atomic chip node. The chip's
-  // `value` attr is what serializes back to wire format on next
-  // onUpdate, so the parent's `setValue(string)` flow stays unchanged.
+  // Commit: dispatch TipTap's insertMentionChip command for
+  // skill/file rows. Builtin commands (e.g. /compact) commit as plain
+  // text because they're intercepted by handleSend's slash-command
+  // dispatcher, not by the skill mention chip path.
   const commitRow = React.useCallback(
     (row: Row) => {
       const ed = editorRef.current
       if (!ed || !trigger) return
+
+      if (row.kind === 'builtin') {
+        // Replace `/<query>` with `/<name> ` (trailing space so the
+        // composer feels ready for follow-up text or Enter-to-send).
+        // The mention chip path doesn't apply — handleSend checks the
+        // raw text for `/<name>` and intercepts there.
+        ed
+          .chain()
+          .focus()
+          .deleteRange({ from: trigger.triggerStart, to: trigger.cursorPos })
+          .insertContent(`/${row.data.name} `)
+          .run()
+        return
+      }
+
       const kind: MentionChipKind = row.kind === 'skill' ? 'skill' : 'file'
       const display = row.kind === 'skill' ? row.data.name : row.data.name
       const value = row.kind === 'skill' ? row.data.name : row.data.absolutePath
@@ -222,12 +274,18 @@ export const ComposerMentionController = React.forwardRef<
       headerLabel={headerLabel}
       emptyText={emptyText}
       keyFor={(r) =>
-        r.kind === 'skill' ? `s:${r.data.name}` : `f:${r.data.absolutePath}`}
+        r.kind === 'skill'
+          ? `s:${r.data.name}`
+          : r.kind === 'file'
+            ? `f:${r.data.absolutePath}`
+            : `b:${r.data.name}`}
       renderItem={(r, isSelected) =>
         r.kind === 'skill' ? (
           <SkillRow skill={r.data} isSelected={isSelected} />
-        ) : (
+        ) : r.kind === 'file' ? (
           <FileRow file={r.data} isSelected={isSelected} />
+        ) : (
+          <BuiltinRow cmd={r.data} isSelected={isSelected} />
         )
       }
     />
@@ -265,6 +323,31 @@ function SkillRow({
             {skill.description}
           </div>
         )}
+      </div>
+    </>
+  )
+}
+
+function BuiltinRow({
+  cmd,
+  isSelected: _isSelected,
+}: {
+  cmd: BuiltinCommand
+  isSelected: boolean
+}): React.ReactElement {
+  return (
+    <>
+      <Layers className="size-3.5 flex-shrink-0 mt-0.5 text-emerald-500/85" />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-medium truncate">/{cmd.name}</span>
+          <span className="text-[9px] px-1 py-px rounded border bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 flex-shrink-0">
+            内置
+          </span>
+        </div>
+        <div className="text-[10px] text-muted-foreground/70 mt-0.5 line-clamp-1">
+          {cmd.description}
+        </div>
       </div>
     </>
   )
