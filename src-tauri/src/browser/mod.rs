@@ -124,7 +124,7 @@ impl BrowserService {
         let guard = self.inner.read().await;
         let inner = guard.as_ref().ok_or_else(|| Error::Internal("Browser not launched".into()))?;
         let page = inner.pages.get(tab_id)
-            .ok_or_else(|| Error::Internal(format!("Tab '{}' not found", tab_id)))?;
+            .ok_or_else(|| Error::Internal(tab_not_found_message(tab_id, &inner.pages)))?;
         let png_bytes = page.screenshot(ScreenshotParams::default()).await
             .map_err(|e| Error::Internal(format!("Screenshot failed: {}", e)))?;
         Ok(ScreenshotResult { data: STANDARD.encode(&png_bytes), width: 1280, height: 800 })
@@ -134,7 +134,7 @@ impl BrowserService {
         let guard = self.inner.read().await;
         let inner = guard.as_ref().ok_or_else(|| Error::Internal("Browser not launched".into()))?;
         let page = inner.pages.get(tab_id)
-            .ok_or_else(|| Error::Internal(format!("Tab '{}' not found", tab_id)))?;
+            .ok_or_else(|| Error::Internal(tab_not_found_message(tab_id, &inner.pages)))?;
         let text = page.evaluate("document.body.innerText").await
             .map_err(|e| Error::Internal(format!("Extract failed: {}", e)))?
             .into_value::<String>()
@@ -146,7 +146,7 @@ impl BrowserService {
         let guard = self.inner.read().await;
         let inner = guard.as_ref().ok_or_else(|| Error::Internal("Browser not launched".into()))?;
         let page = inner.pages.get(tab_id)
-            .ok_or_else(|| Error::Internal(format!("Tab '{}' not found", tab_id)))?;
+            .ok_or_else(|| Error::Internal(tab_not_found_message(tab_id, &inner.pages)))?;
         page.find_element(selector).await
             .map_err(|e| Error::Internal(format!("Element '{}' not found: {}", selector, e)))?
             .click().await
@@ -158,7 +158,7 @@ impl BrowserService {
         let guard = self.inner.read().await;
         let inner = guard.as_ref().ok_or_else(|| Error::Internal("Browser not launched".into()))?;
         let page = inner.pages.get(tab_id)
-            .ok_or_else(|| Error::Internal(format!("Tab '{}' not found", tab_id)))?;
+            .ok_or_else(|| Error::Internal(tab_not_found_message(tab_id, &inner.pages)))?;
         page.find_element(selector).await
             .map_err(|e| Error::Internal(format!("Element '{}' not found: {}", selector, e)))?
             .type_str(text).await
@@ -171,7 +171,7 @@ impl BrowserService {
         let guard = self.inner.read().await;
         let inner = guard.as_ref().ok_or_else(|| Error::Internal("Browser not launched".into()))?;
         let page = inner.pages.get(tab_id)
-            .ok_or_else(|| Error::Internal(format!("Tab '{}' not found", tab_id)))?;
+            .ok_or_else(|| Error::Internal(tab_not_found_message(tab_id, &inner.pages)))?;
         timeout(Duration::from_millis(timeout_ms), page.find_element(selector)).await
             .map_err(|_| Error::Internal(format!("Timeout waiting for '{}'", selector)))?
             .map_err(|e| Error::Internal(format!("Wait failed: {}", e)))?;
@@ -181,4 +181,46 @@ impl BrowserService {
 
 impl Default for BrowserService {
     fn default() -> Self { Self::new() }
+}
+
+/// Bundle 19 — build a "tab not found" error message that gives the
+/// LLM a concrete recovery path instead of the bare `Tab 'X' not
+/// found`. The LLM often invents `tab_id="new"` because
+/// `browser_navigate`'s schema documents `new` as a sentinel; other
+/// browser tools take the resulting real tab id and don't accept
+/// `new`. The expanded message names what's wrong and what to do.
+fn tab_not_found_message(tab_id: &str, available: &HashMap<String, Page>) -> String {
+    let mut msg = format!("Tab '{}' not found.", tab_id);
+    if tab_id == "new" {
+        msg.push_str(
+            " 'new' is only valid as the tab_id for `browser_navigate` \
+             (where it opens a new tab and returns the real id). For \
+             every other browser tool, pass a tab_id that came back \
+             from a prior `browser_navigate` call."
+        );
+    } else {
+        msg.push_str(
+            " The tab_id must be a value returned by a prior \
+             `browser_navigate` call."
+        );
+    }
+    if !available.is_empty() {
+        let mut ids: Vec<&str> = available.keys().map(String::as_str).collect();
+        ids.sort();
+        // Cap at 5 to keep the LLM-visible message short — the agent
+        // gets a hint, not the whole tab inventory.
+        let preview: Vec<&str> = ids.iter().take(5).copied().collect();
+        if ids.len() > 5 {
+            msg.push_str(&format!(
+                " Open tabs (first 5 of {}): {}",
+                ids.len(),
+                preview.join(", "),
+            ));
+        } else {
+            msg.push_str(&format!(" Open tabs: {}", preview.join(", ")));
+        }
+    } else {
+        msg.push_str(" No tabs are currently open.");
+    }
+    msg
 }

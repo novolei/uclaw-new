@@ -160,12 +160,46 @@ impl BrowserContext {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     async fn get_page(&self, tab_id: &str) -> Result<Page> {
-        self.pages
-            .read()
-            .await
-            .get(tab_id)
-            .cloned()
-            .ok_or_else(|| anyhow!("Tab '{}' not found", tab_id))
+        let pages = self.pages.read().await;
+        if let Some(page) = pages.get(tab_id) {
+            return Ok(page.clone());
+        }
+        // Bundle 19 — explain how to recover instead of the bare "Tab
+        // 'X' not found". The LLM frequently passes tab_id="new"
+        // because `browser_navigate` documents "new" as a sentinel,
+        // but other tools (screenshot, click, type, etc.) require a
+        // real id from a prior navigate call.
+        let mut msg = format!("Tab '{}' not found.", tab_id);
+        if tab_id == "new" {
+            msg.push_str(
+                " 'new' is only valid as the tab_id for `browser_navigate` \
+                 (where it opens a new tab and returns the real id). For \
+                 every other browser tool, pass a tab_id that came back \
+                 from a prior `browser_navigate` call.",
+            );
+        } else {
+            msg.push_str(
+                " The tab_id must be a value returned by a prior \
+                 `browser_navigate` call.",
+            );
+        }
+        if pages.is_empty() {
+            msg.push_str(" No tabs are currently open.");
+        } else {
+            let mut ids: Vec<&str> = pages.keys().map(String::as_str).collect();
+            ids.sort();
+            let take = ids.len().min(5);
+            if ids.len() > 5 {
+                msg.push_str(&format!(
+                    " Open tabs (first 5 of {}): {}",
+                    ids.len(),
+                    ids[..take].join(", "),
+                ));
+            } else {
+                msg.push_str(&format!(" Open tabs: {}", ids[..take].join(", ")));
+            }
+        }
+        Err(anyhow!(msg))
     }
 
     /// Resolve tab_id: if "new" or not found, open a blank page and return the
@@ -745,12 +779,25 @@ impl BrowserContext {
     }
 
     pub async fn close_tab(&self, tab_id: &str) -> Result<()> {
-        let page = self
-            .pages
-            .write()
-            .await
-            .remove(tab_id)
-            .ok_or_else(|| anyhow!("Tab '{}' not found", tab_id))?;
+        let page = {
+            let mut pages = self.pages.write().await;
+            match pages.remove(tab_id) {
+                Some(p) => p,
+                None => {
+                    // Bundle 19 — same actionable hint as get_page.
+                    let mut msg = format!("Tab '{}' not found.", tab_id);
+                    if pages.is_empty() {
+                        msg.push_str(" No tabs are currently open to close.");
+                    } else {
+                        let mut ids: Vec<&str> = pages.keys().map(String::as_str).collect();
+                        ids.sort();
+                        let take = ids.len().min(5);
+                        msg.push_str(&format!(" Open tabs: {}", ids[..take].join(", ")));
+                    }
+                    return Err(anyhow!(msg));
+                }
+            }
+        };
         // Stop CDP screencast before closing the page; Page::close consumes it.
         if let Some(stop_tx) = self.screencast_stops.lock().await.remove(tab_id) {
             let _ = page.execute(StopScreencastParams::default()).await;

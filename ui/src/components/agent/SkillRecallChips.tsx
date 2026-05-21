@@ -67,14 +67,23 @@ const MAX_VISIBLE_CHIPS = 8
 const MAX_TOOLTIP_RESULTS = 8
 
 export function SkillRecallChips({ sessionId, className }: SkillRecallChipsProps): React.ReactElement | null {
+  // Hooks rule: call ALL hooks unconditionally before any early-return.
+  // Bundle 18 — prior to this fix, `recalls.length === 0 → return null`
+  // sat between three hooks above and the `useMemo` below. When the
+  // session's first skill_search arrived mid-conversation, `recalls`
+  // flipped from empty to non-empty and the next render ran 4 hooks
+  // instead of 3, tripping React's "Rendered more hooks than during the
+  // previous render." invariant. Moving the early-return below the
+  // hooks keeps the hook count stable across renders.
   const recallsMap = useAtomValue(skillRecallsMapAtom)
   const setSettingsOpen = useSetAtom(settingsOpenAtom)
   const setSettingsTab = useSetAtom(settingsTabAtom)
 
   const recalls = recallsMap.get(sessionId) ?? []
-  if (recalls.length === 0) return null
-
   const conflicts = React.useMemo(() => detectConflicts(recalls), [recalls])
+
+  // Safe to early-return now that all hooks have run.
+  if (recalls.length === 0) return null
 
   const visibleRecalls = recalls.slice(0, MAX_VISIBLE_CHIPS)
   const overflowCount = recalls.length - MAX_VISIBLE_CHIPS
