@@ -1539,15 +1539,25 @@ impl LoopDelegate for ChatDelegate {
             // M2-H L2 — normalize tool schemas before announcing to LLM:
             //   * drop description.examples (saves ~hundreds of tokens per tool)
             //   * dedupe enum arrays
-            //   * cap nesting at depth 3 (MCP-generated schemas can balloon)
+            //   * depth-pruning: DISABLED via usize::MAX cap — see comment
+            //     below for why (DeepSeek/OpenAI strict-schema 400)
             // Idempotent + non-mutating; running on already-normalized schemas
             // is a no-op so re-invocation across loop iterations is cheap.
             let mut total_stats = crate::agent::tool_shaping::normalize::NormalizeStats::default();
             for def in defs.iter_mut() {
                 let raw = std::mem::replace(&mut def.parameters, serde_json::Value::Null);
+                // depth_cap = usize::MAX disables the depth-pruning transform.
+                // Reason: replacing a nested Array (e.g. `items`) with the
+                // `{truncated, original_depth}` Object marker breaks JSON-schema
+                // type contracts — DeepSeek/OpenAI strict validators 400 with
+                // "is not of type 'array'". The other two transforms (drop
+                // description.examples, dedupe enum arrays) are type-safe and
+                // still run. M2-H L2 depth-pruning will need a type-preserving
+                // redesign (empty `[]` for arrays, preserve `type:object` for
+                // objects) before it can be re-enabled — tracked in follow-up.
                 let (rewritten, stats) = crate::agent::tool_shaping::normalize::normalize_tool_schema(
                     raw,
-                    crate::agent::tool_shaping::normalize::DEFAULT_MAX_NESTING_DEPTH,
+                    usize::MAX,
                 );
                 def.parameters = rewritten;
                 total_stats.examples_dropped += stats.examples_dropped;
