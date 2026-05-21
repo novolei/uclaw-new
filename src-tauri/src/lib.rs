@@ -18,6 +18,9 @@ pub mod infra;
 // Phase 0.5 M1-T1 — IntentSpec/TaskSpec/TaskEvent runtime contracts.
 pub mod runtime;
 
+// M7-T1 — Plugin manifest schema + TOML loader.
+pub mod plugin_manifest;
+
 // B2: Infrastructure modules
 pub mod memory;
 pub mod memory_graph;
