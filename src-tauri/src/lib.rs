@@ -20,6 +20,8 @@ pub mod runtime;
 
 // M3-T1 — Five-registry skeleton (skills/connectors/tools/models/themes).
 pub mod registries;
+// M4-T1 — World projection types skeleton.
+pub mod world;
 
 // B2: Infrastructure modules
 pub mod memory;
