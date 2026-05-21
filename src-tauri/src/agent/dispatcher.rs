@@ -219,7 +219,22 @@ impl ChatDelegate {
 
     /// Slice 1 — set the provider id stamped on TokenBudgetSnapshot.
     /// Pass `llm_config.provider` from the Tauri command.
+    ///
+    /// Side effect — logs the M2-H L5 image capability check at INFO. This
+    /// runs once per agent loop spin-up so the user can confirm the
+    /// (provider, model) pair was classified correctly (deepseek-v4-pro
+    /// should resolve to `image_blind=true`, claude-* to `false`, etc.)
+    /// without having to wait for a screenshot to actually trigger the
+    /// strip path.
     pub fn set_provider(&mut self, provider: String) {
+        let supports_images =
+            crate::agent::image_policy::supports_images(&provider, &self.model);
+        tracing::info!(
+            provider = %provider,
+            model = %self.model,
+            image_blind = !supports_images,
+            "[L5] capability check",
+        );
         self.provider = provider;
     }
 
@@ -1571,6 +1586,15 @@ impl LoopDelegate for ChatDelegate {
                     deep_nests_pruned = total_stats.deep_nests_pruned,
                     tool_count = defs.len(),
                     "[L2] normalized tool schemas",
+                );
+            } else {
+                // NOOP heartbeat — keeps the trace queryable per-turn so users
+                // can confirm L2 actually ran even when schemas were already
+                // clean. INFO would be too chatty (every turn); DEBUG is the
+                // right level — surfaces under `RUST_LOG=uclaw_core::agent=debug`.
+                tracing::debug!(
+                    tool_count = defs.len(),
+                    "[L2] normalize: noop (schemas already clean)",
                 );
             }
             // Track tool list hash to detect unexpected changes mid-turn (e.g.
