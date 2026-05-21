@@ -42,6 +42,14 @@ pub struct ChatDelegate {
     conversation_id: String,
     /// Optional memory context to prepend to system prompt (from recall engine)
     memory_context: Option<String>,
+    /// M2-D — last-seen memory_context FragmentSnapshot, used to log a
+    /// per-iteration diff for observability. The diff currently fires
+    /// inside `effective_system_prompt` (sync), so callers/UIs can
+    /// correlate "context unchanged across iter N" with prompt-cache
+    /// hits. Uses std::sync::Mutex (matching the rest of the delegate's
+    /// short-lived locks) — never held across awaits.
+    memory_context_snapshot:
+        std::sync::Mutex<Option<crate::agent::context_diff::FragmentSnapshot>>,
     /// InfraService for publishing tool execution events
     infra_service: Option<Arc<InfraService>>,
     /// Optional trajectory store for recording tool turns
@@ -173,6 +181,7 @@ impl ChatDelegate {
             pending_approvals,
             conversation_id,
             memory_context: None,
+            memory_context_snapshot: std::sync::Mutex::new(None),
             infra_service: None,
             trajectory_store: None,
             tool_budget: None,
@@ -634,6 +643,68 @@ impl ChatDelegate {
         // the system prompt) so Anthropic cache_control: ephemeral on the system
         // prompt block can hit reliably from iteration 2 onward.
         if let Some(ctx) = self.memory_context.as_deref().filter(|s| !s.is_empty()) {
+            // M2-D — observe memory_context drift across iterations.
+            // We compute a stable FragmentSnapshot (content_hash =
+            // djb2 of the rendered block, token_estimate = bytes/4),
+            // diff it against the snapshot we kept from the prior
+            // iteration, and log the result. Pure observability today;
+            // the same plumbing is what would feed a real diff-as-LLM-
+            // content re-injection later (send only `<changed>` /
+            // `<added>` deltas to the next iter, rather than the full
+            // memory_context block again).
+            let new_snapshot = {
+                use std::hash::Hasher;
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                h.write(ctx.as_bytes());
+                let content_hash = format!("{:x}", h.finish());
+                let token_estimate = ctx.len() / 4;
+                crate::agent::context_diff::FragmentSnapshot::new(
+                    crate::agent::compact::ArtifactRef::labeled(
+                        "context:memory_context",
+                        "Memory recall context",
+                    ),
+                    content_hash,
+                    token_estimate,
+                )
+            };
+            let prior = self
+                .memory_context_snapshot
+                .lock()
+                .ok()
+                .and_then(|g| g.clone());
+            let diff = crate::agent::context_diff::diff_snapshots(
+                prior.as_ref().map(std::slice::from_ref).unwrap_or(&[]),
+                std::slice::from_ref(&new_snapshot),
+            );
+            let stats = diff.stats();
+            if diff.is_empty() {
+                // Same content as prior iteration — Anthropic prompt
+                // cache should hit. DEBUG level (every iter, very chatty).
+                tracing::debug!(
+                    content_hash = %new_snapshot.content_hash,
+                    token_estimate = new_snapshot.token_estimate,
+                    "[M2-D] memory_context unchanged vs prior iter (cache hit expected)",
+                );
+            } else if prior.is_none() {
+                tracing::info!(
+                    content_hash = %new_snapshot.content_hash,
+                    token_estimate = new_snapshot.token_estimate,
+                    "[M2-D] memory_context first injection",
+                );
+            } else {
+                tracing::info!(
+                    added = stats.added,
+                    removed = stats.removed,
+                    changed = stats.changed,
+                    added_or_changed_tokens = stats.added_or_changed_tokens,
+                    new_content_hash = %new_snapshot.content_hash,
+                    "[M2-D] memory_context drifted across iterations (cache will miss)",
+                );
+            }
+            if let Ok(mut slot) = self.memory_context_snapshot.lock() {
+                *slot = Some(new_snapshot);
+            }
+
             block.push_str("\n\n<memory_context>\n");
             block.push_str(ctx);
             block.push_str("\n</memory_context>");
