@@ -9718,18 +9718,29 @@ pub async fn send_agent_message(
     }
 
     // ── /compact intercept (agent path) ─────────────────────────────
-    // Same handling as the chat path: user typed `/compact` either via
-    // the input box or the ContextUsageBadge button. Compact the agent
-    // session in-place and emit a result, no LLM call needed.
+    // M2-G wire-up — user typed `/compact` via input box or ContextUsageBadge.
     //
-    // P1 logical-marking: uses UPDATE SET compacted=1 instead of DELETE.
-    // Compacted messages stay in DB for frontend replay with visual distinction.
+    // Flow:
+    //   1. (sync, DB lock) Read messages-to-compact's role + content
+    //      into memory, then UPDATE compacted=1 and insert audit marker.
+    //   2. (async, no DB lock) Call LLM to produce a StructuredFold from
+    //      the read messages. Render to Markdown.
+    //   3. (sync, DB lock) INSERT the fold's Markdown rendering as the
+    //      replacement placeholder, then bump session message_count.
+    //
+    // Soft-fail design: if the LLM call fails or returns malformed JSON,
+    // fall back to the legacy "[Context compressed by /compact: N
+    // earlier messages compacted]" sentence. Compaction itself (marking
+    // compacted=1) is unaffected — the worst case is we lose information
+    // quality, never break the user's /compact.
     if input.user_message.trim() == "/compact" {
         const COMPACT_KEEP_TURNS: usize = 10;
         let now_ms = chrono::Utc::now().timestamp_millis();
 
-        // Read current message count + mark older messages as compacted.
-        let (before_count, removed, after_count) = {
+        // Phase 1 (sync) — read about-to-be-compacted messages, mark
+        // them, insert audit marker. DB lock released at the end of
+        // this block before the async LLM call.
+        let (before_count, removed_count, threshold_opt, to_summarize) = {
             let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
             let before: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1",
@@ -9737,8 +9748,6 @@ pub async fn send_agent_message(
                 |r| r.get(0),
             ).map_err(|e| Error::Database(e))?;
 
-            // Find the created_at threshold: keep messages newer than the
-            // (before - keep)-th oldest.
             let keep_threshold: Option<i64> = conn.query_row(
                 "SELECT MIN(created_at) FROM (
                      SELECT created_at FROM agent_messages
@@ -9751,7 +9760,25 @@ pub async fn send_agent_message(
             ).ok();
 
             if let Some(threshold) = keep_threshold {
-                // Logical marking: UPDATE compacted = 1 instead of DELETE
+                // Read the about-to-be-compacted messages BEFORE the
+                // UPDATE — once marked, our later SELECT filter (`compacted = 0`)
+                // would skip them. We capture role + content text for the
+                // summarizer. Tool-use blocks live in tool_activities_json
+                // but plain text content is enough for the first cut.
+                let mut stmt = conn.prepare(
+                    "SELECT role, content FROM agent_messages
+                     WHERE session_id = ?1 AND created_at < ?2 AND compacted = 0
+                     ORDER BY created_at ASC"
+                ).map_err(|e| Error::Database(e))?;
+                let read_rows: Vec<(String, String)> = stmt
+                    .query_map(rusqlite::params![input.session_id, threshold], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(|e| Error::Database(e))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                drop(stmt);
+
                 let compacted_count = conn.execute(
                     "UPDATE agent_messages
                      SET compacted = 1
@@ -9760,7 +9787,6 @@ pub async fn send_agent_message(
                 ).map_err(|e| Error::Database(e))? as i64;
 
                 if compacted_count > 0 {
-                    // Insert a compaction_markers record for audit trail
                     let marker_id = uuid::Uuid::new_v4().to_string();
                     let _ = conn.execute(
                         "INSERT INTO compaction_markers (id, session_id, summary, removed_count, created_at)
@@ -9773,21 +9799,105 @@ pub async fn send_agent_message(
                             now_ms,
                         ],
                     );
+                }
 
-                    // Insert a summary placeholder so the LLM sees an explanation
-                    // for the missing context. Mark as NOT compacted (compacted = 0).
-                    let summary_id = uuid::Uuid::new_v4().to_string();
-                    let summary = format!(
-                        "[Context compressed by /compact: {} earlier messages compacted]",
-                        compacted_count,
+                (before as usize, compacted_count as usize, Some(threshold), read_rows)
+            } else {
+                (before as usize, 0, None, Vec::new())
+            }
+        };
+
+        // Phase 2 (async) — generate StructuredFold via LLM. Soft-fail
+        // to legacy placeholder if anything goes wrong (parse error,
+        // network blip, rate limit). Always wraps in a try-block so the
+        // compaction itself can't be reverted by a summarizer failure.
+        let summary_text: String = if removed_count > 0 && !to_summarize.is_empty() {
+            // Convert the (role, content) tuples to ChatMessage values
+            // the summarizer expects. Skipping non-{user,assistant,system}
+            // roles defensively.
+            let history: Vec<crate::agent::types::ChatMessage> = to_summarize
+                .into_iter()
+                .filter_map(|(role, content)| {
+                    let r = match role.as_str() {
+                        "user" => crate::agent::types::MessageRole::User,
+                        "assistant" => crate::agent::types::MessageRole::Assistant,
+                        "system" => crate::agent::types::MessageRole::System,
+                        _ => return None,
+                    };
+                    Some(crate::agent::types::ChatMessage {
+                        role: r,
+                        content: vec![crate::agent::types::ContentBlock::Text { text: content }],
+                        compacted: false,
+                    })
+                })
+                .collect();
+
+            // Resolve the session's LLM provider (same lookup the real
+            // turn uses below). Cheaper than running our own — keeps
+            // /compact summarizer on the model the user actually picked.
+            let summarize_result = async {
+                let legacy = state.llm_config.read().await;
+                let llm_cfg = if let Some((provider_id, model, api_key, base_url)) =
+                    state.provider_service.get_active_llm_config().await
+                {
+                    llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 16384, 0.7)
+                } else {
+                    legacy.clone()
+                };
+                drop(legacy);
+                let model_id = llm_cfg.model.clone();
+                let llm = llm::create_provider(&llm_cfg)?;
+                crate::agent::compact::summarize_to_fold(llm, &model_id, &history)
+                    .await
+                    .map_err(|e| Error::Internal(format!("fold summarize: {e}")))
+            }.await;
+
+            match summarize_result {
+                Ok(fold) => {
+                    tracing::info!(
+                        session_id = %input.session_id,
+                        facts = fold.facts.len(),
+                        decisions = fold.decisions.len(),
+                        failed_attempts = fold.failed_attempts.len(),
+                        unresolved = fold.unresolved_questions.len(),
+                        next_actions = fold.next_actions.len(),
+                        compacted_count = removed_count,
+                        "[/compact] M2-G StructuredFold produced",
                     );
+                    fold.to_markdown()
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        session_id = %input.session_id,
+                        error = %e,
+                        "[/compact] fold summarize failed, falling back to placeholder",
+                    );
+                    format!(
+                        "[Context compressed by /compact: {} earlier messages compacted]",
+                        removed_count,
+                    )
+                }
+            }
+        } else {
+            // Either nothing was compacted or the read returned 0 rows —
+            // legacy placeholder is fine.
+            format!(
+                "[Context compressed by /compact: {} earlier messages compacted]",
+                removed_count,
+            )
+        };
+
+        // Phase 3 (sync) — insert the summary placeholder + bump count.
+        let after_count = {
+            let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+            if removed_count > 0 {
+                if let Some(threshold) = threshold_opt {
+                    let summary_id = uuid::Uuid::new_v4().to_string();
                     let _ = conn.execute(
                         "INSERT INTO agent_messages (id, session_id, role, content, created_at, compacted)
                          VALUES (?1, ?2, 'user', ?3, ?4, 0)",
-                        rusqlite::params![summary_id, input.session_id, summary, threshold - 1],
+                        rusqlite::params![summary_id, input.session_id, summary_text, threshold - 1],
                     );
-
-                    // Update message count: all messages (including compacted) count.
                     let _ = conn.execute(
                         "UPDATE agent_sessions
                          SET message_count = (SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1),
@@ -9796,17 +9906,15 @@ pub async fn send_agent_message(
                         rusqlite::params![input.session_id, now_ms],
                     );
                 }
-
-                let after: i64 = conn.query_row(
-                    "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1 AND compacted = 0",
-                    rusqlite::params![input.session_id],
-                    |r| r.get(0),
-                ).map_err(|e| Error::Database(e))?;
-                (before as usize, compacted_count as usize, after as usize)
-            } else {
-                (before as usize, 0, before as usize)
             }
+            let after: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1 AND compacted = 0",
+                rusqlite::params![input.session_id],
+                |r| r.get(0),
+            ).map_err(|e| Error::Database(e))?;
+            after as usize
         };
+        let removed = removed_count;
 
         // Emit `chat:stream-complete` — the same event the real agent loop
         // fires at end-of-turn (legacy chat:* prefix is shared by both chat
