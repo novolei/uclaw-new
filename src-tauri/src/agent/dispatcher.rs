@@ -146,6 +146,10 @@ pub struct ChatDelegate {
     /// `get_latest_token_budget` Tauri command. None = telemetry off
     /// (e.g. headless / harness contexts that don't need UI feed).
     token_budget_collector: Option<crate::agent::telemetry::TokenBudgetCollector>,
+    /// Slice 1 — provider id ('anthropic' / 'openai' / 'deepseek' / etc.)
+    /// stamped on every TokenBudgetSnapshot. Default 'unknown' is
+    /// replaced by the caller via `set_provider`.
+    provider: String,
 }
 
 impl ChatDelegate {
@@ -197,6 +201,7 @@ impl ChatDelegate {
             gbrain_extract_mcp_mgr: None,
             last_tool_defs_hash: Mutex::new(None),
             token_budget_collector: None,
+            provider: "unknown".to_string(),
         }
     }
 
@@ -210,6 +215,12 @@ impl ChatDelegate {
         collector: crate::agent::telemetry::TokenBudgetCollector,
     ) {
         self.token_budget_collector = Some(collector);
+    }
+
+    /// Slice 1 — set the provider id stamped on TokenBudgetSnapshot.
+    /// Pass `llm_config.provider` from the Tauri command.
+    pub fn set_provider(&mut self, provider: String) {
+        self.provider = provider;
     }
 
     /// Set the GEP Gene retriever for control signal injection.
@@ -2311,7 +2322,7 @@ impl LoopDelegate for ChatDelegate {
             let mut snap = crate::agent::token_budget::TokenBudgetSnapshot::new(
                 self.conversation_id.clone(),
                 turn,
-                "anthropic", // M2-J commit 2 plumbs real provider id; pilot fixes this string
+                self.provider.clone(),
                 self.model.clone(),
                 captured_at,
             );

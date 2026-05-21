@@ -1989,6 +1989,7 @@ pub async fn send_message(
     // a TokenBudgetSnapshot per turn. UI reads via
     // `get_latest_token_budget` Tauri command.
     delegate.set_token_budget_collector(state.token_budget_collector.clone());
+    delegate.set_provider(llm_config.provider.clone());
 
     // Wire thinking_enabled from the request
     delegate.set_thinking_enabled(input.thinking_enabled.unwrap_or(false));
@@ -10237,6 +10238,7 @@ pub async fn send_agent_message(
         delegate.set_trajectory_store(Arc::clone(&trajectory_store));
         delegate.set_tool_budget(Arc::clone(&tool_budget));
         delegate.set_token_budget_collector(token_budget_collector.clone());
+        delegate.set_provider(llm_config.provider.clone());
 
         // Build skill manifest and inject into system prompt (async: needs registry.read()).
         {
@@ -13489,6 +13491,7 @@ pub async fn start_agent_teams(
     let safety_for_factory = Arc::clone(&safety_manager);
     let approvals_for_factory = Arc::clone(&pending_approvals);
     let token_budget_collector_for_factory = state.token_budget_collector.clone();
+    let provider_for_factory = provider_id.clone();
     let proactive_service_for_teams = Arc::clone(&state.proactive_service);
     // Sprint 2.0 — learning pipeline snapshot for the orchestrator's
     // delegate_factory closure. Read config flags now so the captured
@@ -13602,6 +13605,7 @@ pub async fn start_agent_teams(
                     workspace_root_for_factory.clone(),
                 );
                 delegate.set_token_budget_collector(token_budget_collector_for_factory.clone());
+                delegate.set_provider(provider_for_factory.clone());
                 // Inject GeneRetriever if we have active genes
                 if !active_genes.is_empty() {
                     if let Some(retriever) = build_gene_retriever(active_genes.clone(), gene_repo_for_teams.as_ref()) {
