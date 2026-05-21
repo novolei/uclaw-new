@@ -368,7 +368,7 @@ impl Tool for BrowserGoBackTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID" }
+                "tab_id": { "type": "string", "description": "Tab ID returned by a prior browser_navigate call. Do NOT pass 'new' here — 'new' is only valid for browser_navigate itself." }
             },
             "required": ["tab_id"]
         })
@@ -403,7 +403,7 @@ impl Tool for BrowserGoForwardTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID" }
+                "tab_id": { "type": "string", "description": "Tab ID returned by a prior browser_navigate call. Do NOT pass 'new' here — 'new' is only valid for browser_navigate itself." }
             },
             "required": ["tab_id"]
         })
@@ -438,7 +438,7 @@ impl Tool for BrowserReloadTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID" }
+                "tab_id": { "type": "string", "description": "Tab ID returned by a prior browser_navigate call. Do NOT pass 'new' here — 'new' is only valid for browser_navigate itself." }
             },
             "required": ["tab_id"]
         })
@@ -475,7 +475,7 @@ impl Tool for BrowserGetDomTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID" }
+                "tab_id": { "type": "string", "description": "Tab ID returned by a prior browser_navigate call. Do NOT pass 'new' here — 'new' is only valid for browser_navigate itself." }
             },
             "required": ["tab_id"]
         })
@@ -512,7 +512,7 @@ impl Tool for BrowserScreenshotTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID to screenshot" }
+                "tab_id": { "type": "string", "description": "Tab ID to screenshot — must be returned by a prior browser_navigate call. Not 'new'." }
             },
             "required": ["tab_id"]
         })
@@ -556,7 +556,7 @@ impl Tool for BrowserExtractTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID" },
+                "tab_id": { "type": "string", "description": "Tab ID returned by a prior browser_navigate call. Do NOT pass 'new' here — 'new' is only valid for browser_navigate itself." },
                 "selector": {
                     "type": "string",
                     "description": "CSS selector for the element to extract text from (default 'body')"
@@ -606,7 +606,7 @@ impl Tool for BrowserClickTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID" },
+                "tab_id": { "type": "string", "description": "Tab ID returned by a prior browser_navigate call. Do NOT pass 'new' here — 'new' is only valid for browser_navigate itself." },
                 "index": {
                     "type": "integer",
                     "minimum": 0,
@@ -651,7 +651,7 @@ impl Tool for BrowserTypeTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID" },
+                "tab_id": { "type": "string", "description": "Tab ID returned by a prior browser_navigate call. Do NOT pass 'new' here — 'new' is only valid for browser_navigate itself." },
                 "index": {
                     "type": "integer",
                     "description": "Element index from browser_get_dom"
@@ -698,7 +698,7 @@ impl Tool for BrowserSelectTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID" },
+                "tab_id": { "type": "string", "description": "Tab ID returned by a prior browser_navigate call. Do NOT pass 'new' here — 'new' is only valid for browser_navigate itself." },
                 "index": {
                     "type": "integer",
                     "description": "Element index from browser_get_dom"
@@ -745,7 +745,7 @@ impl Tool for BrowserScrollTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID" },
+                "tab_id": { "type": "string", "description": "Tab ID returned by a prior browser_navigate call. Do NOT pass 'new' here — 'new' is only valid for browser_navigate itself." },
                 "direction": {
                     "type": "string",
                     "enum": ["up", "down", "left", "right"],
@@ -800,7 +800,7 @@ impl Tool for BrowserSendKeysTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID" },
+                "tab_id": { "type": "string", "description": "Tab ID returned by a prior browser_navigate call. Do NOT pass 'new' here — 'new' is only valid for browser_navigate itself." },
                 "keys": {
                     "type": "string",
                     "description": "Key name to send (e.g. 'Enter', 'Escape', 'Tab', 'ArrowDown')"
@@ -844,7 +844,7 @@ impl Tool for BrowserEvaluateTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID" },
+                "tab_id": { "type": "string", "description": "Tab ID returned by a prior browser_navigate call. Do NOT pass 'new' here — 'new' is only valid for browser_navigate itself." },
                 "script": {
                     "type": "string",
                     "description": "JavaScript expression or function to evaluate"
@@ -1145,7 +1145,7 @@ impl Tool for BrowserHoverTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID" },
+                "tab_id": { "type": "string", "description": "Tab ID returned by a prior browser_navigate call. Do NOT pass 'new' here — 'new' is only valid for browser_navigate itself." },
                 "index": {
                     "type": "integer",
                     "minimum": 0,
@@ -1233,7 +1233,7 @@ impl Tool for BrowserUploadFileTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID" },
+                "tab_id": { "type": "string", "description": "Tab ID returned by a prior browser_navigate call. Do NOT pass 'new' here — 'new' is only valid for browser_navigate itself." },
                 "index": {
                     "type": "integer",
                     "minimum": 0,
@@ -1329,7 +1329,7 @@ impl Tool for BrowserGetStateTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID to observe" },
+                "tab_id": { "type": "string", "description": "Tab ID to observe — must be returned by a prior browser_navigate call. Not 'new'." },
                 "include_screenshot": { "type": "boolean", "description": "Include base64 PNG screenshot data (default false)" },
                 "include_visual": { "type": "boolean", "description": "Run the configured visual perception provider over a screenshot and include OCR/control candidates when available (default false)" }
             },
@@ -1394,7 +1394,7 @@ impl Tool for BrowserSwitchTabTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID to make active" }
+                "tab_id": { "type": "string", "description": "Tab ID to make active — must be returned by a prior browser_navigate call. Not 'new'." }
             },
             "required": ["tab_id"]
         })
@@ -1429,7 +1429,7 @@ impl Tool for BrowserCloseTabTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID to close" }
+                "tab_id": { "type": "string", "description": "Tab ID to close — must be returned by a prior browser_navigate call. Not 'new'." }
             },
             "required": ["tab_id"]
         })
