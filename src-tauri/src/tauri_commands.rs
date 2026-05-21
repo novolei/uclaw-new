@@ -10419,8 +10419,8 @@ pub async fn send_agent_message(
             if let Ok(conn) = db.lock() {
                 let _ = conn.execute(
                     "INSERT INTO agent_messages \
-                     (id, session_id, role, content, created_at, reasoning, tool_activities_json, duration_ms, input_tokens, output_tokens, cost_usd) \
-                     VALUES (?1,?2,'assistant',?3,?4,?5,?6,?7,?8,?9,?10)",
+                     (id, session_id, role, content, created_at, reasoning, tool_activities_json, duration_ms, input_tokens, output_tokens, cost_usd, model) \
+                     VALUES (?1,?2,'assistant',?3,?4,?5,?6,?7,?8,?9,?10,?11)",
                     rusqlite::params![
                         asst_msg_id,
                         session_id,
@@ -10432,6 +10432,7 @@ pub async fn send_agent_message(
                         turn_input,
                         turn_output,
                         cost_usd,
+                        &model,
                     ],
                 );
                 let _ = conn.execute(

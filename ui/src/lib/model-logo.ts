@@ -159,23 +159,43 @@ export function inferProviderFromBaseUrl(baseUrl: string): string | undefined {
 /**
  * Resolve the bundled PNG URL for an assistant / channel logo.
  *
+ * Tries the provider hint first (only if it actually matches a known slug),
+ * then falls through to modelId-based inference. This matters when channels
+ * carry non-slug provider strings like "OpenAI Compatible" — without the
+ * fall-through the lookup would return '' even though the modelId itself
+ * would resolve cleanly.
+ *
  * @param modelId  Raw model id ("claude-sonnet-4-6", "deepseek-v4-pro", …)
- * @param provider Optional provider hint from the channel record — wins over inference.
+ * @param provider Optional provider hint from the channel record.
  * @returns Absolute URL when a logo is found, empty string otherwise.
  */
 export function getModelLogo(modelId: string, provider?: string): string {
-  const slug = (provider || inferProviderFromModelId(modelId) || '').toLowerCase()
-  return providerLogoMap[slug] ?? ''
+  const providerSlug = provider?.toLowerCase().trim()
+  if (providerSlug && providerLogoMap[providerSlug]) {
+    return providerLogoMap[providerSlug]!
+  }
+  const inferred = inferProviderFromModelId(modelId)
+  if (inferred && providerLogoMap[inferred]) {
+    return providerLogoMap[inferred]!
+  }
+  return ''
 }
 
 /**
- * Resolve the channel-row logo. Channels always carry an explicit `provider`
- * slug in the registry; pass that as the second arg when available — base
- * URL inference is the fallback for self-hosted endpoints.
+ * Resolve the channel-row logo. Channels carry an explicit `provider` slug
+ * in the registry; pass that as the second arg when available. Same
+ * provider-hint-then-inference fall-through as `getModelLogo`.
  */
 export function getChannelLogo(baseUrl: string, provider?: string): string {
-  const slug = (provider || inferProviderFromBaseUrl(baseUrl) || '').toLowerCase()
-  return providerLogoMap[slug] ?? ''
+  const providerSlug = provider?.toLowerCase().trim()
+  if (providerSlug && providerLogoMap[providerSlug]) {
+    return providerLogoMap[providerSlug]!
+  }
+  const inferred = inferProviderFromBaseUrl(baseUrl)
+  if (inferred && providerLogoMap[inferred]) {
+    return providerLogoMap[inferred]!
+  }
+  return ''
 }
 
 /**

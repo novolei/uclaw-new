@@ -1495,7 +1495,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         {/* 消息区域 */}
         <AgentMessages
           sessionId={sessionId}
-          sessionModelId={agentModelId || undefined}
+          /* sessionModelId 回退链：per-session map → 全局默认 → localStorage 活跃模型。
+             历史消息 (M2-J 之前) 没在 DB 存 model，必须靠这里兜底显示头像 + caption。 */
+          sessionModelId={agentModelId || activeProviderModel?.modelId || undefined}
           messages={messages}
           messagesLoaded={messagesLoaded}
           streaming={streaming}

@@ -880,6 +880,8 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
   const suppressAgentRunning = streamState?.isCompacting || streamState?.compactInFlight
 
   // 迷你地图数据 — 跳过 compacted 消息以减少噪音
+  // model 字段持久化前的历史 assistant 消息（DB 未填 model 列）回退到会话当前模型，
+  // 否则 ItemIcon 拿不到 model 就不渲染 logo。
   const minimapItems: MinimapItem[] = React.useMemo(
     () => {
       return messages
@@ -889,10 +891,10 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
         role: m.role === 'status' ? 'status' as const : m.role as MinimapItem['role'],
         preview: (m.content ?? '').replace(/<attached_files>[\s\S]*?<\/attached_files>\n*/, '').slice(0, 200),
         avatar: m.role === 'user' ? userProfile.avatar : undefined,
-        model: m.model,
+        model: m.role === 'assistant' ? (m.model ?? sessionModelId) : m.model,
       }))
     },
-    [messages, userProfile.avatar]
+    [messages, userProfile.avatar, sessionModelId]
   )
 
   // 将 liveMessages 中的 compact_boundary 按时间戳插入到消息列表的正确位置，
