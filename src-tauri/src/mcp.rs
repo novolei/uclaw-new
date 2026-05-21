@@ -1290,6 +1290,20 @@ impl GbrainCliTransport {
             }
         }
 
+        // Bundle 14-B — observability around the bun spawn. The
+        // SIGKILL-in-4ms symptom doesn't fit OOM (system idle, 64GB
+        // free) so we need to see what env + argv are actually being
+        // launched. Logged at DEBUG to keep production trace clean,
+        // but easy to surface with RUST_LOG=uclaw_core::mcp=debug.
+        let spawn_start = std::time::Instant::now();
+        tracing::debug!(
+            tool,
+            command = %self.command,
+            argv = ?argv,
+            env_keys = ?self.env.keys().collect::<Vec<_>>(),
+            "[gbrain-cli] spawning bun subprocess"
+        );
+
         let mut cmd = tokio::process::Command::new(&self.command);
         cmd.args(&argv)
             .envs(&self.env)
@@ -1303,9 +1317,27 @@ impl GbrainCliTransport {
             .map_err(|_| McpError::Server(gbrain_cli_error_payload(tool, "timeout", "timed out", Vec::new())))?
             .map_err(|e| McpError::Io(e))?;
 
+        // Bundle 14-B — log spawn timing + exit details on the way out.
+        // For a SIGKILL'd process: status.code()=None, status.to_string()
+        // is "signal: N (NAME)". Stderr is captured even if process never
+        // wrote anything (empty string in that case).
+        let elapsed_ms = spawn_start.elapsed().as_millis() as u64;
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if !output.status.success() {
+            // Capture the stderr TAIL even for crash cases — for SIGKILL
+            // we typically get nothing, but bun sometimes prints a
+            // single line about quarantine / signing / library load
+            // failures before being killed.
+            tracing::warn!(
+                tool,
+                elapsed_ms,
+                status = %output.status,
+                stdout_len = stdout.len(),
+                stderr_len = stderr.len(),
+                stderr_tail = %stderr.chars().rev().take(500).collect::<String>().chars().rev().collect::<String>(),
+                "[gbrain-cli] subprocess exited non-zero"
+            );
             let mut suggestions = Vec::new();
             if tool == "get_page" && stderr.contains("page_not_found") {
                 if let Some(slug) = requested_slug.as_deref() {

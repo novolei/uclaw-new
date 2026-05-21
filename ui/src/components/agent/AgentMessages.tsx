@@ -1182,6 +1182,18 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
                 return null
               }
               if (item.type === 'system' && item.subtype === 'compacting') {
+                // Bundle 14-A — dedupe with the streamState-driven indicator
+                // at line ~1173. Both fire concurrently when handleCompact
+                // sets `isCompacting: true` AND inserts a `compacting`
+                // marker into liveMessages, producing TWO pills. The
+                // streamState-driven indicator is the primary (it tracks
+                // backend state); the liveMessages marker is the
+                // optimistic-fallback for the React batch race the
+                // comment in handleCompact mentions. So: only render the
+                // liveMessages version when streamState.isCompacting is
+                // NOT already true. The two signals are now mutually
+                // exclusive, never both visible at once.
+                if (streamState?.isCompacting) return null
                 return <div key={key} data-live-marker="compacting"><CompactingIndicator /></div>
               }
               if (item.type === 'user') {
