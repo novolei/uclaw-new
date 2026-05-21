@@ -30,6 +30,9 @@ pub mod task_scheduler;
 pub mod im_channels;
 // M6-T1 — Memory graph contract (typed adapter layer over memory_graph).
 pub mod memory_contract;
+// M3-T8 — SKILL.md frontmatter schema + parser (distinct from the
+// existing `skills_manifest` module handling a different format).
+pub mod skill_md_parse;
 
 // B2: Infrastructure modules
 pub mod memory;
