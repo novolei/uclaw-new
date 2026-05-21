@@ -1560,6 +1560,66 @@ pub async fn gbrain_serve_smoke(state: State<'_, AppState>) -> Result<GbrainSmok
     Ok(report)
 }
 
+/// Bundle 6 — same browser-task memory heuristic as
+/// `build_browser_task_memory_context`, but takes the `MemoryStore`
+/// handle directly so it can run inside a background tokio::spawn
+/// without borrowing the IPC handler's `&AppState`.
+fn browser_task_memory_for_query(
+    memory_store: &crate::memory::MemoryStore,
+    query: &str,
+) -> Option<String> {
+    let lower = query.to_lowercase();
+    let is_browser_memory_query = [
+        "browser_task",
+        "browser task",
+        "browser-tasks",
+        "browser tasks",
+        "visual observation",
+        "视觉观察",
+        "浏览器任务",
+        "浏览器记忆",
+        "gbrain",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    if !is_browser_memory_query {
+        return None;
+    }
+    let mut memories = memory_store.search_full(
+        query,
+        Some("browser_task"),
+        Some("global"),
+        None,
+        8,
+    );
+    if memories.is_empty() {
+        memories = memory_store.list_filtered(&crate::memory::ListFilter {
+            space_id: Some("global".to_string()),
+            namespace: Some("browser_task".to_string()),
+            kind: None,
+            tag: None,
+            limit: Some(8),
+            offset: None,
+        });
+    }
+    if memories.is_empty() {
+        return None;
+    }
+    let mut ctx = String::from("<browser_task_memories namespace=\"browser_task\">\n");
+    for memory in &memories {
+        ctx.push_str(&format!(
+            "- key: {}\n  kind: {}\n  value: {}\n",
+            memory.key, memory.kind, memory.value
+        ));
+    }
+    ctx.push_str("</browser_task_memories>\n");
+    tracing::info!(
+        browser_task_memories = memories.len(),
+        "Browser task memories injected (background)"
+    );
+    Some(ctx)
+}
+
 fn build_browser_task_memory_context(state: &AppState, query: &str) -> Option<String> {
     let lower = query.to_lowercase();
     let is_browser_memory_query = [
@@ -10321,18 +10381,31 @@ pub async fn send_agent_message(
     };
 
     // ── Memory Recall Integration (Agent path) ───────────────────────────
-    // Bundle 4 — mirror what Chat (`send_message`) does so Agent turns also:
-    //   1. inject memory context into the system prompt
-    //   2. emit `agent:memory-recall` IPC so the UI chip shows
+    // Bundle 4 originally ran the full recall plan synchronously here,
+    // blocking the IPC handler until memU returned. Bundle 6 — same chip
+    // event, same memory_ctx injection, but moved off the critical path:
     //
-    // Done BEFORE the spawn because build_recall_plan needs `state.*`
-    // handles that don't survive `move`. The resulting Option<String> is
-    // moved into the spawn closure and applied via delegate.set_memory_context.
+    //   1. Spawn the recall plan as a background tokio task NOW.
+    //   2. The task emits `agent:memory-recall` AND returns the composed
+    //      memory_ctx string via a oneshot channel.
+    //   3. Just before agentic_loop starts, await the receiver with a
+    //      short deadline (RECALL_DEADLINE_MS). If recall is ready in
+    //      time, inject it. If not, proceed without memory_ctx for this
+    //      turn — the recall background task still completes (the chip
+    //      will still surface) so the next turn benefits, but THIS turn
+    //      doesn't wait.
     //
-    // Recall space_id mirrors the agent loop's hard-coded "default" (see
-    // skill_search/load_skill tools above) — once dynamic per-workspace
-    // recall lands we'll thread it through here too.
-    let memory_ctx_for_spawn: Option<String> = {
+    // Why this matters: the previous code blocked send_agent_message
+    // until memU's L3 vector retrieve returned. memU's retrieve goes
+    // through a Python subprocess and (when slow) can stall for many
+    // seconds, observable in the dev log as 30s+ tool-level timeouts.
+    // Putting it on the critical path made every Agent turn pay that
+    // tail-latency. Putting it on a deadline gives best-effort memory
+    // injection without sacrificing user-visible TTFT.
+    const RECALL_DEADLINE_MS: u64 = 400;
+
+    let (recall_tx, recall_rx) = tokio::sync::oneshot::channel::<Option<String>>();
+    {
         let recall_store = state.memory_graph_store.clone();
         let recall_memu = state.memu_client.clone();
         let recall_config = {
@@ -10342,110 +10415,183 @@ pub async fn send_agent_message(
                 .map(crate::memory_graph::recall::MemoryRecallConfig::from)
                 .unwrap_or_default()
         };
-        let recall_engine = crate::memory_graph::recall::MemoryRecallEngine::new(
-            recall_store,
-            recall_memu,
-            recall_config,
-        );
-        let recall_space_id = "default";
-        match recall_engine.build_recall_plan(recall_space_id, &input.user_message, false).await {
-            Ok(plan) => {
-                let total = plan.boot.len() + plan.triggered.len() + plan.relevant.len()
-                    + plan.expanded.len() + plan.recent.len();
+        // Pre-resolve everything the background task needs so it doesn't
+        // borrow from `state` (which is bound to the IPC handler's
+        // lifetime and can't escape into the spawn).
+        let user_msg_for_recall = input.user_message.clone();
+        let session_id_for_recall = input.session_id.clone();
+        let memory_store_for_recall = Arc::clone(&state.memory_store);
+        let app_handle_for_recall = app_handle.clone();
+        let state_db_for_browser = Arc::clone(&state.db);
+        let workspace_root_for_browser = state.workspace_root.clone();
 
-                // Session-scoped memory (LIKE match) — independent of graph total.
-                let session_memory_ctx = {
-                    let session_ns = format!("session:{}", input.session_id);
-                    let session_memories = state.memory_store.search(
-                        &input.user_message,
-                        Some(&session_ns),
-                        5,
-                    );
-                    if !session_memories.is_empty() {
-                        let mut ctx = String::from("<session_memories>\n");
-                        for m in &session_memories {
-                            ctx.push_str(&format!("- [{}] {}\n", m.kind, m.value));
+        tokio::spawn(async move {
+            let recall_engine = crate::memory_graph::recall::MemoryRecallEngine::new(
+                recall_store,
+                recall_memu,
+                recall_config,
+            );
+            let recall_space_id = "default";
+            let composed: Option<String> = match recall_engine
+                .build_recall_plan(recall_space_id, &user_msg_for_recall, false)
+                .await
+            {
+                Ok(plan) => {
+                    let total = plan.boot.len()
+                        + plan.triggered.len()
+                        + plan.relevant.len()
+                        + plan.expanded.len()
+                        + plan.recent.len();
+
+                    // Session-scoped memory (LIKE match) — independent of graph total.
+                    let session_memory_ctx = {
+                        let session_ns = format!("session:{}", session_id_for_recall);
+                        let session_memories =
+                            memory_store_for_recall.search(&user_msg_for_recall, Some(&session_ns), 5);
+                        if !session_memories.is_empty() {
+                            let mut ctx = String::from("<session_memories>\n");
+                            for m in &session_memories {
+                                ctx.push_str(&format!("- [{}] {}\n", m.kind, m.value));
+                            }
+                            ctx.push_str("</session_memories>\n");
+                            tracing::info!(
+                                session_memories = session_memories.len(),
+                                "Session-scoped memories ready (agent, background)"
+                            );
+                            Some(ctx)
+                        } else {
+                            None
                         }
-                        ctx.push_str("</session_memories>\n");
+                    };
+                    // Browser-task memory needs a full `AppState`-like
+                    // surface today. The background task only has the
+                    // DB + workspace root, so we re-implement the
+                    // narrow heuristic match inline. Keeps this off the
+                    // critical path without leaking state lifetimes.
+                    let browser_task_memory_ctx = browser_task_memory_for_query(
+                        &memory_store_for_recall,
+                        &user_msg_for_recall,
+                    );
+                    // Suppress "unused" warning for the not-yet-wired
+                    // db + workspace handles — kept for future expansion.
+                    let _ = (&state_db_for_browser, &workspace_root_for_browser);
+
+                    if total > 0 {
+                        let budget = recall_engine.config().token_budget;
+                        let mut memory_ctx =
+                            crate::memory_graph::recall::MemoryRecallEngine::format_recall_for_prompt(
+                                &plan, budget,
+                            );
+                        if let Some(ref sess_ctx) = session_memory_ctx {
+                            memory_ctx.push_str(sess_ctx);
+                        }
+                        if let Some(ref browser_ctx) = browser_task_memory_ctx {
+                            memory_ctx.push_str(browser_ctx);
+                        }
                         tracing::info!(
-                            session_memories = session_memories.len(),
-                            "Session-scoped memories injected (agent)"
+                            total_candidates = total,
+                            "Memory recall composed (agent, background)"
                         );
-                        Some(ctx)
-                    } else {
-                        None
-                    }
-                };
-                let browser_task_memory_ctx =
-                    build_browser_task_memory_context(&state, &input.user_message);
 
-                let composed = if total > 0 {
-                    let budget = recall_engine.config().token_budget;
-                    let mut memory_ctx =
-                        crate::memory_graph::recall::MemoryRecallEngine::format_recall_for_prompt(&plan, budget);
-                    if let Some(ref sess_ctx) = session_memory_ctx {
-                        memory_ctx.push_str(sess_ctx);
-                    }
-                    if let Some(ref browser_ctx) = browser_task_memory_ctx {
-                        memory_ctx.push_str(browser_ctx);
-                    }
-                    tracing::info!(total_candidates = total, "Memory recall injected into system prompt (agent)");
-
-                    // Emit recall summary so the AgentMessages chip renders.
-                    let skills_count = plan.boot.iter()
-                        .chain(plan.triggered.iter())
-                        .chain(plan.relevant.iter())
-                        .chain(plan.expanded.iter())
-                        .filter(|c| c.kind == crate::memory_graph::models::MemoryNodeKind::Procedure)
-                        .count();
-                    let items: Vec<serde_json::Value> = plan.boot.iter()
-                        .chain(plan.triggered.iter())
-                        .chain(plan.relevant.iter())
-                        .chain(plan.expanded.iter())
-                        .take(20)
-                        .map(|c| serde_json::json!({
-                            "nodeId": c.node_id,
-                            "title": c.title,
-                            "kind": c.kind,
-                            "source": c.source,
-                        }))
-                        .collect();
-                    let _ = app_handle.emit("agent:memory-recall", serde_json::json!({
-                        "totalCandidates": total,
-                        "skillsCount": skills_count,
-                        "bootCount": plan.boot.len(),
-                        "triggeredCount": plan.triggered.len(),
-                        "relevantCount": plan.relevant.len(),
-                        "expandedCount": plan.expanded.len(),
-                        "recentCount": plan.recent.len(),
-                        "items": items,
-                        "conversationId": input.session_id,
-                        "timestamp": chrono::Utc::now().to_rfc3339(),
-                    }));
-                    recall_engine.record_used_skills(&plan);
-                    Some(memory_ctx)
-                } else {
-                    let mut memory_ctx = String::new();
-                    if let Some(sess_ctx) = session_memory_ctx {
-                        memory_ctx.push_str(&sess_ctx);
-                    }
-                    if let Some(browser_ctx) = browser_task_memory_ctx {
-                        memory_ctx.push_str(&browser_ctx);
-                    }
-                    if !memory_ctx.is_empty() {
-                        tracing::info!("Auxiliary memories injected (no graph recall, agent)");
+                        // Emit chip event so the UI badge shows even if
+                        // we missed the synchronous deadline below.
+                        let skills_count = plan
+                            .boot
+                            .iter()
+                            .chain(plan.triggered.iter())
+                            .chain(plan.relevant.iter())
+                            .chain(plan.expanded.iter())
+                            .filter(|c| {
+                                c.kind == crate::memory_graph::models::MemoryNodeKind::Procedure
+                            })
+                            .count();
+                        let items: Vec<serde_json::Value> = plan
+                            .boot
+                            .iter()
+                            .chain(plan.triggered.iter())
+                            .chain(plan.relevant.iter())
+                            .chain(plan.expanded.iter())
+                            .take(20)
+                            .map(|c| {
+                                serde_json::json!({
+                                    "nodeId": c.node_id,
+                                    "title": c.title,
+                                    "kind": c.kind,
+                                    "source": c.source,
+                                })
+                            })
+                            .collect();
+                        let _ = app_handle_for_recall.emit(
+                            "agent:memory-recall",
+                            serde_json::json!({
+                                "totalCandidates": total,
+                                "skillsCount": skills_count,
+                                "bootCount": plan.boot.len(),
+                                "triggeredCount": plan.triggered.len(),
+                                "relevantCount": plan.relevant.len(),
+                                "expandedCount": plan.expanded.len(),
+                                "recentCount": plan.recent.len(),
+                                "items": items,
+                                "conversationId": session_id_for_recall,
+                                "timestamp": chrono::Utc::now().to_rfc3339(),
+                            }),
+                        );
+                        recall_engine.record_used_skills(&plan);
                         Some(memory_ctx)
                     } else {
-                        tracing::info!("Memory recall returned no candidates (agent)");
-                        None
+                        let mut memory_ctx = String::new();
+                        if let Some(sess_ctx) = session_memory_ctx {
+                            memory_ctx.push_str(&sess_ctx);
+                        }
+                        if let Some(browser_ctx) = browser_task_memory_ctx {
+                            memory_ctx.push_str(&browser_ctx);
+                        }
+                        if !memory_ctx.is_empty() {
+                            tracing::info!(
+                                "Auxiliary memories composed (agent, background, no graph recall)"
+                            );
+                            Some(memory_ctx)
+                        } else {
+                            None
+                        }
                     }
-                };
-                composed
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Memory recall failed, proceeding without memory context (agent)");
-                None
-            }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Memory recall failed in background task, agent will proceed without it"
+                    );
+                    None
+                }
+            };
+            // Receiver may have been dropped (deadline already fired) —
+            // that's fine; we still did the chip emit above so the user
+            // sees recall happened, just not in time to influence
+            // THIS turn's system prompt.
+            let _ = recall_tx.send(composed);
+        });
+    }
+
+    // Await the recall with a hard deadline. If recall is slow / memU
+    // is sluggish, we proceed without memory_ctx for this turn — the
+    // background task still completes and emits the chip event.
+    let memory_ctx_for_spawn: Option<String> = match tokio::time::timeout(
+        std::time::Duration::from_millis(RECALL_DEADLINE_MS),
+        recall_rx,
+    )
+    .await
+    {
+        Ok(Ok(ctx)) => ctx,
+        Ok(Err(_)) => {
+            tracing::debug!("Memory recall channel closed before result arrived (agent)");
+            None
+        }
+        Err(_) => {
+            tracing::info!(
+                deadline_ms = RECALL_DEADLINE_MS,
+                "Memory recall deadline exceeded; proceeding without memory context (agent)"
+            );
+            None
         }
     };
 
