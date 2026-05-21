@@ -15,6 +15,7 @@ pub mod preference_extractor;
 pub mod proactive_recall;
 pub mod scenarios;
 pub mod skill_parser;
+pub mod skill_telemetry;
 pub mod task_memory;
 pub mod tool_memory;
 pub mod review_scheduler;

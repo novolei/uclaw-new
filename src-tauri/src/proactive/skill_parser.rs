@@ -542,6 +542,18 @@ pub fn persist_learned_skill_to_disk(
     let skill_md_path = skill_dir.join("SKILL.md");
     let content = compose_learned_skill_md(skill, &slug);
     std::fs::write(&skill_md_path, content)?;
+
+    // Bundle 26-A: seed meta.json so telemetry has a starting record.
+    // Best-effort — if this fails the skill is still on disk and will
+    // get a fresh meta lazily on the first record_returned call.
+    let meta = crate::proactive::skill_telemetry::SkillMeta::new(&slug);
+    if let Err(e) = crate::proactive::skill_telemetry::save_meta(&skill_dir, &meta) {
+        tracing::warn!(
+            skill_dir = %skill_dir.display(),
+            error = %e,
+            "[skill_telemetry] failed to seed meta.json (skill itself persisted ok)"
+        );
+    }
     Ok(skill_md_path)
 }
 
