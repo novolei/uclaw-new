@@ -160,29 +160,39 @@ impl BrowserContext {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     async fn get_page(&self, tab_id: &str) -> Result<Page> {
+        // Bundle 25-C: fast-reject pseudo tab ids (currently "new") BEFORE
+        // any lock acquisition or lookup. Bundle 19 already returned a
+        // helpful error when "new" fell through the lookup path, but the
+        // LLM continued to make the same call repeatedly in tight loops
+        // (see /Users/ryanliu/.uclaw/logs/uclaw.log.2026-05-21).
+        // This guard:
+        //   1. Returns an unambiguous `[InvalidInput]` error so the agent
+        //      sees a category-specific signal that retrying with the same
+        //      param won't help.
+        //   2. Logs a warn! line so we can track how often this fires —
+        //      sustained high counts would suggest schema-level
+        //      tightening (enum constraint) is needed.
+        //   3. Avoids the cost of `pages.read()` + inventory string build
+        //      on a known-bad input.
+        if let Some(msg) = Self::reject_pseudo_tab_id(tab_id) {
+            tracing::warn!(
+                tab_id = %tab_id,
+                "browser tool rejected pseudo tab_id (Bundle 25-C)"
+            );
+            return Err(anyhow!(msg));
+        }
+
         let pages = self.pages.read().await;
         if let Some(page) = pages.get(tab_id) {
             return Ok(page.clone());
         }
-        // Bundle 19 — explain how to recover instead of the bare "Tab
-        // 'X' not found". The LLM frequently passes tab_id="new"
-        // because `browser_navigate` documents "new" as a sentinel,
-        // but other tools (screenshot, click, type, etc.) require a
-        // real id from a prior navigate call.
+        // Real lookup miss (legit id but tab closed / wrong session) —
+        // give the LLM the open-tabs inventory so it can pick a real one.
         let mut msg = format!("Tab '{}' not found.", tab_id);
-        if tab_id == "new" {
-            msg.push_str(
-                " 'new' is only valid as the tab_id for `browser_navigate` \
-                 (where it opens a new tab and returns the real id). For \
-                 every other browser tool, pass a tab_id that came back \
-                 from a prior `browser_navigate` call.",
-            );
-        } else {
-            msg.push_str(
-                " The tab_id must be a value returned by a prior \
-                 `browser_navigate` call.",
-            );
-        }
+        msg.push_str(
+            " The tab_id must be a value returned by a prior \
+             `browser_navigate` call.",
+        );
         if pages.is_empty() {
             msg.push_str(" No tabs are currently open.");
         } else {
@@ -200,6 +210,29 @@ impl BrowserContext {
             }
         }
         Err(anyhow!(msg))
+    }
+
+    /// Bundle 25-C: returns a recovery message when `tab_id` is a value
+    /// that's never going to resolve to a real tab — currently just "new",
+    /// but built as a list so we can extend (e.g. "current", "active")
+    /// without restructuring callers.
+    ///
+    /// Returns `None` if the tab_id passes the pseudo-id check (still
+    /// might fail the real lookup; that's the next stage in get_page).
+    fn reject_pseudo_tab_id(tab_id: &str) -> Option<String> {
+        match tab_id {
+            "new" => Some(
+                "[InvalidInput] Tab id 'new' is only valid as input to `browser_navigate` \
+                 (where it opens a new tab and returns the real id). For every other \
+                 browser tool (browser_reload, browser_click, browser_type, \
+                 browser_screenshot, etc.) pass a tab_id that came back from a prior \
+                 `browser_navigate` call. If you need a fresh tab, call `browser_navigate` \
+                 first with tab_id='new' to get a real id, then use that id."
+                    .to_string(),
+            ),
+            // Future: "current", "active", "" — add when we see them in logs.
+            _ => None,
+        }
     }
 
     /// Resolve tab_id: if "new" or not found, open a blank page and return the
@@ -576,13 +609,107 @@ impl BrowserContext {
     pub async fn type_text(&self, tab_id: &str, index: u32, text: &str) -> Result<()> {
         let selector = Self::index_selector(index);
         let page = self.get_page(tab_id).await?;
-        page.find_element(&selector)
+        let element = page
+            .find_element(&selector)
             .await
-            .map_err(|e| anyhow!("Element [{}] not found: {}", index, e))?
-            .type_str(text)
+            .map_err(|e| anyhow!("Element [{}] not found: {}", index, e))?;
+
+        match element.type_str(text).await {
+            Ok(_) => {
+                self.invalidate_dom_cache(tab_id).await;
+                Ok(())
+            }
+            Err(e) => {
+                // Bundle 25-B: CDP keyboard layout doesn't cover every Unicode
+                // codepoint — CJK characters (e.g. '许') raise "Key not found".
+                // When that happens, fall back to setting `el.value` via
+                // evaluate() and dispatching input + change events so frameworks
+                // (React/Vue/Svelte) still see a real input.
+                let msg = e.to_string();
+                let is_unsupported_key = msg.contains("Key not found")
+                    || msg.contains("KeyDescriptor")
+                    || msg.contains("keyDefinitions");
+                if !is_unsupported_key {
+                    return Err(anyhow!("type_text [{}] failed: {}", index, e));
+                }
+
+                tracing::debug!(
+                    index = %index,
+                    chars = %text.chars().count(),
+                    "type_text: type_str failed with 'Key not found' — falling back to evaluate()"
+                );
+                Self::type_via_evaluate(&page, &selector, text)
+                    .await
+                    .map_err(|e2| {
+                        anyhow!(
+                            "type_text [{}] failed (CDP type_str: {}) and evaluate fallback also failed: {}",
+                            index, e, e2
+                        )
+                    })?;
+                self.invalidate_dom_cache(tab_id).await;
+                Ok(())
+            }
+        }
+    }
+
+    /// Bundle 25-B helper: build the JS script for the type-via-evaluate fallback.
+    /// Extracted as a pure function so it can be unit-tested without a real Page.
+    fn build_type_fallback_script(selector: &str, text: &str) -> Result<String> {
+        // selector may contain ' (single quote) — same escape pattern as select_option().
+        let safe_selector = selector.replace('\'', "\\'");
+        // Serialize text as a JS string literal — handles all Unicode safely.
+        let js_text = serde_json::to_string(text)
+            .map_err(|e| anyhow!("JSON-encode text for evaluate: {}", e))?;
+        Ok(format!(
+            r#"(function() {{
+                var el = document.querySelector('{selector}');
+                if (!el) return {{ ok: false, reason: 'element_not_found' }};
+                try {{
+                    if (typeof el.focus === 'function') el.focus();
+                    el.value = {value};
+                    el.dispatchEvent(new Event('input',  {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    return {{ ok: true }};
+                }} catch (err) {{
+                    return {{ ok: false, reason: String(err && err.message || err) }};
+                }}
+            }})()"#,
+            selector = safe_selector,
+            value = js_text,
+        ))
+    }
+
+    /// Bundle 25-B: Fallback for `type_text` when the CDP keyboard layout
+    /// rejects a Unicode codepoint (e.g. CJK).
+    ///
+    /// Sets `el.value` directly via `evaluate()` and dispatches `input` +
+    /// `change` events so JS frameworks see the change. Uses
+    /// `serde_json::to_string(text)` to produce a valid JS string literal —
+    /// this is the only correct way to embed arbitrary Unicode (including
+    /// quotes, backslashes, newlines, surrogate pairs) into JS source.
+    async fn type_via_evaluate(
+        page: &chromiumoxide::Page,
+        selector: &str,
+        text: &str,
+    ) -> Result<()> {
+        let script = Self::build_type_fallback_script(selector, text)?;
+
+        let result = page
+            .evaluate(script)
             .await
-            .map_err(|e| anyhow!("type_text [{}] failed: {}", index, e))?;
-        self.invalidate_dom_cache(tab_id).await;
+            .map_err(|e| anyhow!("evaluate fallback failed: {}", e))?;
+
+        // chromiumoxide's evaluate returns a value we deserialize via .into_value::<T>()
+        let value: serde_json::Value = result
+            .into_value::<serde_json::Value>()
+            .map_err(|e| anyhow!("evaluate fallback returned non-JSON: {}", e))?;
+        if !value.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            let reason = value
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            return Err(anyhow!("evaluate fallback rejected: {}", reason));
+        }
         Ok(())
     }
 
@@ -1193,5 +1320,84 @@ mod tests {
         assert!(script.contains("const __uclawParams = {\"options\":{\"enabled\":true},\"roomId\":\"douyin-room-1\"};"));
         assert!(script.contains("const __uclawUserFn = (async (params) =>"));
         assert!(script.contains("return await __uclawUserFn(__uclawParams);"));
+    }
+
+    // --- Bundle 25-B: type-fallback script builder tests ---
+
+    #[test]
+    fn type_fallback_script_embeds_cjk_text_safely() {
+        let s = BrowserContext::build_type_fallback_script(
+            "[data-uclaw-index=\"3\"]",
+            "你好世界",
+        )
+        .unwrap();
+        // JSON serialization of CJK uses raw UTF-8 by default — both forms
+        // are valid JS but serde_json writes the bytes directly.
+        assert!(s.contains("\"你好世界\""), "expected CJK passed through, got:\n{s}");
+        // The 'value =' line uses the JSON literal as a JS string.
+        assert!(s.contains("el.value = \"你好世界\""));
+        // Both events dispatched.
+        assert!(s.contains("new Event('input'"));
+        assert!(s.contains("new Event('change'"));
+    }
+
+    #[test]
+    fn type_fallback_script_escapes_quotes_and_backslashes() {
+        let s = BrowserContext::build_type_fallback_script(
+            "[data-uclaw-index=\"7\"]",
+            "she said \"hi\" and `\\` and 'q' and\nnewline",
+        )
+        .unwrap();
+        // serde_json escapes " as \" and \ as \\ and \n as \\n
+        assert!(s.contains(r#"\"hi\""#), "quotes should be escaped");
+        assert!(s.contains(r"\\"), "backslash should be escaped");
+        assert!(s.contains(r"\n"), "newline should be escaped");
+    }
+
+    #[test]
+    fn type_fallback_script_escapes_selector_single_quotes() {
+        // (rare but possible: selectors containing single quotes from a malformed index)
+        let s = BrowserContext::build_type_fallback_script(
+            "input[name='weird']",
+            "ok",
+        )
+        .unwrap();
+        // Single quotes inside the selector are backslash-escaped before going
+        // into the JS single-quoted string literal.
+        assert!(s.contains(r"input[name=\'weird\']"));
+    }
+
+    // --- Bundle 25-C: pseudo tab_id rejection tests ---
+
+    #[test]
+    fn pseudo_tab_id_rejects_new() {
+        let msg = BrowserContext::reject_pseudo_tab_id("new").expect("'new' should be rejected");
+        assert!(msg.contains("[InvalidInput]"));
+        assert!(msg.contains("browser_navigate"));
+        // Mentions concrete other tools so the LLM gets a hint about scope.
+        assert!(msg.contains("browser_reload") || msg.contains("browser_click"));
+    }
+
+    #[test]
+    fn pseudo_tab_id_accepts_real_uuids() {
+        // A normal UUID-style id should pass the guard (real lookup happens later).
+        assert!(BrowserContext::reject_pseudo_tab_id(
+            "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn pseudo_tab_id_accepts_short_random_ids() {
+        assert!(BrowserContext::reject_pseudo_tab_id("tab_42").is_none());
+        assert!(BrowserContext::reject_pseudo_tab_id("0").is_none()); // intentionally not a pseudo yet
+        assert!(BrowserContext::reject_pseudo_tab_id("").is_none()); // empty currently passes; revisit if seen in logs
+    }
+
+    #[test]
+    fn type_fallback_script_emoji_and_emoji_zwj_sequences() {
+        // 👨‍👩‍👧 = ZWJ family sequence — multi-codepoint, valid UTF-8.
+        let s = BrowserContext::build_type_fallback_script("#x", "👨‍👩‍👧 hi").unwrap();
+        assert!(s.contains("\"👨\u{200d}👩\u{200d}👧 hi\"") || s.contains("\"👨‍👩‍👧 hi\""));
     }
 }
