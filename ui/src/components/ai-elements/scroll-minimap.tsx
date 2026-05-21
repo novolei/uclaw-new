@@ -459,13 +459,18 @@ function ItemIcon({ item }: { item: MinimapItem }): React.ReactElement {
     return <UserAvatar avatar={item.avatar} size={16} className="mt-0.5" />
   }
   if (item.role === 'assistant' && item.model) {
-    return (
-      <img
-        src={getModelLogo(item.model)}
-        alt=""
-        className="size-4 shrink-0 mt-0.5 rounded-[20%] object-cover"
-      />
-    )
+    const logoUrl = getModelLogo(item.model)
+    if (logoUrl) {
+      return (
+        <img
+          src={logoUrl}
+          alt=""
+          className="size-4 shrink-0 mt-0.5 rounded-[20%] object-cover"
+        />
+      )
+    }
+    // Unknown provider — use a tiny placeholder dot rather than broken-image glyph
+    return <span className="size-4 shrink-0 mt-0.5 rounded-[20%] bg-primary/20" aria-hidden />
   }
   if (item.role === 'status') {
     return <AlertTriangle className="size-4 shrink-0 mt-0.5 text-destructive" />

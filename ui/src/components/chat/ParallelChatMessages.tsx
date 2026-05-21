@@ -28,7 +28,7 @@ import {
 } from '@/components/ai-elements/reasoning'
 import { streamingModelAtom } from '@/atoms/chat-atoms'
 import { agentDisplayNameForAtom } from '@/atoms/agent-display-name'
-import { getModelLogo } from '@/lib/model-logo'
+import { ProviderAvatar } from '@/components/ai-elements/provider-avatar'
 import type { ChatMessage } from '@/lib/chat-types'
 
 interface MessageSegment {
@@ -191,13 +191,7 @@ function MessageColumn({
               name={agentNameLookup(conversationId)}
               model={streamingModel ?? undefined}
               time={formatMessageTime(Date.now())}
-              logo={
-                <img
-                  src={getModelLogo(streamingModel ?? '')}
-                  alt="AI"
-                  className="size-[35px] rounded-[25%] object-cover"
-                />
-              }
+              logo={<ProviderAvatar model={streamingModel} />}
             />
             <MessageContent>
               {streamingReasoning && (

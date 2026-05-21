@@ -30,7 +30,8 @@ import { MigrateToAgentButton } from './MigrateToAgentButton'
 import { DeleteMessageDialog } from './DeleteMessageDialog'
 import { InlineEditForm } from './InlineEditForm'
 import { UserAvatar } from './UserAvatar'
-import { getModelLogo, resolveModelDisplayName } from '@/lib/model-logo'
+import { resolveModelDisplayName } from '@/lib/model-logo'
+import { ProviderAvatar } from '@/components/ai-elements/provider-avatar'
 import { userProfileAtom } from '@/atoms/user-profile'
 import { channelsAtom } from '@/atoms/chat-atoms'
 import { agentDisplayNameForAtom } from '@/atoms/agent-display-name'
@@ -123,13 +124,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
             name={agentNameLookup(conversationId)}
             model={message.model ? resolveModelDisplayName(message.model, channels) : undefined}
             time={formatMessageTime(message.createdAt)}
-            logo={
-              <img
-                src={getModelLogo(message.model ?? '')}
-                alt={message.model ?? 'AI'}
-                className="size-[35px] rounded-[25%] object-cover"
-              />
-            }
+            logo={<ProviderAvatar model={message.model} />}
           />
         )}
 

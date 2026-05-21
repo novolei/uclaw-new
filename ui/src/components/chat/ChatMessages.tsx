@@ -38,7 +38,7 @@ import {
 import { useSmoothStream } from '@/hooks/useSmoothStream'
 import { ScrollPositionManager } from '@/hooks/useScrollPositionMemory'
 import { useConversationParallelMode } from '@/hooks/useConversationSettings'
-import { getModelLogo } from '@/lib/model-logo'
+import { ProviderAvatar } from '@/components/ai-elements/provider-avatar'
 import { userProfileAtom } from '@/atoms/user-profile'
 import { tabMinimapCacheAtom, type TabMinimapItem } from '@/atoms/tab-atoms'
 import { agentDisplayNameForAtom } from '@/atoms/agent-display-name'
@@ -316,13 +316,7 @@ export function ChatMessages({
                   name={agentNameLookup(conversationId)}
                   model={streamingModel ?? undefined}
                   time={formatMessageTime(Date.now())}
-                  logo={
-                    <img
-                      src={getModelLogo(streamingModel ?? '')}
-                      alt="AI"
-                      className="size-[35px] rounded-[25%] object-cover"
-                    />
-                  }
+                  logo={<ProviderAvatar model={streamingModel} />}
                 />
                 <MessageContent>
                   <ChatToolActivityIndicator activities={toolActivities} isStreaming={streaming} />
