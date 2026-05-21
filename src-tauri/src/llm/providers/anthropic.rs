@@ -264,6 +264,33 @@ impl AnthropicProvider {
             }
             body["tools"] = serde_json::json!(converted);
         }
+
+        // M2-I (#118) — Slice 3-C: add up to 2 message-level cache
+        // breakpoints, bringing the total to the Anthropic per-request
+        // ceiling of 4 (system + last tool + 2 conversation cuts).
+        //
+        // Strategy:
+        //   - Walk messages backwards, find the last and 2nd-to-last
+        //     USER message indices.
+        //   - On each, normalize the content into block form (if it's a
+        //     bare string we wrap it) and stamp the LAST content block
+        //     with `cache_control: { type: "ephemeral" }`.
+        //   - The newest user message marker means "everything up to
+        //     and including the latest user turn is cacheable", so the
+        //     NEXT iteration's assistant prefill gets a cache hit even
+        //     though the new assistant content itself isn't cached.
+        //   - The 2nd-to-last marker is a fallback: when the agent
+        //     loop runs multiple LLM iterations within one user turn
+        //     (tool-call → reply pattern), the older user msg becomes
+        //     stable territory and caches across iterations.
+        //
+        // Anthropic ignores cache_control on segments < 1024 tokens, so
+        // this stays safe even when conversation history is short —
+        // it's a no-op cost-wise until the conversation accumulates
+        // enough tokens for caching to be worth it.
+        if let Some(messages_arr) = body["messages"].as_array_mut() {
+            attach_message_cache_breakpoints(messages_arr);
+        }
         if stream {
             body["stream"] = serde_json::json!(true);
         }
@@ -877,4 +904,136 @@ fn normalize_base_url(raw: &str) -> String {
         }
     }
     trimmed.to_string()
+}
+
+/// M2-I (#118) — apply up to 2 message-level `cache_control: ephemeral`
+/// markers, completing the 4-breakpoint budget alongside the system +
+/// last-tool markers that build_request_body already emits.
+///
+/// Algorithm:
+///   1. Walk `messages` in reverse, collecting the up to 2 most-recent
+///      user-message indices.
+///   2. For each such index, locate the message's `content` field:
+///      - If it's a bare string, rewrite it as a content-block array
+///        of one text block (Anthropic spec requires block-form for
+///        cache_control to attach).
+///      - If it's already an array, target the LAST block.
+///      - If it's any other shape (unexpected), leave it alone.
+///   3. Stamp `cache_control: { type: "ephemeral" }` onto the target
+///      block's object.
+///
+/// Two markers are placed at most. Anthropic ignores markers on
+/// segments < 1024 tokens, so short conversations no-op out. Tests
+/// below pin the layout invariants for: bare-string user msgs,
+/// block-array user msgs, mixed user/assistant ordering, and the
+/// no-user-msg edge case.
+fn attach_message_cache_breakpoints(messages: &mut [serde_json::Value]) {
+    // Phase 1: find indices of up to 2 most-recent user messages.
+    let mut targets: Vec<usize> = Vec::with_capacity(2);
+    for (idx, msg) in messages.iter().enumerate().rev() {
+        if targets.len() >= 2 {
+            break;
+        }
+        if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
+            targets.push(idx);
+        }
+    }
+
+    // Phase 2: stamp cache_control on the last content block of each.
+    for idx in targets {
+        let Some(msg) = messages.get_mut(idx).and_then(|m| m.as_object_mut()) else {
+            continue;
+        };
+        // Normalize content to an array if it's a bare string.
+        let needs_wrap = matches!(msg.get("content"), Some(serde_json::Value::String(_)));
+        if needs_wrap {
+            if let Some(serde_json::Value::String(text)) = msg.remove("content") {
+                msg.insert(
+                    "content".to_string(),
+                    serde_json::json!([{"type": "text", "text": text}]),
+                );
+            }
+        }
+        // Stamp cache_control on the last block.
+        if let Some(serde_json::Value::Array(blocks)) = msg.get_mut("content") {
+            if let Some(last_obj) = blocks.last_mut().and_then(|v| v.as_object_mut()) {
+                last_obj.insert(
+                    "cache_control".to_string(),
+                    serde_json::json!({"type": "ephemeral"}),
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod cache_breakpoints_tests {
+    use super::attach_message_cache_breakpoints;
+    use serde_json::json;
+
+    #[test]
+    fn marks_last_user_message_in_bare_string_form() {
+        let mut messages = vec![
+            json!({"role": "user", "content": "first"}),
+            json!({"role": "assistant", "content": "ok"}),
+            json!({"role": "user", "content": "second"}),
+        ];
+        attach_message_cache_breakpoints(&mut messages);
+        // Both user messages get markers (max 2).
+        for idx in [0, 2] {
+            let blocks = messages[idx]["content"].as_array().unwrap();
+            let last = blocks.last().unwrap();
+            assert_eq!(last["type"], json!("text"));
+            assert_eq!(last["cache_control"], json!({"type": "ephemeral"}));
+        }
+        // Assistant message untouched.
+        assert_eq!(messages[1]["content"], json!("ok"));
+    }
+
+    #[test]
+    fn stops_after_two_markers() {
+        let mut messages = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "user", "content": "u3"}),
+        ];
+        attach_message_cache_breakpoints(&mut messages);
+        // Newest two (indices 1, 2) get markers; oldest (0) does not.
+        assert!(messages[0]["content"].is_string(), "u1 should be unmarked / unmutated");
+        assert_eq!(
+            messages[1]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+        assert_eq!(
+            messages[2]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+    }
+
+    #[test]
+    fn marks_block_form_user_message_on_last_block() {
+        let mut messages = vec![json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "x", "content": "..."},
+                {"type": "text", "text": "follow-up"}
+            ]
+        })];
+        attach_message_cache_breakpoints(&mut messages);
+        let blocks = messages[0]["content"].as_array().unwrap();
+        // First block untouched, last gets cache_control.
+        assert!(blocks[0].get("cache_control").is_none());
+        assert_eq!(blocks[1]["cache_control"], json!({"type": "ephemeral"}));
+    }
+
+    #[test]
+    fn no_op_when_no_user_messages() {
+        let before = vec![
+            json!({"role": "assistant", "content": "hi"}),
+            json!({"role": "assistant", "content": "again"}),
+        ];
+        let mut messages = before.clone();
+        attach_message_cache_breakpoints(&mut messages);
+        assert_eq!(messages, before);
+    }
 }
