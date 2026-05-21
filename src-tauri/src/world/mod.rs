@@ -28,6 +28,9 @@ pub use adapters::{channel_to_entity, SlackAdapter, SlackEvent};
 pub use adapters::{
     calendar_event_to_entity, email_to_entity, CalendarAdapter, CalendarChangeEvent,
     EmailEvent, MailAdapter,
+pub use adapters::{
+    dataset_to_entity, document_to_entity, DatasetAdapter, DatasetEvent, DocEvent,
+    DocumentAdapter,
 };
 pub use entity::{EntityRef, WorldEntity, WorldEntityKind, WorldEntityState};
 pub use snapshot::{ProjectionStats, WorldSnapshot};
