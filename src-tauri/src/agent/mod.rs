@@ -17,6 +17,8 @@ pub mod image_policy;
 pub mod skill_selection;
 // M2-H L7 pilot — Compaction state machine.
 pub mod compression_state;
+// M2-B pilot — ContextManager per-turn composition skeleton.
+pub mod context_manager;
 // M1-T4b — opt-in rollout bridge for direct run_agentic_loop callsites.
 pub mod rollout_integration;
 pub mod code_rescue;
