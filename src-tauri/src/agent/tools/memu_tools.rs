@@ -13,6 +13,7 @@ use tracing::{info, warn};
 
 use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput};
 use crate::memu::client::MemUClient;
+use crate::memory_graph::store::MemoryGraphStore;
 
 // ═══════════════════════════════════════════════════════════════════════
 // 1. memu_memory — 记忆检索工具
@@ -24,11 +25,41 @@ use crate::memu::client::MemUClient;
 /// 通过此工具从 memU 服务中检索相关记忆。
 pub struct MemuMemoryTool {
     client: Option<Arc<MemUClient>>,
+    /// Optional MemoryGraphStore — when set, ranking-style queries
+    /// (e.g. "使用次数前 5 的技能") skip the LLM-backed memU retrieval
+    /// and go straight to a SQL aggregation on `procedure` nodes. Bundle 5
+    /// fast path — see [`is_skill_ranking_query`].
+    store: Option<Arc<MemoryGraphStore>>,
+    /// Workspace / space id passed to [`MemoryGraphStore::list_top_skills_by_usage`].
+    /// Hard-coded `"default"` today since the agent loop hard-codes the
+    /// same; will move to per-workspace once dynamic space_id lands.
+    space_id: String,
 }
 
 impl MemuMemoryTool {
     pub fn new(client: Option<Arc<MemUClient>>) -> Self {
-        Self { client }
+        Self {
+            client,
+            store: None,
+            space_id: "default".to_string(),
+        }
+    }
+
+    /// Bundle 5 — attach a MemoryGraphStore handle so ranking-style
+    /// queries can take the SQL fast path. Without this, ranking
+    /// queries still work but fall through to the regular memU
+    /// retrieve_with_context (slow, LLM-enriched).
+    pub fn with_store(mut self, store: Arc<MemoryGraphStore>) -> Self {
+        self.store = Some(store);
+        self
+    }
+
+    /// Override the default space_id used for the SQL fast path.
+    /// Defaults to `"default"` (matches the agent loop hard-coding).
+    #[allow(dead_code)]
+    pub fn with_space_id(mut self, space_id: impl Into<String>) -> Self {
+        self.space_id = space_id.into();
+        self
     }
 }
 
@@ -88,6 +119,69 @@ impl Tool for MemuMemoryTool {
             "[memu_memory] 检索记忆: query={}, limit={}",
             input.query, input.limit
         );
+
+        // Bundle 5 — fast path for skill-ranking queries.
+        //
+        // Dev log showed "请列出使用次数前5的技能" routing into
+        // `retrieve_with_context` and hitting the 60s memU timeout
+        // (duration_ms=60002) — because the LLM-backed category
+        // enrichment pass is doing semantic work on a question that is
+        // fundamentally a SQL aggregation over `procedure_nodes.usage_count`.
+        //
+        // When (a) the query reads as a ranking question AND (b) a
+        // MemoryGraphStore handle is wired, answer it directly from the
+        // graph DB. Falls through to the regular retrieve path if either
+        // condition fails — no behavior regression for non-ranking queries.
+        if let Some(ref store) = self.store {
+            if is_skill_ranking_query(&input.query) {
+                let limit = input.limit.clamp(1, 50);
+                match store.list_top_skills_by_usage(&self.space_id, limit) {
+                    Ok(rows) => {
+                        let memories: Vec<serde_json::Value> = rows
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, (node_id, title, usage_count, cited_count, last_cited_at))| {
+                                json!({
+                                    "rank": idx + 1,
+                                    "node_id": node_id,
+                                    "title": title,
+                                    "usage_count": usage_count,
+                                    "cited_count": cited_count,
+                                    "last_cited_at": last_cited_at,
+                                })
+                            })
+                            .collect();
+                        let count = memories.len();
+                        let result = json!({
+                            "memories": memories,
+                            "query": input.query,
+                            "mode": "skill_ranking",
+                            "count": count,
+                            // Surface the rationale so the LLM doesn't
+                            // re-call memu_memory thinking it got wrong data.
+                            "note": "Returned via SQL fast path (ranked by usage_count DESC, then cited_count). LLM-backed semantic retrieval was skipped because this looks like a ranking question.",
+                        });
+                        info!(
+                            duration_ms = start.elapsed().as_millis() as u64,
+                            count,
+                            "[memu_memory] skill_ranking fast path returned"
+                        );
+                        return Ok(ToolOutput::new(
+                            result,
+                            start.elapsed().as_millis() as u64,
+                        ));
+                    }
+                    Err(e) => {
+                        // Fall through to memU retrieve — SQL failure
+                        // shouldn't make the whole tool unusable.
+                        warn!(
+                            "[memu_memory] skill_ranking SQL fast path failed, falling back to memU: {}",
+                            e
+                        );
+                    }
+                }
+            }
+        }
 
         match &self.client {
             Some(client) => {
@@ -171,13 +265,24 @@ impl Tool for MemuMemoryTool {
                         Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
                     }
                     Err(e) => {
-                        // 降级处理：返回空列表而非错误
+                        // 降级处理：返回空列表而非错误，并给 LLM 一个结构化的
+                        // hint —— 否则 raw "Request timed out after 60s" 容易
+                        // 让 LLM 误以为整个 memU 服务不可用并放弃后续 tool 调用。
                         warn!("[MemuMemoryTool] retrieve failed: {}", e);
+                        let err_str = e.to_string();
+                        let is_timeout = err_str.contains("timed out") || err_str.contains("Timeout");
+                        let hint = if is_timeout {
+                            "memU retrieve timed out. This may be a semantic-search-heavy query — consider rephrasing with a more concrete keyword, or for skill-ranking questions ask 'top N skills by usage_count' so the SQL fast path kicks in."
+                        } else {
+                            "memU retrieve failed — the service may be temporarily unavailable. Proceed without long-term memory context."
+                        };
                         let result = json!({
                             "memories": [],
                             "query": input.query,
                             "count": 0,
                             "error": format!("retrieve failed: {}", e),
+                            "hint": hint,
+                            "kind": if is_timeout { "timeout" } else { "unknown" },
                         });
                         Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
                     }
@@ -219,6 +324,49 @@ fn is_list_all_memory_query(query: &str) -> bool {
     ) || normalized.contains("所有记忆")
         || normalized.contains("全部记忆")
         || normalized.contains("有什么长期记忆")
+}
+
+/// Bundle 5 — does the query read as "rank skills by usage / frequency"?
+///
+/// Heuristic over the lowercased query. Requires BOTH a skill-noun
+/// signal AND a ranking/count signal — otherwise innocent queries like
+/// "top of mind" or "我用过的命令" would false-positive.
+///
+/// Returns `true` for:
+/// - "请列出使用次数前 5 的技能"
+/// - "top 5 skills by usage count"
+/// - "排名前十的 skill"
+/// - "skill ranking by use frequency"
+///
+/// Returns `false` for:
+/// - "记忆里有什么 skill" (no ranking signal)
+/// - "top 5 movies" (no skill signal)
+fn is_skill_ranking_query(query: &str) -> bool {
+    let normalized = query.trim().to_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+    let skill_signal = [
+        "技能", "skill", "skills",
+        "工具使用", "工具调用", "tool usage",
+    ]
+    .iter()
+    .any(|kw| normalized.contains(kw));
+    if !skill_signal {
+        return false;
+    }
+    let ranking_signal = [
+        // Chinese
+        "排名", "排行", "排序", "前 5", "前5", "前 10", "前10", "前 3", "前3",
+        "使用次数", "调用次数", "次数最多", "用得最多", "用的最多",
+        "最常用", "最频繁",
+        // English
+        "top ", "ranking", "rank by", "by usage", "by use", "by count",
+        "most used", "most frequently", "usage count", "use count",
+    ]
+    .iter()
+    .any(|kw| normalized.contains(kw));
+    ranking_signal
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -448,22 +596,40 @@ impl Tool for WaitUserConfirmTool {
 use crate::agent::tools::tool::ToolRegistry;
 
 /// 将 memU 基础工具（memu_memory + memu_todos）注册到给定的 ToolRegistry
-pub fn register_memu_tools(registry: &mut ToolRegistry, memu_client: Option<Arc<MemUClient>>) {
-    registry.register(MemuMemoryTool::new(memu_client.clone()));
+///
+/// `memory_graph_store` is optional — when provided, `memu_memory` will
+/// route ranking-style queries ("top N skills by usage") through a SQL
+/// fast path instead of the LLM-backed memU retrieve. Pass `None` to
+/// keep the legacy retrieve-only behavior (e.g. proactive service path
+/// where the store handle isn't readily plumbed in).
+pub fn register_memu_tools(
+    registry: &mut ToolRegistry,
+    memu_client: Option<Arc<MemUClient>>,
+    memory_graph_store: Option<Arc<MemoryGraphStore>>,
+) {
+    let mut memory_tool = MemuMemoryTool::new(memu_client.clone());
+    if let Some(store) = memory_graph_store {
+        memory_tool = memory_tool.with_store(store);
+    }
+    registry.register(memory_tool);
     registry.register(MemuTodosTool::new(memu_client));
 }
 
 /// 将主动服务专用工具集注册到给定的 ToolRegistry
 ///
 /// 包含所有 memU 基础工具 + wait_user_confirm
-pub fn register_proactive_tools(registry: &mut ToolRegistry, memu_client: Option<Arc<MemUClient>>) {
-    register_memu_tools(registry, memu_client);
+pub fn register_proactive_tools(
+    registry: &mut ToolRegistry,
+    memu_client: Option<Arc<MemUClient>>,
+    memory_graph_store: Option<Arc<MemoryGraphStore>>,
+) {
+    register_memu_tools(registry, memu_client, memory_graph_store);
     registry.register(WaitUserConfirmTool::new());
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_list_all_memory_query;
+    use super::{is_list_all_memory_query, is_skill_ranking_query};
 
     #[test]
     fn list_all_memory_query_recognizes_inventory_prompts() {
@@ -472,5 +638,41 @@ mod tests {
         assert!(is_list_all_memory_query("*"));
         assert!(is_list_all_memory_query("all memories"));
         assert!(!is_list_all_memory_query("天津大学"));
+    }
+
+    #[test]
+    fn skill_ranking_query_matches_chinese_phrasing() {
+        // The exact dev-log phrasing that triggered Bundle 5
+        assert!(is_skill_ranking_query("请列出使用次数前5的技能"));
+        assert!(is_skill_ranking_query("使用次数前 10 的技能"));
+        assert!(is_skill_ranking_query("最常用的技能"));
+        assert!(is_skill_ranking_query("技能排行榜"));
+        assert!(is_skill_ranking_query("技能调用次数排名"));
+    }
+
+    #[test]
+    fn skill_ranking_query_matches_english_phrasing() {
+        assert!(is_skill_ranking_query("top 5 skills by usage"));
+        assert!(is_skill_ranking_query("skill ranking by use frequency"));
+        assert!(is_skill_ranking_query("most used skills"));
+        assert!(is_skill_ranking_query("rank skills by usage count"));
+    }
+
+    #[test]
+    fn skill_ranking_query_rejects_non_skill_questions() {
+        // No skill signal — should NOT route to SQL fast path
+        assert!(!is_skill_ranking_query("top 5 movies"));
+        assert!(!is_skill_ranking_query("ranking of cities"));
+        assert!(!is_skill_ranking_query("最常用的命令"));
+    }
+
+    #[test]
+    fn skill_ranking_query_rejects_skill_browsing() {
+        // Skill signal but no ranking signal — keep the existing
+        // semantic retrieve path (these are genuine "what's in the
+        // catalog" questions, not ranking questions).
+        assert!(!is_skill_ranking_query("我有哪些技能"));
+        assert!(!is_skill_ranking_query("list my skills"));
+        assert!(!is_skill_ranking_query("show all skills"));
     }
 }

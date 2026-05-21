@@ -1777,6 +1777,7 @@ pub async fn send_message(
     crate::agent::tools::memu_tools::register_memu_tools(
         &mut tools,
         state.memu_client.clone(),
+        Some(Arc::clone(&state.memory_graph_store)),
     );
     // Browser tools (v2 — BrowserContextManager)
     {
@@ -10122,6 +10123,7 @@ pub async fn send_agent_message(
     crate::agent::tools::memu_tools::register_memu_tools(
         &mut tools,
         state.memu_client.clone(),
+        Some(Arc::clone(&state.memory_graph_store)),
     );
     // Browser tools (v2 — BrowserContextManager)
     // Lazy registration: when no active browser context exists for this session,

@@ -391,15 +391,19 @@ impl MemUClient {
         // retrieve_with_context runs an LLM-backed category enrichment pass
         // when include_categories=true. The default 30s `send_request` timeout
         // hits a hard cap during that LLM call (observed in dev as exact
-        // 30002ms duration on memu_memory tool calls). Use a 60s window — the
-        // enrichment is rarely above 20s, but tail-latency for cold-start
-        // FastEmbed inference + first-touch sqlite write can stretch.
+        // 30002ms duration on memu_memory tool calls).
+        //
+        // Bundle 1 raised this to 60s; Bundle 5 raises to 90s as a soft
+        // ceiling for the worst observed real-world case (ranking-style
+        // queries against larger procedure-node sets). Pair with the SQL
+        // fast path in MemuMemoryTool — most "top N skills by usage"
+        // queries should never reach here.
         let result = self
             .bridge
             .send_request_with_timeout(
                 "retrieve_with_context",
                 params,
-                std::time::Duration::from_secs(60),
+                std::time::Duration::from_secs(90),
             )
             .await?;
 
