@@ -251,6 +251,29 @@ pub struct AppState {
     /// Used by stop_agent_session to cancel a running loop.
     pub running_sessions: Arc<tokio::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>>,
 
+    /// Bundle 20 — per-session cached composed `memory_context` from
+    /// the most recent **completed** background recall. The agent
+    /// recall pipeline (Bundle 6) puts recall in `tokio::spawn` with
+    /// a 400ms deadline on the main path; in production memU's
+    /// retrieve_with_context routinely exceeds that, so the receiver
+    /// is dropped before the task can send. The composed context was
+    /// then thrown away — `delegate.set_memory_context` never ran,
+    /// LLM never saw the recall, and downstream telemetry (Bundle
+    /// 16-B `[M2-D]`) never fired.
+    ///
+    /// Bundle 20 fixes the leak by stashing every successfully
+    /// composed context here keyed by `conversation_id`. The next
+    /// turn's main path uses this as a fallback when its own 400ms
+    /// deadline misses — net effect is "recall primes the NEXT
+    /// turn", which preserves Bundle 6's TTFT win while delivering
+    /// memory_context on every turn ≥ 2.
+    ///
+    /// Memory cost is bounded: each entry is a single composed
+    /// String (~1-3 KB typical), keyed by session id. Stale sessions
+    /// stay in the map until process exit — that's bounded by the
+    /// number of conversations the user has, which is small.
+    pub recall_ctx_cache: Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
+
     /// Browser service for headless Chrome automation
     pub browser_service: Arc<crate::browser::BrowserService>,
 
@@ -788,6 +811,8 @@ impl AppState {
             metrics_service,
             memubot_config: Arc::new(tokio::sync::RwLock::new(memubot_config)),
             running_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            // Bundle 20 — see `recall_ctx_cache` field doc.
+            recall_ctx_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             browser_service: Arc::new(crate::browser::BrowserService::new()),
             browser_context_manager,
             trajectory_store,

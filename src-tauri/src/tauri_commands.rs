@@ -1649,6 +1649,48 @@ fn browser_task_memory_for_query(
     Some(ctx)
 }
 
+/// Bundle 20 — fallback to the per-session cached recall ctx when
+/// the current turn's recall doesn't meet its own deadline (or
+/// composes nothing). `reason` is a short tag that travels into the
+/// log line so we can tell apart the three "we missed our own
+/// deadline" branches in production telemetry.
+///
+/// Behaviour:
+/// - cache hit  → log INFO "fell back to cached recall ctx" + return `Some(ctx)`
+/// - cache miss → log INFO "no cached recall ctx; proceeding without" + return `None`
+///
+/// Returning a clone here is fine — composed contexts are 1-3 KB
+/// typical; cheap relative to the LLM call that follows.
+async fn recall_cache_fallback(
+    cache: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
+    session_id: &str,
+    reason: &str,
+) -> Option<String> {
+    let hit = {
+        let guard = cache.read().await;
+        guard.get(session_id).cloned()
+    };
+    match hit {
+        Some(ctx) => {
+            tracing::info!(
+                session_id,
+                reason,
+                ctx_len = ctx.len(),
+                "[Bundle 20] recall miss → fell back to cached ctx from prior turn"
+            );
+            Some(ctx)
+        }
+        None => {
+            tracing::info!(
+                session_id,
+                reason,
+                "[Bundle 20] recall miss → no cached ctx, proceeding without memory context"
+            );
+            None
+        }
+    }
+}
+
 fn build_browser_task_memory_context(state: &AppState, query: &str) -> Option<String> {
     let lower = query.to_lowercase();
     let is_browser_memory_query = [
@@ -10453,6 +10495,13 @@ pub async fn send_agent_message(
         let app_handle_for_recall = app_handle.clone();
         let state_db_for_browser = Arc::clone(&state.db);
         let workspace_root_for_browser = state.workspace_root.clone();
+        // Bundle 20 — clone the per-session recall cache handle. The
+        // bg task writes the freshly-composed memory_context here AFTER
+        // sending on the oneshot so even if the main path's 400ms
+        // deadline already fired (recv dropped), the next turn's main
+        // path can fall back to this cached value. See the field doc
+        // on AppState::recall_ctx_cache for the design rationale.
+        let recall_ctx_cache_for_bg = Arc::clone(&state.recall_ctx_cache);
 
         tokio::spawn(async move {
             let recall_engine = crate::memory_graph::recall::MemoryRecallEngine::new(
@@ -10593,6 +10642,24 @@ pub async fn send_agent_message(
                     None
                 }
             };
+            // Bundle 20 — stash the composed ctx in the per-session
+            // cache BEFORE sending on the oneshot. If the main path
+            // already timed out (very common because memU recall
+            // routinely exceeds 400ms), the next turn's main path
+            // will read this cached value as its fallback, so the
+            // LLM gets memory_context starting from turn N+1 even
+            // when EVERY turn's recall is too slow for its own
+            // deadline. Without this stash the composed value was
+            // dropped on the floor.
+            if let Some(ref ctx) = composed {
+                let mut cache = recall_ctx_cache_for_bg.write().await;
+                cache.insert(session_id_for_recall.clone(), ctx.clone());
+                tracing::info!(
+                    session_id = %session_id_for_recall,
+                    ctx_len = ctx.len(),
+                    "[Bundle 20] cached recall ctx for next turn"
+                );
+            }
             // Receiver may have been dropped (deadline already fired) —
             // that's fine; we still did the chip emit above so the user
             // sees recall happened, just not in time to influence
@@ -10604,23 +10671,60 @@ pub async fn send_agent_message(
     // Await the recall with a hard deadline. If recall is slow / memU
     // is sluggish, we proceed without memory_ctx for this turn — the
     // background task still completes and emits the chip event.
+    //
+    // Bundle 20 — when the deadline misses, fall back to the cached
+    // memory_context that the PRIOR turn's background recall stashed.
+    // This is the "memory primes the next turn" semantics described
+    // in the `AppState::recall_ctx_cache` field doc. On turn 1 the
+    // cache is empty → memory_ctx = None (acceptable cold start);
+    // on turn ≥ 2 the cache is populated from turn N-1's bg recall
+    // even when EVERY turn exceeds its own 400ms deadline.
     let memory_ctx_for_spawn: Option<String> = match tokio::time::timeout(
         std::time::Duration::from_millis(RECALL_DEADLINE_MS),
         recall_rx,
     )
     .await
     {
-        Ok(Ok(ctx)) => ctx,
+        Ok(Ok(Some(ctx))) => {
+            // Recall finished in time — also bump the cache so the
+            // NEXT turn benefits even if its own bg task is slow.
+            // (Bundle 20 wrote-on-bg-complete handles this too, but
+            // duplicating here costs nothing and survives the bg
+            // task being cancelled mid-flight.)
+            let cache = Arc::clone(&state.recall_ctx_cache);
+            let sid = input.session_id.clone();
+            let ctx_for_cache = ctx.clone();
+            tokio::spawn(async move {
+                cache.write().await.insert(sid, ctx_for_cache);
+            });
+            tracing::debug!(
+                deadline_ms = RECALL_DEADLINE_MS,
+                "Memory recall arrived within deadline (agent)"
+            );
+            Some(ctx)
+        }
+        Ok(Ok(None)) => {
+            // Recall completed but composed nothing usable. Still try
+            // cache fallback for this turn (prior turn may have
+            // populated it before this fresh recall came back empty).
+            recall_cache_fallback(&state.recall_ctx_cache, &input.session_id, "empty-compose")
+                .await
+        }
         Ok(Err(_)) => {
-            tracing::debug!("Memory recall channel closed before result arrived (agent)");
-            None
+            recall_cache_fallback(
+                &state.recall_ctx_cache,
+                &input.session_id,
+                "channel-closed",
+            )
+            .await
         }
         Err(_) => {
             tracing::info!(
                 deadline_ms = RECALL_DEADLINE_MS,
-                "Memory recall deadline exceeded; proceeding without memory context (agent)"
+                "Memory recall deadline exceeded; checking cross-turn cache (agent)"
             );
-            None
+            recall_cache_fallback(&state.recall_ctx_cache, &input.session_id, "deadline")
+                .await
         }
     };
 
