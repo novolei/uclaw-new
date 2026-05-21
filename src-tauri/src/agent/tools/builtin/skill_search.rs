@@ -426,6 +426,44 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
             }
         }
 
+        // Bundle 26-A — Skill-use telemetry: bump returned_count on each
+        // disk-resident skill that came back as a hit. Separate from
+        // bump_skill_usage (which updates the memory_graph cited_count
+        // ONLY for learned-tier skills) — meta.json sits next to
+        // SKILL.md for ALL tiers (auto_extracted / user / project /
+        // marketplace / bundled) so the future SkillDistillationScenario
+        // (Bundle 26-B) has uniform data to reason about.
+        {
+            let registry = self.registry.read().await;
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            for hit in &hits {
+                let Some(loaded) = registry.get_loaded(&hit.name) else {
+                    continue;
+                };
+                let skill_dir = &loaded.manifest.path;
+                // Slug: filesystem dirname — for _auto_extracted/ this
+                // matches skill_parser.slugify_for_filesystem; for other
+                // tiers it's whatever the disk layout has. Falls back to
+                // skill name if the path has no terminal component (very
+                // unusual but defensive).
+                let slug = skill_dir
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(hit.name.as_str())
+                    .to_string();
+                if let Err(e) = crate::proactive::skill_telemetry::record_returned(
+                    skill_dir, &slug, now_ms,
+                ) {
+                    tracing::warn!(
+                        skill = %hit.name,
+                        skill_dir = %skill_dir.display(),
+                        error = %e,
+                        "[skill_telemetry] record_returned failed"
+                    );
+                }
+            }
+        }
+
         // Emit agent:skill-recalled event — always with the FULL hit shape
         // so the UI can still render rich chips even when the LLM saw lite.
         let tool_call_id = params["_tool_call_id"]

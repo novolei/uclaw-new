@@ -168,6 +168,11 @@ pub struct ChatDelegate {
     /// stamped on every TokenBudgetSnapshot. Default 'unknown' is
     /// replaced by the caller via `set_provider`.
     provider: String,
+    /// Bundle 27-A — optional heartbeat supervisor. When set, the
+    /// dispatcher calls `mark_activity` at every stage boundary and
+    /// `append_partial` on every text delta. None for headless /
+    /// test contexts where no UI is listening.
+    heartbeat: Option<Arc<crate::agent::heartbeat::HeartbeatSupervisor>>,
 }
 
 impl ChatDelegate {
@@ -221,6 +226,27 @@ impl ChatDelegate {
             last_tool_defs_hash: Mutex::new(None),
             token_budget_collector: None,
             provider: "unknown".to_string(),
+            heartbeat: None,
+        }
+    }
+
+    /// Bundle 27-A — install a heartbeat supervisor. Builder pattern:
+    /// caller constructs `HeartbeatSupervisor::new(...)` and hands the
+    /// `Arc` to the dispatcher, which keeps a clone alongside the
+    /// caller's clone. Both are dropped at the same time (end of agent
+    /// loop), which tears down the ticker via Drop.
+    pub fn set_heartbeat(
+        &mut self,
+        hb: Arc<crate::agent::heartbeat::HeartbeatSupervisor>,
+    ) {
+        self.heartbeat = Some(hb);
+    }
+
+    /// Bundle 27-A — tiny helper so the (many) callsites can do
+    /// `self.beat(stage)` without unwrap/Option dance.
+    fn beat(&self, stage: &str) {
+        if let Some(ref hb) = self.heartbeat {
+            hb.mark_activity(stage);
         }
     }
 
@@ -802,6 +828,19 @@ impl ChatDelegate {
             "conversationId": self.conversation_id,
             "delta": chunk,
         }));
+        // Bundle 27-A — feed the partial buffer + beat. The buffer is
+        // what gets persisted as "[interrupted-recovered]" assistant
+        // text if the process dies mid-stream. Done as fire-and-forget
+        // task so we don't block the streaming hot path on a mutex
+        // we don't strictly need to await here.
+        if let Some(ref hb) = self.heartbeat {
+            let hb = hb.clone();
+            let chunk = chunk.to_string();
+            tokio::spawn(async move {
+                hb.append_partial(&chunk).await;
+                hb.mark_activity(crate::agent::heartbeat::stages::LLM_STREAM);
+            });
+        }
     }
 
     /// Emit a tool call start to the frontend.
@@ -830,6 +869,14 @@ impl ChatDelegate {
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }
         }));
+        // Bundle 27-A — tool boundaries are the typical place where
+        // the agent hangs (browser navigate, long bash, MCP roundtrip).
+        // Mark activity at start AND completion so heartbeat reflects
+        // the actual stage.
+        self.beat(&format!(
+            "{}:{}",
+            crate::agent::heartbeat::stages::TOOL_CALL, name
+        ));
     }
 
     /// Emit a tool result to the frontend
@@ -878,6 +925,19 @@ impl ChatDelegate {
             "text": text,
             "truncated": truncated,
         }));
+        // Bundle 27-A — normal completion flushes the partial buffer
+        // and tears down the heartbeat ticker. Drop alone would also
+        // do this on the next stack unwind, but flushing here makes
+        // the order explicit: stream-complete event → partial
+        // cleared → ticker stops → flight record removed.
+        if let Some(ref hb) = self.heartbeat {
+            hb.mark_activity(crate::agent::heartbeat::stages::DONE);
+            let hb = hb.clone();
+            tokio::spawn(async move {
+                let _ = hb.take_partial().await;
+                hb.shutdown();
+            });
+        }
     }
 
     /// Emit thinking block to the frontend

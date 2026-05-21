@@ -185,6 +185,7 @@ tempfile = "3"
 # PTY for terminal
 [target.'cfg(unix)'.dependencies]
 pty-process = { version = "0.5", features = ["async"] }
+libc = "0.2"
 
 [dev-dependencies]
 tauri = { version = "2.11", features = ["test"] }
