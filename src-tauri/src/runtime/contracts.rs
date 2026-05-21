@@ -541,6 +541,146 @@ impl TaskEvent {
     }
 }
 
+// ───────────────────────────────────────────────────────────────────
+// M1-T1 patch — types listed in the §3.2 spec but not landed in #304:
+//
+// - HookDecision   — used by M5 HookBus + M3 PolicySpec evaluation
+// - BoundaryRef    — used by M1-T1 TaskEvent::BoundaryYield (currently
+//                    a string; this gives it a typed home for future
+//                    structured boundary handling)
+// - WorkerId       — used by M3 sub-agent / Teams orchestrator
+//
+// These are intentionally small types — the larger contract surface
+// (ArtifactRef / CheckpointRef) is deferred until M2-G (#331) lands so
+// we don't duplicate the agent/compact/fold.rs definitions.
+
+/// Decision returned by a hook callback when evaluating a guarded
+/// action. M5 HookBus dispatches against this; M3 PolicySpec returns
+/// it from `evaluate(&Action)`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "decision")]
+pub enum HookDecision {
+    /// Action allowed unconditionally.
+    Allow,
+    /// Action denied with a structured reason. The reason is surfaced
+    /// to the model (so it knows what failed) and to the user (so the
+    /// UI can explain).
+    Deny {
+        reason: String,
+    },
+    /// Action requires interactive user approval before proceeding.
+    /// The `prompt` is shown verbatim; the `risk_class` informs UI
+    /// styling (red badge for High/Restricted).
+    AskUser {
+        prompt: String,
+        #[serde(default)]
+        risk_class: Option<RiskClass>,
+    },
+}
+
+impl HookDecision {
+    /// `true` when the action may proceed without further interaction.
+    pub fn is_allow(&self) -> bool {
+        matches!(self, HookDecision::Allow)
+    }
+
+    /// `true` when the action must be blocked.
+    pub fn is_deny(&self) -> bool {
+        matches!(self, HookDecision::Deny { .. })
+    }
+
+    /// `true` when user interaction is required.
+    pub fn requires_user(&self) -> bool {
+        matches!(self, HookDecision::AskUser { .. })
+    }
+}
+
+/// Pointer to a boundary the task hit at runtime (budget cap, policy
+/// gate, role limit, world-projection edge). The shape mirrors
+/// [`ArtifactRef`] / [`CheckpointRef`] (opaque id + kind tag) for
+/// consistency.
+///
+/// Boundary kinds use a free-form `kind` string to keep this type open
+/// for future extension. Recognized values today:
+///
+/// - `"budget"` — a [`BudgetSpec`] dimension was exhausted
+/// - `"policy"` — a [`PolicySpec`] gate denied an action
+/// - `"role"`   — a sub-agent attempted something outside its role
+/// - `"world"`  — a world-projection (M4) edge was reached
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoundaryRef {
+    pub id: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl BoundaryRef {
+    pub fn new(kind: impl Into<String>, id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            kind: kind.into(),
+            note: None,
+        }
+    }
+
+    pub fn with_note(
+        kind: impl Into<String>,
+        id: impl Into<String>,
+        note: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            kind: kind.into(),
+            note: Some(note.into()),
+        }
+    }
+
+    pub fn is_budget(&self) -> bool {
+        self.kind == "budget"
+    }
+
+    pub fn is_policy(&self) -> bool {
+        self.kind == "policy"
+    }
+}
+
+/// Identifier of a sub-agent / Teams worker. Wrapped String so the
+/// type system distinguishes worker ids from task ids / intent ids
+/// (which are also currently `String`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct WorkerId(pub String);
+
+impl WorkerId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for WorkerId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for WorkerId {
+    fn from(s: &str) -> Self {
+        Self(s.into())
+    }
+}
+
+impl std::fmt::Display for WorkerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -836,5 +976,126 @@ mod tests {
         assert!(!json.contains("costUsdMicros"));
         assert!(json.contains("\"inputTokens\":0"));
         assert!(json.contains("\"reasoningOutputTokens\":0"));
+    }
+
+    // ── HookDecision ────────────────────────────────────────────────
+
+    #[test]
+    fn hook_decision_classifiers() {
+        assert!(HookDecision::Allow.is_allow());
+        assert!(!HookDecision::Allow.is_deny());
+        assert!(!HookDecision::Allow.requires_user());
+
+        let deny = HookDecision::Deny {
+            reason: "blocked by policy".into(),
+        };
+        assert!(deny.is_deny());
+        assert!(!deny.is_allow());
+
+        let ask = HookDecision::AskUser {
+            prompt: "execute rm -rf /?".into(),
+            risk_class: Some(RiskClass::Restricted),
+        };
+        assert!(ask.requires_user());
+        assert!(!ask.is_allow());
+        assert!(!ask.is_deny());
+    }
+
+    #[test]
+    fn hook_decision_serde_uses_decision_tag_snake_case() {
+        let v = serde_json::to_value(HookDecision::Allow).unwrap();
+        assert_eq!(v["decision"], "allow");
+
+        let v = serde_json::to_value(HookDecision::Deny {
+            reason: "x".into(),
+        })
+        .unwrap();
+        assert_eq!(v["decision"], "deny");
+        assert_eq!(v["reason"], "x");
+
+        let v = serde_json::to_value(HookDecision::AskUser {
+            prompt: "p".into(),
+            risk_class: None,
+        })
+        .unwrap();
+        assert_eq!(v["decision"], "ask_user");
+        assert_eq!(v["prompt"], "p");
+    }
+
+    #[test]
+    fn hook_decision_roundtrips_with_risk_class() {
+        let d = HookDecision::AskUser {
+            prompt: "?".into(),
+            risk_class: Some(RiskClass::High),
+        };
+        let json = serde_json::to_string(&d).unwrap();
+        let back: HookDecision = serde_json::from_str(&json).unwrap();
+        assert_eq!(d, back);
+    }
+
+    // ── BoundaryRef ─────────────────────────────────────────────────
+
+    #[test]
+    fn boundary_ref_factories() {
+        let b = BoundaryRef::new("budget", "input_tokens");
+        assert!(b.is_budget());
+        assert!(!b.is_policy());
+        assert!(b.note.is_none());
+
+        let b = BoundaryRef::with_note("policy", "no_external_net", "blocked by org policy");
+        assert!(b.is_policy());
+        assert_eq!(b.note.as_deref(), Some("blocked by org policy"));
+    }
+
+    #[test]
+    fn boundary_ref_serde_camel_case_note_skipped_when_none() {
+        let b = BoundaryRef::new("role", "research-only");
+        let json = serde_json::to_string(&b).unwrap();
+        // camelCase = same as lowercase for single-word fields; verify no "note" key.
+        assert!(!json.contains("note"));
+        assert!(json.contains("\"kind\":\"role\""));
+    }
+
+    #[test]
+    fn boundary_ref_roundtrip() {
+        let b = BoundaryRef::with_note("world", "edge.git", "git remote unreachable");
+        let json = serde_json::to_string(&b).unwrap();
+        let back: BoundaryRef = serde_json::from_str(&json).unwrap();
+        assert_eq!(b, back);
+    }
+
+    // ── WorkerId ────────────────────────────────────────────────────
+
+    #[test]
+    fn worker_id_constructors_and_display() {
+        let a = WorkerId::new("w1");
+        assert_eq!(a.as_str(), "w1");
+        assert_eq!(a.to_string(), "w1");
+
+        let b: WorkerId = "w2".into();
+        let c: WorkerId = String::from("w3").into();
+        assert_eq!(b, WorkerId::new("w2"));
+        assert_eq!(c, WorkerId::new("w3"));
+    }
+
+    #[test]
+    fn worker_id_serializes_transparently() {
+        // #[serde(transparent)] means it serializes as a bare string,
+        // not {"0": "w1"}.
+        let w = WorkerId::new("w1");
+        let json = serde_json::to_string(&w).unwrap();
+        assert_eq!(json, "\"w1\"");
+        let back: WorkerId = serde_json::from_str(&json).unwrap();
+        assert_eq!(w, back);
+    }
+
+    #[test]
+    fn worker_id_hashable_in_hashmap() {
+        use std::collections::HashMap;
+        let mut map: HashMap<WorkerId, i32> = HashMap::new();
+        map.insert(WorkerId::new("w1"), 1);
+        map.insert(WorkerId::new("w2"), 2);
+        assert_eq!(map.get(&WorkerId::new("w1")), Some(&1));
+        assert_eq!(map.len(), 2);
     }
 }
