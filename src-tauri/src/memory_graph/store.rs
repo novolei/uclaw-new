@@ -254,6 +254,65 @@ impl MemoryGraphStore {
         Self::batch_hydrate_details(&conn, nodes)
     }
 
+    /// List the top-N skills strictly ranked by `usage_count` (DESC).
+    ///
+    /// Bundle 5 — fast path for ranking-style queries (e.g. "使用次数前 5
+    /// 的技能" / "top 5 skills by usage"). Unlike
+    /// [`list_top_learned_skills`] this does **not** apply Gaussian
+    /// decay — when the user asks "by usage count" they want the raw
+    /// counter, not a freshness-weighted score.
+    ///
+    /// Returns lightweight rows `(node_id, title, usage_count,
+    /// cited_count, last_cited_at)`. The `last_cited_at` is included
+    /// purely for UI sorting tiebreaks; callers that don't need it can
+    /// ignore the field. No `metadata_json` rehydration / version
+    /// fetch happens here — this is meant to be ~SQL-cost only.
+    ///
+    /// Includes both `learned` and `static` skill types (the
+    /// `skill_type` filter from `list_top_learned_skills` is dropped so
+    /// builtin/registry-mounted skills are also visible). Disabled
+    /// skills (`metadata.enabled = false`) are excluded.
+    pub fn list_top_skills_by_usage(
+        &self,
+        space_id: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, String, i64, i64, Option<String>)>, crate::error::Error> {
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        let mut stmt = conn.prepare(
+            "SELECT
+                id,
+                title,
+                COALESCE(CAST(json_extract(metadata_json, '$.usage_count') AS INTEGER), 0) AS usage_count,
+                COALESCE(CAST(json_extract(metadata_json, '$.cited_count') AS INTEGER), 0) AS cited_count,
+                json_extract(metadata_json, '$.last_cited_at') AS last_cited_at
+             FROM memory_nodes
+             WHERE space_id = ?1
+               AND kind = ?2
+               AND COALESCE(json_extract(metadata_json, '$.enabled'), 1) <> 0
+             ORDER BY usage_count DESC, cited_count DESC, updated_at DESC
+             LIMIT ?3"
+        ).map_err(crate::error::Error::Database)?;
+
+        let rows = stmt
+            .query_map(
+                params![space_id, MemoryNodeKind::Procedure.as_str(), limit as i64],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )
+            .map_err(crate::error::Error::Database)?
+            .flatten()
+            .collect();
+
+        Ok(rows)
+    }
+
     /// Manifest-only variant of [`list_top_learned_skills`] that excludes
     /// `draft` and `deprecated` lifecycle stages.
     ///
