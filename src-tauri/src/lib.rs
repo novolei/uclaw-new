@@ -37,6 +37,8 @@ pub mod skill_md_parse;
 pub mod plugin_manifest;
 // M3-T6 — Policy evaluator (PolicySpec rules → HookDecision).
 pub mod policy_eval;
+// M3-T3 — Worker / sub-agent type skeleton.
+pub mod workers;
 
 // B2: Infrastructure modules
 pub mod memory;
