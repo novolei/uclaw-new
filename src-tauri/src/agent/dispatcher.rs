@@ -42,14 +42,24 @@ pub struct ChatDelegate {
     conversation_id: String,
     /// Optional memory context to prepend to system prompt (from recall engine)
     memory_context: Option<String>,
-    /// M2-D — last-seen memory_context FragmentSnapshot, used to log a
-    /// per-iteration diff for observability. The diff currently fires
-    /// inside `effective_system_prompt` (sync), so callers/UIs can
-    /// correlate "context unchanged across iter N" with prompt-cache
-    /// hits. Uses std::sync::Mutex (matching the rest of the delegate's
-    /// short-lived locks) — never held across awaits.
-    memory_context_snapshot:
-        std::sync::Mutex<Option<crate::agent::context_diff::FragmentSnapshot>>,
+    /// M2-D Phase 2 (Bundle 16-B) — last successfully-injected
+    /// memory_context snapshot, kept **across turns** within a
+    /// session. Diffed against the current turn's snapshot inside
+    /// `build_dynamic_context` to decide whether to attach a
+    /// `<memory_context_changes>` delta annotation alongside the
+    /// full block. Replaces the per-iteration snapshot from Bundle
+    /// 10 / Slice 3-B — per-iter observability is redundant with
+    /// M2-I's prompt-cache breakpoint hits.
+    ///
+    /// Survives across turns; not cleared on iter boundaries.
+    /// Cleared on `/compact` since the structured fold becomes the
+    /// new baseline. Uses `std::sync::Mutex` for the same reason
+    /// the rest of the delegate's short-lived locks do: never held
+    /// across awaits.
+    last_memory_context_snapshot:
+        std::sync::Mutex<
+            Option<crate::agent::context_diff::LineFragmentSnapshot>,
+        >,
     /// InfraService for publishing tool execution events
     infra_service: Option<Arc<InfraService>>,
     /// Optional trajectory store for recording tool turns
@@ -181,7 +191,7 @@ impl ChatDelegate {
             pending_approvals,
             conversation_id,
             memory_context: None,
-            memory_context_snapshot: std::sync::Mutex::new(None),
+            last_memory_context_snapshot: std::sync::Mutex::new(None),
             infra_service: None,
             trajectory_store: None,
             tool_budget: None,
@@ -481,6 +491,16 @@ impl ChatDelegate {
         self.memory_context = Some(context);
     }
 
+    /// M2-D Phase 2 — clear the cross-turn memory_context anchor.
+    /// Called when a `/compact` runs so the next turn's diff baseline
+    /// is the post-fold state, not the pre-fold one. Safe to call
+    /// repeatedly; no-op when no anchor exists.
+    pub fn clear_memory_context_anchor(&self) {
+        if let Ok(mut slot) = self.last_memory_context_snapshot.lock() {
+            *slot = None;
+        }
+    }
+
     /// Append additional context to the existing memory context.
     /// If no memory context has been set yet, this creates one.
     pub fn append_memory_context(&mut self, extra: &str) {
@@ -643,71 +663,99 @@ impl ChatDelegate {
         // the system prompt) so Anthropic cache_control: ephemeral on the system
         // prompt block can hit reliably from iteration 2 onward.
         if let Some(ctx) = self.memory_context.as_deref().filter(|s| !s.is_empty()) {
-            // M2-D — observe memory_context drift across iterations.
-            // We compute a stable FragmentSnapshot (content_hash =
-            // djb2 of the rendered block, token_estimate = bytes/4),
-            // diff it against the snapshot we kept from the prior
-            // iteration, and log the result. Pure observability today;
-            // the same plumbing is what would feed a real diff-as-LLM-
-            // content re-injection later (send only `<changed>` /
-            // `<added>` deltas to the next iter, rather than the full
-            // memory_context block again).
-            let new_snapshot = {
-                use std::hash::Hasher;
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                h.write(ctx.as_bytes());
-                let content_hash = format!("{:x}", h.finish());
-                let token_estimate = ctx.len() / 4;
-                crate::agent::context_diff::FragmentSnapshot::new(
-                    crate::agent::compact::ArtifactRef::labeled(
-                        "context:memory_context",
-                        "Memory recall context",
-                    ),
-                    content_hash,
-                    token_estimate,
-                )
-            };
+            // M2-D Phase 2 Track A (Bundle 16-B) — cross-turn diff
+            // injection. We build a line-level snapshot of the
+            // current memory_context, diff against the prior turn's
+            // snapshot, and conditionally attach a
+            // `<memory_context_changes>` annotation block alongside
+            // the full block:
+            //
+            //   first turn / no prior → full block only (annotation
+            //     omitted; the LLM has nothing to compare against)
+            //   identical to prior   → full block only
+            //                          (Anthropic cache hit path)
+            //   small drift (≤40%)   → full block + delta annotation
+            //                          (LLM gets "what changed" signal)
+            //   significant drift    → full block only (delta would
+            //                          be noisy + cache misses anyway)
+            //
+            // We keep the full block even on small drift because
+            // un-cached providers (DeepSeek / Kimi) have no
+            // mechanism for "saw it last turn". The delta block is
+            // pure additional signal, not a replacement.
+            const SIGNIFICANT_DRIFT_THRESHOLD: f32 = 0.40;
+            let new_snapshot = crate::agent::context_diff::LineFragmentSnapshot::from_text(
+                "memory_context",
+                ctx,
+            );
             let prior = self
-                .memory_context_snapshot
+                .last_memory_context_snapshot
                 .lock()
                 .ok()
                 .and_then(|g| g.clone());
-            let diff = crate::agent::context_diff::diff_snapshots(
-                prior.as_ref().map(std::slice::from_ref).unwrap_or(&[]),
-                std::slice::from_ref(&new_snapshot),
-            );
-            let stats = diff.stats();
-            if diff.is_empty() {
-                // Same content as prior iteration — Anthropic prompt
-                // cache should hit. DEBUG level (every iter, very chatty).
-                tracing::debug!(
-                    content_hash = %new_snapshot.content_hash,
-                    token_estimate = new_snapshot.token_estimate,
-                    "[M2-D] memory_context unchanged vs prior iter (cache hit expected)",
-                );
-            } else if prior.is_none() {
-                tracing::info!(
-                    content_hash = %new_snapshot.content_hash,
-                    token_estimate = new_snapshot.token_estimate,
-                    "[M2-D] memory_context first injection",
-                );
-            } else {
-                tracing::info!(
-                    added = stats.added,
-                    removed = stats.removed,
-                    changed = stats.changed,
-                    added_or_changed_tokens = stats.added_or_changed_tokens,
-                    new_content_hash = %new_snapshot.content_hash,
-                    "[M2-D] memory_context drifted across iterations (cache will miss)",
-                );
-            }
-            if let Ok(mut slot) = self.memory_context_snapshot.lock() {
+
+            let delta_annotation: Option<String> = match prior.as_ref() {
+                None => {
+                    tracing::info!(
+                        line_count = new_snapshot.line_count(),
+                        token_estimate = new_snapshot.token_estimate,
+                        "[M2-D] turn=first memory_context first injection emitted=full",
+                    );
+                    None
+                }
+                Some(prior_snap) => {
+                    let diff = crate::agent::context_diff::line_diff(
+                        prior_snap,
+                        &new_snapshot,
+                    );
+                    let stats = diff.stats();
+                    if diff.is_empty() {
+                        tracing::debug!(
+                            line_count = new_snapshot.line_count(),
+                            unchanged = stats.unchanged,
+                            "[M2-D] turn=N memory_context unchanged emitted=full cache_state=hit-expected",
+                        );
+                        None
+                    } else if stats
+                        .is_significant_change(SIGNIFICANT_DRIFT_THRESHOLD)
+                    {
+                        tracing::info!(
+                            added = stats.added,
+                            removed = stats.removed,
+                            changed = stats.changed,
+                            unchanged = stats.unchanged,
+                            added_or_changed_tokens = stats.added_or_changed_tokens,
+                            "[M2-D] turn=N memory_context drift=significant emitted=full cache_state=miss",
+                        );
+                        None
+                    } else {
+                        let annotation =
+                            crate::agent::context_diff::render_delta_annotation(&diff);
+                        tracing::info!(
+                            added = stats.added,
+                            removed = stats.removed,
+                            changed = stats.changed,
+                            unchanged = stats.unchanged,
+                            added_or_changed_tokens = stats.added_or_changed_tokens,
+                            "[M2-D] turn=N memory_context drift=small emitted=full+delta cache_state=miss",
+                        );
+                        annotation
+                    }
+                }
+            };
+
+            if let Ok(mut slot) = self.last_memory_context_snapshot.lock() {
                 *slot = Some(new_snapshot);
             }
 
             block.push_str("\n\n<memory_context>\n");
             block.push_str(ctx);
             block.push_str("\n</memory_context>");
+
+            if let Some(annotation) = delta_annotation {
+                block.push_str("\n\n");
+                block.push_str(&annotation);
+            }
         }
 
         // Learned user profile (30-min rebuild cadence) — same rationale as
@@ -3259,5 +3307,215 @@ mod active_plan_history_tests {
             },
         ];
         assert_eq!(extract_active_plan_from_history(&history), None);
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────
+// Bundle 16-C — memory_context cross-turn delta render-path tests.
+//
+// We pin the four render paths from `build_dynamic_context` without
+// constructing a full `LoopDelegate` (which would need an LLM
+// provider, safety manager, db handle, etc.). The helper below
+// mirrors the in-line logic exactly — any change to the dispatcher
+// branch order must be mirrored here, same convention as
+// `manifest_suppression_tests`.
+//
+// The four paths under test:
+//
+//  1. first turn (no prior anchor)  → full block, no annotation
+//  2. unchanged across turns        → full block, no annotation
+//  3. small drift (≤ 40%)           → full block + delta annotation
+//  4. significant drift (> 40%)     → full block, no annotation
+// ───────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod memory_context_delta_render_tests {
+    use crate::agent::context_diff::{
+        line_diff, render_delta_annotation, LineFragmentSnapshot,
+    };
+
+    /// Mirror of the dispatcher's render decision. Returns
+    /// `(emitted_block, kind_label)` where `kind_label` is one of
+    /// `"full"`, `"full+delta"`, used for assertions + telemetry
+    /// parity.
+    fn render_memory_context(
+        prior: Option<&LineFragmentSnapshot>,
+        current_text: &str,
+    ) -> (String, &'static str) {
+        const SIGNIFICANT_DRIFT_THRESHOLD: f32 = 0.40;
+        let current = LineFragmentSnapshot::from_text("memory_context", current_text);
+
+        let mut block = String::new();
+        let mut kind = "full";
+
+        let annotation: Option<String> = match prior {
+            None => None,
+            Some(p) => {
+                let d = line_diff(p, &current);
+                let stats = d.stats();
+                if d.is_empty() {
+                    None
+                } else if stats.is_significant_change(SIGNIFICANT_DRIFT_THRESHOLD) {
+                    None
+                } else {
+                    let a = render_delta_annotation(&d);
+                    if a.is_some() {
+                        kind = "full+delta";
+                    }
+                    a
+                }
+            }
+        };
+
+        block.push_str("<memory_context>\n");
+        block.push_str(current_text);
+        block.push_str("\n</memory_context>");
+        if let Some(a) = annotation {
+            block.push_str("\n\n");
+            block.push_str(&a);
+        }
+        (block, kind)
+    }
+
+    // ── Path 1: first turn ─────────────────────────────────────────
+
+    #[test]
+    fn dispatcher_first_turn_emits_full_memory_context_block_only() {
+        let ctx = "- preferred_language: zh\n- project: uClaw\n";
+        let (block, kind) = render_memory_context(None, ctx);
+        assert_eq!(kind, "full");
+        assert!(block.contains("<memory_context>"));
+        assert!(block.contains("preferred_language"));
+        assert!(
+            !block.contains("<memory_context_changes"),
+            "first turn must not emit delta annotation"
+        );
+    }
+
+    // ── Path 2: unchanged across turns ─────────────────────────────
+
+    #[test]
+    fn dispatcher_unchanged_turn_emits_full_block_no_delta_annotation() {
+        let ctx = "- preferred_language: zh\n- project: uClaw\n";
+        let prior = LineFragmentSnapshot::from_text("memory_context", ctx);
+        let (block, kind) = render_memory_context(Some(&prior), ctx);
+        assert_eq!(kind, "full");
+        assert!(block.contains("<memory_context>"));
+        assert!(
+            !block.contains("<memory_context_changes"),
+            "no drift → no annotation"
+        );
+    }
+
+    // ── Path 3: small drift → full + delta ─────────────────────────
+
+    #[test]
+    fn dispatcher_small_drift_emits_full_block_plus_delta_annotation() {
+        // Prior: 5 lines. New: 4 unchanged + 1 changed (value flip).
+        // Drift = 1/5 = 0.20, below 0.40 threshold → small drift path.
+        let prior_text =
+            "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- preferred_language: en\n";
+        let new_text =
+            "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- preferred_language: zh\n";
+        let prior = LineFragmentSnapshot::from_text("memory_context", prior_text);
+        let (block, kind) = render_memory_context(Some(&prior), new_text);
+        assert_eq!(kind, "full+delta");
+        // Full block present
+        assert!(block.contains("<memory_context>"));
+        assert!(block.contains("preferred_language: zh"));
+        // Delta annotation present
+        assert!(block.contains("<memory_context_changes"));
+        assert!(
+            block.contains("~ changed key=preferred_language"),
+            "delta must surface the changed line\nblock:\n{}",
+            block
+        );
+        // Block order: <memory_context> first, then <memory_context_changes>
+        let mc_pos = block.find("<memory_context>").unwrap();
+        let mcc_pos = block.find("<memory_context_changes").unwrap();
+        assert!(
+            mc_pos < mcc_pos,
+            "full block must precede the delta annotation"
+        );
+    }
+
+    #[test]
+    fn dispatcher_small_drift_one_added_line_emits_delta() {
+        // 5 prior lines, 1 line added → drift = 0/5 (added-only doesn't
+        // count toward drift fraction since it's not in prior).
+        // is_significant_change checks (removed + changed) / prior, so
+        // pure-add never crosses 40%. We expect full+delta.
+        let prior_text = "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- e: 5\n";
+        let new_text =
+            "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- e: 5\n- last_query: foo\n";
+        let prior = LineFragmentSnapshot::from_text("memory_context", prior_text);
+        let (block, kind) = render_memory_context(Some(&prior), new_text);
+        assert_eq!(kind, "full+delta");
+        assert!(block.contains("+ added: - last_query: foo"));
+    }
+
+    // ── Path 4: significant drift ──────────────────────────────────
+
+    #[test]
+    fn dispatcher_significant_drift_emits_full_block_no_annotation() {
+        // 4 prior lines, 3 removed (drift = 0.75) → above threshold.
+        let prior_text = "- a: 1\n- b: 2\n- c: 3\n- d: 4\n";
+        let new_text = "- a: 1\n- z: new\n";
+        let prior = LineFragmentSnapshot::from_text("memory_context", prior_text);
+        let (block, kind) = render_memory_context(Some(&prior), new_text);
+        assert_eq!(kind, "full");
+        assert!(block.contains("<memory_context>"));
+        assert!(
+            !block.contains("<memory_context_changes"),
+            "significant drift must NOT emit delta annotation (noisy + cache miss anyway)"
+        );
+    }
+
+    // ── Anchor reset via clear_memory_context_anchor() ─────────────
+
+    #[test]
+    fn clear_anchor_makes_next_turn_behave_like_first_turn() {
+        let prior_text = "- a: 1\n";
+        let new_text = "- a: 1\n- b: 2\n";
+        let prior = LineFragmentSnapshot::from_text("memory_context", prior_text);
+
+        // With anchor: small drift → delta
+        let (with_anchor, kind_with) = render_memory_context(Some(&prior), new_text);
+        assert_eq!(kind_with, "full+delta");
+        assert!(with_anchor.contains("<memory_context_changes"));
+
+        // After clear (None): treated as first turn → no delta
+        let (after_clear, kind_after) = render_memory_context(None, new_text);
+        assert_eq!(kind_after, "full");
+        assert!(!after_clear.contains("<memory_context_changes"));
+    }
+
+    // ── Reorder invariance: same key set, different order → no drift
+
+    #[test]
+    fn reordered_lines_emit_full_block_no_annotation() {
+        let prior_text = "- a: 1\n- b: 2\n- c: 3\n";
+        let new_text = "- c: 3\n- a: 1\n- b: 2\n";  // same keys, reordered
+        let prior = LineFragmentSnapshot::from_text("memory_context", prior_text);
+        let (block, kind) = render_memory_context(Some(&prior), new_text);
+        assert_eq!(kind, "full");
+        assert!(
+            !block.contains("<memory_context_changes"),
+            "reorder must not trigger delta annotation"
+        );
+    }
+
+    // ── Drift threshold is exactly 0.40 (boundary check) ──────────
+
+    #[test]
+    fn drift_exactly_at_40_percent_threshold_is_significant() {
+        // 5 prior, 2 removed → drift = 2/5 = 0.40 → meets `>=` cutoff
+        // in is_significant_change(0.40), so this is the "significant"
+        // path with `full` (no delta).
+        let prior_text = "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- e: 5\n";
+        let new_text = "- a: 1\n- b: 2\n- c: 3\n";
+        let prior = LineFragmentSnapshot::from_text("memory_context", prior_text);
+        let (block, kind) = render_memory_context(Some(&prior), new_text);
+        assert_eq!(kind, "full");
+        assert!(!block.contains("<memory_context_changes"));
     }
 }
