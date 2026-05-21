@@ -37,6 +37,10 @@ pub mod dispatcher;
 pub mod gbrain_prompt;
 pub mod gep;
 pub mod headless;
+// Bundle 27-A — Heartbeat / stall detection / flight recorder.
+pub mod heartbeat;
+// Bundle 27-A — Reply recovery after unclean shutdown (uses flight record + 27-C's ProcessLock).
+pub mod recovery;
 pub mod history_window;
 pub mod llm_stream;
 pub mod mode_prompts;

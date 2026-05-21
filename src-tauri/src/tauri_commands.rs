@@ -2126,6 +2126,26 @@ pub async fn send_message(
     // Wire thinking_enabled from the request
     delegate.set_thinking_enabled(input.thinking_enabled.unwrap_or(false));
 
+    // Bundle 27-A — install the heartbeat supervisor for this run.
+    // Held in `_hb_arc` until end-of-scope; the dispatcher gets a
+    // clone. When both Arcs drop, the Drop impl tears down the ticker
+    // and removes the flight-record file (so next boot sees the run
+    // as "clean").
+    let _hb_arc = {
+        let space_for_hb = {
+            let session_mgr = state.session_manager.read().await;
+            session_mgr.get_space_id(&input.conversation_id).unwrap_or_else(|| "default".to_string())
+        };
+        let hb = crate::agent::heartbeat::HeartbeatSupervisor::new(
+            app_handle.clone(),
+            input.conversation_id.clone(),
+            space_for_hb,
+            crate::agent::heartbeat::default_flight_path(),
+        );
+        delegate.set_heartbeat(hb.clone());
+        hb
+    };
+
     // Resolve space_id once — reused by both skills manifest and memory recall.
     let space_id: String = {
         let session_mgr = state.session_manager.read().await;
@@ -11265,6 +11285,59 @@ pub async fn queue_agent_message(
     input: SendAgentMessageInput,
 ) -> Result<(), Error> {
     send_agent_message(state, app_handle, input).await
+}
+
+/// Bundle 27-A — manual interrupt for a stalled agent run.
+///
+/// Triggered from the UI's "中断并保存" button on the
+/// `agent:stalled` banner. Reads the in-flight FlightRecord,
+/// returns `{ partialText, iteration, stage, stalledForMs }` so the
+/// caller can immediately render the recovered text as an
+/// `[interrupted]` assistant message, then cancels the running
+/// session via the existing `running_sessions` cancellation token.
+///
+/// The dispatcher's Drop on `_hb_arc` clears the flight file once
+/// the cancelled loop unwinds, so we don't double-clean here.
+#[tauri::command]
+pub async fn interrupt_current_agent_run(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<serde_json::Value, Error> {
+    let flight_path = crate::agent::heartbeat::default_flight_path();
+    let record = crate::agent::heartbeat::read_flight(&flight_path)
+        .map_err(|e| Error::Internal(format!("read flight record: {e}")))?;
+
+    let payload = match record {
+        Some(rec) if rec.conversation_id == session_id => serde_json::json!({
+            "partialText": rec.partial_text,
+            "iteration": rec.iteration,
+            "stage": rec.stage,
+            "stalledForMs": chrono::Utc::now().timestamp_millis() - rec.last_activity_at,
+            "startedAt": rec.started_at,
+        }),
+        Some(_) | None => serde_json::json!({
+            "partialText": "",
+            "iteration": 0,
+            "stage": "unknown",
+            "stalledForMs": 0,
+            "startedAt": 0,
+        }),
+    };
+
+    // Cancel the running task — heartbeat ticker is torn down on Drop
+    // and partial text is what the caller already received.
+    {
+        let mut sessions = state.running_sessions.lock().await;
+        if let Some(token) = sessions.remove(&session_id) {
+            token.cancel();
+            tracing::info!(
+                session = %session_id,
+                "[Bundle 27-A] agent run interrupted by user from stall banner"
+            );
+        }
+    }
+
+    Ok(payload)
 }
 
 #[tauri::command]

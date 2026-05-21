@@ -3,6 +3,7 @@
 
 mod metrics;
 mod trace;
+pub mod shutdown;
 
 pub use metrics::*;
 pub use trace::*;

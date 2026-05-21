@@ -22,14 +22,102 @@ fn main() {
     let _guard = uclaw_core::observability::init();
     uclaw_core::observability::install_panic_hook();
 
+    // Bundle 27-C — Unclean shutdown detection. Logs structured WARN
+    // if the previous instance died without removing its process.lock
+    // (SIGKILL / OOM-kill / panic / forced quit). If another live
+    // uClaw instance is detected, log error and abort early.
+    let shutdown_lock_path = uclaw_core::observability::shutdown::default_lock_path();
+    let previous_shutdown = match uclaw_core::observability::shutdown::check_and_install(
+        &shutdown_lock_path,
+    ) {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %shutdown_lock_path.display(),
+                "[Bundle 27-C] could not install process lock — continuing without unclean-shutdown detection"
+            );
+            uclaw_core::observability::shutdown::PreviousShutdown::Clean
+        }
+    };
+    if let uclaw_core::observability::shutdown::PreviousShutdown::AnotherInstanceAlive(p) =
+        &previous_shutdown
+    {
+        eprintln!(
+            "[uclaw] another live instance detected (pid={}, started_at={}). Refusing to start.",
+            p.pid, p.started_at
+        );
+        std::process::exit(1);
+    }
+    // RAII guard — Drop on normal exit (and on panic-unwind, when
+    // tauri::Builder::run returns or main() ends) removes the lock
+    // file so the next boot sees Clean. Only SIGKILL / abort skips
+    // Drop — which is exactly the case Bundle 27-C wants detected.
+    let _shutdown_guard =
+        uclaw_core::observability::shutdown::CleanExitGuard::new(shutdown_lock_path.clone());
+    // Bundle 27-A — clone the Unclean lock for recovery payload PID
+    // cross-check inside the setup closure. Move out of `_previous`
+    // first so we don't accidentally consume `previous_shutdown`
+    // here in a way that breaks the AnotherInstance branch above.
+    let prev_unclean_lock: Option<uclaw_core::observability::shutdown::ProcessLock> =
+        match &previous_shutdown {
+            uclaw_core::observability::shutdown::PreviousShutdown::Unclean(p) => {
+                Some(p.clone())
+            }
+            _ => None,
+        };
+    let _previous_shutdown = previous_shutdown;
+
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
-        .setup(|app| {
+        .setup(move |app| {
             let app_state = AppState::new(app.handle())?;
+
+            // Bundle 27-A — if Bundle 27-C reported an unclean shutdown,
+            // check whether the prior run left a `last_active_run.json`
+            // flight record with buffered assistant text. If so, emit
+            // `agent:interrupted-recovered` so the UI can render the
+            // partial reply as an `[interrupted-recovered]` message —
+            // delivering on "真实中断的话也需要把 Agent 的回复补齐".
+            //
+            // Spawn on the tauri async runtime so we don't block setup.
+            // The UI registers the listener on mount, which races with
+            // this emit; a small initial delay covers the gap.
+            if let Some(prev_lock) = prev_unclean_lock.clone() {
+                let app_handle = app.handle().clone();
+                let flight_path =
+                    uclaw_core::agent::heartbeat::default_flight_path();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(500))
+                        .await;
+                    match uclaw_core::agent::recovery::recover_unclean_shutdown(
+                        &app_handle,
+                        &flight_path,
+                        Some(&prev_lock),
+                    ) {
+                        Ok(report) => {
+                            if report.recovered {
+                                tracing::warn!(
+                                    conversation_id = ?report.conversation_id,
+                                    iteration = ?report.iteration,
+                                    stage = ?report.stage,
+                                    partial_chars = report.partial_chars,
+                                    dead_pid = ?report.dead_pid,
+                                    "[Bundle 27-A] recovered interrupted assistant reply",
+                                );
+                            }
+                        }
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "[Bundle 27-A] flight recovery failed"
+                        ),
+                    }
+                });
+            }
 
             // M3-T1 wire-up slice 1 + 2 — populate the Capability Mesh
             // registry hub from the existing uClaw subsystems so the
@@ -1143,6 +1231,7 @@ fn main() {
             uclaw_core::tauri_commands::send_agent_message,
             uclaw_core::tauri_commands::move_agent_session_to_workspace,
             uclaw_core::tauri_commands::stop_agent,
+            uclaw_core::tauri_commands::interrupt_current_agent_run,
             uclaw_core::tauri_commands::queue_agent_message,
             uclaw_core::tauri_commands::fork_agent_session,
             uclaw_core::tauri_commands::rewind_session,

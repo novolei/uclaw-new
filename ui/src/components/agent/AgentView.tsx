@@ -24,6 +24,8 @@ import { ContextUsageBadge } from './ContextUsageBadge'
 import { AutoPreviewPopover } from './AutoPreviewPopover'
 import { StrategyPresetSelector } from './StrategyPresetSelector'
 import { PermissionBanner } from './PermissionBanner'
+// Bundle 27-A — heartbeat indicator + stall banner + interrupted-reply recovery.
+import { AgentHeartbeatBanner } from './AgentHeartbeatBanner'
 import { PermissionModeSelector } from './PermissionModeSelector'
 import { AgentStatusBar } from './AgentStatusBar'
 import { AskUserBanner } from './AskUserBanner'
@@ -1655,6 +1657,13 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
         {/* 权限请求横幅 */}
         <PermissionBanner sessionId={sessionId} />
+
+        {/* Bundle 27-A — Heartbeat / stall / interrupted-reply recovery.
+            Self-contained: renders nothing when there's no live run,
+            no stall, and no recovery payload pending. Owns its own
+            event listeners (agent:heartbeat / agent:stalled /
+            agent:stall-recovered / agent:interrupted-recovered). */}
+        <AgentHeartbeatBanner sessionId={sessionId} />
 
         {/* Plan 模式自动建议横幅 — advisory (not blocking) */}
         <PlanModeSuggestBanner sessionId={sessionId} />
