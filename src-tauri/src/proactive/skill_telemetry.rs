@@ -71,13 +71,21 @@ fn default_schema_version() -> u32 {
 }
 
 impl SkillMeta {
-    /// Create a fresh meta record for a newly-extracted skill.
+    /// Create a fresh meta record stamped with the real wall clock.
+    /// Convenience wrapper around `new_at(slug, chrono::Utc::now().timestamp_millis())`
+    /// for production callers that don't need to inject time.
     pub fn new(slug: impl Into<String>) -> Self {
-        let now = chrono::Utc::now().timestamp_millis();
+        Self::new_at(slug, chrono::Utc::now().timestamp_millis())
+    }
+
+    /// Create a fresh meta record stamped with the given timestamp.
+    /// Tests / time-injecting callers use this so `record_returned` and
+    /// friends can keep their API fully deterministic in `now_ms`.
+    pub fn new_at(slug: impl Into<String>, now_ms: i64) -> Self {
         Self {
             slug: slug.into(),
-            created_at: now,
-            updated_at: now,
+            created_at: now_ms,
+            updated_at: now_ms,
             returned_count: 0,
             last_returned_at: None,
             success_count: 0,
@@ -163,18 +171,22 @@ pub fn save_meta(skill_dir: &Path, meta: &SkillMeta) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Load-or-default — returns existing meta or a fresh `SkillMeta::new(slug)`.
-pub fn load_or_init(skill_dir: &Path, slug: &str) -> SkillMeta {
+/// Load-or-default — returns existing meta or a fresh meta stamped with `now_ms`.
+///
+/// `now_ms` is threaded through (rather than calling `chrono::Utc::now()` here)
+/// so the surrounding `record_returned` / `record_outcome` API stays fully
+/// deterministic in their `now_ms` argument. Tests rely on this property.
+pub fn load_or_init(skill_dir: &Path, slug: &str, now_ms: i64) -> SkillMeta {
     match load_meta(skill_dir) {
         Ok(Some(meta)) => meta,
-        Ok(None) => SkillMeta::new(slug),
+        Ok(None) => SkillMeta::new_at(slug, now_ms),
         Err(e) => {
             tracing::warn!(
                 skill_dir = %skill_dir.display(),
                 error = %e,
                 "[skill_telemetry] load_meta failed, starting fresh meta"
             );
-            SkillMeta::new(slug)
+            SkillMeta::new_at(slug, now_ms)
         }
     }
 }
@@ -198,7 +210,7 @@ pub enum SkillOutcome {
 /// Idempotent-safe: increments `returned_count` and refreshes
 /// `last_returned_at` to `now_ms`. Creates meta.json if missing.
 pub fn record_returned(skill_dir: &Path, slug: &str, now_ms: i64) -> std::io::Result<()> {
-    let mut meta = load_or_init(skill_dir, slug);
+    let mut meta = load_or_init(skill_dir, slug, now_ms);
     meta.returned_count = meta.returned_count.saturating_add(1);
     meta.last_returned_at = Some(now_ms);
     meta.updated_at = now_ms;
@@ -214,7 +226,7 @@ pub fn record_outcome(
     outcome: SkillOutcome,
     now_ms: i64,
 ) -> std::io::Result<()> {
-    let mut meta = load_or_init(skill_dir, slug);
+    let mut meta = load_or_init(skill_dir, slug, now_ms);
     match outcome {
         SkillOutcome::Success => {
             meta.success_count = meta.success_count.saturating_add(1);
@@ -364,7 +376,7 @@ mod tests {
         let dir = tmp.path().join("s");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("meta.json"), "{ not valid json").unwrap();
-        let meta = load_or_init(&dir, "fallback-slug");
+        let meta = load_or_init(&dir, "fallback-slug", fixed_now());
         assert_eq!(meta.slug, "fallback-slug");
         assert_eq!(meta.returned_count, 0);
     }
