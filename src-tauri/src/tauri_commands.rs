@@ -463,11 +463,40 @@ pub async fn get_system_diagnostics(
     };
 
     // Sprint 2.2.5b — last-known init outcome from Stage 3 boot.
-    let gbrain_init = state
+    //
+    // Bundle 7 followup — the slot is set ONCE during Stage 3 and never
+    // refreshed. In dev mode the bundle artifacts can be transiently
+    // unresolvable at boot (Gatekeeper first-launch consent, dev binary
+    // timing) — Stage 3 records `BundleMissing`, but the persistently-
+    // seeded MCP entry connects fine seconds later via its run.sh
+    // launcher. The diagnostic then keeps shouting "bundle 缺失" even
+    // though the gbrain section above shows the MCP connected, 6 tools,
+    // PGLite ready.
+    //
+    // Fix: if we observably HAVE a working gbrain (MCP connected + pgdata
+    // ready), treat any stale `BundleMissing` / `NotAttempted` as
+    // `SkippedAlreadyInitialized` so the UI matches reality. We don't
+    // synthesize a `Succeeded` because we never re-ran the actual init
+    // probe — but skipping-because-already-initialized is exactly what's
+    // true at this moment.
+    let raw_gbrain_init = state
         .gbrain_init_status
         .lock()
         .map(|g| g.clone())
         .unwrap_or(crate::mcp::GbrainInitStatus::NotAttempted);
+    let gbrain_init = match (&raw_gbrain_init, gbrain.connected, gbrain.pgdata_ready) {
+        (crate::mcp::GbrainInitStatus::BundleMissing, true, true)
+        | (crate::mcp::GbrainInitStatus::NotAttempted, true, true) => {
+            tracing::debug!(
+                stale = ?raw_gbrain_init,
+                "Replacing stale gbrain_init status with SkippedAlreadyInitialized (MCP is observably connected)"
+            );
+            crate::mcp::GbrainInitStatus::SkippedAlreadyInitialized {
+                at_ms: chrono::Utc::now().timestamp_millis(),
+            }
+        }
+        _ => raw_gbrain_init,
+    };
 
     Ok(SystemDiagnosticsReport {
         app_version: env!("CARGO_PKG_VERSION").into(),
