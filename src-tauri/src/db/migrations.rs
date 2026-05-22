@@ -1981,6 +1981,115 @@ CREATE INDEX IF NOT EXISTS idx_agent_fold_baselines_session
     ON agent_fold_baselines(session_id);
 ";
 
+/// V53 — Symphony reconstruction and ZeptoBeam/SymphonyMac fusion.
+/// Fuses Kahn DAG topological scheduling, fine-grained check-pointing,
+/// supervision tree models, financial firewalls and 3-stage pipeline metrics.
+pub const SQL_V53_SYMPHONY: &str = "
+DROP TABLE IF EXISTS symphony_node_runs;
+DROP TABLE IF EXISTS symphony_workflow_versions;
+DROP TABLE IF EXISTS symphony_edges;
+DROP TABLE IF EXISTS symphony_nodes;
+DROP TABLE IF EXISTS symphony_graphs;
+DROP TABLE IF EXISTS symphony_runs;
+DROP TABLE IF EXISTS symphony_workflows;
+
+CREATE TABLE IF NOT EXISTS symphony_issues (
+    id              TEXT PRIMARY KEY,
+    provider        TEXT NOT NULL,
+    external_id     TEXT,
+    title           TEXT NOT NULL,
+    description     TEXT,
+    status          TEXT NOT NULL,
+    priority        TEXT,
+    assignee        TEXT,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS symphony_workflows (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    description     TEXT,
+    definition_md   TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS symphony_runs (
+    id              TEXT PRIMARY KEY,
+    issue_id        TEXT NOT NULL,
+    workflow_id     TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    outcome         TEXT,
+    current_stage   TEXT,
+    total_cost_usd  REAL NOT NULL DEFAULT 0.0,
+    cost_cap_usd    REAL NOT NULL DEFAULT 10.0,
+    started_at      INTEGER,
+    completed_at    INTEGER,
+    FOREIGN KEY (issue_id) REFERENCES symphony_issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (workflow_id) REFERENCES symphony_workflows(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS symphony_run_steps (
+    id              TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL,
+    stage_id        TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    attempt         INTEGER NOT NULL DEFAULT 1,
+    depends_on_json TEXT NOT NULL DEFAULT '[]',
+    session_id      TEXT,
+    cost_usd        REAL NOT NULL DEFAULT 0.0,
+    token_usage     INTEGER NOT NULL DEFAULT 0,
+    started_at_ms   INTEGER NOT NULL,
+    last_heartbeat_ms INTEGER NOT NULL,
+    completed_at_ms INTEGER,
+    error_text      TEXT,
+    FOREIGN KEY (run_id) REFERENCES symphony_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS symphony_run_checkpoints (
+    key             TEXT PRIMARY KEY,
+    data            BLOB NOT NULL,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS symphony_run_subtasks (
+    id              TEXT PRIMARY KEY,
+    step_id         TEXT NOT NULL,
+    subtask_title   TEXT NOT NULL,
+    beacon_signal   TEXT NOT NULL,
+    assigned_agent  TEXT NOT NULL,
+    agent_capability REAL NOT NULL,
+    agent_latency   INTEGER NOT NULL,
+    agent_load      INTEGER NOT NULL,
+    linucb_reward   REAL,
+    status          TEXT NOT NULL,
+    FOREIGN KEY (step_id) REFERENCES symphony_run_steps(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS symphony_run_votes (
+    id              TEXT PRIMARY KEY,
+    step_id         TEXT NOT NULL,
+    response_id     TEXT NOT NULL,
+    judge_agent     TEXT NOT NULL,
+    score           REAL NOT NULL,
+    vote_weight     REAL NOT NULL,
+    rationale       TEXT NOT NULL,
+    is_consensus    INTEGER NOT NULL DEFAULT 0,
+    created_at_ms   INTEGER NOT NULL,
+    FOREIGN KEY (step_id) REFERENCES symphony_run_steps(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_symphony_issues_provider ON symphony_issues(provider, external_id);
+CREATE INDEX IF NOT EXISTS idx_symphony_runs_issue ON symphony_runs(issue_id);
+CREATE INDEX IF NOT EXISTS idx_symphony_run_steps_run ON symphony_run_steps(run_id, stage_id);
+CREATE INDEX IF NOT EXISTS idx_symphony_subtasks_step ON symphony_run_subtasks(step_id);
+CREATE INDEX IF NOT EXISTS idx_symphony_votes_step ON symphony_run_votes(step_id);
+";
+
 /// V43 seed — Phase 8.2: 7 default rows in `wiki_page_templates`, one
 /// per subkind defined in Cognitive Spec §2.2. `INSERT OR IGNORE` keeps
 /// the seed re-runnable: users / agents can tune the prompts in the
@@ -2601,6 +2710,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in V52_AGENT_FOLD_BASELINES.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V52 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    // V53: symphony reconstruction and ZeptoBeam/SymphonyMac fusion.
+    tracing::debug!("Running migration V53: Symphony reconstruction and ZeptoBeam/SymphonyMac fusion");
+    for stmt in SQL_V53_SYMPHONY.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V53 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -3388,15 +3504,18 @@ mod tests {
     // ─── V33: Symphony schema ─────────────────────────────────────────────
 
     #[test]
-    fn v33_creates_symphony_tables_and_indexes() {
+    fn v53_creates_symphony_tables_and_indexes() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         super::run(&conn).unwrap();
 
         for table in [
+            "symphony_issues",
             "symphony_workflows",
-            "symphony_workflow_versions",
             "symphony_runs",
-            "symphony_node_runs",
+            "symphony_run_steps",
+            "symphony_run_checkpoints",
+            "symphony_run_subtasks",
+            "symphony_run_votes",
         ] {
             let n: i64 = conn
                 .query_row(
@@ -3405,15 +3524,15 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(n, 1, "table {} must exist after V33", table);
+            assert_eq!(n, 1, "table {} must exist after V53", table);
         }
 
         for index in [
-            "idx_symphony_runs_workflow",
-            "idx_symphony_runs_status",
-            "idx_symphony_node_runs_run",
-            "idx_symphony_node_runs_status",
-            "idx_symphony_node_runs_heartbeat",
+            "idx_symphony_issues_provider",
+            "idx_symphony_runs_issue",
+            "idx_symphony_run_steps_run",
+            "idx_symphony_subtasks_step",
+            "idx_symphony_votes_step",
         ] {
             let n: i64 = conn
                 .query_row(
@@ -3422,7 +3541,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(n, 1, "index {} must exist after V33", index);
+            assert_eq!(n, 1, "index {} must exist after V53", index);
         }
 
         // Seeded 'symphonies' home space.
@@ -3454,72 +3573,73 @@ mod tests {
     }
 
     #[test]
-    fn v33_run_fk_cascades_to_node_runs_on_workflow_delete() {
+    fn v53_run_fk_cascades_on_workflow_delete() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         super::run(&conn).unwrap();
         // Enable FK enforcement (off by default in rusqlite in-memory).
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
 
-        let now = 1_700_000_000_000_i64;
+        let now = 1_700_000_000_i64;
+        
+        // 1. Insert Issue
         conn.execute(
-            "INSERT INTO symphony_workflows \
-             (id, name, current_version, enabled, created_at, updated_at) \
-             VALUES ('wf-1', 'demo', 1, 1, ?1, ?1)",
+            "INSERT INTO symphony_issues \
+             (id, provider, external_id, title, description, status, priority, assignee, created_at, updated_at) \
+             VALUES ('MAN-101', 'manual', NULL, 'Test manual issue', 'desc', 'todo', 'high', NULL, ?1, ?1)",
             [&now],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO symphony_workflow_versions \
-             (workflow_id, version, definition_yaml, definition_md, nodes_json, edges_json, created_at) \
-             VALUES ('wf-1', 1, 'kind: symphony', '---\\nkind: symphony\\n---', '[]', '[]', ?1)",
-            [&now],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO symphony_runs \
-             (id, workflow_id, workflow_version, trigger_kind, status, queued_at) \
-             VALUES ('run-1', 'wf-1', 1, 'manual', 'running', ?1)",
-            [&now],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO symphony_node_runs \
-             (id, run_id, node_id, attempt, status) \
-             VALUES ('nr-1', 'run-1', 'a', 1, 'ready')",
-            [],
         )
         .unwrap();
 
-        // Sanity: rows present.
+        // 2. Insert Workflow
+        conn.execute(
+            "INSERT INTO symphony_workflows \
+             (id, name, description, definition_md, created_at, updated_at) \
+             VALUES ('wf-1', 'demo', 'desc', '# workflow md', ?1, ?1)",
+            [&now],
+        )
+        .unwrap();
+
+        // 3. Insert Run
+        conn.execute(
+            "INSERT INTO symphony_runs \
+             (id, issue_id, workflow_id, status, outcome, current_stage, total_cost_usd, cost_cap_usd, started_at, completed_at) \
+             VALUES ('run-1', 'MAN-101', 'wf-1', 'running', NULL, 'implement', 0.0, 10.0, ?1, NULL)",
+            [&now],
+        )
+        .unwrap();
+
+        // 4. Insert Step
+        conn.execute(
+            "INSERT INTO symphony_run_steps \
+             (id, run_id, stage_id, title, status, attempt, depends_on_json, session_id, cost_usd, token_usage, started_at_ms, last_heartbeat_ms, completed_at_ms, error_text) \
+             VALUES ('step-1', 'run-1', 'implement', 'Code generation', 'running', 1, '[]', NULL, 0.0, 0, ?1, ?1, NULL, NULL)",
+            [&now],
+        )
+        .unwrap();
+
+        // Sanity check: rows exist.
         let n_runs_before: i64 = conn
             .query_row("SELECT COUNT(*) FROM symphony_runs", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n_runs_before, 1);
-        let n_node_runs_before: i64 = conn
-            .query_row("SELECT COUNT(*) FROM symphony_node_runs", [], |r| r.get(0))
+        let n_steps_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM symphony_run_steps", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(n_node_runs_before, 1);
+        assert_eq!(n_steps_before, 1);
 
-        // Delete the workflow → cascade through versions → runs → node_runs.
+        // Delete the workflow -> cascade delete the runs & steps.
         conn.execute("DELETE FROM symphony_workflows WHERE id = 'wf-1'", [])
             .unwrap();
 
-        let n_versions: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM symphony_workflow_versions",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n_versions, 0, "versions must cascade on workflow delete");
-        let n_runs: i64 = conn
+        let n_runs_after: i64 = conn
             .query_row("SELECT COUNT(*) FROM symphony_runs", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(n_runs, 0, "runs must cascade on workflow delete");
-        let n_node_runs: i64 = conn
-            .query_row("SELECT COUNT(*) FROM symphony_node_runs", [], |r| r.get(0))
+        assert_eq!(n_runs_after, 0, "runs must cascade delete on workflow delete");
+
+        let n_steps_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM symphony_run_steps", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(n_node_runs, 0, "node_runs must cascade through runs");
+        assert_eq!(n_steps_after, 0, "steps must cascade delete through runs");
     }
 
     // ─── V34: Memory OS Foundation Phase 1 ────────────────────────────────

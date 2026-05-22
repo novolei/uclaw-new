@@ -16633,6 +16633,7 @@ pub async fn reactivate_gene(
 // adjacent-edits rule).
 // ═══════════════════════════════════════════════════════════════════════════
 
+/*
 use crate::symphony_graph::manager::{ManagerError, SymphonyManager, WorkflowDetail, WorkflowRow};
 use crate::symphony_graph::protocol::SymphonyWorkflowDef;
 use crate::symphony_graph::runtime::service::{SymphonyService, TriggerCmd};
@@ -16998,6 +16999,7 @@ pub async fn symphony_get_node_session_id(
         .ok();
     Ok(sid)
 }
+*/
 
 /// Frontend → backend: user has decided on a plan-mode suggestion.
 /// Outcome is one of accepted | skipped | silenced | aborted.
