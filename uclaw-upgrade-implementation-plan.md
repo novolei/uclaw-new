@@ -3035,6 +3035,57 @@ v2.2 §2 Phase 0.5 原有 T1-T7。v2.3 增补 T8-T10：
 
 ---
 
+## 34. v2.4 进度快照 (2026-05-22) <a id="34-v24-进度快照"></a>
+
+> **说明**: 本文档 v2.3 写于 2026-05-20,定稿时 Phase 0.5 + M1 尚未启动。截至
+> 2026-05-22,Phase 0.5 全部完工 + M1 已 close + M2-M4 处于不同进度阶段。**主
+> 进度的 single source of truth** 已迁出本文档,挪到
+> [`docs/superpowers/MILESTONE_STATUS.md`](docs/superpowers/MILESTONE_STATUS.md);
+> 跨 PR 的整合策略 + 战术-vs-主线漂移检测在
+> [`docs/superpowers/plans/2026-05-22-pr-integration-strategy.md`](docs/superpowers/plans/2026-05-22-pr-integration-strategy.md)。
+>
+> 本节是 month-end **快照**,每月 1 号回写一次,反映该月底当时的 milestone 状
+> 态。**实时状态请看 MILESTONE_STATUS.md**。
+
+### 34.1 截至 2026-05-22 的 milestone 快照
+
+| Milestone | 估算 % | 关键 PR | 阻塞项 |
+|---|---|---|---|
+| Phase 0.5 | **100%** ✅ | #289-#302 + #291/#292/#294/#295 | — |
+| M0 | **100%** ✅ | (含在 Phase 0.5 内) | — |
+| M1 Runtime Contracts | **100%** ✅ | #304-#321 (closes at #320, retro #321) | — |
+| M2 Context Fabric | **~55%** 🟡 | M2-A 完成 + 大量 pilot + 部分 Slice wire-up | Bundle 17-B/C wire-up; M2-B/C/F/J wire-up; 50-turn bench |
+| M3 Capability Mesh | **~22%** 🟡 | T1 pilot + T1 wire-up slice 1+2 (#390-391) | T2-T6 wire-up 全部待做 |
+| M4 World Projection | **~24%** (pilots) 🟡 | T1-T8 pilots 全在 (#346 + #354-358) | 0% wire-up |
+| M5 Policy Hooks + Isolation | **~10%** 🟠 | HookDecision in #338 | M5 全 milestone 没动 |
+| M6 Browser Provider | **0%** ⚪ | — | 没动 |
+| M7 Evolution Factory | **0%** ⚪ | (task list M7-T1 #358 实际是 plan 的 M3-T6) | 没动 |
+| M8 Teams v1 | **0%** ⚪ | — | 没动 |
+| M9 Cluster v1 (远期) | **0%** ⚪ | — | 没动 |
+
+### 34.2 已识别的执行偏差
+
+1. **5-21 单日 18 个 Bundle PR 战术爆炸** — Bundle 18-27 全是 dogfood 回归债,
+   零 milestone 推进。drift check 标 RED ALARM。建议:接下来强制 milestone-first
+   节奏,Bundle 类工作每周限 5 个以内,否则触发 forcing function。
+2. **task list 和 plan 文档的 M-T 编号不一致** — task #79-#98 的 M3-T1 ~ M3-T9
+   是 pilot 级拆分,plan §5.2 的 M3-T1 ~ M3-T6 是任务级拆分,两套编号不能直接
+   对账。MILESTONE_STATUS.md 表里已做映射。下次 task list cleanup 时统一编号。
+3. **M2 自评 60-75% 是乐观的** — 按 plan §4.3 DoD 严格算只有 ~55%。bench / cache
+   hit / cost 数据完全缺。M2 closeout 前必须补量化数据。
+
+### 34.3 v2.4 → v2.5 之间的目标
+
+- C1: 收尾 M2(Bundle 17-B/C wire-up + M2-J UI + M2-B/F wire-up + 50-turn bench
+  + closeout report)
+- 月底审计(2026-05-31 或下次月初):回写 §34.4 v2.5 快照,升 plan 至 v2.5
+
+### 34.4 (TBD: v2.5 快照 — M2 close 之后回写)
+
+待 M2 closeout 之后填写。
+
+---
+
 ## 33. 立即可执行的下一步
 
 按 §30 phased rollout + §31 Phase 0.5 增补：
