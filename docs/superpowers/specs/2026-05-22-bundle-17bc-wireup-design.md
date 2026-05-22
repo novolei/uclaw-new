@@ -131,14 +131,90 @@ After both PRs land:
 3. **Drift script update**: classify both PRs as `M-Wireup` not Tactical;
    confirm tactical % stays low
 
-## 6. Open questions for review
+## 6. Decisions (locked 2026-05-22)
 
-- Threshold of 5 is a wild guess — pick after instrumenting one session?
-  Or pick 5 now, tune via setting later?
-- `<context_changes_since_last_fold>` block format — borrow from
-  Bundle 16's `<memory_context_changes>` shape? (cross-turn delta pattern)
-- Should delta-applied path also bump prompt-cache breakpoint count
-  (M2-I)? Probably yes — but separate commit if needed.
+> The three open questions from the draft spec are settled. Recording
+> here rather than removing so the spec stays a self-contained record
+> of *why* the implementation looks the way it does.
+
+### 6.1 Threshold default = 5; tune via settings within 2 weeks
+
+- **Decision**: ship the wild guess (5) as the default. Don't gate
+  implementation on a-priori telemetry.
+- **Why**: Bundle 17-C ships the stats in the same PR-pair, so we'll
+  have data within days of merge. Tuning is `MemubotConfig::context.fold_delta_threshold`
+  — settings-page editable via the same pattern as PR #396's
+  StreamSkillThresholdsSection. **No fresh PR needed to retune**.
+- **Plan**: After M2 closeout bench, look at the histogram of observed
+  delta sizes. If most sessions hit delta = 1-3 (small turns), 5 is
+  fine. If most hit 8-15 (chunky turns), bump to 10+. Recorded as
+  follow-up in M2 closeout report.
+
+### 6.2 Block format — reuse Bundle 16's `<memory_context_changes>` shape
+
+- **Decision**: borrow the Bundle 16 (PR #384) cross-turn delta
+  rendering directly. Tag becomes
+  `<context_changes_since_last_fold>` but the inner shape is
+  identical: added/removed/changed lists with stable-key identifiers.
+- **Why**:
+  1. LLM already trained on this shape via Bundle 16 production
+     traffic — zero new prompt-design risk.
+  2. **prompt-cache friendly** — same prefix convention means the
+     M2-I cache breakpoint placement Just Works without case-splitting
+     on which delta type fired.
+  3. Code reuse — the renderer in `agent/context_diff/diff.rs` can be
+     pulled into a shared helper rather than duplicated.
+- **Trade-off accepted**: 8-axis FoldDelta is structurally richer than
+  Bundle 16's flat memory_context. We collapse to flat list per axis
+  with axis name prefix in the change description, e.g.
+  `[decisions] "Use rusqlite" → "Use sqlx"`. Loses the per-axis
+  structure visually, gains uniformity.
+- **Future option**: if LLM grounding suffers, split per-axis blocks in
+  a follow-up. Don't pre-optimize.
+
+### 6.3 Trigger M2-I cache breakpoint count on delta-applied path
+
+- **Decision**: yes, delta-applied path increments the prompt-cache
+  breakpoint counter (M2-I).
+- **Why**: the whole point of using a delta block is to keep prior
+  fold + baseline + UCLAW.md as a stable prefix. The M2-I cache
+  placement policy reads this counter to decide where to insert the
+  `cache_control: { type: "ephemeral" }` marker. Without the count
+  bump, M2-I won't see the delta-applied turns as cache-hit candidates
+  and will re-place breakpoints suboptimally.
+- **Implementation**: in the dispatcher delta-applied branch, after
+  rendering the changes block, call the existing M2-I cache helper
+  (signature TBD during implementation — likely
+  `agent::cache_policy::record_stable_prefix_turn(&mut session_state)`).
+- **Out of scope for 17-B**: if the cache helper doesn't exist with
+  the right signature yet, add a TODO + use the most general bump
+  available, then refactor in a follow-up touching M2-I directly.
+
+## 7. Implementation notes (binding for the impl session)
+
+- **Branch**: `prep/bundle-17b-dispatcher-wireup` (then
+  `prep/bundle-17c-telemetry` after merge)
+- **Default + config**: `MemubotConfig::context.fold_delta_threshold:
+  u32 = 5` with `#[serde(default = "default_fold_delta_threshold")]`.
+  Backend `set_fold_delta_threshold` Tauri command with clamp [1, 50].
+  No frontend UI in this PR — defer to C1.2 (M2-J full UI).
+- **Stat field shape** (Bundle 17-C):
+  ```rust
+  // agent/token_budget/snapshot.rs
+  pub struct FoldDeltaStats {
+      pub total_compactions: u32,
+      pub delta_applied: u32,
+      pub full_refold: u32,
+      pub tokens_saved_estimate: u64,
+  }
+  ```
+  `tokens_saved_estimate` ≈ `(prior_fold_tokens * delta_applied) -
+  (delta_block_tokens * delta_applied)`. Computed at increment time
+  using tiktoken-style estimator already in `agent/dispatcher.rs`.
+- **Backward compat**: old MemubotConfig.json without
+  `context.fold_delta_threshold` deserializes to 5 via serde default.
+  Old `TokenBudgetSnapshot` JSON without `fold_delta_stats`
+  deserializes to `FoldDeltaStats::default()` (all zeros).
 
 ## 7. Estimated effort
 
