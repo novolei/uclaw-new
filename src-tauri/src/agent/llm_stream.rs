@@ -15,17 +15,11 @@ use chrono::Utc;
 use futures::StreamExt;
 use std::time::Duration;
 
-/// Bundle 27-B — max idle time between two streaming chunks before we
-/// give up on the current stream and retry via the existing
-/// RetryBudget. Targets the "silent-drop" failure mode of national
-/// LLM providers (Kimi K series in particular) where the upstream
-/// load balancer drops the long-lived HTTP connection without sending
-/// a TCP FIN, leaving the stream consumer hung in `.next().await`
-/// forever. 90s is generous enough that legitimate slow responses
-/// (large prompts, deep reasoning) aren't false-positives, but short
-/// enough that the user sees a recovery attempt rather than a
-/// permanent hang.
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// Bundle 27-B — fallback used when the caller passes `Duration::ZERO`
+/// or a value that would underflow timeout math. Production callers
+/// resolve the timeout from `MemubotConfig::stream_idle_timeout_secs`
+/// (default 90s). See doc on that field for rationale.
+const STREAM_IDLE_TIMEOUT_FALLBACK: Duration = Duration::from_secs(90);
 
 /// Side-effects a streaming completion produces. The interactive delegate
 /// emits IPC events; the headless automation delegate uses `NoopSink`.
@@ -61,13 +55,27 @@ impl StreamSink for NoopSink {
 /// Drive `llm.stream(...)` to a `RespondOutput`, retrying transient/stalled
 /// failures via a fresh `RetryBudget::for_agent_loop()`. All streaming
 /// side-effects go through `sink`.
+///
+/// `stream_idle_timeout` (Bundle 27-B) is the max gap between two
+/// streaming chunks before the stream is treated as silently dropped
+/// and routed through the retry budget. Resolved from
+/// `MemubotConfig::stream_idle_timeout_secs` at the call site (default
+/// 90s). `Duration::ZERO` is normalised to 90s — `tokio::time::timeout`
+/// treats zero as "immediately elapsed", which would tear down healthy
+/// streams.
 pub async fn stream_completion(
     llm: &dyn LlmProvider,
     messages: Vec<ChatMessage>,
     tools: Vec<ToolDefinition>,
     config: &CompletionConfig,
     sink: &dyn StreamSink,
+    stream_idle_timeout: Duration,
 ) -> Result<RespondOutput, Error> {
+    let stream_idle_timeout = if stream_idle_timeout.is_zero() {
+        STREAM_IDLE_TIMEOUT_FALLBACK
+    } else {
+        stream_idle_timeout
+    };
     let mut retry_budget = RetryBudget::for_agent_loop();
     'stream_attempt: loop {
         match llm.stream(messages.clone(), tools.clone(), config).await {
@@ -87,7 +95,7 @@ pub async fn stream_completion(
                     // connection silently; without this, we'd block here
                     // forever, leaving the user staring at a frozen agent.
                     let next_result = tokio::time::timeout(
-                        STREAM_IDLE_TIMEOUT,
+                        stream_idle_timeout,
                         stream.next(),
                     )
                     .await;
@@ -101,12 +109,12 @@ pub async fn stream_completion(
                             let synthetic_err: Error = LlmError::ApiRequestFailed(
                                 format!(
                                     "stream idle > {}s (Bundle 27-B fallback)",
-                                    STREAM_IDLE_TIMEOUT.as_secs()
+                                    stream_idle_timeout.as_secs()
                                 ),
                             )
                             .into();
                             tracing::warn!(
-                                idle_secs = STREAM_IDLE_TIMEOUT.as_secs(),
+                                idle_secs = stream_idle_timeout.as_secs(),
                                 attempt = retry_budget.attempts(),
                                 "[Bundle 27-B] LLM stream idle for too long — treating as stalled"
                             );
@@ -114,7 +122,7 @@ pub async fn stream_completion(
                                 BudgetDecision::Sleep(delay) => {
                                     let reason = format!(
                                         "stream idle > {}s",
-                                        STREAM_IDLE_TIMEOUT.as_secs()
+                                        stream_idle_timeout.as_secs()
                                     );
                                     sink.on_stream_reset();
                                     sink.on_retry_event(AgentRetryEvent::Starting {
@@ -436,7 +444,7 @@ mod tests {
             },
         ]);
         let sink = RecordingSink::default();
-        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink).await.unwrap();
+        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink, Duration::from_secs(90)).await.unwrap();
         match out {
             RespondOutput::Text { text, .. } => assert_eq!(text, "Hello world"),
             other => panic!("expected Text, got {:?}", other),
@@ -455,7 +463,7 @@ mod tests {
             StreamDelta::Done { finish_reason: Some("tool_use".into()), usage: None },
         ]);
         let sink = RecordingSink::default();
-        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink).await.unwrap();
+        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink, Duration::from_secs(90)).await.unwrap();
         match out {
             RespondOutput::ToolCalls { tool_calls, .. } => {
                 assert_eq!(tool_calls.len(), 1);
@@ -472,7 +480,7 @@ mod tests {
             // no Done delta — stream just ends
         ]);
         let sink = RecordingSink::default();
-        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink).await.unwrap();
+        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink, Duration::from_secs(90)).await.unwrap();
         match out {
             RespondOutput::Text { text, metadata, .. } => {
                 assert_eq!(text, "partial");

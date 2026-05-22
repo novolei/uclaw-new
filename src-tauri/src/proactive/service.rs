@@ -216,6 +216,19 @@ pub struct MemoryOsRuntimeConfig {
     /// Resolved at AppState bootstrap; default
     /// `~/Documents/workground/brain/PROFILE.md`.
     pub profile_md_path: Option<std::path::PathBuf>,
+    /// Bundle 26-B — see
+    /// `MemubotConfig::memory_os::skill_prune_min_unused_days`. Read
+    /// by the `% 240` prune branch in `tick_inner`. Snapshotted at
+    /// proactive-service start; `set_skill_prune_min_unused_days`
+    /// triggers a silent proactive restart so the new value takes
+    /// effect on the next tick rather than requiring an app restart.
+    pub skill_prune_min_unused_days: u32,
+    /// Bundle 26-D — see
+    /// `MemubotConfig::memory_os::skill_promote_min_returned_count`.
+    /// Read by the `% 60` promote branch in `tick_inner`.
+    /// Snapshotted at proactive-service start; the matching set
+    /// command does a silent restart.
+    pub skill_promote_min_returned_count: u32,
 }
 
 impl MemoryOsRuntimeConfig {
@@ -242,6 +255,8 @@ impl MemoryOsRuntimeConfig {
             learning_scheduler: None,  // wired in AppState bootstrap
             facet_cache: None,         // wired in AppState bootstrap
             profile_md_path: None,     // wired in AppState bootstrap
+            skill_prune_min_unused_days: cfg.skill_prune_min_unused_days,
+            skill_promote_min_returned_count: cfg.skill_promote_min_returned_count,
         }
     }
 
@@ -267,6 +282,8 @@ impl MemoryOsRuntimeConfig {
             learning_scheduler: None,
             facet_cache: None,
             profile_md_path: None,
+            skill_prune_min_unused_days: 30,
+            skill_promote_min_returned_count: 3,
         }
     }
 }
@@ -290,6 +307,8 @@ impl Default for MemoryOsRuntimeConfig {
             learning_scheduler: None,
             facet_cache: None,
             profile_md_path: None,
+            skill_prune_min_unused_days: 30,
+            skill_promote_min_returned_count: 3,
         }
     }
 }
@@ -1397,10 +1416,18 @@ impl ProactiveService {
         // only.
         if refs.tick_count.load(Ordering::SeqCst) % 240 == 0 {
             let data_dir = refs.data_dir.clone();
+            // Bundle 26-B (settings exposure) — pull the stale-day
+            // threshold from the runtime config snapshot rather than
+            // hardcoding it. Default 30 days (corrected from the
+            // inline `7.0` literal shipped in the original 26-B
+            // commit — was a leftover debug value); user-tunable via
+            // `set_skill_prune_min_unused_days`.
+            let min_unused_days =
+                refs.memory_os.skill_prune_min_unused_days as f64;
             tokio::task::spawn_blocking(move || {
                 let now_ms = chrono::Utc::now().timestamp_millis();
                 match crate::proactive::skill_distillation::run_prune_pass(
-                    &data_dir, now_ms, 7.0,
+                    &data_dir, now_ms, min_unused_days,
                 ) {
                     Ok(report) => {
                         if !report.archived.is_empty() || !report.errors.is_empty() {
@@ -1446,10 +1473,13 @@ impl ProactiveService {
             let gene_pool = refs.gene_candidate_pool.clone();
             let new_gene_flag = refs.new_gene_candidates.clone();
             let has_new = refs.has_new_context.clone();
+            // Bundle 26-D (settings exposure) — pull the promotion
+            // threshold from runtime config (default 3).
+            let min_returned = refs.memory_os.skill_promote_min_returned_count;
             tokio::spawn(async move {
                 let candidates = tokio::task::spawn_blocking(move || {
                     crate::proactive::skill_distillation::find_promotion_candidates(
-                        &data_dir, 3, 2000,
+                        &data_dir, min_returned, 2000,
                     )
                 })
                 .await

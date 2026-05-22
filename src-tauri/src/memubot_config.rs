@@ -54,6 +54,20 @@ pub struct MemubotConfig {
     /// Default true. Toggle exposed in Settings → Intelligence → Agent.
     #[serde(default = "default_true")]
     pub plan_mode_suggest_enabled: bool,
+    /// Bundle 27-B — max idle time (seconds) between two streaming chunks
+    /// before the LLM stream is treated as silently-dropped and re-driven
+    /// through the existing `RetryBudget`. Targets the "Kimi K silent
+    /// drop" failure mode: national LLM provider load balancers
+    /// sometimes close long-lived HTTP streams without a TCP FIN,
+    /// leaving the consumer hung in `stream.next().await` forever. 90s
+    /// is generous enough that legitimate slow responses (large prompt,
+    /// deep reasoning) aren't false-positives, but short enough that
+    /// the user sees a recovery attempt rather than a permanent hang.
+    /// Lower this (e.g. 30-60s) for providers with frequent silent
+    /// drops; raise it for slow/long-reasoning models.
+    /// Toggle exposed in Settings → System → Stream & Skill thresholds.
+    #[serde(default = "default_stream_idle_timeout_secs")]
+    pub stream_idle_timeout_secs: u64,
 }
 
 /// 后台记忆提取配置
@@ -353,6 +367,21 @@ fn default_agent_loop_timeout_secs() -> u64 {
 fn default_true() -> bool {
     true
 }
+/// Bundle 27-B — 90s default. See doc on
+/// `MemubotConfig::stream_idle_timeout_secs` for rationale.
+fn default_stream_idle_timeout_secs() -> u64 {
+    90
+}
+/// Bundle 26-B — 30 days matches `review_scheduler.rs` cold-storage
+/// window. See doc on `MemoryOsConfig::skill_prune_min_unused_days`.
+fn default_skill_prune_min_unused_days() -> u32 {
+    30
+}
+/// Bundle 26-D — 3 returns matches the geneticist's gene-candidate→gene
+/// threshold. See doc on `MemoryOsConfig::skill_promote_min_returned_count`.
+fn default_skill_promote_min_returned_count() -> u32 {
+    3
+}
 
 /// Memory OS feature flags — three-layer architecture.
 ///
@@ -493,6 +522,34 @@ pub struct MemoryOsConfig {
     /// L3 §4.12.4 R1 — per-scan cap on candidate EntityPages.
     /// Default 50. Set to 0 to disable without flipping the bool.
     pub drift_detection_batch_size: u32,
+    /// Bundle 26-B — minimum idle days before an auto-extracted skill
+    /// is considered "stale" and archived. The prune pass (runs every
+    /// ~2h via `ProactiveService::tick_inner`) walks
+    /// `~/.uclaw/skills/_auto_extracted/` and archives directories
+    /// where `last_used_at` is older than this AND `returned_count`
+    /// ≤ 1. Default 30 — matches the cold-storage window already
+    /// established by `review_scheduler.rs`. Lower the value to
+    /// archive aggressively on small/noisy libraries; raise it to
+    /// keep skills around longer. Nothing is destroyed — archived
+    /// skills move to `_auto_extracted/_archive/<YYYYMMDD-HHMM>/`
+    /// and are reversible via `mv`.
+    /// Toggle exposed in Settings → System → Stream & Skill thresholds.
+    #[serde(default = "default_skill_prune_min_unused_days")]
+    pub skill_prune_min_unused_days: u32,
+    /// Bundle 26-D — minimum `returned_count` (number of times a
+    /// skill has been returned by `skill_search`) before the skill
+    /// becomes eligible for promotion into the GEP
+    /// `gene_candidate_pool` as a `source: "skill_promotion"`
+    /// candidate. The promotion pass runs every ~30 min via
+    /// `ProactiveService::tick_inner`. Default 3 — aligns with the
+    /// geneticist scenario's existing gene-candidate→gene threshold
+    /// so there's no awkward "skill hot but not gene-worthy" mid-band.
+    /// Each skill promotes at most once (stamped via
+    /// `meta.json::promoted_at`). Lower to promote earlier; raise to
+    /// require more empirical evidence.
+    /// Toggle exposed in Settings → System → Stream & Skill thresholds.
+    #[serde(default = "default_skill_promote_min_returned_count")]
+    pub skill_promote_min_returned_count: u32,
 }
 
 impl Default for MemoryOsConfig {
@@ -563,6 +620,12 @@ impl Default for MemoryOsConfig {
             drift_detection_enabled: true,
             // L3 §4.12.4 R1 default 50 EntityPages/scan.
             drift_detection_batch_size: 50,
+            // Bundle 26-B default 30 days — see field doc and
+            // `default_skill_prune_min_unused_days()`.
+            skill_prune_min_unused_days: 30,
+            // Bundle 26-D default 3 returns — see field doc and
+            // `default_skill_promote_min_returned_count()`.
+            skill_promote_min_returned_count: 3,
         }
     }
 }
@@ -586,6 +649,7 @@ impl Default for MemubotConfig {
             memory_os: MemoryOsConfig::default(),
             agent_loop_timeout_secs: 600,
             plan_mode_suggest_enabled: true,
+            stream_idle_timeout_secs: 90,
         }
     }
 }
@@ -1070,6 +1134,91 @@ mod tests {
         assert!(config.memory_os.memory_health_enabled);
         // Default budget still applies when only the flag is mentioned.
         assert_eq!(config.memory_os.memory_lint_daily_token_budget, 50_000);
+    }
+
+    #[test]
+    fn stream_idle_timeout_secs_default_is_90() {
+        // Bundle 27-B — 90s is the documented default. Lowering this
+        // here without updating settings UI copy + PR body would be a
+        // silent UX regression.
+        let c = MemubotConfig::default();
+        assert_eq!(c.stream_idle_timeout_secs, 90);
+    }
+
+    #[test]
+    fn stream_idle_timeout_secs_explicit_value_preserved() {
+        let json = r#"{"stream_idle_timeout_secs": 30}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.stream_idle_timeout_secs, 30);
+        // Forward-compat: opting into a custom timeout doesn't change
+        // sibling defaults.
+        assert_eq!(config.agent_loop_timeout_secs, 600);
+        assert!(config.plan_mode_suggest_enabled);
+    }
+
+    #[test]
+    fn pre_bundle_27b_config_still_deserializes() {
+        // A config file written before Bundle 27-B exposed the
+        // setting won't have `stream_idle_timeout_secs` at all —
+        // `#[serde(default)]` must fall back to 90s.
+        let json = r#"{
+            "agent_loop_timeout_secs": 600,
+            "plan_mode_suggest_enabled": true
+        }"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.stream_idle_timeout_secs, 90,
+            "missing field must default to 90"
+        );
+    }
+
+    #[test]
+    fn skill_distillation_thresholds_have_documented_defaults() {
+        // Bundle 26-B/26-D — defaults must match the values
+        // claimed in the PR body and the settings UI help copy.
+        // The original 26-B commit shipped an inline 7.0 literal
+        // by mistake; this default-correction is intentional
+        // (matches review_scheduler.rs's 30d cold-storage window).
+        let c = MemoryOsConfig::default();
+        assert_eq!(c.skill_prune_min_unused_days, 30);
+        assert_eq!(c.skill_promote_min_returned_count, 3);
+    }
+
+    #[test]
+    fn pre_settings_exposure_memory_os_still_deserializes() {
+        // A `memory_os` block written before the settings exposure
+        // PR won't have the two new skill_* fields. `#[serde(default)]`
+        // must populate them with the documented defaults.
+        let json = r#"{"memory_os":{
+            "entity_page_enabled": true,
+            "auto_link_enabled": true,
+            "wiki_view_enabled": true,
+            "memory_health_enabled": true,
+            "memory_lint_enabled": true,
+            "memory_lint_daily_token_budget": 50000,
+            "tier_escalator_enabled": true,
+            "tier_escalator_daily_cap": 10
+        }}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.memory_os.skill_prune_min_unused_days, 30,
+            "missing skill_prune_min_unused_days must default to 30"
+        );
+        assert_eq!(
+            config.memory_os.skill_promote_min_returned_count, 3,
+            "missing skill_promote_min_returned_count must default to 3"
+        );
+    }
+
+    #[test]
+    fn skill_distillation_explicit_values_preserved() {
+        let json = r#"{"memory_os":{
+            "skill_prune_min_unused_days": 7,
+            "skill_promote_min_returned_count": 5
+        }}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.memory_os.skill_prune_min_unused_days, 7);
+        assert_eq!(config.memory_os.skill_promote_min_returned_count, 5);
     }
 
     #[test]
