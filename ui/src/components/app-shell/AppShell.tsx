@@ -327,7 +327,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         ) : (
           <>
             {/* 左侧边栏：focus mode 下隐藏，由 FocusModeOverlay 接管 */}
-            {!focusMode && (
+            {!focusMode && appMode !== 'symphony' && (
               <div className="sidebar-wrapper p-2 pr-0 relative z-[60]">
                 <LeftSidebar />
               </div>

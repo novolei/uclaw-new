@@ -37,10 +37,10 @@ export function SymphonyCanvas({ workflowId }: SymphonyCanvasProps = {}) {
   }, []);
 
   return (
-    <div className="flex h-full bg-background text-foreground">
+    <div className="flex h-full bg-transparent text-foreground gap-3 overflow-hidden">
       {/* Sidebar */}
-      <div className="w-56 bg-muted/40 border-r border-border flex flex-col shrink-0">
-        <div className="p-4 border-b border-border">
+      <div className="w-56 bg-[#161b22] border border-[#30363d] rounded-2xl flex flex-col shrink-0 shadow-lg overflow-hidden">
+        <div className="p-4 border-b border-[#30363d]">
           <h1 className="text-lg font-bold text-foreground flex items-center gap-2">
             <span className="text-xl text-primary">&#9835;</span> Symphony
           </h1>
@@ -82,7 +82,7 @@ export function SymphonyCanvas({ workflowId }: SymphonyCanvasProps = {}) {
         </nav>
 
         {selectedRepos.length > 0 && (
-          <div className="p-3 border-t border-border bg-muted/20">
+          <div className="p-3 border-t border-[#30363d] bg-muted/5">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
               Active Repos ({selectedRepos.length})
             </p>
@@ -98,7 +98,7 @@ export function SymphonyCanvas({ workflowId }: SymphonyCanvasProps = {}) {
       </div>
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col overflow-hidden bg-background">
+      <div className="flex-1 flex flex-col overflow-hidden bg-[#0d1117] border border-[#30363d] rounded-2xl shadow-lg">
         {view === "repos" && (
           <RepoSelector
             selectedRepos={selectedRepos}
@@ -140,7 +140,7 @@ export function SymphonyCanvas({ workflowId }: SymphonyCanvasProps = {}) {
 
       {/* Report panel (slides in) */}
       {reportRunId && (
-        <div className="w-[500px] bg-muted/30 border-l border-border flex flex-col shrink-0 animate-in slide-in-from-right duration-200">
+        <div className="w-[500px] bg-[#161b22] border border-[#30363d] rounded-2xl flex flex-col shrink-0 shadow-lg overflow-hidden animate-in slide-in-from-right duration-200">
           <PipelineReportView
             runId={reportRunId}
             onClose={() => setReportRunId(null)}
@@ -154,7 +154,7 @@ export function SymphonyCanvas({ workflowId }: SymphonyCanvasProps = {}) {
 
       {/* Log panel (slides in) */}
       {selectedRunId && (
-        <div className="w-[500px] bg-muted/30 border-l border-border flex flex-col shrink-0 animate-in slide-in-from-right duration-200">
+        <div className="w-[500px] bg-[#161b22] border border-[#30363d] rounded-2xl flex flex-col shrink-0 shadow-lg overflow-hidden animate-in slide-in-from-right duration-200">
           <LogViewer
             runId={selectedRunId}
             onClose={() => setSelectedRunId(null)}
