@@ -25,13 +25,13 @@
 
 ## Queue items
 
-### [ ] C1.1 PR-1 — Bundle 17-B dispatcher fold delta wire-up
+### [ ] C1.1 PR-1 — Bundle 17-B /compact fold-delta wire-up
 
-- **Spec**: [`specs/2026-05-22-bundle-17bc-wireup-design.md`](../specs/2026-05-22-bundle-17bc-wireup-design.md) §4 PR-1 + §6.1-6.3 (locked decisions)
-- **Branch**: `prep/bundle-17b-dispatcher-wireup`
-- **Files touched**: `agent/compact/{mod.rs,fold_diff.rs}`, `agent/dispatcher.rs`, `memubot_config.rs`
-- **Commits planned**: 3 (per spec §4 PR-1)
-- **Done means**: PR merged + MILESTONE_STATUS M2 row updated + threshold setting wired (default 5)
+- **Spec**: [`specs/2026-05-22-bundle-17bc-wireup-design.md`](../specs/2026-05-22-bundle-17bc-wireup-design.md) §4 PR-1 + §6.1-6.3 + **§9 reconciliation addendum (binding where it conflicts with §4)**
+- **Branch**: `prep/bundle-17b-dispatcher-wireup` *(branch name kept for traceability; actual edits are in tauri_commands.rs not dispatcher.rs — see spec §9.1)*
+- **Files touched** (revised per §9.4): `db/migrations.rs` (V52), `agent/compact/{mod.rs, baseline.rs (new), render.rs}`, `tauri_commands.rs` (/compact intercept), `main.rs` (invoke_handler register), `memubot_config.rs`, `CONTEXT.md` (V52 registry row)
+- **Commits planned**: 4 (spec addendum + V52 migration & helpers + /compact delta branch & threshold + tests, per spec §9.5)
+- **Done means**: PR merged + MILESTONE_STATUS M2 row updated + threshold setting wired (default 5) + agent_fold_baselines table live
 - **Unblocks**: C1.1 PR-2, task #146 closure
 - **Actual PR**: _(fill on merge)_
 
