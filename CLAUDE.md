@@ -13,6 +13,36 @@ to the same `BEHAVIOR.md` so behavior stays uniform across sessions.
 
 ---
 
+## ⚠️ Milestone work — must follow closed-loop discipline
+
+If the user mentions **"推进主线" / "continue main line" / "M2/M3/M4/M5+
+work" / "C1/C2/C3" / "Bundle wire-up" / "milestone closeout" / "next
+slice"**, you MUST:
+
+1. **Read SSoT first**: `docs/superpowers/MILESTONE_STATUS.md` (live
+   M0-M9 state) — before any code edits
+2. **Run drift check**: `./scripts/milestone-drift-check.sh
+   --since "1 week ago"` — flag RED/YELLOW alarm in your first reply
+3. **Load skill `uclaw-milestone-closed-loop`** — it encodes the rules
+4. **Tag every PR** with one of `[M<N>-T<X>]` / `[M<N>-T<X> wire-up]` /
+   `[Bundle <N>]` / `[Phase 0.5-T<X>]` / `[Backlog]` — no untagged PRs
+5. **Update SSoT after merge**: 1-line edit to MILESTONE_STATUS.md is
+   part of the PR, not a follow-up
+
+Spec-first for wire-up: look in `docs/superpowers/specs/` for an
+existing spec; if absent, write one (see
+`docs/superpowers/specs/2026-05-22-bundle-17bc-wireup-design.md` as
+template) BEFORE opening a `prep/` branch.
+
+Strategy doc with full reasoning + cutoff criteria:
+`docs/superpowers/plans/2026-05-22-pr-integration-strategy.md`.
+
+Current state (2026-05-22): C1 = M2 closeout in progress; C2 = M3
+wire-up next; C3 = M4 wire-up after. **Strict order — do not start C2
+before C1 closes.**
+
+---
+
 # Part 1 — Working Style
 
 ## Surfaces to check before assuming
