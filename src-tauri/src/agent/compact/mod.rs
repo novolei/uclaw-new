@@ -29,11 +29,13 @@
 //!
 //! - [`fold`] — `StructuredFold` + 8 component types + serde roundtrip tests
 
+pub mod baseline;
 pub mod fold;
 pub mod fold_diff;
 pub mod render;
 pub mod summarize;
 
+pub use baseline::{load_baseline, upsert_baseline};
 pub use fold::{
     ArtifactRef, CheckpointRef, DecisionWithRationale, FactWithEvidence, FailedAttempt,
     StructuredFold,

@@ -1945,6 +1945,42 @@ CREATE TABLE IF NOT EXISTS memorization_state (
 );
 ";
 
+/// V52 — `agent_fold_baselines` table for Bundle 17-B delta-rendered
+/// `/compact` placeholder.
+///
+/// Per spec
+/// [`docs/superpowers/specs/2026-05-22-bundle-17bc-wireup-design.md`](../../../docs/superpowers/specs/2026-05-22-bundle-17bc-wireup-design.md) §9.2:
+/// the `/compact` intercept in `tauri_commands.rs` historically drops
+/// the typed `StructuredFold` after rendering it to markdown. To enable
+/// the delta-rendered path (small drift → render `<context_changes_since_last_fold>`
+/// block on top of the *stable* prior fold), we persist the most recent
+/// fold per session so the next `/compact` can diff against it.
+///
+/// Schema:
+/// - `session_id` — PK, refs `agent_sessions.id` (1-to-1 with current fold)
+/// - `fold_json` — serde_json::to_string of `StructuredFold` (NOT NULL)
+/// - `baseline_hash` — `StructuredFold::baseline_hash()` (sanity check)
+/// - `updated_at` — wall-clock ms (debugging only)
+///
+/// No FK so an orphaned baseline row simply gets ignored on next session
+/// query — matches the pattern of `compaction_markers` (V29) which also
+/// avoids FK to keep session deletion fast.
+///
+/// Idempotent: `CREATE TABLE IF NOT EXISTS` so re-running V52 on already-
+/// migrated DB is a no-op. First-compact behavior on a brand-new V52
+/// session: `SELECT` returns 0 rows → falls back to current full-rewrite
+/// behavior (no regression).
+pub const V52_AGENT_FOLD_BASELINES: &str = "
+CREATE TABLE IF NOT EXISTS agent_fold_baselines (
+    session_id     TEXT PRIMARY KEY,
+    fold_json      TEXT NOT NULL,
+    baseline_hash  TEXT NOT NULL,
+    updated_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_fold_baselines_session
+    ON agent_fold_baselines(session_id);
+";
+
 /// V43 seed — Phase 8.2: 7 default rows in `wiki_page_templates`, one
 /// per subkind defined in Cognitive Spec §2.2. `INSERT OR IGNORE` keeps
 /// the seed re-runnable: users / agents can tune the prompts in the
@@ -2557,6 +2593,14 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             // on databases that ran MemorizationStorage::ensure_tables first —
             // log at DEBUG so they don't fill the operator's stderr with noise.
             tracing::debug!("V51 stmt skipped (likely already applied): {} :: {}", e, stmt);
+        }
+    }
+    // V52: agent_fold_baselines for Bundle 17-B `/compact` delta-rendered path.
+    // CREATE TABLE IF NOT EXISTS is fully idempotent; no expected error class.
+    tracing::debug!("Running migration V52: agent_fold_baselines");
+    for stmt in V52_AGENT_FOLD_BASELINES.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V52 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
