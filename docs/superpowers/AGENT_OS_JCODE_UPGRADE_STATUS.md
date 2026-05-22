@@ -19,16 +19,16 @@
 
 | PR | Theme | Status | Owner Session | Next Action |
 |---|---|---|---|---|
-| PR-0 | Design baseline and close-loop governance | In progress | Codex | Review this status file and PR-0 spec; then write PR-1 plan after approval. |
-| PR-1 | Runtime event spine audit and adapter contracts | Not started | Unassigned | Create plan in `docs/superpowers/plans/PR-1-runtime-event-spine-audit-and-adapter-contracts.md`. |
-| PR-2 | ToolContext adapter | Not started | Unassigned | Wait for PR-1 event vocabulary. |
+| PR-0 | Design baseline and close-loop governance | Committed | Codex | Baseline commit `c44a3267`; PR-1 numbering correction is tracked in this worktree. |
+| PR-1 | Pure type crates for messages/tools/protocol/runtime contracts | Plan ready | Codex | Review and execute `docs/superpowers/plans/2026-05-23-pr1-pure-type-crates-runtime-contracts.md` in the isolated worktree. |
+| PR-2 | ToolContext adapter | Not started | Unassigned | Wait for PR-1 pure type crates. |
 | PR-3 | Provider readiness core | Not started | Unassigned | Wait for PR-1 and current provider impact analysis. |
-| PR-4 | Soft interrupts and boundary yields | Not started | Unassigned | Wait for PR-1 tests and policy review. |
-| PR-5 | Session projection journal | Not started | Unassigned | Wait for PR-1 fixtures and M4 alignment. |
+| PR-4 | Soft interrupts and boundary yields | Not started | Unassigned | Wait for PR-1 contracts and policy review. |
+| PR-5 | Session projection journal | Not started | Unassigned | Wait for PR-1 contracts and M4 alignment. |
 | PR-6 | Performance scorecards | Not started | Unassigned | Wait for first replay fixtures. |
-| PR-7 | Subagent/team runtime hardening | Not started | Unassigned | Wait for PR-1 and PR-4 boundary semantics. |
+| PR-7 | Subagent/team runtime hardening | Not started | Unassigned | Wait for PR-1 contracts and PR-4 boundary semantics. |
 | PR-8 | jcode-inspired tool family mesh | Not started | Unassigned | Wait for PR-2 and Capability Mesh status. |
-| PR-9 | BrowserProvider status/setup/probe | Not started | Unassigned | Wait for PR-1 and browser impact map. |
+| PR-9 | BrowserProvider status/setup/probe | Not started | Unassigned | Wait for PR-1 contracts and browser impact map. |
 | PR-10 | Ambient-to-automation mapping | Not started | Unassigned | Wait for PR-4 and automation policy review. |
 | PR-11 | Harness campaigns | Not started | Unassigned | Wait for PR-2, PR-6, PR-9 smoke subjects. |
 | PR-12 | Frontend projection reducer | Not started | Unassigned | Wait for PR-5 projection journal. |
@@ -46,6 +46,7 @@ Append one row when a design decision changes the roadmap.
 | 2026-05-23 | uClaw Browser Agent v2 remains the primary browser stack; jcode browser contributes readiness/setup/probe ergonomics. | jcode/uClaw browser comparison in the ADR gap audit. | Browser work starts as BrowserProvider status/probe, not browser replacement. |
 | 2026-05-23 | jcode ambient maps into automation/scheduled workers, not a second scheduler. | ADR gap audit ambient section. | PR-10 must preserve automation and heartbeat ownership. |
 | 2026-05-23 | Every PR uses Superpowers workflow. | User direction on 2026-05-23. | Each PR starts with `superpowers:using-superpowers`; implementation PRs need a plan. |
+| 2026-05-23 | Corrected PR-1 numbering drift: PR-1 is pure type crate extraction, not event spine validation. | `docs/jcode_comparison/README.md` listed PR-1 as type extraction. | Event spine validation moves behind the type-crate foundation. |
 
 ---
 
@@ -161,8 +162,8 @@ Use these alarms to keep the upgrade from drifting into scattered fixes.
 - [x] ADR gap audit covers tools, browser, ambient, harness, subagents, teams.
 - [x] PR-0 design spec exists under `docs/superpowers/specs/`.
 - [x] Close-loop status file exists.
-- [ ] User reviews and approves PR-0 design baseline.
-- [ ] PR-1 implementation plan is written after approval.
+- [x] User reviewed and approved PR-0 design baseline.
+- [x] PR-1 implementation plan is written after approval.
 
 ---
 
@@ -179,11 +180,20 @@ PR-1 can start only when:
 
 Recommended PR-1 first tests:
 
-- TaskEvent replay fixture for a normal agent turn;
-- browser task event replay fixture;
-- automation event replay fixture;
-- team/worker event replay fixture;
-- harness subject trace fixture.
+- serde wire-shape test for `ChatMessage`;
+- serde wire-shape test for `ToolCall` and `ToolDefinition`;
+- serde round-trip tests for `IntentSpec`, `TaskSpec`, and `TaskEvent`;
+- compile regression tests for existing provider, rollout, browser, automation, and harness modules.
+
+## PR-1 Progress
+
+- Plan: `docs/superpowers/plans/2026-05-23-pr1-pure-type-crates-runtime-contracts.md`
+- Worktree: `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr1-plan`
+- Branch: `codex/agent-os-jcode-pr1-plan`
+- Scope: extract `uclaw-message-types`, `uclaw-tool-types`, `uclaw-runtime-contracts`, and `uclaw-protocol-types`.
+- DMZ files: root `Cargo.toml` touched; writer/reviewer required before merge.
+- Migration: none planned.
+- Rollback: revert crate additions, dependency additions, and compatibility re-export facades.
 
 ---
 

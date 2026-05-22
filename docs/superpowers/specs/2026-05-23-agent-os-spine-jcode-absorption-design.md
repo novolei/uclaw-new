@@ -340,7 +340,7 @@ The comparison reports currently recommend this sequence.
 | PR | Theme | Purpose | Implementation Risk |
 |---|---|---|---|
 | PR-0 | Design baseline | This spec plus jcode comparison updates. | Low |
-| PR-1 | Runtime event spine | Define or tighten task/event/projection adapter contracts without changing behavior. | Medium |
+| PR-1 | Pure type crates | Extract message, tool, protocol, and runtime contract types behind compatibility re-exports. | High |
 | PR-2 | ToolContext adapter | Add a jcode-inspired tool context adapter around existing uClaw tools. | Medium |
 | PR-3 | Provider core | Normalize provider readiness, credentials, and streaming status. | Medium |
 | PR-4 | Soft interrupts | Add safe points and resumable boundary yields. | High |
@@ -363,18 +363,18 @@ otherwise.
 After PR-0 is reviewed, the best first implementation PR is PR-1:
 
 ```text
-PR-1: Runtime Event Spine Audit and Adapter Contracts
+PR-1: Pure Type Crates for Messages, Tools, Protocol, and Runtime Contracts
 ```
 
 Why PR-1 first:
 
-- it gives later tool/browser/team work a stable event vocabulary;
-- it can be scoped narrowly;
-- it reduces the risk of each later PR inventing a local truth model;
-- it creates harness replay fixtures early.
+- it gives later tool/browser/team work dependency-light contract crates;
+- it reduces the risk of each later PR importing the monolithic backend;
+- it matches the canonical migration order in `docs/jcode_comparison/README.md`;
+- it preserves current behavior through compatibility re-exports.
 
-PR-1 should avoid broad behavior changes. It should focus on contracts,
-fixtures, and tests.
+PR-1 should avoid behavior changes. It should focus on crate boundaries,
+compatibility facades, serde tests, and compile regression tests.
 
 ## 11. Workstream Details
 
@@ -590,7 +590,7 @@ PR-0 does not:
 - create migrations;
 - edit DMZ files;
 - port jcode code;
-- decide final type names for PR-1;
+- implement PR-1 type crates;
 - claim a performance win;
 - promote any autonomy level;
 - change the frontend runtime.
@@ -602,13 +602,12 @@ PR-0 only aligns the map before implementation starts.
 After this spec is reviewed, create the first implementation plan:
 
 ```text
-docs/superpowers/plans/PR-1-runtime-event-spine-audit-and-adapter-contracts.md
+docs/superpowers/plans/2026-05-23-pr1-pure-type-crates-runtime-contracts.md
 ```
 
-That plan should be narrow and test-first:
+That plan should be compatibility-first:
 
-- inspect current TaskEvent, browser task event, automation activity, team
-  worker, and harness trace models;
-- propose the minimum shared adapter contract;
-- add replay fixtures before changing behavior;
-- avoid DMZ files unless impact analysis proves there is no cleaner path.
+- extract pure type crates for messages, tools, protocol envelopes, and runtime contracts;
+- keep compatibility re-exports in the monolith so existing call sites do not churn;
+- run focused serde and compile tests for each extracted crate;
+- treat root `Cargo.toml` as a DMZ file and require writer/reviewer review before merge.
