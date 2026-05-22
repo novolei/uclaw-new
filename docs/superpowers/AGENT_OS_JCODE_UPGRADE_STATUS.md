@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-1 implementation
+> Current phase: PR-1 ready for writer/reviewer closeout
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -20,7 +20,7 @@
 | PR | Theme | Status | Owner Session | Next Action |
 |---|---|---|---|---|
 | PR-0 | Design baseline and close-loop governance | Committed | Codex | Baseline commit `c44a3267`; PR-1 numbering correction is tracked in this worktree. |
-| PR-1 | Pure type crates for messages/tools/protocol/runtime contracts | In progress | Codex | Execute `docs/superpowers/plans/2026-05-23-pr1-pure-type-crates-runtime-contracts.md` with Subagent-Driven Development in the isolated worktree. |
+| PR-1 | Pure type crates for messages/tools/protocol/runtime contracts | Verified; reviewer closeout pending | Codex | Run fresh final review, then push/create PR when Ryan chooses. |
 | PR-2 | ToolContext adapter | Not started | Unassigned | Wait for PR-1 pure type crates. |
 | PR-3 | Provider readiness core | Not started | Unassigned | Wait for PR-1 and current provider impact analysis. |
 | PR-4 | Soft interrupts and boundary yields | Not started | Unassigned | Wait for PR-1 contracts and policy review. |
@@ -48,6 +48,7 @@ Append one row when a design decision changes the roadmap.
 | 2026-05-23 | Every PR uses Superpowers workflow. | User direction on 2026-05-23. | Each PR starts with `superpowers:using-superpowers`; implementation PRs need a plan. |
 | 2026-05-23 | Corrected PR-1 numbering drift: PR-1 is pure type crate extraction, not event spine validation. | `docs/jcode_comparison/README.md` listed PR-1 as type extraction. | Event spine validation moves behind the type-crate foundation. |
 | 2026-05-23 | Adopted jcode-style Rust test/module hygiene for uClaw PR-1. | User reference screenshots show sibling `*_tests.rs` modules loaded via `#[path = "..."] mod tests;`. | PR-1 crates must use sibling test files and avoid god files through focused module boundaries. |
+| 2026-05-23 | PR-1 implementation uses compatibility re-exports, not call-site churn. | Commits `c85f4c1c`, `5fdc1e4b`, `a4428a71`, `8b5602e9`, `160d6491`. | Later PRs can migrate imports gradually while existing backend modules keep compiling against the facade paths. |
 
 ---
 
@@ -196,6 +197,25 @@ Recommended PR-1 first tests:
 - DMZ files: root `Cargo.toml` touched; writer/reviewer required before merge.
 - Migration: none planned.
 - Rollback: revert crate additions, dependency additions, and compatibility re-export facades.
+
+### PR-1 Implementation Commits
+
+| Commit | Slice | Review Status | Verification |
+|---|---|---|---|
+| `c85f4c1c` | `uclaw-message-types` | Spec approved; quality approved after import-order fix. | `cargo test -p uclaw-message-types` passed 3 tests; `src-tauri` focused tests blocked by missing ignored runtime resources. |
+| `5fdc1e4b` | `uclaw-tool-types` | Spec approved; quality approved. | `cargo test -p uclaw-tool-types` passed 2 tests; `cargo check -p uclaw` blocked by missing `pyembed/python`. |
+| `a4428a71` | `uclaw-runtime-contracts` | Spec approved; quality approved. | `cargo test -p uclaw-runtime-contracts` passed 20 tests; `cargo check -p uclaw --lib` blocked by missing `gbrain-source`. |
+| `8b5602e9` | `uclaw-protocol-types` | Spec approved; quality approved. | `cargo test -p uclaw-protocol-types` passed 2 tests. |
+| `160d6491` | harness `TaskEventSource` bridge compatibility | GitNexus risk low; 0 affected processes. | `cargo check -p uclaw --lib` passed; `cargo test harness::case --lib` passed 3 tests. |
+
+### PR-1 Verification Notes
+
+- GitNexus marked `ChatMessage` as CRITICAL impact before Task 1; Ryan explicitly confirmed continuing with PR-1.
+- GitNexus `detect-changes` can warn or omit `risk_level` in this sibling worktree because the indexed repo path is `/Users/ryanliu/Documents/uclaw`; commit hooks surfaced that caveat on each commit.
+- Full `cargo check -p uclaw --lib` passed after linking ignored local runtime resources (`pyembed/python`, `bunembed/bun`, `gbrain-source`) from the primary worktree into this isolated worktree.
+- `cargo test -p uclaw-message-types -p uclaw-tool-types -p uclaw-runtime-contracts -p uclaw-protocol-types` passed 27 unit tests plus doctests.
+- `cd src-tauri && cargo test agent::types --lib` passed 17 tests.
+- `cd src-tauri && cargo test channels::dispatcher --lib` passed 19 tests.
 
 ---
 
