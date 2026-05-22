@@ -29,6 +29,7 @@ uclaw-utils-async-utils = { path = "../crates/uclaw-utils-async-utils", version 
 uclaw-utils-template = { path = "../crates/uclaw-utils-template", version = "0.1" }
 uclaw-message-types = { path = "../crates/uclaw-message-types" }
 uclaw-tool-types = { path = "../crates/uclaw-tool-types" }
+uclaw-runtime-contracts = { path = "../crates/uclaw-runtime-contracts" }
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }

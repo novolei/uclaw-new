@@ -7659,6 +7659,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uclaw-message-types",
+ "uclaw-runtime-contracts",
  "uclaw-tool-types",
  "uclaw-utils-async-utils",
  "uclaw-utils-home",
@@ -7671,6 +7672,14 @@ dependencies = [
 
 [[package]]
 name = "uclaw-message-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "uclaw-runtime-contracts"
 version = "0.1.0"
 dependencies = [
  "serde",
