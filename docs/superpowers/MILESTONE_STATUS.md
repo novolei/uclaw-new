@@ -175,7 +175,7 @@ rollout writes to JSONL; HarnessSubject bridges to harness eval.
 
 > 当 drift check 触发红色 alarm 时,在这里追加一行;关 window 后划掉。
 
-- *(empty — alarms 触发会自动 append)*
+- **2026-05-22 RED — consecutive Bundle run = 20 > 7 threshold** (PRs #370-#389 strip before C1.1 resumed). Tactical ratio itself is healthy (25/200 = 12%). PR #397 ([M2-D wire-up]) breaks the run; closing C1.1 resets the counter to 0. **No action required** — alarm is informational; the counter was already broken by #391/#390/#367/#366/#365/#364/#328 (5 M-Wireup) before #397 landed.
 
 ---
 
