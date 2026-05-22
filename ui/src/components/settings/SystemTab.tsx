@@ -4,6 +4,7 @@ import { Activity, ChevronDown, ChevronUp, PlayCircle, RefreshCw, RotateCcw, Pow
 import { cn } from '@/lib/utils'
 import { EmbeddingEndpointSection } from './EmbeddingEndpointSection'
 import { StreamSkillThresholdsSection } from './StreamSkillThresholdsSection'
+import { FoldDeltaThresholdSection } from './FoldDeltaThresholdSection'
 import { DeveloperOptionsSection } from './DeveloperOptionsSection'
 
 // ── Types (mirror Rust structs) ──────────────────────────────────────
@@ -552,6 +553,10 @@ export function SystemTab() {
           distillation thresholds, originally hardcoded, now
           user-tunable. */}
       <StreamSkillThresholdsSection />
+
+      {/* Bundle 17-B — /compact fold delta threshold. Loose default 50
+          favors the delta path until Bundle 17-C telemetry tunes it. */}
+      <FoldDeltaThresholdSection />
 
       {/* Sprint 2.2 followon #4 — developer options (collapsed by default) */}
       <DeveloperOptionsSection />

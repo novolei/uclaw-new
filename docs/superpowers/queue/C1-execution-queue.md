@@ -5,8 +5,8 @@
 > Each item is a self-contained PR; agent picks the first unchecked
 > and executes per the linked spec.
 >
-> **Last updated**: 2026-05-22 (C1.1 PR-1 prep branch built + queued for push/review)
-> **Status**: 0/7 items merged; C1.1 PR-1 prep branch ready
+> **Last updated**: 2026-05-22 (C1.1 PR-1 in review as #397; C1.5 Bundle 17-D resilience inserted from E2E findings)
+> **Status**: 0/8 items merged; C1.1 PR-1 prep branch in PR review
 
 ---
 
@@ -79,11 +79,23 @@
 - **Note**: per plan §4.2 M2-F = 7 context tools. Pilot only has 4. Either implement remaining 3 (`fold`, `cite`, `compare`) here or split into C1.4a/b.
 - **Actual PR**: _(fill on merge)_
 
-### [ ] C1.5 — 50-turn benchmark + cached_input_tokens measurement
+### [ ] C1.5 — Bundle 17-D `summarize_to_fold` resilience (multi-provider + heuristic fallback)
+
+- **Spec**: [`specs/2026-05-23-bundle-17d-summarize-resilience-design.md`](../specs/2026-05-23-bundle-17d-summarize-resilience-design.md)
+- **Branch**: `prep/bundle-17d-summarize-resilience`
+- **Depends on**: C1.1 PR-1 merged (PR #397); independent of PR-2/C1.2/C1.3/C1.4
+- **Motivation**: 2026-05-22 E2E live-fire on session `78c1d9fd` showed 2 of 3 `/compact` attempts failed at the LLM tier (1 "high risk" rejection + 1 timeout → empty response → JSON parse failure). PR #397 soft-fail handled both correctly, but the delta path never exercised. Need multi-provider fallback + non-LLM extractive floor so the delta path actually fires in production.
+- **Files touched**: `agent/compact/summarize.rs` (rework producer to walk chain), `agent/compact/heuristic.rs` (new — Tier-2 extractor), `memubot_config.rs` (`fold_summarizer_chain: Vec<String>` with default `["anthropic","deepseek","kimi","openai"]`), tests
+- **Commits planned**: 5 (per spec §5)
+- **Done means**: production `/compact` success rate ≥ 90% (combining Tier-1 hit + Tier-2 extractive); never regress vs current soft-fail floor
+- **Unblocks**: C1.6 benchmark (without 17-D, bench results are contaminated by LLM availability noise)
+- **Actual PR**: _(fill on merge)_
+
+### [ ] C1.6 — 50-turn benchmark + cached_input_tokens measurement
 
 - **Spec**: `specs/<date>-m2-benchmark-plan.md` (write the methodology first)
 - **Branch**: `prep/m2-50turn-benchmark`
-- **Depends on**: C1.1-C1.4 merged (need wire-up done to measure savings)
+- **Depends on**: C1.1-C1.5 merged (need wire-up AND resilience done to measure savings cleanly)
 - **Done means**:
   - Fixture: 50-turn session script under `scripts/benchmark/`
   - Run baseline (M2 pilots disabled / pre-Slice-2 head) — recorded token cost
@@ -93,11 +105,11 @@
   - Result document: `docs/superpowers/reports/<date>-m2-benchmark.md`
 - **Actual PR**: _(may be doc-only or include the benchmark script)_
 
-### [ ] C1.6 — M2 closeout report + tagged release
+### [ ] C1.7 — M2 closeout report + tagged release
 
 - **Spec**: no spec needed; follows M1 retrospective doc pattern (PR #321)
 - **Branch**: `prep/m2-closeout`
-- **Depends on**: C1.1-C1.5 all merged + bench data exists
+- **Depends on**: C1.1-C1.6 all merged + bench data exists
 - **Done means**:
   - `docs/superpowers/reports/<date>-m2-closeout.md` with: actual vs estimated effort, bench results, sub-task that drifted as Bundles + root cause, advice for M3 startup
   - PR description includes "Closes M2" + links to: ADR §16 M2 exit criteria check, plan §4.3 DoD check, bench data, retro doc
@@ -109,7 +121,7 @@
 
 ## Post-queue
 
-After all 7 items checked, queue file is archived:
+After all 8 items checked, queue file is archived:
 
 ```bash
 git mv docs/superpowers/queue/C1-execution-queue.md \

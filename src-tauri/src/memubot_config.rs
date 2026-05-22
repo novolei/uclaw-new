@@ -180,11 +180,13 @@ pub struct ContextConfig {
     /// cache breakpoint sits on a stable prefix → cached_input_tokens
     /// kicks in more on subsequent turns.
     ///
-    /// Default 5 — a wild guess; spec
+    /// Default 50 — loose default, favors delta path while telemetry stabilizes.
+    /// Spec
     /// [`docs/superpowers/specs/2026-05-22-bundle-17bc-wireup-design.md`](../../docs/superpowers/specs/2026-05-22-bundle-17bc-wireup-design.md) §6.1
     /// commits to retuning from telemetry within 2 weeks of merge.
-    /// Settings-editable via `set_fold_delta_threshold` Tauri command;
-    /// clamped to `[1, 50]` on write.
+    /// Settings-editable via `set_fold_delta_threshold` Tauri command,
+    /// also surfaced as the FoldDeltaThresholdSection on the System
+    /// settings tab; clamped to `[1, 50]` on write.
     #[serde(default = "default_fold_delta_threshold")]
     pub fold_delta_threshold: u32,
 }
@@ -804,10 +806,19 @@ impl Default for ContextConfig {
     }
 }
 
-/// Bundle 17-B default — 5 across-axis-cumulative delta count below
-/// which `/compact` takes the delta-rendered path. See `ContextConfig::fold_delta_threshold`.
+/// Bundle 17-B default — across-axis-cumulative delta count below which
+/// `/compact` takes the delta-rendered path. See `ContextConfig::fold_delta_threshold`.
+///
+/// **Initially 50 (loose default, 2026-05-22).** The original spec §6.1 picked
+/// 5 as a wild guess. Live E2E on session `78c1d9fd-...` showed: 2 of 3
+/// `/compact` attempts failed at the LLM tier (one "high risk" rejection +
+/// one timeout/empty-response → JSON parse failure) before the delta path
+/// could even be exercised. With 50 we favor *any* successful delta path
+/// firing until telemetry from C1.1 PR-2 (`FoldDeltaStats`) tells us a
+/// data-driven number. Retune from histogram of observed `drift` values
+/// within 2 weeks of merge per spec §6.1 + Bundle 17-D resilience design.
 fn default_fold_delta_threshold() -> u32 {
-    5
+    50
 }
 
 /// Bundle 17-B — clamp range for `fold_delta_threshold` write path.
