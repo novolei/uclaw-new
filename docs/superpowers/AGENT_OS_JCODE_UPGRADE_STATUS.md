@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-0 design baseline
+> Current phase: PR-1 implementation
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -20,7 +20,7 @@
 | PR | Theme | Status | Owner Session | Next Action |
 |---|---|---|---|---|
 | PR-0 | Design baseline and close-loop governance | Committed | Codex | Baseline commit `c44a3267`; PR-1 numbering correction is tracked in this worktree. |
-| PR-1 | Pure type crates for messages/tools/protocol/runtime contracts | Plan ready | Codex | Review and execute `docs/superpowers/plans/2026-05-23-pr1-pure-type-crates-runtime-contracts.md` in the isolated worktree. |
+| PR-1 | Pure type crates for messages/tools/protocol/runtime contracts | In progress | Codex | Execute `docs/superpowers/plans/2026-05-23-pr1-pure-type-crates-runtime-contracts.md` with Subagent-Driven Development in the isolated worktree. |
 | PR-2 | ToolContext adapter | Not started | Unassigned | Wait for PR-1 pure type crates. |
 | PR-3 | Provider readiness core | Not started | Unassigned | Wait for PR-1 and current provider impact analysis. |
 | PR-4 | Soft interrupts and boundary yields | Not started | Unassigned | Wait for PR-1 contracts and policy review. |
@@ -47,6 +47,7 @@ Append one row when a design decision changes the roadmap.
 | 2026-05-23 | jcode ambient maps into automation/scheduled workers, not a second scheduler. | ADR gap audit ambient section. | PR-10 must preserve automation and heartbeat ownership. |
 | 2026-05-23 | Every PR uses Superpowers workflow. | User direction on 2026-05-23. | Each PR starts with `superpowers:using-superpowers`; implementation PRs need a plan. |
 | 2026-05-23 | Corrected PR-1 numbering drift: PR-1 is pure type crate extraction, not event spine validation. | `docs/jcode_comparison/README.md` listed PR-1 as type extraction. | Event spine validation moves behind the type-crate foundation. |
+| 2026-05-23 | Adopted jcode-style Rust test/module hygiene for uClaw PR-1. | User reference screenshots show sibling `*_tests.rs` modules loaded via `#[path = "..."] mod tests;`. | PR-1 crates must use sibling test files and avoid god files through focused module boundaries. |
 
 ---
 
@@ -180,9 +181,9 @@ PR-1 can start only when:
 
 Recommended PR-1 first tests:
 
-- serde wire-shape test for `ChatMessage`;
-- serde wire-shape test for `ToolCall` and `ToolDefinition`;
-- serde round-trip tests for `IntentSpec`, `TaskSpec`, and `TaskEvent`;
+- serde wire-shape test for `ChatMessage` in `crates/uclaw-message-types/src/message_tests.rs`;
+- serde wire-shape test for `ToolCall` and `ToolDefinition` in `crates/uclaw-tool-types/src/tool_tests.rs`;
+- serde round-trip tests for `IntentSpec`, `TaskSpec`, and `TaskEvent` in `crates/uclaw-runtime-contracts/src/contracts_tests.rs`;
 - compile regression tests for existing provider, rollout, browser, automation, and harness modules.
 
 ## PR-1 Progress
@@ -191,6 +192,7 @@ Recommended PR-1 first tests:
 - Worktree: `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr1-plan`
 - Branch: `codex/agent-os-jcode-pr1-plan`
 - Scope: extract `uclaw-message-types`, `uclaw-tool-types`, `uclaw-runtime-contracts`, and `uclaw-protocol-types`.
+- Rust hygiene: sibling `*_tests.rs` files only; no substantial inline test module blocks in production modules.
 - DMZ files: root `Cargo.toml` touched; writer/reviewer required before merge.
 - Migration: none planned.
 - Rollback: revert crate additions, dependency additions, and compatibility re-export facades.

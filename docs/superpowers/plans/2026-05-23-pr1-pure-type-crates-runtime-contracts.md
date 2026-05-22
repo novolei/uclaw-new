@@ -122,12 +122,16 @@ Create:
 
 - `crates/uclaw-message-types/Cargo.toml`
 - `crates/uclaw-message-types/src/lib.rs`
+- `crates/uclaw-message-types/src/message_tests.rs`
 - `crates/uclaw-tool-types/Cargo.toml`
 - `crates/uclaw-tool-types/src/lib.rs`
+- `crates/uclaw-tool-types/src/tool_tests.rs`
 - `crates/uclaw-runtime-contracts/Cargo.toml`
 - `crates/uclaw-runtime-contracts/src/lib.rs`
+- `crates/uclaw-runtime-contracts/src/contracts_tests.rs`
 - `crates/uclaw-protocol-types/Cargo.toml`
 - `crates/uclaw-protocol-types/src/lib.rs`
+- `crates/uclaw-protocol-types/src/protocol_tests.rs`
 
 Modify:
 
@@ -145,13 +149,50 @@ Do not modify:
 - `memory_graph`
 - frontend files
 
-## 6. Implementation Tasks
+## 6. uClaw Rust Hygiene Adapted From jcode
+
+This PR adopts the jcode-style Rust layout shown in the user reference images,
+adapted to uClaw conventions:
+
+- keep production modules focused on production definitions;
+- put substantial unit tests in sibling `*_tests.rs` files;
+- include those tests from the production module with:
+
+```rust
+#[cfg(test)]
+#[path = "message_tests.rs"]
+mod tests;
+```
+
+- use platform gates when needed:
+
+```rust
+#[cfg(all(test, not(windows)))]
+#[path = "bash_tests.rs"]
+mod tests;
+```
+
+- start sibling test files with `use super::*;`;
+- do not create god files: target roughly under 400 lines per hand-written Rust
+  module, split before 600 lines when practical, and treat 900+ lines as a hard
+  split trigger unless the file is generated or a data fixture with an explicit
+  comment explaining why it stays whole.
+
+For PR-1 specifically, every new pure type crate must use a sibling test file:
+
+- `uclaw-message-types/src/message_tests.rs`
+- `uclaw-tool-types/src/tool_tests.rs`
+- `uclaw-runtime-contracts/src/contracts_tests.rs`
+- `uclaw-protocol-types/src/protocol_tests.rs`
+
+## 7. Implementation Tasks
 
 ### Task 1: Extract `uclaw-message-types`
 
 **Files:**
 - Create: `crates/uclaw-message-types/Cargo.toml`
 - Create: `crates/uclaw-message-types/src/lib.rs`
+- Create: `crates/uclaw-message-types/src/message_tests.rs`
 - Modify: `Cargo.toml`
 - Modify: `src-tauri/Cargo.toml`
 - Modify: `src-tauri/src/agent/types.rs`
@@ -179,39 +220,46 @@ Move `MessageRole`, `ContentBlock`, `ChatMessage`, `estimate_tokens`,
 `estimate_message_tokens`, and private `is_cjk` from
 `src-tauri/src/agent/types.rs` into `crates/uclaw-message-types/src/lib.rs`.
 
-Add these tests to the new crate:
+At the bottom of `lib.rs`, add only the jcode-style external test module hook:
 
 ```rust
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "message_tests.rs"]
+mod tests;
+```
 
-    #[test]
-    fn chat_message_wire_shape_preserves_role_and_content_type() {
-        let msg = ChatMessage::user("hello");
-        let value = serde_json::to_value(&msg).unwrap();
-        assert_eq!(value["role"], "user");
-        assert_eq!(value["content"][0]["type"], "text");
-        assert_eq!(value["compacted"], false);
-    }
+- [ ] **Step 3: Create sibling tests**
 
-    #[test]
-    fn tool_result_helper_preserves_error_flag() {
-        let msg = ChatMessage::user_tool_result("call-1", "failed", true);
-        let value = serde_json::to_value(&msg).unwrap();
-        assert_eq!(value["content"][0]["type"], "tool_result");
-        assert_eq!(value["content"][0]["tool_use_id"], "call-1");
-        assert_eq!(value["content"][0]["is_error"], true);
-    }
+Create `crates/uclaw-message-types/src/message_tests.rs`:
 
-    #[test]
-    fn cjk_estimator_counts_chinese_more_heavily_than_ascii() {
-        assert!(estimate_tokens("你好世界") > estimate_tokens("hello"));
-    }
+```rust
+use super::*;
+
+#[test]
+fn chat_message_wire_shape_preserves_role_and_content_type() {
+    let msg = ChatMessage::user("hello");
+    let value = serde_json::to_value(&msg).unwrap();
+    assert_eq!(value["role"], "user");
+    assert_eq!(value["content"][0]["type"], "text");
+    assert_eq!(value["compacted"], false);
+}
+
+#[test]
+fn tool_result_helper_preserves_error_flag() {
+    let msg = ChatMessage::user_tool_result("call-1", "failed", true);
+    let value = serde_json::to_value(&msg).unwrap();
+    assert_eq!(value["content"][0]["type"], "tool_result");
+    assert_eq!(value["content"][0]["tool_use_id"], "call-1");
+    assert_eq!(value["content"][0]["is_error"], true);
+}
+
+#[test]
+fn cjk_estimator_counts_chinese_more_heavily_than_ascii() {
+    assert!(estimate_tokens("你好世界") > estimate_tokens("hello"));
 }
 ```
 
-- [ ] **Step 3: Wire workspace and compatibility facade**
+- [ ] **Step 4: Wire workspace and compatibility facade**
 
 Add workspace member to root `Cargo.toml`:
 
@@ -234,7 +282,7 @@ pub use uclaw_message_types::{
 };
 ```
 
-- [ ] **Step 4: Verify**
+- [ ] **Step 5: Verify**
 
 ```bash
 cargo test -p uclaw-message-types
@@ -252,6 +300,7 @@ test result: ok
 **Files:**
 - Create: `crates/uclaw-tool-types/Cargo.toml`
 - Create: `crates/uclaw-tool-types/src/lib.rs`
+- Create: `crates/uclaw-tool-types/src/tool_tests.rs`
 - Modify: `Cargo.toml`
 - Modify: `src-tauri/Cargo.toml`
 - Modify: `src-tauri/src/agent/types.rs`
@@ -278,43 +327,50 @@ serde_json = "1"
 Move `ToolCall` and `ToolDefinition` from `src-tauri/src/agent/types.rs` into
 `crates/uclaw-tool-types/src/lib.rs`.
 
-Add tests:
+At the bottom of `lib.rs`, add only the jcode-style external test module hook:
 
 ```rust
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
+#[path = "tool_tests.rs"]
+mod tests;
+```
 
-    #[test]
-    fn tool_call_wire_shape_is_stable() {
-        let call = ToolCall {
-            id: "call-1".into(),
-            name: "shell".into(),
-            arguments: json!({"cmd": "pwd"}),
-        };
-        let value = serde_json::to_value(call).unwrap();
-        assert_eq!(value["id"], "call-1");
-        assert_eq!(value["name"], "shell");
-        assert_eq!(value["arguments"]["cmd"], "pwd");
-    }
+- [ ] **Step 3: Create sibling tests**
 
-    #[test]
-    fn tool_definition_wire_shape_is_stable() {
-        let definition = ToolDefinition {
-            name: "read_file".into(),
-            description: "Read a file".into(),
-            parameters: json!({"type": "object"}),
-        };
-        let value = serde_json::to_value(definition).unwrap();
-        assert_eq!(value["name"], "read_file");
-        assert_eq!(value["description"], "Read a file");
-        assert_eq!(value["parameters"]["type"], "object");
-    }
+Create `crates/uclaw-tool-types/src/tool_tests.rs`:
+
+```rust
+use super::*;
+use serde_json::json;
+
+#[test]
+fn tool_call_wire_shape_is_stable() {
+    let call = ToolCall {
+        id: "call-1".into(),
+        name: "shell".into(),
+        arguments: json!({"cmd": "pwd"}),
+    };
+    let value = serde_json::to_value(call).unwrap();
+    assert_eq!(value["id"], "call-1");
+    assert_eq!(value["name"], "shell");
+    assert_eq!(value["arguments"]["cmd"], "pwd");
+}
+
+#[test]
+fn tool_definition_wire_shape_is_stable() {
+    let definition = ToolDefinition {
+        name: "read_file".into(),
+        description: "Read a file".into(),
+        parameters: json!({"type": "object"}),
+    };
+    let value = serde_json::to_value(definition).unwrap();
+    assert_eq!(value["name"], "read_file");
+    assert_eq!(value["description"], "Read a file");
+    assert_eq!(value["parameters"]["type"], "object");
 }
 ```
 
-- [ ] **Step 3: Wire workspace and compatibility facade**
+- [ ] **Step 4: Wire workspace and compatibility facade**
 
 Add workspace member:
 
@@ -334,7 +390,7 @@ Add compatibility re-export:
 pub use uclaw_tool_types::{ToolCall, ToolDefinition};
 ```
 
-- [ ] **Step 4: Verify**
+- [ ] **Step 5: Verify**
 
 ```bash
 cargo test -p uclaw-tool-types
@@ -352,6 +408,7 @@ test result: ok
 **Files:**
 - Create: `crates/uclaw-runtime-contracts/Cargo.toml`
 - Create: `crates/uclaw-runtime-contracts/src/lib.rs`
+- Create: `crates/uclaw-runtime-contracts/src/contracts_tests.rs`
 - Modify: `Cargo.toml`
 - Modify: `src-tauri/Cargo.toml`
 - Modify: `src-tauri/src/runtime/contracts.rs`
@@ -375,8 +432,17 @@ serde_json = "1"
 
 - [ ] **Step 2: Move runtime contracts**
 
-Move public type definitions and tests from `src-tauri/src/runtime/contracts.rs`
-into `crates/uclaw-runtime-contracts/src/lib.rs`.
+Move public type definitions from `src-tauri/src/runtime/contracts.rs` into
+`crates/uclaw-runtime-contracts/src/lib.rs`. Move any existing tests into
+`crates/uclaw-runtime-contracts/src/contracts_tests.rs`.
+
+At the bottom of `lib.rs`, add only the jcode-style external test module hook:
+
+```rust
+#[cfg(test)]
+#[path = "contracts_tests.rs"]
+mod tests;
+```
 
 Replace old module content with:
 
@@ -420,6 +486,7 @@ test result: ok
 **Files:**
 - Create: `crates/uclaw-protocol-types/Cargo.toml`
 - Create: `crates/uclaw-protocol-types/src/lib.rs`
+- Create: `crates/uclaw-protocol-types/src/protocol_tests.rs`
 - Modify: `Cargo.toml`
 - Modify: `src-tauri/Cargo.toml`
 
@@ -490,9 +557,49 @@ impl<T> ProtocolEnvelope<T> {
 }
 ```
 
-Add tests for envelope wire shape and re-exports.
+At the bottom of `lib.rs`, add only the jcode-style external test module hook:
 
-- [ ] **Step 3: Wire workspace**
+```rust
+#[cfg(test)]
+#[path = "protocol_tests.rs"]
+mod tests;
+```
+
+- [ ] **Step 3: Create sibling tests**
+
+Create `crates/uclaw-protocol-types/src/protocol_tests.rs`:
+
+```rust
+use super::*;
+
+#[test]
+fn protocol_envelope_wire_shape_is_camel_case() {
+    let envelope = ProtocolEnvelope::new(ProtocolDomain::Agent, "payload");
+    let value = serde_json::to_value(envelope).unwrap();
+    assert_eq!(value["version"], UCLAW_PROTOCOL_VERSION);
+    assert_eq!(value["domain"], "agent");
+    assert_eq!(value["payload"], "payload");
+}
+
+#[test]
+fn protocol_crate_reexports_runtime_message_and_tool_types() {
+    let _message = ChatMessage::user("hello");
+    let _event = TaskEvent::Warning {
+        ts: "2026-05-23T00:00:00Z".into(),
+        source: TaskEventSource::AgentLoop,
+        task_id: "task-1".into(),
+        code: "example".into(),
+        message: "hello".into(),
+    };
+    let _tool = ToolCall {
+        id: "call-1".into(),
+        name: "shell".into(),
+        arguments: serde_json::json!({"cmd": "pwd"}),
+    };
+}
+```
+
+- [ ] **Step 4: Wire workspace**
 
 Add workspace member:
 
@@ -506,7 +613,7 @@ Add dependency to `src-tauri/Cargo.toml`:
 uclaw-protocol-types = { path = "../crates/uclaw-protocol-types" }
 ```
 
-- [ ] **Step 4: Verify**
+- [ ] **Step 5: Verify**
 
 ```bash
 cargo test -p uclaw-protocol-types
@@ -533,6 +640,7 @@ test result: ok
 
 ```markdown
 | 2026-05-23 | Corrected PR-1 numbering drift: PR-1 is pure type crate extraction, not event spine validation. | `docs/jcode_comparison/README.md` listed PR-1 as type extraction. | Event spine validation moves behind the type-crate foundation. |
+| 2026-05-23 | Adopted jcode-style Rust test/module hygiene for uClaw PR-1. | User reference screenshots show sibling `*_tests.rs` modules loaded via `#[path = "..."] mod tests;`. | PR-1 crates must use sibling test files and avoid god files through focused module boundaries. |
 ```
 
 - [ ] **Step 3: Update PR-1 progress**
@@ -544,6 +652,7 @@ test result: ok
 - Worktree: `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr1-plan`
 - Branch: `codex/agent-os-jcode-pr1-plan`
 - Scope: extract `uclaw-message-types`, `uclaw-tool-types`, `uclaw-runtime-contracts`, and `uclaw-protocol-types`.
+- Rust hygiene: sibling `*_tests.rs` files only; no substantial inline test module blocks in production modules.
 - DMZ files: root `Cargo.toml` touched; writer/reviewer required before merge.
 - Migration: none planned.
 - Rollback: revert crate additions, dependency additions, and compatibility re-export facades.
@@ -579,7 +688,20 @@ Expected:
 <no output>
 ```
 
-- [ ] **Step 3: Verify markdown whitespace**
+- [ ] **Step 3: Verify no inline Rust test module examples remain**
+
+```bash
+rg -n "mod tests [\\{]" \
+  docs/superpowers/plans/2026-05-23-pr1-pure-type-crates-runtime-contracts.md
+```
+
+Expected:
+
+```text
+<no output>
+```
+
+- [ ] **Step 4: Verify markdown whitespace**
 
 ```bash
 git diff --check -- \
@@ -594,7 +716,7 @@ Expected:
 <no output>
 ```
 
-## 7. Final Verification
+## 8. Final Verification
 
 After implementation:
 
@@ -615,13 +737,13 @@ test result: ok
 Finished `dev` profile
 ```
 
-## 8. Rollback
+## 9. Rollback
 
 Rollback is a normal git revert. Manual rollback removes the four crates,
 removes their workspace/dependency entries, and restores local definitions in
 `src-tauri/src/agent/types.rs` and `src-tauri/src/runtime/contracts.rs`.
 
-## 9. Out Of Scope
+## 10. Out Of Scope
 
 This PR does not change runtime behavior, event emission, ToolContext,
 BrowserProvider, automation scheduling, team orchestration, frontend projection,

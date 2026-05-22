@@ -376,6 +376,11 @@ Why PR-1 first:
 PR-1 should avoid behavior changes. It should focus on crate boundaries,
 compatibility facades, serde tests, and compile regression tests.
 
+PR-1 also adopts the jcode-style Rust hygiene rule for uClaw: substantial
+tests live in sibling `*_tests.rs` files loaded with `#[path = "..."] mod tests;`,
+and hand-written Rust files that drift toward god-file size must be split into
+focused modules before the PR expands its blast radius.
+
 ## 11. Workstream Details
 
 ### 11.1 Tools
@@ -608,6 +613,7 @@ docs/superpowers/plans/2026-05-23-pr1-pure-type-crates-runtime-contracts.md
 That plan should be compatibility-first:
 
 - extract pure type crates for messages, tools, protocol envelopes, and runtime contracts;
+- use sibling `*_tests.rs` test modules and avoid new god files;
 - keep compatibility re-exports in the monolith so existing call sites do not churn;
 - run focused serde and compile tests for each extracted crate;
 - treat root `Cargo.toml` as a DMZ file and require writer/reviewer review before merge.
