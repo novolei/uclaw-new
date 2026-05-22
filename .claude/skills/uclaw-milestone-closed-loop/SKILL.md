@@ -1,6 +1,6 @@
 ---
 name: uclaw-milestone-closed-loop
-description: Use BEFORE any milestone-related work (推进主线 / continue main line / advance milestone / open new PR for M-* / Bundle wire-up / M2 closeout / M3 wire-up / M4 wire-up). Trigger phrases include "推进主线", "继续主线", "C1", "C2", "C3", "M2 收尾", "M3 wire-up", "M4 wire-up", "Bundle 17-B", "Bundle 17-C", "milestone closeout", "open prep branch", "next milestone slice", "main line drift", "drift check". Loads the closed-loop progress tracking discipline: read MILESTONE_STATUS.md SSoT first, run drift-check script, classify intended PR, update SSoT after merge.
+description: Use BEFORE any milestone-related work (推进主线 / continue main line / advance milestone / open new PR for M-* / Bundle wire-up / M2 closeout / M3 wire-up / M4 wire-up / queue-next / 继续队列下一项 / next slice). Trigger phrases include "推进主线", "继续主线", "C1", "C2", "C3", "M2 收尾", "M3 wire-up", "M4 wire-up", "Bundle 17-B", "Bundle 17-C", "milestone closeout", "open prep branch", "next milestone slice", "main line drift", "drift check", "继续队列下一项", "next queue item", "next slice", "queue next", "Mode 2 chain". Loads the closed-loop progress tracking discipline: read MILESTONE_STATUS.md SSoT first, run drift-check script, classify intended PR, update SSoT after merge, and (if queue-driven) execute the next unchecked queue item per spec.
 ---
 
 # uClaw — Milestone Closed-Loop Discipline
@@ -104,6 +104,54 @@ Per strategy §6: a milestone closes only when:
 - Quantitative benchmark data exists
 - Closeout report at `docs/superpowers/reports/<date>-M<N>-closeout.md`
 - PR description says "Closes M<N>" + links above
+
+## Queue execution (when user says "继续队列下一项" / "next slice" / "queue next")
+
+The closed-loop has a queue artifact at
+`docs/superpowers/queue/<phase>-execution-queue.md`. Each queue item is
+a self-contained PR with a spec link + branch name + done criteria.
+
+### Procedure when user triggers queue-next
+
+1. Run the queue helper to see state:
+   ```bash
+   ./scripts/queue-next.sh                 # default: C1
+   ./scripts/queue-next.sh C2              # if user specified
+   ```
+2. The output shows the **next unchecked item** with all its metadata.
+3. Read its **Spec** link before any code work.
+   - If spec is `_(needs to be written)_`: write the spec FIRST as a
+     separate commit, push, **then** return to user for sign-off on
+     the spec before opening the impl prep branch (don't bypass §5.1
+     Rule 3 spec-first).
+4. Run the closed-loop discipline at session start (read SSoT + drift check).
+5. `git checkout -b <branch from queue item>`.
+6. Execute commits per spec.
+7. **After PR opens or merges** (depending on user's review preference):
+   - Mark item done: `./scripts/queue-next.sh --done <item-title-prefix>`
+     (e.g. `./scripts/queue-next.sh --done C1.1-PR-1` won't match because
+     the title says "Bundle 17-B" — use that: `--done "Bundle 17-B"`)
+   - Edit the queue file's "Actual PR" cell to fill the PR number
+   - Update MILESTONE_STATUS.md to reflect new progress (e.g. M2 →
+     58% if C1.1 PR-1 closes)
+8. Report to user: "Done with item X. Next is Y (or queue complete)."
+
+### Mode 2 (self-perpetuating chain)
+
+If user invokes Mode 2 (overnight unattended chain), see the binding
+template at
+`docs/superpowers/specs/2026-05-22-mode-2-scheduled-chain-prompt.md`.
+The skill loads the Mode-2 prompt and binds these circuit breakers:
+
+- cargo build failure → STOP chain, notify
+- drift-check RED + current PR is Bundle → STOP chain, notify
+- Queue empty / MAX hit → graceful exit, notify
+- git push conflict → STOP chain, "needs human merge"
+
+DO NOT improvise Mode 2 without the template — the circuit breakers
+are load-bearing.
+
+---
 
 ## C1/C2/C3 execution sequence (current 2026-05-22 state)
 
