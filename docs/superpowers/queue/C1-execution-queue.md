@@ -5,8 +5,8 @@
 > Each item is a self-contained PR; agent picks the first unchecked
 > and executes per the linked spec.
 >
-> **Last updated**: 2026-05-22 (queue created from strategy doc §7)
-> **Status**: 0/7 items done
+> **Last updated**: 2026-05-22 (C1.1 PR-1 prep branch built + queued for push/review)
+> **Status**: 0/7 items merged; C1.1 PR-1 prep branch ready
 
 ---
 
@@ -33,7 +33,7 @@
 - **Commits planned**: 4 (spec addendum + V52 migration & helpers + /compact delta branch & threshold + tests, per spec §9.5)
 - **Done means**: PR merged + MILESTONE_STATUS M2 row updated + threshold setting wired (default 5) + agent_fold_baselines table live
 - **Unblocks**: C1.1 PR-2, task #146 closure
-- **Actual PR**: _(fill on merge)_
+- **Actual PR**: _(prep branch `prep/bundle-17b-dispatcher-wireup` built locally — 4 commits: spec addendum, V52 + baseline helpers, /compact wire-up + threshold, decide_placeholder extract + tests. Pending local `cargo build` / `cargo test --lib agent::compact` verification + `git push` + `gh pr create`)_
 
 ### [ ] C1.1 PR-2 — Bundle 17-C FoldDeltaStats telemetry
 

@@ -172,6 +172,21 @@ pub struct ContextConfig {
     pub max_prompt_tokens: usize,
     /// 是否启用会话压缩（长对话自动摘要）
     pub enable_session_compression: bool,
+    /// Bundle 17-B — drift threshold (sum of added + removed + changed
+    /// across all 8 StructuredFold axes) below which `/compact` renders
+    /// the new fold as a `<context_changes_since_last_fold>` delta block
+    /// stacked on top of the byte-stable prior fold, instead of emitting
+    /// a fresh full re-render. Smaller placeholder → next-turn prompt
+    /// cache breakpoint sits on a stable prefix → cached_input_tokens
+    /// kicks in more on subsequent turns.
+    ///
+    /// Default 5 — a wild guess; spec
+    /// [`docs/superpowers/specs/2026-05-22-bundle-17bc-wireup-design.md`](../../docs/superpowers/specs/2026-05-22-bundle-17bc-wireup-design.md) §6.1
+    /// commits to retuning from telemetry within 2 weeks of merge.
+    /// Settings-editable via `set_fold_delta_threshold` Tauri command;
+    /// clamped to `[1, 50]` on write.
+    #[serde(default = "default_fold_delta_threshold")]
+    pub fold_delta_threshold: u32,
 }
 
 /// 可观测性配置
@@ -784,9 +799,24 @@ impl Default for ContextConfig {
             l1_target_tokens: 2000,
             max_prompt_tokens: 1500,
             enable_session_compression: false,
+            fold_delta_threshold: default_fold_delta_threshold(),
         }
     }
 }
+
+/// Bundle 17-B default — 5 across-axis-cumulative delta count below
+/// which `/compact` takes the delta-rendered path. See `ContextConfig::fold_delta_threshold`.
+fn default_fold_delta_threshold() -> u32 {
+    5
+}
+
+/// Bundle 17-B — clamp range for `fold_delta_threshold` write path.
+/// Below 1 disables the delta path entirely (every compact re-renders);
+/// above 50 would let nearly-fresh folds slip through as deltas, defeating
+/// the cache-stability benefit. Used by `set_fold_delta_threshold` Tauri
+/// command and by anyone updating MemubotConfig programmatically.
+pub const FOLD_DELTA_THRESHOLD_MIN: u32 = 1;
+pub const FOLD_DELTA_THRESHOLD_MAX: u32 = 50;
 
 impl Default for ObservabilityConfig {
     fn default() -> Self {
