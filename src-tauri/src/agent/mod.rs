@@ -52,3 +52,5 @@ pub mod session;
 pub mod teams;
 pub mod tools;
 pub mod types;
+
+pub use crate::symphony_graph::agent::launch_agent;

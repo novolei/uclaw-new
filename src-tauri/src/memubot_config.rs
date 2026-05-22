@@ -172,6 +172,23 @@ pub struct ContextConfig {
     pub max_prompt_tokens: usize,
     /// 是否启用会话压缩（长对话自动摘要）
     pub enable_session_compression: bool,
+    /// Bundle 17-B — drift threshold (sum of added + removed + changed
+    /// across all 8 StructuredFold axes) below which `/compact` renders
+    /// the new fold as a `<context_changes_since_last_fold>` delta block
+    /// stacked on top of the byte-stable prior fold, instead of emitting
+    /// a fresh full re-render. Smaller placeholder → next-turn prompt
+    /// cache breakpoint sits on a stable prefix → cached_input_tokens
+    /// kicks in more on subsequent turns.
+    ///
+    /// Default 50 — loose default, favors delta path while telemetry stabilizes.
+    /// Spec
+    /// [`docs/superpowers/specs/2026-05-22-bundle-17bc-wireup-design.md`](../../docs/superpowers/specs/2026-05-22-bundle-17bc-wireup-design.md) §6.1
+    /// commits to retuning from telemetry within 2 weeks of merge.
+    /// Settings-editable via `set_fold_delta_threshold` Tauri command,
+    /// also surfaced as the FoldDeltaThresholdSection on the System
+    /// settings tab; clamped to `[1, 50]` on write.
+    #[serde(default = "default_fold_delta_threshold")]
+    pub fold_delta_threshold: u32,
 }
 
 /// 可观测性配置
@@ -784,9 +801,33 @@ impl Default for ContextConfig {
             l1_target_tokens: 2000,
             max_prompt_tokens: 1500,
             enable_session_compression: false,
+            fold_delta_threshold: default_fold_delta_threshold(),
         }
     }
 }
+
+/// Bundle 17-B default — across-axis-cumulative delta count below which
+/// `/compact` takes the delta-rendered path. See `ContextConfig::fold_delta_threshold`.
+///
+/// **Initially 50 (loose default, 2026-05-22).** The original spec §6.1 picked
+/// 5 as a wild guess. Live E2E on session `78c1d9fd-...` showed: 2 of 3
+/// `/compact` attempts failed at the LLM tier (one "high risk" rejection +
+/// one timeout/empty-response → JSON parse failure) before the delta path
+/// could even be exercised. With 50 we favor *any* successful delta path
+/// firing until telemetry from C1.1 PR-2 (`FoldDeltaStats`) tells us a
+/// data-driven number. Retune from histogram of observed `drift` values
+/// within 2 weeks of merge per spec §6.1 + Bundle 17-D resilience design.
+fn default_fold_delta_threshold() -> u32 {
+    50
+}
+
+/// Bundle 17-B — clamp range for `fold_delta_threshold` write path.
+/// Below 1 disables the delta path entirely (every compact re-renders);
+/// above 50 would let nearly-fresh folds slip through as deltas, defeating
+/// the cache-stability benefit. Used by `set_fold_delta_threshold` Tauri
+/// command and by anyone updating MemubotConfig programmatically.
+pub const FOLD_DELTA_THRESHOLD_MIN: u32 = 1;
+pub const FOLD_DELTA_THRESHOLD_MAX: u32 = 50;
 
 impl Default for ObservabilityConfig {
     fn default() -> Self {

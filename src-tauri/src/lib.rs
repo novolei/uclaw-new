@@ -78,6 +78,16 @@ pub mod automation;
 
 // Phase 4: Symphony — DAG-of-agent-runs runtime (parallel to Chat/Agent/Automation).
 pub mod symphony_graph;
+pub use symphony_graph::orchestrator;
+pub use symphony_graph::persistence;
+pub use symphony_graph::paths;
+pub use symphony_graph::logs;
+pub use symphony_graph::gateway as github;
+pub use symphony_graph::report;
+pub use crate::notifications as notification;
+
+pub type SharedState = std::sync::Arc<tokio::sync::Mutex<symphony_graph::orchestrator::OrchestratorState>>;
+
 
 // Phase 3: Files Rail
 pub mod files_rail;

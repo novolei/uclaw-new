@@ -524,42 +524,39 @@ fn main() {
                         tracing::info!("[Stage 3] AppRuntimeService registered");
                     }
 
-                    // SymphonyService — third parallel runtime (DAG-of-agent-runs).
-                    // Gated on memubot_config.symphony.enabled. Reuses the
-                    // automation MemoryStore so Symphony per-workflow notes share
-                    // the on-disk layout the rest of uClaw expects.
-                    if memubot_config.symphony.enabled {
-                        use std::path::PathBuf;
-                        use std::sync::Arc;
-                        let workspace_root: PathBuf = data_dir.join("symphony");
-                        if let Err(e) = std::fs::create_dir_all(&workspace_root) {
-                            tracing::warn!(
-                                "[Stage 3] symphony workspace root mkdir failed: {} (continuing)",
-                                e
-                            );
-                        }
-                        let memory = Arc::new(
-                            uclaw_core::automation::memory::MemoryStore::new(
-                                data_dir.join("symphony-memory"),
-                            ),
-                        );
-                        let symphony_svc = uclaw_core::symphony_graph::runtime::service::SymphonyService::new(
-                            db.clone(),
-                            infra_service.clone(),
-                            provider_service.clone(),
-                            memubot_config.symphony.clone(),
-                            Some(app_handle.clone()),
-                            workspace_root,
-                            memory,
-                        );
-                        service_manager.register(symphony_svc.clone()).await;
-                        // Fill the AppState slot so Tauri commands can borrow it.
-                        let state_ref: tauri::State<'_, AppState> = app_handle.state();
-                        *state_ref.symphony_service.write().await = Some(symphony_svc);
-                        tracing::info!("[Stage 3] SymphonyService registered");
-                    } else {
-                        tracing::info!("[Stage 3] SymphonyService disabled by config — skipping");
-                    }
+                    // Legacy SymphonyService is disabled as the system has been reconstructed around the modern issue-centric orchestrator.
+                    // if memubot_config.symphony.enabled {
+                    //     use std::path::PathBuf;
+                    //     use std::sync::Arc;
+                    //     let workspace_root: PathBuf = data_dir.join("symphony");
+                    //     if let Err(e) = std::fs::create_dir_all(&workspace_root) {
+                    //         tracing::warn!(
+                    //             "[Stage 3] symphony workspace root mkdir failed: {} (continuing)",
+                    //             e
+                    //         );
+                    //     }
+                    //     let memory = Arc::new(
+                    //         uclaw_core::automation::memory::MemoryStore::new(
+                    //             data_dir.join("symphony-memory"),
+                    //         ),
+                    //     );
+                    //     let symphony_svc = uclaw_core::symphony_graph::runtime::service::SymphonyService::new(
+                    //         db.clone(),
+                    //         infra_service.clone(),
+                    //         provider_service.clone(),
+                    //         memubot_config.symphony.clone(),
+                    //         Some(app_handle.clone()),
+                    //         workspace_root,
+                    //         memory,
+                    //     );
+                    //     service_manager.register(symphony_svc.clone()).await;
+                    //     // Fill the AppState slot so Tauri commands can borrow it.
+                    //     let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                    //     *state_ref.symphony_service.write().await = Some(symphony_svc);
+                    //     tracing::info!("[Stage 3] SymphonyService registered");
+                    // } else {
+                    //     tracing::info!("[Stage 3] SymphonyService disabled by config — skipping");
+                    // }
 
                     // Start ImChannelManager (load DB instances + start notify senders)
                     {
@@ -1158,19 +1155,32 @@ fn main() {
             uclaw_core::tauri_commands::get_gene_evolution_tree,
             uclaw_core::tauri_commands::retire_gene,
             uclaw_core::tauri_commands::reactivate_gene,
-            // Symphony runtime (T14)
-            uclaw_core::tauri_commands::symphony_list_workflows,
-            uclaw_core::tauri_commands::symphony_get_workflow,
-            uclaw_core::tauri_commands::symphony_save_workflow,
-            uclaw_core::tauri_commands::symphony_delete_workflow,
-            uclaw_core::tauri_commands::symphony_import_workflow_md,
-            uclaw_core::tauri_commands::symphony_export_workflow_md,
-            uclaw_core::tauri_commands::symphony_list_runs,
-            uclaw_core::tauri_commands::symphony_get_run,
-            uclaw_core::tauri_commands::symphony_trigger_run,
-            uclaw_core::tauri_commands::symphony_cancel_run,
-            uclaw_core::tauri_commands::symphony_get_node_session_id,
-            uclaw_core::tauri_commands::symphony_get_service_health,
+            // Symphony Reconstruction Commands (Tauri IPC mapped to SymphonyMac/ZeptoBeam designs)
+            uclaw_core::symphony_graph::agent::get_default_prompts,
+            uclaw_core::symphony_graph::agent::start_single_issue,
+            uclaw_core::symphony_graph::agent::retry_agent,
+            uclaw_core::symphony_graph::agent::retry_agent_from_stage,
+            uclaw_core::symphony_graph::agent::approve_stage,
+            uclaw_core::symphony_graph::agent::reject_stage,
+            uclaw_core::symphony_graph::agent::stop_symphony_agent,
+            uclaw_core::symphony_graph::agent::advance_to_stage,
+            uclaw_core::symphony_graph::orchestrator::get_status,
+            uclaw_core::symphony_graph::orchestrator::update_config,
+            uclaw_core::symphony_graph::orchestrator::start_orchestrator,
+            uclaw_core::symphony_graph::orchestrator::stop_orchestrator,
+            uclaw_core::symphony_graph::orchestrator::get_agent_logs,
+            uclaw_core::symphony_graph::orchestrator::search_agent_logs,
+            uclaw_core::symphony_graph::orchestrator::export_logs_text,
+            uclaw_core::symphony_graph::orchestrator::export_logs_json,
+            uclaw_core::symphony_graph::orchestrator::list_log_history,
+            uclaw_core::symphony_graph::orchestrator::get_pipeline_report,
+            uclaw_core::symphony_graph::orchestrator::get_interrupted_runs,
+            uclaw_core::symphony_graph::orchestrator::resume_pipeline,
+            uclaw_core::symphony_graph::workspace::list_workspaces,
+            uclaw_core::symphony_graph::workspace::cleanup_old_workspaces,
+            uclaw_core::symphony_graph::workspace::cleanup_single_workspace,
+            uclaw_core::symphony_graph::workspace::cleanup_all_workspaces,
+            uclaw_core::symphony_graph::workspace::validate_local_repo,
             uclaw_core::tauri_commands::backfill_skill_keywords,
             uclaw_core::tauri_commands::propose_skill_consolidation,
             uclaw_core::tauri_commands::cancel_skill_consolidation,
@@ -1219,6 +1229,9 @@ fn main() {
             uclaw_core::tauri_commands::set_plan_mode_suggest_enabled,
             uclaw_core::tauri_commands::get_stream_idle_timeout_secs,
             uclaw_core::tauri_commands::set_stream_idle_timeout_secs,
+            // Bundle 17-B — /compact fold-delta threshold
+            uclaw_core::tauri_commands::get_fold_delta_threshold,
+            uclaw_core::tauri_commands::set_fold_delta_threshold,
             uclaw_core::tauri_commands::get_skill_prune_min_unused_days,
             uclaw_core::tauri_commands::set_skill_prune_min_unused_days,
             uclaw_core::tauri_commands::get_skill_promote_min_returned_count,

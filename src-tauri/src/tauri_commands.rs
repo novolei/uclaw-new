@@ -6716,6 +6716,45 @@ pub async fn get_stream_idle_timeout_secs(
     Ok(state.memubot_config.read().await.stream_idle_timeout_secs)
 }
 
+/// Bundle 17-B — read `/compact` delta-path threshold.
+#[tauri::command]
+pub async fn get_fold_delta_threshold(state: State<'_, AppState>) -> Result<u32, String> {
+    Ok(state.memubot_config.read().await.context.fold_delta_threshold)
+}
+
+/// Bundle 17-B — set `/compact` delta-path threshold and persist.
+///
+/// Clamped to `[FOLD_DELTA_THRESHOLD_MIN, FOLD_DELTA_THRESHOLD_MAX]` =
+/// `[1, 50]` per `memubot_config.rs`. Below 1 would disable the delta
+/// path entirely (every compact re-renders); above 50 would let
+/// nearly-fresh folds slip through as deltas and defeat the cache
+/// stability benefit.
+///
+/// The dispatcher reads `cfg.context.fold_delta_threshold` afresh on
+/// each `/compact`, so changes take effect on the next user-triggered
+/// compaction without restart.
+#[tauri::command]
+pub async fn set_fold_delta_threshold(
+    state: State<'_, AppState>,
+    threshold: u32,
+) -> Result<(), String> {
+    let clamped = threshold.clamp(
+        crate::memubot_config::FOLD_DELTA_THRESHOLD_MIN,
+        crate::memubot_config::FOLD_DELTA_THRESHOLD_MAX,
+    );
+    {
+        let mut cfg = state.memubot_config.write().await;
+        cfg.context.fold_delta_threshold = clamped;
+        cfg.save(&state.data_dir).map_err(|e| e.to_string())?;
+    }
+    tracing::info!(
+        requested = threshold,
+        applied = clamped,
+        "[Bundle 17-B] fold_delta_threshold updated and persisted"
+    );
+    Ok(())
+}
+
 /// Bundle 27-B — 设置 LLM 流式响应空闲超时（秒），持久化到
 /// memubot_config.json。变更对**下一次**消息立即生效（dispatcher /
 /// headless 的 call_llm 在每次调用前重新从 MemubotConfig 读取该值）。
@@ -10135,7 +10174,108 @@ pub async fn send_agent_message(
                         compacted_count = removed_count,
                         "[/compact] M2-G StructuredFold produced",
                     );
-                    fold.to_markdown()
+
+                    // ── Bundle 17-B — delta-rendered path ─────────────────
+                    //
+                    // Spec §9.2 / §9.3: if a prior baseline exists for this
+                    // session AND the drift is below the configured
+                    // threshold, render the placeholder as
+                    // `prior_fold.to_markdown()` + delta block — the prior
+                    // fold's markdown is byte-stable so next-turn's
+                    // prompt-cache breakpoint hits a stable prefix.
+                    //
+                    // The decision is a pure function in `compact/mod.rs`
+                    // (`decide_placeholder`) — see unit tests there.
+                    // On any DB failure during baseline read or upsert,
+                    // fall back to the full-rewrite path; never break
+                    // /compact on a cache issue.
+                    let prior_opt = {
+                        match state.db.lock() {
+                            Ok(conn) => crate::agent::compact::load_baseline(
+                                &conn,
+                                &input.session_id,
+                            ),
+                            Err(e) => {
+                                tracing::warn!(
+                                    session_id = %input.session_id,
+                                    error = %e,
+                                    "[/compact] DB lock failed for baseline read; full-rewrite",
+                                );
+                                None
+                            }
+                        }
+                    };
+                    let threshold = state
+                        .memubot_config
+                        .read()
+                        .await
+                        .context
+                        .fold_delta_threshold;
+
+                    let (rendered, path) =
+                        crate::agent::compact::decide_placeholder(
+                            prior_opt.as_ref(),
+                            &fold,
+                            threshold,
+                        );
+
+                    match &path {
+                        crate::agent::compact::CompactPath::DeltaRendered { drift } => {
+                            tracing::info!(
+                                session_id = %input.session_id,
+                                drift = drift,
+                                threshold = threshold,
+                                "[/compact] delta-rendered path",
+                            );
+                        }
+                        crate::agent::compact::CompactPath::FullRewrite => {
+                            tracing::info!(
+                                session_id = %input.session_id,
+                                threshold = threshold,
+                                had_prior = prior_opt.is_some(),
+                                "[/compact] full-rewrite path",
+                            );
+                        }
+                    }
+
+                    // Persist the fresh fold as the new baseline regardless
+                    // of which path we took — spec §9.3 step 5: baseline
+                    // against the latest fold, not the increasingly stale
+                    // prior. Soft-fail: log and continue.
+                    {
+                        match state.db.lock() {
+                            Ok(conn) => {
+                                if let Err(e) =
+                                    crate::agent::compact::upsert_baseline(
+                                        &conn,
+                                        &input.session_id,
+                                        &fold,
+                                    )
+                                {
+                                    tracing::warn!(
+                                        session_id = %input.session_id,
+                                        error = %e,
+                                        "[/compact] baseline upsert failed; next compact will see stale baseline",
+                                    );
+                                }
+                            }
+                            Err(e) => tracing::warn!(
+                                session_id = %input.session_id,
+                                error = %e,
+                                "[/compact] DB lock failed for baseline upsert",
+                            ),
+                        }
+                    }
+
+                    // TODO(M2-I): once `agent::cache_policy::record_stable_prefix_turn`
+                    // (or equivalent) lands, bump the prompt-cache breakpoint
+                    // counter when `path == DeltaRendered { .. }` per spec
+                    // §6.3 / §9.3. For now the delta-rendered path benefits
+                    // from cache hits implicitly via the byte-stable
+                    // prior_fold prefix.
+                    let _ = path;
+
+                    rendered
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -16493,6 +16633,7 @@ pub async fn reactivate_gene(
 // adjacent-edits rule).
 // ═══════════════════════════════════════════════════════════════════════════
 
+/*
 use crate::symphony_graph::manager::{ManagerError, SymphonyManager, WorkflowDetail, WorkflowRow};
 use crate::symphony_graph::protocol::SymphonyWorkflowDef;
 use crate::symphony_graph::runtime::service::{SymphonyService, TriggerCmd};
@@ -16858,6 +16999,7 @@ pub async fn symphony_get_node_session_id(
         .ok();
     Ok(sid)
 }
+*/
 
 /// Frontend → backend: user has decided on a plan-mode suggestion.
 /// Outcome is one of accepted | skipped | silenced | aborted.

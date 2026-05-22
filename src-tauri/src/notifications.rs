@@ -106,3 +106,74 @@ impl NotificationManager {
 
 /// Shared notification manager type for Tauri state
 pub type SharedNotificationManager = Arc<Mutex<NotificationManager>>;
+
+pub fn notify_pipeline_done(
+    app: &tauri::AppHandle,
+    issue_number: u64,
+    issue_title: &str,
+    _notification_sound: bool,
+) {
+    use tauri::Manager;
+    if let Some(state) = app.try_state::<crate::app::AppState>() {
+        let notifications = state.notifications.clone();
+        let issue_title = issue_title.to_string();
+        tauri::async_runtime::spawn(async move {
+            let mut mgr = notifications.lock().await;
+            let title = format!("Pipeline Done (Issue #{})", issue_number);
+            let message = format!("Issue #{}: {} has been successfully processed and completed.", issue_number, issue_title);
+            mgr.success(&title, &message, "symphony");
+        });
+    }
+}
+
+pub fn notify_pipeline_failed(
+    app: &tauri::AppHandle,
+    issue_number: u64,
+    stage_label: &str,
+    _notification_sound: bool,
+) {
+    use tauri::Manager;
+    if let Some(state) = app.try_state::<crate::app::AppState>() {
+        let notifications = state.notifications.clone();
+        let stage_label = stage_label.to_string();
+        tauri::async_runtime::spawn(async move {
+            let mut mgr = notifications.lock().await;
+            let title = format!("Pipeline Failed (Issue #{})", issue_number);
+            let message = format!("Stage '{}' failed for Issue #{}.", stage_label, issue_number);
+            mgr.error(&title, &message, "symphony");
+        });
+    }
+}
+
+pub fn notify_awaiting_approval(
+    app: &tauri::AppHandle,
+    issue_number: u64,
+    stage_label: &str,
+    _notification_sound: bool,
+) {
+    use tauri::Manager;
+    if let Some(state) = app.try_state::<crate::app::AppState>() {
+        let notifications = state.notifications.clone();
+        let stage_label = stage_label.to_string();
+        tauri::async_runtime::spawn(async move {
+            let mut mgr = notifications.lock().await;
+            let title = format!("Awaiting Approval (Issue #{})", issue_number);
+            let message = format!("Stage '{}' of Issue #{} is awaiting your approval.", stage_label, issue_number);
+            mgr.warning(&title, &message, "symphony");
+        });
+    }
+}
+
+pub fn notify_all_processed(
+    app: &tauri::AppHandle,
+    _notification_sound: bool,
+) {
+    use tauri::Manager;
+    if let Some(state) = app.try_state::<crate::app::AppState>() {
+        let notifications = state.notifications.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut mgr = notifications.lock().await;
+            mgr.info("All Issues Processed", "The Symphony orchestrator has completed all scheduled tasks.", "symphony");
+        });
+    }
+}

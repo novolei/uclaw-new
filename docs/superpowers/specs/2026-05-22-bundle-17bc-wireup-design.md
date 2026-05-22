@@ -226,3 +226,136 @@ After both PRs land:
 
 - task #146: pending → completed
 - Drives M2 progress from ~55% → ~60% (out of ~6 sub-tasks left in M2)
+
+---
+
+## 9. Implementation reality reconciliation (2026-05-22, addendum)
+
+> The spec sections above were drafted from the design intent before
+> surveying the actual call sites. The §2.1 wording is partially wrong
+> on three points; this section is the binding correction. **Treat
+> §9 as authoritative where it conflicts with §2.1 / §6.3.**
+
+### 9.1 `/compact` lives in `tauri_commands.rs`, not `dispatcher.rs`
+
+§2.1 says "src-tauri/src/agent/dispatcher.rs — at the /compact trigger
+site". That trigger site doesn't exist in `dispatcher.rs`. The actual
+`/compact` intercept is `tauri_commands.rs:10007` inside the agent
+turn-execution path. The dispatcher only holds `last_memory_context_snapshot`
+(Bundle 16's memory_context delta, an unrelated axis) and a comment
+on line 55 saying the snapshot is *cleared* on `/compact`.
+
+**Correction**: Bundle 17-B wire-up edits `tauri_commands.rs` at the
+`/compact intercept (agent path)` block, between Phase 2 (LLM
+`summarize_to_fold`) and Phase 3 (insert placeholder). No dispatcher
+edits needed for PR-1 except potentially exposing the
+`SafetyManager` / cache-breakpoint helper for the §9.3 counter bump.
+
+### 9.2 Prior fold is **not** currently cached — V52 migration adds storage
+
+§2.1 step 1 says "Read prior `StructuredFold` from session state
+(already cached after last /compact)". This is false: today's Phase 3
+in `tauri_commands.rs` calls `fold.to_markdown()` and inserts the
+markdown as an agent_messages row, then **drops the typed `StructuredFold`**.
+There's no in-memory cache and no DB column carrying the structured form.
+
+**Correction**: introduce a new table
+
+```sql
+-- V52 (next free V-num per CONTEXT.md registry, confirmed 2026-05-22)
+CREATE TABLE IF NOT EXISTS agent_fold_baselines (
+    session_id     TEXT PRIMARY KEY,
+    fold_json      TEXT NOT NULL,
+    baseline_hash  TEXT NOT NULL,
+    updated_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_fold_baselines_session
+  ON agent_fold_baselines(session_id);
+```
+
+Plus a helper module `agent/compact/baseline.rs` with:
+
+```rust
+pub fn load(conn: &Connection, session_id: &str) -> Option<StructuredFold>;
+pub fn upsert(conn: &Connection, session_id: &str, fold: &StructuredFold) -> Result<()>;
+```
+
+Missing row = no prior fold = full re-fold path (graceful first-compact).
+Backward compat: existing DBs without V52 applied just see no rows on
+load, which is the correct first-compact behavior.
+
+Rationale for picking a new table vs extending `compaction_markers`:
+the `compaction_markers` table is row-per-event (one row per `/compact`
+invocation), but the baseline we need is row-per-session (one current
+fold per session). Coupling two cardinalities into one table needs an
+`is_current` flag or a `MAX(created_at)` join on every read. A
+dedicated table is the cleaner shape.
+
+### 9.3 "no LLM" wording was imprecise — savings are on *placeholder size*, not LLM call
+
+§2.1 step 3 says "If `FoldDelta` is 'small' ... → emit
+`<context_changes_since_last_fold>` block + reuse prior fold (no LLM)".
+The "no LLM" parenthetical is wrong as written — to compute a
+FoldDelta you must produce a candidate new fold first, and the only
+producer that exists is the LLM-based `summarize_to_fold`. Skipping
+the LLM means skipping the producer means there's no delta to compare
+against.
+
+**Correction**: the actual savings come from **how the
+placeholder is rendered**, not from skipping the LLM call:
+
+1. Always run `summarize_to_fold(history)` → `new_fold` (current cost).
+2. `baseline::load(conn, session_id)` → `Option<prior_fold>`.
+3. If `Some(prior_fold)` and `prior_fold.diff(&new_fold).total_drift() < threshold`:
+   - Placeholder text = `prior_fold.to_markdown()` (the **same** markdown
+     as last turn — byte-stable prefix → M2-I prompt cache hits this
+     prefix) + `\n\n` + `render_delta_block(&delta)` (the new
+     `<context_changes_since_last_fold>` wrapper around added/removed/
+     changed lists, per §6.2).
+   - The block is much smaller than a fresh full fold markdown, so the
+     next turn's system-prompt cache breakpoint sits on a stable
+     prefix (prior_fold) + small mutable tail (delta block).
+   - Bump M2-I cache-breakpoint counter (§6.3 still applies here).
+4. Else (large delta or first compact): placeholder text =
+   `new_fold.to_markdown()` (current behavior). Cache breakpoint moves
+   to the new fold; future deltas re-baseline against it.
+5. Always `baseline::upsert(conn, session_id, &new_fold)` — even on the
+   delta-rendered path, so we baseline against the *fresh* fold next
+   time, not the increasingly stale prior. (Without this, two
+   consecutive small deltas would compute delta against a 2-compacts-stale
+   fold and miss intermediate changes.)
+
+This still hits the spec's "30-50% savings on /compact path" bench
+target (§5) — the savings are on **next-turn input tokens via cache
+hits**, not on summarize_to_fold's own output tokens.
+
+### 9.4 Updated file list for PR-1
+
+Concrete file edits in PR-1 (binding):
+
+| File | Edit |
+|---|---|
+| `src-tauri/src/db/migrations.rs` | Add `V52_AGENT_FOLD_BASELINES` const + run() entry |
+| `src-tauri/src/agent/compact/baseline.rs` | New file — load/upsert helpers + roundtrip tests |
+| `src-tauri/src/agent/compact/mod.rs` | `pub mod baseline; pub use baseline::{load_baseline, upsert_baseline};` |
+| `src-tauri/src/agent/compact/render.rs` | Add `render_fold_delta_block(&FoldDelta) -> String` (Bundle 16 style, §6.2 borrowed shape) |
+| `src-tauri/src/tauri_commands.rs` | At /compact intercept Phase 2/3 boundary: load baseline, decide delta vs full, render placeholder accordingly, upsert baseline. Add `set_fold_delta_threshold` Tauri command. |
+| `src-tauri/src/main.rs` | Register `set_fold_delta_threshold` in `invoke_handler!` (per CLAUDE.md adjacent-edits rule) |
+| `src-tauri/src/memubot_config.rs` | Add `context.fold_delta_threshold: u32` (default 5, clamp 1..=50 via setter) |
+| `CONTEXT.md` | Add V52 row to Active migration registry |
+
+**Out of scope for PR-1**: M2-I cache-breakpoint helper signature — if
+no `record_stable_prefix_turn` helper exists yet (§6.3 caveat), leave
+a `TODO(M2-I)` comment + use the most general counter bump available.
+Don't gate PR-1 on M2-I refactor.
+
+### 9.5 Commit plan (revised, supersedes §4 PR-1)
+
+1. **chore(spec)**: this §9 addendum itself (already in this commit)
+2. **feat(db/v52)**: V52_AGENT_FOLD_BASELINES const + run() entry + CONTEXT.md row + `compact/baseline.rs` helpers + module export
+3. **feat(/compact)**: tauri_commands.rs delta-rendered branch + render_fold_delta_block + MemubotConfig threshold + set_fold_delta_threshold command + invoke_handler register
+4. **test**: baseline roundtrip + small-delta-vs-large-delta /compact placeholder text assertion
+
+Effort revision: 0.5-1 day → **~1 day** for PR-1 (the V52 migration +
+baseline helpers are an extra commit beyond §4's 3-commit plan, but
+each commit is smaller and more bisectable than the original).

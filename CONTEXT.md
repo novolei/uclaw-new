@@ -159,6 +159,11 @@ Two PRs reusing the same V-number is the most common merge accident in this repo
 | V45 | Memory OS L3 §4.12.3 RETAINED — `spaced_repetition_state` | in progress |
 | V46 | Memory OS L3 §4.12.4 RETAINED — `drift_events` | in progress |
 | V47 | Memory OS L3 §4.12.5 RETAINED — `triangulation_evidence` | in progress |
+| V48 | task_events_rollout (M1-T5) | merged (PR #310) |
+| V49 | cost_records.cached_input_tokens + reasoning_output_tokens (M1-T6) | merged (PR #313) |
+| V50 | Halo automation_specs metadata (status / user_overrides_json / browser_login / uninstalled_at) | merged |
+| V51 | memorization_queue + memorization_state shared schema | merged |
+| V52 | agent_fold_baselines — per-session StructuredFold cache for Bundle 17-B `/compact` delta-rendered path | in progress (C1.1 PR-1) |
 
 **If you're adding a migration**: pick the next number after both merged AND open PRs. Update this table in your PR.
 

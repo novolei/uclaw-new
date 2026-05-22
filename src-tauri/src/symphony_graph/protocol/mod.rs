@@ -15,6 +15,9 @@ pub use normalize::{
 };
 pub use parse::{parse_workflow_md, ParseError};
 pub use types::{
-    FailureMode, NodeKind, NodeOutcome, NodeStatus, RetryPolicy, RunOutcome,
-    RunStatus, SymphonyEdge, SymphonyNode, SymphonyWorkflowDef,
+    AgentStatus, AgentRun, FailureMode, Issue, LifecycleHooks, NodeKind, NodeOutcome,
+    NodeStatus, OrchestratorOverview, PersistedState, PipelineReport, PipelineStage, PullRequest,
+    Repo, RetryPolicy, RunConfig, RunOutcome, RunStatus, RunSummary, StageContext, StageReport,
+    SymphonyEdge, SymphonyNode, SymphonyWorkflowDef,
 };
+

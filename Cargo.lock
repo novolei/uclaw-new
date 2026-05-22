@@ -7498,7 +7498,17 @@ dependencies = [
  "lazy_static",
  "serde_json",
  "thiserror 2.0.18",
- "ts-rs-macros",
+ "ts-rs-macros 10.1.0",
+]
+
+[[package]]
+name = "ts-rs"
+version = "12.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "756050066659291d47a554a9f558125db17428b073c5ffce1daf5dcb0f7231d8"
+dependencies = [
+ "thiserror 2.0.18",
+ "ts-rs-macros 12.0.1",
 ]
 
 [[package]]
@@ -7506,6 +7516,18 @@ name = "ts-rs-macros"
 version = "10.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e9d8656589772eeec2cf7a8264d9cda40fb28b9bc53118ceb9e8c07f8f38730"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+ "termcolor",
+]
+
+[[package]]
+name = "ts-rs-macros"
+version = "12.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38d90eea51bc7988ef9e674bf80a85ba6804739e535e9cab48e4bb34a8b652aa"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7636,6 +7658,7 @@ dependencies = [
  "serde_json",
  "serde_yml",
  "sha2",
+ "shlex",
  "similar",
  "symphonia",
  "sysinfo",
@@ -7658,6 +7681,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "ts-rs 12.0.1",
  "uclaw-utils-async-utils",
  "uclaw-utils-home",
  "uclaw-utils-template",
@@ -7678,7 +7702,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "ts-rs",
+ "ts-rs 10.1.0",
 ]
 
 [[package]]

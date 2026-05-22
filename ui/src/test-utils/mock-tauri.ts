@@ -23,7 +23,7 @@
 import { vi } from 'vitest'
 
 /** Default invoke mock — every test should override per-command. */
-export const mockInvoke = vi.fn(async (cmd: string, _args?: unknown) => {
+export const mockInvoke = vi.fn(async (cmd: string, _args?: unknown): Promise<any> => {
   throw new Error(`mockInvoke: command ${cmd} not stubbed for this test`)
 })
 
