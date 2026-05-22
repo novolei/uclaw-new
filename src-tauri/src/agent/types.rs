@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 pub use uclaw_message_types::{
     estimate_message_tokens, estimate_tokens, ChatMessage, ContentBlock, MessageRole,
 };
+pub use uclaw_tool_types::{ToolCall, ToolDefinition};
 
 // ─── Thread State Machine ─────────────────────────────────────────────
 
@@ -161,22 +162,6 @@ impl ReasoningContext {
         }).sum();
         system_tokens + msg_tokens
     }
-}
-
-// ─── Tool Call / Definition ────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCall {
-    pub id: String,
-    pub name: String,
-    pub arguments: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
 }
 
 // ─── Token Usage / Response Metadata ───────────────────────────────────

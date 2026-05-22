@@ -35,6 +35,7 @@ members = [
     "crates/uclaw-utils-path-utils",
     "crates/uclaw-utils-image",
     "crates/uclaw-message-types",
+    "crates/uclaw-tool-types",
     # T5b/T6 crates land here.
 ]
 # Exclude any temporary or in-progress trees. Keeping this explicit lets
