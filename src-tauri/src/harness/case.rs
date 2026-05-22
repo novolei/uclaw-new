@@ -174,12 +174,16 @@ impl From<HarnessSubject> for crate::runtime::contracts::TaskEventSource {
     }
 }
 
-impl crate::runtime::contracts::TaskEventSource {
+pub trait TaskEventSourceHarnessExt {
     /// Reverse direction: collapse `TaskEventSource` → `HarnessSubject`.
     /// `TaskEventSource::Automation` has no harness equivalent (harness
     /// cases predate the unified runtime), so it maps to
     /// `HarnessSubject::Tasks` as a documented fallback.
-    pub fn to_harness_subject(self) -> HarnessSubject {
+    fn to_harness_subject(self) -> HarnessSubject;
+}
+
+impl TaskEventSourceHarnessExt for crate::runtime::contracts::TaskEventSource {
+    fn to_harness_subject(self) -> HarnessSubject {
         use crate::runtime::contracts::TaskEventSource as T;
         match self {
             T::AgentLoop   => HarnessSubject::AgentLoop,
