@@ -14,6 +14,7 @@ pub mod personality_model;
 pub mod preference_extractor;
 pub mod proactive_recall;
 pub mod scenarios;
+pub mod skill_distillation;
 pub mod skill_parser;
 pub mod skill_telemetry;
 pub mod task_memory;

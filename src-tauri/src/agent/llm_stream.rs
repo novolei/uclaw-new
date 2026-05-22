@@ -6,7 +6,7 @@
 
 use crate::agent::retry::{AgentRetryEvent, BudgetDecision, RetryBudget};
 use crate::agent::types::{ChatMessage, RespondOutput, ResponseMetadata, StreamDelta, ToolCall, ToolDefinition};
-use crate::error::Error;
+use crate::error::{Error, LlmError};
 use crate::llm::stream_error::{classify_stream_error, StreamErrorKind};
 use crate::llm::CompletionConfig;
 use crate::llm::LlmProvider;
@@ -14,6 +14,12 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::StreamExt;
 use std::time::Duration;
+
+/// Bundle 27-B — fallback used when the caller passes `Duration::ZERO`
+/// or a value that would underflow timeout math. Production callers
+/// resolve the timeout from `MemubotConfig::stream_idle_timeout_secs`
+/// (default 90s). See doc on that field for rationale.
+const STREAM_IDLE_TIMEOUT_FALLBACK: Duration = Duration::from_secs(90);
 
 /// Side-effects a streaming completion produces. The interactive delegate
 /// emits IPC events; the headless automation delegate uses `NoopSink`.
@@ -49,13 +55,27 @@ impl StreamSink for NoopSink {
 /// Drive `llm.stream(...)` to a `RespondOutput`, retrying transient/stalled
 /// failures via a fresh `RetryBudget::for_agent_loop()`. All streaming
 /// side-effects go through `sink`.
+///
+/// `stream_idle_timeout` (Bundle 27-B) is the max gap between two
+/// streaming chunks before the stream is treated as silently dropped
+/// and routed through the retry budget. Resolved from
+/// `MemubotConfig::stream_idle_timeout_secs` at the call site (default
+/// 90s). `Duration::ZERO` is normalised to 90s — `tokio::time::timeout`
+/// treats zero as "immediately elapsed", which would tear down healthy
+/// streams.
 pub async fn stream_completion(
     llm: &dyn LlmProvider,
     messages: Vec<ChatMessage>,
     tools: Vec<ToolDefinition>,
     config: &CompletionConfig,
     sink: &dyn StreamSink,
+    stream_idle_timeout: Duration,
 ) -> Result<RespondOutput, Error> {
+    let stream_idle_timeout = if stream_idle_timeout.is_zero() {
+        STREAM_IDLE_TIMEOUT_FALLBACK
+    } else {
+        stream_idle_timeout
+    };
     let mut retry_budget = RetryBudget::for_agent_loop();
     'stream_attempt: loop {
         match llm.stream(messages.clone(), tools.clone(), config).await {
@@ -69,7 +89,76 @@ pub async fn stream_completion(
                 let mut thinking_start_time: Option<std::time::Instant> = None;
                 let mut metadata: Option<ResponseMetadata> = None;
 
-                while let Some(item) = stream.next().await {
+                loop {
+                    // Bundle 27-B — wrap each chunk wait in an idle timeout.
+                    // National providers (Kimi K) sometimes drop the streaming
+                    // connection silently; without this, we'd block here
+                    // forever, leaving the user staring at a frozen agent.
+                    let next_result = tokio::time::timeout(
+                        stream_idle_timeout,
+                        stream.next(),
+                    )
+                    .await;
+                    let item_opt = match next_result {
+                        Ok(opt) => opt,
+                        Err(_elapsed) => {
+                            // Idle timeout fired — synthesize a "stalled"
+                            // error and route through the existing retry
+                            // budget, same shape as a real Stalled error
+                            // would take.
+                            let synthetic_err: Error = LlmError::ApiRequestFailed(
+                                format!(
+                                    "stream idle > {}s (Bundle 27-B fallback)",
+                                    stream_idle_timeout.as_secs()
+                                ),
+                            )
+                            .into();
+                            tracing::warn!(
+                                idle_secs = stream_idle_timeout.as_secs(),
+                                attempt = retry_budget.attempts(),
+                                "[Bundle 27-B] LLM stream idle for too long — treating as stalled"
+                            );
+                            match retry_budget.next_delay() {
+                                BudgetDecision::Sleep(delay) => {
+                                    let reason = format!(
+                                        "stream idle > {}s",
+                                        stream_idle_timeout.as_secs()
+                                    );
+                                    sink.on_stream_reset();
+                                    sink.on_retry_event(AgentRetryEvent::Starting {
+                                        attempt: retry_budget.attempts(),
+                                        max_attempts: retry_budget.max_attempts(),
+                                        delay_seconds: delay.as_secs_f64(),
+                                        reason: reason.clone(),
+                                    });
+                                    if sink.sleep_or_abort(delay).await {
+                                        sink.on_stream_reset();
+                                        return Err(synthetic_err);
+                                    }
+                                    sink.on_retry_event(AgentRetryEvent::Attempt {
+                                        attempt: retry_budget.attempts(),
+                                        timestamp_ms: Utc::now().timestamp_millis(),
+                                        reason,
+                                    });
+                                    continue 'stream_attempt;
+                                }
+                                BudgetDecision::Exhausted => {
+                                    tracing::error!(
+                                        attempts = retry_budget.attempts(),
+                                        elapsed_wait_ms = retry_budget.elapsed_wait().as_millis() as u64,
+                                        "[Bundle 27-B] stream idle exhausted retry budget"
+                                    );
+                                    sink.on_stream_reset();
+                                    sink.on_retry_event(AgentRetryEvent::Exhausted {
+                                        total_attempts: retry_budget.attempts(),
+                                        total_wait_ms: retry_budget.elapsed_wait().as_millis() as u64,
+                                    });
+                                    return Err(synthetic_err);
+                                }
+                            }
+                        }
+                    };
+                    let Some(item) = item_opt else { break };
                     match item {
                         Ok(StreamDelta::TextDelta { text }) => {
                             if thinking_started {
@@ -355,7 +444,7 @@ mod tests {
             },
         ]);
         let sink = RecordingSink::default();
-        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink).await.unwrap();
+        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink, Duration::from_secs(90)).await.unwrap();
         match out {
             RespondOutput::Text { text, .. } => assert_eq!(text, "Hello world"),
             other => panic!("expected Text, got {:?}", other),
@@ -374,7 +463,7 @@ mod tests {
             StreamDelta::Done { finish_reason: Some("tool_use".into()), usage: None },
         ]);
         let sink = RecordingSink::default();
-        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink).await.unwrap();
+        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink, Duration::from_secs(90)).await.unwrap();
         match out {
             RespondOutput::ToolCalls { tool_calls, .. } => {
                 assert_eq!(tool_calls.len(), 1);
@@ -391,7 +480,7 @@ mod tests {
             // no Done delta — stream just ends
         ]);
         let sink = RecordingSink::default();
-        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink).await.unwrap();
+        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink, Duration::from_secs(90)).await.unwrap();
         match out {
             RespondOutput::Text { text, metadata, .. } => {
                 assert_eq!(text, "partial");

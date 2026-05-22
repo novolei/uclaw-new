@@ -176,12 +176,27 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
             "headless run: calling LLM"
         );
 
+        // Bundle 27-B (settings exposure) — resolve stream-idle timeout
+        // from MemubotConfig when the AppHandle is available
+        // (production); fall back to 90s in tests/unit contexts where
+        // AppHandle is None.
+        let stream_idle_timeout = match &self.app_handle {
+            Some(ah) => {
+                use tauri::Manager;
+                let app_state = ah.state::<crate::app::AppState>();
+                let cfg = app_state.memubot_config.read().await;
+                std::time::Duration::from_secs(cfg.stream_idle_timeout_secs)
+            }
+            None => std::time::Duration::from_secs(90),
+        };
+
         crate::agent::llm_stream::stream_completion(
             self.llm.as_ref(),
             messages,
             tools,
             &config,
             &crate::agent::llm_stream::NoopSink,
+            stream_idle_timeout,
         )
         .await
     }

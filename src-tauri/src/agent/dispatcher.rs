@@ -1853,12 +1853,24 @@ impl LoopDelegate for ChatDelegate {
             "Calling LLM"
         );
 
+        // Bundle 27-B (settings exposure) — resolve the stream-idle
+        // timeout from MemubotConfig on every call_llm so the user can
+        // adjust the value in Settings → System and have it apply to
+        // the very next message without restarting the session.
+        let stream_idle_timeout = {
+            use tauri::Manager;
+            let app_state = self.app_handle.state::<crate::app::AppState>();
+            let cfg = app_state.memubot_config.read().await;
+            std::time::Duration::from_secs(cfg.stream_idle_timeout_secs)
+        };
+
         crate::agent::llm_stream::stream_completion(
             self.llm.as_ref(),
             messages,
             tools,
             &config,
             self,
+            stream_idle_timeout,
         )
         .await
     }

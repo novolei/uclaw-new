@@ -1217,6 +1217,12 @@ fn main() {
             uclaw_core::tauri_commands::memubot_config_get,
             uclaw_core::tauri_commands::get_plan_mode_suggest_enabled,
             uclaw_core::tauri_commands::set_plan_mode_suggest_enabled,
+            uclaw_core::tauri_commands::get_stream_idle_timeout_secs,
+            uclaw_core::tauri_commands::set_stream_idle_timeout_secs,
+            uclaw_core::tauri_commands::get_skill_prune_min_unused_days,
+            uclaw_core::tauri_commands::set_skill_prune_min_unused_days,
+            uclaw_core::tauri_commands::get_skill_promote_min_returned_count,
+            uclaw_core::tauri_commands::set_skill_promote_min_returned_count,
             // Dev / Testing
             uclaw_core::tauri_commands::trigger_proactive_scenario,
             // Agent Session Control

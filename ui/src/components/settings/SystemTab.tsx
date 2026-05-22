@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { Activity, ChevronDown, ChevronUp, PlayCircle, RefreshCw, RotateCcw, Power } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { EmbeddingEndpointSection } from './EmbeddingEndpointSection'
+import { StreamSkillThresholdsSection } from './StreamSkillThresholdsSection'
 import { DeveloperOptionsSection } from './DeveloperOptionsSection'
 
 // ── Types (mirror Rust structs) ──────────────────────────────────────
@@ -546,6 +547,11 @@ export function SystemTab() {
 
       {/* Sprint 2.2 followon #4 — embedding endpoint configuration */}
       <EmbeddingEndpointSection />
+
+      {/* Bundle 26-B / 26-D / 27-B — stream idle timeout + skill
+          distillation thresholds, originally hardcoded, now
+          user-tunable. */}
+      <StreamSkillThresholdsSection />
 
       {/* Sprint 2.2 followon #4 — developer options (collapsed by default) */}
       <DeveloperOptionsSection />
