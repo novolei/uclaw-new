@@ -7,5 +7,6 @@
 
 pub mod types;
 pub mod registry;
+pub mod readiness;
 pub mod store;
 pub mod service;

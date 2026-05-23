@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-2 implemented; reviewer closeout pending
+> Current phase: PR-3 provider readiness core in progress
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -19,10 +19,10 @@
 
 | PR | Theme | Status | Owner Session | Next Action |
 |---|---|---|---|---|
-| PR-0 | Design baseline and close-loop governance | Committed | Codex | Baseline commit `c44a3267`; PR-1 numbering correction is tracked in this worktree. |
-| PR-1 | Pure type crates for messages/tools/protocol/runtime contracts | PR opened | Codex | GitHub PR #399; PR-2 is stacked on this branch until PR-1 merges. |
-| PR-2 | ToolContext adapter | Implemented; verification passed | Codex | Run fresh spec/code review, then commit and push when approved. |
-| PR-3 | Provider readiness core | Not started | Unassigned | Wait for PR-1 and current provider impact analysis. |
+| PR-0 | Design baseline and close-loop governance | Merged | Codex | Baseline docs are on `main`; local skill/context follow-up also landed on `main`. |
+| PR-1 | Pure type crates for messages/tools/protocol/runtime contracts | Merged | Codex | GitHub PR #399 merged at `efe0e72d`. |
+| PR-2 | ToolContext adapter | Merged | Codex | GitHub PR #400 merged at `17ec931e`. |
+| PR-3 | Provider readiness core | In progress | Codex | Worktree `agent-os-jcode-pr3-provider-core`; implement metadata-only readiness reports and defer runtime provider migration. |
 | PR-4 | Soft interrupts and boundary yields | Not started | Unassigned | Wait for PR-1 contracts and policy review. |
 | PR-5 | Session projection journal | Not started | Unassigned | Wait for PR-1 contracts and M4 alignment. |
 | PR-6 | Performance scorecards | Not started | Unassigned | Wait for first replay fixtures. |
@@ -50,6 +50,7 @@ Append one row when a design decision changes the roadmap.
 | 2026-05-23 | Adopted jcode-style Rust test/module hygiene for uClaw PR-1. | User reference screenshots show sibling `*_tests.rs` modules loaded via `#[path = "..."] mod tests;`. | PR-1 crates must use sibling test files and avoid god files through focused module boundaries. |
 | 2026-05-23 | PR-1 implementation uses compatibility re-exports, not call-site churn. | Commits `c85f4c1c`, `5fdc1e4b`, `a4428a71`, `8b5602e9`, `160d6491`. | Later PRs can migrate imports gradually while existing backend modules keep compiling against the facade paths. |
 | 2026-05-23 | PR-2 uses a compatibility ToolContext adapter, not a `Tool::execute` signature rewrite. | GitNexus marks `Tool` HIGH impact with 28 direct implementers. | PR-2 keeps behavior stable and introduces a context seam for later tool migration. |
+| 2026-05-23 | PR-3 starts with provider readiness/core metadata, not runtime split-prompt execution. | GitNexus marks `get_active_llm_config` HIGH risk; subagents agreed `LlmProvider`/OpenAI/Anthropic runtime paths should not change in PR-3. | PR-3 adds typed readiness reports and leaves split prompt, runtime failover, and provider trait migration to later PRs. |
 
 ---
 
@@ -61,8 +62,8 @@ PR.
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Known pre-existing tracked changes | `AGENTS.md`, `CLAUDE.md` |
-| Current jcode comparison docs | `docs/jcode_comparison/` is untracked at the time this status file was created. |
+| Known pre-existing tracked changes | None in PR-3 worktree. |
+| Current jcode comparison docs | `docs/jcode_comparison/` is tracked on `main`. |
 | Current PR-0 spec | `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md` |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -273,6 +274,72 @@ Recommended PR-2 first tests:
   `AGENTS.md` and `CLAUDE.md`, which were restored.
 - `npx gitnexus detect-changes --scope staged --repo /Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr2-tool-context`
   reported low risk, 0 affected processes.
+
+---
+
+## PR-3 Entry Criteria
+
+PR-3 can start because:
+
+- PR-1 and PR-2 are merged into `main`;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr3-provider-core`;
+- jcode provider-core and uClaw provider/LLM architecture were explored by
+  subagents;
+- GitNexus impact for `get_active_llm_config` was run and reported HIGH risk;
+- PR-3 is scoped to metadata/readiness and avoids runtime provider trait
+  migration.
+
+Recommended PR-3 first tests:
+
+- serde round-trip tests for `ProviderReadinessReport`;
+- readiness precedence tests for credentials, base URL, model selection, probe
+  failures, and unknown providers;
+- provider adapter tests for API-family and credential-status mapping;
+- `ProviderService::provider_readiness` test proving reports do not expose API
+  keys.
+
+## PR-3 Progress
+
+- Plan: `docs/superpowers/plans/2026-05-23-pr3-provider-readiness-core.md`
+- Worktree: `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr3-provider-core`
+- Branch: `codex/agent-os-jcode-pr3-provider-core`
+- Scope: add `uclaw-provider-core` plus a provider readiness adapter over
+  existing provider configs; no runtime LLM behavior changes.
+- Rust hygiene: new tests live in sibling `provider_tests.rs` and
+  `readiness_tests.rs`; no substantial inline test additions.
+- DMZ files: root `Cargo.toml` is touched only to add the new workspace member.
+- Migration: none planned.
+- Rollback: revert the new crate, Cargo wiring, readiness adapter, helper
+  methods, and docs.
+
+### PR-3 Impact Notes
+
+- `get_active_llm_config`: HIGH impact; do not change signature or behavior.
+- `create_provider`: practical high risk due many runtime call sites; avoid in
+  PR-3.
+- `LlmProvider`: practical high risk despite low/ambiguous index signal; avoid
+  trait changes.
+- `ProviderService`: acceptable for additive helper methods only.
+- `ProviderConfig`/`ProviderConfigs`: do not change persisted JSON shape.
+
+### PR-3 Verification Notes
+
+- `cargo test -p uclaw-provider-core` passed 9 tests.
+- `cd src-tauri && cargo test providers::readiness --lib` passed 9 tests after
+  linking ignored runtime resources into the worktree.
+- `cd src-tauri && cargo test providers::service --lib` passed 3 tests.
+- `cd src-tauri && cargo test providers::types --lib` passed 5 tests.
+- `cd src-tauri && cargo test providers::store --lib` passed 3 tests.
+- `cargo check -p uclaw --lib` passed with existing warnings only.
+- `pyembed`, `bunembed`, and `gbrain-source` were linked from the primary
+  worktree because those ignored runtime resources are not copied into
+  isolated worktrees.
+- Subagent review findings were addressed before commit:
+  - unconfigured providers now report `NeedsConfiguration`;
+  - Codex OAuth readiness does not require a base URL;
+  - OAuth/API-family/latency JSON names are pinned with tests.
+- `git diff --check` and GitNexus staged detect are pending before commit.
 
 ---
 
