@@ -18,6 +18,7 @@ export type SettingsTab =
   | 'shortcuts'
   | 'pet'
   | 'proxy'
+  | 'browserRuntime' // Browser Runtime / Startup Doctor
   | 'system'         // 系统诊断
   | 'about'
 

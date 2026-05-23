@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 3H root App startup route in progress
+> Current phase: Phase 4A Browser Runtime settings surface in progress
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -22,8 +22,8 @@
 | Phase 0 | Contracts, flags, and projection skeleton | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase0-contracts` / `codex/browser-runtime-phase0-contracts` | Closed; contract regressions stay in every later browser-runtime phase. |
 | Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
-| Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3G merged; Phase 3H root App startup route open in PR #426 under writer/reviewer gate | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Fresh reviewer must inspect PR #426 and explicitly accept or reject the known HIGH `App` blast radius before merge. |
-| Phase 4 | Browser Runtime settings and task-time preparation UX | Blocked | Unassigned | TBD | Wait for PR #426 review/merge of the Phase 3H branded shell route. |
+| Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
+| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A settings surface in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4a-settings-surface` / `codex/browser-runtime-phase4a-settings-surface` | Open Phase 4A PR with readonly Browser Runtime settings tab, view-model, tests, and no runtime side effects. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
@@ -57,6 +57,7 @@
 | 2026-05-24 | Close Phase 3E and stop the PR chain before Phase 4. | PR #423 merged Phase 3E recovery surfaces; Phase 4 is explicitly gated on the Phase 3 shell route, and the only remaining shell-route integration attempt is blocked by GitNexus HIGH. | Phase 3F records the reviewer-plan requirement; no further implementation should proceed until the root `App` blast radius is explicitly accepted. |
 | 2026-05-24 | Prepare a root `App` review acceptance pack instead of editing `App`. | PR #424 merged the Phase 3F gate note; `BEHAVIOR.md` section 8 requires writer/reviewer flow for anything flagged HIGH/CRITICAL by GitNexus. | Phase 3G defines the future writer scope, reviewer prompt, and go/no-go gates; implementation remains blocked until explicit acceptance. |
 | 2026-05-24 | Start Phase 3H as the writer half of the root `App` startup route. | PR #425 merged the Phase 3G acceptance pack; pre-edit GitNexus impact for `App` in the Phase 3H worktree reported LOW risk. | Phase 3H may edit only the root loading branch and must leave merge/acceptance to a fresh reviewer if final staged detect reports the known HIGH blast radius. |
+| 2026-05-24 | Accept and merge the Phase 3H root startup route, then start Phase 4A as a readonly settings substrate. | A fresh reviewer sub-agent returned `REVIEW ACCEPTED` for PR #426, confirming listener registration, settings/model initialization, AppShell handoff, and root error behavior were preserved; PR #426 merged as `13133bb1`. | Phase 4 can begin, but starts with a reversible Settings tab/view-model slice before IPC, deep links, task-time prompts, or runtime side effects. |
 
 ---
 
@@ -65,9 +66,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` |
-| Current phase branch | `codex/browser-runtime-phase3h-app-startup-route` |
-| Current local base | `c5ce25c1 Merge pull request #425 from novolei/codex/browser-runtime-phase3g-app-route-review-pack` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4a-settings-surface` |
+| Current phase branch | `codex/browser-runtime-phase4a-settings-surface` |
+| Current local base | `13133bb1 Merge pull request #426 from novolei/codex/browser-runtime-phase3h-app-startup-route` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -84,9 +85,10 @@
 | Phase 3E implementation commit | Merged through PR #423 as `52035cf4 feat(browser): add startup recovery surfaces`; merge commit `f2dabbe3`. |
 | Phase 3F implementation commit | Merged through PR #424 as `3d4121be docs(browser): record startup route review gate`; merge commit `3e9e4817`. |
 | Phase 3G implementation commit | Merged through PR #425 as `8a1bf76b docs(browser): add root app route review pack`; merge commit `c5ce25c1`. |
-| Phase 3H implementation commit | Open in PR #426 as `feat(browser): route app startup through splash` on `codex/browser-runtime-phase3h-app-startup-route`; use the PR head commit as the current writer commit. |
-| Known pre-existing tracked changes | None in the Phase 3H worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | Phase 3H linked ignored local resources from the primary worktree for verification: `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source`. |
+| Phase 3H implementation commit | Merged through PR #426 as `35d7e39c feat(browser): route app startup through splash`; merge commit `13133bb1`. |
+| Phase 4A implementation commit | In progress on `codex/browser-runtime-phase4a-settings-surface`; PR not opened yet. |
+| Known pre-existing tracked changes | None in the Phase 4A worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | Phase 4A linked ignored local `ui/node_modules` from the primary worktree for Vitest verification. Rust resource links may be added only if the default browser-runtime regressions need them. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -1326,9 +1328,112 @@ Recommended Phase 3H checks:
   `App -> BuildResolvedTarget`, `App -> UpsertBrowserTaskStep`,
   `App -> SafeU`, `App -> GetSettings`, and
   `App -> GetCachedStickyUserMessage`.
-- No new affected process names appeared beyond the Phase 3D list. Phase 3H
-  must stop after opening the writer PR and wait for fresh reviewer acceptance
-  before merge.
+- No new affected process names appeared beyond the Phase 3D list.
+- Fresh reviewer sub-agent accepted PR #426 after checking that listener
+  registration, settings/model initialization, AppShell handoff, and root error
+  behavior were preserved. PR #426 merged as `13133bb1`.
+
+## Phase 4A Entry Criteria
+
+Phase 4A can start because:
+
+- PR #426 merged the branded root Startup Splash route into `main` and
+  `origin/main`;
+- a fresh reviewer sub-agent explicitly returned `REVIEW ACCEPTED` for the
+  known HIGH `App` blast radius before merge;
+- the Phase 4A worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4a-settings-surface`;
+- the branch starts from `13133bb1`, the current `origin/main`;
+- ADR Phase 4 asks for a first-class Browser Runtime / Startup Doctor /
+  Browser Identity settings destination;
+- this slice is scoped to readonly settings surface and typed frontend adapter
+  only, leaving IPC and runtime mutations for later Phase 4 slices.
+
+Recommended Phase 4A checks:
+
+- Browser Runtime tab appears in Settings navigation;
+- readonly surface shows status, last check, version, artifact size, runtime
+  pack path, release channel, update state, rollback state, developer fallback,
+  and auto-prepare state;
+- action affordances are visible but disabled because Phase 4A owns no runtime
+  side effects;
+- focused view-model and settings rendering tests pass;
+- default browser-runtime Rust regressions still pass.
+
+## Phase 4A Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase4a-settings-surface.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4a-settings-surface`
+- Branch:
+  `codex/browser-runtime-phase4a-settings-surface`
+- Scope:
+  add a readonly Browser Runtime settings destination, a typed settings
+  view-model adapter over the Phase 2 runtime-pack status report, inert action
+  affordances, focused tests, and this tracker update.
+- Current PR:
+  [#427](https://github.com/novolei/uclaw-new/pull/427); must not auto-merge
+  while GitNexus final detect remains HIGH.
+- DMZ files:
+  none planned.
+- Migration:
+  none planned.
+- Rollback:
+  revert the settings tab wiring, new Browser Runtime settings component,
+  browser-runtime settings view-model/tests, this status file update, and the
+  Phase 4A plan file.
+
+### Phase 4A Impact Notes
+
+- `npx gitnexus analyze` refreshed the main repo index before Phase 4A impact
+  analysis. It updated only `AGENTS.md` / `CLAUDE.md` statistics, and those
+  noise changes were restored before implementation.
+- GitNexus impact for `SettingsPanel` reported LOW risk, 0 direct callers, and
+  0 affected processes.
+- GitNexus impact for `SettingsContent` reported LOW risk, 1 direct caller
+  (`SettingsPanel`), and 1 affected settings process.
+- GitNexus impact for `SettingsNav` reported LOW risk, 0 direct callers, and
+  0 affected processes.
+- GitNexus did not resolve the `SettingsTab` type alias; the manual change is
+  limited to adding the `browserRuntime` union member.
+- This slice does not change backend IPC, runtime-pack Rust behavior,
+  provider selection, SearchPalette, task checkpointing, DB migrations, or
+  real prepare/repair/cleanup/rollback side effects.
+
+### Phase 4A Verification Notes
+
+- Phase 4A linked ignored `ui/node_modules` from the primary worktree because
+  isolated worktrees do not copy frontend dependencies.
+- Initial focused UI verification failed with `vitest: command not found`
+  before linking `ui/node_modules`; this was a worktree dependency issue, not a
+  source failure.
+- Focused UI verification passed:
+  `cd ui && npm test -- --run src/lib/browser-runtime/browser-runtime-settings.test.ts src/components/settings/BrowserRuntimeSettings.test.tsx src/components/settings/SettingsNav.test.tsx`
+  returned `3 passed`, `10 passed`.
+- Default Browser Runtime Rust regressions passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  returned `32 passed; 0 failed; 2580 filtered out`;
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  returned `44 passed; 0 failed; 2568 filtered out`; and
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  returned `6 passed; 0 failed; 2606 filtered out`.
+- `rustfmt --edition 2021 --check <changed-rust-files>` is not applicable for
+  this phase because no Rust files changed.
+- `git diff --check -- <changed-files>` returned no output.
+- Final staged GitNexus detect for the Phase 4A worktree reported
+  `risk_level: high`, `changed_files: 10`, `changed_count: 49`, and
+  10 affected settings execution flows: `SettingsPanel -> Cn`,
+  `SettingsPanel -> ProviderEmptyState`, `SettingsPanel -> OnTurnCost`,
+  `SettingsPanel -> SettingsSection`,
+  `SettingsPanel -> ReadWorkspaceUclawMd`,
+  `SettingsPanel -> ReadDefaultPrompts`,
+  `SettingsPanel -> OpenWorkspaceUclawMdExternally`,
+  `SettingsContent -> SettingsSection`,
+  `SettingsContent -> GetMemoryRecallConfig`, and
+  `SettingsPanel -> Matches`.
+- Phase 4A must stop after opening the writer PR and wait for fresh reviewer
+  acceptance before merge.
 
 ---
 

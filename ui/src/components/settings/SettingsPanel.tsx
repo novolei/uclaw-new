@@ -19,6 +19,7 @@ import { LearnedProfileTab } from './LearnedProfileTab'
 import { ImChannelsSettings } from './ImChannelsSettings'
 import { SystemTab } from './SystemTab'
 import { SettingsBreadcrumb } from './SettingsBreadcrumb'
+import { BrowserRuntimeSettings } from './BrowserRuntimeSettings'
 
 
 function SettingsContent({ tab }: { tab: SettingsTab }) {
@@ -45,6 +46,8 @@ function SettingsContent({ tab }: { tab: SettingsTab }) {
       return <PetSettings />
     case 'proxy':
       return <ProxySetting />
+    case 'browserRuntime':
+      return <BrowserRuntimeSettings />
     case 'system':
       return <SystemTab />
     case 'about':
@@ -73,6 +76,7 @@ export default function SettingsPanel() {
     shortcuts: '快捷键',
     pet: '桌面宠物',
     proxy: '代理',
+    browserRuntime: '浏览器运行时',
     system: '系统诊断',
     about: '关于',
   }
