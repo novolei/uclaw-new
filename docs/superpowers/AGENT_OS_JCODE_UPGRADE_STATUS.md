@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-1 ready for writer/reviewer closeout
+> Current phase: PR-2 implemented; reviewer closeout pending
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -20,8 +20,8 @@
 | PR | Theme | Status | Owner Session | Next Action |
 |---|---|---|---|---|
 | PR-0 | Design baseline and close-loop governance | Committed | Codex | Baseline commit `c44a3267`; PR-1 numbering correction is tracked in this worktree. |
-| PR-1 | Pure type crates for messages/tools/protocol/runtime contracts | Verified; reviewer closeout pending | Codex | Run fresh final review, then push/create PR when Ryan chooses. |
-| PR-2 | ToolContext adapter | Not started | Unassigned | Wait for PR-1 pure type crates. |
+| PR-1 | Pure type crates for messages/tools/protocol/runtime contracts | PR opened | Codex | GitHub PR #399; PR-2 is stacked on this branch until PR-1 merges. |
+| PR-2 | ToolContext adapter | Implemented; verification passed | Codex | Run fresh spec/code review, then commit and push when approved. |
 | PR-3 | Provider readiness core | Not started | Unassigned | Wait for PR-1 and current provider impact analysis. |
 | PR-4 | Soft interrupts and boundary yields | Not started | Unassigned | Wait for PR-1 contracts and policy review. |
 | PR-5 | Session projection journal | Not started | Unassigned | Wait for PR-1 contracts and M4 alignment. |
@@ -49,6 +49,7 @@ Append one row when a design decision changes the roadmap.
 | 2026-05-23 | Corrected PR-1 numbering drift: PR-1 is pure type crate extraction, not event spine validation. | `docs/jcode_comparison/README.md` listed PR-1 as type extraction. | Event spine validation moves behind the type-crate foundation. |
 | 2026-05-23 | Adopted jcode-style Rust test/module hygiene for uClaw PR-1. | User reference screenshots show sibling `*_tests.rs` modules loaded via `#[path = "..."] mod tests;`. | PR-1 crates must use sibling test files and avoid god files through focused module boundaries. |
 | 2026-05-23 | PR-1 implementation uses compatibility re-exports, not call-site churn. | Commits `c85f4c1c`, `5fdc1e4b`, `a4428a71`, `8b5602e9`, `160d6491`. | Later PRs can migrate imports gradually while existing backend modules keep compiling against the facade paths. |
+| 2026-05-23 | PR-2 uses a compatibility ToolContext adapter, not a `Tool::execute` signature rewrite. | GitNexus marks `Tool` HIGH impact with 28 direct implementers. | PR-2 keeps behavior stable and introduces a context seam for later tool migration. |
 
 ---
 
@@ -216,6 +217,62 @@ Recommended PR-1 first tests:
 - `cargo test -p uclaw-message-types -p uclaw-tool-types -p uclaw-runtime-contracts -p uclaw-protocol-types` passed 27 unit tests plus doctests.
 - `cd src-tauri && cargo test agent::types --lib` passed 17 tests.
 - `cd src-tauri && cargo test channels::dispatcher --lib` passed 19 tests.
+
+---
+
+## PR-2 Entry Criteria
+
+PR-2 can start because:
+
+- PR-1 type crates exist on branch `codex/agent-os-jcode-pr1-plan`;
+- GitHub PR #399 is open and mergeable;
+- the new worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr2-tool-context`;
+- jcode ToolContext and uClaw tool execution chain were explored by subagents;
+- GitNexus impact for `Tool` was run and reported HIGH risk.
+
+Recommended PR-2 first tests:
+
+- sibling-file tests for `ToolExecutionContext::for_subcall`;
+- sibling-file tests for `ToolExecutionContext::resolve_candidate_path`;
+- pass-through test for `execute_tool_with_context`;
+- focused dispatcher/headless compile regression tests.
+
+## PR-2 Progress
+
+- Plan: `docs/superpowers/plans/2026-05-23-pr2-tool-context-adapter.md`
+- Worktree: `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr2-tool-context`
+- Branch: `codex/agent-os-jcode-pr2-tool-context`
+- Scope: introduce `ToolExecutionContext` and a compatibility execution helper
+  without changing `Tool::execute(params)`.
+- Rust hygiene: move touched `tool.rs` tests to sibling `tool_tests.rs`; no new
+  inline production-file test modules.
+- DMZ files: none planned.
+- Migration: none planned.
+- Rollback: revert context/helper additions and switch dispatcher/headless calls
+  back to direct `tool.execute(params)`.
+
+### PR-2 Impact Notes
+
+- `Tool`: HIGH impact; 28 direct implementers.
+- `LoopDelegate::execute_tool_calls`: MEDIUM impact; avoid changing signature.
+- `ChatDelegate::execute_tool_calls`: main runtime hot path; adapter must be
+  behavior-preserving.
+- New PR-2 worktree is not yet a GitNexus indexed repo path, so impact was
+  checked against the indexed PR-1 worktree baseline.
+
+### PR-2 Verification Notes
+
+- `cargo test -p uclaw --lib agent::tools::tool` passed 7 tests.
+- `cd src-tauri && cargo test agent::dispatcher --lib` passed 43 tests.
+- `cd src-tauri && cargo test agent::headless --lib` passed compilation with
+  0 matching tests.
+- `cargo check -p uclaw --lib` passed with existing warnings only.
+- `git diff --check` passed.
+- `npx gitnexus analyze` indexed the PR-2 worktree; it auto-touched
+  `AGENTS.md` and `CLAUDE.md`, which were restored.
+- `npx gitnexus detect-changes --scope staged --repo /Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr2-tool-context`
+  reported low risk, 0 affected processes.
 
 ---
 
