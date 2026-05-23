@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: Phase 1 supervisor shell slice committed
+> Current phase: Phase 2 runtime-pack manager shell committed
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -19,9 +19,9 @@
 
 | Phase | Theme | Status | Owner Session | Worktree / Branch | Next Action |
 |---|---|---|---|---|---|
-| Phase 0 | Contracts, flags, and projection skeleton | Committed | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase0-contracts` / `codex/browser-runtime-phase0-contracts` | Open PR or start Phase 1 from this committed contract baseline. |
-| Phase 1 | Supervisor around current chromiumoxide runtime | Shell slice committed | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Open PR or continue the next Phase 1 wiring slice from this supervisor shell baseline. |
-| Phase 2 | App-managed Playwright runtime pack | Not started | Unassigned | TBD | Wait for Phase 0 flags and Phase 1 supervisor state. |
+| Phase 0 | Contracts, flags, and projection skeleton | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase0-contracts` / `codex/browser-runtime-phase0-contracts` | Closed; contract regressions stay in every later browser-runtime phase. |
+| Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
+| Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell committed | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2-runtime-pack` / `codex/browser-runtime-phase2-runtime-pack` | Push/open PR or continue the next Phase 2 installer-planning slice from this committed shell baseline. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Not started | Unassigned | TBD | Wait for Phase 0 projection skeleton and Phase 2 runtime-pack status. |
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Not started | Unassigned | TBD | Wait for Phase 2 runtime manager and Phase 3 shell route. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
@@ -42,6 +42,8 @@
 | 2026-05-23 | Use this file as the Browser Runtime close-loop tracker. | User asked to follow the `AGENT_OS_JCODE_UPGRADE_STATUS.md` tracker pattern. | Every Browser Runtime phase must update Quick View, branch hygiene, progress, and verification notes. |
 | 2026-05-23 | Rebase Phase 0 worktree onto latest `main` before commit. | Worktree initially had ADR commit on older merge-base `3d710297`; latest `main` was `d7a9527`. | Phase branch now has latest `main` plus rebased Browser ADR commit `4cb7538`, then Phase 0 WIP reapplied. |
 | 2026-05-23 | Start Phase 1 as a supervisor shell before hot-path rewiring. | Phase 1 ADR is broad; narrow first PR should make runtime states, deadlines, doctor classification, artifacts, and projection available without changing action execution. | Later Phase 1 follow-ups can route action dispatch through the supervisor once the shell is tested. |
+| 2026-05-23 | Phase 0 and Phase 1 are now merged into `main` and `origin/main`. | `main` and `origin/main` both point at `81d9b9dc Merge remote-tracking branch 'origin/codex/browser-runtime-phase1-supervisor'`. | Phase 2 starts from `origin/main` instead of the older Phase 1 worktree base. |
+| 2026-05-23 | Phase 2 begins with a local runtime-pack manifest/status/doctor shell. | ADR Phase 2 includes install/repair/cleanup/rollback, but the first reversible slice should avoid network download, worker execution, and UI. | The first Phase 2 PR proves pack state classification before adding download or Playwright process behavior. |
 
 ---
 
@@ -50,15 +52,15 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` |
-| Current phase branch | `codex/browser-runtime-phase1-supervisor` |
-| Current local base | `d7a9527 feat(ui): add Agent OS projection reducer` |
-| Browser ADR commit on phase branch | `4cb7538 docs(adr): define browser runtime supervisor strategy` |
-| Phase 0 implementation commit | Current `HEAD` on `codex/browser-runtime-phase0-contracts`: `feat(browser): add runtime supervisor phase0 contracts` |
-| Phase 1 base commit | `84743093 feat(browser): add runtime supervisor phase0 contracts` |
-| Phase 1 implementation commit | Current `HEAD` on `codex/browser-runtime-phase1-supervisor`: `feat(browser): add runtime supervisor phase1 shell` |
-| Known pre-existing tracked changes | None in the Phase 1 worktree at start. |
-| Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, `src-tauri/gbrain-source`, and `ui/node_modules` linked from the primary worktree for local verification. |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2-runtime-pack` |
+| Current phase branch | `codex/browser-runtime-phase2-runtime-pack` |
+| Current local base | `81d9b9dc Merge remote-tracking branch 'origin/codex/browser-runtime-phase1-supervisor'` |
+| Browser ADR commit on phase branch | Included in merged `origin/main` history. |
+| Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
+| Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
+| Phase 2 implementation commit | In progress. |
+| Known pre-existing tracked changes | None in the Phase 2 worktree at start. |
+| Linked ignored runtime resources | Not linked yet for Phase 2; link `src-tauri/pyembed`, `src-tauri/bunembed`, `src-tauri/gbrain-source`, and `ui/node_modules` only if verification needs them. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -120,6 +122,101 @@ Phase 1 can start because:
   and `git diff --check -- <changed-files>`.
 - GitNexus staged detect after refreshing the Phase 1 worktree index reported
   `risk_level: low`, `changed_files: 5`, and `affected_processes: []`.
+- After the branch was merged to the local primary `main`, `origin/main` was
+  also confirmed at `81d9b9dc`; effective post-merge verification used the
+  correct filters:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  returned `12 passed; 0 failed; 2568 filtered out`, and
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  returned `6 passed; 0 failed; 2574 filtered out`.
+
+## Phase 2 Entry Criteria
+
+Phase 2 can start because:
+
+- Phase 0 and Phase 1 are merged into `main` and `origin/main`;
+- the Phase 2 worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2-runtime-pack`;
+- the branch starts from `81d9b9dc`, the current `origin/main`;
+- this first slice avoids network download, Playwright worker startup, Tauri
+  commands, DB migrations, and Settings UI.
+
+Recommended Phase 2 first tests:
+
+- runtime manifest defaults and semver-like version fields;
+- path layout and `PLAYWRIGHT_BROWSERS_PATH` environment derivation;
+- doctor classifications for missing manifest, missing Node, missing
+  Playwright package, missing browser binary, corrupt cache, version mismatch,
+  and ready state;
+- update policy classification for security, ordinary, idle, active task,
+  rollback, and offline states;
+- cleanup/rollback action planning without deleting files in tests.
+
+## Phase 2 Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-23-browser-runtime-phase2-runtime-pack.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2-runtime-pack`
+- Branch:
+  `codex/browser-runtime-phase2-runtime-pack`
+- Scope:
+  app-managed Playwright runtime-pack manifest/status/doctor shell, local path
+  policy, install/update/remediation action planning, and tests.
+- Implementation:
+  `runtime_pack.rs` defines runtime-pack manifest metadata, uClaw-managed path
+  policy including `PLAYWRIGHT_BROWSERS_PATH`, doctor issue/status
+  classification, remediation actions, and update decisions.
+- DMZ files:
+  none planned.
+- Migration:
+  none planned.
+- Rollback:
+  revert the Phase 2 runtime-pack module, tests, browser module exports, this
+  status file, and the Phase 2 plan file.
+
+### Phase 2 Impact Notes
+
+- Existing browser execution symbols are intentionally avoided:
+  `BrowserContextManager`, `BrowserContext`, `BrowserAgentLoop`,
+  `BrowserActionRegistry`, and `tauri_commands.rs` are not edited.
+- `browser/mod.rs` receives additive module exports only.
+- GitNexus impact for existing `BrowserService` in `src-tauri/src/browser/mod.rs`
+  reported LOW risk, 0 direct callers, and 0 affected processes before adding
+  module exports.
+- The first Phase 2 slice does not download, install, repair, cleanup, roll
+  back, spawn Node, run Playwright, start MCP, write settings, or write DB
+  migrations.
+
+### Phase 2 Verification Notes
+
+- Baseline bring-up linked ignored local runtime resources from the primary
+  worktree because isolated worktrees do not copy `pyembed`, `bunembed`,
+  `gbrain-source`, or `ui/node_modules`.
+- Initial Rust focused verification before linking `gbrain-source` failed in
+  the Tauri build script with `resource path 'gbrain-source' doesn't exist`;
+  this was a worktree dependency issue, not a source failure.
+- A post-format focused test briefly failed with `No space left on device` while
+  writing Cargo incremental cache. Generated `target/` directories for the
+  Phase 0, Phase 1, and Phase 2 browser-runtime worktrees were cleaned, freeing
+  local disk space without touching source files.
+- Focused runtime-pack verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  returned `10 passed; 0 failed; 2580 filtered out`.
+- Runtime contract/supervisor regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  returned `22 passed; 0 failed; 2568 filtered out`.
+- Existing provider regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  returned `6 passed; 0 failed; 2584 filtered out`.
+- Formatting and whitespace checks passed for changed files:
+  `rustfmt --edition 2021 --check src-tauri/src/browser/runtime_pack.rs src-tauri/src/browser/runtime_pack_tests.rs`
+  and `git diff --check -- <changed-files>` returned no output.
+- GitNexus staged detect after refreshing the Phase 2 worktree index reported
+  `risk_level: low`, `changed_files: 5`, and `affected_processes: []`.
+- Phase 2 runtime-pack shell committed on
+  `codex/browser-runtime-phase2-runtime-pack` as current `HEAD`:
+  `feat(browser): add runtime pack manager shell`.
 
 ---
 
@@ -264,11 +361,12 @@ Recommended Phase 0 first tests:
 
 ## Handoff Notes
 
-- Phase 1 has started with a supervisor shell on top of the committed Phase 0
-  contract module.
+- Phase 0 and Phase 1 shell slices are merged to `main` / `origin/main`.
 - The next Phase 1 wiring slice should route one low-risk call path through
-  `BrowserRuntimeSupervisor` rather than introducing Playwright behavior.
-- Phase 2 should not introduce Playwright runtime downloads until Phase 0 flags
-  and projection status fields exist.
+  `BrowserRuntimeSupervisor`; this can proceed independently from Phase 2 once
+  the runtime-pack shell is stable.
+- The next Phase 2 slice can add the side-effect boundary for install/repair
+  planning, but should still keep actual network download and archive extraction
+  behind explicit policy gates.
 - Phase 3 startup splash should consume the projection/doctor vocabulary from
   Phase 0 instead of inventing a separate UI state model.
