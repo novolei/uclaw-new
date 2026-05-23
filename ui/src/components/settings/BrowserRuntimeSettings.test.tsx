@@ -59,6 +59,7 @@ describe('BrowserRuntimeSettings', () => {
     expect(screen.getByText('734 MiB')).toBeInTheDocument()
     expect(screen.getByText('/uclaw/browser-runtime/v1')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '保持当前' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '关闭自动准备' })).toBeEnabled()
     expect(screen.getByText('操作预览')).toBeInTheDocument()
     expect(screen.getByText('browser.runtime.keep_current.ready · browser.runtime.doctor.completed')).toBeInTheDocument()
   })
@@ -97,5 +98,22 @@ describe('BrowserRuntimeSettings', () => {
     expect(screen.getByText('回滚到上一个可用 Browser runtime pack，需要明确确认并等待后端执行边界接入。')).toBeInTheDocument()
     expect(screen.getByText('需要确认')).toBeInTheDocument()
     expect(screen.getByText('无副作用')).toBeInTheDocument()
+  })
+
+  it('previews auto-prepare control without disabling browser capability', async () => {
+    const { user } = renderWithProviders(
+      <BrowserRuntimeSettings
+        status={{
+          report: runtimeReport(),
+          autoPrepareEnabled: true,
+        }}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: '关闭自动准备' }))
+
+    expect(screen.getByText('关闭启动/后台自动准备；浏览器任务仍可在使用时请求准备运行时。')).toBeInTheDocument()
+    expect(screen.getByText('browser.runtime.auto_prepare.disable.requested')).toBeInTheDocument()
+    expect(screen.getByText('预览')).toBeInTheDocument()
   })
 })

@@ -6,6 +6,7 @@ import {
   Download,
   HardDrive,
   History,
+  Power,
   RefreshCw,
   RotateCcw,
   ShieldCheck,
@@ -33,6 +34,8 @@ const ACTION_ICONS: Record<BrowserRuntimeSettingsAction['id'], React.ReactNode> 
   defer: <History />,
   retry_when_online: <RefreshCw />,
   keep_current: <ShieldCheck />,
+  disable_auto_prepare: <Power />,
+  enable_auto_prepare: <Power />,
   run_doctor: <Bug />,
 }
 

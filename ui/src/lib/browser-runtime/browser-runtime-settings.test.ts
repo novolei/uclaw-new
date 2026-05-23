@@ -75,6 +75,14 @@ describe('browser runtime settings view model', () => {
           }),
         }),
         expect.objectContaining({ id: 'run_doctor', enabled: true }),
+        expect.objectContaining({
+          id: 'disable_auto_prepare',
+          enabled: true,
+          preview: expect.objectContaining({
+            eventNames: ['browser.runtime.auto_prepare.disable.requested'],
+            summary: '关闭启动/后台自动准备；浏览器任务仍可在使用时请求准备运行时。',
+          }),
+        }),
       ]),
     )
   })
@@ -116,6 +124,30 @@ describe('browser runtime settings view model', () => {
     expect(model.runtimePackPathLabel).toBe('等待运行时状态')
     expect(model.autoPrepareLabel).toBe('等待运行时状态')
     expect(model.actions.every((action) => !action.enabled)).toBe(true)
+  })
+
+  it('keeps auto-prepare disabled semantics separate from browser capability', () => {
+    const model = deriveBrowserRuntimeSettingsViewModel({
+      report: runtimeReport(),
+      autoPrepareEnabled: false,
+    })
+
+    expect(model.autoPrepareLabel).toBe('已关闭')
+    expect(model.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'enable_auto_prepare',
+          label: '开启自动准备',
+          enabled: true,
+          preview: expect.objectContaining({
+            destructive: false,
+            requiresConfirmation: false,
+            eventNames: ['browser.runtime.auto_prepare.enable.requested'],
+            summary: '恢复启动/后台自动准备；不会立即下载或修复运行时。',
+          }),
+        }),
+      ]),
+    )
   })
 
   it('marks destructive settings intents as confirmation-only previews', () => {
