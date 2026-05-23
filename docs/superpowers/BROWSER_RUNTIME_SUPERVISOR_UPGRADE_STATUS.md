@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: Phase 1 supervisor shell slice committed
+> Current phase: Phase 1 supervisor shell restored on `main`
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -19,17 +19,17 @@
 
 | Phase | Theme | Status | Owner Session | Worktree / Branch | Next Action |
 |---|---|---|---|---|---|
-| Phase 0 | Contracts, flags, and projection skeleton | Committed | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase0-contracts` / `codex/browser-runtime-phase0-contracts` | Open PR or start Phase 1 from this committed contract baseline. |
-| Phase 1 | Supervisor around current chromiumoxide runtime | Shell slice committed | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Open PR or continue the next Phase 1 wiring slice from this supervisor shell baseline. |
-| Phase 2 | App-managed Playwright runtime pack | Not started | Unassigned | TBD | Wait for Phase 0 flags and Phase 1 supervisor state. |
-| Phase 3 | Startup Splash, Startup Doctor, and shell UX | Not started | Unassigned | TBD | Wait for Phase 0 projection skeleton and Phase 2 runtime-pack status. |
-| Phase 4 | Browser Runtime settings and task-time preparation UX | Not started | Unassigned | TBD | Wait for Phase 2 runtime manager and Phase 3 shell route. |
-| Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
-| Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
-| Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
-| Phase 8 | Provider abstraction, parity harness, and default selection | Not started | Unassigned | TBD | Wait for chromiumoxide, CLI, and MCP lanes. |
-| Phase 9 | Recipes, locator cache, and domain-skill candidates | Not started | Unassigned | TBD | Wait for observable provider behavior and harness scorecards. |
-| Phase 10 | Optional hosted providers and hard-site escape hatches | Not started | Unassigned | TBD | Wait for local-first provider routing and policy prompts. |
+| Phase 0 | Contracts, flags, and projection skeleton | Restored on main | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase0-contracts` / `codex/browser-runtime-phase0-contracts` | Use as baseline for readiness wiring; no separate PR needed for this commit set. |
+| Phase 1 | Supervisor around current chromiumoxide runtime | Restored on main | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Continue with readiness bridge after Agent OS PR-15 projection diagnostics. |
+| Phase 2 | App-managed Playwright runtime pack | Not started | Unassigned | Not allocated | Wait for Phase 0 flags and Phase 1 supervisor state. |
+| Phase 3 | Startup Splash, Startup Doctor, and shell UX | Not started | Unassigned | Not allocated | Wait for Phase 0 projection skeleton and Phase 2 runtime-pack status. |
+| Phase 4 | Browser Runtime settings and task-time preparation UX | Not started | Unassigned | Not allocated | Wait for Phase 2 runtime manager and Phase 3 shell route. |
+| Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | Not allocated | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
+| Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | Not allocated | Wait for supervised isolated-profile baseline. |
+| Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | Not allocated | Wait for provider contract and runtime pack policy. |
+| Phase 8 | Provider abstraction, parity harness, and default selection | Not started | Unassigned | Not allocated | Wait for chromiumoxide, CLI, and MCP lanes. |
+| Phase 9 | Recipes, locator cache, and domain-skill candidates | Not started | Unassigned | Not allocated | Wait for observable provider behavior and harness scorecards. |
+| Phase 10 | Optional hosted providers and hard-site escape hatches | Not started | Unassigned | Not allocated | Wait for local-first provider routing and policy prompts. |
 
 ---
 
@@ -42,6 +42,7 @@
 | 2026-05-23 | Use this file as the Browser Runtime close-loop tracker. | User asked to follow the `AGENT_OS_JCODE_UPGRADE_STATUS.md` tracker pattern. | Every Browser Runtime phase must update Quick View, branch hygiene, progress, and verification notes. |
 | 2026-05-23 | Rebase Phase 0 worktree onto latest `main` before commit. | Worktree initially had ADR commit on older merge-base `3d710297`; latest `main` was `d7a9527`. | Phase branch now has latest `main` plus rebased Browser ADR commit `4cb7538`, then Phase 0 WIP reapplied. |
 | 2026-05-23 | Start Phase 1 as a supervisor shell before hot-path rewiring. | Phase 1 ADR is broad; narrow first PR should make runtime states, deadlines, doctor classification, artifacts, and projection available without changing action execution. | Later Phase 1 follow-ups can route action dispatch through the supervisor once the shell is tested. |
+| 2026-05-23 | Restore Browser Runtime Supervisor Phase 0/1 commits to `main` before the Agent OS Post-PR14 recovery wave. | `main` merge commit `81d9b9dc` contains `38d1457c`, `a24cbc08`, and `bcf823f8`. | Agent OS PR-18 can wire readiness against the restored supervisor baseline instead of depending on branch-only commits. |
 
 ---
 
@@ -50,13 +51,12 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` |
-| Current phase branch | `codex/browser-runtime-phase1-supervisor` |
-| Current local base | `d7a9527 feat(ui): add Agent OS projection reducer` |
-| Browser ADR commit on phase branch | `4cb7538 docs(adr): define browser runtime supervisor strategy` |
-| Phase 0 implementation commit | Current `HEAD` on `codex/browser-runtime-phase0-contracts`: `feat(browser): add runtime supervisor phase0 contracts` |
-| Phase 1 base commit | `84743093 feat(browser): add runtime supervisor phase0 contracts` |
-| Phase 1 implementation commit | Current `HEAD` on `codex/browser-runtime-phase1-supervisor`: `feat(browser): add runtime supervisor phase1 shell` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-post-pr14-audit-design` for tracker/spec follow-up |
+| Current phase branch | `codex/agent-os-post-pr14-audit-design` |
+| Current local base | `81d9b9dc Merge remote-tracking branch 'origin/codex/browser-runtime-phase1-supervisor'` |
+| Browser ADR commit on main | `38d1457c docs(adr): define browser runtime supervisor strategy` |
+| Phase 0 implementation commit on main | `a24cbc08 feat(browser): add runtime supervisor phase0 contracts` |
+| Phase 1 implementation commit on main | `bcf823f8 feat(browser): add runtime supervisor phase1 shell` |
 | Known pre-existing tracked changes | None in the Phase 1 worktree at start. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, `src-tauri/gbrain-source`, and `ui/node_modules` linked from the primary worktree for local verification. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |

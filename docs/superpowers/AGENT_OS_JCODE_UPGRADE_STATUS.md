@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: Post-PR14 codebase health audit
+> Current phase: Post-PR14 runtime spine closure design
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -34,6 +34,13 @@
 | PR-12 | Frontend projection reducer | Merged | Codex | GitHub PR #410 merged at `d7a9527f`. |
 | PR-13 | Surface convergence | Merged | Codex | GitHub PR #411 merged at `dff2ede7`. |
 | PR-14 | Projection hydration bridge | Merged | Codex | GitHub PR #412 merged at `78331945`. |
+| Audit | Post-PR14 codebase health audit | Landed | Codex | See `docs/superpowers/reports/2026-05-23-agent-os-post-pr14-codebase-audit.md`. |
+| PR-15 | Projection ingress and visible diagnostics | Spec proposed | Codex | Review `docs/superpowers/specs/2026-05-23-agent-os-runtime-spine-closure-design.md`, then write PR-15 implementation plan. |
+| PR-16 | Default TaskEvent observability | Planned | Unassigned | Wait for PR-15 projection ingress. |
+| PR-17 | Agent OS bridge no-fake-success hardening | Planned | Unassigned | Wait for PR-15 diagnostics surface. |
+| PR-18 | Browser Runtime Supervisor readiness bridge | Planned | Unassigned | Wait for PR-15 diagnostics and Browser Runtime Phase 1 shell now restored on `main`. |
+| PR-19 | Evolution gate freeze and harness runner entry | Planned | Unassigned | Can start after PR-15 plan if P0 governance risk is prioritized. |
+| PR-20 | Worker/team projection convergence | Planned | Unassigned | Wait for PR-16 event observability or define an adapter-only slice. |
 
 ---
 
@@ -54,6 +61,8 @@ Append one row when a design decision changes the roadmap.
 | 2026-05-23 | PR-3 starts with provider readiness/core metadata, not runtime split-prompt execution. | GitNexus marks `get_active_llm_config` HIGH risk; subagents agreed `LlmProvider`/OpenAI/Anthropic runtime paths should not change in PR-3. | PR-3 adds typed readiness reports and leaves split prompt, runtime failover, and provider trait migration to later PRs. |
 | 2026-05-23 | PR-4 starts as an adapter/foundation slice, not an agent-loop rewrite. | GitNexus marks `run_agentic_loop` HIGH risk; jcode soft interrupt design can be adopted without changing the loop signature first. | PR-4 adds soft interrupt queue primitives and normalizes resumable boundaries into existing `TaskEvent` variants. |
 | 2026-05-23 | PR-5 starts as a derived projection journal, not a new session truth store. | jcode snapshot/journal is useful, but uClaw already owns conversation truth in SQLite and runtime truth in `TaskEvent` rollout JSONL. | PR-5 adds `runtime::projection_journal` and keeps DB migrations, startup wiring, UI reducer, and `tauri_commands.rs` out of scope. |
+| 2026-05-23 | Post-PR14 audit found the program is foundation-rich but runtime-wire-up poor. | `docs/superpowers/reports/2026-05-23-agent-os-post-pr14-codebase-audit.md`. | Stop adding metadata-only slices; next wave must close `TaskEvent -> WorldProjection -> visible diagnostics -> harness` loops. |
+| 2026-05-23 | Browser Runtime Supervisor Phase 0/1 commits were restored to `main`. | Merge commit `81d9b9dc` includes `38d1457c`, `a24cbc08`, and `bcf823f8`. | PR-18 can depend on supervisor contracts/shell instead of treating them as branch-only work. |
 
 ---
 
@@ -65,8 +74,9 @@ PR.
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current PR worktree | None; `/Users/ryanliu/Documents/uclaw` is synced to `main` at `670ee8fa`, the status-ledger commit on top of PR-14 merge `78331945`. |
-| Current PR branch | `main` |
+| Current PR worktree | `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-post-pr14-audit-design` |
+| Current PR branch | `codex/agent-os-post-pr14-audit-design` |
+| Current main baseline | `81d9b9dc`, including Browser Runtime Supervisor Phase 0/1 restoration. |
 | Known pre-existing untracked changes | Primary worktree has local Tauri IPC contract audit/design docs; preserve them and do not stage them into Agent OS PRs. |
 | Current jcode comparison docs | `docs/jcode_comparison/` is tracked on `main`. |
 | Current PR-0 spec | `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md` |
@@ -148,6 +158,47 @@ After merge or after the PR is declared ready:
 - add drift notes if the PR was tactical or blocked;
 - link closeout report for milestone-closing PRs;
 - leave a handoff note if another session should continue.
+
+---
+
+## Post-PR14 Runtime Spine Closure Track
+
+This track exists because the Post-PR14 audit found that many Agent OS pieces
+exist as contracts, metadata, adapters, or pure projection helpers without
+being the default product path yet.
+
+### Artifacts
+
+| Artifact | Path | Purpose |
+|---|---|---|
+| Audit report | `docs/superpowers/reports/2026-05-23-agent-os-post-pr14-codebase-audit.md` | Records implemented vs. not implemented gaps, empty promises, hidden fallbacks, UI wiring gaps, and quality risks. |
+| Recovery design | `docs/superpowers/specs/2026-05-23-agent-os-runtime-spine-closure-design.md` | Defines the spine-first PR wave after PR-14. |
+| Browser runtime status | `docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md` | Tracks Browser Runtime Supervisor Phase 0/1 restoration and future readiness wiring. |
+
+### Findings To Close
+
+| Finding | Severity | Owner PR | Close Criteria |
+|---|---|---|---|
+| GEP can store distilled genes as active without harness/user promotion gate. | P0 | PR-19 | New genes land as candidate/quarantined; active promotion requires harness evidence and user-visible review. |
+| Default Agent/Chat path can bypass `TaskEvent` rollout unless `UCLAW_ROLLOUT_ENABLED` is set. | P1 | PR-16 | Normal Agent/Chat runs emit read-only TaskEvent observability by default, with explicit visible fallback. |
+| PR-14 hydration is not connected to backend ingress or UI. | P1 | PR-15 | A read-only command returns projection payloads and a visible diagnostics surface renders hydrated `WorldProjection`. |
+| Capability Mesh ids can drift from executable tool names. | P1 | PR-17 or PR-20 | Mesh/runtime parity tests prevent nonexistent tool ids from being advertised as executable. |
+| `ToolExecutionContext` is accepted but ignored by execution. | P1 | Later ToolContext PR | At least one real tool path consumes context for task/provenance/policy behavior. |
+| BrowserProvider readiness is not backed by runtime supervisor state. | P1 | PR-18 | BrowserProvider status consumes Browser Runtime Supervisor snapshots and shows task-time preparation state. |
+| Ambient mapping is not consumed by automation runtime. | P1 | Later Ambient PR | Automation scheduling applies ambient pause/headroom/origin semantics and emits projection-visible outcomes. |
+| Teams are parallel mini-agents rather than canonical workers. | P1 | PR-20 | Team worker lifecycle maps to canonical worker spec/events and visible projection state. |
+| Harness campaigns are manifests, not promotion gates. | P1 | PR-19 | Campaign runner command and UI entry produce promotion evidence. |
+| Frontend bridge has fake-success fallbacks. | P2 | PR-17 | Agent OS bridge paths return typed errors instead of synthetic success. |
+
+### Next Gate
+
+Do not start PR-15 implementation until the recovery design spec is reviewed:
+
+- `docs/superpowers/specs/2026-05-23-agent-os-runtime-spine-closure-design.md`
+
+After approval, use `superpowers:writing-plans` to write:
+
+- `docs/superpowers/plans/2026-05-23-pr15-projection-ingress-visible-diagnostics.md`
 
 ---
 
