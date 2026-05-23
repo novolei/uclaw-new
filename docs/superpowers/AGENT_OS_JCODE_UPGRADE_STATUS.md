@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-8 jcode-inspired tool family mesh in progress
+> Current phase: PR-8 jcode-inspired tool family mesh in review
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -27,7 +27,7 @@
 | PR-5 | Session projection journal | Merged | Codex | GitHub PR #403 merged at `f7811f3d`. |
 | PR-6 | Performance scorecards | Merged | Codex | GitHub PR #404 merged at `78b16dde`. |
 | PR-7 | Subagent/team runtime hardening | Merged | Codex | GitHub PR #405 merged at `174015a6`. |
-| PR-8 | jcode-inspired tool family mesh | In progress | Codex | Branch `codex/agent-os-jcode-pr8-tool-family-mesh` adds registry-layer tool family cards without dispatch rewrites. |
+| PR-8 | jcode-inspired tool family mesh | Open | Codex | GitHub PR #406: https://github.com/novolei/uclaw-new/pull/406 |
 | PR-9 | BrowserProvider status/setup/probe | Not started | Unassigned | Wait for PR-1 contracts and browser impact map. |
 | PR-10 | Ambient-to-automation mapping | Not started | Unassigned | Wait for PR-4 and automation policy review. |
 | PR-11 | Harness campaigns | Not started | Unassigned | Wait for PR-2, PR-6, PR-9 smoke subjects. |
