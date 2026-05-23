@@ -28,5 +28,6 @@
 pub mod context;
 pub mod context_tools;
 pub mod contracts;
+pub mod projection_journal;
 pub mod rollout;
 pub mod task;
