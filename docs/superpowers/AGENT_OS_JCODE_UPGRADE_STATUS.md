@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-5 session projection journal open for review
+> Current phase: PR-6 performance scorecards starting
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -23,9 +23,9 @@
 | PR-1 | Pure type crates for messages/tools/protocol/runtime contracts | Merged | Codex | GitHub PR #399 merged at `efe0e72d`. |
 | PR-2 | ToolContext adapter | Merged | Codex | GitHub PR #400 merged at `17ec931e`. |
 | PR-3 | Provider readiness core | Merged | Codex | GitHub PR #401 merged at `9af769c1`. |
-| PR-4 | Soft interrupts and boundary yields | Open | Codex | GitHub PR #402 is open; review, merge, then sync local `main`. |
-| PR-5 | Session projection journal | Open | Codex | GitHub PR #403 is open; stacked on PR #402 until PR-4 merges. |
-| PR-6 | Performance scorecards | Not started | Unassigned | Wait for first replay fixtures. |
+| PR-4 | Soft interrupts and boundary yields | Merged | Codex | GitHub PR #402 merged at `21e6f9d1`. |
+| PR-5 | Session projection journal | Merged | Codex | GitHub PR #403 merged at `f7811f3d`. |
+| PR-6 | Performance scorecards | Starting | Codex | Create isolated worktree and write PR-6 plan from current `main`. |
 | PR-7 | Subagent/team runtime hardening | Not started | Unassigned | Wait for PR-1 contracts and PR-4 boundary semantics. |
 | PR-8 | jcode-inspired tool family mesh | Not started | Unassigned | Wait for PR-2 and Capability Mesh status. |
 | PR-9 | BrowserProvider status/setup/probe | Not started | Unassigned | Wait for PR-1 contracts and browser impact map. |
