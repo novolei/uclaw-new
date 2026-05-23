@@ -108,7 +108,7 @@ run failed with repository-not-found. The final gate therefore uses focused
 Vitest, a strict two-file TypeScript check, and staged diff whitespace check,
 with the GitNexus registry limitation recorded in the commit/PR notes.
 
-- [ ] **Step 3: Commit and open PR**
+- [x] **Step 3: Commit and open PR**
 
 Commit:
 

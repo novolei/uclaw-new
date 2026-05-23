@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-13 Surface convergence in progress
+> Current phase: PR-13 Surface convergence open for review
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -32,7 +32,7 @@
 | PR-10 | Ambient-to-automation mapping | Merged | Codex | GitHub PR #408 merged at `67005fed`. |
 | PR-11 | Harness campaigns | Merged | Codex | GitHub PR #409 merged at `adbe68c9`. |
 | PR-12 | Frontend projection reducer | Merged | Codex | GitHub PR #410 merged at `d7a9527f`. |
-| PR-13 | Surface convergence | In progress | Codex | Worktree `agent-os-jcode-pr13-surface-convergence`; scope is pure WorldProjection surface selectors, not component rewrites. |
+| PR-13 | Surface convergence | Open | Codex | GitHub PR #411 opened from `codex/agent-os-jcode-pr13-surface-convergence`; scope is pure WorldProjection surface selectors, not component rewrites. |
 
 ---
 
