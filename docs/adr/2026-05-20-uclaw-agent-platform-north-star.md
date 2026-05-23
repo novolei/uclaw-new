@@ -8,7 +8,7 @@
 - **Related docs:** `docs/adr/2026-05-20-gbrain-primary-freeze-l2-cognitive.md`, `docs/superpowers/specs/2026-05-19-uclaw-agent-autonomy-harness-design.md`, `docs/superpowers/specs/2026-05-18-ai-browser-agent-v2-design.md`, `docs/superpowers/specs/2026-05-17-symphony-runtime-design.md`, `docs/uclaw-migration-plan.md`
 - **Primary local reference:** `/Users/ryanliu/Documents/hermes-agent`
 - **Additional local references:** `/Users/ryanliu/Documents/GenericAgent`, `/Users/ryanliu/Documents/hello-halo`
-- **External design references:** OpenAI Codex, Claude Code, Hermes Agent plugin model, Context-as-a-Tool, Context-Folding, Agent S2, Reflexion, Voyager.
+- **External design references:** OpenAI Codex, Claude Code, Hermes Agent plugin model, Microsoft Playwright CLI, browser-use/browser-harness, Context-as-a-Tool, Context-Folding, Agent S2, Reflexion, Voyager.
 
 ---
 
@@ -182,6 +182,35 @@ The Agent OS v2 design incorporates these research directions:
 The uClaw-specific synthesis:
 
 > Context, capabilities, memory, and skills must all be runtime objects with provenance, budgets, and evaluation history.
+
+### 3.7 Playwright CLI and Browser-Harness
+
+Playwright CLI is the preferred fast execution lane for browser automation, but
+it should not become an unobserved side channel. The right lesson is:
+
+- use Playwright CLI for bounded, low-token, fast browser actions;
+- keep browser state warm behind a runtime supervisor instead of cold-starting
+  the full chain for every action;
+- treat MCP as the discovery and ecosystem lane, not the first execution path;
+- preserve a raw CDP escape hatch for compositor-level actions, stale session
+  repair, dialogs, downloads, iframes, shadow DOM, and other browser mechanics
+  that do not fit cleanly through higher-level wrappers;
+- learn from browser-harness's thin lane: small protected core, editable helper
+  workspace, site-specific domain skills, screenshots as verification, and
+  real liveness probes;
+- borrow browser-harness's runtime topology: short-lived foreground command,
+  long-lived browser runtime, one-request JSON-line IPC, persistent CDP
+  WebSocket, event buffer, real browser liveness probe, and bounded stale
+  session reattach;
+- do not copy browser-harness's no-manager posture into uClaw production.
+  uClaw still needs permissions, audit, redaction, TaskEvent traces, artifacts,
+  and harness promotion gates.
+
+The stable browser direction is therefore:
+
+> **Playwright CLI first for speed, Browser Runtime Supervisor for stability,
+> MCP second for capability discovery and ecosystem reach, raw CDP as a guarded
+> escape hatch, and harness-gated domain skills for repeated success.**
 
 ---
 
@@ -670,7 +699,11 @@ Browser automation is a capability family, not the agent's identity.
 ```mermaid
 flowchart LR
     Kernel["Runtime Kernel"] --> API["BrowserProvider API"]
-    API --> Local["Local Chromium\ncurrent BrowserContextManager"]
+    API --> Supervisor["Browser Runtime Supervisor"]
+    Supervisor --> PW["Playwright CLI Thin Lane"]
+    Supervisor --> Local["Local Chromium\ncurrent BrowserContextManager"]
+    Supervisor --> CDP["Guarded Raw CDP Lane"]
+    API --> MCP["Browser MCP Providers"]
     API --> BU["Browser Use Provider"]
     API --> BB["Browserbase Provider"]
     API --> FC["Firecrawl Browser Provider"]
@@ -678,17 +711,294 @@ flowchart LR
     API --> Harness["Browser Harness"]
 ```
 
-### 12.2 Strategy
+### 12.2 Execution Priority
+
+The default browser action ladder is:
+
+1. **No-browser lane:** use HTTP, API, static fetch, or existing structured data
+   when the task is read-only or does not require browser state.
+2. **Playwright CLI thin lane:** run a bounded script/action against a warm
+   browser context and return a structured result envelope plus artifact refs.
+   Declarative actions prefer semantic Playwright addressing first, such as
+   role, label, text, test id, and locator. uClaw DOM index or element id is the
+   second choice when structured observation already identified the target.
+   Coordinate/compositor input is a first-class fallback for cross-origin
+   iframes, shadow DOM, canvas, virtualized lists, rich text editors, and pages
+   where semantic locators are unstable.
+3. **Playwright warm session lane:** reuse browser/page/context state through
+   the Browser Runtime Supervisor for multi-step flows.
+4. **Guarded raw CDP lane:** use direct CDP only for mechanics that need it:
+   compositor-level coordinate actions, target/session repair, dialogs,
+   downloads, uploads, iframes, shadow DOM, screenshots, and low-level events.
+5. **MCP exploratory lane:** use MCP when a third-party server provides a useful
+   capability, when discovery matters more than speed, or when a provider has
+   a strong managed integration.
+6. **Cloud/remote provider lane:** use Browser Use Cloud, Browserbase,
+   Firecrawl, or another provider only when local execution cannot satisfy
+   isolation, stealth, scaling, proxy, captcha, or deployment constraints.
+
+This priority keeps the common path fast and low-token while preserving the
+Agent OS rule that state, policy, and evidence flow through the same runtime.
+
+### 12.3 Provider Strategy
 
 - Keep current `BrowserContextManager` as `LocalChromiumProvider`.
 - Keep legacy `BrowserService` only as compatibility surface with sunset note.
 - Put all new browser behavior behind `BrowserProvider`.
-- Treat browser-use, Browserbase, and Firecrawl as provider plugins.
+- Add a `PlaywrightCliProvider` as the first new browser execution provider.
+- Add a `BrowserRuntimeSupervisor` that owns warm sessions, profile locks,
+  liveness probes, action timeouts, restart policy, and artifact capture.
+- uClaw owns Playwright runtime installation and repair. Users should not need
+  to install Playwright CLI, Node packages, or browser binaries manually.
+  `BrowserRuntimeSupervisor` and `browser_runtime_doctor` manage pinned
+  Playwright package versions, worker scripts, browser revisions, cache paths,
+  one-click install/repair, first-use progress, and optional
+  offline/prebundled runtime modes. Worker execution must use explicit
+  uClaw-managed cache paths, for example through `PLAYWRIGHT_BROWSERS_PATH`,
+  so global user caches do not become product state.
+- The main app bundle should continue to use the already-bundled Bun runtime.
+  Do not add a second full Node runtime directly to the primary app bundle for
+  v1. Playwright runs through an optional uClaw-managed runtime pack containing
+  a pinned Node runtime, pinned Playwright package, worker scripts, and the
+  v1 Chromium browser binary. Firefox and WebKit remain later optional targets.
+- Runtime-pack download uses a uClaw-controlled manifest. The manifest declares
+  runtime pack version, pinned Node version, Playwright package version, worker
+  version, Chromium revision, download URLs, artifact size, sha256, minimum
+  compatible app version, rollback version, and release channel. Production
+  builds download signed/hashed uClaw-managed artifacts by default and must not
+  silently fall back to upstream Playwright install paths. Development builds
+  may use an explicit upstream fallback for local iteration, but that fallback
+  remains labeled as developer mode and outside normal product runtime state.
+- Runtime-pack updates are non-disruptive by default. Security updates may
+  prompt and take priority, but must remain visible. Ordinary updates should be
+  deferred to idle time or the next app launch and must not replace the runtime
+  while a browser task is using it. Keep the previous working pack version for
+  rollback until the new version passes doctor and harness gates.
+- App startup should include a polished Startup Splash / Startup Doctor surface
+  that is brand-first, beautiful, elegant, and attention-grabbing before it is a
+  diagnostic checklist. The first impression should feel like a strong uClaw
+  launch moment: refined typography, deliberate motion, depth, excellent
+  spacing, and a premium visual system tailored to the app's identity. Its
+  visual language should fuse a professional, trustworthy agent workbench with
+  a restrained sense of futuristic intelligence: stable and production-grade,
+  but alive through motion, depth, and responsive state. Startup diagnostics
+  should appear as a progressive secondary layer, not as the primary hero.
+  Motion may carry a strong brand memory, but it must be bounded: first launch
+  may use a fuller 1.5-2.5 second brand sequence, daily launch should stay
+  short at roughly 300-800 ms, it must be interruptible/skippable, and reduced
+  motion settings must fall back to a static or subtle fade-in experience. The
+  default splash should not show a checklist. It should show one polished status
+  line and minimal progress, then reveal detailed checks only after the time
+  budget is exceeded, a failure occurs, or the user explicitly expands
+  diagnostics. In v1 this surface should be the first route rendered by the
+  main Tauri WebView, with an extremely early render path. A native splash may
+  serve only as a very short blank-window placeholder or later optimization; it
+  should not be the primary interactive Startup Doctor in v1. The WebView route
+  can integrate with React state, World Projection, settings, confirmations, and
+  runtime progress. Splash visuals must be fully local and bundled; the first
+  impression must not depend on network access. Use local lightweight
+  shader/CSS/canvas/image/video assets as needed. Generated image or video
+  assets are allowed and should be prepared ahead of time into the frontend
+  asset tree, such as `ui/src/assets/startup-splash/` for build-imported assets
+  or `ui/public/startup-splash/` for static public assets. Generated assets must
+  be optimized for startup, include source prompt/metadata and license/provenance
+  notes, support reduced-motion fallback, and avoid making launch dependent on
+  a remote generation service. The v1 primary visual path should use local
+  static or short-loop WebP/AVIF assets plus CSS/canvas lightweight motion.
+  If the desired effect can be achieved with image assets plus CSS/canvas,
+  prefer that over video. Video may be an enhancement only when image/CSS cannot
+  deliver the intended effect with acceptable quality or complexity; it must not
+  be the only primary path and requires a static first frame and reduced-motion
+  fallback. Splash asset performance is a product requirement: launch-critical
+  visual assets should stay under a small startup budget, with a v1 target under
+  roughly 2 MB total for first-screen critical assets; enhancement video and
+  high-resolution alternates lazy-load after the first frame; the first static
+  frame renders before any Runtime Doctor or browser-runtime work completes.
+  Remote visual assets are allowed only for later optional themes or updates,
+  never for the v1 launch-critical path. v1 does not support multiple splash
+  themes or skinning; it ships one canonical uClaw brand experience. Seasonal or
+  optional themes can be considered only after the canonical experience proves
+  quality, performance, and reliability.
+  The same surface runs launch self-checks: local
+  configuration, DB/migration readiness, Bun runtime, permissions, network
+  availability, Playwright runtime manifest, runtime-pack path existence, and
+  last-known runtime status. Every launch should run only lightweight runtime
+  checks by default. Heavy checks such as Chromium binary hashing, Playwright
+  worker smoke test, and real-page probe run only on first install, version
+  upgrade, previous failure, user-requested repair, or immediately before a
+  browser task needs the lane. The splash may start runtime-pack installation
+  automatically by default, but it must expose clear visible state and Settings
+  controls for disabling automatic preparation, clearing the runtime pack,
+  reinstalling, and repairing it. If the download is unusually large or the
+  network appears metered, cellular, captive, restricted, or offline, the splash
+  should ask for lightweight confirmation before downloading. Runtime
+  preparation must not block the whole app indefinitely. After a short time
+  budget, such as 5-8 seconds, uClaw should enter the main UI while browser
+  runtime preparation continues in the background. Only browser automation tasks
+  wait on `preparing_browser_runtime`; normal chat, project browsing, settings,
+  and no-browser lanes remain usable.
+- Disabling automatic preparation only disables startup/background runtime-pack
+  download. It does not disable Browser automation capability. If the user later
+  starts a task that needs the browser lane and the runtime pack is absent, uClaw
+  should show a clear "prepare Browser runtime" confirmation with actions to
+  prepare now, defer until later, or continue through no-browser lanes when
+  possible. If the user defers and the task cannot proceed without browser
+  automation, the task enters `paused_waiting_for_browser_runtime` with a
+  checkpoint instead of failing. If a no-browser lane can satisfy the request,
+  uClaw may continue in that mode with visible capability limits.
+- Startup Doctor state enters World Projection and emits lightweight TaskEvents
+  for launch diagnostics, support, and developer visibility, but it must not
+  create a normal user-visible task or pollute the user's task list.
+- Default browser automation uses a uClaw-isolated profile. Users may create a
+  uClaw-managed browser identity through an explicit one-time global Settings
+  authorization flow with clear consent, revocation, trace, and policy
+  boundaries. Once authorized, that identity does not require per-domain or
+  per-task reauthorization by default. Payment-related sensitive actions still
+  trigger the agent `ask_user` confirmation banner.
+- Browser identities are global user-level resources in v1. Do not add
+  Space/Workspace association for browser identity grants until a concrete
+  product need appears.
+- Settings must show the authorized browser identity status, last-used time,
+  active tasks currently using it, and a one-click revoke action.
+- The Settings entry should behave like an OAuth-style authorization flow: the
+  user clicks an explicit connect button, uClaw opens a dedicated in-app
+  WebView/Browser authorization window or wizard, the user chooses or logs into
+  the browser identity there, and uClaw stores only the authorization
+  association and profile metadata needed to reconnect and audit the grant.
+- The in-app authorization window must still run through the same
+  `BrowserProvider`, `BrowserRuntimeSupervisor`, profile metadata, trace, and
+  revocation model; it must not become an untracked second browser truth source.
+- For v1, the identity created by this flow is a uClaw-managed browser identity
+  rather than a binding to an external Chrome profile. External Chrome real
+  profile attach remains an advanced or later mode, not the default product
+  path for the authorization window.
+- Revocation immediately blocks new actions for that browser identity, allows
+  the current action only a short bounded drain window, then moves affected
+  tasks to `paused_checkpointed`, emits a user-boundary event, and asks whether
+  to switch to an isolated profile, reauthorize, or end the task.
+- Browser identity authorization state and profile metadata live in uClaw
+  config or DB. Local uClaw-managed browser identity should not require storing
+  cookies, storage state, or long-lived attach secrets outside its managed
+  profile store. System keychain is reserved for external provider credentials
+  and other true secrets, read outside the per-action hot path and cached in
+  memory for the active session.
+- `BrowserRuntimeSupervisor` is owned by the Rust runtime. Node/Playwright is a
+  managed child worker/provider, not a second control plane or canonical truth
+  source.
+- The initial Rust-to-Playwright worker protocol is a short-lived child process
+  with stdin/stdout JSON envelopes per bounded action. The Rust supervisor keeps
+  warm browser/session metadata and artifact archives, owns per-action timeout,
+  kill, retry, and error classification, and may later upgrade to a long-lived
+  JSON-RPC worker only after the short-command path is stable.
+- The v1 worker envelope exposes declarative actions by default, such as
+  `navigate`, `click`, `type`, `screenshot`, `extract`, and `wait`. Arbitrary
+  Playwright script execution is an explicit policy-controlled escape hatch,
+  disabled by default and limited to development or allowlisted profiles.
+- This deliberately mirrors browser-harness's useful shape while moving the
+  control plane into uClaw: browser-harness has a short CLI, a persistent daemon,
+  JSON-line IPC, and a persistent CDP connection; uClaw's Rust supervisor plays
+  the daemon role, while Node/Playwright workers remain replaceable execution
+  children.
+- Treat browser-use, Browserbase, Firecrawl, and Browser MCP servers as provider
+  plugins behind the same profile and policy model.
 - Make site-specific workflows script artifacts when repeated.
-- Preserve structured observations, action results, boundary events, and checkpoints.
+- Preserve structured observations, action results, boundary events, and
+  checkpoints.
 - Evaluate providers with the same browser harness cases.
 
-### 12.3 Computer Use Upgrade
+### 12.4 Runtime Health and Self-Healing
+
+Browser runtime health must be proven by real browser operations, not by a
+process or socket merely existing.
+
+Required runtime signals:
+
+- CLI/provider version and install status;
+- app-managed Playwright runtime status: package version, worker version,
+  browser revision, cache path, install/repair availability, and offline mode;
+- Startup Doctor phase and progress: config, DB/migration, Bun runtime,
+  permissions, network, runtime manifest, runtime-pack path, last-known runtime
+  status, and any deferred heavy check reason;
+- runtime pack state: absent, preparing, ready, repairing, failed, offline, or
+  background-installing;
+- runtime download gate: auto-allowed, awaiting lightweight confirmation,
+  metered network, restricted network, offline, disabled in Settings, or
+  cleanup requested;
+- runtime manifest trust state: channel, artifact URL, size, sha256, minimum app
+  version, rollback version, signature/hash validation, and whether any
+  developer-only upstream fallback is active;
+- runtime update state: none, ordinary deferred, security update available,
+  updating at idle, update failed, rollback available, or rollback active;
+- browser process and profile status;
+- profile mode: isolated uClaw profile, authorized uClaw-managed browser
+  identity, advanced real-profile attach, or remote/cloud profile;
+- active context/page/tab identity;
+- real page operation probe, such as title, URL, target list, or screenshot;
+- stale target/session detection and one bounded reattach retry;
+- pending dialog, download, file picker, beforeunload, and auth-wall detection;
+- active-session event buffer that filters background tab network noise;
+- one-request IPC envelopes for action workers so hung calls can be timed out,
+  killed, classified, and retried without poisoning the warm runtime;
+- risk-based screenshot policy: capture screenshots for navigation, submit,
+  upload, login/user-boundary events, cross iframe/shadow-DOM work, coordinate
+  fallback, failed retry, and final state, but allow ordinary `type`, `wait`,
+  and stable locator clicks to rely on action results plus DOM/state diffs;
+- timeout classification: startup, connect, action, wait, network idle,
+  policy block, user boundary, and provider crash;
+- artifact refs for screenshots, traces, logs, action envelopes, and event tail.
+
+The health surface should exist as both a user-visible diagnosis action and a
+harness subject. A frozen or half-dead browser runtime is a recoverable
+runtime state, not an opaque tool failure.
+
+### 12.5 Domain Skills and Browser Learning
+
+Browser learning produces candidates, not production mutation.
+
+uClaw should adopt browser-harness's domain-skill insight but route it through
+Agent OS governance:
+
+- durable site knowledge belongs in gbrain and executable skill/script
+  registries, not hidden prompt text;
+- site playbooks may capture stable URL patterns, selectors, private API
+  shapes, wait conditions, iframe/shadow-DOM notes, auth boundaries, and known
+  traps;
+- playbooks must not store secrets, task diaries, transient pixel coordinates,
+  or private user data;
+- generated helper or domain-skill candidates must carry evidence from the run,
+  pass harness regression cases, and remain reversible through promotion state;
+- repeated browser work should become cheaper because the runtime recalls the
+  right provider, profile, script, and domain skill, not because the model sees
+  a larger prompt.
+
+### 12.6 Non-Goals
+
+- Playwright CLI does not replace `BrowserProvider`; it implements one fast
+  provider lane.
+- Users do not manually install Playwright CLI for normal app use; global
+  Playwright installs and global browser caches are developer fallbacks only.
+- The primary app bundle does not need to carry a second full Node runtime for
+  v1; Node belongs to the optional Playwright runtime pack.
+- App launch must not be held indefinitely by Playwright runtime download or
+  repair. Browser automation may wait; the rest of the app should degrade
+  gracefully.
+- Automatic Playwright runtime preparation should not hide user control:
+  Settings must expose status, disable automatic preparation, cleanup, reinstall,
+  and repair; large or metered/restricted downloads require lightweight
+  confirmation.
+- Disabling automatic preparation does not disable Browser automation. It only
+  prevents startup/background download; task-time browser use asks for explicit
+  preparation if the runtime is still absent.
+- Playwright worker v1 does not expose a general shell-like script runner by
+  default; arbitrary script execution is an explicit escape hatch.
+- MCP does not become the canonical browser truth source; it is a provider and
+  discovery surface.
+- Raw CDP does not bypass policy; it is a guarded fallback capability.
+- Domain skills do not self-promote into production behavior.
+- Browser automation does not own credentials, payment authorization, CAPTCHA,
+  or destructive external actions; those remain human boundary events.
+
+### 12.7 Computer Use Upgrade
 
 For GUI/computer control, borrow Agent S2's principle:
 
@@ -696,6 +1006,98 @@ For GUI/computer control, borrow Agent S2's principle:
 - use specialist grounding for coordinates, accessibility, screenshots, and UI state;
 - maintain multi-scale plans: goal plan, page/app plan, next-action plan;
 - treat GUI grounding uncertainty as a first-class risk signal.
+
+### 12.8 Product Shell and UI/UX Upgrade
+
+The current React codebase already has a capable desktop shell: `AppShell`,
+`WorkspaceShell`, left/right panels, bottom dock, Settings primitives,
+Kaleidoscope modules, global modals, and theme tokens. The UX risk is not lack
+of UI, but fragmentation: launch state, task state, runtime health, settings,
+diagnostics, placeholders, and recovery states can appear through separate
+surfaces rather than one coherent product language.
+
+Current codebase evidence:
+
+- `ui/src/App.tsx` still renders a generic spinner and "正在初始化..." while
+  the app initializes. This should become the Startup Splash / Startup Doctor
+  first route.
+- `ui/src/main.tsx` has a raw root error fallback with inline colors and stack
+  output. This should become a branded recovery surface with developer details
+  behind expansion.
+- `ui/src/components/app-shell/AppShell.tsx` owns many global overlays:
+  approvals, settings, dock panels, focus mode, memory capture, escalation, and
+  quick capture. These should progressively consume World Projection rather
+  than inventing separate visibility/state rules.
+- `ui/src/components/app-shell/LeftSidebar.tsx` and
+  `ui/src/components/agent/AgentView.tsx` are very large and combine layout,
+  data coordination, interactions, and microcopy. Future UI work should extract
+  focused shell, session-list, composer, and runtime-status subcomponents.
+- `ui/src/components/settings/SettingsPanel.tsx` and settings primitives are a
+  good foundation, but the new Browser Runtime / Startup Doctor / browser
+  identity controls need a first-class Settings destination with deep links
+  from search, runtime prompts, and failure states.
+- `ui/src/styles/globals.css` provides many theme variables, while feature
+  modules still contain hard-coded status colors, shadows, and raw hex values.
+  New shared status, runtime, motion, and elevation tokens should reduce visual
+  drift across themes.
+- Several user-visible surfaces are still placeholders or debug-oriented:
+  dock Connections/Alert panels, ComingSoon Kaleidoscope modules, file-browser
+  placeholder, `FLASH-DEBUG` warnings, and raw system diagnostics. These should
+  be either hidden behind capability flags or upgraded into branded empty,
+  unavailable, and recovery states.
+
+UI/UX upgrade principles:
+
+- **World Projection first:** primary UI surfaces answer what is running, what
+  is waiting, what needs the user, what can resume, and what is degraded. Avoid
+  module-local truth for task/runtime state.
+- **Brand-first launch:** replace generic initialization with the canonical
+  Startup Splash. First frame renders immediately; diagnostics are progressive.
+- **Settings as control tower:** Settings must expose browser runtime,
+  Startup Doctor, browser identity, provider health, privacy/auth, cleanup,
+  repair, rollback, and developer-mode fallback as scannable status groups.
+- **Progressive disclosure:** normal users see concise status and primary
+  actions; details, logs, hashes, stack traces, and raw diagnostics expand only
+  when needed.
+- **One product motion system:** define reusable motion tokens for launch,
+  dialog, dock, sidebar, task progress, and recovery. Respect reduced motion.
+- **Semantic tokens over hard-coded color:** introduce shared status tokens for
+  success, warning, danger, info, running, paused, degraded, blocked, preparing,
+  and developer-mode. Canvas/3D visualizations may keep domain palettes, but
+  operational UI should use semantic tokens.
+- **Recovery is designed:** errors, offline mode, missing runtime, revoked
+  identity, failed doctor, and unavailable placeholders should show a clear
+  status, one primary action, one defer/continue path, and an expandable detail
+  region.
+- **Accessibility by default:** every new shell/control surface needs keyboard
+  reachability, focus states, readable text scale, tooltip/aria labels for icon
+  controls, contrast checks across supported themes, and reduced-motion paths.
+- **Performance budgets:** launch-critical UI and shell assets must not wait on
+  runtime doctors, browser downloads, network calls, or heavy visualization
+  bundles. Enhanced visuals and diagnostics lazy-load after the first frame.
+
+Recommended UI/UX workstreams:
+
+1. **Startup Experience:** replace the generic `App.tsx` loading state with the
+   Startup Splash first route and branded recovery fallback.
+2. **World Projection Surface:** consolidate task, runtime, provider, browser,
+   identity, and startup states into a reusable projection model consumed by
+   shell banners, status bars, settings, and runtime prompts.
+3. **Settings Information Architecture:** add Browser Runtime / Startup Doctor
+   / Browser Identity controls under a dedicated settings destination with
+   deep-link support from SearchPalette and runtime prompts.
+4. **Shell Navigation Simplification:** clarify the hierarchy between left
+   sidebar, bottom dock, Kaleidoscope, Home Office, and placeholder panels. Hide
+   or mark incomplete surfaces so the app feels intentional.
+5. **Design Token Consolidation:** add semantic status, elevation, radius,
+   motion, and runtime tokens; migrate operational UI away from hard-coded
+   Tailwind color families where they conflict with theme support.
+6. **Recovery and Empty-State System:** create branded reusable empty,
+   unavailable, degraded, paused, and repair-needed states for settings,
+   browser runtime, diagnostics, dock panels, and feature placeholders.
+7. **UX Verification Harness:** add visual regression screenshots for launch,
+   settings, shell, dark/light/special themes, reduced motion, and browser
+   runtime degraded states.
 
 ---
 
@@ -920,11 +1322,21 @@ Deliverables:
 - materialized task projection from TaskEvent streams;
 - pending boundary projection;
 - active provider/worker projection;
-- browser/task/team state surfaces consume projection instead of bespoke state when possible.
+- browser/task/team state surfaces consume projection instead of bespoke state
+  when possible;
+- shared shell status model for startup, runtime, provider, identity,
+  automation, memory, and browser states;
+- reusable recovery and empty-state primitives for paused, degraded, blocked,
+  unavailable, setup-needed, and repair-needed surfaces.
 
 Exit criteria:
 
-- UI can answer what the agent is doing, waiting for, using, and able to resume.
+- UI can answer what the agent is doing, waiting for, using, degraded by, and
+  able to resume;
+- Startup Doctor status appears in World Projection without becoming a normal
+  user task;
+- settings, shell banners, runtime prompts, and browser panels render the same
+  projection facts rather than duplicating local state.
 
 ### Milestone 5 — Policy Hooks and Isolation
 
@@ -945,13 +1357,42 @@ Deliverables:
 
 - `BrowserProvider` trait;
 - `LocalChromiumProvider` adapter;
+- `PlaywrightCliProvider` thin lane with structured result envelopes;
+- `BrowserRuntimeSupervisor` for warm sessions, liveness, restart, timeouts,
+  profile locks, event buffers, and artifact capture;
+- app-managed Playwright runtime manager for the optional runtime pack: pinned
+  Node runtime, pinned Playwright package, worker scripts, v1 Chromium binary,
+  uClaw-controlled runtime manifest, signed/hashed artifacts, managed cache
+  paths, non-disruptive update scheduling, one-click install/repair, cleanup,
+  rollback, and optional offline bundles;
+- Startup Splash / Startup Doctor surface for launch self-checks, bounded
+  runtime-pack preparation, progress, graceful background continuation, and
+  recoverable setup failure states, including lightweight confirmation for
+  large or metered/restricted runtime downloads. The splash is a premium
+  brand-first launch experience with progressive diagnostics, not a utilitarian
+  status checklist;
+- Browser Runtime / Startup Doctor / Browser Identity settings destination with
+  visible status, last-used/last-checked metadata, active task use, install,
+  repair, cleanup, revoke, rollback, and developer-mode fallback controls;
+- branded recovery and unavailable states for missing runtime, failed doctor,
+  offline download, revoked identity, and deferred browser preparation;
+- short-lived Playwright child worker protocol with stdin/stdout JSON envelopes
+  before any long-lived JSON-RPC worker optimization;
+- `browser_runtime_doctor` as both user-visible diagnosis and harness subject;
+- guarded raw CDP escape hatch for browser mechanics that Playwright CLI cannot
+  express reliably;
+- browser action ladder policy: no-browser, Playwright CLI, warm session, raw
+  CDP, MCP, cloud/remote provider;
 - provider-independent browser harness;
 - Browser Use, Browserbase, Firecrawl provider plugin stubs;
-- site workflow script contract.
+- site workflow script and domain-skill candidate contract.
 
 Exit criteria:
 
-- same browser harness case can run against local provider and a mock external provider.
+- same browser harness case can run against local provider, Playwright CLI lane,
+  and a mock external provider;
+- a stale session, blocked dialog, and failed browser-health probe produce
+  classified recovery events instead of an opaque tool hang.
 
 ### Milestone 7 — Evolution Factory
 
@@ -1013,9 +1454,16 @@ Exit criteria:
 | Self-evolution corrupts behavior | prompt/skill changes auto-promote | Evolution Factory requires harness and rollback |
 | Memory splits again | new features write facts outside gbrain | ADR violation unless a later ADR changes the canonical source |
 | Browser stack becomes a clone | new features land only in local chromium path | new behavior must target BrowserProvider API |
+| Browser CLI becomes a hidden side channel | Playwright scripts mutate pages without TaskEvent, policy, or artifacts | CLI lanes must run through BrowserProvider, Supervisor, policy hooks, and harness-visible result envelopes |
+| Browser runtime appears alive while unusable | socket/process ping passes but target/page/action calls hang | health checks must execute real browser operations and classify stale sessions, dialogs, profile locks, and timeout class |
+| In-app authorization creates a second browser truth source | auth window stores private state outside BrowserProvider/Supervisor | authorization window must use the same provider, supervisor, trace, and revocation model |
+| Domain skills leak private state | generated playbooks include secrets, task diaries, or pixel coordinates | promotion gate redacts and rejects non-durable or sensitive content |
 | Teams duplicate runtime | team code creates its own loop/tool/policy model | teams must run TaskSpec and emit TaskEvent |
 | Cluster leaks private context | remote workers receive broad local state | data locality policy and explicit context refs |
 | UI becomes panel sprawl | each module renders its own truth | WorldProjection becomes the product-facing state contract |
+| UI polish regresses into engineering surfaces | generic spinners, raw stack traces, debug warnings, or placeholders appear in normal flows | brand-first shell, progressive diagnostics, branded recovery states, and capability-gated incomplete surfaces |
+| Theme support drifts | hard-coded status colors/shadows appear across operational UI | semantic status/elevation/motion tokens plus screenshot checks across core themes |
+| Settings becomes a drawer of unrelated controls | runtime, identity, provider, memory, and diagnostics controls fragment by implementation area | settings IA treats Browser Runtime, Startup Doctor, Browser Identity, provider health, and privacy/auth as scannable status groups |
 
 ---
 
