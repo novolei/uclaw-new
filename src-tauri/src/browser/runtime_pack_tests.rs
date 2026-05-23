@@ -657,6 +657,203 @@ fn dry_run_executor_surfaces_destructive_cleanup_and_rollback_after_confirmation
         && step.destructive));
 }
 
+#[derive(Default)]
+struct RecordingRuntimePackStepRunner {
+    calls: Vec<BrowserRuntimePackPlanStepKind>,
+    fail_at: Option<BrowserRuntimePackPlanStepKind>,
+}
+
+impl BrowserRuntimePackStepRunner for RecordingRuntimePackStepRunner {
+    fn run_step(&mut self, step: &BrowserRuntimePackPlanStep) -> BrowserRuntimePackStepRunOutcome {
+        self.calls.push(step.kind);
+        if self.fail_at == Some(step.kind) {
+            BrowserRuntimePackStepRunOutcome::failed(format!(
+                "simulated failure at {:?}",
+                step.kind
+            ))
+        } else {
+            BrowserRuntimePackStepRunOutcome::completed()
+        }
+    }
+}
+
+#[test]
+fn managed_executor_blocks_network_or_destructive_policy_without_runner_calls() {
+    let (manifest, paths, doctor, prepare_request) = plan_fixture(
+        BrowserRuntimePackOperation::Prepare,
+        BrowserRuntimePackNetworkState::Online,
+    );
+    let prepare_plan = plan_runtime_pack_operation(&manifest, &paths, &doctor, prepare_request);
+    let mut runner = RecordingRuntimePackStepRunner::default();
+
+    let blocked_network = execute_runtime_pack_plan_with_runner(
+        &prepare_plan,
+        BrowserRuntimePackExecutorPolicy::no_side_effects(),
+        &mut runner,
+    );
+
+    assert_eq!(
+        blocked_network.status,
+        BrowserRuntimePackExecutionStatus::Blocked
+    );
+    assert_eq!(
+        blocked_network.mode,
+        BrowserRuntimePackExecutionMode::Managed
+    );
+    assert!(blocked_network.step_reports.is_empty());
+    assert!(runner.calls.is_empty());
+    assert!(blocked_network
+        .event_names
+        .contains(&"browser.runtime.prepare.execution_blocked".to_string()));
+
+    let mut cleanup_request = BrowserRuntimePackOperationRequest {
+        operation: BrowserRuntimePackOperation::Cleanup,
+        trigger: BrowserRuntimePackPlanTrigger::Settings,
+        network_state: BrowserRuntimePackNetworkState::Online,
+        auto_prepare_enabled: true,
+        user_confirmed: true,
+        active_tasks: 0,
+    };
+    cleanup_request.user_confirmed = true;
+    let cleanup_plan = plan_runtime_pack_operation(&manifest, &paths, &doctor, cleanup_request);
+    let blocked_destructive = execute_runtime_pack_plan_with_runner(
+        &cleanup_plan,
+        BrowserRuntimePackExecutorPolicy::no_side_effects(),
+        &mut runner,
+    );
+
+    assert_eq!(
+        blocked_destructive.status,
+        BrowserRuntimePackExecutionStatus::Blocked
+    );
+    assert!(runner.calls.is_empty());
+    assert!(blocked_destructive
+        .event_names
+        .contains(&"browser.runtime.cleanup.execution_blocked".to_string()));
+}
+
+#[test]
+fn managed_executor_runs_planned_steps_through_runner() {
+    let (manifest, paths, doctor, request) = plan_fixture(
+        BrowserRuntimePackOperation::Prepare,
+        BrowserRuntimePackNetworkState::Online,
+    );
+    let plan = plan_runtime_pack_operation(&manifest, &paths, &doctor, request);
+    let mut runner = RecordingRuntimePackStepRunner::default();
+
+    let report = execute_runtime_pack_plan_with_runner(
+        &plan,
+        BrowserRuntimePackExecutorPolicy {
+            allow_network: true,
+            allow_destructive: false,
+        },
+        &mut runner,
+    );
+
+    assert_eq!(report.status, BrowserRuntimePackExecutionStatus::Succeeded);
+    assert_eq!(report.mode, BrowserRuntimePackExecutionMode::Managed);
+    assert_eq!(runner.calls.len(), plan.steps.len());
+    assert_eq!(report.step_reports.len(), plan.steps.len());
+    assert!(report
+        .step_reports
+        .iter()
+        .all(|step| step.status == BrowserRuntimePackStepExecutionStatus::Completed));
+    assert!(report
+        .event_names
+        .contains(&"browser.runtime.prepare.execution_succeeded".to_string()));
+}
+
+#[test]
+fn managed_executor_stops_on_failed_step_with_artifact_event() {
+    let (manifest, paths, doctor, request) = plan_fixture(
+        BrowserRuntimePackOperation::Prepare,
+        BrowserRuntimePackNetworkState::Online,
+    );
+    let plan = plan_runtime_pack_operation(&manifest, &paths, &doctor, request);
+    let mut runner = RecordingRuntimePackStepRunner {
+        fail_at: Some(BrowserRuntimePackPlanStepKind::VerifySha256),
+        ..RecordingRuntimePackStepRunner::default()
+    };
+
+    let report = execute_runtime_pack_plan_with_runner(
+        &plan,
+        BrowserRuntimePackExecutorPolicy {
+            allow_network: true,
+            allow_destructive: false,
+        },
+        &mut runner,
+    );
+
+    assert_eq!(report.status, BrowserRuntimePackExecutionStatus::Failed);
+    assert_eq!(
+        runner.calls,
+        vec![
+            BrowserRuntimePackPlanStepKind::CheckManifest,
+            BrowserRuntimePackPlanStepKind::CheckNetworkPolicy,
+            BrowserRuntimePackPlanStepKind::DownloadArchive,
+            BrowserRuntimePackPlanStepKind::VerifySha256,
+        ]
+    );
+    assert_eq!(
+        report.step_reports.last().map(|step| step.status),
+        Some(BrowserRuntimePackStepExecutionStatus::Failed)
+    );
+    assert!(report
+        .step_reports
+        .last()
+        .and_then(|step| step.error.as_ref())
+        .is_some());
+    assert!(report
+        .artifact_id
+        .contains("browser-runtime-prepare-browser-runtime-pack-v1-failed"));
+    assert!(report
+        .event_names
+        .contains(&"browser.runtime.prepare.execution_failed".to_string()));
+}
+
+#[test]
+fn managed_executor_preserves_confirmation_and_deferred_boundaries() {
+    let (manifest, paths, doctor, mut confirmation_request) = plan_fixture(
+        BrowserRuntimePackOperation::Prepare,
+        BrowserRuntimePackNetworkState::Metered,
+    );
+    confirmation_request.user_confirmed = false;
+    let confirmation_plan =
+        plan_runtime_pack_operation(&manifest, &paths, &doctor, confirmation_request);
+    let mut runner = RecordingRuntimePackStepRunner::default();
+
+    let confirmation = execute_runtime_pack_plan_with_runner(
+        &confirmation_plan,
+        BrowserRuntimePackExecutorPolicy {
+            allow_network: true,
+            allow_destructive: false,
+        },
+        &mut runner,
+    );
+    assert_eq!(
+        confirmation.status,
+        BrowserRuntimePackExecutionStatus::RequiresConfirmation
+    );
+    assert!(runner.calls.is_empty());
+    assert!(confirmation.step_reports.is_empty());
+
+    let (_, _, _, offline_request) = plan_fixture(
+        BrowserRuntimePackOperation::Prepare,
+        BrowserRuntimePackNetworkState::Offline,
+    );
+    let offline_plan = plan_runtime_pack_operation(&manifest, &paths, &doctor, offline_request);
+    let deferred = execute_runtime_pack_plan_with_runner(
+        &offline_plan,
+        BrowserRuntimePackExecutorPolicy {
+            allow_network: true,
+            allow_destructive: false,
+        },
+        &mut runner,
+    );
+    assert_eq!(deferred.status, BrowserRuntimePackExecutionStatus::Deferred);
+    assert!(runner.calls.is_empty());
+}
+
 #[test]
 fn manifest_loader_reports_missing_loaded_and_invalid_json() {
     let temp = tempfile::tempdir().expect("tempdir");

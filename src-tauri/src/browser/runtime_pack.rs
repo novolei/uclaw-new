@@ -647,6 +647,7 @@ pub struct BrowserRuntimePackOperationPlan {
 #[serde(rename_all = "snake_case")]
 pub enum BrowserRuntimePackExecutionMode {
     DryRun,
+    Managed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -657,6 +658,7 @@ pub enum BrowserRuntimePackExecutionStatus {
     RequiresConfirmation,
     Deferred,
     Blocked,
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -664,6 +666,8 @@ pub enum BrowserRuntimePackExecutionStatus {
 pub enum BrowserRuntimePackStepExecutionStatus {
     WouldRun,
     Skipped,
+    Completed,
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -677,6 +681,8 @@ pub struct BrowserRuntimePackStepExecutionReport {
     pub uses_network: bool,
     pub destructive: bool,
     pub requires_confirmation: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -696,6 +702,48 @@ pub struct BrowserRuntimePackExecutionReport {
     pub destructive: bool,
     pub requires_confirmation: bool,
     pub keeps_current_pack: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRuntimePackExecutorPolicy {
+    pub allow_network: bool,
+    pub allow_destructive: bool,
+}
+
+impl BrowserRuntimePackExecutorPolicy {
+    pub const fn no_side_effects() -> Self {
+        Self {
+            allow_network: false,
+            allow_destructive: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserRuntimePackStepRunOutcome {
+    pub status: BrowserRuntimePackStepExecutionStatus,
+    pub error: Option<String>,
+}
+
+impl BrowserRuntimePackStepRunOutcome {
+    pub fn completed() -> Self {
+        Self {
+            status: BrowserRuntimePackStepExecutionStatus::Completed,
+            error: None,
+        }
+    }
+
+    pub fn failed(error: impl Into<String>) -> Self {
+        Self {
+            status: BrowserRuntimePackStepExecutionStatus::Failed,
+            error: Some(error.into()),
+        }
+    }
+}
+
+pub trait BrowserRuntimePackStepRunner {
+    fn run_step(&mut self, step: &BrowserRuntimePackPlanStep) -> BrowserRuntimePackStepRunOutcome;
 }
 
 pub fn execute_runtime_pack_plan_dry_run(
@@ -723,6 +771,7 @@ pub fn execute_runtime_pack_plan_dry_run(
                 uses_network: step.uses_network,
                 destructive: step.destructive,
                 requires_confirmation: step.requires_confirmation,
+                error: None,
             })
             .collect()
     } else {
@@ -745,6 +794,69 @@ pub fn execute_runtime_pack_plan_dry_run(
         requires_confirmation: plan.requires_confirmation,
         keeps_current_pack: plan.keeps_current_pack,
     }
+}
+
+pub fn execute_runtime_pack_plan_with_runner<R: BrowserRuntimePackStepRunner>(
+    plan: &BrowserRuntimePackOperationPlan,
+    policy: BrowserRuntimePackExecutorPolicy,
+    runner: &mut R,
+) -> BrowserRuntimePackExecutionReport {
+    let preflight_status = execution_status_for_plan(plan);
+    if !matches!(
+        preflight_status,
+        BrowserRuntimePackExecutionStatus::Succeeded | BrowserRuntimePackExecutionStatus::NoOp
+    ) {
+        return managed_execution_report(plan, preflight_status, Vec::new());
+    }
+
+    if preflight_status == BrowserRuntimePackExecutionStatus::NoOp {
+        return managed_execution_report(plan, BrowserRuntimePackExecutionStatus::NoOp, Vec::new());
+    }
+
+    if (plan.uses_network && !policy.allow_network)
+        || (plan.destructive && !policy.allow_destructive)
+    {
+        return managed_execution_report(
+            plan,
+            BrowserRuntimePackExecutionStatus::Blocked,
+            Vec::new(),
+        );
+    }
+
+    let mut step_reports = Vec::new();
+    for step in &plan.steps {
+        if (step.uses_network && !policy.allow_network)
+            || (step.destructive && !policy.allow_destructive)
+        {
+            step_reports.push(step_execution_report(
+                step,
+                BrowserRuntimePackStepExecutionStatus::Skipped,
+                Some("Step blocked by Browser runtime executor policy.".to_string()),
+            ));
+            return managed_execution_report(
+                plan,
+                BrowserRuntimePackExecutionStatus::Blocked,
+                step_reports,
+            );
+        }
+
+        let outcome = runner.run_step(step);
+        let failed = outcome.status == BrowserRuntimePackStepExecutionStatus::Failed;
+        step_reports.push(step_execution_report(step, outcome.status, outcome.error));
+        if failed {
+            return managed_execution_report(
+                plan,
+                BrowserRuntimePackExecutionStatus::Failed,
+                step_reports,
+            );
+        }
+    }
+
+    managed_execution_report(
+        plan,
+        BrowserRuntimePackExecutionStatus::Succeeded,
+        step_reports,
+    )
 }
 
 fn execution_status_for_plan(
@@ -781,6 +893,9 @@ fn execution_summary_for_status(
         BrowserRuntimePackExecutionStatus::Blocked => {
             format!("Dry-run blocked: {}", plan.summary)
         }
+        BrowserRuntimePackExecutionStatus::Failed => {
+            format!("Dry-run failed: {}", plan.summary)
+        }
     }
 }
 
@@ -808,6 +923,99 @@ fn execution_event_names(
         BrowserRuntimePackExecutionStatus::RequiresConfirmation => "dry_run_confirmation_required",
         BrowserRuntimePackExecutionStatus::Deferred => "dry_run_deferred",
         BrowserRuntimePackExecutionStatus::Blocked => "dry_run_blocked",
+        BrowserRuntimePackExecutionStatus::Failed => "dry_run_failed",
+    };
+    events.push(format!(
+        "browser.runtime.{}.{}",
+        plan.operation.event_slug(),
+        suffix
+    ));
+    events
+}
+
+fn step_execution_report(
+    step: &BrowserRuntimePackPlanStep,
+    status: BrowserRuntimePackStepExecutionStatus,
+    error: Option<String>,
+) -> BrowserRuntimePackStepExecutionReport {
+    BrowserRuntimePackStepExecutionReport {
+        step: step.kind,
+        status,
+        label: step.label.clone(),
+        path: step.path.clone(),
+        uses_network: step.uses_network,
+        destructive: step.destructive,
+        requires_confirmation: step.requires_confirmation,
+        error,
+    }
+}
+
+fn managed_execution_report(
+    plan: &BrowserRuntimePackOperationPlan,
+    status: BrowserRuntimePackExecutionStatus,
+    step_reports: Vec<BrowserRuntimePackStepExecutionReport>,
+) -> BrowserRuntimePackExecutionReport {
+    BrowserRuntimePackExecutionReport {
+        operation: plan.operation,
+        mode: BrowserRuntimePackExecutionMode::Managed,
+        status,
+        summary: managed_execution_summary_for_status(plan, status),
+        artifact_id: runtime_pack_artifact_id(plan, status),
+        event_names: managed_execution_event_names(plan, status),
+        step_reports,
+        manifest_pack_version: plan.manifest_pack_version.clone(),
+        runtime_root: plan.runtime_root.clone(),
+        current_pack_dir: plan.current_pack_dir.clone(),
+        uses_network: plan.uses_network,
+        destructive: plan.destructive,
+        requires_confirmation: plan.requires_confirmation,
+        keeps_current_pack: plan.keeps_current_pack,
+    }
+}
+
+fn managed_execution_summary_for_status(
+    plan: &BrowserRuntimePackOperationPlan,
+    status: BrowserRuntimePackExecutionStatus,
+) -> String {
+    match status {
+        BrowserRuntimePackExecutionStatus::Succeeded => {
+            format!("Managed execution succeeded: {}", plan.summary)
+        }
+        BrowserRuntimePackExecutionStatus::NoOp => {
+            format!("Managed execution no-op: {}", plan.summary)
+        }
+        BrowserRuntimePackExecutionStatus::RequiresConfirmation => {
+            format!(
+                "Managed execution waiting for confirmation: {}",
+                plan.summary
+            )
+        }
+        BrowserRuntimePackExecutionStatus::Deferred => {
+            format!("Managed execution deferred: {}", plan.summary)
+        }
+        BrowserRuntimePackExecutionStatus::Blocked => {
+            format!("Managed execution blocked: {}", plan.summary)
+        }
+        BrowserRuntimePackExecutionStatus::Failed => {
+            format!("Managed execution failed: {}", plan.summary)
+        }
+    }
+}
+
+fn managed_execution_event_names(
+    plan: &BrowserRuntimePackOperationPlan,
+    status: BrowserRuntimePackExecutionStatus,
+) -> Vec<String> {
+    let mut events = plan.event_names.clone();
+    let suffix = match status {
+        BrowserRuntimePackExecutionStatus::Succeeded => "execution_succeeded",
+        BrowserRuntimePackExecutionStatus::NoOp => "execution_noop",
+        BrowserRuntimePackExecutionStatus::RequiresConfirmation => {
+            "execution_confirmation_required"
+        }
+        BrowserRuntimePackExecutionStatus::Deferred => "execution_deferred",
+        BrowserRuntimePackExecutionStatus::Blocked => "execution_blocked",
+        BrowserRuntimePackExecutionStatus::Failed => "execution_failed",
     };
     events.push(format!(
         "browser.runtime.{}.{}",
