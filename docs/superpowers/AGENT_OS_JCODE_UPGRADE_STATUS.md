@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-14 Projection hydration bridge open
+> Current phase: Post-PR14 codebase health audit
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -33,7 +33,7 @@
 | PR-11 | Harness campaigns | Merged | Codex | GitHub PR #409 merged at `adbe68c9`. |
 | PR-12 | Frontend projection reducer | Merged | Codex | GitHub PR #410 merged at `d7a9527f`. |
 | PR-13 | Surface convergence | Merged | Codex | GitHub PR #411 merged at `dff2ede7`. |
-| PR-14 | Projection hydration bridge | Open | Codex | GitHub PR #412; scope is pure frontend hydration bridge, not Tauri command wiring. |
+| PR-14 | Projection hydration bridge | Merged | Codex | GitHub PR #412 merged at `78331945`. |
 
 ---
 
@@ -65,8 +65,8 @@ PR.
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current PR worktree | `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr14-projection-hydration-bridge` on `codex/agent-os-jcode-pr14-projection-hydration-bridge`, based on `origin/main` at `14edb88f`. |
-| Current PR branch | `codex/agent-os-jcode-pr14-projection-hydration-bridge` |
+| Current PR worktree | None; `/Users/ryanliu/Documents/uclaw` is synced to PR-14 merge commit `78331945`. |
+| Current PR branch | `main` |
 | Known pre-existing tracked changes | Primary worktree has local browser-runtime ADR drafts; preserve them and do not stage them into Agent OS PRs. |
 | Current jcode comparison docs | `docs/jcode_comparison/` is tracked on `main`. |
 | Current PR-0 spec | `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md` |
