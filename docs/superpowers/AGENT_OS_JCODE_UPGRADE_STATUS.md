@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-4 soft interrupts and boundary yields open for review
+> Current phase: PR-5 session projection journal in progress
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -24,7 +24,7 @@
 | PR-2 | ToolContext adapter | Merged | Codex | GitHub PR #400 merged at `17ec931e`. |
 | PR-3 | Provider readiness core | Merged | Codex | GitHub PR #401 merged at `9af769c1`. |
 | PR-4 | Soft interrupts and boundary yields | Open | Codex | GitHub PR #402 is open; review, merge, then sync local `main`. |
-| PR-5 | Session projection journal | Not started | Unassigned | Wait for PR-1 contracts and M4 alignment. |
+| PR-5 | Session projection journal | In progress | Codex | Worktree `agent-os-jcode-pr5-projection-journal`; stacked on PR #402 until PR-4 merges. |
 | PR-6 | Performance scorecards | Not started | Unassigned | Wait for first replay fixtures. |
 | PR-7 | Subagent/team runtime hardening | Not started | Unassigned | Wait for PR-1 contracts and PR-4 boundary semantics. |
 | PR-8 | jcode-inspired tool family mesh | Not started | Unassigned | Wait for PR-2 and Capability Mesh status. |
@@ -52,6 +52,7 @@ Append one row when a design decision changes the roadmap.
 | 2026-05-23 | PR-2 uses a compatibility ToolContext adapter, not a `Tool::execute` signature rewrite. | GitNexus marks `Tool` HIGH impact with 28 direct implementers. | PR-2 keeps behavior stable and introduces a context seam for later tool migration. |
 | 2026-05-23 | PR-3 starts with provider readiness/core metadata, not runtime split-prompt execution. | GitNexus marks `get_active_llm_config` HIGH risk; subagents agreed `LlmProvider`/OpenAI/Anthropic runtime paths should not change in PR-3. | PR-3 adds typed readiness reports and leaves split prompt, runtime failover, and provider trait migration to later PRs. |
 | 2026-05-23 | PR-4 starts as an adapter/foundation slice, not an agent-loop rewrite. | GitNexus marks `run_agentic_loop` HIGH risk; jcode soft interrupt design can be adopted without changing the loop signature first. | PR-4 adds soft interrupt queue primitives and normalizes resumable boundaries into existing `TaskEvent` variants. |
+| 2026-05-23 | PR-5 starts as a derived projection journal, not a new session truth store. | jcode snapshot/journal is useful, but uClaw already owns conversation truth in SQLite and runtime truth in `TaskEvent` rollout JSONL. | PR-5 adds `runtime::projection_journal` and keeps DB migrations, startup wiring, UI reducer, and `tauri_commands.rs` out of scope. |
 
 ---
 
@@ -63,7 +64,7 @@ PR.
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Known pre-existing tracked changes | None in PR-4 worktree after restoring GitNexus auto-updated `AGENTS.md` and `CLAUDE.md` stats. |
+| Known pre-existing tracked changes | None in PR-5 worktree after restoring GitNexus auto-updated `AGENTS.md` and `CLAUDE.md` stats. |
 | Current jcode comparison docs | `docs/jcode_comparison/` is tracked on `main`. |
 | Current PR-0 spec | `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md` |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
@@ -412,6 +413,79 @@ Recommended PR-4 first tests:
 - `git diff --cached --check` passed.
 - `npx gitnexus detect-changes --scope staged --repo /Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr4-soft-interrupts`
   reported low risk, 0 affected processes.
+
+---
+
+## PR-5 Entry Criteria
+
+PR-5 can start because:
+
+- PR-1, PR-2, and PR-3 are merged into `main`;
+- PR-4 is open as GitHub PR #402 and provides the boundary/checkpoint semantics
+  that projection replay needs;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr5-projection-journal`;
+- the branch is intentionally stacked on
+  `origin/codex/agent-os-jcode-pr4-soft-interrupts` until PR-4 merges;
+- jcode snapshot/journal/startup-stub references and uClaw rollout/session
+  persistence were explored by subagents;
+- GitNexus impact for `RolloutRecord`, `drive_writer`, and
+  `replay_jsonl_into_sqlite` was run and reported LOW risk;
+- PR-5 avoids `tauri_commands.rs`, `main.rs`, `db/migrations.rs`, and
+  `TaskEvent` contract changes.
+
+Recommended PR-5 first tests:
+
+- sibling-file tests for completed task projection from `TaskStarted` plus
+  `TaskFinished`;
+- sibling-file tests for `BoundaryYield` as resumable waiting state;
+- sibling-file tests for `Checkpoint` as checkpointed resumable state;
+- malformed JSONL replay test proving corruption does not panic and increments
+  `malformed_line_count`;
+- stub and journal-entry JSON round-trip tests proving startup data is compact
+  and does not inline heavy event payloads.
+
+## PR-5 Progress
+
+- Plan: `docs/superpowers/plans/2026-05-23-pr5-session-projection-journal.md`
+- Worktree: `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr5-projection-journal`
+- Branch: `codex/agent-os-jcode-pr5-projection-journal`
+- Base: stacked on `origin/codex/agent-os-jcode-pr4-soft-interrupts` until PR
+  #402 merges.
+- Scope: add a derived-only `runtime::projection_journal` module for replaying
+  rollout JSONL into compact projection startup stubs and projection journal
+  entries.
+- Sequence semantics: projection `last_sequence` and journal entry `sequence`
+  are global rollout file-order counters, not `RolloutRecord.sequence`
+  per-task counters.
+- Rust hygiene: new tests must live in sibling `projection_journal_tests.rs`;
+  no new inline test bodies.
+- DMZ files: none planned.
+- Migration: none planned.
+- Rollback: revert the projection module/export/tests/docs and delete any
+  generated projection files under the injected test/runtime projection dir.
+
+### PR-5 Impact Notes
+
+- `RolloutRecord`: LOW impact; consumed by new reducer, not modified.
+- `drive_writer`: LOW impact; not modified.
+- `replay_jsonl_into_sqlite`: LOW impact; not modified.
+- `TaskEvent`: serialized contract; do not add or rename variants in PR-5.
+- `runtime/mod.rs`: additive module export only; final GitNexus detect must
+  confirm no unexpected high-risk affected processes.
+
+### PR-5 Verification Notes
+
+- Passed: `cargo test --manifest-path src-tauri/Cargo.toml --lib runtime::projection_journal`
+  (7 passed; only existing warnings).
+- Passed: `cargo test --manifest-path src-tauri/Cargo.toml --lib runtime::rollout`
+  (3 passed; only existing warnings).
+- Passed: `cargo test --manifest-path src-tauri/Cargo.toml -p uclaw-runtime-contracts`
+  (20 passed plus doc tests).
+- Passed: `git diff --check` for the PR-5 files.
+- Passed: `git diff --cached --check`.
+- Passed: `npx gitnexus detect-changes --scope staged --repo /Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr5-projection-journal`
+  (risk level LOW; 0 affected processes).
 
 ---
 
