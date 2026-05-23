@@ -1,4 +1,5 @@
 use super::*;
+use std::fs;
 
 #[test]
 fn default_manifest_carries_pinned_runtime_versions_and_release_metadata() {
@@ -654,4 +655,140 @@ fn dry_run_executor_surfaces_destructive_cleanup_and_rollback_after_confirmation
     assert!(rollback.step_reports.iter().any(|step| step.step
         == BrowserRuntimePackPlanStepKind::RestoreRollback
         && step.destructive));
+}
+
+#[test]
+fn manifest_loader_reports_missing_loaded_and_invalid_json() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("runtime-pack.manifest.json");
+
+    let missing = load_runtime_pack_manifest(&manifest_path);
+    assert_eq!(
+        missing.status,
+        BrowserRuntimePackManifestLoadStatus::Missing
+    );
+    assert_eq!(missing.manifest, None);
+
+    let manifest = BrowserRuntimePackManifest::v1_default();
+    fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+    let loaded = load_runtime_pack_manifest(&manifest_path);
+    assert_eq!(loaded.status, BrowserRuntimePackManifestLoadStatus::Loaded);
+    assert_eq!(loaded.manifest, Some(manifest));
+
+    fs::write(&manifest_path, "{not-json").expect("write invalid manifest");
+    let invalid = load_runtime_pack_manifest(&manifest_path);
+    assert_eq!(
+        invalid.status,
+        BrowserRuntimePackManifestLoadStatus::InvalidJson
+    );
+    assert!(invalid.error.is_some());
+}
+
+#[test]
+fn filesystem_probe_maps_present_runtime_pack_to_ready_probe() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let manifest = BrowserRuntimePackManifest::v1_default();
+    let paths = BrowserRuntimePackPaths::from_root(temp.path(), &manifest);
+
+    fs::create_dir_all(paths.node_binary_path.parent().expect("node parent")).expect("node dir");
+    fs::write(&paths.node_binary_path, "").expect("node binary");
+    fs::create_dir_all(&paths.playwright_package_dir).expect("playwright package");
+    fs::create_dir_all(paths.worker_script_path.parent().expect("worker parent"))
+        .expect("worker dir");
+    fs::write(&paths.worker_script_path, "").expect("worker script");
+    fs::create_dir_all(
+        paths
+            .chromium_binary_path
+            .parent()
+            .expect("chromium parent"),
+    )
+    .expect("chromium dir");
+    fs::write(&paths.chromium_binary_path, "").expect("chromium binary");
+    fs::write(
+        &paths.manifest_path,
+        serde_json::to_string_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("manifest");
+    fs::create_dir_all(paths.packs_dir.join("browser-runtime-pack-v0")).expect("rollback pack");
+
+    let report = probe_runtime_pack_filesystem(
+        &manifest,
+        &paths,
+        BrowserRuntimePackFilesystemProbeOptions::default(),
+    );
+
+    assert_eq!(
+        report.manifest_load.status,
+        BrowserRuntimePackManifestLoadStatus::Loaded
+    );
+    assert!(report.snapshot.manifest_present);
+    assert!(report.snapshot.node_present);
+    assert!(report.snapshot.playwright_package_present);
+    assert!(report.snapshot.worker_script_present);
+    assert!(report.snapshot.browser_binary_present);
+    assert!(report.snapshot.previous_pack_available);
+    assert!(report.snapshot.versions_match);
+    assert_eq!(report.probe, BrowserRuntimePackProbe::ready());
+}
+
+#[test]
+fn filesystem_probe_flags_version_mismatch_invalid_manifest_and_missing_worker() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let manifest = BrowserRuntimePackManifest::v1_default();
+    let paths = BrowserRuntimePackPaths::from_root(temp.path(), &manifest);
+
+    fs::create_dir_all(paths.node_binary_path.parent().expect("node parent")).expect("node dir");
+    fs::write(&paths.node_binary_path, "").expect("node binary");
+    fs::create_dir_all(&paths.playwright_package_dir).expect("playwright package");
+    fs::create_dir_all(
+        paths
+            .chromium_binary_path
+            .parent()
+            .expect("chromium parent"),
+    )
+    .expect("chromium dir");
+    fs::write(&paths.chromium_binary_path, "").expect("chromium binary");
+
+    let installed = BrowserRuntimePackManifest {
+        playwright_version: "1.52.0".to_string(),
+        ..manifest.clone()
+    };
+    fs::write(
+        &paths.manifest_path,
+        serde_json::to_string_pretty(&installed).expect("serialize manifest"),
+    )
+    .expect("manifest");
+    let mismatch = probe_runtime_pack_filesystem(
+        &manifest,
+        &paths,
+        BrowserRuntimePackFilesystemProbeOptions {
+            active_tasks: 2,
+            offline: true,
+            ..BrowserRuntimePackFilesystemProbeOptions::default()
+        },
+    );
+    assert!(mismatch.snapshot.manifest_present);
+    assert!(!mismatch.snapshot.versions_match);
+    assert!(!mismatch.probe.versions_match);
+    assert!(!mismatch.probe.worker_startup_ok);
+    assert_eq!(mismatch.probe.active_tasks, 2);
+    assert!(mismatch.probe.offline);
+
+    fs::write(&paths.manifest_path, "{not-json").expect("invalid manifest");
+    let invalid = probe_runtime_pack_filesystem(
+        &manifest,
+        &paths,
+        BrowserRuntimePackFilesystemProbeOptions::default(),
+    );
+    assert_eq!(
+        invalid.snapshot.manifest_status,
+        BrowserRuntimePackManifestLoadStatus::InvalidJson
+    );
+    assert!(invalid.snapshot.cache_corrupt);
+    assert!(invalid.probe.cache_corrupt);
+    assert!(!invalid.probe.versions_match);
 }
