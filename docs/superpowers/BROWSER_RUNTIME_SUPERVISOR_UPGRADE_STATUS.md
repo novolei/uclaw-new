@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: Phase 0 contracts, flags, and projection skeleton committed
+> Current phase: Phase 1 supervisor shell slice committed
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -20,7 +20,7 @@
 | Phase | Theme | Status | Owner Session | Worktree / Branch | Next Action |
 |---|---|---|---|---|---|
 | Phase 0 | Contracts, flags, and projection skeleton | Committed | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase0-contracts` / `codex/browser-runtime-phase0-contracts` | Open PR or start Phase 1 from this committed contract baseline. |
-| Phase 1 | Supervisor around current chromiumoxide runtime | Not started | Unassigned | TBD | Wait for Phase 0 contracts. |
+| Phase 1 | Supervisor around current chromiumoxide runtime | Shell slice committed | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Open PR or continue the next Phase 1 wiring slice from this supervisor shell baseline. |
 | Phase 2 | App-managed Playwright runtime pack | Not started | Unassigned | TBD | Wait for Phase 0 flags and Phase 1 supervisor state. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Not started | Unassigned | TBD | Wait for Phase 0 projection skeleton and Phase 2 runtime-pack status. |
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Not started | Unassigned | TBD | Wait for Phase 2 runtime manager and Phase 3 shell route. |
@@ -41,6 +41,7 @@
 | 2026-05-23 | Phase 0 is metadata/contracts only. | ADR Phase 0 expected outcome says later phases add behavior behind stable contracts. | No Playwright process, MCP sidecar, browser launch, Tauri command, DB migration, or UI wiring in Phase 0. |
 | 2026-05-23 | Use this file as the Browser Runtime close-loop tracker. | User asked to follow the `AGENT_OS_JCODE_UPGRADE_STATUS.md` tracker pattern. | Every Browser Runtime phase must update Quick View, branch hygiene, progress, and verification notes. |
 | 2026-05-23 | Rebase Phase 0 worktree onto latest `main` before commit. | Worktree initially had ADR commit on older merge-base `3d710297`; latest `main` was `d7a9527`. | Phase branch now has latest `main` plus rebased Browser ADR commit `4cb7538`, then Phase 0 WIP reapplied. |
+| 2026-05-23 | Start Phase 1 as a supervisor shell before hot-path rewiring. | Phase 1 ADR is broad; narrow first PR should make runtime states, deadlines, doctor classification, artifacts, and projection available without changing action execution. | Later Phase 1 follow-ups can route action dispatch through the supervisor once the shell is tested. |
 
 ---
 
@@ -49,14 +50,76 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase0-contracts` |
-| Current phase branch | `codex/browser-runtime-phase0-contracts` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` |
+| Current phase branch | `codex/browser-runtime-phase1-supervisor` |
 | Current local base | `d7a9527 feat(ui): add Agent OS projection reducer` |
 | Browser ADR commit on phase branch | `4cb7538 docs(adr): define browser runtime supervisor strategy` |
 | Phase 0 implementation commit | Current `HEAD` on `codex/browser-runtime-phase0-contracts`: `feat(browser): add runtime supervisor phase0 contracts` |
-| Known pre-existing tracked changes | None in the Phase 0 worktree at start. |
+| Phase 1 base commit | `84743093 feat(browser): add runtime supervisor phase0 contracts` |
+| Phase 1 implementation commit | Current `HEAD` on `codex/browser-runtime-phase1-supervisor`: `feat(browser): add runtime supervisor phase1 shell` |
+| Known pre-existing tracked changes | None in the Phase 1 worktree at start. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, `src-tauri/gbrain-source`, and `ui/node_modules` linked from the primary worktree for local verification. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
+
+## Phase 1 Entry Criteria
+
+Phase 1 can start because:
+
+- Phase 0 committed the browser runtime contracts and provider cards;
+- the Phase 1 worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor`;
+- the branch starts from `84743093 feat(browser): add runtime supervisor phase0 contracts`;
+- this slice avoids hot-path action rewiring and focuses on a tested supervisor
+  shell around local chromiumoxide state.
+
+## Phase 1 Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-23-browser-runtime-phase1-supervisor.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor`
+- Branch:
+  `codex/browser-runtime-phase1-supervisor`
+- Scope:
+  local Chromium supervisor shell, deadline profile, doctor classification,
+  artifact-pack metadata, projection builder, and context-manager session
+  snapshot.
+- DMZ files:
+  none planned.
+- Migration:
+  none planned.
+- Rollback:
+  revert `runtime_supervisor.rs`, `runtime_supervisor_tests.rs`,
+  `browser/mod.rs` exports, this status file, and the Phase 1 plan file.
+
+### Phase 1 Impact Notes
+
+- Existing browser execution symbols are intentionally avoided in this first
+  shell slice: `BrowserActionRegistry`, `BrowserAgentLoop`, `BrowserContext`,
+  and `tauri_commands.rs` are not edited.
+- `BrowserContextManager` is observed through existing public methods only; its
+  implementation is not changed.
+- `browser/mod.rs` receives additive module exports only.
+
+### Phase 1 Verification Notes
+
+- GitNexus impact for existing `BrowserService` in `src-tauri/src/browser/mod.rs`
+  reported LOW risk, 0 direct callers, and 0 affected processes before adding
+  module exports.
+- Focused supervisor verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_supervisor`
+  returned `7 passed; 0 failed; 2573 filtered out`.
+- Phase 0 contract regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_contracts`
+  returned `5 passed; 0 failed; 2575 filtered out`.
+- Existing provider regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider`
+  returned `6 passed; 0 failed; 2574 filtered out`.
+- Formatting and whitespace checks passed for changed files:
+  `rustfmt --edition 2021 --check src-tauri/src/browser/runtime_supervisor.rs src-tauri/src/browser/runtime_supervisor_tests.rs`
+  and `git diff --check -- <changed-files>`.
+- GitNexus staged detect after refreshing the Phase 1 worktree index reported
+  `risk_level: low`, `changed_files: 5`, and `affected_processes: []`.
 
 ---
 
@@ -201,8 +264,10 @@ Recommended Phase 0 first tests:
 
 ## Handoff Notes
 
-- Phase 1 should not start until Phase 0 has a committed contract module and
-  this status file marks Phase 0 committed or merged.
+- Phase 1 has started with a supervisor shell on top of the committed Phase 0
+  contract module.
+- The next Phase 1 wiring slice should route one low-risk call path through
+  `BrowserRuntimeSupervisor` rather than introducing Playwright behavior.
 - Phase 2 should not introduce Playwright runtime downloads until Phase 0 flags
   and projection status fields exist.
 - Phase 3 startup splash should consume the projection/doctor vocabulary from
