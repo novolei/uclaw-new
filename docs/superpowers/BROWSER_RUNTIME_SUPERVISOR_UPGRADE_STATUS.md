@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 2F runtime-pack executor boundary in progress
+> Current phase: Phase 3A startup shell substrate ready for PR
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -21,8 +21,8 @@
 |---|---|---|---|---|---|
 | Phase 0 | Contracts, flags, and projection skeleton | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase0-contracts` / `codex/browser-runtime-phase0-contracts` | Closed; contract regressions stay in every later browser-runtime phase. |
 | Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
-| Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2E status report merged; Phase 2F executor boundary ready for PR | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Open PR for policy-gated managed executor seam before real download/filesystem adapters. |
-| Phase 3 | Startup Splash, Startup Doctor, and shell UX | Not started | Unassigned | TBD | Wait for Phase 0 projection skeleton and Phase 2 runtime-pack status. |
+| Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
+| Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A startup shell substrate ready for PR | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3a-startup-shell` / `codex/browser-runtime-phase3a-startup-shell` | Review PR for the additive startup view model/component substrate; do root `App` integration next as Phase 3B with explicit HIGH-risk review. |
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Not started | Unassigned | TBD | Wait for Phase 2 runtime manager and Phase 3 shell route. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
@@ -49,6 +49,8 @@
 | 2026-05-23 | Add a read-only filesystem probe before real installation. | PR #416 merged the dry-run executor; Startup Doctor and Settings still need local pack evidence without launching Playwright or mutating files. | Phase 2D loads the runtime manifest, probes expected pack paths, detects version mismatch/corrupt manifests, and feeds the existing doctor. |
 | 2026-05-23 | Add a status-report aggregator before UI wiring. | PR #417 merged the filesystem probe; Startup Doctor and Settings need one queryable runtime status contract, not direct knowledge of every probe/doctor/planner step. | Phase 2E composes filesystem, doctor, primary action, operation plan, and event names without emitting events or mutating runtime files. |
 | 2026-05-24 | Add a managed executor boundary before real side effects. | PR #418 merged the status report; ADR Phase 2 still needs install/repair/cleanup/rollback, but runtime mutations need an explicit policy-gated runner seam first. | Phase 2F adds managed execution DTOs, policy gates, and a step-runner boundary without downloading, deleting, extracting, or launching Playwright. |
+| 2026-05-24 | Split Phase 3 into a small 3A startup-shell substrate. | PR #419 merged Phase 2F; ADR Phase 3 includes branded splash, doctor, background preparation, recovery, and screenshots, which is too broad for one PR. | Phase 3A adds a typed frontend Startup Doctor view model and loading shell only; real backend doctor IPC, settings, root error recovery, and final asset polish stay out of scope. |
+| 2026-05-24 | Defer root `App` loading-state integration from Phase 3A to Phase 3B. | An attempted `App` loading-state swap had LOW pre-change impact but staged GitNexus detect returned HIGH because `App` affects 9 top-level listener/settings/runtime processes. | Phase 3A remains additive and mergeable; Phase 3B must explicitly review the `App` blast radius before wiring the shell into app startup. |
 
 ---
 
@@ -57,9 +59,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` |
-| Current phase branch | `codex/browser-runtime-phase2f-executor-boundary` |
-| Current local base | `2efcfc56 Merge pull request #418 from novolei/codex/browser-runtime-phase2e-status-report` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3a-startup-shell` |
+| Current phase branch | `codex/browser-runtime-phase3a-startup-shell` |
+| Current local base | `45463455 Merge pull request #419 from novolei/codex/browser-runtime-phase2f-executor-boundary` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -68,9 +70,10 @@
 | Phase 2C implementation commit | Merged through PR #416 as `feat(browser): add runtime pack dry-run executor`. |
 | Phase 2D implementation commit | Merged through PR #417 as `feat(browser): probe runtime pack filesystem`. |
 | Phase 2E implementation commit | Merged through PR #418 as `feat(browser): add runtime pack status report`. |
-| Phase 2F implementation commit | Ready to commit on `codex/browser-runtime-phase2f-executor-boundary`. |
-| Known pre-existing tracked changes | None in the Phase 2F worktree at start. |
-| Linked ignored runtime resources | Not linked yet for Phase 2F; link `src-tauri/pyembed`, `src-tauri/bunembed`, `src-tauri/gbrain-source`, and `ui/node_modules` only if verification needs them. |
+| Phase 2F implementation commit | Merged through PR #419 as `9d02cb33 feat(browser): add runtime pack executor boundary`; merge commit `45463455`. |
+| Phase 3A implementation commit | Committed on `codex/browser-runtime-phase3a-startup-shell` as `feat(browser): add startup shell substrate`; PR opens after push. |
+| Known pre-existing tracked changes | None in the Phase 3A worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | Phase 3A linked ignored local resources from the primary worktree for verification: `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source`. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -622,6 +625,109 @@ Recommended Phase 2F tests:
   so that formatting churn was intentionally not accepted into this PR.
 - GitNexus staged detect reported `risk_level: low`, `changed_files: 5`, and
   `affected_processes: []`.
+- Phase 2F executor boundary was merged through PR #419 as
+  `45463455 Merge pull request #419 from novolei/codex/browser-runtime-phase2f-executor-boundary`.
+
+## Phase 3A Entry Criteria
+
+Phase 3A can start because:
+
+- PR #419 merged the Phase 2F managed executor boundary into `main` and
+  `origin/main`;
+- the Phase 3A worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3a-startup-shell`;
+- the branch starts from `45463455`, the current `origin/main`;
+- Phase 3 is intentionally split because the ADR scope includes startup brand
+  visuals, Startup Doctor, background preparation, recovery UX, settings deep
+  links, and screenshot gates;
+- this first slice avoids backend doctor IPC, real runtime preparation, final
+  visual asset production, root render error recovery, Settings UI, DB
+  migrations, root `App` integration, and DMZ files.
+
+Recommended Phase 3A tests:
+
+- Startup Doctor view model defaults to concise checking state and clamps
+  progress;
+- ready, degraded, and failed check sets derive the correct startup phase;
+- Startup Splash renders a concise first frame by default without showing a
+  checklist;
+- diagnostic details expand on demand and open automatically for attention
+  states;
+- root `App` loading-state integration is explicitly deferred to Phase 3B
+  because it triggered HIGH staged GitNexus detect.
+
+## Phase 3A Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase3a-startup-shell.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3a-startup-shell`
+- Branch:
+  `codex/browser-runtime-phase3a-startup-shell`
+- Scope:
+  typed frontend Startup Doctor view model, branded local-first Startup Splash
+  component, focused Vitest coverage, and tracker updates.
+- DMZ files:
+  none planned.
+- Migration:
+  none planned.
+- Rollback:
+  revert the Phase 3A startup model/component/tests, this status file update,
+  and the Phase 3A plan file.
+
+### Phase 3A Impact Notes
+
+- GitNexus was refreshed in the Phase 3A worktree before editing; the analyzer
+  auto-updated only `AGENTS.md` / `CLAUDE.md` statistics, and those noise
+  changes were restored before implementation.
+- GitNexus impact before the attempted `App` integration in
+  `ui/src/App.tsx` reported LOW risk, 0 direct callers, 0 affected processes,
+  and 0 affected modules; however, staged GitNexus detect then reported HIGH
+  because `App` participates in 9 top-level app processes, so the `App` change
+  was removed from Phase 3A and deferred to Phase 3B.
+- New Startup Doctor model and Startup Splash component symbols are additive.
+- Existing browser runtime/provider symbols remain intentionally avoided:
+  `BrowserContextManager`, `BrowserContext`, `BrowserAgentLoop`,
+  `BrowserActionRegistry`, `runtime_pack.rs`, `tauri_commands.rs`, and DB
+  migrations are not edited.
+- The Phase 3A slice does not download, install, repair, cleanup, roll back,
+  spawn Node, run Playwright, start MCP, emit TaskEvents, write settings, or
+  write DB migrations.
+
+### Phase 3A Verification Notes
+
+- Baseline bring-up linked ignored local runtime resources from the primary
+  worktree because isolated worktrees do not copy `pyembed`, `bunembed`,
+  `gbrain-source`, or `ui/node_modules`.
+- Focused Startup Doctor and Startup Splash verification passed:
+  `cd ui && npm test -- --run src/lib/startup/startup-doctor.test.ts src/components/startup/StartupSplash.test.tsx`
+  returned `2 passed`, `8 passed`.
+- Default Rust browser-runtime regressions still passed even though Phase 3A
+  changes no Rust files:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  returned `32 passed; 0 failed; 2580 filtered out`;
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  returned `44 passed; 0 failed; 2568 filtered out`; and
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  returned `6 passed; 0 failed; 2606 filtered out`.
+- A temporary browser-rendered startup shell preview was used during the
+  attempted `App` integration, but the root integration was removed after the
+  HIGH staged GitNexus detect; final Phase 3A verification relies on focused
+  component/model tests and leaves app-route screenshots to Phase 3B.
+- UI production build passed:
+  `cd ui && npx vite build --outDir /tmp/uclaw-phase3a-vite-build --emptyOutDir`
+  returned `built in 9.67s`; Vite emitted the existing
+  `tauri-bridge.ts` mixed dynamic/static import warning and large chunk size
+  warning.
+- `cd ui && npx tsc --noEmit` still fails on pre-existing unrelated type
+  errors in automation, browser screencast, settings, hook, login-window, and
+  dev-tauri mock tests; none of those files are part of Phase 3A.
+- No Rust files changed, so `rustfmt --edition 2021 --check <changed-rust-files>`
+  is not applicable for Phase 3A.
+- `git diff --check -- <changed-files>` returned no output after the final
+  UI/tracker edits.
+- Final staged GitNexus detect after removing root `App` integration reported
+  `risk_level: low`, `changed_files: 6`, `affected_processes: []`.
 
 ---
 
