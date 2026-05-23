@@ -40,6 +40,11 @@ export function BrowserRuntimeSettings({
   status,
 }: BrowserRuntimeSettingsProps): React.ReactElement {
   const model = deriveBrowserRuntimeSettingsViewModel(status)
+  const [selectedActionId, setSelectedActionId] =
+    React.useState<BrowserRuntimeSettingsAction['id'] | null>(null)
+  const selectedAction =
+    model.actions.find((action) => action.id === selectedActionId)
+    ?? model.actions.find((action) => action.enabled)
 
   return (
     <div className="space-y-8">
@@ -76,6 +81,7 @@ export function BrowserRuntimeSettings({
                 size="sm"
                 disabled={!action.enabled}
                 aria-label={action.label}
+                onClick={() => setSelectedActionId(action.id)}
               >
                 {ACTION_ICONS[action.id]}
                 {action.label}
@@ -84,6 +90,29 @@ export function BrowserRuntimeSettings({
           </div>
         </SettingsCard>
       </SettingsSection>
+
+      {selectedAction && (
+        <SettingsSection title="操作预览">
+          <SettingsCard>
+            <SettingsRow
+              label={selectedAction.preview.title}
+              description={selectedAction.preview.summary}
+            >
+              <Badge variant={selectedAction.preview.destructive ? 'destructive' : 'outline'}>
+                {selectedAction.preview.requiresConfirmation ? '需要确认' : '预览'}
+              </Badge>
+            </SettingsRow>
+            <SettingsRow
+              label="事件"
+              description={selectedAction.preview.eventNames.length > 0
+                ? selectedAction.preview.eventNames.join(' · ')
+                : '等待后端事件接入'}
+            >
+              <span className="text-xs text-muted-foreground">无副作用</span>
+            </SettingsRow>
+          </SettingsCard>
+        </SettingsSection>
+      )}
     </div>
   )
 }

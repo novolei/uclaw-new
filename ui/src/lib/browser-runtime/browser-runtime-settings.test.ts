@@ -64,8 +64,17 @@ describe('browser runtime settings view model', () => {
     expect(model.rollbackLabel).toBe('可用')
     expect(model.actions).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: 'keep_current', enabled: false }),
-        expect.objectContaining({ id: 'run_doctor', enabled: false }),
+        expect.objectContaining({
+          id: 'keep_current',
+          enabled: true,
+          preview: expect.objectContaining({
+            eventNames: [
+              'browser.runtime.keep_current.ready',
+              'browser.runtime.doctor.completed',
+            ],
+          }),
+        }),
+        expect.objectContaining({ id: 'run_doctor', enabled: true }),
       ]),
     )
   })
@@ -105,6 +114,52 @@ describe('browser runtime settings view model', () => {
     expect(model.statusKind).toBe('unknown')
     expect(model.versionLabel).toBe('未检查')
     expect(model.runtimePackPathLabel).toBe('等待运行时状态')
+    expect(model.autoPrepareLabel).toBe('等待运行时状态')
     expect(model.actions.every((action) => !action.enabled)).toBe(true)
+  })
+
+  it('marks destructive settings intents as confirmation-only previews', () => {
+    const model = deriveBrowserRuntimeSettingsViewModel({
+      report: runtimeReport({
+        ready: false,
+        canRunBrowserTasks: false,
+        primaryAction: 'reinstall',
+        doctor: {
+          status: 'needs_repair',
+          ready: false,
+          issue: 'corrupt_cache',
+          remediation: 'Runtime cache is corrupt.',
+          actions: ['cleanup', 'reinstall'],
+          manifestPackVersion: '1.48.2-uclaw.1',
+          rollbackAvailable: true,
+          activeTasks: 0,
+        },
+        operationPlan: {
+          status: 'requires_confirmation',
+          summary: 'Reinstall requires explicit confirmation.',
+          eventNames: ['browser.runtime.reinstall.confirmation_required'],
+        },
+      }),
+    })
+
+    expect(model.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'cleanup',
+          enabled: true,
+          preview: expect.objectContaining({
+            destructive: true,
+            requiresConfirmation: true,
+          }),
+        }),
+        expect.objectContaining({
+          id: 'reinstall',
+          enabled: true,
+          preview: expect.objectContaining({
+            summary: 'Reinstall requires explicit confirmation.',
+          }),
+        }),
+      ]),
+    )
   })
 })
