@@ -1,6 +1,7 @@
 pub mod adapters;
 pub mod artifacts;
 pub mod budget;
+pub mod campaign;
 pub mod case;
 pub mod episode;
 pub mod graders;
@@ -13,6 +14,12 @@ pub mod trajectory;
 
 pub use artifacts::{HarnessArtifact, HarnessArtifactStore};
 pub use budget::ToolBudgetManager;
+pub use campaign::{
+    agent_os_harness_campaigns, attach_harness_campaign_manifest,
+    browser_provider_readiness_campaign, jcode_tool_smoke_campaign,
+    scheduled_worker_campaign, soft_interrupt_checkpoint_campaign, HarnessCampaign,
+    HarnessCampaignCadence, HarnessCampaignCase, HarnessCampaignKind,
+};
 pub use case::{HarnessBudget, HarnessCase, HarnessSubject};
 pub use episode::{HarnessEpisode, HarnessVerdict};
 pub use graders::{HarnessGraderRegistry, HarnessGraderResult, HarnessGraderSpec};
