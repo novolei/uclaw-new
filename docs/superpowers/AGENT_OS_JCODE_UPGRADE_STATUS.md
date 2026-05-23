@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-7 subagent/team runtime hardening starting
+> Current phase: PR-7 subagent/team runtime hardening in review
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -26,7 +26,7 @@
 | PR-4 | Soft interrupts and boundary yields | Merged | Codex | GitHub PR #402 merged at `21e6f9d1`. |
 | PR-5 | Session projection journal | Merged | Codex | GitHub PR #403 merged at `f7811f3d`. |
 | PR-6 | Performance scorecards | Merged | Codex | GitHub PR #404 merged at `78b16dde`. |
-| PR-7 | Subagent/team runtime hardening | Not started | Unassigned | Wait for PR-1 contracts and PR-4 boundary semantics. |
+| PR-7 | Subagent/team runtime hardening | In progress | Codex | Finalize reviewer fixes, then open PR. |
 | PR-8 | jcode-inspired tool family mesh | Not started | Unassigned | Wait for PR-2 and Capability Mesh status. |
 | PR-9 | BrowserProvider status/setup/probe | Not started | Unassigned | Wait for PR-1 contracts and browser impact map. |
 | PR-10 | Ambient-to-automation mapping | Not started | Unassigned | Wait for PR-4 and automation policy review. |
@@ -64,9 +64,9 @@ PR.
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current PR worktree | `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr6-performance-scorecards` |
-| Current PR branch | `codex/agent-os-jcode-pr6-performance-scorecards` |
-| Known pre-existing tracked changes | None in PR-6 worktree; ignored resource symlinks point to primary worktree for local Tauri test embedding. |
+| Current PR worktree | `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr7-team-runtime-hardening` |
+| Current PR branch | `codex/agent-os-jcode-pr7-team-runtime-hardening` |
+| Known pre-existing tracked changes | None in PR-7 worktree after restoring GitNexus auto-updated `AGENTS.md` and `CLAUDE.md` stats. |
 | Current jcode comparison docs | `docs/jcode_comparison/` is tracked on `main`. |
 | Current PR-0 spec | `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md` |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
@@ -550,6 +550,76 @@ Recommended PR-6 first tests:
 - Passed: `git diff --check` on PR-6 touched files.
 - Passed: `npx gitnexus detect-changes --scope staged --repo /Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr6-performance-scorecards`
   (6 files, 5 symbols, 0 affected processes, LOW risk).
+
+---
+
+## PR-7 Entry Criteria
+
+PR-7 can start because:
+
+- PR-1 contract crates and PR-4 soft boundary semantics are merged into
+  `main`;
+- PR-6 performance scorecards are merged, so later team benchmark campaigns
+  have an artifact substrate;
+- the jcode gap audit requires bounded child isolation, bounded fanout,
+  recursive delegation guard foundations, reviewer stop semantics, and cleanup
+  semantics before teams become a larger runtime surface;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr7-team-runtime-hardening`;
+- GitNexus impact for `AgentTeamOrchestrator::run`,
+  `AgentTeamOrchestrator::execute_supervisor_tool`,
+  `AgentTeamChannel::get_messages`, and `run_worker` was run with explicit
+  targets and reported LOW risk / 0 affected processes.
+
+Recommended PR-7 first tests:
+
+- sibling-file tests for `TeamRuntimePolicy::default`;
+- sibling-file tests for max parallel worker fanout;
+- sibling-file tests for `ReviewGateState` blocking completion until reviewer
+  pass;
+- sibling-file tests for stable review-gate status ids.
+
+## PR-7 Progress
+
+- Plan: `docs/superpowers/plans/2026-05-23-pr7-team-runtime-hardening.md`
+- Worktree: `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr7-team-runtime-hardening`
+- Branch: `codex/agent-os-jcode-pr7-team-runtime-hardening`
+- Scope: add a focused team runtime policy/review-gate substrate, consume it
+  from the existing orchestrator, and pass the supervisor prompt as a system
+  message.
+- Deferred roadmap scope: child `TaskSpec` spawning, capability-profile
+  registry integration, `TaskEvent` schema expansion, WorkerRegistry cleanup,
+  and UI projection are follow-up PRs.
+- Rust hygiene: new tests must live in sibling `runtime_policy_tests.rs`; no
+  new inline test bodies.
+- DMZ files: none planned.
+- Migration: none planned.
+- Rollback: revert the runtime policy module/export/tests, orchestrator policy
+  consumption, and this status section.
+
+### PR-7 Impact Notes
+
+- `AgentTeamOrchestrator::run`: LOW impact; replace hard-coded limits with
+  default policy.
+- `AgentTeamOrchestrator::execute_supervisor_tool`: LOW impact; enforce worker
+  fanout cap and reviewer-gated completion.
+- `AgentTeamChannel::get_messages`: LOW impact; read-only reference, not
+  modified in PR-7.
+- `run_worker`: LOW impact; worker max-iteration policy is set by the
+  orchestrator, function signature stays unchanged.
+
+### PR-7 Verification Notes
+
+- Passed: `cargo test --manifest-path src-tauri/Cargo.toml --lib agent::teams::runtime_policy`
+  (7 passed; 0 failed; 2535 filtered out).
+- Passed: `cargo test --manifest-path src-tauri/Cargo.toml --lib agent::teams`
+  (7 passed; 0 failed; 2535 filtered out).
+- Passed: `git diff --check` on PR-7 touched files.
+- Passed: `npx gitnexus detect-changes --scope staged --repo /Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr7-team-runtime-hardening`
+  (6 files, 10 symbols, 0 affected processes, LOW risk).
+- Reviewer fixes applied: non-tool final-result paths are review-gated, reviewer
+  pass is bound to the reviewed result, new worker assignment resets the gate,
+  and worker await timeout uses `TeamRuntimePolicy`.
 
 ---
 
