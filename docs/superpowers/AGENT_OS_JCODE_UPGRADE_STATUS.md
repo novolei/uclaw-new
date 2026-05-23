@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-12 Frontend projection reducer in progress
+> Current phase: PR-12 Frontend projection reducer open for review
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -31,7 +31,7 @@
 | PR-9 | BrowserProvider status/setup/probe | Merged | Codex | GitHub PR #407 merged at `33672ba3`. |
 | PR-10 | Ambient-to-automation mapping | Merged | Codex | GitHub PR #408 merged at `67005fed`. |
 | PR-11 | Harness campaigns | Merged | Codex | GitHub PR #409 merged at `adbe68c9`. |
-| PR-12 | Frontend projection reducer | In progress | Codex | Worktree `agent-os-jcode-pr12-frontend-projection`; scope is a pure TypeScript projection reducer plus fixture tests. |
+| PR-12 | Frontend projection reducer | Open | Codex | GitHub PR #410 opened from `codex/agent-os-jcode-pr12-frontend-projection`; scope is a pure TypeScript projection reducer plus fixture tests. |
 | PR-13 | Surface convergence | Not started | Unassigned | Wait for PR-12 plus per-surface migration plans. |
 
 ---
