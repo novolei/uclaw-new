@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: Phase 2B runtime-pack operation planner committed
+> Current phase: Phase 2C runtime-pack dry-run executor committed
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -21,7 +21,7 @@
 |---|---|---|---|---|---|
 | Phase 0 | Contracts, flags, and projection skeleton | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase0-contracts` / `codex/browser-runtime-phase0-contracts` | Closed; contract regressions stay in every later browser-runtime phase. |
 | Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
-| Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell merged; Phase 2B operation planner committed | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2b-install-plan` / `codex/browser-runtime-phase2b-install-plan` | Push/open PR for the no-side-effect operation planner, then continue to the real executor behind explicit policy gates. |
+| Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell and Phase 2B planner merged; Phase 2C dry-run executor committed | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2c-executor` / `codex/browser-runtime-phase2c-executor` | Push/open PR for dry-run execution reports, then continue to real executor adapters behind policy gates. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Not started | Unassigned | TBD | Wait for Phase 0 projection skeleton and Phase 2 runtime-pack status. |
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Not started | Unassigned | TBD | Wait for Phase 2 runtime manager and Phase 3 shell route. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
@@ -45,6 +45,7 @@
 | 2026-05-23 | Phase 0 and Phase 1 are now merged into `main` and `origin/main`. | `main` and `origin/main` both point at `81d9b9dc Merge remote-tracking branch 'origin/codex/browser-runtime-phase1-supervisor'`. | Phase 2 starts from `origin/main` instead of the older Phase 1 worktree base. |
 | 2026-05-23 | Phase 2 begins with a local runtime-pack manifest/status/doctor shell. | ADR Phase 2 includes install/repair/cleanup/rollback, but the first reversible slice should avoid network download, worker execution, and UI. | The first Phase 2 PR proves pack state classification before adding download or Playwright process behavior. |
 | 2026-05-23 | Continue Phase 2 with an operation planner before side effects. | PR #414 merged the manifest/status/doctor shell; ADR Phase 2 still needs install, repair, cleanup, rollback, network confirmation, active-task protection, and rollback retention. | Phase 2B adds a pure plan boundary for Splash, Settings, and future executors without downloading, extracting, deleting, or launching Playwright. |
+| 2026-05-23 | Add a dry-run executor before real side effects. | PR #415 merged the operation planner; the next safe step is an execution report boundary that proves policy gating and artifact/event metadata before real downloads or deletes. | Phase 2C keeps execution auditable and side-effect free while preparing the seam for later real executor adapters. |
 
 ---
 
@@ -53,16 +54,17 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2b-install-plan` |
-| Current phase branch | `codex/browser-runtime-phase2b-install-plan` |
-| Current local base | `49c43241 Merge pull request #414 from novolei/codex/browser-runtime-phase2-runtime-pack` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2c-executor` |
+| Current phase branch | `codex/browser-runtime-phase2c-executor` |
+| Current local base | `625193fd Merge pull request #415 from novolei/codex/browser-runtime-phase2b-install-plan` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
 | Phase 2 implementation commit | Merged through `origin/main` history as `96752fe6 feat(browser): add runtime pack manager shell`. |
-| Phase 2B implementation commit | Committed on `codex/browser-runtime-phase2b-install-plan` as `feat(browser): plan runtime pack operations`. |
-| Known pre-existing tracked changes | None in the Phase 2B worktree at start. |
-| Linked ignored runtime resources | Not linked yet for Phase 2B; link `src-tauri/pyembed`, `src-tauri/bunembed`, `src-tauri/gbrain-source`, and `ui/node_modules` only if verification needs them. |
+| Phase 2B implementation commit | Merged through `origin/main` history as `6915f184 feat(browser): plan runtime pack operations`. |
+| Phase 2C implementation commit | Committed on `codex/browser-runtime-phase2c-executor` as `feat(browser): add runtime pack dry-run executor`. |
+| Known pre-existing tracked changes | None in the Phase 2C worktree at start. |
+| Linked ignored runtime resources | Not linked yet for Phase 2C; link `src-tauri/pyembed`, `src-tauri/bunembed`, `src-tauri/gbrain-source`, and `ui/node_modules` only if verification needs them. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -216,6 +218,8 @@ Recommended Phase 2 first tests:
   and `git diff --check -- <changed-files>` returned no output.
 - GitNexus staged detect reported `risk_level: low`, `changed_files: 5`, and
   `affected_processes: []`.
+- GitNexus staged detect reported `risk_level: low`, `changed_files: 5`, and
+  `affected_processes: []`.
 - GitNexus staged detect after refreshing the Phase 2 worktree index reported
   `risk_level: low`, `changed_files: 5`, and `affected_processes: []`.
 - Phase 2 runtime-pack shell committed on
@@ -297,6 +301,81 @@ Recommended Phase 2B tests:
 - Existing provider regression passed:
   `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
   returned `6 passed; 0 failed; 2591 filtered out`.
+- Formatting and whitespace checks passed for changed files:
+  `rustfmt --edition 2021 --check src-tauri/src/browser/runtime_pack.rs src-tauri/src/browser/runtime_pack_tests.rs`
+  and `git diff --check -- <changed-files>` returned no output.
+- Phase 2B operation planner was merged through PR #415 as
+  `625193fd Merge pull request #415 from novolei/codex/browser-runtime-phase2b-install-plan`.
+
+## Phase 2C Entry Criteria
+
+Phase 2C can start because:
+
+- PR #415 merged the Phase 2B operation planner into `main` and `origin/main`;
+- the Phase 2C worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2c-executor`;
+- the branch starts from `625193fd`, the current `origin/main`;
+- this slice still avoids real network download, archive extraction, filesystem
+  deletion, Playwright worker startup, Tauri commands, DB migrations, and
+  Settings/Splash UI.
+
+Recommended Phase 2C tests:
+
+- planned prepare dry-run reports success, step reports, event names, artifact
+  id, network/destructive flags, and current-pack retention intent;
+- confirmation-required, deferred, and blocked plans do not execute steps;
+- keep-current ready plan reports no-op success;
+- cleanup and rollback plans surface destructive flags after confirmation and
+  no active tasks.
+
+## Phase 2C Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-23-browser-runtime-phase2c-dry-run-executor.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2c-executor`
+- Branch:
+  `codex/browser-runtime-phase2c-executor`
+- Scope:
+  deterministic dry-run executor and execution report DTOs for runtime-pack
+  operation plans. The executor consumes plans, honors policy statuses, returns
+  per-step dry-run reports, artifact ids, event names, current-pack retention,
+  and network/destructive/confirmation flags.
+- DMZ files:
+  none planned.
+- Migration:
+  none planned.
+- Rollback:
+  revert the Phase 2C executor DTOs/functions/tests, browser module exports,
+  this status file update, and the Phase 2C plan file.
+
+### Phase 2C Impact Notes
+
+- GitNexus impact before editing reported:
+  `plan_runtime_pack_operation` MEDIUM risk with 7 direct test callers and 0
+  affected execution flows; `BrowserRuntimePackOperationPlan` LOW risk with the
+  planner as its only direct caller and 0 affected execution flows;
+  `BrowserService` export surface LOW risk with 0 affected flows.
+- Existing browser execution symbols remain intentionally avoided:
+  `BrowserContextManager`, `BrowserContext`, `BrowserAgentLoop`,
+  `BrowserActionRegistry`, and `tauri_commands.rs` are not edited.
+- The Phase 2C slice does not download, install, repair, cleanup, roll back,
+  spawn Node, run Playwright, start MCP, write settings, or write DB migrations.
+
+### Phase 2C Verification Notes
+
+- Baseline bring-up linked ignored local runtime resources from the primary
+  worktree because isolated worktrees do not copy `pyembed`, `bunembed`,
+  `gbrain-source`, or `ui/node_modules`.
+- Focused runtime-pack verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  returned `22 passed; 0 failed; 2580 filtered out`.
+- Runtime contract/supervisor regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  returned `34 passed; 0 failed; 2568 filtered out`.
+- Existing provider regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  returned `6 passed; 0 failed; 2596 filtered out`.
 - Formatting and whitespace checks passed for changed files:
   `rustfmt --edition 2021 --check src-tauri/src/browser/runtime_pack.rs src-tauri/src/browser/runtime_pack_tests.rs`
   and `git diff --check -- <changed-files>` returned no output.

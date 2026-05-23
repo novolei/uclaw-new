@@ -383,6 +383,180 @@ pub struct BrowserRuntimePackOperationPlan {
     pub destructive: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserRuntimePackExecutionMode {
+    DryRun,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserRuntimePackExecutionStatus {
+    Succeeded,
+    NoOp,
+    RequiresConfirmation,
+    Deferred,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserRuntimePackStepExecutionStatus {
+    WouldRun,
+    Skipped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRuntimePackStepExecutionReport {
+    pub step: BrowserRuntimePackPlanStepKind,
+    pub status: BrowserRuntimePackStepExecutionStatus,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+    pub uses_network: bool,
+    pub destructive: bool,
+    pub requires_confirmation: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRuntimePackExecutionReport {
+    pub operation: BrowserRuntimePackOperation,
+    pub mode: BrowserRuntimePackExecutionMode,
+    pub status: BrowserRuntimePackExecutionStatus,
+    pub summary: String,
+    pub artifact_id: String,
+    pub event_names: Vec<String>,
+    pub step_reports: Vec<BrowserRuntimePackStepExecutionReport>,
+    pub manifest_pack_version: String,
+    pub runtime_root: PathBuf,
+    pub current_pack_dir: PathBuf,
+    pub uses_network: bool,
+    pub destructive: bool,
+    pub requires_confirmation: bool,
+    pub keeps_current_pack: bool,
+}
+
+pub fn execute_runtime_pack_plan_dry_run(
+    plan: &BrowserRuntimePackOperationPlan,
+) -> BrowserRuntimePackExecutionReport {
+    let status = execution_status_for_plan(plan);
+    let should_report_steps = matches!(
+        status,
+        BrowserRuntimePackExecutionStatus::Succeeded | BrowserRuntimePackExecutionStatus::NoOp
+    );
+    let step_status = if should_report_steps {
+        BrowserRuntimePackStepExecutionStatus::WouldRun
+    } else {
+        BrowserRuntimePackStepExecutionStatus::Skipped
+    };
+
+    let step_reports = if should_report_steps {
+        plan.steps
+            .iter()
+            .map(|step| BrowserRuntimePackStepExecutionReport {
+                step: step.kind,
+                status: step_status,
+                label: step.label.clone(),
+                path: step.path.clone(),
+                uses_network: step.uses_network,
+                destructive: step.destructive,
+                requires_confirmation: step.requires_confirmation,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    BrowserRuntimePackExecutionReport {
+        operation: plan.operation,
+        mode: BrowserRuntimePackExecutionMode::DryRun,
+        status,
+        summary: execution_summary_for_status(plan, status),
+        artifact_id: runtime_pack_artifact_id(plan, status),
+        event_names: execution_event_names(plan, status),
+        step_reports,
+        manifest_pack_version: plan.manifest_pack_version.clone(),
+        runtime_root: plan.runtime_root.clone(),
+        current_pack_dir: plan.current_pack_dir.clone(),
+        uses_network: plan.uses_network,
+        destructive: plan.destructive,
+        requires_confirmation: plan.requires_confirmation,
+        keeps_current_pack: plan.keeps_current_pack,
+    }
+}
+
+fn execution_status_for_plan(
+    plan: &BrowserRuntimePackOperationPlan,
+) -> BrowserRuntimePackExecutionStatus {
+    match plan.status {
+        BrowserRuntimePackPlanStatus::Ready => BrowserRuntimePackExecutionStatus::NoOp,
+        BrowserRuntimePackPlanStatus::Planned => BrowserRuntimePackExecutionStatus::Succeeded,
+        BrowserRuntimePackPlanStatus::RequiresConfirmation => {
+            BrowserRuntimePackExecutionStatus::RequiresConfirmation
+        }
+        BrowserRuntimePackPlanStatus::Deferred => BrowserRuntimePackExecutionStatus::Deferred,
+        BrowserRuntimePackPlanStatus::Blocked => BrowserRuntimePackExecutionStatus::Blocked,
+    }
+}
+
+fn execution_summary_for_status(
+    plan: &BrowserRuntimePackOperationPlan,
+    status: BrowserRuntimePackExecutionStatus,
+) -> String {
+    match status {
+        BrowserRuntimePackExecutionStatus::Succeeded => {
+            format!("Dry-run succeeded: {}", plan.summary)
+        }
+        BrowserRuntimePackExecutionStatus::NoOp => {
+            format!("Dry-run no-op: {}", plan.summary)
+        }
+        BrowserRuntimePackExecutionStatus::RequiresConfirmation => {
+            format!("Dry-run blocked for confirmation: {}", plan.summary)
+        }
+        BrowserRuntimePackExecutionStatus::Deferred => {
+            format!("Dry-run deferred: {}", plan.summary)
+        }
+        BrowserRuntimePackExecutionStatus::Blocked => {
+            format!("Dry-run blocked: {}", plan.summary)
+        }
+    }
+}
+
+fn runtime_pack_artifact_id(
+    plan: &BrowserRuntimePackOperationPlan,
+    status: BrowserRuntimePackExecutionStatus,
+) -> String {
+    format!(
+        "browser-runtime-{}-{}-{:?}",
+        plan.operation.event_slug(),
+        plan.manifest_pack_version,
+        status
+    )
+    .to_ascii_lowercase()
+}
+
+fn execution_event_names(
+    plan: &BrowserRuntimePackOperationPlan,
+    status: BrowserRuntimePackExecutionStatus,
+) -> Vec<String> {
+    let mut events = plan.event_names.clone();
+    let suffix = match status {
+        BrowserRuntimePackExecutionStatus::Succeeded => "dry_run_succeeded",
+        BrowserRuntimePackExecutionStatus::NoOp => "dry_run_noop",
+        BrowserRuntimePackExecutionStatus::RequiresConfirmation => "dry_run_confirmation_required",
+        BrowserRuntimePackExecutionStatus::Deferred => "dry_run_deferred",
+        BrowserRuntimePackExecutionStatus::Blocked => "dry_run_blocked",
+    };
+    events.push(format!(
+        "browser.runtime.{}.{}",
+        plan.operation.event_slug(),
+        suffix
+    ));
+    events
+}
+
 pub fn plan_runtime_pack_operation(
     manifest: &BrowserRuntimePackManifest,
     paths: &BrowserRuntimePackPaths,
