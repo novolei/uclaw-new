@@ -9,6 +9,7 @@
 import * as React from 'react'
 import { useSetAtom } from 'jotai'
 import { AppShell } from './components/app-shell/AppShell'
+import { StartupSplash } from './components/startup/StartupSplash'
 import { TooltipProvider } from './components/ui/tooltip'
 import type { AppShellContextType } from './contexts/AppShellContext'
 import * as bridge from './lib/tauri-bridge'
@@ -69,14 +70,7 @@ export default function App(): React.ReactElement {
 
   // 加载中状态
   if (isLoading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-background">
-        <div className="flex flex-col items-center gap-4">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="text-sm text-muted-foreground">正在初始化...</p>
-        </div>
-      </div>
-    )
+    return <StartupSplash />
   }
 
   // Placeholder context value
