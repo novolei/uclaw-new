@@ -16,20 +16,16 @@
 //! - `UserIntervention` phase → an extra `PermissionRequested` /
 //!   `PermissionDecided` pair so the rollout shows the human boundary
 //!   explicitly.
-//! - Run status → terminal `TaskFinished` verdict:
+//! - Run status → terminal `TaskFinished` verdict or resumable yield:
 //!     Completed              → `TaskVerdict::Completed`
 //!     Failed                 → `TaskVerdict::Failed { error_code: "browser_failed", message }`
 //!     Stopped                → `TaskVerdict::Cancelled { reason: Some("stopped") }`
-//!     NeedsUserIntervention  → `TaskVerdict::Completed { summary: Some("paused for intervention") }`
-//!     PausedCheckpointed     → `TaskVerdict::Completed { summary: Some("checkpoint") }`
+//!     NeedsUserIntervention  → `BoundaryYield`, no terminator
+//!     PausedCheckpointed     → `Checkpoint` + `BoundaryYield`, no terminator
 //!     Running                → no terminator (caller appends later)
 
-use crate::browser::session_state::{
-    BrowserTaskRun, BrowserTaskStatus, BrowserTaskStepPhase,
-};
-use crate::runtime::contracts::{
-    PermissionDecision, TaskEvent, TaskEventSource, TaskVerdict,
-};
+use crate::browser::session_state::{BrowserTaskRun, BrowserTaskStatus, BrowserTaskStepPhase};
+use crate::runtime::contracts::{PermissionDecision, TaskEvent, TaskEventSource, TaskVerdict};
 
 /// Convert a finished or in-progress browser run into a sequence of
 /// `TaskEvent`s ready for the rollout writer.
@@ -106,7 +102,8 @@ pub fn browser_run_to_events(run: &BrowserTaskRun, intent_id: &str) -> Vec<TaskE
         });
     }
 
-    // Terminal verdict — None when the run is still in progress.
+    // Terminal verdict — None when the run is still in progress or has
+    // yielded at a resumable boundary.
     let verdict = match &run.status {
         BrowserTaskStatus::Running => None,
         BrowserTaskStatus::Completed => Some(TaskVerdict::Completed { summary: None }),
@@ -127,12 +124,30 @@ pub fn browser_run_to_events(run: &BrowserTaskRun, intent_id: &str) -> Vec<TaskE
         BrowserTaskStatus::Stopped => Some(TaskVerdict::Cancelled {
             reason: Some("stopped".into()),
         }),
-        BrowserTaskStatus::NeedsUserIntervention => Some(TaskVerdict::Completed {
-            summary: Some("paused for intervention".into()),
-        }),
-        BrowserTaskStatus::PausedCheckpointed => Some(TaskVerdict::Completed {
-            summary: Some("checkpoint".into()),
-        }),
+        BrowserTaskStatus::NeedsUserIntervention => {
+            out.push(TaskEvent::BoundaryYield {
+                ts: now(),
+                source: src,
+                task_id: task_id.clone(),
+                reason: "browser needs user intervention".into(),
+            });
+            None
+        }
+        BrowserTaskStatus::PausedCheckpointed => {
+            out.push(TaskEvent::Checkpoint {
+                ts: now(),
+                source: src,
+                task_id: task_id.clone(),
+                checkpoint_ref: format!("browser:{task_id}:paused_checkpointed"),
+            });
+            out.push(TaskEvent::BoundaryYield {
+                ts: now(),
+                source: src,
+                task_id: task_id.clone(),
+                reason: "browser checkpoint paused".into(),
+            });
+            None
+        }
     };
 
     if let Some(v) = verdict {
@@ -146,7 +161,6 @@ pub fn browser_run_to_events(run: &BrowserTaskRun, intent_id: &str) -> Vec<TaskE
 
     out
 }
-
 
 // ────────────────────────────────────────────────────────────────────────
 // M1-T4d — fire-and-forget helper that emits a finished browser run to
@@ -198,155 +212,5 @@ pub async fn emit_browser_run_into_session_dir(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::browser::session_state::BrowserTaskStep;
-
-    fn step(idx: u32, phase: BrowserTaskStepPhase, action: &str, ok: bool, msg: Option<&str>) -> BrowserTaskStep {
-        BrowserTaskStep {
-            step_index: idx,
-            phase,
-            observation_summary: String::new(),
-            reasoning: format!("step-{idx}"),
-            action_name: action.into(),
-            action_args: serde_json::json!({"a": idx}),
-            ok,
-            message: msg.map(String::from),
-            error: if ok { None } else { Some("step error".into()) },
-            timestamp_ms: 1_700_000_000_000 + idx as i64 * 1000,
-        }
-    }
-
-    fn run_with(status: BrowserTaskStatus, steps: Vec<BrowserTaskStep>) -> BrowserTaskRun {
-        BrowserTaskRun {
-            run_id: "browser-run-1".into(),
-            session_id: "session-A".into(),
-            task: "test task".into(),
-            status,
-            steps,
-        }
-    }
-
-    #[test]
-    fn completed_run_emits_started_two_pairs_finished() {
-        let run = run_with(
-            BrowserTaskStatus::Completed,
-            vec![
-                step(0, BrowserTaskStepPhase::Act, "click", true, Some("clicked button")),
-                step(1, BrowserTaskStepPhase::Act, "type", true, Some("typed query")),
-            ],
-        );
-        let events = browser_run_to_events(&run, "intent-A");
-        // Started + 2 * (ToolCall, ToolResult) + Finished
-        assert_eq!(events.len(), 6);
-        assert!(matches!(events[0], TaskEvent::TaskStarted { .. }));
-        assert!(matches!(events[1], TaskEvent::ToolCall { .. }));
-        assert!(matches!(events[2], TaskEvent::ToolResult { ok: true, .. }));
-        assert!(matches!(events[3], TaskEvent::ToolCall { .. }));
-        assert!(matches!(events[4], TaskEvent::ToolResult { ok: true, .. }));
-        match &events[5] {
-            TaskEvent::TaskFinished {
-                verdict: TaskVerdict::Completed { summary },
-                source,
-                ..
-            } => {
-                assert_eq!(*source, TaskEventSource::Browser);
-                assert!(summary.is_none());
-            }
-            other => panic!("expected Completed, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn failed_run_carries_last_error_into_verdict() {
-        let run = run_with(
-            BrowserTaskStatus::Failed,
-            vec![
-                step(0, BrowserTaskStepPhase::Act, "click", true, Some("ok")),
-                step(1, BrowserTaskStepPhase::Act, "navigate", false, None),
-            ],
-        );
-        let events = browser_run_to_events(&run, "intent-A");
-        match events.last() {
-            Some(TaskEvent::TaskFinished {
-                verdict: TaskVerdict::Failed { error_code, message },
-                ..
-            }) => {
-                assert_eq!(error_code, "browser_failed");
-                assert_eq!(message, "step error");
-            }
-            other => panic!("expected Failed, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn user_intervention_emits_permission_pair() {
-        let run = run_with(
-            BrowserTaskStatus::NeedsUserIntervention,
-            vec![step(
-                0,
-                BrowserTaskStepPhase::UserIntervention,
-                "ask_human",
-                true,
-                Some("granted"),
-            )],
-        );
-        let events = browser_run_to_events(&run, "intent-A");
-        // Started + PermissionRequested + PermissionDecided + ToolCall + ToolResult + Finished
-        assert_eq!(events.len(), 6);
-        assert!(matches!(events[1], TaskEvent::PermissionRequested { .. }));
-        match &events[2] {
-            TaskEvent::PermissionDecided { decision, .. } => {
-                assert_eq!(*decision, PermissionDecision::Granted);
-            }
-            other => panic!("expected PermissionDecided, got {other:?}"),
-        }
-        // Finished carries the "paused for intervention" summary.
-        match events.last() {
-            Some(TaskEvent::TaskFinished {
-                verdict: TaskVerdict::Completed { summary },
-                ..
-            }) => {
-                assert_eq!(summary.as_deref(), Some("paused for intervention"));
-            }
-            other => panic!("expected Completed(intervention), got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn running_run_emits_no_terminator() {
-        let run = run_with(
-            BrowserTaskStatus::Running,
-            vec![step(0, BrowserTaskStepPhase::Act, "click", true, None)],
-        );
-        let events = browser_run_to_events(&run, "intent-A");
-        // Started + (Call, Result) + NO Finished
-        assert_eq!(events.len(), 3);
-        assert!(matches!(events[0], TaskEvent::TaskStarted { .. }));
-        assert!(!events.iter().any(|e| matches!(e, TaskEvent::TaskFinished { .. })));
-    }
-
-    #[test]
-    fn stopped_run_maps_to_cancelled() {
-        let run = run_with(BrowserTaskStatus::Stopped, vec![]);
-        let events = browser_run_to_events(&run, "intent-A");
-        match events.last() {
-            Some(TaskEvent::TaskFinished {
-                verdict: TaskVerdict::Cancelled { reason },
-                ..
-            }) => {
-                assert_eq!(reason.as_deref(), Some("stopped"));
-            }
-            other => panic!("expected Cancelled, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn empty_steps_completed_emits_started_then_finished() {
-        let run = run_with(BrowserTaskStatus::Completed, vec![]);
-        let events = browser_run_to_events(&run, "intent-A");
-        assert_eq!(events.len(), 2);
-        assert!(matches!(events[0], TaskEvent::TaskStarted { .. }));
-        assert!(matches!(events[1], TaskEvent::TaskFinished { .. }));
-    }
-}
+#[path = "rollout_bridge_tests.rs"]
+mod tests;

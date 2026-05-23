@@ -13,6 +13,7 @@ pub mod tool_shaping;
 pub mod call_audit;
 // M2-H L5 pilot — image stripping for image-blind providers.
 pub mod image_policy;
+pub mod interrupts;
 // M2-H L3 pilot — per-turn skill selection (top-K under token budget).
 pub mod skill_selection;
 // M2-H L7 pilot — Compaction state machine.
