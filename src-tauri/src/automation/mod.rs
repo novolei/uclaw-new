@@ -1,4 +1,5 @@
 pub mod activity;
+pub mod ambient_mapping;
 // M1-T4e — bridge AutomationActivity → runtime::contracts::TaskEvent.
 pub mod rollout_bridge;
 pub mod builtin_apps;
