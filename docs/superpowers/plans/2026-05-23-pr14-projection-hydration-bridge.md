@@ -96,7 +96,7 @@ npx gitnexus detect-changes --scope staged --repo /Users/ryanliu/Documents/uclaw
 
 Expected: focused tests pass, strict file-level TypeScript check passes, staged diff check passes, GitNexus reports low risk or records any local registry limitation.
 
-- [ ] **Step 2: Commit and open PR**
+- [x] **Step 2: Commit and open PR**
 
 Commit:
 

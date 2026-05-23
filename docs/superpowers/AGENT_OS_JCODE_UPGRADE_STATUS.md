@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-14 Projection hydration bridge in progress
+> Current phase: PR-14 Projection hydration bridge open
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -33,7 +33,7 @@
 | PR-11 | Harness campaigns | Merged | Codex | GitHub PR #409 merged at `adbe68c9`. |
 | PR-12 | Frontend projection reducer | Merged | Codex | GitHub PR #410 merged at `d7a9527f`. |
 | PR-13 | Surface convergence | Merged | Codex | GitHub PR #411 merged at `dff2ede7`. |
-| PR-14 | Projection hydration bridge | In progress | Codex | Worktree `agent-os-jcode-pr14-projection-hydration-bridge`; scope is pure frontend hydration bridge, not Tauri command wiring. |
+| PR-14 | Projection hydration bridge | Open | Codex | GitHub PR #412; scope is pure frontend hydration bridge, not Tauri command wiring. |
 
 ---
 
