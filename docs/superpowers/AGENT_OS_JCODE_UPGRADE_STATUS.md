@@ -65,9 +65,9 @@ PR.
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current PR worktree | None; `/Users/ryanliu/Documents/uclaw` is synced to PR-14 merge commit `78331945`. |
+| Current PR worktree | None; `/Users/ryanliu/Documents/uclaw` is synced to `main` at `670ee8fa`, the status-ledger commit on top of PR-14 merge `78331945`. |
 | Current PR branch | `main` |
-| Known pre-existing tracked changes | Primary worktree has local browser-runtime ADR drafts; preserve them and do not stage them into Agent OS PRs. |
+| Known pre-existing untracked changes | Primary worktree has local Tauri IPC contract audit/design docs; preserve them and do not stage them into Agent OS PRs. |
 | Current jcode comparison docs | `docs/jcode_comparison/` is tracked on `main`. |
 | Current PR-0 spec | `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md` |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
