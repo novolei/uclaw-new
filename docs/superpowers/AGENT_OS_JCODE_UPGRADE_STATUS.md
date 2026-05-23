@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-5 session projection journal in progress
+> Current phase: PR-5 session projection journal open for review
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -24,7 +24,7 @@
 | PR-2 | ToolContext adapter | Merged | Codex | GitHub PR #400 merged at `17ec931e`. |
 | PR-3 | Provider readiness core | Merged | Codex | GitHub PR #401 merged at `9af769c1`. |
 | PR-4 | Soft interrupts and boundary yields | Open | Codex | GitHub PR #402 is open; review, merge, then sync local `main`. |
-| PR-5 | Session projection journal | In progress | Codex | Worktree `agent-os-jcode-pr5-projection-journal`; stacked on PR #402 until PR-4 merges. |
+| PR-5 | Session projection journal | Open | Codex | GitHub PR #403 is open; stacked on PR #402 until PR-4 merges. |
 | PR-6 | Performance scorecards | Not started | Unassigned | Wait for first replay fixtures. |
 | PR-7 | Subagent/team runtime hardening | Not started | Unassigned | Wait for PR-1 contracts and PR-4 boundary semantics. |
 | PR-8 | jcode-inspired tool family mesh | Not started | Unassigned | Wait for PR-2 and Capability Mesh status. |
@@ -450,6 +450,7 @@ Recommended PR-5 first tests:
 - Plan: `docs/superpowers/plans/2026-05-23-pr5-session-projection-journal.md`
 - Worktree: `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr5-projection-journal`
 - Branch: `codex/agent-os-jcode-pr5-projection-journal`
+- PR: GitHub PR #403.
 - Base: stacked on `origin/codex/agent-os-jcode-pr4-soft-interrupts` until PR
   #402 merges.
 - Scope: add a derived-only `runtime::projection_journal` module for replaying
