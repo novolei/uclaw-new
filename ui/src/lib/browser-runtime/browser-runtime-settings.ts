@@ -28,8 +28,14 @@ export interface BrowserRuntimeSettingsInput {
   autoPrepareEnabled?: boolean
 }
 
+export type BrowserRuntimeSettingsActionId =
+  | BrowserRuntimePackAction
+  | 'run_doctor'
+  | 'disable_auto_prepare'
+  | 'enable_auto_prepare'
+
 export interface BrowserRuntimeSettingsAction {
-  id: BrowserRuntimePackAction | 'run_doctor'
+  id: BrowserRuntimeSettingsActionId
   label: string
   enabled: boolean
   preview: BrowserRuntimeSettingsActionPreview
@@ -59,7 +65,7 @@ export interface BrowserRuntimeSettingsViewModel {
   actions: BrowserRuntimeSettingsAction[]
 }
 
-const ACTION_LABELS: Record<BrowserRuntimeSettingsAction['id'], string> = {
+const ACTION_LABELS: Record<BrowserRuntimeSettingsActionId, string> = {
   prepare: '准备',
   repair: '修复',
   reinstall: '重装',
@@ -68,6 +74,8 @@ const ACTION_LABELS: Record<BrowserRuntimeSettingsAction['id'], string> = {
   defer: '稍后',
   retry_when_online: '联网后重试',
   keep_current: '保持当前',
+  disable_auto_prepare: '关闭自动准备',
+  enable_auto_prepare: '开启自动准备',
   run_doctor: '运行诊断',
 }
 
@@ -76,7 +84,7 @@ export function deriveBrowserRuntimeSettingsViewModel(
 ): BrowserRuntimeSettingsViewModel {
   const report = input.report
   const statusKind = deriveStatusKind(report)
-  const actions = deriveActions(report)
+  const actions = deriveActions(report, input.autoPrepareEnabled)
 
   return {
     statusKind,
@@ -135,10 +143,14 @@ function statusDetail(report: StartupRuntimePackStatusReport | undefined): strin
 
 function deriveActions(
   report: StartupRuntimePackStatusReport | undefined,
+  autoPrepareEnabled: boolean | undefined,
 ): BrowserRuntimeSettingsAction[] {
   const actionIds = report?.doctor.actions.length
     ? report.doctor.actions
     : (['prepare', 'repair', 'reinstall', 'cleanup', 'rollback'] as BrowserRuntimePackAction[])
+  const autoPrepareActionId: BrowserRuntimeSettingsActionId = autoPrepareEnabled === false
+    ? 'enable_auto_prepare'
+    : 'disable_auto_prepare'
 
   return [
     ...actionIds.map((id) => ({
@@ -147,6 +159,12 @@ function deriveActions(
       enabled: Boolean(report),
       preview: actionPreview(id, report),
     })),
+    {
+      id: autoPrepareActionId,
+      label: ACTION_LABELS[autoPrepareActionId],
+      enabled: autoPrepareEnabled !== undefined,
+      preview: actionPreview(autoPrepareActionId, report),
+    },
     {
       id: 'run_doctor' as const,
       label: ACTION_LABELS.run_doctor,
@@ -157,14 +175,11 @@ function deriveActions(
 }
 
 function actionPreview(
-  id: BrowserRuntimeSettingsAction['id'],
+  id: BrowserRuntimeSettingsActionId,
   report: StartupRuntimePackStatusReport | undefined,
 ): BrowserRuntimeSettingsActionPreview {
   const isPrimary = report?.primaryAction === id
-  const eventNames = [
-    ...(report?.operationPlan.eventNames ?? []),
-    ...(report?.eventNames ?? []),
-  ]
+  const eventNames = actionEventNames(id, report)
   const fallbackSummary = report
     ? report.doctor.remediation
     : '等待 Startup Doctor 提供浏览器运行时状态。'
@@ -185,7 +200,7 @@ function actionPreview(
 }
 
 function actionSummary(
-  id: BrowserRuntimeSettingsAction['id'],
+  id: BrowserRuntimeSettingsActionId,
   fallbackSummary: string,
 ): string {
   switch (id) {
@@ -205,11 +220,32 @@ function actionSummary(
       return '网络恢复后重试 Browser runtime preparation。'
     case 'keep_current':
       return '保持当前 Browser runtime pack，不执行准备或修复。'
+    case 'disable_auto_prepare':
+      return '关闭启动/后台自动准备；浏览器任务仍可在使用时请求准备运行时。'
+    case 'enable_auto_prepare':
+      return '恢复启动/后台自动准备；不会立即下载或修复运行时。'
     case 'run_doctor':
       return '重新运行 Startup Doctor / Browser Runtime 检查，等待后端 IPC 接入。'
     default:
       return fallbackSummary
   }
+}
+
+function actionEventNames(
+  id: BrowserRuntimeSettingsActionId,
+  report: StartupRuntimePackStatusReport | undefined,
+): string[] {
+  if (id === 'disable_auto_prepare') {
+    return ['browser.runtime.auto_prepare.disable.requested']
+  }
+  if (id === 'enable_auto_prepare') {
+    return ['browser.runtime.auto_prepare.enable.requested']
+  }
+
+  return [
+    ...(report?.operationPlan.eventNames ?? []),
+    ...(report?.eventNames ?? []),
+  ]
 }
 
 function uniqueEventNames(eventNames: string[]): string[] {
