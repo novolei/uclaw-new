@@ -25,6 +25,7 @@ describe('SettingsNav', () => {
     expect(screen.getByText('通用与外观')).not.toBeNull()
     expect(screen.getByText('输入（语音）')).not.toBeNull()
     expect(screen.getByText('代理')).not.toBeNull()
+    expect(screen.getByText('浏览器运行时')).not.toBeNull()
     expect(screen.getByText('关于')).not.toBeNull()
   })
 

@@ -1,0 +1,98 @@
+import * as React from 'react'
+import {
+  Activity,
+  Archive,
+  Bug,
+  Download,
+  HardDrive,
+  History,
+  RefreshCw,
+  RotateCcw,
+  ShieldCheck,
+  Trash2,
+} from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+  deriveBrowserRuntimeSettingsViewModel,
+  type BrowserRuntimeSettingsInput,
+  type BrowserRuntimeSettingsAction,
+} from '@/lib/browser-runtime/browser-runtime-settings'
+import { SettingsCard, SettingsRow, SettingsSection } from './primitives'
+
+interface BrowserRuntimeSettingsProps {
+  status?: BrowserRuntimeSettingsInput
+}
+
+const ACTION_ICONS: Record<BrowserRuntimeSettingsAction['id'], React.ReactNode> = {
+  prepare: <Download />,
+  repair: <RefreshCw />,
+  reinstall: <Archive />,
+  cleanup: <Trash2 />,
+  rollback: <RotateCcw />,
+  defer: <History />,
+  retry_when_online: <RefreshCw />,
+  keep_current: <ShieldCheck />,
+  run_doctor: <Bug />,
+}
+
+export function BrowserRuntimeSettings({
+  status,
+}: BrowserRuntimeSettingsProps): React.ReactElement {
+  const model = deriveBrowserRuntimeSettingsViewModel(status)
+
+  return (
+    <div className="space-y-8">
+      <SettingsSection title="浏览器运行时" description="Playwright provider runtime pack">
+        <SettingsCard>
+          <SettingsRow label="状态" icon={<Activity size={16} />} description={model.statusDetail}>
+            <Badge variant={badgeVariant(model.statusKind)}>{model.statusLabel}</Badge>
+          </SettingsRow>
+          <SettingsRow label="最后检查" description={model.lastCheckedLabel}>
+            <span className="text-sm text-muted-foreground">{model.updateStateLabel}</span>
+          </SettingsRow>
+          <SettingsRow label="版本" description={model.releaseChannelLabel}>
+            <span className="text-sm font-medium">{model.versionLabel}</span>
+          </SettingsRow>
+          <SettingsRow label="体积" description={model.artifactSizeLabel}>
+            <HardDrive size={16} className="text-muted-foreground" />
+          </SettingsRow>
+          <SettingsRow label="运行时路径" description={model.runtimePackPathLabel} />
+          <SettingsRow label="回滚" description={model.rollbackLabel}>
+            <span className="text-sm text-muted-foreground">{model.developerFallbackLabel}</span>
+          </SettingsRow>
+          <SettingsRow label="自动准备" description={model.autoPrepareLabel} />
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="操作">
+        <SettingsCard divided={false}>
+          <div className="grid grid-cols-2 gap-2 p-4 sm:grid-cols-3">
+            {model.actions.map((action) => (
+              <Button
+                key={action.id}
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!action.enabled}
+                aria-label={action.label}
+              >
+                {ACTION_ICONS[action.id]}
+                {action.label}
+              </Button>
+            ))}
+          </div>
+        </SettingsCard>
+      </SettingsSection>
+    </div>
+  )
+}
+
+function badgeVariant(
+  kind: ReturnType<typeof deriveBrowserRuntimeSettingsViewModel>['statusKind'],
+): React.ComponentProps<typeof Badge>['variant'] {
+  if (kind === 'ready') return 'default'
+  if (kind === 'blocked') return 'destructive'
+  if (kind === 'attention' || kind === 'deferred') return 'secondary'
+  return 'outline'
+}

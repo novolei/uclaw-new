@@ -9,7 +9,7 @@
 import * as React from 'react'
 import {
   Radio, Cpu, Wrench, Settings, Mic, Keyboard, Smile, Globe, Info, Brain,
-  Search, MessageSquare, UserCircle2, Monitor,
+  Search, MessageSquare, UserCircle2, Monitor, HardDrive,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { SettingsTab } from '@/atoms/settings-tab'
@@ -50,6 +50,7 @@ const GROUPS: NavGroup[] = [
     title: '系统',
     items: [
       { id: 'proxy', label: '代理', icon: <Globe size={16} /> },
+      { id: 'browserRuntime', label: '浏览器运行时', icon: <HardDrive size={16} /> },
       { id: 'system', label: '系统诊断', icon: <Monitor size={16} /> },
       { id: 'about', label: '关于', icon: <Info size={16} /> },
     ],
