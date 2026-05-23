@@ -31,7 +31,9 @@ use crate::automation::tools::{
     report_to_user::ReportInput,
     request_escalation::RequestEscalationInput,
 };
-use crate::agent::tools::tool::ToolRegistry;
+use crate::agent::tools::tool::{
+    execute_tool_with_context, ToolExecutionContext, ToolRegistry,
+};
 use crate::automation::runtime::cost::CostCapState;
 use crate::channels::{ChannelManager, ChannelNotification};
 use crate::error::Error;
@@ -531,7 +533,19 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                     // Permission was already checked at the top of the loop.
                     match self.tools.get(other) {
                         Some(tool) => {
-                            match tool.execute(call.arguments.clone()).await {
+                            let tool_context = ToolExecutionContext::agent_turn(
+                                self.session_id.clone(),
+                                call.id.clone(),
+                                Some(self.workspace_root.clone()),
+                                None,
+                            );
+                            match execute_tool_with_context(
+                                tool,
+                                call.arguments.clone(),
+                                &tool_context,
+                            )
+                            .await
+                            {
                                 Ok(output) => {
                                     let result = serde_json::to_string(&output.result)
                                         .unwrap_or_else(|_| "{}".into());

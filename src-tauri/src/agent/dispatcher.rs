@@ -4,7 +4,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use async_trait::async_trait;
 use tauri::Emitter;
 use crate::agent::types::*;
-use crate::agent::tools::tool::{ToolRegistry, ToolOutput};
+use crate::agent::tools::tool::{
+    execute_tool_with_context, ToolExecutionContext, ToolRegistry, ToolOutput,
+};
 use crate::agent::gep::repository::GeneRepository;
 use crate::agent::gep::retrieval::{GeneRetriever, GeneMatch, format_gene_injection};
 use crate::agent::gep::types::{Capsule, CapsuleOutcome, OutcomeStatus, BlastRadius, EnvFingerprint, EvolutionEvent};
@@ -2377,6 +2379,12 @@ impl LoopDelegate for ChatDelegate {
                     // get caught at the JoinHandle boundary rather than unwinding through
                     // the agent loop and killing the whole turn.
                     let tool_name_for_panic = tc.name.clone();
+                    let tool_context_for_spawn = ToolExecutionContext::agent_turn(
+                        self.conversation_id.clone(),
+                        tc.id.clone(),
+                        self.workspace_root.clone(),
+                        self.safety_mode.clone(),
+                    );
                     let tool_args_for_spawn = {
                         let mut args = tc.arguments.clone();
                         if let Some(obj) = args.as_object_mut() {
@@ -2392,7 +2400,14 @@ impl LoopDelegate for ChatDelegate {
                     let tools_arc = Arc::clone(&self.tools);
                     let execute_result = match tokio::task::spawn(async move {
                         match tools_arc.get(&tool_name_for_panic) {
-                            Some(t) => t.execute(tool_args_for_spawn).await,
+                            Some(t) => {
+                                execute_tool_with_context(
+                                    t,
+                                    tool_args_for_spawn,
+                                    &tool_context_for_spawn,
+                                )
+                                .await
+                            }
                             None => Err(crate::agent::tools::tool::ToolError::NotFound(tool_name_for_panic)),
                         }
                     }).await {

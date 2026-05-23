@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use crate::agent::types::ToolDefinition;
+use crate::safety::SafetyMode;
 
 /// Tool execution result
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +134,69 @@ impl Default for ApprovalRequirement {
     fn default() -> Self { Self::Never }
 }
 
+/// Execution mode for a tool invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolExecutionMode {
+    /// Tool call produced by an agent loop turn.
+    AgentTurn,
+    /// Direct/manual invocation outside a normal agent turn.
+    Direct,
+}
+
+/// Structured context for a tool invocation.
+///
+/// PR-2 keeps this as adapter metadata. The canonical execution behavior still
+/// flows through `Tool::execute(params)` until individual tools opt into richer
+/// context-aware behavior in later PRs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolExecutionContext {
+    pub session_id: String,
+    pub task_id: Option<String>,
+    pub message_id: Option<String>,
+    pub tool_call_id: String,
+    pub workspace_root: Option<PathBuf>,
+    pub execution_mode: ToolExecutionMode,
+    pub safety_mode: Option<SafetyMode>,
+    pub capability_profile_id: Option<String>,
+}
+
+impl ToolExecutionContext {
+    pub fn agent_turn(
+        session_id: impl Into<String>,
+        tool_call_id: impl Into<String>,
+        workspace_root: Option<PathBuf>,
+        safety_mode: Option<SafetyMode>,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            task_id: None,
+            message_id: None,
+            tool_call_id: tool_call_id.into(),
+            workspace_root,
+            execution_mode: ToolExecutionMode::AgentTurn,
+            safety_mode,
+            capability_profile_id: None,
+        }
+    }
+
+    pub fn for_subcall(&self, tool_call_id: impl Into<String>) -> Self {
+        let mut next = self.clone();
+        next.tool_call_id = tool_call_id.into();
+        next
+    }
+
+    pub fn resolve_candidate_path(&self, path: impl AsRef<Path>) -> PathBuf {
+        let path = path.as_ref();
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else if let Some(root) = &self.workspace_root {
+            root.join(path)
+        } else {
+            path.to_path_buf()
+        }
+    }
+}
+
 /// Tool trait — implement for each tool
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -167,6 +232,14 @@ pub trait Tool: Send + Sync {
     fn preview_target_path(&self, _args: &serde_json::Value) -> Option<String> {
         None
     }
+}
+
+pub async fn execute_tool_with_context(
+    tool: &dyn Tool,
+    params: serde_json::Value,
+    _ctx: &ToolExecutionContext,
+) -> Result<ToolOutput, ToolError> {
+    tool.execute(params).await
 }
 
 /// Tool registry
@@ -210,45 +283,5 @@ impl Default for ToolRegistry {
 }
 
 #[cfg(test)]
-mod kinded_error_tests {
-    use super::*;
-
-    #[test]
-    fn kinded_error_displays_with_bracketed_kind() {
-        let err = ToolError::kinded(
-            ToolErrorKind::ResourceNotFound,
-            "Page returned 404",
-        );
-        assert_eq!(format!("{}", err), "[NotFound] Page returned 404");
-    }
-
-    #[test]
-    fn kinded_error_serializes_through_existing_serde_path() {
-        let err = ToolError::kinded(
-            ToolErrorKind::PermissionDenied,
-            "URL blocked",
-        );
-        let json = serde_json::to_string(&err).unwrap();
-        // Existing serde impl uses Display; both new + legacy variants share
-        // the same serialization path.
-        assert!(json.contains("PermissionDenied"), "got json: {}", json);
-        assert!(json.contains("URL blocked"), "got json: {}", json);
-    }
-
-    #[test]
-    fn kinded_with_source_keeps_source_field() {
-        let err = ToolError::kinded_with_source(
-            ToolErrorKind::ParseError,
-            "Could not parse JSON",
-            "expected ',' at line 5",
-        );
-        match err {
-            ToolError::Kinded { kind, message, source_context } => {
-                assert_eq!(kind, ToolErrorKind::ParseError);
-                assert_eq!(message, "Could not parse JSON");
-                assert_eq!(source_context.as_deref(), Some("expected ',' at line 5"));
-            }
-            _ => panic!("expected Kinded variant"),
-        }
-    }
-}
+#[path = "tool_tests.rs"]
+mod tests;
