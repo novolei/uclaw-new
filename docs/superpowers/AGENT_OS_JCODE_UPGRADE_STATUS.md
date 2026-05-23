@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-6 performance scorecards starting
+> Current phase: PR-6 performance scorecards in review
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -25,7 +25,7 @@
 | PR-3 | Provider readiness core | Merged | Codex | GitHub PR #401 merged at `9af769c1`. |
 | PR-4 | Soft interrupts and boundary yields | Merged | Codex | GitHub PR #402 merged at `21e6f9d1`. |
 | PR-5 | Session projection journal | Merged | Codex | GitHub PR #403 merged at `f7811f3d`. |
-| PR-6 | Performance scorecards | Starting | Codex | Create isolated worktree and write PR-6 plan from current `main`. |
+| PR-6 | Performance scorecards | In progress | Codex | Execute `docs/superpowers/plans/2026-05-23-pr6-performance-scorecards.md` in isolated worktree. |
 | PR-7 | Subagent/team runtime hardening | Not started | Unassigned | Wait for PR-1 contracts and PR-4 boundary semantics. |
 | PR-8 | jcode-inspired tool family mesh | Not started | Unassigned | Wait for PR-2 and Capability Mesh status. |
 | PR-9 | BrowserProvider status/setup/probe | Not started | Unassigned | Wait for PR-1 contracts and browser impact map. |
@@ -64,7 +64,9 @@ PR.
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Known pre-existing tracked changes | None in PR-5 worktree after restoring GitNexus auto-updated `AGENTS.md` and `CLAUDE.md` stats. |
+| Current PR worktree | `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr6-performance-scorecards` |
+| Current PR branch | `codex/agent-os-jcode-pr6-performance-scorecards` |
+| Known pre-existing tracked changes | None in PR-6 worktree; ignored resource symlinks point to primary worktree for local Tauri test embedding. |
 | Current jcode comparison docs | `docs/jcode_comparison/` is tracked on `main`. |
 | Current PR-0 spec | `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md` |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
@@ -487,6 +489,67 @@ Recommended PR-5 first tests:
 - Passed: `git diff --cached --check`.
 - Passed: `npx gitnexus detect-changes --scope staged --repo /Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr5-projection-journal`
   (risk level LOW; 0 affected processes).
+
+---
+
+## PR-6 Entry Criteria
+
+PR-6 can start because:
+
+- PR-1 through PR-5 are merged into `main`;
+- PR-5 provides projection replay artifacts that later scorecards can consume;
+- `docs/jcode_comparison/03_performance_optimization.md` identifies
+  repeatable scorecards as the next safe step before hot-path optimization;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr6-performance-scorecards`;
+- GitNexus impact for `HarnessRuntime`, `HarnessArtifactStore`, and
+  `ToolBudgetManager` was run with explicit struct targets and reported LOW
+  risk / 0 affected processes.
+
+Recommended PR-6 first tests:
+
+- sibling-file tests for percentile summary math;
+- sibling-file tests for pass/warn/fail threshold verdicts;
+- sibling-file tests for scorecard JSON camelCase shape;
+- sibling-file tests for attaching a `performance_scorecard` artifact through
+  `HarnessRuntime`;
+- existing `harness::runtime` and `harness::artifacts` regression tests.
+
+## PR-6 Progress
+
+- Plan: `docs/superpowers/plans/2026-05-23-pr6-performance-scorecards.md`
+- Worktree: `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr6-performance-scorecards`
+- Branch: `codex/agent-os-jcode-pr6-performance-scorecards`
+- Scope: add a model-free performance scorecard substrate for harness JSON
+  artifacts, deterministic percentile summaries, and threshold verdicts.
+- Rust hygiene: new tests must live in sibling
+  `performance_scorecard_tests.rs`; no new inline test bodies.
+- DMZ files: none planned.
+- Migration: none planned.
+- Rollback: revert the scorecard module/export/tests/docs and delete generated
+  performance scorecard JSON artifacts.
+
+### PR-6 Impact Notes
+
+- `HarnessRuntime`: LOW impact; consumed by artifact helper, not modified.
+- `HarnessArtifactStore`: LOW impact; used via existing runtime helper, not
+  modified.
+- `ToolBudgetManager`: LOW impact; referenced as future measured subject, not
+  modified.
+- `harness/mod.rs`: additive module export only; final GitNexus detect must
+  confirm no unexpected high-risk affected processes.
+
+### PR-6 Verification Notes
+
+- Passed: `cargo test --manifest-path src-tauri/Cargo.toml --lib harness::performance_scorecard`
+  (11 passed; 0 failed; 2524 filtered out).
+- Passed: `cargo test --manifest-path src-tauri/Cargo.toml --lib harness::runtime`
+  (1 passed; 0 failed; 2531 filtered out).
+- Passed: `cargo test --manifest-path src-tauri/Cargo.toml --lib harness::artifacts`
+  (1 passed; 0 failed; 2531 filtered out).
+- Passed: `git diff --check` on PR-6 touched files.
+- Passed: `npx gitnexus detect-changes --scope staged --repo /Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr6-performance-scorecards`
+  (6 files, 5 symbols, 0 affected processes, LOW risk).
 
 ---
 
