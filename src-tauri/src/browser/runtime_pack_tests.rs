@@ -308,3 +308,210 @@ fn update_policy_keeps_current_pack_when_current_or_offline() {
     assert_eq!(offline.action, BrowserRuntimePackAction::RetryWhenOnline);
     assert!(offline.keep_current_pack);
 }
+
+fn plan_fixture(
+    operation: BrowserRuntimePackOperation,
+    network_state: BrowserRuntimePackNetworkState,
+) -> (
+    BrowserRuntimePackManifest,
+    BrowserRuntimePackPaths,
+    BrowserRuntimePackDoctorOutcome,
+    BrowserRuntimePackOperationRequest,
+) {
+    let manifest = BrowserRuntimePackManifest {
+        archive_size_bytes: 120 * 1024 * 1024,
+        ..BrowserRuntimePackManifest::v1_default()
+    };
+    let paths = BrowserRuntimePackPaths::from_root("/tmp/uclaw-runtime", &manifest);
+    let doctor = diagnose_runtime_pack(&manifest, &BrowserRuntimePackProbe::ready());
+    let request = BrowserRuntimePackOperationRequest {
+        operation,
+        trigger: BrowserRuntimePackPlanTrigger::StartupAuto,
+        network_state,
+        auto_prepare_enabled: true,
+        user_confirmed: true,
+        active_tasks: 0,
+    };
+
+    (manifest, paths, doctor, request)
+}
+
+#[test]
+fn operation_planner_prepares_runtime_pack_with_verification_promotion_and_env() {
+    let (manifest, paths, doctor, request) = plan_fixture(
+        BrowserRuntimePackOperation::Prepare,
+        BrowserRuntimePackNetworkState::Online,
+    );
+
+    let plan = plan_runtime_pack_operation(&manifest, &paths, &doctor, request);
+
+    assert_eq!(plan.status, BrowserRuntimePackPlanStatus::Planned);
+    assert!(plan.uses_network);
+    assert!(!plan.requires_confirmation);
+    assert_eq!(
+        plan.env,
+        vec![BrowserRuntimePackEnvVar {
+            name: "PLAYWRIGHT_BROWSERS_PATH".to_string(),
+            value: paths.playwright_browsers_path.clone(),
+        }]
+    );
+
+    let step_kinds: Vec<_> = plan.steps.iter().map(|step| step.kind).collect();
+    assert!(step_kinds.contains(&BrowserRuntimePackPlanStepKind::DownloadArchive));
+    assert!(step_kinds.contains(&BrowserRuntimePackPlanStepKind::VerifySha256));
+    assert!(step_kinds.contains(&BrowserRuntimePackPlanStepKind::UnpackStaging));
+    assert!(step_kinds.contains(&BrowserRuntimePackPlanStepKind::InstallPack));
+    assert!(step_kinds.contains(&BrowserRuntimePackPlanStepKind::RunDoctor));
+    assert!(step_kinds.contains(&BrowserRuntimePackPlanStepKind::PromotePack));
+    assert!(step_kinds.contains(&BrowserRuntimePackPlanStepKind::RetainRollback));
+    assert_eq!(
+        plan.event_names,
+        vec!["browser.runtime.prepare.planned".to_string()]
+    );
+}
+
+#[test]
+fn operation_planner_requires_confirmation_for_metered_or_large_downloads() {
+    let (manifest, paths, doctor, mut request) = plan_fixture(
+        BrowserRuntimePackOperation::Prepare,
+        BrowserRuntimePackNetworkState::Metered,
+    );
+    request.user_confirmed = false;
+
+    let metered = plan_runtime_pack_operation(&manifest, &paths, &doctor, request.clone());
+    assert_eq!(
+        metered.status,
+        BrowserRuntimePackPlanStatus::RequiresConfirmation
+    );
+    assert!(metered.requires_confirmation);
+    assert!(metered
+        .steps
+        .iter()
+        .any(|step| step.kind == BrowserRuntimePackPlanStepKind::RequireUserConfirmation));
+
+    let large_manifest = BrowserRuntimePackManifest {
+        archive_size_bytes: 350 * 1024 * 1024,
+        ..manifest
+    };
+    let large = plan_runtime_pack_operation(&large_manifest, &paths, &doctor, request);
+    assert_eq!(
+        large.status,
+        BrowserRuntimePackPlanStatus::RequiresConfirmation
+    );
+}
+
+#[test]
+fn operation_planner_defers_offline_or_captive_downloads_without_network_steps() {
+    let (manifest, paths, doctor, request) = plan_fixture(
+        BrowserRuntimePackOperation::Prepare,
+        BrowserRuntimePackNetworkState::Offline,
+    );
+
+    let offline = plan_runtime_pack_operation(&manifest, &paths, &doctor, request);
+
+    assert_eq!(offline.status, BrowserRuntimePackPlanStatus::Deferred);
+    assert!(offline.keeps_current_pack);
+    assert!(!offline
+        .steps
+        .iter()
+        .any(|step| step.kind == BrowserRuntimePackPlanStepKind::DownloadArchive));
+    assert_eq!(
+        offline.event_names,
+        vec!["browser.runtime.prepare.deferred".to_string()]
+    );
+}
+
+#[test]
+fn operation_planner_respects_disabled_startup_auto_prepare_but_allows_task_time() {
+    let (manifest, paths, doctor, mut request) = plan_fixture(
+        BrowserRuntimePackOperation::Prepare,
+        BrowserRuntimePackNetworkState::Online,
+    );
+    request.auto_prepare_enabled = false;
+    request.user_confirmed = true;
+
+    let startup = plan_runtime_pack_operation(&manifest, &paths, &doctor, request.clone());
+    assert_eq!(startup.status, BrowserRuntimePackPlanStatus::Deferred);
+    assert_eq!(
+        startup.event_names,
+        vec!["browser.runtime.prepare.deferred".to_string()]
+    );
+
+    request.trigger = BrowserRuntimePackPlanTrigger::TaskTime;
+    let task_time = plan_runtime_pack_operation(&manifest, &paths, &doctor, request);
+    assert_eq!(task_time.status, BrowserRuntimePackPlanStatus::Planned);
+    assert!(task_time
+        .steps
+        .iter()
+        .any(|step| step.kind == BrowserRuntimePackPlanStepKind::DownloadArchive));
+}
+
+#[test]
+fn operation_planner_defers_cleanup_and_rollback_during_active_tasks() {
+    let (manifest, paths, doctor, mut cleanup_request) = plan_fixture(
+        BrowserRuntimePackOperation::Cleanup,
+        BrowserRuntimePackNetworkState::Online,
+    );
+    cleanup_request.active_tasks = 2;
+
+    let cleanup = plan_runtime_pack_operation(&manifest, &paths, &doctor, cleanup_request);
+    assert_eq!(cleanup.status, BrowserRuntimePackPlanStatus::Deferred);
+    assert!(cleanup.keeps_current_pack);
+    assert!(!cleanup
+        .steps
+        .iter()
+        .any(|step| step.kind == BrowserRuntimePackPlanStepKind::CleanupOldPacks));
+
+    let rollback_request = BrowserRuntimePackOperationRequest {
+        operation: BrowserRuntimePackOperation::Rollback,
+        trigger: BrowserRuntimePackPlanTrigger::Settings,
+        network_state: BrowserRuntimePackNetworkState::Online,
+        auto_prepare_enabled: true,
+        user_confirmed: true,
+        active_tasks: 1,
+    };
+    let rollback = plan_runtime_pack_operation(&manifest, &paths, &doctor, rollback_request);
+    assert_eq!(rollback.status, BrowserRuntimePackPlanStatus::Deferred);
+}
+
+#[test]
+fn operation_planner_blocks_rollback_when_no_previous_pack_exists() {
+    let (manifest, paths, _doctor, request) = plan_fixture(
+        BrowserRuntimePackOperation::Rollback,
+        BrowserRuntimePackNetworkState::Online,
+    );
+    let doctor = BrowserRuntimePackDoctorOutcome {
+        rollback_available: false,
+        ..diagnose_runtime_pack(&manifest, &BrowserRuntimePackProbe::ready())
+    };
+
+    let rollback = plan_runtime_pack_operation(&manifest, &paths, &doctor, request);
+
+    assert_eq!(rollback.status, BrowserRuntimePackPlanStatus::Blocked);
+    assert_eq!(
+        rollback.event_names,
+        vec!["browser.runtime.rollback.blocked".to_string()]
+    );
+    assert!(rollback
+        .steps
+        .iter()
+        .any(|step| step.kind == BrowserRuntimePackPlanStepKind::KeepCurrent));
+}
+
+#[test]
+fn operation_planner_keep_current_is_ready_noop() {
+    let (manifest, paths, doctor, request) = plan_fixture(
+        BrowserRuntimePackOperation::KeepCurrent,
+        BrowserRuntimePackNetworkState::Online,
+    );
+
+    let plan = plan_runtime_pack_operation(&manifest, &paths, &doctor, request);
+
+    assert_eq!(plan.status, BrowserRuntimePackPlanStatus::Ready);
+    assert!(plan.keeps_current_pack);
+    assert!(!plan.destructive);
+    assert_eq!(
+        plan.event_names,
+        vec!["browser.runtime.keep_current.planned".to_string()]
+    );
+}
