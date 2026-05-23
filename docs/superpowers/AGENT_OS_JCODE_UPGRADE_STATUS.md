@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-6 performance scorecards in review
+> Current phase: PR-7 subagent/team runtime hardening starting
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -25,7 +25,7 @@
 | PR-3 | Provider readiness core | Merged | Codex | GitHub PR #401 merged at `9af769c1`. |
 | PR-4 | Soft interrupts and boundary yields | Merged | Codex | GitHub PR #402 merged at `21e6f9d1`. |
 | PR-5 | Session projection journal | Merged | Codex | GitHub PR #403 merged at `f7811f3d`. |
-| PR-6 | Performance scorecards | Open | Codex | GitHub PR #404: <https://github.com/novolei/uclaw-new/pull/404>. |
+| PR-6 | Performance scorecards | Merged | Codex | GitHub PR #404 merged at `78b16dde`. |
 | PR-7 | Subagent/team runtime hardening | Not started | Unassigned | Wait for PR-1 contracts and PR-4 boundary semantics. |
 | PR-8 | jcode-inspired tool family mesh | Not started | Unassigned | Wait for PR-2 and Capability Mesh status. |
 | PR-9 | BrowserProvider status/setup/probe | Not started | Unassigned | Wait for PR-1 contracts and browser impact map. |
