@@ -14,6 +14,7 @@ pub mod observation;
 pub mod perception;
 pub mod provider;
 pub mod recovery;
+pub mod runtime_contracts;
 pub mod script_runner;
 pub mod session_state;
 pub mod task_store;
@@ -30,6 +31,14 @@ pub use provider::{
     BrowserProbeStatus, BrowserProviderCapabilities, BrowserProviderReadiness,
     BrowserProviderReadinessProbe, BrowserProviderStatus, BrowserSetupCheck,
     LOCAL_CHROMIUM_PROVIDER_ID,
+};
+pub use runtime_contracts::{
+    browser_provider_capability_card, browser_provider_capability_cards, browser_task_event_names,
+    is_allowed_browser_runtime_transition, BrowserIdentityMode, BrowserIdentityProjection,
+    BrowserProviderCapabilityCard, BrowserProviderLane, BrowserRuntimeFeatureFlags,
+    BrowserRuntimeProjection, BrowserRuntimeState, BrowserRuntimeTransition,
+    BrowserStartupDoctorProjection, BrowserTaskBoundaryProjection, BrowserTaskBoundaryStatus,
+    BrowserTaskEventName, BrowserWorldProjectionSummary, StartupDoctorStatus,
 };
 pub use types::{DOMState, ScreencastFramePayload};
 
