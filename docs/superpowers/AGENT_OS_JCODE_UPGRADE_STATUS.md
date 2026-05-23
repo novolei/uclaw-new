@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-11 Harness campaigns in progress
+> Current phase: PR-11 Harness campaigns open for review
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -30,7 +30,7 @@
 | PR-8 | jcode-inspired tool family mesh | Merged | Codex | GitHub PR #406 merged at `ac0f526c`. |
 | PR-9 | BrowserProvider status/setup/probe | Merged | Codex | GitHub PR #407 merged at `33672ba3`. |
 | PR-10 | Ambient-to-automation mapping | Merged | Codex | GitHub PR #408 merged at `67005fed`. |
-| PR-11 | Harness campaigns | In progress | Codex | Worktree `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr11-harness-campaigns`; branch `codex/agent-os-jcode-pr11-harness-campaigns`; adding pure campaign manifests only. |
+| PR-11 | Harness campaigns | Open | Codex | GitHub PR #409 opened from `codex/agent-os-jcode-pr11-harness-campaigns`; pure campaign manifests only. |
 | PR-12 | Frontend projection reducer | Not started | Unassigned | Wait for PR-5 projection journal. |
 | PR-13 | Surface convergence | Not started | Unassigned | Wait for PR-12 plus per-surface migration plans. |
 
