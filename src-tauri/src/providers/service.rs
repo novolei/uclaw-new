@@ -17,6 +17,7 @@ use tokio::sync::RwLock;
 use crate::error::Error;
 
 use super::registry;
+use super::readiness;
 use super::store::{load_provider_configs, save_provider_configs};
 use super::types::{
     KnownProvider, Model, ModelModality, ProviderConfig, ProviderConfigs, TestResult,
@@ -84,6 +85,44 @@ impl ProviderService {
     /// Get the current active model.
     pub async fn get_active_model(&self) -> Option<super::types::ModelSelection> {
         self.configs.read().await.active_model.clone()
+    }
+
+    /// Derive a provider readiness report from the current local config.
+    ///
+    /// This is a metadata-only helper: it does not make HTTP calls, mutate
+    /// credentials, or change runtime provider selection.
+    pub async fn provider_readiness(
+        &self,
+        provider_id: &str,
+    ) -> uclaw_provider_core::ProviderReadinessReport {
+        let configs = self.configs.read().await;
+        let known = registry::find(provider_id);
+        readiness::assess_provider_readiness(
+            provider_id,
+            known.as_ref(),
+            configs.find_provider(provider_id),
+            &configs.selected_models,
+            configs.active_model.as_ref(),
+        )
+    }
+
+    /// Derive readiness reports for every built-in provider.
+    pub async fn all_provider_readiness(
+        &self,
+    ) -> Vec<uclaw_provider_core::ProviderReadinessReport> {
+        let configs = self.configs.read().await;
+        registry::all()
+            .into_iter()
+            .map(|known| {
+                readiness::assess_provider_readiness(
+                    &known.id,
+                    Some(&known),
+                    configs.find_provider(&known.id),
+                    &configs.selected_models,
+                    configs.active_model.as_ref(),
+                )
+            })
+            .collect()
     }
 
     /// Resolve the active model into full LLM connection parameters.

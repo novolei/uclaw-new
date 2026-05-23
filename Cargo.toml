@@ -38,6 +38,7 @@ members = [
     "crates/uclaw-tool-types",
     "crates/uclaw-runtime-contracts",
     "crates/uclaw-protocol-types",
+    "crates/uclaw-provider-core",
     # T5b/T6 crates land here.
 ]
 # Exclude any temporary or in-progress trees. Keeping this explicit lets
