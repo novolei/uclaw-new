@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-3 provider readiness core in progress
+> Current phase: PR-4 soft interrupts and boundary yields open for review
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -22,8 +22,8 @@
 | PR-0 | Design baseline and close-loop governance | Merged | Codex | Baseline docs are on `main`; local skill/context follow-up also landed on `main`. |
 | PR-1 | Pure type crates for messages/tools/protocol/runtime contracts | Merged | Codex | GitHub PR #399 merged at `efe0e72d`. |
 | PR-2 | ToolContext adapter | Merged | Codex | GitHub PR #400 merged at `17ec931e`. |
-| PR-3 | Provider readiness core | In progress | Codex | Worktree `agent-os-jcode-pr3-provider-core`; implement metadata-only readiness reports and defer runtime provider migration. |
-| PR-4 | Soft interrupts and boundary yields | Not started | Unassigned | Wait for PR-1 contracts and policy review. |
+| PR-3 | Provider readiness core | Merged | Codex | GitHub PR #401 merged at `9af769c1`. |
+| PR-4 | Soft interrupts and boundary yields | Open | Codex | GitHub PR #402 is open; review, merge, then sync local `main`. |
 | PR-5 | Session projection journal | Not started | Unassigned | Wait for PR-1 contracts and M4 alignment. |
 | PR-6 | Performance scorecards | Not started | Unassigned | Wait for first replay fixtures. |
 | PR-7 | Subagent/team runtime hardening | Not started | Unassigned | Wait for PR-1 contracts and PR-4 boundary semantics. |
@@ -51,6 +51,7 @@ Append one row when a design decision changes the roadmap.
 | 2026-05-23 | PR-1 implementation uses compatibility re-exports, not call-site churn. | Commits `c85f4c1c`, `5fdc1e4b`, `a4428a71`, `8b5602e9`, `160d6491`. | Later PRs can migrate imports gradually while existing backend modules keep compiling against the facade paths. |
 | 2026-05-23 | PR-2 uses a compatibility ToolContext adapter, not a `Tool::execute` signature rewrite. | GitNexus marks `Tool` HIGH impact with 28 direct implementers. | PR-2 keeps behavior stable and introduces a context seam for later tool migration. |
 | 2026-05-23 | PR-3 starts with provider readiness/core metadata, not runtime split-prompt execution. | GitNexus marks `get_active_llm_config` HIGH risk; subagents agreed `LlmProvider`/OpenAI/Anthropic runtime paths should not change in PR-3. | PR-3 adds typed readiness reports and leaves split prompt, runtime failover, and provider trait migration to later PRs. |
+| 2026-05-23 | PR-4 starts as an adapter/foundation slice, not an agent-loop rewrite. | GitNexus marks `run_agentic_loop` HIGH risk; jcode soft interrupt design can be adopted without changing the loop signature first. | PR-4 adds soft interrupt queue primitives and normalizes resumable boundaries into existing `TaskEvent` variants. |
 
 ---
 
@@ -62,7 +63,7 @@ PR.
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Known pre-existing tracked changes | None in PR-3 worktree. |
+| Known pre-existing tracked changes | None in PR-4 worktree after restoring GitNexus auto-updated `AGENTS.md` and `CLAUDE.md` stats. |
 | Current jcode comparison docs | `docs/jcode_comparison/` is tracked on `main`. |
 | Current PR-0 spec | `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md` |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
@@ -339,7 +340,78 @@ Recommended PR-3 first tests:
   - unconfigured providers now report `NeedsConfiguration`;
   - Codex OAuth readiness does not require a base URL;
   - OAuth/API-family/latency JSON names are pinned with tests.
-- `git diff --check` and GitNexus staged detect are pending before commit.
+- `git diff --check` passed.
+- GitNexus staged detect passed after indexing the PR-3 worktree.
+- GitHub PR #401 merged at `9af769c1`; local `main` was synced before PR-4.
+
+---
+
+## PR-4 Entry Criteria
+
+PR-4 can start because:
+
+- PR-1, PR-2, and PR-3 are merged into `main`;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr4-soft-interrupts`;
+- jcode soft-interrupt/browser/harness references were explored by subagents;
+- uClaw runtime contracts already contain `BoundaryYield`, `Checkpoint`,
+  `PermissionRequested`, and `PermissionDecided`;
+- GitNexus impact for `run_agentic_loop` was run and reported HIGH risk, so
+  this PR avoids loop signature or control-plane rewrites.
+
+Recommended PR-4 first tests:
+
+- sibling-file tests for `SoftInterruptQueue` FIFO drain, urgent counting,
+  non-destructive snapshot, clear, and serde shape;
+- sibling-file `RegularTask` test proving `LoopOutcome::NeedApproval` emits
+  `BoundaryYield` and no terminal `TaskFinished`;
+- browser rollout bridge tests proving `NeedsUserIntervention` and
+  `PausedCheckpointed` are resumable yields, not completed runs;
+- existing contract tests to ensure no `TaskEvent` wire-shape drift.
+
+## PR-4 Progress
+
+- Plan: `docs/superpowers/plans/2026-05-23-pr4-soft-interrupts-boundary-yields.md`
+- Worktree: `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr4-soft-interrupts`
+- Branch: `codex/agent-os-jcode-pr4-soft-interrupts`
+- Pull request: GitHub PR #402.
+- Scope: clean-room soft-interrupt queue primitives plus event adapter mapping
+  for approval, browser intervention, and browser checkpoint boundaries.
+- Rust hygiene: new tests live in sibling `interrupts_tests.rs`,
+  `regular_task_pr4_tests.rs`, and `browser/rollout_bridge_tests.rs`; PR-4
+  avoids adding new inline test bodies.
+- DMZ files: none planned.
+- Migration: none planned.
+- Rollback: revert the new queue module, module export, boundary mapping
+  changes, tests, and docs.
+
+### PR-4 Impact Notes
+
+- `run_agentic_loop`: HIGH impact; do not edit in PR-4.
+- `ReasoningContext::is_cancelled`: HIGH impact; do not edit in PR-4.
+- `LoopDelegate`: MEDIUM by GitNexus but semantically high; do not change
+  signatures in PR-4.
+- `outcome_to_verdict`: MEDIUM impact; keep mapping unchanged for compatibility
+  and add boundary-yield behavior in `RegularTask::run`.
+- `browser_run_to_events`: MEDIUM impact; direct caller is
+  `emit_browser_run_into_session_dir` plus local tests.
+- `TaskEvent`: serialized contract; do not add or rename variants in PR-4.
+
+### PR-4 Verification Notes
+
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib agent::interrupts`
+  passed 4 tests.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib agent::regular_task`
+  passed 11 tests.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::rollout_bridge`
+  passed 7 tests.
+- `cargo test -p uclaw-runtime-contracts` passed 20 tests plus doctests.
+- `gbrain-source`, `pyembed`, and `bunembed` were linked from the primary
+  worktree because ignored runtime resources are not copied into isolated
+  worktrees.
+- `git diff --cached --check` passed.
+- `npx gitnexus detect-changes --scope staged --repo /Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr4-soft-interrupts`
+  reported low risk, 0 affected processes.
 
 ---
 

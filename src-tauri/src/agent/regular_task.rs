@@ -185,6 +185,16 @@ impl SessionTask for RegularTask {
             _ => {}
         }
 
+        if let Some(reason) = outcome_to_boundary_yield_reason(&outcome) {
+            events.push(TaskEvent::BoundaryYield {
+                ts: now(),
+                source: TaskEventSource::AgentLoop,
+                task_id: self.spec.id.clone(),
+                reason,
+            });
+            return events;
+        }
+
         let verdict = outcome_to_verdict(&outcome, &token);
         events.push(TaskEvent::TaskFinished {
             ts: now(),
@@ -193,6 +203,15 @@ impl SessionTask for RegularTask {
             verdict,
         });
         events
+    }
+}
+
+fn outcome_to_boundary_yield_reason(outcome: &LoopOutcome) -> Option<String> {
+    match outcome {
+        LoopOutcome::NeedApproval { tool_name, tool_call_id, .. } => {
+            Some(format!("awaiting approval for tool `{tool_name}` ({tool_call_id})"))
+        }
+        _ => None,
     }
 }
 
@@ -233,6 +252,10 @@ pub fn outcome_to_verdict(outcome: &LoopOutcome, token: &CancellationToken) -> T
         }
     }
 }
+
+#[cfg(test)]
+#[path = "regular_task_pr4_tests.rs"]
+mod pr4_tests;
 
 #[cfg(test)]
 mod tests {
