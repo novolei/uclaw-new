@@ -26,7 +26,7 @@
 | PR-4 | Soft interrupts and boundary yields | Merged | Codex | GitHub PR #402 merged at `21e6f9d1`. |
 | PR-5 | Session projection journal | Merged | Codex | GitHub PR #403 merged at `f7811f3d`. |
 | PR-6 | Performance scorecards | Merged | Codex | GitHub PR #404 merged at `78b16dde`. |
-| PR-7 | Subagent/team runtime hardening | In progress | Codex | Finalize reviewer fixes, then open PR. |
+| PR-7 | Subagent/team runtime hardening | Open | Codex | GitHub PR #405: <https://github.com/novolei/uclaw-new/pull/405>. |
 | PR-8 | jcode-inspired tool family mesh | Not started | Unassigned | Wait for PR-2 and Capability Mesh status. |
 | PR-9 | BrowserProvider status/setup/probe | Not started | Unassigned | Wait for PR-1 contracts and browser impact map. |
 | PR-10 | Ambient-to-automation mapping | Not started | Unassigned | Wait for PR-4 and automation policy review. |
