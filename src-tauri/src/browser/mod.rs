@@ -15,6 +15,7 @@ pub mod perception;
 pub mod provider;
 pub mod recovery;
 pub mod runtime_contracts;
+pub mod runtime_pack;
 pub mod runtime_supervisor;
 pub mod script_runner;
 pub mod session_state;
@@ -40,6 +41,13 @@ pub use runtime_contracts::{
     BrowserRuntimeProjection, BrowserRuntimeState, BrowserRuntimeTransition,
     BrowserStartupDoctorProjection, BrowserTaskBoundaryProjection, BrowserTaskBoundaryStatus,
     BrowserTaskEventName, BrowserWorldProjectionSummary, StartupDoctorStatus,
+};
+pub use runtime_pack::{
+    decide_runtime_pack_update, diagnose_runtime_pack, BrowserRuntimePackAction,
+    BrowserRuntimePackDoctorOutcome, BrowserRuntimePackDoctorStatus, BrowserRuntimePackIssue,
+    BrowserRuntimePackManifest, BrowserRuntimePackPaths, BrowserRuntimePackProbe,
+    BrowserRuntimePackReleaseChannel, BrowserRuntimePackUpdateDecision,
+    BrowserRuntimePackUpdateKind, BrowserRuntimePackUpdatePolicy,
 };
 pub use runtime_supervisor::{
     BrowserRuntimeArtifactPack, BrowserRuntimeDeadlineProfile, BrowserRuntimeDegradation,
