@@ -7658,6 +7658,10 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "uclaw-message-types",
+ "uclaw-protocol-types",
+ "uclaw-runtime-contracts",
+ "uclaw-tool-types",
  "uclaw-utils-async-utils",
  "uclaw-utils-home",
  "uclaw-utils-template",
@@ -7665,6 +7669,41 @@ dependencies = [
  "urlencoding",
  "uuid",
  "walkdir",
+]
+
+[[package]]
+name = "uclaw-message-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "uclaw-protocol-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uclaw-message-types",
+ "uclaw-runtime-contracts",
+ "uclaw-tool-types",
+]
+
+[[package]]
+name = "uclaw-runtime-contracts"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "uclaw-tool-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

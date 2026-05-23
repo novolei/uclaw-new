@@ -1,0 +1,15 @@
+[package]
+name = "uclaw-protocol-types"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uclaw-message-types = { path = "../uclaw-message-types" }
+uclaw-runtime-contracts = { path = "../uclaw-runtime-contracts" }
+uclaw-tool-types = { path = "../uclaw-tool-types" }
