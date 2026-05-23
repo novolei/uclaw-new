@@ -192,6 +192,463 @@ pub enum BrowserRuntimePackAction {
     KeepCurrent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserRuntimePackOperation {
+    Prepare,
+    Repair,
+    Reinstall,
+    Cleanup,
+    Rollback,
+    KeepCurrent,
+}
+
+impl BrowserRuntimePackOperation {
+    pub const fn from_action(action: BrowserRuntimePackAction) -> Self {
+        match action {
+            BrowserRuntimePackAction::Prepare => Self::Prepare,
+            BrowserRuntimePackAction::Repair => Self::Repair,
+            BrowserRuntimePackAction::Reinstall => Self::Reinstall,
+            BrowserRuntimePackAction::Cleanup => Self::Cleanup,
+            BrowserRuntimePackAction::Rollback => Self::Rollback,
+            BrowserRuntimePackAction::KeepCurrent => Self::KeepCurrent,
+            BrowserRuntimePackAction::Defer | BrowserRuntimePackAction::RetryWhenOnline => {
+                Self::Prepare
+            }
+        }
+    }
+
+    const fn event_slug(self) -> &'static str {
+        match self {
+            Self::Prepare => "prepare",
+            Self::Repair => "repair",
+            Self::Reinstall => "reinstall",
+            Self::Cleanup => "cleanup",
+            Self::Rollback => "rollback",
+            Self::KeepCurrent => "keep_current",
+        }
+    }
+
+    const fn uses_network(self) -> bool {
+        matches!(self, Self::Prepare | Self::Repair | Self::Reinstall)
+    }
+
+    const fn can_disrupt_active_tasks(self) -> bool {
+        matches!(self, Self::Reinstall | Self::Cleanup | Self::Rollback)
+    }
+
+    const fn is_destructive(self) -> bool {
+        matches!(self, Self::Cleanup | Self::Rollback | Self::Reinstall)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserRuntimePackPlanTrigger {
+    StartupAuto,
+    TaskTime,
+    Settings,
+    DoctorRepair,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserRuntimePackNetworkState {
+    Online,
+    Offline,
+    Metered,
+    Cellular,
+    CaptivePortal,
+    Restricted,
+}
+
+impl BrowserRuntimePackNetworkState {
+    const fn blocks_download(self) -> bool {
+        matches!(self, Self::Offline | Self::CaptivePortal)
+    }
+
+    const fn needs_confirmation(self) -> bool {
+        matches!(self, Self::Metered | Self::Cellular | Self::Restricted)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserRuntimePackPlanStatus {
+    Ready,
+    Planned,
+    RequiresConfirmation,
+    Deferred,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserRuntimePackPlanStepKind {
+    CheckManifest,
+    CheckNetworkPolicy,
+    RequireUserConfirmation,
+    DownloadArchive,
+    VerifySha256,
+    UnpackStaging,
+    InstallPack,
+    RunDoctor,
+    PromotePack,
+    RetainRollback,
+    CleanupPreview,
+    CleanupOldPacks,
+    RestoreRollback,
+    KeepCurrent,
+    Defer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRuntimePackPlanStep {
+    pub kind: BrowserRuntimePackPlanStepKind,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+    pub uses_network: bool,
+    pub destructive: bool,
+    pub requires_confirmation: bool,
+}
+
+impl BrowserRuntimePackPlanStep {
+    fn new(kind: BrowserRuntimePackPlanStepKind, label: impl Into<String>) -> Self {
+        Self {
+            kind,
+            label: label.into(),
+            path: None,
+            uses_network: false,
+            destructive: false,
+            requires_confirmation: false,
+        }
+    }
+
+    fn path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    fn network(mut self) -> Self {
+        self.uses_network = true;
+        self
+    }
+
+    fn destructive(mut self) -> Self {
+        self.destructive = true;
+        self
+    }
+
+    fn confirmation(mut self) -> Self {
+        self.requires_confirmation = true;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRuntimePackEnvVar {
+    pub name: String,
+    pub value: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRuntimePackOperationRequest {
+    pub operation: BrowserRuntimePackOperation,
+    pub trigger: BrowserRuntimePackPlanTrigger,
+    pub network_state: BrowserRuntimePackNetworkState,
+    pub auto_prepare_enabled: bool,
+    pub user_confirmed: bool,
+    pub active_tasks: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRuntimePackOperationPlan {
+    pub operation: BrowserRuntimePackOperation,
+    pub status: BrowserRuntimePackPlanStatus,
+    pub summary: String,
+    pub steps: Vec<BrowserRuntimePackPlanStep>,
+    pub env: Vec<BrowserRuntimePackEnvVar>,
+    pub event_names: Vec<String>,
+    pub manifest_pack_version: String,
+    pub runtime_root: PathBuf,
+    pub current_pack_dir: PathBuf,
+    pub uses_network: bool,
+    pub requires_confirmation: bool,
+    pub keeps_current_pack: bool,
+    pub destructive: bool,
+}
+
+pub fn plan_runtime_pack_operation(
+    manifest: &BrowserRuntimePackManifest,
+    paths: &BrowserRuntimePackPaths,
+    doctor: &BrowserRuntimePackDoctorOutcome,
+    request: BrowserRuntimePackOperationRequest,
+) -> BrowserRuntimePackOperationPlan {
+    let mut plan = BrowserRuntimePackOperationPlan {
+        operation: request.operation,
+        status: BrowserRuntimePackPlanStatus::Planned,
+        summary: "Browser runtime operation is planned.".to_string(),
+        steps: Vec::new(),
+        env: vec![BrowserRuntimePackEnvVar {
+            name: "PLAYWRIGHT_BROWSERS_PATH".to_string(),
+            value: paths.playwright_browsers_path.clone(),
+        }],
+        event_names: Vec::new(),
+        manifest_pack_version: manifest.pack_version.clone(),
+        runtime_root: paths.runtime_root.clone(),
+        current_pack_dir: paths.current_pack_dir.clone(),
+        uses_network: request.operation.uses_network(),
+        requires_confirmation: false,
+        keeps_current_pack: request.active_tasks > 0,
+        destructive: request.operation.is_destructive(),
+    };
+
+    plan.steps.push(
+        BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::CheckManifest,
+            "Read the pinned Browser runtime manifest.",
+        )
+        .path(paths.manifest_path.clone()),
+    );
+
+    if request.operation == BrowserRuntimePackOperation::KeepCurrent {
+        plan.status = BrowserRuntimePackPlanStatus::Ready;
+        plan.summary = "Current Browser runtime pack remains selected.".to_string();
+        plan.keeps_current_pack = true;
+        plan.steps.push(BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::KeepCurrent,
+            "Keep the current Browser runtime pack.",
+        ));
+        plan.event_names
+            .push("browser.runtime.keep_current.planned".to_string());
+        return plan;
+    }
+
+    if !request.auto_prepare_enabled
+        && request.trigger == BrowserRuntimePackPlanTrigger::StartupAuto
+        && request.operation.uses_network()
+    {
+        plan.status = BrowserRuntimePackPlanStatus::Deferred;
+        plan.summary =
+            "Startup auto-preparation is disabled; defer runtime preparation until task-time or Settings."
+                .to_string();
+        plan.keeps_current_pack = true;
+        plan.steps.push(BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::Defer,
+            "Wait for a task-time or Settings confirmation before preparing the runtime.",
+        ));
+        push_event(&mut plan, "deferred");
+        return plan;
+    }
+
+    if request.operation.uses_network() {
+        plan.steps.push(BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::CheckNetworkPolicy,
+            "Check network policy before downloading the runtime pack.",
+        ));
+
+        if request.network_state.blocks_download()
+            || doctor.status == BrowserRuntimePackDoctorStatus::Deferred
+        {
+            plan.status = BrowserRuntimePackPlanStatus::Deferred;
+            plan.summary =
+                "Runtime preparation is deferred until network access is available.".to_string();
+            plan.keeps_current_pack = true;
+            plan.steps.push(BrowserRuntimePackPlanStep::new(
+                BrowserRuntimePackPlanStepKind::Defer,
+                "Retry runtime preparation when the network is available.",
+            ));
+            push_event(&mut plan, "deferred");
+            return plan;
+        }
+    }
+
+    if request.operation.can_disrupt_active_tasks() && request.active_tasks > 0 {
+        plan.status = BrowserRuntimePackPlanStatus::Deferred;
+        plan.summary =
+            "Runtime operation is deferred because active browser tasks are using the current pack."
+                .to_string();
+        plan.keeps_current_pack = true;
+        plan.steps.push(BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::KeepCurrent,
+            "Keep the current pack until active browser tasks finish.",
+        ));
+        push_event(&mut plan, "deferred");
+        return plan;
+    }
+
+    if request.operation == BrowserRuntimePackOperation::Rollback && !doctor.rollback_available {
+        plan.status = BrowserRuntimePackPlanStatus::Blocked;
+        plan.summary = "Runtime rollback is blocked because no previous working pack is available."
+            .to_string();
+        plan.steps.push(BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::KeepCurrent,
+            "Keep the current pack and request repair instead of rollback.",
+        ));
+        push_event(&mut plan, "blocked");
+        return plan;
+    }
+
+    let large_download = manifest.archive_size_bytes >= 200 * 1024 * 1024;
+    let confirmation_reason = request.operation.is_destructive()
+        || (request.operation.uses_network()
+            && (large_download || request.network_state.needs_confirmation()));
+
+    if confirmation_reason && !request.user_confirmed {
+        plan.status = BrowserRuntimePackPlanStatus::RequiresConfirmation;
+        plan.summary = "Runtime operation requires lightweight user confirmation.".to_string();
+        plan.requires_confirmation = true;
+        plan.steps.push(
+            BrowserRuntimePackPlanStep::new(
+                BrowserRuntimePackPlanStepKind::RequireUserConfirmation,
+                "Ask the user to confirm this Browser runtime operation.",
+            )
+            .confirmation(),
+        );
+        push_event(&mut plan, "confirmation_required");
+        return plan;
+    }
+
+    match request.operation {
+        BrowserRuntimePackOperation::Prepare => add_prepare_steps(&mut plan, manifest, paths),
+        BrowserRuntimePackOperation::Repair => add_repair_steps(&mut plan, manifest, paths),
+        BrowserRuntimePackOperation::Reinstall => add_reinstall_steps(&mut plan, manifest, paths),
+        BrowserRuntimePackOperation::Cleanup => add_cleanup_steps(&mut plan, paths),
+        BrowserRuntimePackOperation::Rollback => add_rollback_steps(&mut plan, paths),
+        BrowserRuntimePackOperation::KeepCurrent => {}
+    }
+
+    if request.active_tasks == 0 {
+        plan.keeps_current_pack = matches!(
+            request.operation,
+            BrowserRuntimePackOperation::Cleanup | BrowserRuntimePackOperation::KeepCurrent
+        );
+    }
+
+    push_event(&mut plan, "planned");
+    plan
+}
+
+fn add_prepare_steps(
+    plan: &mut BrowserRuntimePackOperationPlan,
+    manifest: &BrowserRuntimePackManifest,
+    paths: &BrowserRuntimePackPaths,
+) {
+    plan.summary = "Prepare the pinned Browser runtime pack in uClaw-managed storage.".to_string();
+    plan.steps.extend([
+        BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::DownloadArchive,
+            format!("Download runtime pack from {}.", manifest.download_url),
+        )
+        .network(),
+        BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::VerifySha256,
+            format!("Verify runtime pack sha256 {}.", manifest.sha256),
+        ),
+        BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::UnpackStaging,
+            "Unpack runtime pack into a staging directory.",
+        )
+        .path(paths.current_pack_dir.with_extension("staging")),
+        BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::InstallPack,
+            "Install the staged runtime pack.",
+        )
+        .path(paths.current_pack_dir.clone()),
+        BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::RunDoctor,
+            "Run Browser runtime doctor before promotion.",
+        ),
+        BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::PromotePack,
+            "Promote the verified runtime pack.",
+        )
+        .path(paths.current_pack_dir.clone()),
+        BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::RetainRollback,
+            "Retain the previous working runtime pack for rollback.",
+        ),
+    ]);
+}
+
+fn add_repair_steps(
+    plan: &mut BrowserRuntimePackOperationPlan,
+    manifest: &BrowserRuntimePackManifest,
+    paths: &BrowserRuntimePackPaths,
+) {
+    add_prepare_steps(plan, manifest, paths);
+    plan.operation = BrowserRuntimePackOperation::Repair;
+    plan.summary = "Repair the Browser runtime pack and retain rollback evidence.".to_string();
+}
+
+fn add_reinstall_steps(
+    plan: &mut BrowserRuntimePackOperationPlan,
+    manifest: &BrowserRuntimePackManifest,
+    paths: &BrowserRuntimePackPaths,
+) {
+    plan.steps.push(
+        BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::CleanupPreview,
+            "Preview the current runtime pack cleanup before reinstall.",
+        )
+        .path(paths.current_pack_dir.clone()),
+    );
+    add_prepare_steps(plan, manifest, paths);
+    plan.operation = BrowserRuntimePackOperation::Reinstall;
+    plan.summary = "Reinstall the Browser runtime pack after confirmation.".to_string();
+}
+
+fn add_cleanup_steps(plan: &mut BrowserRuntimePackOperationPlan, paths: &BrowserRuntimePackPaths) {
+    plan.summary = "Plan Browser runtime cleanup without deleting files in this step.".to_string();
+    plan.keeps_current_pack = true;
+    plan.steps.extend([
+        BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::CleanupPreview,
+            "Preview runtime-pack cache and old-pack cleanup candidates.",
+        )
+        .path(paths.packs_dir.clone()),
+        BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::CleanupOldPacks,
+            "Cleanup old runtime packs after explicit executor confirmation.",
+        )
+        .path(paths.packs_dir.clone())
+        .destructive(),
+    ]);
+}
+
+fn add_rollback_steps(plan: &mut BrowserRuntimePackOperationPlan, paths: &BrowserRuntimePackPaths) {
+    plan.summary = "Roll back to the previous working Browser runtime pack.".to_string();
+    plan.steps.extend([
+        BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::RestoreRollback,
+            "Restore the previous working runtime pack.",
+        )
+        .path(paths.packs_dir.clone())
+        .destructive(),
+        BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::RunDoctor,
+            "Run Browser runtime doctor on the rollback pack.",
+        ),
+        BrowserRuntimePackPlanStep::new(
+            BrowserRuntimePackPlanStepKind::PromotePack,
+            "Promote the rollback pack if doctor passes.",
+        ),
+    ]);
+}
+
+fn push_event(plan: &mut BrowserRuntimePackOperationPlan, suffix: &str) {
+    plan.event_names.push(format!(
+        "browser.runtime.{}.{}",
+        plan.operation.event_slug(),
+        suffix
+    ));
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserRuntimePackDoctorOutcome {
