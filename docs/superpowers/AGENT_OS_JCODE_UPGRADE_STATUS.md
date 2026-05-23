@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-9 BrowserProvider status/setup/probe in progress
+> Current phase: PR-9 BrowserProvider status/setup/probe in review
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -28,7 +28,7 @@
 | PR-6 | Performance scorecards | Merged | Codex | GitHub PR #404 merged at `78b16dde`. |
 | PR-7 | Subagent/team runtime hardening | Merged | Codex | GitHub PR #405 merged at `174015a6`. |
 | PR-8 | jcode-inspired tool family mesh | Merged | Codex | GitHub PR #406 merged at `ac0f526c`. |
-| PR-9 | BrowserProvider status/setup/probe | In progress | Codex | Branch `codex/agent-os-jcode-pr9-browser-provider-probe` adds pure BrowserProvider readiness/status/probe contracts around Browser Agent v2. |
+| PR-9 | BrowserProvider status/setup/probe | Open | Codex | GitHub PR #407: https://github.com/novolei/uclaw-new/pull/407 |
 | PR-10 | Ambient-to-automation mapping | Not started | Unassigned | Wait for PR-4 and automation policy review. |
 | PR-11 | Harness campaigns | Not started | Unassigned | Wait for PR-2, PR-6, PR-9 smoke subjects. |
 | PR-12 | Frontend projection reducer | Not started | Unassigned | Wait for PR-5 projection journal. |
