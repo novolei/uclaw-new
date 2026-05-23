@@ -32,6 +32,15 @@ export interface BrowserRuntimeSettingsAction {
   id: BrowserRuntimePackAction | 'run_doctor'
   label: string
   enabled: boolean
+  preview: BrowserRuntimeSettingsActionPreview
+}
+
+export interface BrowserRuntimeSettingsActionPreview {
+  title: string
+  summary: string
+  eventNames: string[]
+  requiresConfirmation: boolean
+  destructive: boolean
 }
 
 export interface BrowserRuntimeSettingsViewModel {
@@ -81,7 +90,9 @@ export function deriveBrowserRuntimeSettingsViewModel(
     updateStateLabel: updateStateLabel(input.updateState ?? 'unknown'),
     rollbackLabel: report?.doctor.rollbackAvailable ? '可用' : '不可用',
     developerFallbackLabel: input.developerFallbackEnabled ? '已启用' : '未启用',
-    autoPrepareLabel: input.autoPrepareEnabled === false ? '已关闭' : '已开启',
+    autoPrepareLabel: input.autoPrepareEnabled === undefined
+      ? '等待运行时状态'
+      : input.autoPrepareEnabled ? '已开启' : '已关闭',
     actions,
   }
 }
@@ -133,14 +144,76 @@ function deriveActions(
     ...actionIds.map((id) => ({
       id,
       label: ACTION_LABELS[id],
-      enabled: false,
+      enabled: Boolean(report),
+      preview: actionPreview(id, report),
     })),
     {
       id: 'run_doctor' as const,
       label: ACTION_LABELS.run_doctor,
-      enabled: false,
+      enabled: Boolean(report),
+      preview: actionPreview('run_doctor', report),
     },
   ]
+}
+
+function actionPreview(
+  id: BrowserRuntimeSettingsAction['id'],
+  report: StartupRuntimePackStatusReport | undefined,
+): BrowserRuntimeSettingsActionPreview {
+  const isPrimary = report?.primaryAction === id
+  const eventNames = [
+    ...(report?.operationPlan.eventNames ?? []),
+    ...(report?.eventNames ?? []),
+  ]
+  const fallbackSummary = report
+    ? report.doctor.remediation
+    : '等待 Startup Doctor 提供浏览器运行时状态。'
+  const summary = isPrimary
+    ? report?.operationPlan.summary ?? fallbackSummary
+    : actionSummary(id, fallbackSummary)
+
+  return {
+    title: ACTION_LABELS[id],
+    summary,
+    eventNames: uniqueEventNames(eventNames),
+    requiresConfirmation: id === 'reinstall'
+      || id === 'cleanup'
+      || id === 'rollback'
+      || report?.operationPlan.status === 'requires_confirmation',
+    destructive: id === 'cleanup' || id === 'rollback' || id === 'reinstall',
+  }
+}
+
+function actionSummary(
+  id: BrowserRuntimeSettingsAction['id'],
+  fallbackSummary: string,
+): string {
+  switch (id) {
+    case 'prepare':
+      return '准备 pinned Browser runtime pack，等待后端执行边界接入。'
+    case 'repair':
+      return '修复当前 Browser runtime pack，等待后端执行边界接入。'
+    case 'reinstall':
+      return '重装 Browser runtime pack，需要明确确认并等待后端执行边界接入。'
+    case 'cleanup':
+      return '清理旧 Browser runtime artifacts，需要明确确认并等待后端执行边界接入。'
+    case 'rollback':
+      return '回滚到上一个可用 Browser runtime pack，需要明确确认并等待后端执行边界接入。'
+    case 'defer':
+      return '推迟 runtime preparation，后续 task-time prompt 会继续这条路径。'
+    case 'retry_when_online':
+      return '网络恢复后重试 Browser runtime preparation。'
+    case 'keep_current':
+      return '保持当前 Browser runtime pack，不执行准备或修复。'
+    case 'run_doctor':
+      return '重新运行 Startup Doctor / Browser Runtime 检查，等待后端 IPC 接入。'
+    default:
+      return fallbackSummary
+  }
+}
+
+function uniqueEventNames(eventNames: string[]): string[] {
+  return Array.from(new Set(eventNames.filter(Boolean)))
 }
 
 function formatLastChecked(lastCheckedAtMs: number | undefined): string {

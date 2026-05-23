@@ -34,7 +34,7 @@ describe('BrowserRuntimeSettings', () => {
 
     expect(screen.getByText('浏览器运行时')).toBeInTheDocument()
     expect(screen.getAllByText('未检查').length).toBeGreaterThan(1)
-    expect(screen.getByText('等待运行时状态')).toBeInTheDocument()
+    expect(screen.getAllByText('等待运行时状态').length).toBeGreaterThan(1)
     expect(screen.getByRole('button', { name: '准备' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '运行诊断' })).toBeDisabled()
   })
@@ -58,6 +58,44 @@ describe('BrowserRuntimeSettings', () => {
     expect(screen.getByText('1.48.2-uclaw.1')).toBeInTheDocument()
     expect(screen.getByText('734 MiB')).toBeInTheDocument()
     expect(screen.getByText('/uclaw/browser-runtime/v1')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '保持当前' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '保持当前' })).toBeEnabled()
+    expect(screen.getByText('操作预览')).toBeInTheDocument()
+    expect(screen.getByText('browser.runtime.keep_current.ready · browser.runtime.doctor.completed')).toBeInTheDocument()
+  })
+
+  it('selects runtime action intents without invoking side effects', async () => {
+    const { user } = renderWithProviders(
+      <BrowserRuntimeSettings
+        status={{
+          report: {
+            ...runtimeReport(),
+            ready: false,
+            canRunBrowserTasks: false,
+            primaryAction: 'repair',
+            doctor: {
+              status: 'needs_repair',
+              ready: false,
+              issue: 'corrupt_cache',
+              remediation: 'Runtime cache is corrupt.',
+              actions: ['repair', 'rollback'],
+              manifestPackVersion: '1.48.2-uclaw.1',
+              rollbackAvailable: true,
+              activeTasks: 0,
+            },
+            operationPlan: {
+              status: 'planned',
+              summary: 'Repair Browser runtime pack after policy checks.',
+              eventNames: ['browser.runtime.repair.planned'],
+            },
+          },
+        }}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: '回滚' }))
+
+    expect(screen.getByText('回滚到上一个可用 Browser runtime pack，需要明确确认并等待后端执行边界接入。')).toBeInTheDocument()
+    expect(screen.getByText('需要确认')).toBeInTheDocument()
+    expect(screen.getByText('无副作用')).toBeInTheDocument()
   })
 })
