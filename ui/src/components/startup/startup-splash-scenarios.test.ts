@@ -38,7 +38,7 @@ describe('startup splash preview scenarios', () => {
     expect(options.reducedMotion).toBe(true)
   })
 
-  it('models ready, deferred, and failed runtime-pack states distinctly', () => {
+  it('models ready, deferred, offline recovery, and failed runtime-pack states distinctly', () => {
     expect(getStartupSplashScenario('ready').viewModel).toMatchObject({
       phase: 'ready',
       statusLine: 'uClaw is ready',
@@ -47,6 +47,13 @@ describe('startup splash preview scenarios', () => {
     expect(getStartupSplashScenario('deferred').viewModel).toMatchObject({
       phase: 'degraded',
       detailsRecommended: true,
+    })
+    expect(getStartupSplashScenario('offline-recovery')).toMatchObject({
+      detailsExpanded: false,
+      viewModel: {
+        phase: 'degraded',
+        detailsRecommended: true,
+      },
     })
     expect(getStartupSplashScenario('failed').viewModel).toMatchObject({
       phase: 'failed',

@@ -7,7 +7,13 @@ import {
   type StartupRuntimePackStatusReport,
 } from '@/lib/startup/startup-doctor'
 
-export type StartupSplashScenarioId = 'first-frame' | 'details' | 'ready' | 'deferred' | 'failed'
+export type StartupSplashScenarioId =
+  | 'first-frame'
+  | 'details'
+  | 'ready'
+  | 'deferred'
+  | 'offline-recovery'
+  | 'failed'
 
 export type StartupSplashPreviewTheme =
   | 'light'
@@ -34,6 +40,7 @@ export const STARTUP_SPLASH_SCENARIO_IDS: StartupSplashScenarioId[] = [
   'details',
   'ready',
   'deferred',
+  'offline-recovery',
   'failed',
 ]
 
@@ -81,6 +88,14 @@ export function getStartupSplashScenario(id: StartupSplashScenarioId): StartupSp
       id,
       viewModel: deriveStartupDoctorViewModelFromRuntimePackStatus(deferredRuntimeReport(), passedBaseChecks()),
       detailsExpanded: true,
+    }
+  }
+
+  if (id === 'offline-recovery') {
+    return {
+      id,
+      viewModel: deriveStartupDoctorViewModelFromRuntimePackStatus(deferredRuntimeReport(), passedBaseChecks()),
+      detailsExpanded: false,
     }
   }
 

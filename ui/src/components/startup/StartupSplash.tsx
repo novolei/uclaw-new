@@ -5,6 +5,7 @@ import {
   ChevronDown,
   CircleDashed,
   Loader2,
+  ShieldAlert,
   XCircle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -32,6 +33,12 @@ const phaseTone: Record<StartupDoctorPhase, string> = {
   failed: 'text-[hsl(var(--danger))]',
 }
 
+interface StartupRecoverySurface {
+  title: string
+  message: string
+  tone: 'warning' | 'danger'
+}
+
 function CheckStatusIcon({ status }: { status: StartupDoctorCheckStatus }): React.ReactElement {
   if (status === 'passed') return <CheckCircle2 aria-hidden className="h-4 w-4 text-[hsl(var(--success))]" />
   if (status === 'warning') return <AlertTriangle aria-hidden className="h-4 w-4 text-[hsl(var(--warning))]" />
@@ -57,6 +64,29 @@ function StartupCheckRow({ check }: { check: StartupDoctorCheck }): React.ReactE
   )
 }
 
+function startupRecoverySurface(viewModel: StartupDoctorViewModel): StartupRecoverySurface | null {
+  const attentionCheck = viewModel.checks.find((check) => check.status === 'failed' || check.status === 'warning')
+  const detail = attentionCheck?.detail ? ` ${attentionCheck.detail}` : ''
+
+  if (viewModel.phase === 'failed') {
+    return {
+      title: 'Recovery needed',
+      message: `uClaw can keep the startup doctor open while this local runtime issue is repaired.${detail}`,
+      tone: 'danger',
+    }
+  }
+
+  if (viewModel.phase === 'degraded') {
+    return {
+      title: 'Continuing in the background',
+      message: `uClaw can continue while this check recovers or waits for user confirmation.${detail}`,
+      tone: 'warning',
+    }
+  }
+
+  return null
+}
+
 export function StartupSplash({
   viewModel = deriveStartupDoctorViewModel(),
   detailsExpanded,
@@ -66,6 +96,7 @@ export function StartupSplash({
   const isControlled = detailsExpanded !== undefined
   const expanded = isControlled ? detailsExpanded : internalExpanded
   const progress = clampStartupProgress(viewModel.progress)
+  const recoverySurface = startupRecoverySurface(viewModel)
 
   const setExpanded = (next: boolean) => {
     if (!isControlled) setInternalExpanded(next)
@@ -121,6 +152,46 @@ export function StartupSplash({
             <p className="mt-3 max-w-[34rem] text-sm leading-6 text-muted-foreground">
               Checking local runtime readiness and workspace state.
             </p>
+
+            {recoverySurface ? (
+              <div
+                className={cn(
+                  'mt-6 border-l-2 bg-background/72 px-4 py-3 shadow-sm',
+                  recoverySurface.tone === 'danger'
+                    ? 'border-[hsl(var(--danger))]'
+                    : 'border-[hsl(var(--warning))]',
+                )}
+                role="status"
+                aria-label="Startup recovery"
+              >
+                <div className="flex items-start gap-3">
+                  <ShieldAlert
+                    aria-hidden
+                    className={cn(
+                      'mt-0.5 h-4 w-4 shrink-0',
+                      recoverySurface.tone === 'danger'
+                        ? 'text-[hsl(var(--danger))]'
+                        : 'text-[hsl(var(--warning))]',
+                    )}
+                  />
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-foreground">{recoverySurface.title}</p>
+                    <p className="mt-1 text-sm leading-6 text-muted-foreground">{recoverySurface.message}</p>
+                    {!expanded ? (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="mt-3 h-8"
+                        onClick={() => setExpanded(true)}
+                      >
+                        View diagnostics
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             <div className="mt-8" aria-label={`Startup progress ${progress}%`}>
               <div className="h-1.5 overflow-hidden rounded-full bg-muted">

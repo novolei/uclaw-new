@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { renderWithProviders, screen } from '@/test-utils/render'
+import { renderWithProviders, screen, within } from '@/test-utils/render'
 import { StartupSplash } from './StartupSplash'
 import { deriveStartupDoctorViewModel, type StartupDoctorCheck } from '@/lib/startup/startup-doctor'
 
@@ -32,6 +32,45 @@ describe('StartupSplash', () => {
     expect(screen.getByText('Startup doctor needs attention')).toBeInTheDocument()
     expect(screen.getByRole('list', { name: 'Startup doctor checks' })).toBeInTheDocument()
     expect(screen.getByText('Missing pack')).toBeInTheDocument()
+  })
+
+  it('shows branded recovery guidance for failed startup states', () => {
+    const checks: StartupDoctorCheck[] = [
+      { id: 'config', label: 'Local configuration', status: 'passed' },
+      {
+        id: 'browser-runtime-pack',
+        label: 'Runtime pack path',
+        status: 'failed',
+        detail: 'Rollback is blocked because no previous runtime pack exists.',
+      },
+    ]
+
+    renderWithProviders(<StartupSplash viewModel={deriveStartupDoctorViewModel(checks)} />)
+
+    const recovery = screen.getByRole('status', { name: 'Startup recovery' })
+    expect(recovery).toBeInTheDocument()
+    expect(within(recovery).getByText('Recovery needed')).toBeInTheDocument()
+    expect(within(recovery).getByText(/Rollback is blocked/)).toBeInTheDocument()
+  })
+
+  it('lets recovery guidance reveal diagnostics when details are controlled closed', async () => {
+    const onChange = vi.fn()
+    const checks: StartupDoctorCheck[] = [
+      { id: 'config', label: 'Local configuration', status: 'passed' },
+      { id: 'network', label: 'Network availability', status: 'warning', detail: 'Waiting for network access.' },
+    ]
+
+    const { user } = renderWithProviders(
+      <StartupSplash
+        viewModel={deriveStartupDoctorViewModel(checks)}
+        detailsExpanded={false}
+        onDetailsExpandedChange={onChange}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'View diagnostics' }))
+
+    expect(onChange).toHaveBeenCalledWith(true)
   })
 
   it('supports controlled details state', async () => {
