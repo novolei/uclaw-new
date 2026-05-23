@@ -12,6 +12,7 @@ pub mod loop_detector; // stub — full implementation in Plan 2 Task 15
 pub mod memory_adapter;
 pub mod observation;
 pub mod perception;
+pub mod provider;
 pub mod recovery;
 pub mod script_runner;
 pub mod session_state;
@@ -24,6 +25,12 @@ pub mod rollout_bridge;
 // Re-export the two primary public types so callers can write
 // `crate::browser::BrowserContextManager` without the extra path.
 pub use context_manager::BrowserContextManager;
+pub use provider::{
+    local_chromium_capabilities, local_chromium_status, BrowserCapabilityProbe,
+    BrowserProbeStatus, BrowserProviderCapabilities, BrowserProviderReadiness,
+    BrowserProviderReadinessProbe, BrowserProviderStatus, BrowserSetupCheck,
+    LOCAL_CHROMIUM_PROVIDER_ID,
+};
 pub use types::{DOMState, ScreencastFramePayload};
 
 // ── Legacy BrowserService ─────────────────────────────────────────────

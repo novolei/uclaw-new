@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-9 BrowserProvider status/setup/probe ready to start
+> Current phase: PR-9 BrowserProvider status/setup/probe in review
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -28,7 +28,7 @@
 | PR-6 | Performance scorecards | Merged | Codex | GitHub PR #404 merged at `78b16dde`. |
 | PR-7 | Subagent/team runtime hardening | Merged | Codex | GitHub PR #405 merged at `174015a6`. |
 | PR-8 | jcode-inspired tool family mesh | Merged | Codex | GitHub PR #406 merged at `ac0f526c`. |
-| PR-9 | BrowserProvider status/setup/probe | Not started | Unassigned | Ready to start; PR-1 contracts, PR-2 ToolContext adapter, and PR-8 tool family cards are on `main`. |
+| PR-9 | BrowserProvider status/setup/probe | Open | Codex | GitHub PR #407: https://github.com/novolei/uclaw-new/pull/407 |
 | PR-10 | Ambient-to-automation mapping | Not started | Unassigned | Wait for PR-4 and automation policy review. |
 | PR-11 | Harness campaigns | Not started | Unassigned | Wait for PR-2, PR-6, PR-9 smoke subjects. |
 | PR-12 | Frontend projection reducer | Not started | Unassigned | Wait for PR-5 projection journal. |
@@ -64,9 +64,9 @@ PR.
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current PR worktree | None; `/Users/ryanliu/Documents/uclaw` is synced to PR-8 merge commit `ac0f526c`. |
-| Current PR branch | `main` |
-| Known pre-existing tracked changes | A local ADR browser-runtime draft may be present in the primary worktree; preserve it and do not stage it into Agent OS PRs. |
+| Current PR worktree | `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr9-browser-provider-probe` |
+| Current PR branch | `codex/agent-os-jcode-pr9-browser-provider-probe` |
+| Known pre-existing tracked changes | Primary worktree has a local ADR browser-runtime draft; PR9 worktree has only gitignored local runtime symlinks for `bunembed`, `gbrain-source`, and `pyembed`. |
 | Current jcode comparison docs | `docs/jcode_comparison/` is tracked on `main`. |
 | Current PR-0 spec | `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md` |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
