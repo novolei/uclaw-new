@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-4 soft interrupts and boundary yields in progress
+> Current phase: PR-4 soft interrupts and boundary yields open for review
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -23,7 +23,7 @@
 | PR-1 | Pure type crates for messages/tools/protocol/runtime contracts | Merged | Codex | GitHub PR #399 merged at `efe0e72d`. |
 | PR-2 | ToolContext adapter | Merged | Codex | GitHub PR #400 merged at `17ec931e`. |
 | PR-3 | Provider readiness core | Merged | Codex | GitHub PR #401 merged at `9af769c1`. |
-| PR-4 | Soft interrupts and boundary yields | In progress | Codex | Worktree `agent-os-jcode-pr4-soft-interrupts`; implement queue foundation and yield-not-finish event mapping. |
+| PR-4 | Soft interrupts and boundary yields | Open | Codex | GitHub PR #402 is open; review, merge, then sync local `main`. |
 | PR-5 | Session projection journal | Not started | Unassigned | Wait for PR-1 contracts and M4 alignment. |
 | PR-6 | Performance scorecards | Not started | Unassigned | Wait for first replay fixtures. |
 | PR-7 | Subagent/team runtime hardening | Not started | Unassigned | Wait for PR-1 contracts and PR-4 boundary semantics. |
@@ -374,6 +374,7 @@ Recommended PR-4 first tests:
 - Plan: `docs/superpowers/plans/2026-05-23-pr4-soft-interrupts-boundary-yields.md`
 - Worktree: `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr4-soft-interrupts`
 - Branch: `codex/agent-os-jcode-pr4-soft-interrupts`
+- Pull request: GitHub PR #402.
 - Scope: clean-room soft-interrupt queue primitives plus event adapter mapping
   for approval, browser intervention, and browser checkpoint boundaries.
 - Rust hygiene: new tests live in sibling `interrupts_tests.rs`,
