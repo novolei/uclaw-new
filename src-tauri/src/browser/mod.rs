@@ -44,10 +44,11 @@ pub use runtime_contracts::{
 };
 pub use runtime_pack::{
     decide_runtime_pack_update, diagnose_runtime_pack, execute_runtime_pack_plan_dry_run,
-    inspect_runtime_pack_status, load_runtime_pack_manifest, plan_runtime_pack_operation,
-    probe_runtime_pack_filesystem, BrowserRuntimePackAction, BrowserRuntimePackDoctorOutcome,
-    BrowserRuntimePackDoctorStatus, BrowserRuntimePackEnvVar, BrowserRuntimePackExecutionMode,
-    BrowserRuntimePackExecutionReport, BrowserRuntimePackExecutionStatus,
+    execute_runtime_pack_plan_with_runner, inspect_runtime_pack_status, load_runtime_pack_manifest,
+    plan_runtime_pack_operation, probe_runtime_pack_filesystem, BrowserRuntimePackAction,
+    BrowserRuntimePackDoctorOutcome, BrowserRuntimePackDoctorStatus, BrowserRuntimePackEnvVar,
+    BrowserRuntimePackExecutionMode, BrowserRuntimePackExecutionReport,
+    BrowserRuntimePackExecutionStatus, BrowserRuntimePackExecutorPolicy,
     BrowserRuntimePackFilesystemProbeOptions, BrowserRuntimePackFilesystemProbeReport,
     BrowserRuntimePackFilesystemSnapshot, BrowserRuntimePackIssue, BrowserRuntimePackManifest,
     BrowserRuntimePackManifestLoadOutcome, BrowserRuntimePackManifestLoadStatus,
@@ -58,6 +59,7 @@ pub use runtime_pack::{
     BrowserRuntimePackProbe, BrowserRuntimePackReleaseChannel,
     BrowserRuntimePackStatusReport, BrowserRuntimePackStatusRequest,
     BrowserRuntimePackStepExecutionReport, BrowserRuntimePackStepExecutionStatus,
+    BrowserRuntimePackStepRunOutcome, BrowserRuntimePackStepRunner,
     BrowserRuntimePackUpdateDecision, BrowserRuntimePackUpdateKind, BrowserRuntimePackUpdatePolicy,
 };
 pub use runtime_supervisor::{
