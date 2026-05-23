@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 3F root route reviewer plan in progress
+> Current phase: Phase 3G root App route review pack in progress
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -22,8 +22,8 @@
 | Phase 0 | Contracts, flags, and projection skeleton | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase0-contracts` / `codex/browser-runtime-phase0-contracts` | Closed; contract regressions stay in every later browser-runtime phase. |
 | Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
-| Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E merged; Phase 3D root route blocked by GitNexus HIGH; Phase 3F reviewer plan in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3f-root-route-reviewer-plan` / `codex/browser-runtime-phase3f-root-route-reviewer-plan` | Stop before root `App` startup routing until an explicit HIGH-risk reviewer plan is accepted. |
-| Phase 4 | Browser Runtime settings and task-time preparation UX | Blocked | Unassigned | TBD | Wait for Phase 3 branded shell route; do not start while root `App` integration remains HIGH-risk blocked. |
+| Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C, 3E, and 3F merged; Phase 3D root route blocked by GitNexus HIGH; Phase 3G review pack open in PR #425 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3g-app-route-review-pack` / `codex/browser-runtime-phase3g-app-route-review-pack` | Review PR #425 and explicitly accept or reject the root `App` HIGH-risk writer/reviewer path before any Phase 3H implementation. |
+| Phase 4 | Browser Runtime settings and task-time preparation UX | Blocked | Unassigned | TBD | Wait for Phase 3 branded shell route; do not start while root `App` integration remains HIGH-risk blocked and unaccepted. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
@@ -55,6 +55,7 @@
 | 2026-05-24 | Add a standalone preview harness before root `App` integration. | PR #421 merged Phase 3B runtime-pack status mapping; root `App` wiring still has known HIGH staged-detect risk, while ADR Phase 3 also requires screenshot gates. | Phase 3C adds deterministic preview scenarios and a standalone Vite page for first-frame/details/ready/deferred/failed checks without changing production startup routing. |
 | 2026-05-24 | Stop root `App` route after HIGH staged detect and continue Phase 3 below `App`. | PR #422 merged Phase 3C; a Phase 3D proposal replacing the root loading spinner with `StartupSplash` passed focused tests but final staged GitNexus detect reported HIGH because `App` affects 9 top-level app processes. | Do not retry root `App` startup routing without explicit HIGH-risk review; Phase 3E advances recovery surfaces inside `StartupSplash`, whose impact is LOW. |
 | 2026-05-24 | Close Phase 3E and stop the PR chain before Phase 4. | PR #423 merged Phase 3E recovery surfaces; Phase 4 is explicitly gated on the Phase 3 shell route, and the only remaining shell-route integration attempt is blocked by GitNexus HIGH. | Phase 3F records the reviewer-plan requirement; no further implementation should proceed until the root `App` blast radius is explicitly accepted. |
+| 2026-05-24 | Prepare a root `App` review acceptance pack instead of editing `App`. | PR #424 merged the Phase 3F gate note; `BEHAVIOR.md` section 8 requires writer/reviewer flow for anything flagged HIGH/CRITICAL by GitNexus. | Phase 3G defines the future writer scope, reviewer prompt, and go/no-go gates; implementation remains blocked until explicit acceptance. |
 
 ---
 
@@ -63,9 +64,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3f-root-route-reviewer-plan` |
-| Current phase branch | `codex/browser-runtime-phase3f-root-route-reviewer-plan` |
-| Current local base | `f2dabbe3 Merge pull request #423 from novolei/codex/browser-runtime-phase3e-startup-recovery-surfaces` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3g-app-route-review-pack` |
+| Current phase branch | `codex/browser-runtime-phase3g-app-route-review-pack` |
+| Current local base | `3e9e4817 Merge pull request #424 from novolei/codex/browser-runtime-phase3f-root-route-reviewer-plan` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -80,9 +81,10 @@
 | Phase 3C implementation commit | Merged through PR #422 as `741deb58 feat(browser): add startup splash preview harness`; merge commit `0eb46780`. |
 | Phase 3D implementation commit | Not committed. Stopped after staged GitNexus detect reported HIGH risk for `App` touching 9 top-level app processes. |
 | Phase 3E implementation commit | Merged through PR #423 as `52035cf4 feat(browser): add startup recovery surfaces`; merge commit `f2dabbe3`. |
-| Phase 3F implementation commit | In progress on `codex/browser-runtime-phase3f-root-route-reviewer-plan`. |
-| Known pre-existing tracked changes | None in the Phase 3F worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | None needed for Phase 3F because it is docs-only. |
+| Phase 3F implementation commit | Merged through PR #424 as `3d4121be docs(browser): record startup route review gate`; merge commit `3e9e4817`. |
+| Phase 3G implementation commit | Open in PR #425 as `docs(browser): add root app route review pack` on `codex/browser-runtime-phase3g-app-route-review-pack`. |
+| Known pre-existing tracked changes | None in the Phase 3G worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | None needed for Phase 3G because it is docs-only. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -1142,6 +1144,78 @@ Recommended Phase 3F checks:
   this docs-only scope.
 - Final staged GitNexus detect for the Phase 3F worktree reported
   `risk_level: low`, `changed_files: 2`, `changed_count: 21`, and
+  `affected_processes: []`.
+- Phase 3F root route reviewer gate was merged through PR #424 as
+  `3e9e4817 Merge pull request #424 from novolei/codex/browser-runtime-phase3f-root-route-reviewer-plan`.
+
+## Phase 3G Entry Criteria
+
+Phase 3G can start because:
+
+- PR #424 merged the Phase 3F root route reviewer gate into `main` and
+  `origin/main`;
+- the Phase 3G worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3g-app-route-review-pack`;
+- the branch starts from `3e9e4817`, the current `origin/main`;
+- `BEHAVIOR.md` section 8 requires a writer/reviewer flow for anything flagged
+  HIGH/CRITICAL by GitNexus;
+- ADR Phase 3 still requires the main Tauri WebView first route to use the
+  branded startup experience;
+- ADR Phase 4 remains blocked until that Phase 3 shell route is reviewed and
+  landed.
+
+Recommended Phase 3G checks:
+
+- reviewer pack names the Phase 3D HIGH-risk affected processes;
+- reviewer pack defines writer allowed files and non-goals;
+- reviewer pack defines the fresh-session reviewer prompt;
+- reviewer pack defines go/no-go gates and verification for any future root
+  `App` writer PR;
+- docs-only diff has no whitespace errors and no affected execution flows.
+
+## Phase 3G Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase3g-app-route-review-pack.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3g-app-route-review-pack`
+- Branch:
+  `codex/browser-runtime-phase3g-app-route-review-pack`
+- Scope:
+  close the Phase 3F tracker state, define the future root `App` writer scope,
+  define the reviewer prompt, and document go/no-go gates for accepting the
+  HIGH-risk blast radius.
+- Current PR:
+  [#425](https://github.com/novolei/uclaw-new/pull/425)
+- DMZ files:
+  none planned.
+- Migration:
+  none planned.
+- Rollback:
+  revert this docs-only tracker and Phase 3G plan update.
+
+### Phase 3G Impact Notes
+
+- No source symbols are edited in Phase 3G, so pre-edit GitNexus impact is not
+  required.
+- Final staged GitNexus detect is still required before commit.
+- This slice does not touch root `App`, `main.tsx`, AppShell, Startup Splash,
+  backend IPC, runtime-pack Rust, provider code, Settings, DB migrations,
+  TaskEvents, Playwright, MCP, or runtime side effects.
+- Phase 3G does not approve the future HIGH-risk root `App` edit; it defines
+  the acceptance pack that the DRI/user must explicitly accept before a writer
+  session implements Phase 3H.
+
+### Phase 3G Verification Notes
+
+- `git diff --check -- docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-phase3g-app-route-review-pack.md`
+  returned no output.
+- `git diff --cached --check` returned no output.
+- GitNexus was refreshed for the Phase 3G worktree; analyzer-updated
+  `AGENTS.md` / `CLAUDE.md` statistics were restored because they are outside
+  this docs-only scope.
+- Final staged GitNexus detect for the Phase 3G worktree reported
+  `risk_level: low`, `changed_files: 2`, `changed_count: 23`, and
   `affected_processes: []`.
 
 ---
