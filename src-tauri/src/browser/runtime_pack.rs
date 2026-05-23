@@ -4,6 +4,7 @@
 //! policy, doctor classifications, and remediation planning. It intentionally
 //! does not download archives, spawn Node, run Playwright, or delete files.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -152,6 +153,193 @@ impl BrowserRuntimePackProbe {
             active_tasks: 0,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserRuntimePackManifestLoadStatus {
+    Loaded,
+    Missing,
+    InvalidJson,
+    IoError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRuntimePackManifestLoadOutcome {
+    pub status: BrowserRuntimePackManifestLoadStatus,
+    pub path: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<BrowserRuntimePackManifest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRuntimePackFilesystemProbeOptions {
+    pub active_tasks: usize,
+    pub offline: bool,
+    pub worker_startup_ok: bool,
+    pub real_page_probe_ok: bool,
+    pub cache_corrupt: bool,
+}
+
+impl Default for BrowserRuntimePackFilesystemProbeOptions {
+    fn default() -> Self {
+        Self {
+            active_tasks: 0,
+            offline: false,
+            worker_startup_ok: true,
+            real_page_probe_ok: true,
+            cache_corrupt: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRuntimePackFilesystemSnapshot {
+    pub current_pack_dir: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_pack_dir: Option<PathBuf>,
+    pub manifest_path: PathBuf,
+    pub manifest_status: BrowserRuntimePackManifestLoadStatus,
+    pub manifest_present: bool,
+    pub node_present: bool,
+    pub playwright_package_present: bool,
+    pub worker_script_present: bool,
+    pub browser_binary_present: bool,
+    pub previous_pack_available: bool,
+    pub versions_match: bool,
+    pub cache_corrupt: bool,
+    pub active_tasks: usize,
+    pub offline: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRuntimePackFilesystemProbeReport {
+    pub snapshot: BrowserRuntimePackFilesystemSnapshot,
+    pub probe: BrowserRuntimePackProbe,
+    pub manifest_load: BrowserRuntimePackManifestLoadOutcome,
+}
+
+pub fn load_runtime_pack_manifest(path: impl AsRef<Path>) -> BrowserRuntimePackManifestLoadOutcome {
+    let path = path.as_ref().to_path_buf();
+    if !path.exists() {
+        return BrowserRuntimePackManifestLoadOutcome {
+            status: BrowserRuntimePackManifestLoadStatus::Missing,
+            path,
+            manifest: None,
+            error: None,
+        };
+    }
+
+    match fs::read_to_string(&path) {
+        Ok(contents) => match serde_json::from_str::<BrowserRuntimePackManifest>(&contents) {
+            Ok(manifest) => BrowserRuntimePackManifestLoadOutcome {
+                status: BrowserRuntimePackManifestLoadStatus::Loaded,
+                path,
+                manifest: Some(manifest),
+                error: None,
+            },
+            Err(error) => BrowserRuntimePackManifestLoadOutcome {
+                status: BrowserRuntimePackManifestLoadStatus::InvalidJson,
+                path,
+                manifest: None,
+                error: Some(error.to_string()),
+            },
+        },
+        Err(error) => BrowserRuntimePackManifestLoadOutcome {
+            status: BrowserRuntimePackManifestLoadStatus::IoError,
+            path,
+            manifest: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+pub fn probe_runtime_pack_filesystem(
+    expected_manifest: &BrowserRuntimePackManifest,
+    paths: &BrowserRuntimePackPaths,
+    options: BrowserRuntimePackFilesystemProbeOptions,
+) -> BrowserRuntimePackFilesystemProbeReport {
+    let manifest_load = load_runtime_pack_manifest(&paths.manifest_path);
+    let previous_pack_dir = expected_manifest
+        .rollback_pack_version
+        .as_ref()
+        .map(|version| paths.packs_dir.join(version));
+    let previous_pack_available = previous_pack_dir
+        .as_ref()
+        .map(|path| path.exists())
+        .unwrap_or(false);
+    let manifest_present = !matches!(
+        manifest_load.status,
+        BrowserRuntimePackManifestLoadStatus::Missing
+    );
+    let versions_match = manifest_load
+        .manifest
+        .as_ref()
+        .map(|installed| runtime_pack_manifest_versions_match(expected_manifest, installed))
+        .unwrap_or(false);
+    let cache_corrupt = options.cache_corrupt
+        || matches!(
+            manifest_load.status,
+            BrowserRuntimePackManifestLoadStatus::InvalidJson
+                | BrowserRuntimePackManifestLoadStatus::IoError
+        );
+    let node_present = paths.node_binary_path.exists();
+    let playwright_package_present = paths.playwright_package_dir.exists();
+    let worker_script_present = paths.worker_script_path.exists();
+    let browser_binary_present = paths.chromium_binary_path.exists();
+
+    let snapshot = BrowserRuntimePackFilesystemSnapshot {
+        current_pack_dir: paths.current_pack_dir.clone(),
+        previous_pack_dir,
+        manifest_path: paths.manifest_path.clone(),
+        manifest_status: manifest_load.status,
+        manifest_present,
+        node_present,
+        playwright_package_present,
+        worker_script_present,
+        browser_binary_present,
+        previous_pack_available,
+        versions_match,
+        cache_corrupt,
+        active_tasks: options.active_tasks,
+        offline: options.offline,
+    };
+    let probe = BrowserRuntimePackProbe {
+        manifest_present,
+        node_present,
+        playwright_package_present,
+        browser_binary_present,
+        cache_corrupt,
+        versions_match,
+        worker_startup_ok: worker_script_present && options.worker_startup_ok,
+        offline: options.offline,
+        real_page_probe_ok: options.real_page_probe_ok,
+        previous_pack_available,
+        active_tasks: options.active_tasks,
+    };
+
+    BrowserRuntimePackFilesystemProbeReport {
+        snapshot,
+        probe,
+        manifest_load,
+    }
+}
+
+fn runtime_pack_manifest_versions_match(
+    expected: &BrowserRuntimePackManifest,
+    installed: &BrowserRuntimePackManifest,
+) -> bool {
+    expected.pack_version == installed.pack_version
+        && expected.node_version == installed.node_version
+        && expected.playwright_version == installed.playwright_version
+        && expected.worker_version == installed.worker_version
+        && expected.chromium_revision == installed.chromium_revision
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
