@@ -43,14 +43,18 @@ pub use runtime_contracts::{
     BrowserTaskEventName, BrowserWorldProjectionSummary, StartupDoctorStatus,
 };
 pub use runtime_pack::{
-    decide_runtime_pack_update, diagnose_runtime_pack, plan_runtime_pack_operation,
-    BrowserRuntimePackAction, BrowserRuntimePackDoctorOutcome, BrowserRuntimePackDoctorStatus,
-    BrowserRuntimePackEnvVar, BrowserRuntimePackIssue, BrowserRuntimePackManifest,
-    BrowserRuntimePackNetworkState, BrowserRuntimePackOperation, BrowserRuntimePackOperationPlan,
+    decide_runtime_pack_update, diagnose_runtime_pack, execute_runtime_pack_plan_dry_run,
+    plan_runtime_pack_operation, BrowserRuntimePackAction, BrowserRuntimePackDoctorOutcome,
+    BrowserRuntimePackDoctorStatus, BrowserRuntimePackEnvVar, BrowserRuntimePackExecutionMode,
+    BrowserRuntimePackExecutionReport, BrowserRuntimePackExecutionStatus,
+    BrowserRuntimePackIssue, BrowserRuntimePackManifest, BrowserRuntimePackNetworkState,
+    BrowserRuntimePackOperation, BrowserRuntimePackOperationPlan,
     BrowserRuntimePackOperationRequest, BrowserRuntimePackPaths, BrowserRuntimePackPlanStatus,
     BrowserRuntimePackPlanStep, BrowserRuntimePackPlanStepKind, BrowserRuntimePackPlanTrigger,
-    BrowserRuntimePackProbe, BrowserRuntimePackReleaseChannel, BrowserRuntimePackUpdateDecision,
-    BrowserRuntimePackUpdateKind, BrowserRuntimePackUpdatePolicy,
+    BrowserRuntimePackProbe, BrowserRuntimePackReleaseChannel,
+    BrowserRuntimePackStepExecutionReport, BrowserRuntimePackStepExecutionStatus,
+    BrowserRuntimePackUpdateDecision, BrowserRuntimePackUpdateKind,
+    BrowserRuntimePackUpdatePolicy,
 };
 pub use runtime_supervisor::{
     BrowserRuntimeArtifactPack, BrowserRuntimeDeadlineProfile, BrowserRuntimeDegradation,

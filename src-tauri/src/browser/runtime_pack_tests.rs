@@ -515,3 +515,143 @@ fn operation_planner_keep_current_is_ready_noop() {
         vec!["browser.runtime.keep_current.planned".to_string()]
     );
 }
+
+#[test]
+fn dry_run_executor_reports_planned_prepare_steps_and_artifact() {
+    let (manifest, paths, doctor, request) = plan_fixture(
+        BrowserRuntimePackOperation::Prepare,
+        BrowserRuntimePackNetworkState::Online,
+    );
+    let plan = plan_runtime_pack_operation(&manifest, &paths, &doctor, request);
+
+    let report = execute_runtime_pack_plan_dry_run(&plan);
+
+    assert_eq!(report.mode, BrowserRuntimePackExecutionMode::DryRun);
+    assert_eq!(report.status, BrowserRuntimePackExecutionStatus::Succeeded);
+    assert!(report.summary.starts_with("Dry-run succeeded:"));
+    assert!(report
+        .artifact_id
+        .contains("browser-runtime-prepare-browser-runtime-pack-v1-succeeded"));
+    assert!(report.uses_network);
+    assert!(!report.destructive);
+    assert_eq!(report.step_reports.len(), plan.steps.len());
+    assert!(report.step_reports.iter().any(|step| step.step
+        == BrowserRuntimePackPlanStepKind::DownloadArchive
+        && step.status == BrowserRuntimePackStepExecutionStatus::WouldRun
+        && step.uses_network));
+    assert!(report
+        .event_names
+        .contains(&"browser.runtime.prepare.dry_run_succeeded".to_string()));
+}
+
+#[test]
+fn dry_run_executor_blocks_confirmation_required_plan_without_steps() {
+    let (manifest, paths, doctor, mut request) = plan_fixture(
+        BrowserRuntimePackOperation::Prepare,
+        BrowserRuntimePackNetworkState::Metered,
+    );
+    request.user_confirmed = false;
+    let plan = plan_runtime_pack_operation(&manifest, &paths, &doctor, request);
+
+    let report = execute_runtime_pack_plan_dry_run(&plan);
+
+    assert_eq!(
+        report.status,
+        BrowserRuntimePackExecutionStatus::RequiresConfirmation
+    );
+    assert!(report.requires_confirmation);
+    assert!(report.step_reports.is_empty());
+    assert!(report
+        .event_names
+        .contains(&"browser.runtime.prepare.dry_run_confirmation_required".to_string()));
+}
+
+#[test]
+fn dry_run_executor_preserves_deferred_and_blocked_policy_boundaries() {
+    let (manifest, paths, doctor, request) = plan_fixture(
+        BrowserRuntimePackOperation::Prepare,
+        BrowserRuntimePackNetworkState::Offline,
+    );
+    let deferred_plan = plan_runtime_pack_operation(&manifest, &paths, &doctor, request);
+    let deferred = execute_runtime_pack_plan_dry_run(&deferred_plan);
+    assert_eq!(deferred.status, BrowserRuntimePackExecutionStatus::Deferred);
+    assert!(deferred.keeps_current_pack);
+    assert!(deferred.step_reports.is_empty());
+
+    let rollback_request = BrowserRuntimePackOperationRequest {
+        operation: BrowserRuntimePackOperation::Rollback,
+        trigger: BrowserRuntimePackPlanTrigger::Settings,
+        network_state: BrowserRuntimePackNetworkState::Online,
+        auto_prepare_enabled: true,
+        user_confirmed: true,
+        active_tasks: 0,
+    };
+    let blocked_doctor = BrowserRuntimePackDoctorOutcome {
+        rollback_available: false,
+        ..diagnose_runtime_pack(&manifest, &BrowserRuntimePackProbe::ready())
+    };
+    let blocked_plan =
+        plan_runtime_pack_operation(&manifest, &paths, &blocked_doctor, rollback_request);
+    let blocked = execute_runtime_pack_plan_dry_run(&blocked_plan);
+    assert_eq!(blocked.status, BrowserRuntimePackExecutionStatus::Blocked);
+    assert!(blocked.step_reports.is_empty());
+    assert!(blocked
+        .event_names
+        .contains(&"browser.runtime.rollback.dry_run_blocked".to_string()));
+}
+
+#[test]
+fn dry_run_executor_reports_keep_current_as_noop_success() {
+    let (manifest, paths, doctor, request) = plan_fixture(
+        BrowserRuntimePackOperation::KeepCurrent,
+        BrowserRuntimePackNetworkState::Online,
+    );
+    let plan = plan_runtime_pack_operation(&manifest, &paths, &doctor, request);
+
+    let report = execute_runtime_pack_plan_dry_run(&plan);
+
+    assert_eq!(report.status, BrowserRuntimePackExecutionStatus::NoOp);
+    assert!(report.keeps_current_pack);
+    assert_eq!(report.step_reports.len(), plan.steps.len());
+    assert!(report
+        .event_names
+        .contains(&"browser.runtime.keep_current.dry_run_noop".to_string()));
+}
+
+#[test]
+fn dry_run_executor_surfaces_destructive_cleanup_and_rollback_after_confirmation() {
+    let (manifest, paths, doctor, mut cleanup_request) = plan_fixture(
+        BrowserRuntimePackOperation::Cleanup,
+        BrowserRuntimePackNetworkState::Online,
+    );
+    cleanup_request.trigger = BrowserRuntimePackPlanTrigger::Settings;
+    cleanup_request.user_confirmed = true;
+    let cleanup_plan = plan_runtime_pack_operation(&manifest, &paths, &doctor, cleanup_request);
+    let cleanup = execute_runtime_pack_plan_dry_run(&cleanup_plan);
+
+    assert_eq!(cleanup.status, BrowserRuntimePackExecutionStatus::Succeeded);
+    assert!(cleanup.destructive);
+    assert!(cleanup.step_reports.iter().any(|step| step.step
+        == BrowserRuntimePackPlanStepKind::CleanupOldPacks
+        && step.destructive));
+
+    let rollback_request = BrowserRuntimePackOperationRequest {
+        operation: BrowserRuntimePackOperation::Rollback,
+        trigger: BrowserRuntimePackPlanTrigger::Settings,
+        network_state: BrowserRuntimePackNetworkState::Online,
+        auto_prepare_enabled: true,
+        user_confirmed: true,
+        active_tasks: 0,
+    };
+    let rollback_plan = plan_runtime_pack_operation(&manifest, &paths, &doctor, rollback_request);
+    let rollback = execute_runtime_pack_plan_dry_run(&rollback_plan);
+
+    assert_eq!(
+        rollback.status,
+        BrowserRuntimePackExecutionStatus::Succeeded
+    );
+    assert!(rollback.destructive);
+    assert!(rollback.step_reports.iter().any(|step| step.step
+        == BrowserRuntimePackPlanStepKind::RestoreRollback
+        && step.destructive));
+}
