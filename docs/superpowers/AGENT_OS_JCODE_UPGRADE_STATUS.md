@@ -9,7 +9,7 @@
 > the entire thread.
 >
 > Last updated: 2026-05-23 by Codex
-> Current phase: PR-12 Frontend projection reducer open for review
+> Current phase: PR-13 Surface convergence in progress
 > Current source package: `docs/jcode_comparison/` +
 > `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md`
 
@@ -31,8 +31,8 @@
 | PR-9 | BrowserProvider status/setup/probe | Merged | Codex | GitHub PR #407 merged at `33672ba3`. |
 | PR-10 | Ambient-to-automation mapping | Merged | Codex | GitHub PR #408 merged at `67005fed`. |
 | PR-11 | Harness campaigns | Merged | Codex | GitHub PR #409 merged at `adbe68c9`. |
-| PR-12 | Frontend projection reducer | Open | Codex | GitHub PR #410 opened from `codex/agent-os-jcode-pr12-frontend-projection`; scope is a pure TypeScript projection reducer plus fixture tests. |
-| PR-13 | Surface convergence | Not started | Unassigned | Wait for PR-12 plus per-surface migration plans. |
+| PR-12 | Frontend projection reducer | Merged | Codex | GitHub PR #410 merged at `d7a9527f`. |
+| PR-13 | Surface convergence | In progress | Codex | Worktree `agent-os-jcode-pr13-surface-convergence`; scope is pure WorldProjection surface selectors, not component rewrites. |
 
 ---
 
@@ -64,8 +64,8 @@ PR.
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current PR worktree | `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr12-frontend-projection` on `codex/agent-os-jcode-pr12-frontend-projection`, based on `origin/main` at `3d710297`. |
-| Current PR branch | `codex/agent-os-jcode-pr12-frontend-projection` |
+| Current PR worktree | `/Users/ryanliu/Documents/uclaw-worktrees/agent-os-jcode-pr13-surface-convergence` on `codex/agent-os-jcode-pr13-surface-convergence`, based on `origin/main` at `d7a9527f`. |
+| Current PR branch | `codex/agent-os-jcode-pr13-surface-convergence` |
 | Known pre-existing tracked changes | Primary worktree has local browser-runtime ADR drafts; preserve them and do not stage them into Agent OS PRs. |
 | Current jcode comparison docs | `docs/jcode_comparison/` is tracked on `main`. |
 | Current PR-0 spec | `docs/superpowers/specs/2026-05-23-agent-os-spine-jcode-absorption-design.md` |
