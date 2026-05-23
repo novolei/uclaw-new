@@ -792,3 +792,149 @@ fn filesystem_probe_flags_version_mismatch_invalid_manifest_and_missing_worker()
     assert!(invalid.probe.cache_corrupt);
     assert!(!invalid.probe.versions_match);
 }
+
+fn write_ready_runtime_pack(
+    paths: &BrowserRuntimePackPaths,
+    manifest: &BrowserRuntimePackManifest,
+) {
+    fs::create_dir_all(paths.node_binary_path.parent().expect("node parent")).expect("node dir");
+    fs::write(&paths.node_binary_path, "").expect("node binary");
+    fs::create_dir_all(&paths.playwright_package_dir).expect("playwright package");
+    fs::create_dir_all(paths.worker_script_path.parent().expect("worker parent"))
+        .expect("worker dir");
+    fs::write(&paths.worker_script_path, "").expect("worker script");
+    fs::create_dir_all(
+        paths
+            .chromium_binary_path
+            .parent()
+            .expect("chromium parent"),
+    )
+    .expect("chromium dir");
+    fs::write(&paths.chromium_binary_path, "").expect("chromium binary");
+    fs::write(
+        &paths.manifest_path,
+        serde_json::to_string_pretty(manifest).expect("serialize manifest"),
+    )
+    .expect("manifest");
+    fs::create_dir_all(paths.packs_dir.join("browser-runtime-pack-v0")).expect("rollback pack");
+}
+
+fn status_request(
+    trigger: BrowserRuntimePackPlanTrigger,
+    network_state: BrowserRuntimePackNetworkState,
+    user_confirmed: bool,
+) -> BrowserRuntimePackStatusRequest {
+    BrowserRuntimePackStatusRequest {
+        trigger,
+        network_state,
+        auto_prepare_enabled: true,
+        user_confirmed,
+    }
+}
+
+#[test]
+fn status_report_composes_ready_filesystem_doctor_and_keep_current_plan() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let manifest = BrowserRuntimePackManifest::v1_default();
+    let paths = BrowserRuntimePackPaths::from_root(temp.path(), &manifest);
+    write_ready_runtime_pack(&paths, &manifest);
+
+    let report = inspect_runtime_pack_status(
+        &manifest,
+        &paths,
+        BrowserRuntimePackFilesystemProbeOptions::default(),
+        status_request(
+            BrowserRuntimePackPlanTrigger::StartupAuto,
+            BrowserRuntimePackNetworkState::Online,
+            true,
+        ),
+    );
+
+    assert!(report.ready);
+    assert!(report.can_run_browser_tasks);
+    assert_eq!(report.primary_action, BrowserRuntimePackAction::KeepCurrent);
+    assert_eq!(report.doctor.status, BrowserRuntimePackDoctorStatus::Ready);
+    assert_eq!(
+        report.operation_plan.status,
+        BrowserRuntimePackPlanStatus::Ready
+    );
+    assert!(report
+        .event_names
+        .contains(&"browser.runtime.manifest.checked".to_string()));
+    assert!(report
+        .event_names
+        .contains(&"browser.runtime.keep_current.planned".to_string()));
+}
+
+#[test]
+fn status_report_defers_missing_pack_when_offline() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let manifest = BrowserRuntimePackManifest::v1_default();
+    let paths = BrowserRuntimePackPaths::from_root(temp.path(), &manifest);
+
+    let report = inspect_runtime_pack_status(
+        &manifest,
+        &paths,
+        BrowserRuntimePackFilesystemProbeOptions {
+            offline: true,
+            ..BrowserRuntimePackFilesystemProbeOptions::default()
+        },
+        status_request(
+            BrowserRuntimePackPlanTrigger::StartupAuto,
+            BrowserRuntimePackNetworkState::Offline,
+            false,
+        ),
+    );
+
+    assert!(!report.ready);
+    assert!(!report.can_run_browser_tasks);
+    assert_eq!(
+        report.primary_action,
+        BrowserRuntimePackAction::RetryWhenOnline
+    );
+    assert_eq!(
+        report.doctor.status,
+        BrowserRuntimePackDoctorStatus::Deferred
+    );
+    assert_eq!(
+        report.operation_plan.status,
+        BrowserRuntimePackPlanStatus::Deferred
+    );
+    assert!(!report
+        .operation_plan
+        .steps
+        .iter()
+        .any(|step| step.kind == BrowserRuntimePackPlanStepKind::DownloadArchive));
+}
+
+#[test]
+fn status_report_surfaces_confirmation_required_for_metered_prepare() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let manifest = BrowserRuntimePackManifest {
+        archive_size_bytes: 250 * 1024 * 1024,
+        ..BrowserRuntimePackManifest::v1_default()
+    };
+    let paths = BrowserRuntimePackPaths::from_root(temp.path(), &manifest);
+
+    let report = inspect_runtime_pack_status(
+        &manifest,
+        &paths,
+        BrowserRuntimePackFilesystemProbeOptions::default(),
+        status_request(
+            BrowserRuntimePackPlanTrigger::TaskTime,
+            BrowserRuntimePackNetworkState::Metered,
+            false,
+        ),
+    );
+
+    assert!(!report.ready);
+    assert_eq!(report.primary_action, BrowserRuntimePackAction::Prepare);
+    assert_eq!(
+        report.operation_plan.status,
+        BrowserRuntimePackPlanStatus::RequiresConfirmation
+    );
+    assert!(report.operation_plan.requires_confirmation);
+    assert!(report
+        .event_names
+        .contains(&"browser.runtime.prepare.confirmation_required".to_string()));
+}

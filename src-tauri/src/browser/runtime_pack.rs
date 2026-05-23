@@ -342,6 +342,78 @@ fn runtime_pack_manifest_versions_match(
         && expected.chromium_revision == installed.chromium_revision
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRuntimePackStatusRequest {
+    pub trigger: BrowserRuntimePackPlanTrigger,
+    pub network_state: BrowserRuntimePackNetworkState,
+    pub auto_prepare_enabled: bool,
+    pub user_confirmed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRuntimePackStatusReport {
+    pub manifest_pack_version: String,
+    pub runtime_root: PathBuf,
+    pub current_pack_dir: PathBuf,
+    pub filesystem: BrowserRuntimePackFilesystemProbeReport,
+    pub doctor: BrowserRuntimePackDoctorOutcome,
+    pub primary_action: BrowserRuntimePackAction,
+    pub operation_plan: BrowserRuntimePackOperationPlan,
+    pub ready: bool,
+    pub can_run_browser_tasks: bool,
+    pub event_names: Vec<String>,
+}
+
+pub fn inspect_runtime_pack_status(
+    manifest: &BrowserRuntimePackManifest,
+    paths: &BrowserRuntimePackPaths,
+    filesystem_options: BrowserRuntimePackFilesystemProbeOptions,
+    request: BrowserRuntimePackStatusRequest,
+) -> BrowserRuntimePackStatusReport {
+    let filesystem = probe_runtime_pack_filesystem(manifest, paths, filesystem_options);
+    let doctor = diagnose_runtime_pack(manifest, &filesystem.probe);
+    let primary_action = doctor
+        .actions
+        .first()
+        .copied()
+        .unwrap_or(BrowserRuntimePackAction::KeepCurrent);
+    let operation = BrowserRuntimePackOperation::from_action(primary_action);
+    let operation_plan = plan_runtime_pack_operation(
+        manifest,
+        paths,
+        &doctor,
+        BrowserRuntimePackOperationRequest {
+            operation,
+            trigger: request.trigger,
+            network_state: request.network_state,
+            auto_prepare_enabled: request.auto_prepare_enabled,
+            user_confirmed: request.user_confirmed,
+            active_tasks: filesystem.probe.active_tasks,
+        },
+    );
+    let mut event_names = vec![
+        "browser.runtime.manifest.checked".to_string(),
+        "browser.runtime.filesystem.probed".to_string(),
+        "browser.runtime.doctor.completed".to_string(),
+    ];
+    event_names.extend(operation_plan.event_names.clone());
+
+    BrowserRuntimePackStatusReport {
+        manifest_pack_version: manifest.pack_version.clone(),
+        runtime_root: paths.runtime_root.clone(),
+        current_pack_dir: paths.current_pack_dir.clone(),
+        ready: doctor.ready,
+        can_run_browser_tasks: doctor.ready,
+        filesystem,
+        doctor,
+        primary_action,
+        operation_plan,
+        event_names,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserRuntimePackIssue {
