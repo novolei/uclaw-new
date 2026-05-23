@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 3B Startup Doctor runtime-pack status adapter in progress
+> Current phase: Phase 3C Startup Splash preview harness in progress
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -22,7 +22,7 @@
 | Phase 0 | Contracts, flags, and projection skeleton | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase0-contracts` / `codex/browser-runtime-phase0-contracts` | Closed; contract regressions stay in every later browser-runtime phase. |
 | Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
-| Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A merged; Phase 3B runtime-pack status adapter in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3b-doctor-status-adapter` / `codex/browser-runtime-phase3b-doctor-status-adapter` | Land additive runtime-pack status mapping into the Startup Doctor model before root `App` integration or backend IPC. |
+| Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A and 3B merged; Phase 3C preview harness in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3c-splash-preview-harness` / `codex/browser-runtime-phase3c-splash-preview-harness` | Land standalone preview scenarios and screenshot harness before root `App` integration or backend IPC. |
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Not started | Unassigned | TBD | Wait for Phase 2 runtime manager and Phase 3 shell route. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
@@ -52,6 +52,7 @@
 | 2026-05-24 | Split Phase 3 into a small 3A startup-shell substrate. | PR #419 merged Phase 2F; ADR Phase 3 includes branded splash, doctor, background preparation, recovery, and screenshots, which is too broad for one PR. | Phase 3A adds a typed frontend Startup Doctor view model and loading shell only; real backend doctor IPC, settings, root error recovery, and final asset polish stay out of scope. |
 | 2026-05-24 | Defer root `App` loading-state integration from Phase 3A to Phase 3B. | An attempted `App` loading-state swap had LOW pre-change impact but staged GitNexus detect returned HIGH because `App` affects 9 top-level listener/settings/runtime processes. | Phase 3A remains additive and mergeable; Phase 3B must explicitly review the `App` blast radius before wiring the shell into app startup. |
 | 2026-05-24 | Do runtime-pack status mapping before root `App` integration. | PR #420 merged the additive Startup Splash substrate; root `App` wiring still has known HIGH staged-detect risk, while ADR Phase 3 also requires Startup Doctor to consume runtime-pack state. | Phase 3B adds a pure frontend adapter from Phase 2 runtime-pack status reports into Startup Doctor checks, with no IPC, `App`, Settings, or runtime side effects. |
+| 2026-05-24 | Add a standalone preview harness before root `App` integration. | PR #421 merged Phase 3B runtime-pack status mapping; root `App` wiring still has known HIGH staged-detect risk, while ADR Phase 3 also requires screenshot gates. | Phase 3C adds deterministic preview scenarios and a standalone Vite page for first-frame/details/ready/deferred/failed checks without changing production startup routing. |
 
 ---
 
@@ -60,9 +61,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3b-doctor-status-adapter` |
-| Current phase branch | `codex/browser-runtime-phase3b-doctor-status-adapter` |
-| Current local base | `2c380373 Merge pull request #420 from novolei/codex/browser-runtime-phase3a-startup-shell` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3c-splash-preview-harness` |
+| Current phase branch | `codex/browser-runtime-phase3c-splash-preview-harness` |
+| Current local base | `7efe4fee Merge pull request #421 from novolei/codex/browser-runtime-phase3b-doctor-status-adapter` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -73,9 +74,10 @@
 | Phase 2E implementation commit | Merged through PR #418 as `feat(browser): add runtime pack status report`. |
 | Phase 2F implementation commit | Merged through PR #419 as `9d02cb33 feat(browser): add runtime pack executor boundary`; merge commit `45463455`. |
 | Phase 3A implementation commit | Merged through PR #420 as `267f2c6f feat(browser): add startup shell substrate`; merge commit `2c380373`. |
-| Phase 3B implementation commit | Committed on `codex/browser-runtime-phase3b-doctor-status-adapter` as `feat(browser): map runtime pack status into startup doctor`; PR opens after push. |
-| Known pre-existing tracked changes | None in the Phase 3B worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | Phase 3B linked ignored local resources from the primary worktree for verification: `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source`. |
+| Phase 3B implementation commit | Merged through PR #421 as `8112b362 feat(browser): map runtime pack status into startup doctor`; merge commit `7efe4fee`. |
+| Phase 3C implementation commit | Committed on `codex/browser-runtime-phase3c-splash-preview-harness` as `feat(browser): add startup splash preview harness`; PR opens after push. |
+| Known pre-existing tracked changes | None in the Phase 3C worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | Phase 3C linked ignored local resources from the primary worktree for verification: `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source`. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -819,6 +821,95 @@ Recommended Phase 3B tests:
   UI/tracker edits.
 - Final staged GitNexus detect reported `risk_level: low`,
   `changed_files: 4`, and `affected_processes: []`.
+- Phase 3B runtime-pack status adapter was merged through PR #421 as
+  `7efe4fee Merge pull request #421 from novolei/codex/browser-runtime-phase3b-doctor-status-adapter`.
+
+## Phase 3C Entry Criteria
+
+Phase 3C can start because:
+
+- PR #421 merged the runtime-pack status adapter into `main` and
+  `origin/main`;
+- the Phase 3C worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3c-splash-preview-harness`;
+- the branch starts from `7efe4fee`, the current `origin/main`;
+- ADR Phase 3 requires screenshot checks for Startup Splash / Startup Doctor
+  states before production startup wiring;
+- root `App` integration still has known HIGH staged-detect risk, so this
+  slice keeps the screenshot harness standalone and deterministic.
+
+Recommended Phase 3C tests:
+
+- first-frame preview renders concise loading state without expanding details;
+- details preview renders all Startup Doctor checks in a reduced-motion theme;
+- ready, deferred, and failed scenarios resolve to the expected startup phase;
+- theme query parameters apply supported app shell classes only;
+- existing Startup Splash and Startup Doctor regressions still pass.
+
+## Phase 3C Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase3c-splash-preview-harness.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3c-splash-preview-harness`
+- Branch:
+  `codex/browser-runtime-phase3c-splash-preview-harness`
+- Scope:
+  deterministic Startup Splash scenario fixtures, standalone Vite preview
+  page, reduced-motion/theme query handling, focused Vitest coverage, browser
+  screenshots, and tracker updates.
+- DMZ files:
+  none planned.
+- Migration:
+  none planned.
+- Rollback:
+  revert the Phase 3C preview HTML/entry, scenario helper/tests, this status
+  file update, and the Phase 3C plan file.
+
+### Phase 3C Impact Notes
+
+- GitNexus was refreshed in the Phase 3C worktree before implementation; the
+  analyzer auto-updated only `AGENTS.md` / `CLAUDE.md` statistics, and those
+  noise changes were restored before implementation.
+- This slice adds new preview/scenario files only; existing Startup Splash,
+  Startup Doctor, root `App`, Tauri IPC, runtime-pack Rust, provider, and DB
+  migration symbols are not modified.
+- Because no existing function, class, method, or symbol is edited, there are
+  no pre-change GitNexus impact targets for this slice; final staged detect
+  remains the graph closeout gate.
+- The Phase 3C slice does not download, install, repair, cleanup, roll back,
+  spawn Node, run Playwright as a provider, start MCP, emit TaskEvents, write
+  settings, or write DB migrations.
+
+### Phase 3C Verification Notes
+
+- Baseline bring-up linked ignored local runtime resources from the primary
+  worktree because isolated worktrees do not copy `pyembed`, `bunembed`,
+  `gbrain-source`, or `ui/node_modules`.
+- Focused preview and startup regression verification passed:
+  `cd ui && npm test -- --run src/components/startup/startup-splash-scenarios.test.ts src/components/startup/StartupSplash.test.tsx src/lib/startup/startup-doctor.test.ts`
+  returned `3 passed`, `16 passed`.
+- Browser preview checks passed against the standalone Vite preview page:
+  first-frame rendered `Preparing uClaw` with collapsed details; the
+  details-expanded `qingye` reduced-motion scenario rendered all eight Startup
+  Doctor checks. Console checks reported `errors 0` and `warnings 0` for both
+  navigations. Screenshots were captured as
+  `uclaw-phase3c-first-frame.png` and
+  `uclaw-phase3c-details-qingye-reduced.png`.
+- Default Rust browser-runtime regressions still passed even though Phase 3C
+  changes no Rust files:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  returned `32 passed; 0 failed; 2580 filtered out`;
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  returned `44 passed; 0 failed; 2568 filtered out`; and
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  returned `6 passed; 0 failed; 2606 filtered out`.
+- No Rust files changed, so `rustfmt --edition 2021 --check <changed-rust-files>`
+  is not applicable for Phase 3C.
+- `git diff --check -- <changed-files>` and `git diff --cached --check`
+  returned no output after the final UI/tracker edits.
+- Final staged GitNexus detect reported `risk_level: low`,
+  `changed_files: 6`, and `affected_processes: []`.
 
 ---
 
