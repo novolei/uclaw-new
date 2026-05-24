@@ -24,6 +24,8 @@ pub struct BrowserRuntimePackManifest {
     pub pack_version: String,
     pub node_version: String,
     pub playwright_version: String,
+    #[serde(default = "default_playwright_mcp_version")]
+    pub playwright_mcp_version: String,
     pub worker_version: String,
     pub chromium_revision: String,
     pub download_url: String,
@@ -35,12 +37,17 @@ pub struct BrowserRuntimePackManifest {
     pub release_channel: BrowserRuntimePackReleaseChannel,
 }
 
+fn default_playwright_mcp_version() -> String {
+    "1.53.0".to_string()
+}
+
 impl BrowserRuntimePackManifest {
     pub fn v1_default() -> Self {
         Self {
             pack_version: "browser-runtime-pack-v1".to_string(),
             node_version: "22.16.0".to_string(),
             playwright_version: "1.53.0".to_string(),
+            playwright_mcp_version: default_playwright_mcp_version(),
             worker_version: "0.1.0".to_string(),
             chromium_revision: "1181".to_string(),
             download_url: "https://runtime.uclaw.local/browser-runtime-pack-v1.tar.zst".to_string(),
@@ -62,6 +69,7 @@ pub struct BrowserRuntimePackPaths {
     pub manifest_path: PathBuf,
     pub node_binary_path: PathBuf,
     pub playwright_package_dir: PathBuf,
+    pub playwright_mcp_package_dir: PathBuf,
     pub worker_script_path: PathBuf,
     pub playwright_browsers_path: PathBuf,
     pub chromium_binary_path: PathBuf,
@@ -88,6 +96,10 @@ impl BrowserRuntimePackPaths {
             manifest_path: current_pack_dir.join("runtime-pack.manifest.json"),
             node_binary_path: current_pack_dir.join("node").join("bin").join("node"),
             playwright_package_dir: current_pack_dir.join("node_modules").join("playwright"),
+            playwright_mcp_package_dir: current_pack_dir
+                .join("node_modules")
+                .join("@playwright")
+                .join("mcp"),
             worker_script_path: current_pack_dir
                 .join("worker")
                 .join("uclaw-playwright-worker.mjs"),
@@ -127,6 +139,7 @@ pub struct BrowserRuntimePackProbe {
     pub manifest_present: bool,
     pub node_present: bool,
     pub playwright_package_present: bool,
+    pub playwright_mcp_package_present: bool,
     pub browser_binary_present: bool,
     pub cache_corrupt: bool,
     pub versions_match: bool,
@@ -143,6 +156,7 @@ impl BrowserRuntimePackProbe {
             manifest_present: true,
             node_present: true,
             playwright_package_present: true,
+            playwright_mcp_package_present: true,
             browser_binary_present: true,
             cache_corrupt: false,
             versions_match: true,
@@ -208,6 +222,7 @@ pub struct BrowserRuntimePackFilesystemSnapshot {
     pub manifest_present: bool,
     pub node_present: bool,
     pub playwright_package_present: bool,
+    pub playwright_mcp_package_present: bool,
     pub worker_script_present: bool,
     pub browser_binary_present: bool,
     pub previous_pack_available: bool,
@@ -291,6 +306,7 @@ pub fn probe_runtime_pack_filesystem(
         );
     let node_present = paths.node_binary_path.exists();
     let playwright_package_present = paths.playwright_package_dir.exists();
+    let playwright_mcp_package_present = paths.playwright_mcp_package_dir.exists();
     let worker_script_present = paths.worker_script_path.exists();
     let browser_binary_present = paths.chromium_binary_path.exists();
 
@@ -302,6 +318,7 @@ pub fn probe_runtime_pack_filesystem(
         manifest_present,
         node_present,
         playwright_package_present,
+        playwright_mcp_package_present,
         worker_script_present,
         browser_binary_present,
         previous_pack_available,
@@ -314,6 +331,7 @@ pub fn probe_runtime_pack_filesystem(
         manifest_present,
         node_present,
         playwright_package_present,
+        playwright_mcp_package_present,
         browser_binary_present,
         cache_corrupt,
         versions_match,
@@ -338,6 +356,7 @@ fn runtime_pack_manifest_versions_match(
     expected.pack_version == installed.pack_version
         && expected.node_version == installed.node_version
         && expected.playwright_version == installed.playwright_version
+        && expected.playwright_mcp_version == installed.playwright_mcp_version
         && expected.worker_version == installed.worker_version
         && expected.chromium_revision == installed.chromium_revision
 }

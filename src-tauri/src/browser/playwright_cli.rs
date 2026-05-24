@@ -1598,6 +1598,7 @@ export const chromium = {
             manifest_present: false,
             node_present: false,
             playwright_package_present: false,
+            playwright_mcp_package_present: false,
             browser_binary_present: false,
             ..BrowserRuntimePackProbe::ready()
         })
@@ -1662,6 +1663,7 @@ export const chromium = {
                 manifest_present: probe.manifest_present,
                 node_present: probe.node_present,
                 playwright_package_present: probe.playwright_package_present,
+                playwright_mcp_package_present: probe.playwright_mcp_package_present,
                 worker_script_present: probe.playwright_package_present,
                 browser_binary_present: probe.browser_binary_present,
                 previous_pack_available: probe.previous_pack_available,

@@ -366,6 +366,7 @@ mod tests {
             .expect("node parent");
         fs::write(&paths.node_binary_path, "node").expect("node binary");
         fs::create_dir_all(&paths.playwright_package_dir).expect("playwright package");
+        fs::create_dir_all(&paths.playwright_mcp_package_dir).expect("playwright mcp package");
         fs::create_dir_all(paths.worker_script_path.parent().expect("worker parent"))
             .expect("worker parent");
         fs::write(&paths.worker_script_path, "worker").expect("worker script");
