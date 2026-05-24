@@ -174,6 +174,16 @@ impl StructuredFold {
             }
         }
 
+        if !self.micro_capsules.is_empty() {
+            out.push_str("\n### Conversational milestones (turn-by-turn)\n");
+            for c in &self.micro_capsules {
+                out.push_str(&format!(
+                    "<turn index=\"{}\">\n  <user>{}</user>\n  <outcome>{}</outcome>\n</turn>\n",
+                    c.turn_index, c.user_query, c.agent_outcome
+                ));
+            }
+        }
+
         out
     }
 }

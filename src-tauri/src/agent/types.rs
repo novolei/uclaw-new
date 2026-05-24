@@ -349,6 +349,11 @@ pub trait LoopDelegate: Send + Sync {
     async fn summarize_for_compression(&self, _messages: &[ChatMessage]) -> Option<String> {
         None
     }
+    /// Generate a StructuredFold summary of the given messages for context compression.
+    /// Called during soft_compress_context to produce an L1 archive summary.
+    async fn summarize_to_fold(&self, _messages: &[ChatMessage]) -> Option<super::compact::StructuredFold> {
+        None
+    }
 }
 
 // ─── Agentic Loop Config ───────────────────────────────────────────────

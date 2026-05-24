@@ -10284,12 +10284,10 @@ pub async fn send_agent_message(
                     tracing::warn!(
                         session_id = %input.session_id,
                         error = %e,
-                        "[/compact] fold summarize failed, falling back to placeholder",
+                        "[/compact] fold summarize failed, falling back to extractive fallback fold",
                     );
-                    format!(
-                        "[Context compressed by /compact: {} earlier messages compacted]",
-                        removed_count,
-                    )
+                    let fallback_fold = crate::agent::compact::summarize::extractive_fallback_fold(&history);
+                    fallback_fold.to_markdown()
                 }
             }
         } else {

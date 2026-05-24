@@ -40,7 +40,7 @@ use std::collections::HashMap;
 
 use crate::agent::compact::fold::{
     ArtifactRef, CheckpointRef, DecisionWithRationale, FactWithEvidence, FailedAttempt,
-    StructuredFold,
+    MicroCapsule, StructuredFold,
 };
 use crate::runtime::contracts::Constraint;
 
@@ -186,6 +186,12 @@ impl AxisItem for CheckpointRef {
     }
 }
 
+impl AxisItem for MicroCapsule {
+    fn stable_key(&self) -> String {
+        self.turn_index.to_string()
+    }
+}
+
 impl AxisItem for String {
     fn stable_key(&self) -> String {
         self.clone()
@@ -222,6 +228,7 @@ pub struct FoldDelta {
     pub active_constraints: AxisDelta<Constraint>,
     pub next_actions: AxisDelta<String>,
     pub rollback_points: AxisDelta<CheckpointRef>,
+    pub micro_capsules: AxisDelta<MicroCapsule>,
     /// Hash of the prior fold the delta was computed against. The
     /// dispatcher refuses to apply a delta whose `baseline_hash`
     /// doesn't match the recorded last-fold anchor.
@@ -239,6 +246,7 @@ impl FoldDelta {
             && self.active_constraints.is_empty()
             && self.next_actions.is_empty()
             && self.rollback_points.is_empty()
+            && self.micro_capsules.is_empty()
     }
 
     /// Sum of added + changed + removed across all axes — gauges
@@ -256,6 +264,7 @@ impl FoldDelta {
             + drift(&self.active_constraints)
             + drift(&self.next_actions)
             + drift(&self.rollback_points)
+            + drift(&self.micro_capsules)
     }
 }
 
@@ -289,6 +298,7 @@ impl StructuredFold {
             ),
             next_actions: diff_axis(&self.next_actions, &other.next_actions),
             rollback_points: diff_axis(&self.rollback_points, &other.rollback_points),
+            micro_capsules: diff_axis(&self.micro_capsules, &other.micro_capsules),
             baseline_hash: self.baseline_hash(),
         }
     }
@@ -321,6 +331,7 @@ impl StructuredFold {
             ),
             next_actions: apply_axis(&self.next_actions, &delta.next_actions),
             rollback_points: apply_axis(&self.rollback_points, &delta.rollback_points),
+            micro_capsules: apply_axis(&self.micro_capsules, &delta.micro_capsules),
         }
     }
 }
@@ -596,9 +607,14 @@ mod tests {
         let b = StructuredFold::default()
             .with_facts(vec![fact("f1", None)])              // +1
             .with_decisions(vec![decision("d1", "r")])       // +1
-            .with_next_actions(vec!["a1".into(), "a2".into()]); // +2
+            .with_next_actions(vec!["a1".into(), "a2".into()]) // +2
+            .with_micro_capsules(vec![MicroCapsule {
+                turn_index: 1,
+                user_query: "query".into(),
+                agent_outcome: "outcome".into(),
+            }]);                                             // +1
         let d = a.diff(&b);
-        assert_eq!(d.total_drift(), 4);
+        assert_eq!(d.total_drift(), 5);
     }
 
     // ── serde roundtrip ───────────────────────────────────────────

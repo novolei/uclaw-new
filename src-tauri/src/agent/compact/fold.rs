@@ -112,11 +112,22 @@ impl CheckpointRef {
     }
 }
 
+// ── MicroCapsule ───────────────────────────────────────────────────
+
+/// A chronological micro-capsule summarizing a single conversation turn verbatim query
+/// and its outcome. This ensures high turn recall with minimal token footprint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MicroCapsule {
+    pub turn_index: usize,
+    pub user_query: String,
+    pub agent_outcome: String,
+}
+
 // ── StructuredFold ─────────────────────────────────────────────────
 
 /// The canonical compact summary an agent emits at the end of a turn
 /// / sub-task. Replaces ad-hoc "summarize the conversation so far"
-/// prompts with a typed 8-field form.
+/// prompts with a typed 8-field form (extended with micro-capsules).
 ///
 /// Construction patterns:
 ///
@@ -158,6 +169,8 @@ pub struct StructuredFold {
     pub next_actions: Vec<String>,
     #[serde(default)]
     pub rollback_points: Vec<CheckpointRef>,
+    #[serde(default)]
+    pub micro_capsules: Vec<MicroCapsule>,
 }
 
 impl StructuredFold {
@@ -202,6 +215,11 @@ impl StructuredFold {
         self
     }
 
+    pub fn with_micro_capsules(mut self, capsules: Vec<MicroCapsule>) -> Self {
+        self.micro_capsules = capsules;
+        self
+    }
+
     /// `true` if every field is empty — useful for "skip compaction"
     /// short-circuits in the producer pipeline.
     pub fn is_empty(&self) -> bool {
@@ -213,6 +231,7 @@ impl StructuredFold {
             && self.active_constraints.is_empty()
             && self.next_actions.is_empty()
             && self.rollback_points.is_empty()
+            && self.micro_capsules.is_empty()
     }
 
     /// Total number of items across all axes — used by Token defense
@@ -226,6 +245,7 @@ impl StructuredFold {
             + self.active_constraints.len()
             + self.next_actions.len()
             + self.rollback_points.len()
+            + self.micro_capsules.len()
     }
 }
 
@@ -340,7 +360,8 @@ mod tests {
             .with_failed_attempts(vec![])
             .with_active_constraints(vec![])
             .with_next_actions(vec![])
-            .with_rollback_points(vec![]);
+            .with_rollback_points(vec![])
+            .with_micro_capsules(vec![]);
         assert!(f.is_empty());
     }
 
