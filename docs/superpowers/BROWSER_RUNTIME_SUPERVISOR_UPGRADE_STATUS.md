@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 4M task-time decision bridge open as PR #439
+> Current phase: Phase 4N task-time tool-call patch boundary open as PR #440
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -23,7 +23,7 @@
 | Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
-| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4L merged; Phase 4M task-time decision bridge open as PR #439 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4m-task-time-decision-bridge` / `codex/browser-runtime-phase4m-task-time-decision-bridge` | Merge PR #439 if GitHub reports CLEAN; next slice should plan prompt dispatch / tool-call mutation separately. |
+| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4M merged; Phase 4N task-time tool-call patch boundary open as PR #440 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4n-task-time-tool-call-patch` / `codex/browser-runtime-phase4n-task-time-tool-call-patch` | Merge PR #440 if GitHub reports CLEAN; next slice should wire prompt dispatch only with a separate impact/reviewer plan. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
@@ -77,6 +77,8 @@
 | 2026-05-24 | Open Phase 4L task runtime pause gate PR. | PR #438 contains the explicit `browser_task` defer gate, paused-waiting checkpoint behavior, focused parser/pause tests, runtime regressions, and staged GitNexus LOW detect. | Merge if GitHub reports CLEAN; Phase 4M should not fold into this PR and should plan real prompt dispatch / IPC separately. |
 | 2026-05-24 | Merge Phase 4L and start Phase 4M as a typed prompt/action decision bridge. | PR #438 merged as `a566decf`; backend can pause on explicit `runtime_preparation_decision: "defer"`, but frontend prompt actions do not yet carry that backend-ready payload. | Phase 4M adds model metadata only. Tool-call mutation, prompt dispatch, Settings IPC, runtime-pack execution, no-browser fallback execution, provider promotion, and DMZ edits remain later slices. |
 | 2026-05-24 | Open Phase 4M task-time decision bridge PR. | PR #439 contains typed prompt-action metadata that maps checkpointed defer to `runtime_preparation_decision: "defer"`, focused prompt tests, default Rust regressions, and staged GitNexus `risk_level: none`. | Merge if GitHub reports CLEAN; next Phase 4 slice must separately plan prompt dispatch / tool-call mutation because that may touch task-runtime or approval boundaries. |
+| 2026-05-24 | Merge Phase 4M and start Phase 4N as a pure tool-call patch boundary. | PR #439 merged as `a0dd62e5`; frontend prompt actions now carry the defer payload, but dispatch/approval hot paths still need a clean helper boundary before wiring. | Phase 4N adds only a pure helper for applying defer metadata to serialized `browser_task` arguments. Prompt dispatch, tool approval mutation, Settings IPC, backend execution, and DMZ edits remain later slices. |
+| 2026-05-24 | Open Phase 4N task-time tool-call patch boundary PR. | PR #440 contains pure `browser_task` argument patch helpers, focused prompt-model coverage, default Rust regressions, and staged GitNexus LOW detect. | Merge if GitHub reports CLEAN; actual prompt dispatch / approval wiring remains a separate Phase 4 slice. |
 
 ---
 
@@ -85,9 +87,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4m-task-time-decision-bridge` |
-| Current phase branch | `codex/browser-runtime-phase4m-task-time-decision-bridge` |
-| Current local base | `a566decf Merge pull request #438 from novolei/codex/browser-runtime-phase4l-task-runtime-pause-gate` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4n-task-time-tool-call-patch` |
+| Current phase branch | `codex/browser-runtime-phase4n-task-time-tool-call-patch` |
+| Current local base | `a0dd62e5 Merge pull request #439 from novolei/codex/browser-runtime-phase4m-task-time-decision-bridge` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -117,9 +119,10 @@
 | Phase 4J implementation commit | Merged through PR #436 as `24ae4b22 feat(browser): add paused-waiting runtime task status`; merge commit `1f8739ec`. |
 | Phase 4K implementation commit | Merged through PR #437 as `7b667f4a feat(browser): show paused-waiting runtime task status`; merge commit `5bd56ba1`. |
 | Phase 4L implementation commit | Merged through PR #438 as `f0fa0b39 feat(browser): add task runtime pause gate`; merge commit `a566decf`. |
-| Phase 4M implementation commit | Open as PR #439 from `codex/browser-runtime-phase4m-task-time-decision-bridge`; implementation commit title `feat(browser): bridge task-time runtime decision`. |
-| Known pre-existing tracked changes | None in the Phase 4M worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | Phase 4M may use ignored local `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` links from the primary worktree for verification only. |
+| Phase 4M implementation commit | Merged through PR #439 as `1c844a19 feat(browser): bridge task-time runtime decision`; merge commit `a0dd62e5`. |
+| Phase 4N implementation commit | Open as PR #440 from `codex/browser-runtime-phase4n-task-time-tool-call-patch`; implementation commit title `feat(browser): add task-time tool call patch boundary`. |
+| Known pre-existing tracked changes | None in the Phase 4N worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | Phase 4N may use ignored local `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` links from the primary worktree for verification only. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -2563,6 +2566,91 @@ Recommended Phase 4M checks:
 - GitNexus staged detect reported `risk_level: none`, `changed_count: 0`, and
   `affected_processes: []`; the TS/docs-only prompt-model metadata changes did
   not map to indexed execution flows.
+
+## Phase 4N Entry Criteria
+
+Phase 4N can start because:
+
+- PR #439 merged the typed prompt-action defer payload into `main` and
+  `origin/main`;
+- the Phase 4N worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4n-task-time-tool-call-patch`;
+- the branch starts from `a0dd62e5`, the current `origin/main`;
+- prompt dispatch / approval hot paths still lack a single helper for applying
+  task-time runtime decisions to serialized `browser_task` arguments;
+- true dispatch wiring, Settings IPC, runtime-pack execution, and no-browser
+  fallback execution require separate review and are not folded into this PR.
+
+Recommended Phase 4N checks:
+
+- checkpointed defer actions patch only `browser_task` arguments with
+  `runtime_preparation_decision: "defer"`;
+- no-browser fallback actions leave browser-task arguments unpatched;
+- non-browser tools never receive Browser runtime decision payloads;
+- helper preserves existing tool arguments and does not mutate caller-owned
+  argument objects;
+- no backend, IPC, DMZ, runtime-pack execution, provider promotion, or prompt
+  dispatch changes.
+
+## Phase 4N Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase4n-task-time-tool-call-patch.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4n-task-time-tool-call-patch`
+- Branch:
+  `codex/browser-runtime-phase4n-task-time-tool-call-patch`
+- Scope:
+  pure frontend/model tool-call argument patch helper and focused tests.
+- Current PR:
+  #440 (`https://github.com/novolei/uclaw-new/pull/440`).
+- DMZ files:
+  none planned.
+- Migration:
+  none planned.
+- Rollback:
+  revert the helper/test additions, this status file update, and the Phase 4N
+  plan file.
+
+### Phase 4N Impact Notes
+
+- `npx gitnexus analyze` indexed the Phase 4N worktree before impact analysis.
+  It updated only `AGENTS.md` / `CLAUDE.md` statistics, and those noise changes
+  were restored.
+- Pre-edit GitNexus impact for `deriveBrowserRuntimeTaskTimePrompt` reported
+  LOW risk: 0 direct callers, 0 affected processes, 0 affected modules.
+- Pre-edit GitNexus impact for `browserTaskRuntimeDecisionPayloadForAction`
+  reported LOW risk: 0 direct callers, 0 affected processes, 0 affected
+  modules.
+- `BrowserRuntimeTaskTimePromptAction` was not resolvable as an indexed symbol
+  in this worktree; this slice avoids changing the existing action interface.
+- This slice does not change prompt dispatch, tool approval, Settings IPC,
+  backend browser task execution, runtime-pack execution, Playwright launch,
+  provider selection, DB migrations, root `App`, or `tauri_commands.rs`.
+
+### Phase 4N Verification Notes
+
+- Focused prompt-model verification passed:
+  `cd ui && npm test -- --run src/lib/browser-runtime/browser-runtime-task-prompt.test.ts`
+  returned `1 passed`, `5 passed`.
+- Existing prompt UI rendering verification passed:
+  `cd ui && npm test -- --run src/components/browser-runtime/BrowserRuntimeTaskTimePrompt.test.tsx`
+  returned `1 passed`, `6 passed`.
+- Default Rust browser-runtime regressions passed even though Phase 4N changes
+  no Rust files:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  returned `32 passed; 0 failed; 2587 filtered out`;
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  returned `44 passed; 0 failed; 2575 filtered out`; and
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  returned `6 passed; 0 failed; 2613 filtered out`.
+- No Rust files changed, so
+  `rustfmt --edition 2021 --check <changed-rust-files>` is not applicable for
+  Phase 4N.
+- `git diff --check -- <changed-files>` returned no output.
+- `git diff --cached --check` returned no output.
+- GitNexus staged detect reported `risk_level: low`, `changed_files: 4`, 15
+  changed symbols, and `affected_processes: []`.
 
 ---
 
