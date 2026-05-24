@@ -123,6 +123,21 @@ fn provider_cards_require_explicit_harness_scorecards() {
             card.provider_id
         );
         assert!(
+            !card.data_boundary_policy.trim().is_empty(),
+            "{} must declare data-boundary policy",
+            card.provider_id
+        );
+        assert!(
+            !card.profile_storage_policy.trim().is_empty(),
+            "{} must declare profile/storage policy",
+            card.provider_id
+        );
+        assert!(
+            !card.cost_policy.trim().is_empty(),
+            "{} must declare cost policy",
+            card.provider_id
+        );
+        assert!(
             !card.harness_score.source.is_empty(),
             "{} must declare scorecard source",
             card.provider_id
@@ -142,6 +157,8 @@ fn provider_cards_require_explicit_harness_scorecards() {
     let hosted = browser_provider_capability_card("browser.hosted").unwrap();
     assert_eq!(hosted.harness_score.fixture_cases_total, 0);
     assert!(!hosted.harness_score.promotion_eligible);
+    assert_eq!(hosted.data_boundary_policy, "explicit_task_prompt_required");
+    assert_eq!(hosted.cost_policy, "estimate_and_cap_required");
 }
 
 #[test]
