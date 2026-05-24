@@ -8,7 +8,7 @@ fn default_manifest_carries_pinned_runtime_versions_and_release_metadata() {
     assert_eq!(manifest.pack_version, "browser-runtime-pack-v1");
     assert_eq!(manifest.node_version, "22.16.0");
     assert_eq!(manifest.playwright_version, "1.53.0");
-    assert_eq!(manifest.playwright_mcp_version, "1.53.0");
+    assert_eq!(manifest.playwright_mcp_version, "0.0.75");
     assert_eq!(manifest.worker_version, "0.1.0");
     assert_eq!(manifest.chromium_revision, "1181");
     assert_eq!(manifest.minimum_app_version, "0.1.0");

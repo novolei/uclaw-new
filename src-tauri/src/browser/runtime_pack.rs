@@ -38,7 +38,7 @@ pub struct BrowserRuntimePackManifest {
 }
 
 fn default_playwright_mcp_version() -> String {
-    "1.53.0".to_string()
+    "0.0.75".to_string()
 }
 
 impl BrowserRuntimePackManifest {

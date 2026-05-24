@@ -465,7 +465,7 @@ mod tests {
     #[test]
     fn sidecar_spec_builds_pinned_args_with_controlled_dirs() {
         let spec = build_playwright_mcp_sidecar_spec(PlaywrightMcpSidecarSpecRequest {
-            package_version: "1.53.0".to_string(),
+            package_version: "0.0.75".to_string(),
             browser: PlaywrightMcpBrowserName::Chrome,
             profile_mode: PlaywrightMcpProfileMode::Isolated,
             output_dir: PathBuf::from("/tmp/uclaw/browser-artifacts/run-1"),
@@ -478,9 +478,9 @@ mod tests {
         })
         .expect("sidecar spec");
 
-        assert_eq!(spec.package_spec(), "@playwright/mcp@1.53.0");
+        assert_eq!(spec.package_spec(), "@playwright/mcp@0.0.75");
         let args = spec.args();
-        assert!(args.contains(&"@playwright/mcp@1.53.0".to_string()));
+        assert!(args.contains(&"@playwright/mcp@0.0.75".to_string()));
         assert!(args.contains(&"--browser=chrome".to_string()));
         assert!(args.contains(&"--isolated".to_string()));
         assert!(args.iter().any(|arg| arg.starts_with("--output-dir=")));
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn sidecar_spec_blocks_raw_tool_exposure() {
         let err = build_playwright_mcp_sidecar_spec(PlaywrightMcpSidecarSpecRequest {
-            package_version: "1.53.0".to_string(),
+            package_version: "0.0.75".to_string(),
             browser: PlaywrightMcpBrowserName::Chrome,
             profile_mode: PlaywrightMcpProfileMode::Isolated,
             output_dir: PathBuf::from("/tmp/out"),
@@ -512,7 +512,7 @@ mod tests {
     #[test]
     fn storage_state_profile_requires_path() {
         let err = build_playwright_mcp_sidecar_spec(PlaywrightMcpSidecarSpecRequest {
-            package_version: "1.53.0".to_string(),
+            package_version: "0.0.75".to_string(),
             browser: PlaywrightMcpBrowserName::Chrome,
             profile_mode: PlaywrightMcpProfileMode::StorageState,
             output_dir: PathBuf::from("/tmp/out"),
@@ -533,7 +533,7 @@ mod tests {
         let mut flags = BrowserRuntimeFeatureFlags::safe_defaults();
         flags.playwright_mcp = true;
         let spec = build_playwright_mcp_sidecar_spec(PlaywrightMcpSidecarSpecRequest {
-            package_version: "1.53.0".to_string(),
+            package_version: "0.0.75".to_string(),
             browser: PlaywrightMcpBrowserName::Chrome,
             profile_mode: PlaywrightMcpProfileMode::Isolated,
             output_dir: PathBuf::from("/tmp/out"),

@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 7B MCP runtime-pack probe
+> Current phase: Phase 7C MCP package pin correction
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -26,7 +26,7 @@
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4X merged to `main` / `origin/main`; exit audit complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` / `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` | Closed for user-visible Settings, Doctor, prompt, checkpoint, deep-link, read-only IPC, and dry-run action evidence. Real runtime execution/provider work moves to Phase 5+. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A-5F merged to `main` / `origin/main`; exit gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff` / `codex/browser-runtime-phase5f-action-state-diff` | Closed for feature-flagged Playwright CLI thin lane. Provider promotion and parity routing remain Phase 8. |
 | Phase 6 | Browser identity authorization and profile UX | Phase 6A-6F merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6f-identity-boundary-actions` / `codex/browser-runtime-phase6f-identity-boundary-actions` | Closed for safe identity revoke/drain/active-task/resume boundary contracts; auth WebView and payment confirmation remain future work. |
-| Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A merged; Phase 7B runtime-pack MCP probe in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7b-mcp-runtime-pack-probe` / `codex/browser-runtime-phase7b-mcp-runtime-pack-probe` | Add `@playwright/mcp` runtime-pack manifest/path/probe evidence without spawning MCP or blocking the existing CLI lane on the new optional package. |
+| Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7B merged; Phase 7C MCP package pin correction in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7c-mcp-package-pin` / `codex/browser-runtime-phase7c-mcp-package-pin` | Correct the app-managed `@playwright/mcp` pin to the real package version before adding the supervised sidecar runner. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Not started | Unassigned | TBD | Wait for chromiumoxide, CLI, and MCP lanes. |
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Not started | Unassigned | TBD | Wait for observable provider behavior and harness scorecards. |
 | Phase 10 | Optional hosted providers and hard-site escape hatches | Not started | Unassigned | TBD | Wait for local-first provider routing and policy prompts. |
@@ -117,6 +117,7 @@
 | 2026-05-24 | Merge Phase 6E and start Phase 6F identity boundary actions. | PR #465 merged as `313b7e83`; Settings now renders real active identity task details, drain deadlines, and run/session identifiers. ADR Phase 6 still requires post-checkpoint recovery choices. | Phase 6F adds the typed backend resume decision contract for isolated-profile fallback, explicit reauthorize, and end-task, while keeping auth WebView, Settings recovery UI, TaskEvents, and payment confirmation separate. |
 | 2026-05-24 | Merge Phase 6F and start Phase 7A MCP provider contract. | PR #466 merged as `ad088ed1`; fresh reviewer Copernicus returned `REVIEW ACCEPTED` after the P1 follow-up fixes, with only a residual real-browser resume integration-test gap. | Phase 7 starts with a pure `browser.playwright_mcp` contract slice: provider status, controlled sidecar spec, uClaw-level envelope, disabled fallback, and raw MCP exposure blocking. No MCP spawn, raw tool surface, IPC, TaskEvents, or provider promotion in this PR. |
 | 2026-05-24 | Merge Phase 7A and start Phase 7B MCP runtime-pack probe. | PR #467 merged as `2b1e7f77`; the MCP provider contract exists, but the app-managed runtime pack did not yet track the pinned `@playwright/mcp` package path. | Phase 7B adds manifest/path/probe evidence for `node_modules/@playwright/mcp` while preserving existing CLI readiness when that MCP package is absent. No sidecar spawn, package installation, IPC, TaskEvents, provider promotion, or global npm fallback in this PR. |
+| 2026-05-24 | Merge Phase 7B and start Phase 7C as a package pin correction before sidecar execution. | PR #468 merged as `90fe28d7`; `npm view @playwright/mcp@1.53.0` returned 404, while `npm view @playwright/mcp version` reported current stable `0.0.75` and `npm view @playwright/mcp@0.0.75 bin` reported `playwright-mcp: cli.js`. | Correct the app-managed MCP package pin before adding a supervised runner, so Phase 7D does not inherit an impossible sidecar package spec. |
 
 ---
 
@@ -125,9 +126,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7b-mcp-runtime-pack-probe` |
-| Current phase branch | `codex/browser-runtime-phase7b-mcp-runtime-pack-probe` |
-| Current local base | `2b1e7f77 Merge pull request #467 from novolei/codex/browser-runtime-phase7a-mcp-provider-contract` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7c-mcp-package-pin` |
+| Current phase branch | `codex/browser-runtime-phase7c-mcp-package-pin` |
+| Current local base | `90fe28d7 Merge pull request #468 from novolei/codex/browser-runtime-phase7b-mcp-runtime-pack-probe` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -186,8 +187,9 @@
 | Phase 6E Settings active-task details implementation commit | Merged through PR #465 as `01363646 feat(browser): show identity active tasks in settings`; merge commit `313b7e83`. |
 | Phase 6F identity-boundary-actions implementation commit | Merged through PR #466 as `3b729893 feat(browser): add identity boundary resume decisions`; merge commit `ad088ed1`. |
 | Phase 7A MCP provider contract implementation commit | Merged through PR #467 as `bec34855 feat(browser): add playwright mcp provider contract`; merge commit `2b1e7f77`. |
-| Phase 7B MCP runtime-pack probe implementation commit | Open in PR #468 at branch tip `feat(browser): track playwright mcp runtime pack`. |
-| Known pre-existing tracked changes | None in the Phase 7B MCP runtime-pack probe worktree at start. Primary worktree is on `prep/nexus-memory` with unrelated tracked compact/fold changes and preserved untracked Tauri IPC docs/reports; this phase worktree is isolated from those changes. |
+| Phase 7B MCP runtime-pack probe implementation commit | Merged through PR #468 as `7ea2453f feat(browser): track playwright mcp runtime pack`; merge commit `90fe28d7`. |
+| Phase 7C MCP package pin correction implementation commit | In progress on `codex/browser-runtime-phase7c-mcp-package-pin`. |
+| Known pre-existing tracked changes | None in the Phase 7C MCP package pin correction worktree at start. Primary worktree remains separate; this phase starts from `origin/main` after PR #468 and PR #469 were merged. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -5072,10 +5074,11 @@ Phase 7B can start because:
 - Scope:
   add `@playwright/mcp` version, managed package path, filesystem snapshot, and
   runtime-pack probe evidence.
-- Current PR:
+- Merged PR:
   PR #468 `https://github.com/novolei/uclaw-new/pull/468`.
-- Current commit:
-  PR #468 branch tip (`feat(browser): track playwright mcp runtime pack`).
+- Implementation commit:
+  `7ea2453f feat(browser): track playwright mcp runtime pack`; merge commit
+  `90fe28d7`.
 - Non-goal:
   no MCP sidecar spawn, package download/install, raw MCP tool exposure, IPC,
   Settings UI, TaskEvents, artifact writes, provider routing/promotion, DB
@@ -5138,8 +5141,88 @@ Phase 7B can start because:
 
 ### Phase 7B MCP Runtime-Pack Probe Next Action
 
-- Merge PR #468 if GitHub remains CLEAN and no checks fail, then sync `main`
-  and continue with the next Phase 7 slice.
+- Closed. PR #468 merged as `90fe28d7`; continue with Phase 7C from
+  `origin/main`.
+
+## Phase 7C MCP Package Pin Correction Entry Criteria
+
+Phase 7C can start because:
+
+- PR #468 merged the runtime-pack MCP package evidence to `main` /
+  `origin/main`;
+- Phase 7D sidecar execution needs a real app-managed package pin, not a
+  placeholder or Playwright-core version;
+- `npm view @playwright/mcp@1.53.0` returned 404, proving the Phase 7B pin is
+  not a valid stable npm package version;
+- `npm view @playwright/mcp version` returned `0.0.75`, and
+  `npm view @playwright/mcp@0.0.75 bin --json` returned
+  `playwright-mcp: cli.js`;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7c-mcp-package-pin`;
+- the branch starts from `90fe28d7`, the current `origin/main`.
+
+## Phase 7C MCP Package Pin Correction Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase7c-mcp-package-pin.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7c-mcp-package-pin`
+- Branch:
+  `codex/browser-runtime-phase7c-mcp-package-pin`
+- Scope:
+  correct the runtime-pack MCP package version default and MCP sidecar package
+  spec expectations from `1.53.0` to `0.0.75`.
+- Current PR:
+  PR #470 `https://github.com/novolei/uclaw-new/pull/470`.
+- Current commit:
+  PR #470 branch tip (`fix(browser): correct playwright mcp package pin`).
+- Non-goal:
+  no MCP sidecar spawn, package download/install, raw MCP tool exposure, IPC,
+  Settings UI, TaskEvents, artifact writes, provider routing/promotion, DB
+  migration, hosted provider, or global npm/user-installed Playwright path.
+- Rollback:
+  revert this PR; MCP returns to the prior package pin, while the provider stays
+  feature-flagged and disabled by default.
+
+### Phase 7C MCP Package Pin Correction Impact Notes
+
+- GitNexus index was refreshed for the Phase 7C worktree before impact checks.
+- GitNexus impact before edits reported LOW risk for
+  `default_playwright_mcp_version`: 0 direct dependants, 0 affected processes.
+- GitNexus impact before edits reported LOW risk for
+  `build_playwright_mcp_sidecar_spec`: 4 direct test callers, 0 affected
+  processes.
+- GitNexus impact for direct edits to `runtime_pack_manifest_versions_match`
+  would be HIGH, so this phase does not edit that function.
+
+### Phase 7C MCP Package Pin Correction Verification Notes
+
+- `npm view @playwright/mcp@1.53.0 bin version --json` returned 404, proving
+  the previous pin was not a valid stable package version.
+- `npm view @playwright/mcp version versions --json` reported current stable
+  version `0.0.75`.
+- `npm view @playwright/mcp@0.0.75 bin version --json` reported version
+  `0.0.75` and bin `playwright-mcp: cli.js`.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  passed: 42 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::playwright_mcp`
+  passed: 7 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  passed: 54 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  passed: 6 tests, 0 failed.
+- `rustfmt --edition 2021 --check src-tauri/src/browser/runtime_pack.rs src-tauri/src/browser/runtime_pack_tests.rs src-tauri/src/browser/playwright_mcp.rs`
+  passed.
+- `git diff --check -- docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-phase7c-mcp-package-pin.md src-tauri/src/browser/runtime_pack.rs src-tauri/src/browser/runtime_pack_tests.rs src-tauri/src/browser/playwright_mcp.rs`
+  passed.
+- GitNexus staged detect reported 5 files, 21 symbols, 0 affected processes,
+  `risk_level: low`; no HIGH or CRITICAL risk.
+
+### Phase 7C MCP Package Pin Correction Next Action
+
+- Run focused tests and checks, commit, push, create PR, request fresh review,
+  and merge automatically if GitHub reports CLEAN, tests pass, reviewer accepts,
+  no HIGH/CRITICAL risk is reported, and no user worktree files are affected.
 
 ---
 
