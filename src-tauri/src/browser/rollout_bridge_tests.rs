@@ -381,3 +381,37 @@ fn provider_route_rollback_emits_previous_and_fallback_signals() {
         _ => false,
     }));
 }
+
+#[test]
+fn provider_route_signal_batch_uses_one_timestamp() {
+    let request = BrowserProviderRouteRequest {
+        selection: BrowserProviderSelectionRequest {
+            action: Some("click".into()),
+            observation_mode: None,
+            requires_mcp_specific_capability: false,
+        },
+        disabled_provider_ids: vec![LOCAL_CHROMIUM_PROVIDER_ID.to_string()],
+        previous_provider_id: Some(LOCAL_CHROMIUM_PROVIDER_ID.to_string()),
+    };
+    let decision = decide_browser_provider_route(
+        &request,
+        &[
+            ready_provider_status(local_chromium_capabilities()),
+            ready_provider_status(playwright_cli_capabilities()),
+        ],
+    );
+
+    let events = provider_route_decision_to_events(&decision, "browser-run-1");
+    let signal_timestamps = events
+        .iter()
+        .filter_map(|event| match event {
+            TaskEvent::Signal { ts, .. } => Some(ts.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(signal_timestamps.len() >= 2);
+    assert!(signal_timestamps
+        .iter()
+        .all(|ts| *ts == signal_timestamps[0]));
+}
