@@ -211,6 +211,37 @@ pub enum PlaywrightCliEnvelopeError {
     RuntimeNotReady,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaywrightCliProviderExecutionStatus {
+    Succeeded,
+    Failed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaywrightCliProviderExecutionError {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaywrightCliProviderExecutionResult {
+    pub provider_id: String,
+    pub request_id: String,
+    pub action_kind: PlaywrightCliActionKind,
+    pub status: PlaywrightCliProviderExecutionStatus,
+    pub summary: String,
+    pub artifact_refs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<PlaywrightCliProviderExecutionError>,
+}
+
 pub fn playwright_cli_capabilities() -> BrowserProviderCapabilities {
     BrowserProviderCapabilities {
         provider_id: PLAYWRIGHT_CLI_PROVIDER_ID.to_string(),
@@ -331,6 +362,63 @@ pub fn build_playwright_cli_request_envelope(
     })
 }
 
+pub async fn execute_playwright_cli_provider_action(
+    request_id: impl Into<String>,
+    flags: BrowserRuntimeFeatureFlags,
+    action: PlaywrightCliAction,
+    runtime_report: &BrowserRuntimePackStatusReport,
+) -> PlaywrightCliProviderExecutionResult {
+    execute_playwright_cli_provider_action_with_timeout(
+        request_id,
+        flags,
+        action,
+        runtime_report,
+        DEFAULT_PLAYWRIGHT_CLI_ACTION_TIMEOUT_MS,
+    )
+    .await
+}
+
+pub async fn execute_playwright_cli_provider_action_with_timeout(
+    request_id: impl Into<String>,
+    flags: BrowserRuntimeFeatureFlags,
+    action: PlaywrightCliAction,
+    runtime_report: &BrowserRuntimePackStatusReport,
+    worker_timeout_ms: u64,
+) -> PlaywrightCliProviderExecutionResult {
+    let request_id = request_id.into();
+    let action_kind = action.kind();
+    if !flags.playwright_cli {
+        return provider_blocked_result(
+            request_id,
+            action_kind,
+            "feature_flag_disabled",
+            "playwright_cli feature flag is disabled",
+            false,
+        );
+    }
+
+    let envelope =
+        match build_playwright_cli_request_envelope(request_id.clone(), action, runtime_report) {
+            Ok(envelope) => envelope,
+            Err(PlaywrightCliEnvelopeError::RuntimeNotReady) => {
+                return provider_blocked_result(
+                    request_id,
+                    action_kind,
+                    "runtime_not_ready",
+                    "Browser runtime pack is not ready for Playwright CLI actions",
+                    true,
+                );
+            }
+        };
+    let config = PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
+        .with_timeout_ms(worker_timeout_ms);
+
+    match run_playwright_cli_child_worker(&envelope, config).await {
+        Ok(worker_result) => provider_result_from_worker(action_kind, worker_result),
+        Err(error) => provider_result_from_runner_error(request_id, action_kind, error),
+    }
+}
+
 pub async fn run_playwright_cli_child_worker(
     envelope: &PlaywrightCliRequestEnvelope,
     config: PlaywrightCliChildWorkerConfig,
@@ -428,6 +516,149 @@ pub async fn run_playwright_cli_child_worker(
         ));
     }
     Ok(result)
+}
+
+fn provider_result_from_worker(
+    action_kind: PlaywrightCliActionKind,
+    worker_result: PlaywrightCliWorkerResultEnvelope,
+) -> PlaywrightCliProviderExecutionResult {
+    let status = match worker_result.status {
+        PlaywrightCliWorkerStatus::Succeeded => PlaywrightCliProviderExecutionStatus::Succeeded,
+        PlaywrightCliWorkerStatus::Failed => PlaywrightCliProviderExecutionStatus::Failed,
+    };
+    let error = worker_result
+        .error
+        .map(|error| PlaywrightCliProviderExecutionError {
+            code: error.code,
+            message: error.message,
+            retryable: error.retryable,
+        })
+        .or_else(|| {
+            (status == PlaywrightCliProviderExecutionStatus::Failed).then(|| {
+                PlaywrightCliProviderExecutionError {
+                    code: "worker_failed".to_string(),
+                    message: "Playwright CLI worker failed without a structured error".to_string(),
+                    retryable: false,
+                }
+            })
+        });
+
+    PlaywrightCliProviderExecutionResult {
+        provider_id: worker_result.provider_id,
+        request_id: worker_result.request_id,
+        action_kind,
+        status,
+        summary: worker_result.summary,
+        artifact_refs: worker_result.artifact_refs,
+        output: worker_result.output,
+        error,
+    }
+}
+
+fn provider_result_from_runner_error(
+    request_id: String,
+    action_kind: PlaywrightCliActionKind,
+    error: PlaywrightCliWorkerError,
+) -> PlaywrightCliProviderExecutionResult {
+    let error = provider_execution_error_from_runner_error(error);
+    PlaywrightCliProviderExecutionResult {
+        provider_id: PLAYWRIGHT_CLI_PROVIDER_ID.to_string(),
+        request_id,
+        action_kind,
+        status: PlaywrightCliProviderExecutionStatus::Failed,
+        summary: "Playwright CLI worker runner failed".to_string(),
+        artifact_refs: vec![],
+        output: None,
+        error: Some(error),
+    }
+}
+
+fn provider_blocked_result(
+    request_id: String,
+    action_kind: PlaywrightCliActionKind,
+    code: &str,
+    message: &str,
+    retryable: bool,
+) -> PlaywrightCliProviderExecutionResult {
+    PlaywrightCliProviderExecutionResult {
+        provider_id: PLAYWRIGHT_CLI_PROVIDER_ID.to_string(),
+        request_id,
+        action_kind,
+        status: PlaywrightCliProviderExecutionStatus::Blocked,
+        summary: message.to_string(),
+        artifact_refs: vec![],
+        output: None,
+        error: Some(PlaywrightCliProviderExecutionError {
+            code: code.to_string(),
+            message: message.to_string(),
+            retryable,
+        }),
+    }
+}
+
+fn provider_execution_error_from_runner_error(
+    error: PlaywrightCliWorkerError,
+) -> PlaywrightCliProviderExecutionError {
+    match error {
+        PlaywrightCliWorkerError::RuntimePathEscapesPack { path, pack_dir } => {
+            PlaywrightCliProviderExecutionError {
+                code: "runtime_path_escapes_pack".to_string(),
+                message: format!(
+                    "worker runtime path {} escapes app-managed pack {}",
+                    path.display(),
+                    pack_dir.display()
+                ),
+                retryable: false,
+            }
+        }
+        PlaywrightCliWorkerError::SpawnFailed(message) => PlaywrightCliProviderExecutionError {
+            code: "worker_spawn_failed".to_string(),
+            message,
+            retryable: true,
+        },
+        PlaywrightCliWorkerError::StdinWriteFailed(message) => {
+            PlaywrightCliProviderExecutionError {
+                code: "worker_stdin_failed".to_string(),
+                message,
+                retryable: true,
+            }
+        }
+        PlaywrightCliWorkerError::StdoutReadFailed(message) => {
+            PlaywrightCliProviderExecutionError {
+                code: "worker_stdout_failed".to_string(),
+                message,
+                retryable: true,
+            }
+        }
+        PlaywrightCliWorkerError::StderrReadFailed(message) => {
+            PlaywrightCliProviderExecutionError {
+                code: "worker_stderr_failed".to_string(),
+                message,
+                retryable: true,
+            }
+        }
+        PlaywrightCliWorkerError::TimedOut { timeout_ms } => PlaywrightCliProviderExecutionError {
+            code: "timeout".to_string(),
+            message: format!("Playwright CLI worker timed out after {timeout_ms} ms"),
+            retryable: true,
+        },
+        PlaywrightCliWorkerError::NonZeroExit { code, stderr } => {
+            PlaywrightCliProviderExecutionError {
+                code: "worker_nonzero_exit".to_string(),
+                message: format!(
+                    "Playwright CLI worker exited with code {:?}: {}",
+                    code,
+                    stderr.trim()
+                ),
+                retryable: false,
+            }
+        }
+        PlaywrightCliWorkerError::InvalidJson(message) => PlaywrightCliProviderExecutionError {
+            code: "worker_invalid_json".to_string(),
+            message,
+            retryable: false,
+        },
+    }
 }
 
 async fn read_pipe_to_string<R>(mut reader: R) -> std::io::Result<String>
@@ -612,6 +843,155 @@ mod tests {
         assert_eq!(err, PlaywrightCliEnvelopeError::RuntimeNotReady);
     }
 
+    #[tokio::test]
+    async fn provider_adapter_blocks_disabled_feature_flag() {
+        let result = execute_playwright_cli_provider_action(
+            "req-provider-disabled",
+            BrowserRuntimeFeatureFlags::safe_defaults(),
+            PlaywrightCliAction::Navigate {
+                url: "https://example.com".to_string(),
+            },
+            &ready_runtime_report(),
+        )
+        .await;
+
+        assert_eq!(result.status, PlaywrightCliProviderExecutionStatus::Blocked);
+        let error = result.error.expect("provider error");
+        assert_eq!(error.code, "feature_flag_disabled");
+        assert!(!error.retryable);
+    }
+
+    #[tokio::test]
+    async fn provider_adapter_blocks_unready_runtime() {
+        let result = execute_playwright_cli_provider_action(
+            "req-provider-runtime",
+            enabled_playwright_cli_flags(),
+            PlaywrightCliAction::Screenshot { full_page: false },
+            &missing_runtime_report(),
+        )
+        .await;
+
+        assert_eq!(result.status, PlaywrightCliProviderExecutionStatus::Blocked);
+        let error = result.error.expect("provider error");
+        assert_eq!(error.code, "runtime_not_ready");
+        assert!(error.retryable);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn provider_adapter_executes_worker_successfully() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let report = fixture_runtime_report(temp.path());
+        write_executable(
+            &report.current_pack_dir.join("node").join("bin").join("node"),
+            "#!/bin/sh\ntest -f \"$1\" || exit 9\nsleep 0.1\nprintf '%s\\n' '{\"schemaVersion\":1,\"providerId\":\"browser.playwright_cli\",\"requestId\":\"req-provider-success\",\"status\":\"succeeded\",\"summary\":\"provider action completed\",\"artifactRefs\":[\"artifact://browser/provider\"],\"output\":{\"clicked\":true}}'\n",
+        );
+        write_executable(
+            &report
+                .current_pack_dir
+                .join("worker")
+                .join("uclaw-playwright-worker.mjs"),
+            "#!/bin/sh\n# provider fixture worker marker\n",
+        );
+
+        let result = execute_playwright_cli_provider_action_with_timeout(
+            "req-provider-success",
+            enabled_playwright_cli_flags(),
+            PlaywrightCliAction::Click {
+                target: PlaywrightCliAddress::Coordinates { x: 10, y: 20 },
+            },
+            &report,
+            2_000,
+        )
+        .await;
+
+        assert_eq!(
+            result.status,
+            PlaywrightCliProviderExecutionStatus::Succeeded
+        );
+        assert_eq!(result.action_kind, PlaywrightCliActionKind::Click);
+        assert_eq!(result.summary, "provider action completed");
+        assert_eq!(result.artifact_refs, vec!["artifact://browser/provider"]);
+        assert_eq!(result.output.expect("output")["clicked"], true);
+        assert!(result.error.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn provider_adapter_preserves_worker_structured_failure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let report = fixture_runtime_report(temp.path());
+        write_executable(
+            &report.current_pack_dir.join("node").join("bin").join("node"),
+            "#!/bin/sh\nsleep 0.1\nprintf '%s\\n' '{\"schemaVersion\":1,\"providerId\":\"browser.playwright_cli\",\"requestId\":\"req-provider-failure\",\"status\":\"failed\",\"summary\":\"provider action failed\",\"artifactRefs\":[],\"error\":{\"code\":\"action_failed\",\"message\":\"missing locator\",\"retryable\":false}}'\n",
+        );
+        write_executable(
+            &report
+                .current_pack_dir
+                .join("worker")
+                .join("uclaw-playwright-worker.mjs"),
+            "#!/bin/sh\n# provider fixture worker marker\n",
+        );
+
+        let result = execute_playwright_cli_provider_action_with_timeout(
+            "req-provider-failure",
+            enabled_playwright_cli_flags(),
+            PlaywrightCliAction::Click {
+                target: PlaywrightCliAddress::SemanticLocator {
+                    locator: "text=missing".to_string(),
+                },
+            },
+            &report,
+            2_000,
+        )
+        .await;
+
+        assert_eq!(result.status, PlaywrightCliProviderExecutionStatus::Failed);
+        let error = result.error.expect("provider error");
+        assert_eq!(error.code, "action_failed");
+        assert_eq!(error.message, "missing locator");
+        assert!(!error.retryable);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn provider_adapter_maps_runner_timeout_to_retryable_failure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let report = fixture_runtime_report(temp.path());
+        write_executable(
+            &report
+                .current_pack_dir
+                .join("node")
+                .join("bin")
+                .join("node"),
+            "#!/bin/sh\nexec \"$1\"\n",
+        );
+        write_executable(
+            &report
+                .current_pack_dir
+                .join("worker")
+                .join("uclaw-playwright-worker.mjs"),
+            "#!/bin/sh\ncat >/dev/null\nsleep 2\n",
+        );
+
+        let result = execute_playwright_cli_provider_action_with_timeout(
+            "req-provider-timeout",
+            enabled_playwright_cli_flags(),
+            PlaywrightCliAction::Wait {
+                target: PlaywrightCliAddress::Coordinates { x: 1, y: 2 },
+                timeout_ms: Some(25),
+            },
+            &report,
+            25,
+        )
+        .await;
+
+        assert_eq!(result.status, PlaywrightCliProviderExecutionStatus::Failed);
+        let error = result.error.expect("provider error");
+        assert_eq!(error.code, "timeout");
+        assert!(error.retryable);
+    }
+
     #[test]
     fn addressing_priority_matches_locator_dom_id_coordinate_order() {
         assert_eq!(
@@ -670,7 +1050,7 @@ mod tests {
         let result = run_playwright_cli_child_worker(
             &envelope,
             PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
-                .with_timeout_ms(1_000),
+                .with_timeout_ms(2_000),
         )
         .await
         .expect("worker result");
@@ -769,7 +1149,7 @@ mod tests {
         let error = run_playwright_cli_child_worker(
             &envelope,
             PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
-                .with_timeout_ms(1_000),
+                .with_timeout_ms(2_000),
         )
         .await
         .expect_err("worker should report nonzero exit");
@@ -809,7 +1189,7 @@ mod tests {
         let error = run_playwright_cli_child_worker(
             &envelope,
             PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
-                .with_timeout_ms(1_000),
+                .with_timeout_ms(2_000),
         )
         .await
         .expect_err("mismatched result should be rejected");
@@ -887,8 +1267,26 @@ mod tests {
         runtime_report_from_probe(BrowserRuntimePackProbe::ready())
     }
 
+    fn enabled_playwright_cli_flags() -> BrowserRuntimeFeatureFlags {
+        let mut flags = BrowserRuntimeFeatureFlags::safe_defaults();
+        flags.playwright_cli = true;
+        flags
+    }
+
     fn fixture_envelope(root: &Path) -> PlaywrightCliRequestEnvelope {
         fixture_envelope_with_action(root, PlaywrightCliAction::Screenshot { full_page: false })
+    }
+
+    fn fixture_runtime_report(root: &Path) -> BrowserRuntimePackStatusReport {
+        let manifest = BrowserRuntimePackManifest::v1_default();
+        let paths = BrowserRuntimePackPaths::from_root(root.join("runtime"), &manifest);
+        let mut report = runtime_report_from_probe(BrowserRuntimePackProbe::ready());
+        report.runtime_root = paths.runtime_root;
+        report.current_pack_dir = paths.current_pack_dir.clone();
+        report.operation_plan.env = vec![];
+        report.filesystem.snapshot.current_pack_dir = paths.current_pack_dir;
+        report.filesystem.snapshot.manifest_path = paths.manifest_path;
+        report
     }
 
     fn fixture_envelope_with_action(
