@@ -72,8 +72,10 @@ impl BrowserIdentityProfileStore {
             scope: input.scope,
             secret_handle: secret_handle.clone(),
             created_at_ms: Utc::now().timestamp_millis(),
+            last_used_at_ms: None,
             last_verified_at_ms: None,
             expires_at_ms: None,
+            revoked_at_ms: None,
             status: BrowserIdentityStatus::Unknown,
         };
 
@@ -100,20 +102,40 @@ impl BrowserIdentityProfileStore {
         &self,
         origin: &str,
     ) -> BrowserIdentityResult<Option<BrowserIdentityProfile>> {
-        Ok(self
-            .load_index()?
-            .profiles
-            .into_iter()
-            .find(|profile| origin_pattern_matches(&profile.origin_pattern, origin)))
+        Ok(self.load_index()?.profiles.into_iter().find(|profile| {
+            !profile.is_revoked() && origin_pattern_matches(&profile.origin_pattern, origin)
+        }))
     }
 
     pub fn load_storage_state(&self, id: &str) -> BrowserIdentityResult<PlaywrightStorageState> {
         let profile = self.get_profile(id)?;
+        if profile.is_revoked() {
+            return Err(BrowserIdentityError::ProfileRevoked(id.to_string()));
+        }
         let secret = self
             .secret_store
             .get_secret(&profile.secret_handle)?
             .ok_or_else(|| BrowserIdentityError::SecretNotFound(profile.secret_handle.clone()))?;
         PlaywrightStorageState::from_json_str(&secret)
+    }
+
+    pub fn revoke_profile(
+        &self,
+        id: &str,
+    ) -> BrowserIdentityResult<Option<BrowserIdentityProfile>> {
+        let mut index = self.load_index()?;
+        let Some(profile) = index.profiles.iter_mut().find(|profile| profile.id == id) else {
+            return Ok(None);
+        };
+
+        let secret_handle = profile.secret_handle.clone();
+        profile.status = BrowserIdentityStatus::Revoked;
+        profile.revoked_at_ms = Some(Utc::now().timestamp_millis());
+        let revoked_profile = profile.clone();
+
+        self.save_index(&index)?;
+        self.secret_store.delete_secret(&secret_handle)?;
+        Ok(Some(revoked_profile))
     }
 
     pub fn delete_profile(&self, id: &str) -> BrowserIdentityResult<bool> {
@@ -237,6 +259,10 @@ mod tests {
             .unwrap();
         assert_eq!(profile.label, "Example app");
         assert!(profile.secret_handle.starts_with("browser-identity:auth-"));
+        assert_eq!(profile.scope, BrowserIdentityScope::Workspace);
+        assert_eq!(profile.status, BrowserIdentityStatus::Unknown);
+        assert!(profile.last_used_at_ms.is_none());
+        assert!(profile.revoked_at_ms.is_none());
 
         let metadata = fs::read_to_string(temp.path().join("profiles.json")).unwrap();
         assert!(!metadata.contains("sensitive-token"));
@@ -270,5 +296,39 @@ mod tests {
             store.load_storage_state(&profile.id).unwrap_err(),
             BrowserIdentityError::ProfileNotFound(_)
         ));
+    }
+
+    #[test]
+    fn revokes_profile_without_deleting_visible_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = BrowserIdentityProfileStore::new(
+            temp.path().join("profiles.json"),
+            Arc::new(MemoryBrowserSecretStore::default()),
+        );
+        let profile = store
+            .import_storage_state(sample_input(), &sample_state())
+            .unwrap();
+
+        let revoked = store
+            .revoke_profile(&profile.id)
+            .unwrap()
+            .expect("revoked profile");
+        assert_eq!(revoked.id, profile.id);
+        assert_eq!(revoked.status, BrowserIdentityStatus::Revoked);
+        assert!(revoked.revoked_at_ms.is_some());
+
+        let profiles = store.list_profiles().unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].status, BrowserIdentityStatus::Revoked);
+        assert!(profiles[0].is_revoked());
+        assert!(store
+            .resolve_for_origin("https://admin.example.com")
+            .unwrap()
+            .is_none());
+        assert!(matches!(
+            store.load_storage_state(&profile.id).unwrap_err(),
+            BrowserIdentityError::ProfileRevoked(_)
+        ));
+        assert!(store.revoke_profile("missing").unwrap().is_none());
     }
 }

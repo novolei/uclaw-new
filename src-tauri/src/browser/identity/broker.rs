@@ -76,6 +76,13 @@ impl BrowserAuthProfileBroker {
     pub fn delete_profile(&self, id: &str) -> BrowserIdentityResult<bool> {
         self.profile_store.delete_profile(id)
     }
+
+    pub fn revoke_profile(
+        &self,
+        id: &str,
+    ) -> BrowserIdentityResult<Option<BrowserIdentityProfile>> {
+        self.profile_store.revoke_profile(id)
+    }
 }
 
 #[cfg(test)]
@@ -117,5 +124,12 @@ mod tests {
         assert_eq!(resolved_profile.id, profile.id);
         assert!(state.matches_origin("https://app.example.com"));
         assert_eq!(broker.list_profiles().unwrap().len(), 1);
+
+        let revoked = broker.revoke_profile(&profile.id).unwrap().unwrap();
+        assert_eq!(revoked.id, profile.id);
+        assert!(broker
+            .resolve_storage_state_for_origin("https://admin.example.com")
+            .unwrap()
+            .is_none());
     }
 }
