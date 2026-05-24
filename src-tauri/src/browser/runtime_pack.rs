@@ -190,8 +190,8 @@ impl Default for BrowserRuntimePackFilesystemProbeOptions {
         Self {
             active_tasks: 0,
             offline: false,
-            worker_startup_ok: true,
-            real_page_probe_ok: true,
+            worker_startup_ok: false,
+            real_page_probe_ok: false,
             cache_corrupt: false,
         }
     }

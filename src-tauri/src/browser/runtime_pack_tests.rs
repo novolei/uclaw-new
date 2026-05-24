@@ -912,23 +912,35 @@ fn filesystem_probe_maps_present_runtime_pack_to_ready_probe() {
     .expect("manifest");
     fs::create_dir_all(paths.packs_dir.join("browser-runtime-pack-v0")).expect("rollback pack");
 
-    let report = probe_runtime_pack_filesystem(
+    let default_report = probe_runtime_pack_filesystem(
         &manifest,
         &paths,
         BrowserRuntimePackFilesystemProbeOptions::default(),
     );
 
     assert_eq!(
-        report.manifest_load.status,
+        default_report.manifest_load.status,
         BrowserRuntimePackManifestLoadStatus::Loaded
     );
-    assert!(report.snapshot.manifest_present);
-    assert!(report.snapshot.node_present);
-    assert!(report.snapshot.playwright_package_present);
-    assert!(report.snapshot.worker_script_present);
-    assert!(report.snapshot.browser_binary_present);
-    assert!(report.snapshot.previous_pack_available);
-    assert!(report.snapshot.versions_match);
+    assert!(default_report.snapshot.manifest_present);
+    assert!(default_report.snapshot.node_present);
+    assert!(default_report.snapshot.playwright_package_present);
+    assert!(default_report.snapshot.worker_script_present);
+    assert!(default_report.snapshot.browser_binary_present);
+    assert!(default_report.snapshot.previous_pack_available);
+    assert!(default_report.snapshot.versions_match);
+    assert!(!default_report.probe.worker_startup_ok);
+    assert!(!default_report.probe.real_page_probe_ok);
+
+    let report = probe_runtime_pack_filesystem(
+        &manifest,
+        &paths,
+        BrowserRuntimePackFilesystemProbeOptions {
+            worker_startup_ok: true,
+            real_page_probe_ok: true,
+            ..BrowserRuntimePackFilesystemProbeOptions::default()
+        },
+    );
     assert_eq!(report.probe, BrowserRuntimePackProbe::ready());
 }
 
@@ -1016,6 +1028,14 @@ fn write_ready_runtime_pack(
     fs::create_dir_all(paths.packs_dir.join("browser-runtime-pack-v0")).expect("rollback pack");
 }
 
+fn verified_probe_options() -> BrowserRuntimePackFilesystemProbeOptions {
+    BrowserRuntimePackFilesystemProbeOptions {
+        worker_startup_ok: true,
+        real_page_probe_ok: true,
+        ..BrowserRuntimePackFilesystemProbeOptions::default()
+    }
+}
+
 fn status_request(
     trigger: BrowserRuntimePackPlanTrigger,
     network_state: BrowserRuntimePackNetworkState,
@@ -1039,7 +1059,7 @@ fn status_report_composes_ready_filesystem_doctor_and_keep_current_plan() {
     let report = inspect_runtime_pack_status(
         &manifest,
         &paths,
-        BrowserRuntimePackFilesystemProbeOptions::default(),
+        verified_probe_options(),
         status_request(
             BrowserRuntimePackPlanTrigger::StartupAuto,
             BrowserRuntimePackNetworkState::Online,
@@ -1061,6 +1081,33 @@ fn status_report_composes_ready_filesystem_doctor_and_keep_current_plan() {
     assert!(report
         .event_names
         .contains(&"browser.runtime.keep_current.planned".to_string()));
+}
+
+#[test]
+fn status_report_requires_worker_and_page_probe_before_ready() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let manifest = BrowserRuntimePackManifest::v1_default();
+    let paths = BrowserRuntimePackPaths::from_root(temp.path(), &manifest);
+    write_ready_runtime_pack(&paths, &manifest);
+
+    let report = inspect_runtime_pack_status(
+        &manifest,
+        &paths,
+        BrowserRuntimePackFilesystemProbeOptions::default(),
+        status_request(
+            BrowserRuntimePackPlanTrigger::StartupAuto,
+            BrowserRuntimePackNetworkState::Online,
+            true,
+        ),
+    );
+
+    assert!(!report.ready);
+    assert!(!report.can_run_browser_tasks);
+    assert_eq!(
+        report.doctor.issue,
+        Some(BrowserRuntimePackIssue::WorkerStartupFailure)
+    );
+    assert_eq!(report.primary_action, BrowserRuntimePackAction::Repair);
 }
 
 #[test]
