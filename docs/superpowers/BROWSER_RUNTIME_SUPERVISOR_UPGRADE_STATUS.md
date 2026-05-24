@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 8F provider execution boundary
+> Current phase: Phase 8G CLI/MCP provider candidate route inputs
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -27,7 +27,7 @@
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A-5F merged to `main` / `origin/main`; exit gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff` / `codex/browser-runtime-phase5f-action-state-diff` | Closed for feature-flagged Playwright CLI thin lane. Provider promotion and parity routing remain Phase 8. |
 | Phase 6 | Browser identity authorization and profile UX | Phase 6A-6F merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6f-identity-boundary-actions` / `codex/browser-runtime-phase6f-identity-boundary-actions` | Closed for safe identity revoke/drain/active-task/resume boundary contracts; auth WebView and payment confirmation remain future work. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7G merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7g-mcp-selection-policy` / `codex/browser-runtime-phase7g-mcp-selection-policy` | Closed for MCP sidecar, stdio action boundary, artifact/error routing, and MCP-vs-CLI selection guardrail. |
-| Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8E merged; Phase 8F provider execution boundary PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8f-provider-execution-boundary` / `codex/browser-runtime-phase8f-provider-execution-boundary` | Fresh reviewer should audit PR #480, then merge if accepted and GitHub reports CLEAN. |
+| Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8F merged; Phase 8G CLI/MCP candidate route inputs PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8g-cli-provider-candidate` / `codex/browser-runtime-phase8g-cli-provider-candidate` | Fresh reviewer should audit PR #481, then merge if accepted and GitHub reports CLEAN. |
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Not started | Unassigned | TBD | Wait for observable provider behavior and harness scorecards. |
 | Phase 10 | Optional hosted providers and hard-site escape hatches | Not started | Unassigned | TBD | Wait for local-first provider routing and policy prompts. |
 
@@ -129,6 +129,8 @@
 | 2026-05-24 | Merge Phase 8D and start Phase 8E as live provider route signals. | PR #478 merged as `23f57438`; fresh reviewer Chandrasekhar returned `REVIEW ACCEPTED`, with a non-blocking note that future live routing should use one timestamp per route decision batch. | Phase 8E wires provider route decisions into `BrowserAgentLoop` before local action execution. It may emit rollout-visible route signals when rollout is enabled, but must not switch execution to CLI/MCP or promote providers. |
 | 2026-05-24 | Merge Phase 8E and start Phase 8F as provider execution boundary. | PR #479 merged as `19b99593`; fresh reviewer Russell returned `REVIEW ACCEPTED` after checking live route placement, local guard, signal batching, and low GitNexus compare risk. | Phase 8F should keep `agent_loop.rs` thin by extracting the route/guard/local action execution into a focused provider execution module, without enabling CLI/MCP execution or provider promotion. |
 | 2026-05-24 | Open Phase 8F provider execution boundary PR. | PR #480 contains the focused `BrowserProviderActionExecutor`, live agent-loop delegation, non-local fail-closed guard preservation, focused provider execution tests, and GitNexus staged detect LOW with 0 affected processes. | Fresh reviewer should audit the real action-path refactor before merge; if accepted and GitHub reports CLEAN, merge and continue to the next Phase 8 slice. |
+| 2026-05-24 | Merge Phase 8F and start Phase 8G as CLI/MCP provider candidate route inputs. | PR #480 merged as `49b71dd0`; fresh reviewer Ampere returned `REVIEW ACCEPTED` and GitHub reported CLEAN. | Phase 8G may add feature-flagged CLI/MCP candidate status inputs to the live provider executor, but must keep safe defaults local-only and block non-local execution until explicit execution wiring lands. |
+| 2026-05-24 | Open Phase 8G CLI/MCP provider candidate route-input PR. | PR #481 contains route options for feature flags, optional runtime-pack readiness evidence, disabled provider IDs, focused provider execution tests, and GitNexus staged detect LOW with 0 affected processes. | Fresh reviewer should audit the candidate input boundary and safe-default behavior before merge; if accepted and GitHub reports CLEAN, merge and continue to the next Phase 8 slice. |
 
 ---
 
@@ -137,9 +139,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8f-provider-execution-boundary` |
-| Current phase branch | `codex/browser-runtime-phase8f-provider-execution-boundary` |
-| Current local base | `19b99593 Merge pull request #479 from novolei/codex/browser-runtime-phase8e-live-route-signals` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8g-cli-provider-candidate` |
+| Current phase branch | `codex/browser-runtime-phase8g-cli-provider-candidate` |
+| Current local base | `49b71dd0 Merge pull request #480 from novolei/codex/browser-runtime-phase8f-provider-execution-boundary` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -209,8 +211,9 @@
 | Phase 8C provider scorecard contract implementation commit | Merged through PR #477 as `1522a18e feat(browser): add provider scorecard metadata`; merge commit `42a764fb`. |
 | Phase 8D provider route events implementation commit | Merged through PR #478 as `f2983b77 feat(browser): emit provider route signals`; merge commit `23f57438`. |
 | Phase 8E live route signals implementation commit | Merged through PR #479 as `6550fa6c feat(browser): emit live provider route signals`; merge commit `19b99593`. |
-| Phase 8F provider execution boundary implementation commit | Open in PR #480 as branch HEAD `feat(browser): extract provider action execution boundary`; merge commit to be recorded after landing. |
-| Known pre-existing tracked changes | None in the Phase 8F provider execution boundary worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes; this phase starts from `origin/main` after PR #479 was merged. |
+| Phase 8F provider execution boundary implementation commit | Merged through PR #480 as `74ddeb03 feat(browser): extract provider action execution boundary`; merge commit `49b71dd0`. |
+| Phase 8G CLI/MCP provider candidate route-input implementation commit | Open in PR #481 as branch HEAD `feat(browser): add provider route candidate inputs`; merge commit to be recorded after landing. |
+| Known pre-existing tracked changes | None in the Phase 8G CLI/MCP provider candidate worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes; this phase starts from `origin/main` after PR #480 was merged. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -6125,7 +6128,102 @@ Phase 8F can start because:
 
 ### Phase 8F Provider Execution Boundary Next Action
 
-- Request a fresh reviewer for PR #480, merge if accepted and GitHub reports
+- Closed. PR #480 merged as `49b71dd0`; continue with Phase 8G from
+  `origin/main` to feed feature-flagged CLI/MCP candidate route inputs into
+  the live provider executor while preserving local Chromium defaults.
+
+## Phase 8G CLI/MCP Provider Candidate Route Inputs Entry Criteria
+
+Phase 8G can start because:
+
+- PR #480 merged Phase 8F provider execution boundary to `main` /
+  `origin/main`;
+- ADR Phase 8 requires chromiumoxide, Playwright CLI, and Playwright MCP to
+  route through `BrowserProvider`;
+- Phase 8F created the focused execution boundary, but its route inputs still
+  include only local Chromium status;
+- Phase 5 and Phase 7 already provide feature-flagged CLI/MCP status functions;
+- this slice can make CLI/MCP visible to the same route boundary without
+  switching live execution, promoting providers, or adding UI/IPC;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8g-cli-provider-candidate`;
+- the branch starts from `49b71dd0`, the current `origin/main`.
+
+## Phase 8G CLI/MCP Provider Candidate Route Inputs Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase8g-cli-provider-candidate.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8g-cli-provider-candidate`
+- Branch:
+  `codex/browser-runtime-phase8g-cli-provider-candidate`
+- Scope:
+  add route options for feature flags, optional runtime-pack status, and
+  disabled provider IDs, then use those options inside the live
+  `BrowserProviderActionExecutor` route path.
+- Implementation:
+  `BrowserProviderActionRouteOptions` now feeds feature-flagged CLI/MCP status
+  candidates into the same provider route boundary used by live browser actions.
+  Safe defaults still omit CLI/MCP statuses; explicit route options can make a
+  ready CLI candidate selectable for tests, and non-local selected routes still
+  fail closed before the local Chromium action registry.
+- Current PR:
+  PR #481: `https://github.com/novolei/uclaw-new/pull/481`
+- Current commit:
+  branch HEAD `feat(browser): add provider route candidate inputs`.
+- Non-goal:
+  no CLI/MCP live execution from browser tasks, provider promotion, UI, IPC,
+  Settings, DB migration, hosted provider, global npm, user-installed
+  Playwright, or raw provider tool exposure.
+- Rollback:
+  revert this PR; Phase 8F local Chromium provider execution boundary remains
+  intact.
+
+### Phase 8G CLI/MCP Provider Candidate Route Inputs Impact Notes
+
+- GitNexus index was refreshed for the Phase 8G worktree before impact checks;
+  generated AGENTS/CLAUDE statistics changes were restored as noise.
+- GitNexus impact before edits reported LOW risk for
+  `BrowserProviderActionExecutor`, `BrowserProviderActionExecutor::new`,
+  `BrowserProviderActionExecutor::route_action`, `route_live_browser_action_provider`,
+  and `provider_route_blocks_local_action`.
+- This phase deliberately keeps `agent_loop.rs` untouched: the live action path
+  already delegates to `BrowserProviderActionExecutor`, and the new route inputs
+  belong inside that focused boundary.
+- Safe defaults remain local-only. CLI/MCP candidates are added only when their
+  feature flags are enabled in route options and runtime readiness evidence is
+  supplied where required.
+
+### Phase 8G CLI/MCP Provider Candidate Route Inputs Verification Notes
+
+- Focused tests passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution`
+  returned `7 passed; 0 failed; 2722 filtered out`.
+- Browser agent loop regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::agent_loop`
+  returned `14 passed; 0 failed; 2715 filtered out`.
+- Provider route signal regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::rollout_bridge`
+  returned `12 passed; 0 failed; 2717 filtered out`.
+- Provider tests passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  returned `16 passed; 0 failed; 2713 filtered out`.
+- Runtime tests passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  returned `59 passed; 0 failed; 2670 filtered out`.
+- Runtime-pack tests passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  returned `42 passed; 0 failed; 2687 filtered out`.
+- Formatting and whitespace checks passed:
+  `rustfmt --edition 2021 --check src-tauri/src/browser/provider_execution.rs src-tauri/src/browser/provider_execution_tests.rs`
+  and `git diff --check -- src-tauri/src/browser/provider_execution.rs src-tauri/src/browser/provider_execution_tests.rs docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-phase8g-cli-provider-candidate.md`
+  returned no output.
+- GitNexus staged detect reported `risk_level: low`, `changed_files: 4`,
+  `changed_count: 28`, and `affected_count: 0`; no HIGH/CRITICAL risk.
+
+### Phase 8G CLI/MCP Provider Candidate Route Inputs Next Action
+
+- Request a fresh reviewer for PR #481, merge if accepted and GitHub reports
   CLEAN, then sync `main` and continue to the next Phase 8 slice.
 
 ---
