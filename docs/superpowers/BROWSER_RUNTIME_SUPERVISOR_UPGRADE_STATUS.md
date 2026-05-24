@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 8I provider parity matrix harness
+> Current phase: Phase 8J provider default policy gate
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -27,7 +27,7 @@
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A-5F merged to `main` / `origin/main`; exit gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff` / `codex/browser-runtime-phase5f-action-state-diff` | Closed for feature-flagged Playwright CLI thin lane. Provider promotion and parity routing remain Phase 8. |
 | Phase 6 | Browser identity authorization and profile UX | Phase 6A-6F merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6f-identity-boundary-actions` / `codex/browser-runtime-phase6f-identity-boundary-actions` | Closed for safe identity revoke/drain/active-task/resume boundary contracts; auth WebView and payment confirmation remain future work. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7G merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7g-mcp-selection-policy` / `codex/browser-runtime-phase7g-mcp-selection-policy` | Closed for MCP sidecar, stdio action boundary, artifact/error routing, and MCP-vs-CLI selection guardrail. |
-| Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8H merged; Phase 8I provider parity matrix harness PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8i-provider-parity-matrix` / `codex/browser-runtime-phase8i-provider-parity-matrix` | Fresh reviewer should audit PR #483, then merge if accepted and GitHub reports CLEAN. |
+| Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8I merged; Phase 8J provider default policy gate PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8j-provider-default-policy` / `codex/browser-runtime-phase8j-provider-default-policy` | Review and merge PR #484 if reviewer accepts, GitHub reports CLEAN, and no HIGH/CRITICAL risk appears. |
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Not started | Unassigned | TBD | Wait for observable provider behavior and harness scorecards. |
 | Phase 10 | Optional hosted providers and hard-site escape hatches | Not started | Unassigned | TBD | Wait for local-first provider routing and policy prompts. |
 
@@ -135,6 +135,8 @@
 | 2026-05-24 | Open Phase 8H CLI selected-route execution PR. | PR #482 contains selected CLI route execution through the existing app-managed worker adapter, BrowserActionResult normalization, unsupported-action blocking, focused provider execution tests, and GitNexus staged detect LOW with 0 affected processes. | Fresh reviewer should audit selected-provider execution semantics and safe-default behavior before merge; if accepted and GitHub reports CLEAN, merge and continue to the next Phase 8 slice. |
 | 2026-05-24 | Merge Phase 8H and start Phase 8I as provider parity matrix harness. | PR #482 merged as `49c274de`; fresh reviewer Lovelace returned `REVIEW ACCEPTED` and reran `browser::provider_execution`. | Phase 8I should add model-free parity matrix evidence that the same harness case can route across local Chromium, Playwright CLI, Playwright MCP, and mock hosted providers, plus fallback artifact visibility, without promotion or real hosted/MCP execution. |
 | 2026-05-24 | Open Phase 8I provider parity matrix harness PR. | PR #483 contains the model-free provider parity matrix module, shared navigate/click forced-route cases, fallback artifact-visibility evidence, attachable harness artifact output, focused harness/provider/runtime regressions, and GitNexus staged detect LOW with 0 affected processes. | Fresh reviewer should audit the harness evidence and no-promotion boundary before merge; if accepted and GitHub reports CLEAN, merge and continue to the next Phase 8 slice. |
+| 2026-05-24 | Merge Phase 8I and start Phase 8J as provider default policy gate. | PR #483 merged as `5a664789`; fresh reviewer Schrodinger returned `REVIEW ACCEPTED` and GitHub reported CLEAN before merge. | Phase 8J owns only a pure, reversible default-provider decision contract. It must not mutate settings, promote CLI/MCP/hosted providers, change route ranking, add UI/IPC/DB, or execute providers. |
+| 2026-05-24 | Open Phase 8J provider default policy gate PR. | PR #484 contains the pure default-provider policy contract, reversible promotion/fallback decisions, rollback provider metadata, focused provider/runtime regressions, and GitNexus staged detect LOW with 0 affected processes. | Fresh reviewer should audit the no-promotion boundary and fallback policy gates before merge; if accepted and GitHub reports CLEAN, merge and continue to the next ADR phase. |
 
 ---
 
@@ -143,9 +145,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8i-provider-parity-matrix` |
-| Current phase branch | `codex/browser-runtime-phase8i-provider-parity-matrix` |
-| Current local base | `49c274de Merge pull request #482 from novolei/codex/browser-runtime-phase8h-cli-selected-execution` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8j-provider-default-policy` |
+| Current phase branch | `codex/browser-runtime-phase8j-provider-default-policy` |
+| Current local base | `5a664789 Merge pull request #483 from novolei/codex/browser-runtime-phase8i-provider-parity-matrix` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -218,8 +220,9 @@
 | Phase 8F provider execution boundary implementation commit | Merged through PR #480 as `74ddeb03 feat(browser): extract provider action execution boundary`; merge commit `49b71dd0`. |
 | Phase 8G CLI/MCP provider candidate route-input implementation commit | Merged through PR #481 as `a52482a4 feat(browser): add provider route candidate inputs`; merge commit `e527ec45`. |
 | Phase 8H CLI selected-route execution implementation commit | Merged through PR #482 as `c2f5f388 feat(browser): execute selected cli provider routes`; merge commit `49c274de`. |
-| Phase 8I provider parity matrix harness implementation commit | Open in PR #483 as `feat(browser): add provider parity matrix harness`; merge commit to be recorded after landing. |
-| Known pre-existing tracked changes | None in the Phase 8I provider parity matrix harness worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes; this phase starts from `origin/main` after PR #482 was merged. |
+| Phase 8I provider parity matrix harness implementation commit | Merged through PR #483 as `fd7dc776 feat(browser): add provider parity matrix harness`; merge commit `5a664789`. |
+| Phase 8J provider default policy gate implementation commit | Open in PR #484 from `codex/browser-runtime-phase8j-provider-default-policy` as current branch `HEAD` with subject `feat(browser): add provider default policy gate`. |
+| Known pre-existing tracked changes | None in the Phase 8J provider default policy gate worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes; this phase starts from `origin/main` after PR #483 was merged. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -6417,8 +6420,103 @@ Phase 8I can start because:
 
 ### Phase 8I Provider Parity Matrix Harness Next Action
 
-- Request a fresh reviewer for PR #483, merge if accepted and GitHub reports
-  CLEAN, then sync `main` and continue to the next Phase 8 slice.
+- Closed. PR #483 merged as `5a664789`; continue with Phase 8J from
+  `origin/main` to add a reversible default-provider policy gate before any
+  actual provider promotion or Phase 9 work.
+
+## Phase 8J Provider Default Policy Gate Entry Criteria
+
+Phase 8J can start because:
+
+- PR #483 merged the provider parity matrix harness to `main` / `origin/main`;
+- ADR Phase 8 still requires provider default selection to become data-driven
+  and reversible;
+- current route ranking and parity evidence exist, but there is no explicit
+  default-provider policy decision that records promotion/fallback reasons and
+  rollback provider id;
+- this slice can add the default policy as a pure contract without mutating
+  Settings, changing route ranking, promoting providers, adding UI/IPC/DB, or
+  executing any provider;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8j-provider-default-policy`;
+- the branch starts from `5a664789`, the current `origin/main`.
+
+## Phase 8J Provider Default Policy Gate Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase8j-provider-default-policy.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8j-provider-default-policy`
+- Branch:
+  `codex/browser-runtime-phase8j-provider-default-policy`
+- Scope:
+  add a pure provider default policy gate that retains current local Chromium,
+  promotes only when a candidate beats current evidence and records rollback,
+  blocks hosted defaults unless explicitly allowed, and selects an
+  artifact-visible fallback when the current default is disabled.
+- Current PR:
+  PR #484: `https://github.com/novolei/uclaw-new/pull/484`.
+- Current commit:
+  current branch `HEAD`, subject `feat(browser): add provider default policy gate`.
+- Non-goal:
+  no live default mutation, provider promotion, route ranking change,
+  provider execution, MCP execution, hosted execution, UI, IPC, Settings, DB
+  migration, runtime-pack mutation, or task-loop behavior.
+- Rollback:
+  revert this PR; Phase 8I parity harness and Phase 8H provider execution
+  remain unchanged.
+
+### Phase 8J Provider Default Policy Gate Impact Notes
+
+- GitNexus index was refreshed for the Phase 8J worktree before impact checks;
+  generated AGENTS/CLAUDE statistics changes were restored as noise.
+- GitNexus impact before edits reported LOW for `BrowserProviderCapabilityCard`
+  and MEDIUM for read-only dependencies `browser_provider_capability_cards`
+  and `rank_browser_provider_candidates`; no HIGH/CRITICAL risk was observed.
+- GitNexus did not resolve `browser/mod.rs` as a symbol target and returned
+  UNKNOWN. The edit is intentionally kept to one additive module export.
+- The implementation does not modify route ranking, live provider execution,
+  provider capability cards, `agent_loop.rs`, or `tauri_commands.rs`.
+
+### Phase 8J Provider Default Policy Gate Verification Notes
+
+- Provider default policy focused verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_defaults`
+  completed with `6 passed; 0 failed; 2734 filtered out` after PR #484
+  reviewer fixes that force disabled/unavailable current defaults through
+  fallback-or-blocked semantics before any promotion decision.
+- Browser provider regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  completed with `16 passed; 0 failed; 2723 filtered out`.
+- Runtime contract regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_contracts`
+  completed with `10 passed; 0 failed; 2729 filtered out`.
+- Default browser-runtime regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  completed with `59 passed; 0 failed; 2680 filtered out`.
+- Runtime-pack regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  completed with `42 passed; 0 failed; 2697 filtered out`.
+- Formatting passed for the new provider-default policy module:
+  `rustfmt --edition 2021 --check src-tauri/src/browser/provider_defaults.rs`.
+- Formatting note: `rustfmt --edition 2021 --check --config skip_children=true
+  src-tauri/src/browser/mod.rs` reports pre-existing formatting drift across the
+  legacy module root. The Phase 8J diff in `browser/mod.rs` is one additive
+  `pub mod provider_defaults;` line, so this PR intentionally avoids a broad
+  unrelated reformat of that file.
+- Diff hygiene passed:
+  `git diff --check -- src-tauri/src/browser/provider_defaults.rs
+  src-tauri/src/browser/mod.rs
+  docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md
+  docs/superpowers/plans/2026-05-24-browser-runtime-phase8j-provider-default-policy.md`.
+- GitNexus staged detect reported `risk_level: low`, `changed_files: 4`,
+  `changed_count: 16`, `affected_count: 0`, and `affected_processes: []`.
+
+### Phase 8J Provider Default Policy Gate Next Action
+
+- Request a fresh reviewer for PR #484, check GitHub mergeability, and merge
+  only if reviewer accepts, GitHub reports CLEAN, tests stay green, and no
+  HIGH/CRITICAL risk appears.
 
 ---
 
