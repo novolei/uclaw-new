@@ -92,6 +92,106 @@ fn provider_cards_cover_all_phase0_lanes_with_safe_defaults() {
 }
 
 #[test]
+fn provider_selection_keeps_mcp_behind_cli_for_generic_actions() {
+    let request = BrowserProviderSelectionRequest {
+        action: Some("click".into()),
+        observation_mode: None,
+        requires_mcp_specific_capability: false,
+    };
+
+    let candidates =
+        rank_browser_provider_candidates(&request, browser_provider_capability_cards());
+    let ids: Vec<&str> = candidates
+        .iter()
+        .map(|candidate| candidate.provider_id)
+        .collect();
+
+    assert_eq!(
+        ids,
+        vec![
+            "browser.local_chromium",
+            "browser.playwright_cli",
+            "browser.playwright_mcp",
+            "browser.hosted",
+        ]
+    );
+    assert_eq!(candidates[1].lane, BrowserProviderLane::PlaywrightCli);
+    assert_eq!(candidates[1].rank, 10);
+    assert_eq!(candidates[2].lane, BrowserProviderLane::PlaywrightMcp);
+    assert_eq!(candidates[2].rank, 20);
+    assert_eq!(candidates[2].reason, "mcp_feature_lane_after_cli");
+}
+
+#[test]
+fn provider_selection_allows_mcp_to_outrank_cli_for_mcp_specific_needs() {
+    let request = BrowserProviderSelectionRequest {
+        action: Some("click".into()),
+        observation_mode: Some("accessibility_snapshot".into()),
+        requires_mcp_specific_capability: true,
+    };
+
+    let candidates =
+        rank_browser_provider_candidates(&request, browser_provider_capability_cards());
+    let ids: Vec<&str> = candidates
+        .iter()
+        .map(|candidate| candidate.provider_id)
+        .collect();
+
+    assert_eq!(
+        ids,
+        vec!["browser.playwright_mcp", "browser.playwright_cli"]
+    );
+    assert_eq!(candidates[0].rank, 5);
+    assert_eq!(candidates[0].reason, "mcp_specific_capability_required");
+    assert_eq!(candidates[1].rank, 10);
+}
+
+#[test]
+fn provider_selection_excludes_ineligible_observation_modes() {
+    let request = BrowserProviderSelectionRequest {
+        action: Some("navigate".into()),
+        observation_mode: Some("network_console".into()),
+        requires_mcp_specific_capability: true,
+    };
+
+    let candidates =
+        rank_browser_provider_candidates(&request, browser_provider_capability_cards());
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].provider_id, "browser.playwright_mcp");
+    assert_eq!(candidates[0].lane, BrowserProviderLane::PlaywrightMcp);
+}
+
+#[test]
+fn provider_selection_keeps_raw_and_hosted_after_local_lanes() {
+    let request = BrowserProviderSelectionRequest {
+        action: Some("screenshot".into()),
+        observation_mode: None,
+        requires_mcp_specific_capability: false,
+    };
+
+    let candidates =
+        rank_browser_provider_candidates(&request, browser_provider_capability_cards());
+    let ids: Vec<&str> = candidates
+        .iter()
+        .map(|candidate| candidate.provider_id)
+        .collect();
+
+    assert_eq!(
+        ids,
+        vec![
+            "browser.local_chromium",
+            "browser.playwright_cli",
+            "browser.playwright_mcp",
+            "browser.raw_cdp",
+            "browser.hosted",
+        ]
+    );
+    assert_eq!(candidates[3].rank, 80);
+    assert_eq!(candidates[4].rank, 90);
+}
+
+#[test]
 fn browser_event_names_cover_startup_runtime_provider_identity_and_boundaries() {
     let event_names = browser_task_event_names();
     let names: Vec<&str> = event_names.iter().map(|name| name.as_str()).collect();
