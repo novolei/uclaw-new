@@ -18,6 +18,8 @@ export interface BrowserTaskRuntimeDecisionPayload {
   runtime_preparation_decision: BrowserRuntimePreparationDecision
 }
 
+export type BrowserTaskToolCallArguments = Record<string, unknown>
+
 export interface BrowserRuntimeTaskTimePromptInput {
   report?: StartupRuntimePackStatusReport
   browserRequired: boolean
@@ -117,6 +119,23 @@ export function browserTaskRuntimeDecisionPayloadForAction(
   action: BrowserRuntimeTaskTimePromptAction,
 ): BrowserTaskRuntimeDecisionPayload | undefined {
   return action.browserTaskRequestPatch
+}
+
+export function browserTaskRuntimeDecisionPayloadForToolCall(
+  toolName: string,
+  action: BrowserRuntimeTaskTimePromptAction,
+): BrowserTaskRuntimeDecisionPayload | undefined {
+  if (toolName !== 'browser_task') return undefined
+  return browserTaskRuntimeDecisionPayloadForAction(action)
+}
+
+export function applyBrowserRuntimeDecisionToBrowserTaskToolCall(
+  toolName: string,
+  args: BrowserTaskToolCallArguments,
+  action: BrowserRuntimeTaskTimePromptAction,
+): BrowserTaskToolCallArguments {
+  const patch = browserTaskRuntimeDecisionPayloadForToolCall(toolName, action)
+  return patch ? { ...args, ...patch } : { ...args }
 }
 
 function promptStatus(

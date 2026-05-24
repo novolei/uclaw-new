@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { StartupRuntimePackStatusReport } from '@/lib/startup/startup-doctor'
 import {
+  applyBrowserRuntimeDecisionToBrowserTaskToolCall,
   browserTaskRuntimeDecisionPayloadForAction,
+  browserTaskRuntimeDecisionPayloadForToolCall,
   deriveBrowserRuntimeTaskTimePrompt,
 } from './browser-runtime-task-prompt'
 
@@ -118,6 +120,23 @@ describe('browser runtime task-time prompt model', () => {
     expect(browserTaskRuntimeDecisionPayloadForAction(deferAction!)).toEqual({
       runtime_preparation_decision: 'defer',
     })
+    expect(browserTaskRuntimeDecisionPayloadForToolCall('browser_task', deferAction!)).toEqual({
+      runtime_preparation_decision: 'defer',
+    })
+
+    const originalArgs = { task: 'Check the billing page', max_steps: 4 }
+    expect(
+      applyBrowserRuntimeDecisionToBrowserTaskToolCall(
+        'browser_task',
+        originalArgs,
+        deferAction!,
+      ),
+    ).toEqual({
+      task: 'Check the billing page',
+      max_steps: 4,
+      runtime_preparation_decision: 'defer',
+    })
+    expect(originalArgs).toEqual({ task: 'Check the billing page', max_steps: 4 })
   })
 
   it('lets tasks continue without browser when a fallback can satisfy the request', () => {
@@ -173,6 +192,49 @@ describe('browser runtime task-time prompt model', () => {
     const deferAction = model.actions.find((action) => action.id === 'defer')
     expect(deferAction).toBeDefined()
     expect(browserTaskRuntimeDecisionPayloadForAction(deferAction!)).toBeUndefined()
+    expect(browserTaskRuntimeDecisionPayloadForToolCall('browser_task', deferAction!)).toBeUndefined()
+    expect(
+      applyBrowserRuntimeDecisionToBrowserTaskToolCall(
+        'browser_task',
+        { task: 'Summarize cached docs' },
+        deferAction!,
+      ),
+    ).toEqual({ task: 'Summarize cached docs' })
+  })
+
+  it('does not patch non-browser-task tool calls', () => {
+    const model = deriveBrowserRuntimeTaskTimePrompt({
+      browserRequired: true,
+      noBrowserFallbackAvailable: false,
+      report: runtimeReport({
+        ready: false,
+        canRunBrowserTasks: false,
+        primaryAction: 'prepare',
+        doctor: {
+          status: 'missing',
+          issue: 'missing_manifest',
+          remediation: 'Prepare Browser runtime pack.',
+          actions: ['prepare', 'defer'],
+          rollbackAvailable: false,
+        },
+        operationPlan: {
+          status: 'ready',
+          summary: 'Prepare Browser runtime pack.',
+          eventNames: ['browser.runtime.prepare.planned'],
+        },
+      }),
+    })
+
+    const deferAction = model.actions.find((action) => action.id === 'defer')
+    expect(deferAction).toBeDefined()
+    expect(browserTaskRuntimeDecisionPayloadForToolCall('ask_user', deferAction!)).toBeUndefined()
+    expect(
+      applyBrowserRuntimeDecisionToBrowserTaskToolCall(
+        'ask_user',
+        { question: 'Continue?' },
+        deferAction!,
+      ),
+    ).toEqual({ question: 'Continue?' })
   })
 
   it('blocks prepare now when runtime preparation is blocked', () => {
