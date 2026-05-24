@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 4C Browser Runtime auto-prepare control intent in progress
+> Current phase: Phase 4D Browser Runtime task-time prompt model in progress
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -23,7 +23,7 @@
 | Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
-| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4B merged; Phase 4C auto-prepare control intent in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4c-auto-prepare-control` / `codex/browser-runtime-phase4c-auto-prepare-control` | Finish Phase 4C PR with no-side-effect auto-prepare control semantics before settings persistence, deep links, or task-time checkpoints. |
+| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4C merged; Phase 4D task-time prompt model in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4d-task-time-prompt-model` / `codex/browser-runtime-phase4d-task-time-prompt-model` | Finish Phase 4D PR with pure task-time prompt choices before UI, IPC, or checkpoint writes. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
@@ -61,6 +61,7 @@
 | 2026-05-24 | Accept and merge the Phase 4A readonly Browser Runtime settings surface. | A fresh reviewer sub-agent returned `REVIEW ACCEPTED` for PR #427, confirming Settings navigation, tab rendering, badges, SettingsPanel handoff, and no runtime side effects were preserved; PR #427 merged as `5e0f18fb`. | Phase 4B can build on the settings destination, but still must avoid IPC, deep links, task-time prompts, provider promotion, and real runtime mutations. |
 | 2026-05-24 | Start Phase 4B as local action-intent previews, not execution. | Phase 4A exposed inert action affordances; ADR Phase 4 still needs user-understandable prepare/repair/reinstall/cleanup/rollback controls before backend execution is safe. | Phase 4B may make enabled buttons select preview metadata only; execution, policy prompts, SearchPalette/Startup Doctor deep links, task checkpoints, and TaskEvents remain later phases. |
 | 2026-05-24 | Merge Phase 4B action-intent previews and start Phase 4C auto-prepare semantics. | PR #428 merged as `d3f9f995`; ADR Phase 4 still requires disable-auto-prepare controls and explicit semantics that browser automation remains available for task-time prompts. | Phase 4C adds only local auto-prepare control previews; settings persistence, IPC, deep links, and task checkpointing remain later Phase 4 slices. |
+| 2026-05-24 | Merge Phase 4C auto-prepare semantics and start Phase 4D as a pure task-time prompt model. | PR #429 merged as `50b5ab8f`; ADR Phase 4 still requires task-time prepare/defer/no-browser decisions and `paused_waiting_for_browser_runtime` checkpoint semantics. | Phase 4D adds a pure frontend model only; UI rendering, IPC, TaskEvents, and actual checkpoint writes remain later slices. |
 
 ---
 
@@ -69,9 +70,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4c-auto-prepare-control` |
-| Current phase branch | `codex/browser-runtime-phase4c-auto-prepare-control` |
-| Current local base | `d3f9f995 Merge pull request #428 from novolei/codex/browser-runtime-phase4b-settings-action-intents` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4d-task-time-prompt-model` |
+| Current phase branch | `codex/browser-runtime-phase4d-task-time-prompt-model` |
+| Current local base | `50b5ab8f Merge pull request #429 from novolei/codex/browser-runtime-phase4c-auto-prepare-control` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -91,9 +92,10 @@
 | Phase 3H implementation commit | Merged through PR #426 as `35d7e39c feat(browser): route app startup through splash`; merge commit `13133bb1`. |
 | Phase 4A implementation commit | Merged through PR #427 as `374fb39d feat(browser): add runtime settings surface`; merge commit `5e0f18fb`. |
 | Phase 4B implementation commit | Merged through PR #428 as `9aca960d feat(browser): add runtime settings action intents`; merge commit `d3f9f995`. |
-| Phase 4C implementation commit | In progress on `codex/browser-runtime-phase4c-auto-prepare-control`; PR not opened yet. |
-| Known pre-existing tracked changes | None in the Phase 4C worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | Phase 4C may use ignored local `ui/node_modules` from the primary worktree for Vitest verification. Rust resource links may be added only if the default browser-runtime regressions need them. |
+| Phase 4C implementation commit | Merged through PR #429 as `985af8e3 feat(browser): add auto-prepare settings intent`; merge commit `50b5ab8f`. |
+| Phase 4D implementation commit | In progress on `codex/browser-runtime-phase4d-task-time-prompt-model`; PR not opened yet. |
+| Known pre-existing tracked changes | None in the Phase 4D worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | Phase 4D may use ignored local `ui/node_modules` from the primary worktree for Vitest verification. Rust resource links may be added only if the default browser-runtime regressions need them. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -1627,6 +1629,90 @@ Recommended Phase 4C checks:
   returned no output.
 - Final staged GitNexus detect for the Phase 4C worktree reported
   `risk_level: low`, `changed_files: 6`, `changed_count: 38`, and
+  `affected_processes: []`.
+- Phase 4C auto-prepare control intent was merged through PR #429 as
+  `50b5ab8f Merge pull request #429 from novolei/codex/browser-runtime-phase4c-auto-prepare-control`.
+
+## Phase 4D Entry Criteria
+
+Phase 4D can start because:
+
+- PR #429 merged the no-side-effect auto-prepare control semantics into `main`
+  and `origin/main`;
+- the Phase 4D worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4d-task-time-prompt-model`;
+- the branch starts from `50b5ab8f`, the current `origin/main`;
+- ADR Phase 4 requires a task-time "prepare Browser runtime" confirmation with
+  prepare-now, defer, and continue-without-browser lanes;
+- this slice is scoped to a pure frontend prompt model only, leaving UI
+  rendering, IPC, TaskEvents, real checkpoint writes, deep links, and runtime
+  execution for later Phase 4 slices.
+
+Recommended Phase 4D checks:
+
+- ready runtime reports do not show a prompt;
+- planned runtime preparation offers a primary prepare-now action;
+- defer records `paused_waiting_for_browser_runtime` only when browser is
+  required and no no-browser fallback can satisfy the task;
+- no-browser fallback is enabled only when the caller says it can satisfy the
+  task;
+- blocked runtime state disables prepare-now and preserves fallback/defer
+  choices;
+- focused prompt-model tests pass;
+- default browser-runtime Rust regressions still pass.
+
+## Phase 4D Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase4d-task-time-prompt-model.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4d-task-time-prompt-model`
+- Branch:
+  `codex/browser-runtime-phase4d-task-time-prompt-model`
+- Scope:
+  add a pure task-time Browser Runtime prompt model deriving prepare-now,
+  defer/checkpoint-intent, and continue-without-browser choices from runtime
+  status and explicit task fallback context.
+- Current PR:
+  not opened yet.
+- DMZ files:
+  none planned.
+- Migration:
+  none planned.
+- Rollback:
+  revert the task-time prompt model/tests, this status file update, and the
+  Phase 4D plan file.
+
+### Phase 4D Impact Notes
+
+- This slice adds new frontend model/test files only and does not modify any
+  existing function, class, method, backend module, settings component, or DMZ
+  file.
+- This slice does not change backend IPC, settings persistence, runtime-pack
+  Rust behavior, provider selection, SearchPalette, Startup Doctor deep links,
+  task checkpointing, DB migrations, TaskEvents, or real runtime side effects.
+
+### Phase 4D Verification Notes
+
+- Phase 4D linked ignored `ui/node_modules`, `src-tauri/pyembed`,
+  `src-tauri/bunembed`, and `src-tauri/gbrain-source` from the primary worktree
+  because isolated worktrees do not copy local dependencies/resources.
+- Focused prompt-model verification passed:
+  `cd ui && npm test -- --run src/lib/browser-runtime/browser-runtime-task-prompt.test.ts`
+  returned `1 passed`, `4 passed`.
+- Default Browser Runtime Rust regressions passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  returned `32 passed; 0 failed; 2580 filtered out`;
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  returned `44 passed; 0 failed; 2568 filtered out`; and
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  returned `6 passed; 0 failed; 2606 filtered out`.
+- `rustfmt --edition 2021 --check <changed-rust-files>` is not applicable for
+  this phase because no Rust files changed.
+- `git diff --check -- <changed-files>` and `git diff --cached --check`
+  returned no output.
+- Final staged GitNexus detect for the Phase 4D worktree reported
+  `risk_level: low`, `changed_files: 4`, `changed_count: 37`, and
   `affected_processes: []`.
 
 ---
