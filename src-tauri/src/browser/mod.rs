@@ -6,6 +6,7 @@ pub mod context;
 pub mod context_manager;
 pub mod decision;
 pub mod dom_state;
+pub mod hosted_provider;
 pub mod identity;
 pub mod identity_ipc;
 pub mod identity_tasks;
