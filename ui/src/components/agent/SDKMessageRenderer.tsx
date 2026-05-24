@@ -896,6 +896,10 @@ function ErrorMessage({ message, onRetry, onRetryInNewSession, onCompact }: Erro
         setSettingsTab('connectivity')
         setSettingsOpen(true)
         break
+      case 'open_browser_runtime_settings':
+        setSettingsTab('browserRuntime')
+        setSettingsOpen(true)
+        break
       case 'settings':
         setSettingsOpen(true)
         break
@@ -920,6 +924,7 @@ function ErrorMessage({ message, onRetry, onRetryInNewSession, onCompact }: Erro
       case 'open_environment_check':
         return <Wrench className="size-3.5 mr-1.5" />
       case 'open_channel_settings':
+      case 'open_browser_runtime_settings':
       case 'settings':
         return <Settings className="size-3.5 mr-1.5" />
       case 'open_external':

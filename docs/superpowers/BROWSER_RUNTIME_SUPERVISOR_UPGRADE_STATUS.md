@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 4H task-time prompt settings deep link open as PR #434
+> Current phase: Phase 4I error recovery settings deep link open as PR #435
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -23,7 +23,7 @@
 | Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
-| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4G merged; Phase 4H task-time prompt settings deep link open as PR #434 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4h-task-time-prompt-deep-link` / `codex/browser-runtime-phase4h-task-time-prompt-deep-link` | Merge PR #434 if CLEAN, then continue with the next Phase 4 deep-link slice before task checkpoint writes or backend side effects. |
+| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4H merged; Phase 4I error recovery settings deep link open as PR #435 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4i-error-recovery-deep-link` / `codex/browser-runtime-phase4i-error-recovery-deep-link` | Merge PR #435 if CLEAN, then continue with task checkpoint/defer semantics only after a separate scoped plan. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
@@ -67,6 +67,8 @@
 | 2026-05-24 | Merge Phase 4F SearchPalette deep link and start Phase 4G as a Startup Doctor component callback. | PR #432 merged as `00ce02ed`; ADR Phase 4 still requires Settings deep links from Startup Doctor, task-time prompts, and error/recovery surfaces. | Phase 4G adds only the StartupSplash callback/button contract for browser-runtime doctor attention; root `App`, IPC, TaskEvents, task checkpoints, and runtime side effects remain later slices. |
 | 2026-05-24 | Merge Phase 4G Startup Doctor deep link and start Phase 4H as a task-time prompt component callback. | PR #433 merged as `5dd0745c`; ADR Phase 4 still requires Settings deep links from task-time runtime prompts and error/recovery surfaces. | Phase 4H adds only the task-time prompt callback/button contract; App/task runtime wiring, IPC, TaskEvents, checkpoint writes, and runtime side effects remain later slices. |
 | 2026-05-24 | Open Phase 4H task-time prompt settings deep-link PR. | PR #434 contains the optional `BrowserRuntimeTaskTimePrompt` settings callback/button, focused prompt tests, and the Phase 4H plan/tracker update. | Merge if GitHub reports CLEAN and checks pass; then continue to the remaining Phase 4 error/recovery deep-link surface before backend task checkpointing. |
+| 2026-05-24 | Merge Phase 4H and start Phase 4I as a structured error/recovery action contract. | PR #434 merged as `bf6a4693`; ADR Phase 4 still requires Settings deep links from error/recovery surfaces. GitNexus pre-edit impact for `ErrorMessage` is HIGH, and fresh reviewer Ptolemy returned `REVIEW ACCEPTED`. | Phase 4I may add only `open_browser_runtime_settings` handling in the existing frontend error/recovery action switch; backend IPC, TaskEvents, task checkpoints, and runtime side effects remain out of scope. |
+| 2026-05-24 | Open Phase 4I error recovery settings deep-link PR. | PR #435 contains `open_browser_runtime_settings`, focused direct/grouped renderer tests, final HIGH GitNexus detect notes, and reviewer acceptance from Ptolemy and Jason. | Merge if GitHub reports CLEAN; next Phase 4 work should plan task checkpoint/defer semantics separately because it may touch task runtime boundaries. |
 
 ---
 
@@ -75,9 +77,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4h-task-time-prompt-deep-link` |
-| Current phase branch | `codex/browser-runtime-phase4h-task-time-prompt-deep-link` |
-| Current local base | `5dd0745c Merge pull request #433 from novolei/codex/browser-runtime-phase4g-startup-doctor-deep-link` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4i-error-recovery-deep-link` |
+| Current phase branch | `codex/browser-runtime-phase4i-error-recovery-deep-link` |
+| Current local base | `bf6a4693 Merge pull request #434 from novolei/codex/browser-runtime-phase4h-task-time-prompt-deep-link` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -102,9 +104,10 @@
 | Phase 4E implementation commit | Merged through PR #431 as `b27410dc feat(browser): add task-time runtime prompt UI`; merge commit `ab59f9aa`. |
 | Phase 4F implementation commit | Merged through PR #432 as `e58516fc feat(browser): add settings palette runtime deep link`; merge commit `00ce02ed`. |
 | Phase 4G implementation commit | Merged through PR #433 as `a3bcb459 feat(browser): link startup doctor to runtime settings`; merge commit `5dd0745c`. |
-| Phase 4H implementation commit | Open as PR #434 from `codex/browser-runtime-phase4h-task-time-prompt-deep-link`; implementation commit is the PR branch tip with subject `feat(browser): link task-time prompt to runtime settings`. |
-| Known pre-existing tracked changes | None in the Phase 4H worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | Phase 4H used ignored local `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` links from the primary worktree for verification only. |
+| Phase 4H implementation commit | Merged through PR #434 as `d02ae409 feat(browser): link task-time prompt to runtime settings`; merge commit `bf6a4693`. |
+| Phase 4I implementation commit | Open as PR #435 from `codex/browser-runtime-phase4i-error-recovery-deep-link`; implementation commit is the PR branch tip with subject `feat(browser): link recovery errors to runtime settings`. |
+| Known pre-existing tracked changes | None in the Phase 4I worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | Phase 4I used ignored local `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` links from the primary worktree for verification only. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -2080,6 +2083,99 @@ Recommended Phase 4H checks:
   produced no output.
 - Staged GitNexus detect reported LOW risk: 4 changed files, 20 changed
   symbols, and 0 affected processes.
+
+## Phase 4I Entry Criteria
+
+Phase 4I can start because:
+
+- PR #434 merged the task-time prompt -> Browser Runtime Settings callback into
+  `main` and `origin/main`;
+- the Phase 4I worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4i-error-recovery-deep-link`;
+- the branch starts from `bf6a4693`, the current `origin/main`;
+- ADR Phase 4 still requires Settings deep links from error/recovery surfaces;
+- `ErrorMessage` already owns structured recovery actions and Settings atoms,
+  so adding a frontend-only action contract is the narrowest reversible slice.
+
+Recommended Phase 4I checks:
+
+- a structured `open_browser_runtime_settings` recovery action opens Settings
+  on the Browser Runtime tab;
+- direct `SDKMessageRenderer` assistant error rendering and grouped
+  `MessageGroupRenderer` assistant-turn rendering both honor the action;
+- existing generic `settings` recovery actions still open Settings without
+  changing the current tab;
+- focused renderer tests pass;
+- UI build still passes;
+- default browser-runtime Rust regressions still pass.
+
+## Phase 4I Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase4i-error-recovery-deep-link.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4i-error-recovery-deep-link`
+- Branch:
+  `codex/browser-runtime-phase4i-error-recovery-deep-link`
+- Scope:
+  add a frontend-only structured error/recovery action that opens Browser
+  Runtime Settings, without emitting backend events or touching task runtime.
+- Current PR:
+  #435, `feat(browser): link recovery errors to runtime settings`.
+- DMZ files:
+  none planned.
+- Migration:
+  none planned.
+- Rollback:
+  revert the action switch case, focused tests, this status file update, and
+  the Phase 4I plan file.
+
+### Phase 4I Impact Notes
+
+- `npx gitnexus analyze` indexed the Phase 4I worktree before impact analysis.
+  It updated only `AGENTS.md` / `CLAUDE.md` statistics, and those noise changes
+  were restored.
+- Pre-edit GitNexus impact for `ErrorMessage` in
+  `ui/src/components/agent/SDKMessageRenderer.tsx` reported HIGH risk because
+  the renderer participates in `SDKMessageRenderer`, `MessageGroupRenderer`,
+  and `AssistantTurnRenderer` Agent message flows.
+- Fresh reviewer sub-agent Ptolemy returned `REVIEW ACCEPTED`, limited to an
+  `open_browser_runtime_settings` case that sets `settingsTabAtom` to
+  `browserRuntime` and opens `settingsOpenAtom`.
+- This slice does not change root `App`, AppShell, SettingsPanel, backend IPC,
+  settings persistence, runtime-pack Rust behavior, provider selection, task
+  checkpointing, DB migrations, TaskEvents, emitted recovery actions, or real
+  runtime side effects.
+
+### Phase 4I Verification Notes
+
+- Focused renderer verification passed:
+  `cd ui && npm test -- --run src/components/agent/SDKMessageRenderer.test.tsx`
+  reported 1 file and 3 tests passed. The first run also had all assertions
+  pass but surfaced an unhandled Tauri event mock rejection; the test now mocks
+  `@tauri-apps/api/event.listen` and reruns cleanly.
+- UI build verification passed:
+  `cd ui && npm run build` completed successfully with the existing Vite
+  dynamic-import and chunk-size warnings.
+- Default Browser Runtime Rust regressions passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  reported 32 passed;
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  reported 44 passed;
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  reported 6 passed. These commands emitted existing repository warnings only.
+- `rustfmt --edition 2021 --check <changed-rust-files>` is not applicable for
+  this phase because no Rust files changed.
+- Whitespace checks passed:
+  `git diff --check -- <changed-files>` and `git diff --cached --check`
+  produced no output.
+- Final staged GitNexus detect reported HIGH risk: 4 changed files, 17 changed
+  symbols, and 8 affected processes, all through the expected `ErrorMessage`
+  direct/grouped agent message renderer paths.
+- Fresh final reviewer sub-agent Jason returned `REVIEW ACCEPTED`, confirming
+  the action-only change preserves existing recovery behavior and that
+  direct/grouped/generic-settings tests are sufficient for this PR to proceed
+  despite the expected HIGH detect.
 
 ---
 
