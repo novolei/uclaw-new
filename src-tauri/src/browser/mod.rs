@@ -16,6 +16,7 @@ pub mod observation;
 pub mod perception;
 pub mod playwright_cli;
 pub mod playwright_mcp;
+pub mod playwright_mcp_sidecar;
 pub mod provider;
 pub mod recovery;
 pub mod runtime_contracts;
@@ -54,6 +55,11 @@ pub use playwright_mcp::{
     DEFAULT_PLAYWRIGHT_MCP_ACTION_TIMEOUT_MS, DEFAULT_PLAYWRIGHT_MCP_NAVIGATION_TIMEOUT_MS,
     PLAYWRIGHT_MCP_DEFAULT_CAPABILITIES, PLAYWRIGHT_MCP_ENVELOPE_SCHEMA_VERSION,
     PLAYWRIGHT_MCP_PACKAGE_NAME, PLAYWRIGHT_MCP_PROVIDER_ID, PLAYWRIGHT_MCP_UCLAW_ACTIONS,
+};
+pub use playwright_mcp_sidecar::{
+    start_playwright_mcp_sidecar, PlaywrightMcpSidecarHandle, PlaywrightMcpSidecarLaunchSummary,
+    PlaywrightMcpSidecarRunnerConfig, PlaywrightMcpSidecarRunnerError,
+    DEFAULT_PLAYWRIGHT_MCP_STARTUP_TIMEOUT_MS,
 };
 pub use provider::{
     local_chromium_capabilities, local_chromium_status, BrowserCapabilityProbe,
