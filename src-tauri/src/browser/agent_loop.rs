@@ -6,7 +6,6 @@ use tauri::Emitter;
 use tokio::time::{sleep, Duration};
 
 use crate::browser::action::BrowserAction;
-use crate::browser::action_registry::BrowserActionRegistry;
 use crate::browser::boundary::{detect_intervention_boundary, BrowserBoundaryEvent};
 use crate::browser::context_manager::BrowserContextManager;
 use crate::browser::decision::{BrowserDecisionAdapter, BrowserDecisionStatus};
@@ -22,14 +21,13 @@ use crate::browser::intervention_bridge::{
 use crate::browser::loop_detector::{make_fingerprint, LoopDetector};
 use crate::browser::memory_adapter::BrowserLongTermMemoryAdapter;
 use crate::browser::observation::BrowserObservation;
-use crate::browser::provider::{
-    local_chromium_status, BrowserCapabilityProbe, BrowserProviderReadinessProbe,
-    BrowserProviderRouteDecision, BrowserProviderRouteDecisionStatus, BrowserProviderRouter,
-    BrowserSetupCheck, LOCAL_CHROMIUM_PROVIDER_ID,
+use crate::browser::provider::BrowserProviderRouteDecision;
+use crate::browser::provider_execution::{
+    BrowserProviderActionBlocked, BrowserProviderActionExecutionOutcome,
+    BrowserProviderActionExecutor,
 };
 use crate::browser::recovery::{classify_browser_error, BrowserRecoveryKind};
 use crate::browser::rollout_bridge::emit_browser_provider_route_into_session_dir;
-use crate::browser::runtime_contracts::BrowserProviderSelectionRequest;
 use crate::browser::session_state::{
     BrowserTaskRun, BrowserTaskStatus, BrowserTaskStep, BrowserTaskStepPhase,
 };
@@ -88,7 +86,7 @@ pub struct BrowserTaskRequest {
 pub struct BrowserAgentLoop {
     ctx_mgr: Arc<BrowserContextManager>,
     decision_adapter: Arc<dyn BrowserDecisionAdapter>,
-    action_registry: BrowserActionRegistry,
+    provider_executor: BrowserProviderActionExecutor,
     task_store: Option<Arc<BrowserTaskStore>>,
     ask_user_bridge: Option<Arc<BrowserAskUserBridge>>,
     auth_profile_broker: Option<Arc<BrowserAuthProfileBroker>>,
@@ -101,11 +99,11 @@ impl BrowserAgentLoop {
         ctx_mgr: Arc<BrowserContextManager>,
         decision_adapter: Arc<dyn BrowserDecisionAdapter>,
     ) -> Self {
-        let action_registry = BrowserActionRegistry::new(Arc::clone(&ctx_mgr));
+        let provider_executor = BrowserProviderActionExecutor::new(Arc::clone(&ctx_mgr));
         Self {
             ctx_mgr,
             decision_adapter,
-            action_registry,
+            provider_executor,
             task_store: None,
             ask_user_bridge: None,
             auth_profile_broker: BrowserAuthProfileBroker::system_default()
@@ -761,61 +759,68 @@ impl BrowserAgentLoop {
                     return Ok(run);
                 }
 
-                let route_decision = route_live_browser_action_provider(&action);
+                let route_decision = self.provider_executor.route_action(&action);
                 emit_browser_provider_route_into_session_dir(&route_decision, &run.run_id, None)
                     .await;
-                if provider_route_blocks_local_action(&route_decision) {
-                    run.status = BrowserTaskStatus::Failed;
-                    self.push_step(
-                        &mut run,
-                        provider_route_blocked_step(
-                            step_index,
-                            &observation,
-                            &action,
-                            &route_decision,
-                        )?,
-                    );
-                    self.emit_run(&run);
-                    self.persist_checkpoint(
-                        &run,
-                        step_index,
-                        Some(&active_tab_id),
-                        latest_memory.as_ref(),
-                        "provider route blocked",
-                        identity_profile_id,
-                    );
-                    self.record_final_state(&run).await;
-                    return Ok(run);
-                }
-
                 match self
-                    .action_registry
-                    .execute_with_identity(&request.session_id, identity_profile_id, action.clone())
+                    .provider_executor
+                    .execute_routed_with_identity(
+                        &request.session_id,
+                        identity_profile_id,
+                        action.clone(),
+                        route_decision,
+                    )
                     .await
                 {
-                    Ok(result) => {
-                        if let Some(tab_id) = result.tab_id.as_ref() {
-                            active_tab_id = tab_id.clone();
-                        } else if let Some(tab_id) = tab_id_from_action(&action) {
-                            active_tab_id = tab_id;
+                    Ok(execution) => match execution.outcome {
+                        BrowserProviderActionExecutionOutcome::Executed(result) => {
+                            if let Some(tab_id) = result.tab_id.as_ref() {
+                                active_tab_id = tab_id.clone();
+                            } else if let Some(tab_id) = tab_id_from_action(&action) {
+                                active_tab_id = tab_id;
+                            }
+                            self.push_step(
+                                &mut run,
+                                BrowserTaskStep {
+                                    step_index,
+                                    phase: BrowserTaskStepPhase::Act,
+                                    observation_summary: String::new(),
+                                    reasoning: format!("Executed {}.", result.action_name),
+                                    action_name: result.action_name,
+                                    action_args,
+                                    ok: result.ok,
+                                    message: result.message,
+                                    error: result.error,
+                                    timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                                },
+                            );
+                            step_index += 1;
                         }
-                        self.push_step(
-                            &mut run,
-                            BrowserTaskStep {
+                        BrowserProviderActionExecutionOutcome::Blocked(blocked) => {
+                            run.status = BrowserTaskStatus::Failed;
+                            self.push_step(
+                                &mut run,
+                                provider_route_blocked_step(
+                                    step_index,
+                                    &observation,
+                                    &action,
+                                    &execution.route_decision,
+                                    &blocked,
+                                )?,
+                            );
+                            self.emit_run(&run);
+                            self.persist_checkpoint(
+                                &run,
                                 step_index,
-                                phase: BrowserTaskStepPhase::Act,
-                                observation_summary: String::new(),
-                                reasoning: format!("Executed {}.", result.action_name),
-                                action_name: result.action_name,
-                                action_args,
-                                ok: result.ok,
-                                message: result.message,
-                                error: result.error,
-                                timestamp_ms: chrono::Utc::now().timestamp_millis(),
-                            },
-                        );
-                        step_index += 1;
-                    }
+                                Some(&active_tab_id),
+                                latest_memory.as_ref(),
+                                "provider route blocked",
+                                identity_profile_id,
+                            );
+                            self.record_final_state(&run).await;
+                            return Ok(run);
+                        }
+                    },
                     Err(error) => {
                         let err = error.to_string();
                         self.push_step(
@@ -1545,95 +1550,12 @@ fn action_name(action: &BrowserAction) -> &'static str {
     }
 }
 
-fn provider_selection_request_for_action(
-    action: &BrowserAction,
-) -> BrowserProviderSelectionRequest {
-    match action {
-        BrowserAction::Navigate { .. } => BrowserProviderSelectionRequest {
-            action: Some("navigate".to_string()),
-            observation_mode: None,
-            requires_mcp_specific_capability: false,
-        },
-        BrowserAction::Click { .. } => BrowserProviderSelectionRequest {
-            action: Some("click".to_string()),
-            observation_mode: None,
-            requires_mcp_specific_capability: false,
-        },
-        BrowserAction::Type { .. } => BrowserProviderSelectionRequest {
-            action: Some("type".to_string()),
-            observation_mode: None,
-            requires_mcp_specific_capability: false,
-        },
-        BrowserAction::Scroll { .. } => BrowserProviderSelectionRequest {
-            action: Some("scroll".to_string()),
-            observation_mode: None,
-            requires_mcp_specific_capability: false,
-        },
-        BrowserAction::SendKeys { .. } => BrowserProviderSelectionRequest {
-            action: Some("send_keys".to_string()),
-            observation_mode: None,
-            requires_mcp_specific_capability: false,
-        },
-        BrowserAction::GetState {
-            include_screenshot, ..
-        } => BrowserProviderSelectionRequest {
-            action: Some("dom_snapshot".to_string()),
-            observation_mode: Some(
-                if *include_screenshot {
-                    "screenshot"
-                } else {
-                    "dom_snapshot"
-                }
-                .to_string(),
-            ),
-            requires_mcp_specific_capability: false,
-        },
-        BrowserAction::UploadFile { .. } => BrowserProviderSelectionRequest {
-            action: Some("file_upload".to_string()),
-            observation_mode: None,
-            requires_mcp_specific_capability: false,
-        },
-        BrowserAction::Evaluate { .. }
-        | BrowserAction::ListTabs
-        | BrowserAction::SwitchTab { .. }
-        | BrowserAction::CloseTab { .. } => BrowserProviderSelectionRequest {
-            action: None,
-            observation_mode: None,
-            requires_mcp_specific_capability: false,
-        },
-    }
-}
-
-fn route_live_browser_action_provider(action: &BrowserAction) -> BrowserProviderRouteDecision {
-    let selection = provider_selection_request_for_action(action);
-    let probe_action = selection
-        .action
-        .clone()
-        .unwrap_or_else(|| "local_action_registry".to_string());
-    let mut router = BrowserProviderRouter::new();
-    router.upsert_status(local_chromium_status(BrowserProviderReadinessProbe {
-        provider_id: LOCAL_CHROMIUM_PROVIDER_ID.to_string(),
-        setup_checks: vec![BrowserSetupCheck::passed(
-            "browser_agent_loop",
-            "Browser agent loop local action registry",
-        )],
-        capability_probes: vec![BrowserCapabilityProbe::passed(probe_action, true)],
-        active_contexts: 0,
-        notes: vec!["live_browser_agent_loop_route".to_string()],
-    }));
-    router.route(selection)
-}
-
-fn provider_route_blocks_local_action(decision: &BrowserProviderRouteDecision) -> bool {
-    decision.status == BrowserProviderRouteDecisionStatus::Blocked
-        || decision.selected_provider_id.as_deref() != Some(LOCAL_CHROMIUM_PROVIDER_ID)
-}
-
 fn provider_route_blocked_step(
     step_index: u32,
     observation: &BrowserObservation,
     action: &BrowserAction,
     decision: &BrowserProviderRouteDecision,
+    blocked: &BrowserProviderActionBlocked,
 ) -> Result<BrowserTaskStep> {
     Ok(BrowserTaskStep {
         step_index,
@@ -1645,14 +1567,12 @@ fn provider_route_blocked_step(
             "action": serde_json::to_value(action)?,
             "routeStatus": decision.status,
             "selectedProviderId": decision.selected_provider_id.as_deref(),
+            "blockedProviderId": blocked.selected_provider_id.as_deref(),
             "candidates": decision.candidates,
         }),
         ok: false,
         message: None,
-        error: Some(
-            "Browser provider route is not executable by the local Chromium action registry."
-                .to_string(),
-        ),
+        error: Some(blocked.message.clone()),
         timestamp_ms: chrono::Utc::now().timestamp_millis(),
     })
 }
@@ -1973,73 +1893,5 @@ mod tests {
         assert!(checkpoint_marks_identity_revoked(Some(&checkpoint)));
         assert_eq!(checkpoint_identity_profile_id(None), None);
         assert!(!checkpoint_marks_identity_revoked(None));
-    }
-
-    #[test]
-    fn live_provider_route_selects_local_chromium_for_click() {
-        let action = BrowserAction::Click {
-            tab_id: "tab-1".to_string(),
-            index: 3,
-        };
-
-        let decision = route_live_browser_action_provider(&action);
-
-        assert_eq!(
-            decision.status,
-            BrowserProviderRouteDecisionStatus::Selected
-        );
-        assert_eq!(
-            decision.selected_provider_id.as_deref(),
-            Some(LOCAL_CHROMIUM_PROVIDER_ID)
-        );
-        assert!(decision.event_intents.iter().any(|intent| {
-            intent.event_name.as_str() == "browser.provider.selected"
-                && intent.provider_id.as_deref() == Some(LOCAL_CHROMIUM_PROVIDER_ID)
-        }));
-        assert!(!provider_route_blocks_local_action(&decision));
-    }
-
-    #[test]
-    fn provider_selection_maps_get_state_to_snapshot_request() {
-        let action = BrowserAction::GetState {
-            tab_id: "tab-1".to_string(),
-            include_screenshot: true,
-            include_visual: true,
-        };
-
-        let selection = provider_selection_request_for_action(&action);
-
-        assert_eq!(selection.action.as_deref(), Some("dom_snapshot"));
-        assert_eq!(selection.observation_mode.as_deref(), Some("screenshot"));
-        assert!(!selection.requires_mcp_specific_capability);
-    }
-
-    #[test]
-    fn evaluate_route_preserves_local_registry_without_raw_provider_promotion() {
-        let action = BrowserAction::Evaluate {
-            tab_id: "tab-1".to_string(),
-            script: "document.title".to_string(),
-        };
-
-        let selection = provider_selection_request_for_action(&action);
-        let decision = route_live_browser_action_provider(&action);
-
-        assert!(selection.action.is_none());
-        assert_eq!(
-            decision.selected_provider_id.as_deref(),
-            Some(LOCAL_CHROMIUM_PROVIDER_ID)
-        );
-    }
-
-    #[test]
-    fn non_local_provider_route_blocks_local_action_registry() {
-        let decision = BrowserProviderRouteDecision {
-            status: BrowserProviderRouteDecisionStatus::Selected,
-            selected_provider_id: Some(crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID.to_string()),
-            candidates: Vec::new(),
-            event_intents: Vec::new(),
-        };
-
-        assert!(provider_route_blocks_local_action(&decision));
     }
 }
