@@ -952,6 +952,7 @@ fn main() {
             uclaw_core::tauri_commands::get_settings,
             uclaw_core::tauri_commands::patch_settings,
             uclaw_core::browser::runtime_pack_ipc::get_browser_runtime_status,
+            uclaw_core::browser::runtime_pack_ipc::dry_run_browser_runtime_action,
             uclaw_core::tauri_commands::get_platform,
             uclaw_core::tauri_commands::get_version,
             uclaw_core::tauri_commands::get_bootstrap_status,

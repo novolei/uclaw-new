@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 4W Settings run-doctor refresh in progress
+> Current phase: Phase 4X Settings action dry-run IPC in progress
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -23,7 +23,7 @@
 | Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
-| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4V merged; Phase 4W Settings run-doctor refresh in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4w-settings-run-doctor-refresh` / `codex/browser-runtime-phase4w-settings-run-doctor-refresh` | Finish the Settings read-only run-doctor refresh PR; do not fold in prepare/repair/cleanup/rollback execution, provider promotion, or backend IPC changes. |
+| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4W merged; Phase 4X Settings action dry-run IPC in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` / `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` | Finish the Settings backend dry-run action PR; do not fold in real prepare/repair/cleanup/rollback side effects, provider promotion, TaskEvents, or DB migrations. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
@@ -95,6 +95,7 @@
 | 2026-05-24 | Open Phase 4U Settings live status read PR. | PR #447 contains the read-only Settings bridge call, explicit-status preview bypass, focused Settings tests, default browser-runtime regressions, and GitNexus staged detect LOW with 0 affected processes. | Merge if GitHub reports CLEAN; next Phase 4 slice should continue read-only Doctor/Settings status consumption or plan action execution separately. |
 | 2026-05-24 | Merge Phase 4U and start Phase 4V as a Startup Doctor live status read. | PR #447 merged as `ffc7b811`; Settings now consumes the dedicated read-only status bridge, while Startup Doctor still rendered static/default status on launch. | Phase 4V may call `getBrowserRuntimeStatus` from Startup Splash when no explicit preview model is supplied, but must not execute runtime actions, edit backend IPC, or touch provider selection. |
 | 2026-05-24 | Merge Phase 4V and start Phase 4W as a Settings run-doctor refresh. | PR #448 merged as `5bd70bd4`; Settings and Startup Doctor now both consume the dedicated read-only status bridge. GitNexus impact for the shared bridge is HIGH because it fans into Settings, Startup, and root `App`, and fresh reviewer Carver accepted a Settings-local refresh plan. | Phase 4W may make the existing Settings `run_doctor` button refresh status through the read-only bridge, but must not change backend IPC, execute runtime actions, mutate packs, or touch provider selection. |
+| 2026-05-24 | Merge Phase 4W and start Phase 4X as Settings action dry-run IPC. | PR #449 merged as `f24a88b4`; Settings can now refresh read-only status on demand. Runtime-pack action buttons still need backend planner evidence before any real execution is safe. | Phase 4X may add a dedicated dry-run Tauri command and Settings rendering for execution reports, but must not perform real prepare/repair/reinstall/cleanup/rollback, emit TaskEvents, promote providers, or mutate runtime files. `main.rs` command registration is a narrow DMZ touch and must be reviewer-visible. |
 
 ---
 
@@ -103,9 +104,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4w-settings-run-doctor-refresh` |
-| Current phase branch | `codex/browser-runtime-phase4w-settings-run-doctor-refresh` |
-| Current local base | `5bd70bd4 Merge pull request #448 from novolei/codex/browser-runtime-phase4v-startup-doctor-live-status-read` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` |
+| Current phase branch | `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` |
+| Current local base | `f24a88b4 Merge pull request #449 from novolei/codex/browser-runtime-phase4w-settings-run-doctor-refresh` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -145,9 +146,10 @@
 | Phase 4T implementation commit | Merged through PR #446 as `ac9537b9 fix(browser): clarify runtime settings status rows`; merge commit `aa6838d6`. |
 | Phase 4U implementation commit | Merged through PR #447 as `a09bd1b6 feat(browser): read runtime status in settings`; merge commit `ffc7b811`. |
 | Phase 4V implementation commit | Merged through PR #448 as `befe2656 feat(browser): read runtime status in startup doctor`; merge commit `5bd70bd4`. |
-| Phase 4W implementation commit | In progress on `codex/browser-runtime-phase4w-settings-run-doctor-refresh`; PR pending. |
-| Known pre-existing tracked changes | None in the Phase 4W worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | Phase 4W may use ignored local `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` links from the primary worktree for verification only. |
+| Phase 4W implementation commit | Merged through PR #449 as `166504ad feat(browser): refresh runtime doctor from settings`; merge commit `f24a88b4`. |
+| Phase 4X implementation commit | Current PR #450 on `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` as `feat(browser): dry-run runtime actions from settings`; exact head SHA is the PR head. |
+| Known pre-existing tracked changes | None in the Phase 4X worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | Phase 4X may use ignored local `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` links from the primary worktree for verification only. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -3425,6 +3427,117 @@ Recommended Phase 4W checks:
   with no output.
 - GitNexus staged detect reported `risk_level: low`, 5 changed files, 18
   changed symbols, and 0 affected processes.
+
+## Phase 4X Entry Criteria
+
+Phase 4X can start because:
+
+- PR #449 merged the Settings read-only run-doctor refresh into `main` and
+  `origin/main`;
+- Browser Runtime Settings already renders local action controls and can read
+  current runtime-pack status through a dedicated read-only bridge;
+- the backend has a tested runtime-pack planner and dry-run executor boundary
+  from Phase 2B/2C/2F;
+- the Phase 4X worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc`;
+- the branch starts from `f24a88b4`, the current `origin/main`;
+- GitNexus impact for `runtime_pack_ipc.rs`, `main`, and
+  `BrowserRuntimeSettings` is LOW; GitNexus impact for
+  `getBrowserRuntimeStatus` is HIGH, but this phase does not edit that shared
+  bridge symbol.
+
+Recommended Phase 4X checks:
+
+- Settings action buttons for prepare, repair, reinstall, cleanup, rollback,
+  and keep-current call a backend dry-run bridge and render visible execution
+  evidence;
+- `retry_when_online` remains a local preview until it has a distinct
+  retry/deferred dry-run evidence contract;
+- explicit `status` props keep preview/test behavior deterministic and do not
+  call the dry-run bridge;
+- the backend dry-run command returns `BrowserRuntimePackExecutionReport`
+  without creating runtime files or invoking real runners;
+- do not wire real prepare/repair/reinstall/cleanup/rollback side effects,
+  provider promotion, TaskEvents, DB migrations, shared `getSettings`,
+  task-time prompt dispatch, no-browser fallback execution, or DMZ files.
+
+## Phase 4X Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase4x-settings-action-dry-run-ipc.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc`
+- Branch:
+  `codex/browser-runtime-phase4x-settings-action-dry-run-ipc`
+- Scope:
+  add a dedicated no-side-effect Tauri dry-run action command, frontend bridge
+  DTOs, and Settings rendering of dry-run execution report evidence.
+- Current PR:
+  PR #450 (`codex/browser-runtime-phase4x-settings-action-dry-run-ipc`).
+- DMZ files:
+  `src-tauri/src/main.rs` command registration only. This is a narrow DMZ touch
+  to expose the dedicated command; it does not edit `tauri_commands.rs`,
+  `agentic_loop.rs`, DB migrations, or task-loop files.
+- Migration:
+  none planned.
+- Rollback:
+  revert this PR; no runtime files, provider state, task checkpoints, settings,
+  or user data are changed.
+
+### Phase 4X Impact Notes
+
+- `src-tauri/src/browser/runtime_pack_ipc.rs`: GitNexus file impact LOW with 0
+  affected processes before adding the dry-run command.
+- `src-tauri/src/main.rs::main`: GitNexus impact LOW with 0 affected processes
+  before registering the command. This is a narrow DMZ command-registration
+  touch and is covered by `cargo check --bin uclaw` plus reviewer verification.
+- `ui/src/components/settings/BrowserRuntimeSettings.tsx::BrowserRuntimeSettings`:
+  GitNexus impact LOW, 1 direct dependent (`SettingsContent`), and 2 affected
+  Settings processes.
+- `ui/src/lib/tauri-bridge.ts::getBrowserRuntimeStatus`: GitNexus impact HIGH
+  because it is shared by Settings, Startup Splash, and root `App`; Phase 4X
+  adds a separate bridge method and does not edit that symbol.
+- This slice changes no real runtime-pack executor side effects, provider
+  selection, DB migrations, TaskEvents, shared `getSettings`, task-loop DMZ
+  files, or production downloader/extractor/delete/promote paths.
+- Fresh reviewer Galileo flagged three P2 issues on PR #450: stale dry-run
+  evidence after failure, ambiguous `retry_when_online` prepare evidence, and
+  missing DMZ documentation for `main.rs`. The PR was updated to clear stale
+  evidence, keep retry as a local preview, add focused tests, and document the
+  `main.rs` DMZ touch.
+
+### Phase 4X Verification Notes
+
+- `cd ui && npm test -- --run src/lib/tauri-bridge.browser-runtime.test.ts`
+  passed: 1 file; 2 tests.
+- `cd ui && npm test -- --run src/components/settings/BrowserRuntimeSettings.test.tsx`
+  passed before reviewer fixes: 1 file; 10 tests. After reviewer fixes, it
+  passed: 1 file; 12 tests.
+- Initial
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack_ipc`
+  failed in the fresh worktree before compiling source because the ignored
+  local runtime resources were not linked:
+  `resource path bunembed/bun doesn't exist`.
+- The worktree now links ignored local `src-tauri/pyembed`,
+  `src-tauri/bunembed`, `src-tauri/gbrain-source`, and `ui/node_modules` from
+  the primary checkout for verification only.
+- `rustfmt --edition 2021 --check src-tauri/src/browser/runtime_pack_ipc.rs`
+  passed with no output.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack_ipc`
+  passed: 4 tests; 0 failed; 2623 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  passed: 36 tests; 0 failed; 2591 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  passed: 48 tests; 0 failed; 2579 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  passed: 6 tests; 0 failed; 2621 filtered out.
+- `cargo check --manifest-path src-tauri/Cargo.toml --bin uclaw` passed with
+  existing repository warnings only.
+- `git diff --check -- <changed-files>` and `git diff --cached --check` passed
+  with no output.
+- GitNexus staged detect reported `risk_level: medium`, 9 changed files, 36
+  changed symbols, and 4 affected `main` command-registration processes; no
+  HIGH or CRITICAL risk was reported.
 
 ---
 
