@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 4X Settings action dry-run IPC in progress
+> Current phase: Phase 5A Playwright CLI provider contract in progress
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -23,8 +23,8 @@
 | Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
-| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4W merged; Phase 4X Settings action dry-run IPC in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` / `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` | Finish the Settings backend dry-run action PR; do not fold in real prepare/repair/cleanup/rollback side effects, provider promotion, TaskEvents, or DB migrations. |
-| Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
+| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4X merged to `main` / `origin/main`; exit audit complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` / `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` | Closed for user-visible Settings, Doctor, prompt, checkpoint, deep-link, read-only IPC, and dry-run action evidence. Real runtime execution/provider work moves to Phase 5+. |
+| Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A provider contract in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5a-cli-provider-contract` / `codex/browser-runtime-phase5a-cli-provider-contract` | Add a pure Playwright CLI provider contract/envelope shell behind the disabled feature flag; do not spawn Node/Playwright or promote providers. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Not started | Unassigned | TBD | Wait for chromiumoxide, CLI, and MCP lanes. |
@@ -96,6 +96,7 @@
 | 2026-05-24 | Merge Phase 4U and start Phase 4V as a Startup Doctor live status read. | PR #447 merged as `ffc7b811`; Settings now consumes the dedicated read-only status bridge, while Startup Doctor still rendered static/default status on launch. | Phase 4V may call `getBrowserRuntimeStatus` from Startup Splash when no explicit preview model is supplied, but must not execute runtime actions, edit backend IPC, or touch provider selection. |
 | 2026-05-24 | Merge Phase 4V and start Phase 4W as a Settings run-doctor refresh. | PR #448 merged as `5bd70bd4`; Settings and Startup Doctor now both consume the dedicated read-only status bridge. GitNexus impact for the shared bridge is HIGH because it fans into Settings, Startup, and root `App`, and fresh reviewer Carver accepted a Settings-local refresh plan. | Phase 4W may make the existing Settings `run_doctor` button refresh status through the read-only bridge, but must not change backend IPC, execute runtime actions, mutate packs, or touch provider selection. |
 | 2026-05-24 | Merge Phase 4W and start Phase 4X as Settings action dry-run IPC. | PR #449 merged as `f24a88b4`; Settings can now refresh read-only status on demand. Runtime-pack action buttons still need backend planner evidence before any real execution is safe. | Phase 4X may add a dedicated dry-run Tauri command and Settings rendering for execution reports, but must not perform real prepare/repair/reinstall/cleanup/rollback, emit TaskEvents, promote providers, or mutate runtime files. `main.rs` command registration is a narrow DMZ touch and must be reviewer-visible. |
+| 2026-05-24 | Close Phase 4 after PR #450 and start Phase 5A as a pure CLI provider contract. | PR #450 merged as `3dbd9500`; fresh reviewer Galileo returned `REVIEW ACCEPTED`; ADR Phase 4 user-visible Settings/Doctor/task-time prompt/defer/dry-run surfaces are now in place, while real Playwright provider execution belongs to Phase 5. | Phase 5A may define readiness and JSON action-envelope contracts for `browser.playwright_cli`, but must not spawn Node/Playwright, execute browser actions, promote the provider, add IPC, or mutate runtime packs. |
 
 ---
 
@@ -104,9 +105,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` |
-| Current phase branch | `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` |
-| Current local base | `f24a88b4 Merge pull request #449 from novolei/codex/browser-runtime-phase4w-settings-run-doctor-refresh` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5a-cli-provider-contract` |
+| Current phase branch | `codex/browser-runtime-phase5a-cli-provider-contract` |
+| Current local base | `3dbd9500 Merge pull request #450 from novolei/codex/browser-runtime-phase4x-settings-action-dry-run-ipc` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -147,9 +148,10 @@
 | Phase 4U implementation commit | Merged through PR #447 as `a09bd1b6 feat(browser): read runtime status in settings`; merge commit `ffc7b811`. |
 | Phase 4V implementation commit | Merged through PR #448 as `befe2656 feat(browser): read runtime status in startup doctor`; merge commit `5bd70bd4`. |
 | Phase 4W implementation commit | Merged through PR #449 as `166504ad feat(browser): refresh runtime doctor from settings`; merge commit `f24a88b4`. |
-| Phase 4X implementation commit | Current PR #450 on `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` as `feat(browser): dry-run runtime actions from settings`; exact head SHA is the PR head. |
-| Known pre-existing tracked changes | None in the Phase 4X worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | Phase 4X may use ignored local `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` links from the primary worktree for verification only. |
+| Phase 4X implementation commit | Merged through PR #450 as `069dafd4 feat(browser): dry-run runtime actions from settings`; merge commit `3dbd9500`. |
+| Phase 5A implementation commit | Current PR #451 on `codex/browser-runtime-phase5a-cli-provider-contract` as `feat(browser): add playwright cli provider contract`; exact head SHA is the PR head. |
+| Known pre-existing tracked changes | None in the Phase 5A worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | Phase 5A may use ignored local `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` links from the primary worktree for verification only if Rust verification needs them. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -3538,6 +3540,102 @@ Recommended Phase 4X checks:
 - GitNexus staged detect reported `risk_level: medium`, 9 changed files, 36
   changed symbols, and 4 affected `main` command-registration processes; no
   HIGH or CRITICAL risk was reported.
+
+## Phase 5A Entry Criteria
+
+Phase 5A can start because:
+
+- PR #450 merged Phase 4X into `main` and `origin/main`;
+- the Phase 4 exit audit maps remaining real runtime/provider execution to
+  ADR Phase 5+ instead of more Settings UX slices;
+- Phase 2 runtime-pack status/planner/executor contracts exist and stay
+  app-managed/local-first;
+- Phase 1 supervisor contracts and Phase 0 provider capability cards already
+  include the disabled `browser.playwright_cli` lane;
+- the Phase 5A worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5a-cli-provider-contract`;
+- the branch starts from `3dbd9500`, the current `origin/main`;
+- GitNexus impact for the `src-tauri/src/browser/mod.rs` export path checked
+  through `BrowserService` is LOW with 0 affected processes.
+
+Recommended Phase 5A checks:
+
+- the provider remains disabled unless `BrowserRuntimeFeatureFlags.playwright_cli`
+  is true;
+- readiness is unavailable when the feature flag is off, needs setup when the
+  runtime pack is not ready, and ready only when both flag and pack are ready;
+- the JSON envelope supports only declarative v1 actions: `navigate`, `click`,
+  `type`, `screenshot`, `extract`, and `wait`;
+- addressing order is explicit: semantic locator first, uClaw DOM element id
+  second, coordinate fallback last;
+- raw arbitrary Playwright scripts are unrepresentable;
+- do not spawn Node/Playwright, add IPC, emit TaskEvents, promote providers,
+  mutate runtime packs, or touch DB migrations/DMZ files.
+
+## Phase 5A Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase5a-cli-provider-contract.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5a-cli-provider-contract`
+- Branch:
+  `codex/browser-runtime-phase5a-cli-provider-contract`
+- Scope:
+  pure Playwright CLI provider readiness and JSON action-envelope contracts.
+- Current PR:
+  PR #451: `https://github.com/novolei/uclaw-new/pull/451`
+- Implementation:
+  adds `browser::playwright_cli` as a pure, disabled-by-default contract shell
+  with typed declarative actions, addressing priority, feature-flag/runtime-pack
+  readiness, and request-envelope serialization tests.
+- DMZ files:
+  none planned.
+- Migration:
+  none planned.
+- Rollback:
+  revert this PR; no runtime files, provider selection, settings, task
+  checkpoints, browser sessions, database rows, or user data are changed.
+
+### Phase 5A Impact Notes
+
+- `npx gitnexus analyze` indexed the Phase 5A worktree. It updated
+  AGENTS/CLAUDE GitNexus stats, and those noise changes were restored.
+- `src-tauri/src/browser/mod.rs` export path: GitNexus impact checked via
+  `BrowserService` in the same file and reported LOW, 0 direct callers, 0
+  affected processes, and 0 affected modules.
+- This slice adds a new pure module and does not edit browser action dispatch,
+  task runtime, Settings UI, IPC command registration, runtime-pack mutation,
+  provider default selection, or DMZ files.
+
+### Phase 5A Verification Notes
+
+- Linked ignored local resources for verification only:
+  `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source`
+  point at the primary worktree resources because a fresh worktree otherwise
+  cannot compile the embedded-resource checks.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::playwright_cli`
+  passed before reviewer follow-up: 7 tests; 0 failed; 2627 filtered out.
+- Fresh reviewer Mencius returned `REVIEW ACCEPTED` for PR #451 and noted a
+  non-blocking test gap for `ready == true && can_run_browser_tasks == false`;
+  Phase 5A added focused coverage before merge.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::playwright_cli`
+  passed after reviewer follow-up: 8 tests; 0 failed; 2627 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  passed: 36 tests; 0 failed; 2598 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  passed: 48 tests; 0 failed; 2586 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  passed: 6 tests; 0 failed; 2628 filtered out.
+- `rustfmt --edition 2021 --check src-tauri/src/browser/playwright_cli.rs`
+  passed with no output.
+- `rustfmt --edition 2021 --check src-tauri/src/browser/mod.rs` was attempted
+  but fails on pre-existing unformatted `browser/*` legacy modules because
+  rustfmt walks child modules from `mod.rs`; Phase 5A keeps `mod.rs` to a
+  minimal export-only diff rather than formatting unrelated browser files.
+- `git diff --check -- <changed-files>` passed with no output.
+- GitNexus staged `detect_changes` reported LOW risk, 4 changed files, 14
+  changed symbols, and 0 affected processes; no HIGH or CRITICAL risk was
+  reported.
 
 ---
 

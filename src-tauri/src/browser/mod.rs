@@ -12,6 +12,7 @@ pub mod loop_detector; // stub — full implementation in Plan 2 Task 15
 pub mod memory_adapter;
 pub mod observation;
 pub mod perception;
+pub mod playwright_cli;
 pub mod provider;
 pub mod recovery;
 pub mod runtime_contracts;
@@ -29,6 +30,14 @@ pub mod rollout_bridge;
 // Re-export the two primary public types so callers can write
 // `crate::browser::BrowserContextManager` without the extra path.
 pub use context_manager::BrowserContextManager;
+pub use playwright_cli::{
+    build_playwright_cli_request_envelope, playwright_cli_capabilities,
+    playwright_cli_provider_status, PlaywrightCliAction, PlaywrightCliActionKind,
+    PlaywrightCliAddress, PlaywrightCliEnvelopeError, PlaywrightCliRequestEnvelope,
+    PlaywrightCliRuntimeEnv, DEFAULT_PLAYWRIGHT_CLI_ACTION_TIMEOUT_MS,
+    PLAYWRIGHT_CLI_DECLARATIVE_ACTIONS, PLAYWRIGHT_CLI_ENVELOPE_SCHEMA_VERSION,
+    PLAYWRIGHT_CLI_PROVIDER_ID,
+};
 pub use provider::{
     local_chromium_capabilities, local_chromium_status, BrowserCapabilityProbe,
     BrowserProbeStatus, BrowserProviderCapabilities, BrowserProviderReadiness,
