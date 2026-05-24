@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 9D domain-skill candidate gate
+> Current phase: Phase 9E recipe/domain-skill harness matrix
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -28,7 +28,7 @@
 | Phase 6 | Browser identity authorization and profile UX | Phase 6A-6F merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6f-identity-boundary-actions` / `codex/browser-runtime-phase6f-identity-boundary-actions` | Closed for safe identity revoke/drain/active-task/resume boundary contracts; auth WebView and payment confirmation remain future work. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7G merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7g-mcp-selection-policy` / `codex/browser-runtime-phase7g-mcp-selection-policy` | Closed for MCP sidecar, stdio action boundary, artifact/error routing, and MCP-vs-CLI selection guardrail. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8J merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8j-provider-default-policy` / `codex/browser-runtime-phase8j-provider-default-policy` | Closed for provider route evidence and reversible default policy; Phase 9 recipe work starts from merge commit `cab8f161`. |
-| Phase 9 | Recipes, locator cache, and domain-skill candidates | Phase 9A-9C merged to `main` / `origin/main`; Phase 9D PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9d-domain-skill-candidate-gate` / `codex/browser-runtime-phase9d-domain-skill-candidate-gate` | Review and merge PR #489 if reviewer accepts, GitHub reports CLEAN, and no HIGH/CRITICAL risk appears. |
+| Phase 9 | Recipes, locator cache, and domain-skill candidates | Phase 9A-9D merged to `main` / `origin/main`; Phase 9E in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9e-harness-matrix` / `codex/browser-runtime-phase9e-harness-matrix` | Add a pure recipe/domain-skill harness matrix report covering replay success, fingerprint mismatch, redaction, promotion, rejection, rollback, and provider-version invalidation. |
 | Phase 10 | Optional hosted providers and hard-site escape hatches | Not started | Unassigned | TBD | Wait for local-first provider routing and policy prompts. |
 
 ---
@@ -143,6 +143,7 @@
 | 2026-05-24 | Merge Phase 9A and start Phase 9B as recipe normalization intake. | PR #486 merged as `5228d0ab` after fresh reviewer Mill returned `REVIEW ACCEPTED`; Phase 9A final commit was `fb2276a9 feat(browser): add recipe candidate contract`. | Phase 9B adds only a pure intake builder from action observations to recipe candidates. It must not replay recipes, persist locator caches, write domain skills, add UI/IPC/DB, or change provider behavior. |
 | 2026-05-25 | Merge Phase 9B and start Phase 9C as a locator cache contract. | PR #487 merged as `930530cb` after fresh reviewer Hume returned `REVIEW ACCEPTED`; Phase 9B final commit was `884dfac2 feat(browser): normalize recipe candidates`. | Phase 9C adds only pure locator-cache eligibility and reuse decisions. It must not persist caches, replay actions, write domain skills, add UI/IPC/DB, or change provider behavior. |
 | 2026-05-25 | Merge Phase 9C and start Phase 9D as a domain-skill candidate gate. | PR #488 merged as `d96f432d` after fresh reviewer Zeno returned `REVIEW ACCEPTED`; Phase 9C final commit was `52ada9a7 feat(browser): add recipe locator cache contract`. | Phase 9D adds only a pure eligibility gate for domain-skill candidates. It must not write domain-skill files, replay actions, persist locators, add UI/IPC/DB, or change provider behavior. |
+| 2026-05-25 | Merge Phase 9D and start Phase 9E as a recipe/domain-skill harness matrix. | PR #489 merged as `769e0d1e` after reviewer Bohr blocked a whitespace-only evidence bug, the branch was fixed, and fresh reviewer Euclid returned `REVIEW ACCEPTED`; Phase 9D final commit was `fe3418b2 feat(browser): gate domain skill candidates`. | Phase 9E turns the ADR Phase 9 gate into a pure matrix report. It must not execute replay, persist locators, write domain skills, add UI/IPC/DB, or change provider behavior. |
 
 ---
 
@@ -151,9 +152,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9d-domain-skill-candidate-gate` |
-| Current phase branch | `codex/browser-runtime-phase9d-domain-skill-candidate-gate` |
-| Current local base | `d96f432d Merge pull request #488 from novolei/codex/browser-runtime-phase9c-locator-cache-contract` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9e-harness-matrix` |
+| Current phase branch | `codex/browser-runtime-phase9e-harness-matrix` |
+| Current local base | `769e0d1e Merge pull request #489 from novolei/codex/browser-runtime-phase9d-domain-skill-candidate-gate` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -231,8 +232,9 @@
 | Phase 9A recipe candidate contract implementation commit | Merged through PR #486 as `fb2276a9 feat(browser): add recipe candidate contract`; merge commit `5228d0ab`. |
 | Phase 9B recipe normalization intake implementation commit | Merged through PR #487 as `884dfac2 feat(browser): normalize recipe candidates`; merge commit `930530cb`. |
 | Phase 9C locator cache contract implementation commit | Merged through PR #488 as `52ada9a7 feat(browser): add recipe locator cache contract`; merge commit `d96f432d`. |
-| Phase 9D domain-skill candidate gate implementation commit | Open in PR #489 from `codex/browser-runtime-phase9d-domain-skill-candidate-gate` as current branch `HEAD` with subject `feat(browser): gate domain skill candidates`. |
-| Known pre-existing tracked changes | None in the Phase 9D domain-skill candidate gate worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes. |
+| Phase 9D domain-skill candidate gate implementation commit | Merged through PR #489 as `fe3418b2 feat(browser): gate domain skill candidates`; merge commit `769e0d1e`. |
+| Phase 9E recipe/domain-skill harness matrix implementation commit | In progress on `codex/browser-runtime-phase9e-harness-matrix`; no PR yet. |
+| Known pre-existing tracked changes | None in the Phase 9E harness matrix worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -6894,7 +6896,97 @@ Phase 9D can start because:
 
 ### Phase 9D Domain-Skill Candidate Gate Next Action
 
-- Request a fresh reviewer for PR #489, check GitHub mergeability, and merge
+- Closed. PR #489 merged as `769e0d1e`; continue with Phase 9E from
+  `origin/main` to add a pure recipe/domain-skill harness matrix before any
+  recipe replay execution, locator persistence, domain-skill file writes, UI,
+  IPC, DB migration, or provider behavior change.
+
+## Phase 9E Recipe/Domain-Skill Harness Matrix Entry Criteria
+
+Phase 9E can start because:
+
+- PR #489 merged Phase 9D's pure domain-skill candidate gate into `main` and
+  `origin/main`;
+- ADR Phase 9's final gate requires recipe/domain-skill harness coverage for
+  replay success, fingerprint mismatch, redaction, promotion, rejection,
+  rollback, and provider-version invalidation;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9e-harness-matrix`;
+- the branch starts from `769e0d1e`, the current `origin/main`;
+- this slice can add a pure matrix/report boundary without replaying actions,
+  persisting locator caches, writing domain-skill files, adding UI/IPC/DB, or
+  mutating provider behavior.
+
+## Phase 9E Recipe/Domain-Skill Harness Matrix Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase9e-harness-matrix.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9e-harness-matrix`
+- Branch:
+  `codex/browser-runtime-phase9e-harness-matrix`
+- Scope:
+  add pure matrix case/report DTOs and a deterministic evaluator that composes
+  candidate validation, replay decisions, locator reuse, and domain-skill gate
+  decisions into ADR Phase 9 harness evidence.
+- Current PR:
+  PR #490 (`https://github.com/novolei/uclaw-new/pull/490`).
+- Current commit:
+  current branch `HEAD` with subject `feat(browser): add recipe harness
+  matrix`.
+- Non-goal:
+  no recipe replay execution, locator cache persistence, production promotion,
+  domain-skill file writes, UI, IPC, Settings, DB migration, provider route
+  change, hosted provider integration, `agentic_loop.rs`, or
+  `tauri_commands.rs` changes.
+- Rollback:
+  revert this PR; Phase 9A/9B/9C/9D recipe contracts remain unchanged.
+
+### Phase 9E Recipe/Domain-Skill Harness Matrix Impact Notes
+
+- GitNexus index was refreshed for the Phase 9E worktree before edits;
+  generated AGENTS/CLAUDE statistics changes were restored as noise.
+- GitNexus file-level impact for `src-tauri/src/browser/recipes.rs` reported
+  LOW risk with 0 impacted symbols and 0 affected processes before editing the
+  recipe contract module.
+- New matrix code is isolated in `src-tauri/src/browser/recipes.rs` and is not
+  consumed by live task routing, provider selection, UI, IPC, DB, persistence,
+  or runtime-pack execution.
+- The evaluator is intentionally scenario-based: it derives safe in-memory
+  replay, locator reuse, fingerprint mismatch, provider-version invalidation,
+  redaction, promotion, rejection, and rollback checks from one candidate.
+- Fresh reviewer Arendt blocked PR #490 on locator reuse case reports dropping
+  locator/action-specific artifact refs. The fix threads built entry and reuse
+  decision artifact refs into the locator matrix case and top-level matrix
+  report.
+
+### Phase 9E Recipe/Domain-Skill Harness Matrix Verification Notes
+
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::recipes`
+  passed before reviewer fix: 32 passed, 0 failed, 2753 filtered out.
+- After the reviewer artifact-preservation fix,
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::recipes`
+  passed: 33 passed, 0 failed, 2753 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  passed after the reviewer fix: 42 passed, 0 failed, 2744 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  passed after the reviewer fix: 59 passed, 0 failed, 2727 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  passed after the reviewer fix: 16 passed, 0 failed, 2770 filtered out.
+- `rustfmt --edition 2021 --check src-tauri/src/browser/recipes.rs` passed.
+- `git diff --check -- src-tauri/src/browser/recipes.rs
+  docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md
+  docs/superpowers/plans/2026-05-24-browser-runtime-phase9e-harness-matrix.md`
+  passed.
+- GitNexus staged detect reported `risk_level: low`, `changed_files: 3`,
+  `changed_count: 38`, `affected_count: 0`, and `affected_processes: []`.
+- GitNexus staged detect after the reviewer artifact-preservation fix reported
+  `risk_level: low`, `changed_files: 2`, `changed_count: 18`,
+  `affected_count: 0`, and `affected_processes: []`.
+
+### Phase 9E Recipe/Domain-Skill Harness Matrix Next Action
+
+- Request a fresh reviewer for PR #490, check GitHub mergeability, and merge
   only if reviewer accepts, GitHub reports CLEAN, tests stay green, and no
   HIGH/CRITICAL risk appears.
 
