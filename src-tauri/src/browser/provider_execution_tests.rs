@@ -1,4 +1,7 @@
 use super::*;
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -111,7 +114,7 @@ fn cli_candidate_can_be_selected_when_enabled_ready_and_local_disabled() {
 }
 
 #[tokio::test]
-async fn selected_cli_route_blocks_before_local_action_registry_execution() {
+async fn selected_cli_route_blocks_unsupported_browser_action() {
     let ctx_mgr = Arc::new(BrowserContextManager::new_for_test(
         "/tmp/uclaw-browser-provider-execution-test".into(),
     ));
@@ -122,16 +125,23 @@ async fn selected_cli_route_blocks_before_local_action_registry_execution() {
         .with_runtime_report(ready_runtime_report())
         .with_disabled_provider(LOCAL_CHROMIUM_PROVIDER_ID);
     let executor = BrowserProviderActionExecutor::new(ctx_mgr).with_route_options(options);
-    let action = BrowserAction::Navigate {
-        tab_id: Some("tab-1".to_string()),
-        url: "https://example.test".to_string(),
+    let action = BrowserAction::Scroll {
+        tab_id: "tab-1".to_string(),
+        direction: "down".to_string(),
+        pixels: Some(300),
+        index: None,
     };
-    let route_decision = executor.route_action(&action);
+    let route_decision = BrowserProviderRouteDecision {
+        status: BrowserProviderRouteDecisionStatus::Selected,
+        selected_provider_id: Some(crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID.to_string()),
+        candidates: Vec::new(),
+        event_intents: Vec::new(),
+    };
 
     let execution = executor
         .execute_routed_with_identity("session-1", None, action, route_decision)
         .await
-        .expect("blocked route should not call local registry");
+        .expect("unsupported selected CLI route should not call local registry");
 
     assert_eq!(
         execution.route_decision.selected_provider_id.as_deref(),
@@ -143,10 +153,79 @@ async fn selected_cli_route_blocks_before_local_action_registry_execution() {
                 blocked.selected_provider_id.as_deref(),
                 Some(crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID)
             );
-            assert!(blocked.message.contains("local Chromium action registry"));
+            assert!(blocked
+                .message
+                .contains("does not support this browser action"));
         }
         BrowserProviderActionExecutionOutcome::Executed(_) => {
-            panic!("CLI route must not fall through to local Chromium execution");
+            panic!("unsupported CLI route must not fall through to local Chromium execution");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn selected_cli_route_executes_managed_worker_and_normalizes_result() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let report = fixture_runtime_report(temp.path());
+    write_executable(
+        &report.current_pack_dir.join("node").join("bin").join("node"),
+        "#!/bin/sh\nrequest=$(cat)\nrequest_id=$(printf '%s' \"$request\" | sed -n 's/.*\"requestId\":\"\\([^\"]*\\)\".*/\\1/p')\nprintf '%s\\n' \"{\\\"schemaVersion\\\":1,\\\"providerId\\\":\\\"browser.playwright_cli\\\",\\\"requestId\\\":\\\"$request_id\\\",\\\"status\\\":\\\"succeeded\\\",\\\"summary\\\":\\\"provider navigate completed\\\",\\\"artifactRefs\\\":[\\\"artifact://browser/provider\\\"],\\\"output\\\":{\\\"url\\\":\\\"https://example.test\\\"}}\"\n",
+    );
+    write_executable(
+        &report
+            .current_pack_dir
+            .join("worker")
+            .join("uclaw-playwright-worker.mjs"),
+        "#!/bin/sh\n# provider execution fixture worker marker\n",
+    );
+
+    let ctx_mgr = Arc::new(BrowserContextManager::new_for_test(
+        temp.path().join("contexts"),
+    ));
+    let mut flags = BrowserRuntimeFeatureFlags::safe_defaults();
+    flags.playwright_cli = true;
+    let options = BrowserProviderActionRouteOptions::default()
+        .with_feature_flags(flags)
+        .with_runtime_report(report)
+        .with_disabled_provider(LOCAL_CHROMIUM_PROVIDER_ID);
+    let executor = BrowserProviderActionExecutor::new(ctx_mgr).with_route_options(options);
+    let action = BrowserAction::Navigate {
+        tab_id: Some("tab-1".to_string()),
+        url: "https://example.test".to_string(),
+    };
+    let route_decision = executor.route_action(&action);
+
+    let execution = executor
+        .execute_routed_with_identity("session-1", None, action, route_decision)
+        .await
+        .expect("selected CLI route should execute through worker");
+
+    assert_eq!(
+        execution.route_decision.selected_provider_id.as_deref(),
+        Some(crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID)
+    );
+    match execution.outcome {
+        BrowserProviderActionExecutionOutcome::Executed(result) => {
+            assert!(result.ok);
+            assert_eq!(result.action_name, "browser_playwright_cli_navigate");
+            assert_eq!(
+                result.message.as_deref(),
+                Some("provider navigate completed")
+            );
+            let observation = result.observation_json.expect("provider observation");
+            assert_eq!(
+                observation["providerId"],
+                crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID
+            );
+            assert_eq!(
+                observation["artifactRefs"][0],
+                "artifact://browser/provider"
+            );
+            assert_eq!(observation["output"]["url"], "https://example.test");
+        }
+        BrowserProviderActionExecutionOutcome::Blocked(blocked) => {
+            panic!("selected CLI route should execute, got blocked: {blocked:?}");
         }
     }
 }
@@ -175,6 +254,22 @@ fn ready_runtime_report() -> BrowserRuntimePackStatusReport {
     let manifest = BrowserRuntimePackManifest::v1_default();
     let paths =
         BrowserRuntimePackPaths::from_root(Path::new("/tmp/uclaw-browser-runtime"), &manifest);
+    runtime_report_for_paths(manifest, paths)
+}
+
+#[cfg(unix)]
+fn fixture_runtime_report(root: &Path) -> BrowserRuntimePackStatusReport {
+    let manifest = BrowserRuntimePackManifest::v1_default();
+    let paths = BrowserRuntimePackPaths::from_root(root, &manifest);
+    fs::create_dir_all(paths.current_pack_dir.join("node").join("bin")).expect("node dir");
+    fs::create_dir_all(paths.current_pack_dir.join("worker")).expect("worker dir");
+    runtime_report_for_paths(manifest, paths)
+}
+
+fn runtime_report_for_paths(
+    manifest: BrowserRuntimePackManifest,
+    paths: BrowserRuntimePackPaths,
+) -> BrowserRuntimePackStatusReport {
     let probe = BrowserRuntimePackProbe::ready();
     let doctor = diagnose_runtime_pack(&manifest, &probe);
     let primary_action = doctor
@@ -233,4 +328,12 @@ fn ready_runtime_report() -> BrowserRuntimePackStatusReport {
         can_run_browser_tasks: true,
         event_names: vec!["browser.runtime.status.reported".to_string()],
     }
+}
+
+#[cfg(unix)]
+fn write_executable(path: &Path, contents: &str) {
+    fs::write(path, contents).expect("write executable");
+    let mut permissions = fs::metadata(path).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("chmod executable");
 }
