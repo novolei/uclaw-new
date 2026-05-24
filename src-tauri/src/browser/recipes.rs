@@ -768,6 +768,98 @@ fn locator_reuse_decision_with_reasons(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserDomainSkillCandidateGateStatus {
+    PromotionEligible,
+    Rejected,
+    NotPromoted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserDomainSkillCandidateGateReport {
+    pub status: BrowserDomainSkillCandidateGateStatus,
+    pub recipe_id: String,
+    pub provider_id: String,
+    pub provider_version: String,
+    pub artifact_refs: Vec<String>,
+    pub harness_case_ids: Vec<String>,
+    pub rejection_reasons: Vec<String>,
+}
+
+pub fn evaluate_browser_domain_skill_candidate_gate(
+    candidate: &BrowserRecipeCandidate,
+) -> BrowserDomainSkillCandidateGateReport {
+    let mut rejection_reasons = validate_browser_recipe_candidate(candidate).rejection_reasons;
+    let domain_skill = candidate.domain_skill_candidate.as_ref();
+
+    match domain_skill {
+        Some(domain_skill) => {
+            if !has_non_empty_value(&domain_skill.stable_url_patterns) {
+                rejection_reasons.push("stable_url_patterns_missing".to_string());
+            }
+            if !has_non_empty_value(&domain_skill.selector_notes) {
+                rejection_reasons.push("selector_notes_missing".to_string());
+            }
+            if !has_non_empty_value(&domain_skill.wait_conditions) {
+                rejection_reasons.push("wait_conditions_missing".to_string());
+            }
+            if has_non_empty_value(&domain_skill.private_api_shapes)
+                && !has_non_empty_value(&domain_skill.auth_boundaries)
+            {
+                rejection_reasons.push("private_api_auth_boundary_missing".to_string());
+            }
+        }
+        None => rejection_reasons.push("domain_skill_candidate_missing".to_string()),
+    }
+
+    if !has_non_empty_value(&candidate.evidence.artifact_refs) {
+        rejection_reasons.push("artifact_refs_missing".to_string());
+    }
+    if !has_non_empty_value(&candidate.evidence.harness_case_ids) {
+        rejection_reasons.push("harness_case_ids_missing".to_string());
+    }
+    if candidate.evidence.replay_success_count == 0 {
+        rejection_reasons.push("harness_replay_success_missing".to_string());
+    }
+    if candidate.evidence.replay_failure_count > 0 {
+        rejection_reasons.push("harness_replay_failed".to_string());
+    }
+    if !has_non_empty_option(&candidate.evidence.redaction_review_artifact_ref) {
+        rejection_reasons.push("redaction_review_artifact_missing".to_string());
+    }
+
+    rejection_reasons.sort();
+    rejection_reasons.dedup();
+
+    let status = if !rejection_reasons.is_empty() {
+        BrowserDomainSkillCandidateGateStatus::Rejected
+    } else if candidate.promotion_state != BrowserRecipePromotionState::Promoted {
+        BrowserDomainSkillCandidateGateStatus::NotPromoted
+    } else {
+        BrowserDomainSkillCandidateGateStatus::PromotionEligible
+    };
+
+    BrowserDomainSkillCandidateGateReport {
+        status,
+        recipe_id: candidate.recipe_id.clone(),
+        provider_id: candidate.key.provider_id.clone(),
+        provider_version: candidate.key.provider_version.clone(),
+        artifact_refs: unique_non_empty(candidate.evidence.artifact_refs.clone()),
+        harness_case_ids: unique_non_empty(candidate.evidence.harness_case_ids.clone()),
+        rejection_reasons,
+    }
+}
+
+fn has_non_empty_value(values: &[String]) -> bool {
+    values.iter().any(|value| !value.trim().is_empty())
+}
+
+fn has_non_empty_option(value: &Option<String>) -> bool {
+    value.as_ref().is_some_and(|value| !value.trim().is_empty())
+}
+
 fn unique_non_empty(values: Vec<String>) -> Vec<String> {
     let mut values: Vec<String> = values
         .into_iter()
@@ -917,6 +1009,356 @@ fn replay_decision_with_reasons(
         recipe_id: request.recipe_id.clone(),
         fallback_to_observation,
         reasons,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserRecipeHarnessMatrixStatus {
+    Passed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserRecipeHarnessMatrixCase {
+    ReplaySuccess,
+    LocatorReuse,
+    FingerprintMismatch,
+    ProviderVersionInvalidation,
+    Redaction,
+    Promotion,
+    Rejection,
+    Rollback,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRecipeHarnessMatrixCaseReport {
+    pub case_id: BrowserRecipeHarnessMatrixCase,
+    pub status: BrowserRecipeHarnessMatrixStatus,
+    pub reasons: Vec<String>,
+    pub artifact_refs: Vec<String>,
+    pub harness_case_ids: Vec<String>,
+    pub fallback_to_observation: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRecipeHarnessMatrixReport {
+    pub status: BrowserRecipeHarnessMatrixStatus,
+    pub recipe_id: String,
+    pub provider_id: String,
+    pub provider_version: String,
+    pub cases: Vec<BrowserRecipeHarnessMatrixCaseReport>,
+    pub blockers: Vec<String>,
+    pub artifact_refs: Vec<String>,
+    pub harness_case_ids: Vec<String>,
+}
+
+pub fn evaluate_browser_recipe_harness_matrix(
+    candidate: &BrowserRecipeCandidate,
+) -> BrowserRecipeHarnessMatrixReport {
+    let mut cases = Vec::new();
+
+    let replay_success =
+        decide_browser_recipe_replay(candidate, &matching_recipe_replay_request(candidate));
+    cases.push(matrix_case_report(
+        BrowserRecipeHarnessMatrixCase::ReplaySuccess,
+        replay_success.status == BrowserRecipeReplayDecisionStatus::ReplayAllowed
+            && !replay_success.fallback_to_observation,
+        replay_success.reasons,
+        candidate,
+        None,
+        replay_success.fallback_to_observation,
+    ));
+
+    cases.push(evaluate_locator_reuse_matrix_case(candidate));
+    cases.push(evaluate_fingerprint_mismatch_matrix_case(candidate));
+    cases.push(evaluate_provider_version_matrix_case(candidate));
+    cases.push(evaluate_redaction_matrix_case(candidate));
+    cases.push(evaluate_promotion_matrix_case(candidate));
+    cases.push(evaluate_rejection_matrix_case(candidate));
+    cases.push(evaluate_rollback_matrix_case(candidate));
+
+    let artifact_refs = collect_harness_matrix_artifact_refs(&cases, candidate);
+    let blockers = collect_harness_matrix_blockers(&cases);
+    let status = if blockers.is_empty() {
+        BrowserRecipeHarnessMatrixStatus::Passed
+    } else {
+        BrowserRecipeHarnessMatrixStatus::Failed
+    };
+
+    BrowserRecipeHarnessMatrixReport {
+        status,
+        recipe_id: candidate.recipe_id.clone(),
+        provider_id: candidate.key.provider_id.clone(),
+        provider_version: candidate.key.provider_version.clone(),
+        cases,
+        blockers,
+        artifact_refs,
+        harness_case_ids: unique_non_empty(candidate.evidence.harness_case_ids.clone()),
+    }
+}
+
+fn evaluate_locator_reuse_matrix_case(
+    candidate: &BrowserRecipeCandidate,
+) -> BrowserRecipeHarnessMatrixCaseReport {
+    let action_id = candidate
+        .actions
+        .first()
+        .map(|action| action.action_id.clone())
+        .unwrap_or_default();
+    let build = build_browser_recipe_locator_cache_entry(candidate, &action_id);
+    let mut reasons = build.reasons.clone();
+    let mut artifact_refs = candidate.evidence.artifact_refs.clone();
+    let mut fallback_to_observation = true;
+    let mut passed = false;
+
+    if let Some(entry) = build.entry.as_ref() {
+        artifact_refs.extend(entry.artifact_refs.clone());
+        let reuse_request = BrowserRecipeLocatorReuseRequest {
+            recipe_id: candidate.recipe_id.clone(),
+            action_id,
+            current_dom_fingerprint: candidate.key.dom_fingerprint.clone(),
+            current_provider_id: candidate.key.provider_id.clone(),
+            current_provider_version: candidate.key.provider_version.clone(),
+            production_replay_allowed: true,
+        };
+        let reuse = decide_browser_recipe_locator_reuse(entry, &reuse_request);
+        reasons.extend(reuse.reasons);
+        artifact_refs.extend(reuse.artifact_refs);
+        fallback_to_observation = reuse.fallback_to_observation;
+        passed = build.status == BrowserRecipeLocatorCacheBuildStatus::Cached
+            && reuse.status == BrowserRecipeLocatorReuseDecisionStatus::LocatorReusable
+            && !reuse.fallback_to_observation;
+    } else if action_id.trim().is_empty() {
+        reasons.push("action_missing".to_string());
+    }
+
+    matrix_case_report(
+        BrowserRecipeHarnessMatrixCase::LocatorReuse,
+        passed,
+        reasons,
+        candidate,
+        Some(artifact_refs),
+        fallback_to_observation,
+    )
+}
+
+fn evaluate_fingerprint_mismatch_matrix_case(
+    candidate: &BrowserRecipeCandidate,
+) -> BrowserRecipeHarnessMatrixCaseReport {
+    let mut request = matching_recipe_replay_request(candidate);
+    request.current_dom_fingerprint = format!("{}#mismatch", candidate.key.dom_fingerprint);
+    let decision = decide_browser_recipe_replay(candidate, &request);
+
+    matrix_case_report(
+        BrowserRecipeHarnessMatrixCase::FingerprintMismatch,
+        decision.status == BrowserRecipeReplayDecisionStatus::FingerprintMismatch
+            && decision.fallback_to_observation,
+        decision.reasons,
+        candidate,
+        None,
+        decision.fallback_to_observation,
+    )
+}
+
+fn evaluate_provider_version_matrix_case(
+    candidate: &BrowserRecipeCandidate,
+) -> BrowserRecipeHarnessMatrixCaseReport {
+    let mut request = matching_recipe_replay_request(candidate);
+    request.current_provider_version = format!("{}#mismatch", candidate.key.provider_version);
+    let decision = decide_browser_recipe_replay(candidate, &request);
+
+    matrix_case_report(
+        BrowserRecipeHarnessMatrixCase::ProviderVersionInvalidation,
+        decision.status == BrowserRecipeReplayDecisionStatus::ProviderVersionMismatch
+            && decision.fallback_to_observation,
+        decision.reasons,
+        candidate,
+        None,
+        decision.fallback_to_observation,
+    )
+}
+
+fn evaluate_redaction_matrix_case(
+    candidate: &BrowserRecipeCandidate,
+) -> BrowserRecipeHarnessMatrixCaseReport {
+    let mut redacted_candidate = candidate.clone();
+    redacted_candidate.redaction.secrets_detected = vec!["harness_secret_fixture".to_string()];
+    let validation = validate_browser_recipe_candidate(&redacted_candidate);
+    let gate = evaluate_browser_domain_skill_candidate_gate(&redacted_candidate);
+    let mut reasons = validation.rejection_reasons;
+    reasons.extend(gate.rejection_reasons);
+    let passed = validation.status == BrowserRecipeCandidateStatus::Rejected
+        && gate.status == BrowserDomainSkillCandidateGateStatus::Rejected
+        && reasons.iter().any(|reason| reason == "secrets_detected");
+
+    matrix_case_report(
+        BrowserRecipeHarnessMatrixCase::Redaction,
+        passed,
+        reasons,
+        candidate,
+        None,
+        true,
+    )
+}
+
+fn evaluate_promotion_matrix_case(
+    candidate: &BrowserRecipeCandidate,
+) -> BrowserRecipeHarnessMatrixCaseReport {
+    let gate = evaluate_browser_domain_skill_candidate_gate(candidate);
+    let mut reasons = gate.rejection_reasons;
+    if gate.status == BrowserDomainSkillCandidateGateStatus::NotPromoted {
+        reasons.push("recipe_not_promoted".to_string());
+    }
+
+    matrix_case_report(
+        BrowserRecipeHarnessMatrixCase::Promotion,
+        gate.status == BrowserDomainSkillCandidateGateStatus::PromotionEligible,
+        reasons,
+        candidate,
+        None,
+        false,
+    )
+}
+
+fn evaluate_rejection_matrix_case(
+    candidate: &BrowserRecipeCandidate,
+) -> BrowserRecipeHarnessMatrixCaseReport {
+    let mut rejected_candidate = candidate.clone();
+    rejected_candidate.recipe_id = "   ".to_string();
+    let validation = validate_browser_recipe_candidate(&rejected_candidate);
+    let request = matching_recipe_replay_request(&rejected_candidate);
+    let replay = decide_browser_recipe_replay(&rejected_candidate, &request);
+    let mut reasons = validation.rejection_reasons;
+    reasons.extend(replay.reasons);
+    let passed = validation.status == BrowserRecipeCandidateStatus::Rejected
+        && replay.status == BrowserRecipeReplayDecisionStatus::CandidateInvalid
+        && replay.fallback_to_observation
+        && reasons.iter().any(|reason| reason == "recipe_id_missing");
+
+    matrix_case_report(
+        BrowserRecipeHarnessMatrixCase::Rejection,
+        passed,
+        reasons,
+        candidate,
+        None,
+        replay.fallback_to_observation,
+    )
+}
+
+fn evaluate_rollback_matrix_case(
+    candidate: &BrowserRecipeCandidate,
+) -> BrowserRecipeHarnessMatrixCaseReport {
+    let mut rollback_candidate = candidate.clone();
+    rollback_candidate.rollback_recipe_id = None;
+    let validation = validate_browser_recipe_candidate(&rollback_candidate);
+    let request = matching_recipe_replay_request(&rollback_candidate);
+    let replay = decide_browser_recipe_replay(&rollback_candidate, &request);
+    let build = rollback_candidate.actions.first().map(|action| {
+        build_browser_recipe_locator_cache_entry(&rollback_candidate, &action.action_id)
+    });
+
+    let mut reasons = validation.rejection_reasons;
+    reasons.extend(replay.reasons);
+    if let Some(build) = build {
+        reasons.extend(build.reasons);
+    }
+    let passed = validation.status == BrowserRecipeCandidateStatus::Rejected
+        && replay.status == BrowserRecipeReplayDecisionStatus::CandidateInvalid
+        && replay.fallback_to_observation
+        && reasons
+            .iter()
+            .any(|reason| reason == "rollback_recipe_id_missing");
+
+    matrix_case_report(
+        BrowserRecipeHarnessMatrixCase::Rollback,
+        passed,
+        reasons,
+        candidate,
+        None,
+        replay.fallback_to_observation,
+    )
+}
+
+fn matching_recipe_replay_request(
+    candidate: &BrowserRecipeCandidate,
+) -> BrowserRecipeReplayRequest {
+    BrowserRecipeReplayRequest {
+        recipe_id: candidate.recipe_id.clone(),
+        current_dom_fingerprint: candidate.key.dom_fingerprint.clone(),
+        current_provider_id: candidate.key.provider_id.clone(),
+        current_provider_version: candidate.key.provider_version.clone(),
+        production_replay_allowed: true,
+    }
+}
+
+fn matrix_case_report(
+    case_id: BrowserRecipeHarnessMatrixCase,
+    passed: bool,
+    reasons: Vec<String>,
+    candidate: &BrowserRecipeCandidate,
+    artifact_refs: Option<Vec<String>>,
+    fallback_to_observation: bool,
+) -> BrowserRecipeHarnessMatrixCaseReport {
+    BrowserRecipeHarnessMatrixCaseReport {
+        case_id,
+        status: if passed {
+            BrowserRecipeHarnessMatrixStatus::Passed
+        } else {
+            BrowserRecipeHarnessMatrixStatus::Failed
+        },
+        reasons: unique_non_empty(reasons),
+        artifact_refs: unique_non_empty(
+            artifact_refs.unwrap_or_else(|| candidate.evidence.artifact_refs.clone()),
+        ),
+        harness_case_ids: unique_non_empty(candidate.evidence.harness_case_ids.clone()),
+        fallback_to_observation,
+    }
+}
+
+fn collect_harness_matrix_blockers(cases: &[BrowserRecipeHarnessMatrixCaseReport]) -> Vec<String> {
+    let mut blockers = Vec::new();
+    for case in cases {
+        if case.status == BrowserRecipeHarnessMatrixStatus::Failed {
+            if case.reasons.is_empty() {
+                blockers.push(format!(
+                    "{}_failed",
+                    browser_recipe_harness_case_key(case.case_id)
+                ));
+            } else {
+                blockers.extend(case.reasons.iter().cloned());
+            }
+        }
+    }
+    unique_non_empty(blockers)
+}
+
+fn collect_harness_matrix_artifact_refs(
+    cases: &[BrowserRecipeHarnessMatrixCaseReport],
+    candidate: &BrowserRecipeCandidate,
+) -> Vec<String> {
+    let mut artifact_refs = candidate.evidence.artifact_refs.clone();
+    for case in cases {
+        artifact_refs.extend(case.artifact_refs.clone());
+    }
+    unique_non_empty(artifact_refs)
+}
+
+fn browser_recipe_harness_case_key(case_id: BrowserRecipeHarnessMatrixCase) -> &'static str {
+    match case_id {
+        BrowserRecipeHarnessMatrixCase::ReplaySuccess => "replay_success",
+        BrowserRecipeHarnessMatrixCase::LocatorReuse => "locator_reuse",
+        BrowserRecipeHarnessMatrixCase::FingerprintMismatch => "fingerprint_mismatch",
+        BrowserRecipeHarnessMatrixCase::ProviderVersionInvalidation => {
+            "provider_version_invalidation"
+        }
+        BrowserRecipeHarnessMatrixCase::Redaction => "redaction",
+        BrowserRecipeHarnessMatrixCase::Promotion => "promotion",
+        BrowserRecipeHarnessMatrixCase::Rejection => "rejection",
+        BrowserRecipeHarnessMatrixCase::Rollback => "rollback",
     }
 }
 
@@ -1415,6 +1857,330 @@ mod tests {
         assert!(build
             .reasons
             .contains(&"stable_locator_missing".to_string()));
+    }
+
+    #[test]
+    fn domain_skill_gate_accepts_promoted_redacted_candidate_with_harness_evidence() {
+        let mut candidate = base_candidate();
+        candidate.promotion_state = BrowserRecipePromotionState::Promoted;
+
+        let report = evaluate_browser_domain_skill_candidate_gate(&candidate);
+
+        assert_eq!(
+            report.status,
+            BrowserDomainSkillCandidateGateStatus::PromotionEligible
+        );
+        assert!(report.rejection_reasons.is_empty());
+        assert_eq!(report.recipe_id, "recipe:example-login:1");
+        assert_eq!(report.provider_id, "browser.playwright_cli");
+        assert_eq!(
+            report.artifact_refs,
+            vec!["artifact://browser/trace-1".to_string()]
+        );
+        assert_eq!(
+            report.harness_case_ids,
+            vec!["browser.recipe.example-login".to_string()]
+        );
+    }
+
+    #[test]
+    fn domain_skill_gate_waits_for_promotion_without_rejecting_clean_candidate() {
+        let candidate = base_candidate();
+
+        let report = evaluate_browser_domain_skill_candidate_gate(&candidate);
+
+        assert_eq!(
+            report.status,
+            BrowserDomainSkillCandidateGateStatus::NotPromoted
+        );
+        assert!(report.rejection_reasons.is_empty());
+    }
+
+    #[test]
+    fn domain_skill_gate_rejects_missing_candidate() {
+        let mut candidate = base_candidate();
+        candidate.domain_skill_candidate = None;
+
+        let report = evaluate_browser_domain_skill_candidate_gate(&candidate);
+
+        assert_eq!(
+            report.status,
+            BrowserDomainSkillCandidateGateStatus::Rejected
+        );
+        assert!(report
+            .rejection_reasons
+            .contains(&"domain_skill_candidate_missing".to_string()));
+    }
+
+    #[test]
+    fn domain_skill_gate_rejects_redaction_and_private_api_without_auth_boundary() {
+        let mut candidate = base_candidate();
+        candidate.redaction.private_user_data_detected = vec!["email".to_string()];
+        let domain_skill = candidate
+            .domain_skill_candidate
+            .as_mut()
+            .expect("domain skill candidate");
+        domain_skill.auth_boundaries.clear();
+
+        let report = evaluate_browser_domain_skill_candidate_gate(&candidate);
+
+        assert_eq!(
+            report.status,
+            BrowserDomainSkillCandidateGateStatus::Rejected
+        );
+        assert!(report
+            .rejection_reasons
+            .contains(&"private_user_data_detected".to_string()));
+        assert!(report
+            .rejection_reasons
+            .contains(&"private_api_auth_boundary_missing".to_string()));
+    }
+
+    #[test]
+    fn domain_skill_gate_rejects_missing_domain_evidence_and_harness_coverage() {
+        let mut candidate = base_candidate();
+        let domain_skill = candidate
+            .domain_skill_candidate
+            .as_mut()
+            .expect("domain skill candidate");
+        domain_skill.stable_url_patterns.clear();
+        domain_skill.selector_notes.clear();
+        domain_skill.wait_conditions.clear();
+        candidate.evidence.artifact_refs.clear();
+        candidate.evidence.harness_case_ids.clear();
+        candidate.evidence.replay_success_count = 0;
+        candidate.evidence.redaction_review_artifact_ref = None;
+
+        let report = evaluate_browser_domain_skill_candidate_gate(&candidate);
+
+        assert_eq!(
+            report.status,
+            BrowserDomainSkillCandidateGateStatus::Rejected
+        );
+        assert!(report
+            .rejection_reasons
+            .contains(&"stable_url_patterns_missing".to_string()));
+        assert!(report
+            .rejection_reasons
+            .contains(&"selector_notes_missing".to_string()));
+        assert!(report
+            .rejection_reasons
+            .contains(&"wait_conditions_missing".to_string()));
+        assert!(report
+            .rejection_reasons
+            .contains(&"artifact_refs_missing".to_string()));
+        assert!(report
+            .rejection_reasons
+            .contains(&"harness_case_ids_missing".to_string()));
+        assert!(report
+            .rejection_reasons
+            .contains(&"harness_replay_success_missing".to_string()));
+        assert!(report
+            .rejection_reasons
+            .contains(&"redaction_review_artifact_missing".to_string()));
+    }
+
+    #[test]
+    fn domain_skill_gate_rejects_whitespace_only_domain_and_evidence_fields() {
+        let mut candidate = base_candidate();
+        candidate.promotion_state = BrowserRecipePromotionState::Promoted;
+        let domain_skill = candidate
+            .domain_skill_candidate
+            .as_mut()
+            .expect("domain skill candidate");
+        domain_skill.stable_url_patterns = vec!["   ".to_string()];
+        domain_skill.selector_notes = vec![String::new()];
+        domain_skill.wait_conditions = vec!["\t".to_string()];
+        domain_skill.private_api_shapes = vec!["window.__PRIVATE__".to_string()];
+        domain_skill.auth_boundaries = vec!["   ".to_string()];
+        candidate.evidence.artifact_refs = vec![" ".to_string()];
+        candidate.evidence.harness_case_ids = vec!["\n".to_string()];
+        candidate.evidence.redaction_review_artifact_ref = Some("   ".to_string());
+
+        let report = evaluate_browser_domain_skill_candidate_gate(&candidate);
+
+        assert_eq!(
+            report.status,
+            BrowserDomainSkillCandidateGateStatus::Rejected
+        );
+        assert!(report.artifact_refs.is_empty());
+        assert!(report.harness_case_ids.is_empty());
+        for reason in [
+            "stable_url_patterns_missing",
+            "selector_notes_missing",
+            "wait_conditions_missing",
+            "private_api_auth_boundary_missing",
+            "artifact_refs_missing",
+            "harness_case_ids_missing",
+            "redaction_review_artifact_missing",
+        ] {
+            assert!(
+                report.rejection_reasons.contains(&reason.to_string()),
+                "missing rejection reason {reason}: {:?}",
+                report.rejection_reasons
+            );
+        }
+    }
+
+    #[test]
+    fn harness_matrix_passes_promoted_candidate_and_covers_phase9_gate_cases() {
+        let mut candidate = base_candidate();
+        candidate.promotion_state = BrowserRecipePromotionState::Promoted;
+
+        let report = evaluate_browser_recipe_harness_matrix(&candidate);
+
+        assert_eq!(report.status, BrowserRecipeHarnessMatrixStatus::Passed);
+        assert!(report.blockers.is_empty());
+        assert_eq!(
+            report.artifact_refs,
+            vec!["artifact://browser/trace-1".to_string()]
+        );
+        assert_eq!(
+            report.harness_case_ids,
+            vec!["browser.recipe.example-login".to_string()]
+        );
+        for case_id in [
+            BrowserRecipeHarnessMatrixCase::ReplaySuccess,
+            BrowserRecipeHarnessMatrixCase::LocatorReuse,
+            BrowserRecipeHarnessMatrixCase::FingerprintMismatch,
+            BrowserRecipeHarnessMatrixCase::ProviderVersionInvalidation,
+            BrowserRecipeHarnessMatrixCase::Redaction,
+            BrowserRecipeHarnessMatrixCase::Promotion,
+            BrowserRecipeHarnessMatrixCase::Rejection,
+            BrowserRecipeHarnessMatrixCase::Rollback,
+        ] {
+            assert_eq!(
+                harness_case_status(&report, case_id),
+                BrowserRecipeHarnessMatrixStatus::Passed,
+                "case should pass: {case_id:?}"
+            );
+        }
+        assert!(
+            !harness_case(&report, BrowserRecipeHarnessMatrixCase::ReplaySuccess)
+                .fallback_to_observation
+        );
+        assert!(
+            harness_case(&report, BrowserRecipeHarnessMatrixCase::FingerprintMismatch)
+                .fallback_to_observation
+        );
+        assert!(
+            harness_case(
+                &report,
+                BrowserRecipeHarnessMatrixCase::ProviderVersionInvalidation
+            )
+            .fallback_to_observation
+        );
+    }
+
+    #[test]
+    fn harness_matrix_locator_case_preserves_action_specific_artifacts() {
+        let mut candidate = base_candidate();
+        candidate.promotion_state = BrowserRecipePromotionState::Promoted;
+        candidate.actions[0].artifact_refs =
+            vec!["artifact://browser/locator-click-submit".to_string()];
+
+        let report = evaluate_browser_recipe_harness_matrix(&candidate);
+        let locator_case = harness_case(&report, BrowserRecipeHarnessMatrixCase::LocatorReuse);
+
+        assert_eq!(
+            locator_case.status,
+            BrowserRecipeHarnessMatrixStatus::Passed
+        );
+        assert!(locator_case
+            .artifact_refs
+            .contains(&"artifact://browser/trace-1".to_string()));
+        assert!(locator_case
+            .artifact_refs
+            .contains(&"artifact://browser/locator-click-submit".to_string()));
+        assert!(report
+            .artifact_refs
+            .contains(&"artifact://browser/locator-click-submit".to_string()));
+    }
+
+    #[test]
+    fn harness_matrix_fails_until_candidate_is_promoted_for_replay_and_locator_reuse() {
+        let candidate = base_candidate();
+
+        let report = evaluate_browser_recipe_harness_matrix(&candidate);
+
+        assert_eq!(report.status, BrowserRecipeHarnessMatrixStatus::Failed);
+        assert_eq!(
+            harness_case_status(&report, BrowserRecipeHarnessMatrixCase::ReplaySuccess),
+            BrowserRecipeHarnessMatrixStatus::Failed
+        );
+        assert_eq!(
+            harness_case_status(&report, BrowserRecipeHarnessMatrixCase::LocatorReuse),
+            BrowserRecipeHarnessMatrixStatus::Failed
+        );
+        assert_eq!(
+            harness_case_status(&report, BrowserRecipeHarnessMatrixCase::Promotion),
+            BrowserRecipeHarnessMatrixStatus::Failed
+        );
+        assert!(report.blockers.contains(&"recipe_not_promoted".to_string()));
+    }
+
+    #[test]
+    fn harness_matrix_fails_closed_when_rollback_metadata_is_missing() {
+        let mut candidate = base_candidate();
+        candidate.promotion_state = BrowserRecipePromotionState::Promoted;
+        candidate.rollback_recipe_id = None;
+
+        let report = evaluate_browser_recipe_harness_matrix(&candidate);
+
+        assert_eq!(report.status, BrowserRecipeHarnessMatrixStatus::Failed);
+        assert_eq!(
+            harness_case_status(&report, BrowserRecipeHarnessMatrixCase::ReplaySuccess),
+            BrowserRecipeHarnessMatrixStatus::Failed
+        );
+        assert_eq!(
+            harness_case_status(&report, BrowserRecipeHarnessMatrixCase::Promotion),
+            BrowserRecipeHarnessMatrixStatus::Failed
+        );
+        assert_eq!(
+            harness_case_status(&report, BrowserRecipeHarnessMatrixCase::Rollback),
+            BrowserRecipeHarnessMatrixStatus::Passed
+        );
+        assert!(report
+            .blockers
+            .contains(&"rollback_recipe_id_missing".to_string()));
+    }
+
+    #[test]
+    fn harness_matrix_fails_closed_for_unredacted_candidate() {
+        let mut candidate = base_candidate();
+        candidate.promotion_state = BrowserRecipePromotionState::Promoted;
+        candidate.redaction.secrets_detected = vec!["api_token".to_string()];
+
+        let report = evaluate_browser_recipe_harness_matrix(&candidate);
+
+        assert_eq!(report.status, BrowserRecipeHarnessMatrixStatus::Failed);
+        assert_eq!(
+            harness_case_status(&report, BrowserRecipeHarnessMatrixCase::ReplaySuccess),
+            BrowserRecipeHarnessMatrixStatus::Failed
+        );
+        assert_eq!(
+            harness_case_status(&report, BrowserRecipeHarnessMatrixCase::Promotion),
+            BrowserRecipeHarnessMatrixStatus::Failed
+        );
+        assert!(report.blockers.contains(&"secrets_detected".to_string()));
+    }
+
+    fn harness_case(
+        report: &BrowserRecipeHarnessMatrixReport,
+        case_id: BrowserRecipeHarnessMatrixCase,
+    ) -> &BrowserRecipeHarnessMatrixCaseReport {
+        report
+            .cases
+            .iter()
+            .find(|case| case.case_id == case_id)
+            .expect("matrix case")
+    }
+
+    fn harness_case_status(
+        report: &BrowserRecipeHarnessMatrixReport,
+        case_id: BrowserRecipeHarnessMatrixCase,
+    ) -> BrowserRecipeHarnessMatrixStatus {
+        harness_case(report, case_id).status
     }
 
     fn matching_replay_request(candidate: &BrowserRecipeCandidate) -> BrowserRecipeReplayRequest {
