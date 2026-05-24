@@ -13,6 +13,9 @@ use crate::browser::decision::{BrowserDecisionAdapter, BrowserDecisionStatus};
 use crate::browser::identity::{
     BrowserAuthProfileBroker, BrowserIdentityProfile, PlaywrightStorageState,
 };
+use crate::browser::identity_tasks::{
+    BrowserIdentityRevocationDecision, BrowserIdentityTaskRegistry,
+};
 use crate::browser::intervention_bridge::{
     BrowserAskUserBridge, BrowserInterventionDecision, BrowserInterventionPrompt,
 };
@@ -66,6 +69,7 @@ pub struct BrowserAgentLoop {
     ask_user_bridge: Option<Arc<BrowserAskUserBridge>>,
     auth_profile_broker: Option<Arc<BrowserAuthProfileBroker>>,
     long_term_memory: Option<Arc<BrowserLongTermMemoryAdapter>>,
+    identity_task_registry: Option<Arc<BrowserIdentityTaskRegistry>>,
 }
 
 impl BrowserAgentLoop {
@@ -84,6 +88,7 @@ impl BrowserAgentLoop {
                 .ok()
                 .map(Arc::new),
             long_term_memory: None,
+            identity_task_registry: None,
         }
     }
 
@@ -116,6 +121,14 @@ impl BrowserAgentLoop {
         self
     }
 
+    pub fn with_identity_task_registry(
+        mut self,
+        identity_task_registry: Option<Arc<BrowserIdentityTaskRegistry>>,
+    ) -> Self {
+        self.identity_task_registry = identity_task_registry;
+        self
+    }
+
     pub async fn run(&self, request: BrowserTaskRequest) -> Result<BrowserTaskRun> {
         let mut segment_steps = clamp_max_steps(request.max_steps);
         let mut run = self
@@ -145,6 +158,7 @@ impl BrowserAgentLoop {
                 None,
                 None,
                 "browser runtime preparation deferred",
+                None,
             );
             self.record_final_state(&run).await;
             return Ok(run);
@@ -157,12 +171,63 @@ impl BrowserAgentLoop {
             .last()
             .map(|step| step.step_index + 1)
             .unwrap_or(0);
-        let auth_profile = self.resolve_auth_profile(&request)?;
+        let resume_checkpoint = self.latest_checkpoint(&request);
+        let resume_identity_profile_id =
+            checkpoint_identity_profile_id(resume_checkpoint.as_ref()).map(str::to_string);
+        let explicit_resume_auth = request.resume_run_id.is_some()
+            && (request.auth_profile_id.is_some() || request.auth_origin.is_some());
+        if request.resume_run_id.is_some() && !explicit_resume_auth {
+            if let Some(profile_id) = resume_identity_profile_id.as_deref() {
+                if checkpoint_marks_identity_revoked(resume_checkpoint.as_ref())
+                    || self.identity_profile_is_revoked(profile_id)?
+                {
+                    run.status = BrowserTaskStatus::PausedCheckpointed;
+                    self.push_step(
+                        &mut run,
+                        identity_revocation_resume_blocked_step(step_index, profile_id),
+                    );
+                    self.emit_run(&run);
+                    self.persist_checkpoint(
+                        &run,
+                        step_index,
+                        resume_checkpoint
+                            .as_ref()
+                            .and_then(|checkpoint| checkpoint.active_tab_id.as_deref()),
+                        resume_checkpoint
+                            .as_ref()
+                            .and_then(|checkpoint| checkpoint.memory.as_ref()),
+                        "browser identity revoked resume blocked",
+                        Some(profile_id),
+                    );
+                    self.record_final_state(&run).await;
+                    return Ok(run);
+                }
+            }
+        }
+
+        let mut auth_request = request.clone();
+        if auth_request.auth_profile_id.is_none() && auth_request.auth_origin.is_none() {
+            auth_request.auth_profile_id = resume_identity_profile_id.clone();
+        }
+        let auth_profile = self.resolve_auth_profile(&auth_request)?;
         let auth_profile_requested =
-            request.auth_profile_id.is_some() || request.auth_origin.is_some();
+            auth_request.auth_profile_id.is_some() || auth_request.auth_origin.is_some();
         let identity_profile_id = auth_profile
             .as_ref()
             .map(|(profile, _)| profile.id.as_str());
+        let _identity_task_registration = identity_profile_id.and_then(|profile_id| {
+            self.identity_task_registry
+                .as_ref()
+                .map(|registry| registry.register(profile_id, &run))
+        });
+        if let Some(profile_id) = identity_profile_id {
+            if self
+                .checkpoint_if_identity_revoked(&mut run, profile_id, step_index, None, None)
+                .await?
+            {
+                return Ok(run);
+            }
+        }
         if auth_profile_requested && auth_profile.is_none() && request.resume_run_id.is_none() {
             self.push_step(&mut run, BrowserTaskStep {
                 step_index,
@@ -186,7 +251,6 @@ impl BrowserAgentLoop {
             .ctx_mgr
             .get_or_create_with_identity(&request.session_id, identity_profile_id)
             .await?;
-        let resume_checkpoint = self.latest_checkpoint(&request);
         let tab_id = if let Some(tab_id) = resume_checkpoint
             .as_ref()
             .and_then(|checkpoint| checkpoint.active_tab_id.clone())
@@ -245,6 +309,21 @@ impl BrowserAgentLoop {
 
         'segments: loop {
             for _ in 0..segment_steps {
+                if let Some(profile_id) = identity_profile_id {
+                    if self
+                        .checkpoint_if_identity_revoked(
+                            &mut run,
+                            profile_id,
+                            step_index,
+                            Some(&active_tab_id),
+                            latest_memory.as_ref(),
+                        )
+                        .await?
+                    {
+                        return Ok(run);
+                    }
+                }
+
                 let mut observation =
                     match ctx.observe_with_visual(&active_tab_id, false, true).await {
                         Ok(observation) => observation,
@@ -274,6 +353,7 @@ impl BrowserAgentLoop {
                                         Some(&active_tab_id),
                                         latest_memory.as_ref(),
                                         "observation failed",
+                                        identity_profile_id,
                                     );
                                     self.record_final_state(&run).await;
                                     return Ok(run);
@@ -333,6 +413,7 @@ impl BrowserAgentLoop {
                             Some(&active_tab_id),
                             latest_memory.as_ref(),
                             "human boundary still present after continue",
+                            identity_profile_id,
                         );
                         self.record_final_state(&run).await;
                         return Ok(run);
@@ -362,6 +443,7 @@ impl BrowserAgentLoop {
                         Some(&active_tab_id),
                         latest_memory.as_ref(),
                         "human boundary",
+                        identity_profile_id,
                     );
                     if let Some(decision) = self.ask_for_intervention(&run, &reason).await? {
                         self.push_intervention_answer_step(
@@ -452,6 +534,7 @@ impl BrowserAgentLoop {
                             Some(&active_tab_id),
                             latest_memory.as_ref(),
                             "completed",
+                            identity_profile_id,
                         );
                         self.record_final_state(&run).await;
                         return Ok(run);
@@ -465,6 +548,7 @@ impl BrowserAgentLoop {
                             Some(&active_tab_id),
                             latest_memory.as_ref(),
                             "failed",
+                            identity_profile_id,
                         );
                         self.record_final_state(&run).await;
                         return Ok(run);
@@ -497,6 +581,7 @@ impl BrowserAgentLoop {
                             Some(&active_tab_id),
                             latest_memory.as_ref(),
                             "decision requested intervention",
+                            identity_profile_id,
                         );
                         if let Some(user_decision) =
                             self.ask_for_intervention(&run, &reason).await?
@@ -554,6 +639,7 @@ impl BrowserAgentLoop {
                         Some(&active_tab_id),
                         latest_memory.as_ref(),
                         "loop detected",
+                        identity_profile_id,
                     );
                     self.record_final_state(&run).await;
                     return Ok(run);
@@ -630,6 +716,7 @@ impl BrowserAgentLoop {
                                     Some(&active_tab_id),
                                     latest_memory.as_ref(),
                                     "recovery stopped",
+                                    identity_profile_id,
                                 );
                                 self.record_final_state(&run).await;
                                 return Ok(run);
@@ -666,6 +753,7 @@ impl BrowserAgentLoop {
                 Some(&active_tab_id),
                 latest_memory.as_ref(),
                 "max steps reached",
+                identity_profile_id,
             );
             self.emit_run(&run);
             if let Some(decision) = self.ask_for_checkpoint(&run).await? {
@@ -855,6 +943,9 @@ impl BrowserAgentLoop {
     }
 
     fn emit_run(&self, run: &BrowserTaskRun) {
+        if let Some(registry) = self.identity_task_registry.as_ref() {
+            registry.update_status(&run.run_id, run.status.clone());
+        }
         if let Some(store) = self.task_store.as_ref() {
             if let Err(e) = store.persist_run(run) {
                 tracing::warn!(run_id = %run.run_id, error = %e, "failed to persist browser task run");
@@ -924,6 +1015,44 @@ impl BrowserAgentLoop {
         }
     }
 
+    async fn checkpoint_if_identity_revoked(
+        &self,
+        run: &mut BrowserTaskRun,
+        profile_id: &str,
+        step_index: u32,
+        active_tab_id: Option<&str>,
+        memory: Option<&BrowserTaskMemory>,
+    ) -> Result<bool> {
+        let Some(registry) = self.identity_task_registry.as_ref() else {
+            return Ok(false);
+        };
+        let decision = registry.revocation_decision(profile_id);
+        let drain_deadline_ms = match decision {
+            BrowserIdentityRevocationDecision::NotRevoked => return Ok(false),
+            BrowserIdentityRevocationDecision::Draining { drain_deadline_ms }
+            | BrowserIdentityRevocationDecision::CheckpointRequired { drain_deadline_ms } => {
+                drain_deadline_ms
+            }
+        };
+
+        run.status = BrowserTaskStatus::PausedCheckpointed;
+        self.push_step(
+            run,
+            identity_revocation_checkpoint_step(step_index, profile_id, drain_deadline_ms),
+        );
+        self.emit_run(run);
+        self.persist_checkpoint(
+            run,
+            step_index,
+            active_tab_id,
+            memory,
+            "browser identity revoked",
+            Some(profile_id),
+        );
+        self.record_final_state(run).await;
+        Ok(true)
+    }
+
     fn load_resume_run(&self, request: &BrowserTaskRequest) -> Result<Option<BrowserTaskRun>> {
         let Some(run_id) = request.resume_run_id.as_deref() else {
             return Ok(None);
@@ -947,6 +1076,19 @@ impl BrowserAgentLoop {
             .and_then(|store| store.latest_checkpoint(run_id).ok().flatten())
     }
 
+    fn identity_profile_is_revoked(&self, profile_id: &str) -> Result<bool> {
+        let Some(broker) = self.auth_profile_broker.as_ref() else {
+            return Ok(false);
+        };
+        Ok(broker
+            .list_profiles()
+            .map_err(|e| anyhow!("list browser auth profiles: {e}"))?
+            .into_iter()
+            .find(|profile| profile.id == profile_id)
+            .map(|profile| profile.is_revoked())
+            .unwrap_or(false))
+    }
+
     fn persist_checkpoint(
         &self,
         run: &BrowserTaskRun,
@@ -954,13 +1096,25 @@ impl BrowserAgentLoop {
         active_tab_id: Option<&str>,
         memory: Option<&BrowserTaskMemory>,
         reason: &str,
+        identity_profile_id: Option<&str>,
     ) {
         if let Some(store) = self.task_store.as_ref() {
-            let loop_state = serde_json::json!({
+            let mut loop_state = serde_json::json!({
                 "status": run.status,
                 "stepCount": run.steps.len(),
                 "reason": reason,
             });
+            if let Some(object) = loop_state.as_object_mut() {
+                if let Some(profile_id) = identity_profile_id {
+                    object.insert(
+                        "identityProfileId".to_string(),
+                        serde_json::Value::String(profile_id.to_string()),
+                    );
+                }
+                if reason.starts_with("browser identity revoked") {
+                    object.insert("identityRevoked".to_string(), serde_json::Value::Bool(true));
+                }
+            }
             if let Err(e) =
                 store.persist_checkpoint(run, step_index, active_tab_id, memory, loop_state)
             {
@@ -1059,6 +1213,74 @@ fn runtime_preparation_pause_step(
         ),
         timestamp_ms: chrono::Utc::now().timestamp_millis(),
     }
+}
+
+fn identity_revocation_checkpoint_step(
+    step_index: u32,
+    profile_id: &str,
+    drain_deadline_ms: i64,
+) -> BrowserTaskStep {
+    BrowserTaskStep {
+        step_index,
+        phase: BrowserTaskStepPhase::UserIntervention,
+        observation_summary: String::new(),
+        reasoning: "Browser identity was revoked; pausing task at the next safe action boundary."
+            .to_string(),
+        action_name: "browser_identity_revoked_checkpoint".to_string(),
+        action_args: serde_json::json!({
+            "profileId": profile_id,
+            "drainDeadlineMs": drain_deadline_ms,
+        }),
+        ok: false,
+        message: Some(
+            "Browser identity was revoked; the task was checkpointed before more browser actions."
+                .to_string(),
+        ),
+        error: Some(
+            "Browser task paused because its authorized browser identity was revoked.".to_string(),
+        ),
+        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+    }
+}
+
+fn identity_revocation_resume_blocked_step(step_index: u32, profile_id: &str) -> BrowserTaskStep {
+    BrowserTaskStep {
+        step_index,
+        phase: BrowserTaskStepPhase::UserIntervention,
+        observation_summary: String::new(),
+        reasoning: "Browser identity was revoked; resume is blocked until an explicit replacement identity is provided.".to_string(),
+        action_name: "browser_identity_revoked_resume_blocked".to_string(),
+        action_args: serde_json::json!({
+            "profileId": profile_id,
+        }),
+        ok: false,
+        message: Some(
+            "Browser identity was revoked; resume requires explicit reauthorization.".to_string(),
+        ),
+        error: Some(
+            "Browser task resume blocked because its authorized browser identity was revoked."
+                .to_string(),
+        ),
+        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+    }
+}
+
+fn checkpoint_identity_profile_id(
+    checkpoint: Option<&crate::browser::task_store::BrowserTaskCheckpoint>,
+) -> Option<&str> {
+    checkpoint?
+        .loop_state
+        .get("identityProfileId")
+        .and_then(|value| value.as_str())
+}
+
+fn checkpoint_marks_identity_revoked(
+    checkpoint: Option<&crate::browser::task_store::BrowserTaskCheckpoint>,
+) -> bool {
+    checkpoint
+        .and_then(|checkpoint| checkpoint.loop_state.get("identityRevoked"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
 }
 
 fn summarize_observation(observation: &BrowserObservation) -> String {
@@ -1238,5 +1460,69 @@ mod tests {
             .as_deref()
             .expect("pause step should have error copy")
             .contains("waiting for Browser runtime preparation"));
+    }
+
+    #[test]
+    fn identity_revocation_checkpoint_step_records_profile_boundary() {
+        let step = identity_revocation_checkpoint_step(4, "auth-1", 1_770_000_000_000);
+
+        assert_eq!(step.step_index, 4);
+        assert_eq!(step.phase, BrowserTaskStepPhase::UserIntervention);
+        assert_eq!(step.action_name, "browser_identity_revoked_checkpoint");
+        assert_eq!(step.action_args["profileId"], serde_json::json!("auth-1"));
+        assert_eq!(
+            step.action_args["drainDeadlineMs"],
+            serde_json::json!(1_770_000_000_000_i64)
+        );
+        assert!(!step.ok);
+        assert!(step
+            .error
+            .as_deref()
+            .expect("revocation step error")
+            .contains("identity was revoked"));
+    }
+
+    #[test]
+    fn identity_revocation_resume_blocked_step_requires_reauth() {
+        let step = identity_revocation_resume_blocked_step(7, "auth-revoked");
+
+        assert_eq!(step.step_index, 7);
+        assert_eq!(step.phase, BrowserTaskStepPhase::UserIntervention);
+        assert_eq!(step.action_name, "browser_identity_revoked_resume_blocked");
+        assert_eq!(
+            step.action_args["profileId"],
+            serde_json::json!("auth-revoked")
+        );
+        assert!(!step.ok);
+        assert!(step
+            .error
+            .as_deref()
+            .expect("resume blocked error")
+            .contains("resume blocked"));
+    }
+
+    #[test]
+    fn checkpoint_identity_metadata_detects_revoked_profile() {
+        let checkpoint = crate::browser::task_store::BrowserTaskCheckpoint {
+            checkpoint_id: "checkpoint-1".to_string(),
+            run_id: "run-1".to_string(),
+            session_id: "session-1".to_string(),
+            step_index: 3,
+            active_tab_id: Some("tab-1".to_string()),
+            memory: None,
+            loop_state: serde_json::json!({
+                "identityProfileId": "auth-1",
+                "identityRevoked": true,
+            }),
+            created_at: 1_770_000_000_000,
+        };
+
+        assert_eq!(
+            checkpoint_identity_profile_id(Some(&checkpoint)),
+            Some("auth-1")
+        );
+        assert!(checkpoint_marks_identity_revoked(Some(&checkpoint)));
+        assert_eq!(checkpoint_identity_profile_id(None), None);
+        assert!(!checkpoint_marks_identity_revoked(None));
     }
 }

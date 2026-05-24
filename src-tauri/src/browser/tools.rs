@@ -6,6 +6,7 @@ use crate::browser::context::DevicePreset;
 use crate::browser::context_manager::BrowserContextManager;
 use crate::browser::decision::BrowserDecisionAdapter;
 use crate::browser::dom_state::format_dom_state_for_llm;
+use crate::browser::identity_tasks::BrowserIdentityTaskRegistry;
 use crate::browser::intervention_bridge::BrowserAskUserBridge;
 use crate::browser::memory_adapter::BrowserLongTermMemoryAdapter;
 use crate::browser::script_runner::ScriptPathPolicy;
@@ -60,6 +61,7 @@ pub struct BrowserTaskTool {
     pub task_store: Option<Arc<BrowserTaskStore>>,
     pub ask_user_bridge: Option<Arc<BrowserAskUserBridge>>,
     pub long_term_memory: Option<Arc<BrowserLongTermMemoryAdapter>>,
+    pub identity_task_registry: Option<Arc<BrowserIdentityTaskRegistry>>,
 }
 
 pub struct BrowserTaskResumeTool {
@@ -69,6 +71,7 @@ pub struct BrowserTaskResumeTool {
     pub task_store: Option<Arc<BrowserTaskStore>>,
     pub ask_user_bridge: Option<Arc<BrowserAskUserBridge>>,
     pub long_term_memory: Option<Arc<BrowserLongTermMemoryAdapter>>,
+    pub identity_task_registry: Option<Arc<BrowserIdentityTaskRegistry>>,
 }
 
 pub struct RetryWithBrowserAgentTool {
@@ -78,6 +81,7 @@ pub struct RetryWithBrowserAgentTool {
     pub task_store: Option<Arc<BrowserTaskStore>>,
     pub ask_user_bridge: Option<Arc<BrowserAskUserBridge>>,
     pub long_term_memory: Option<Arc<BrowserLongTermMemoryAdapter>>,
+    pub identity_task_registry: Option<Arc<BrowserIdentityTaskRegistry>>,
 }
 
 #[derive(Clone)]
@@ -1870,7 +1874,8 @@ impl Tool for BrowserTaskTool {
         )
         .with_task_store(self.task_store.clone())
         .with_ask_user_bridge(self.ask_user_bridge.clone())
-        .with_long_term_memory(self.long_term_memory.clone());
+        .with_long_term_memory(self.long_term_memory.clone())
+        .with_identity_task_registry(self.identity_task_registry.clone());
         let run = runner
             .run(BrowserTaskRequest {
                 session_id: self.session_id.clone(),
@@ -1968,7 +1973,8 @@ impl Tool for BrowserTaskResumeTool {
         )
         .with_task_store(self.task_store.clone())
         .with_ask_user_bridge(self.ask_user_bridge.clone())
-        .with_long_term_memory(self.long_term_memory.clone());
+        .with_long_term_memory(self.long_term_memory.clone())
+        .with_identity_task_registry(self.identity_task_registry.clone());
         let run = runner
             .run(BrowserTaskRequest {
                 session_id: prior.session_id,
@@ -2028,6 +2034,7 @@ impl Tool for RetryWithBrowserAgentTool {
             task_store: self.task_store.clone(),
             ask_user_bridge: self.ask_user_bridge.clone(),
             long_term_memory: self.long_term_memory.clone(),
+            identity_task_registry: self.identity_task_registry.clone(),
         }
         .parameters_schema()
     }
@@ -2040,6 +2047,7 @@ impl Tool for RetryWithBrowserAgentTool {
             task_store: self.task_store.clone(),
             ask_user_bridge: self.ask_user_bridge.clone(),
             long_term_memory: self.long_term_memory.clone(),
+            identity_task_registry: self.identity_task_registry.clone(),
         }
         .execute(params)
         .await

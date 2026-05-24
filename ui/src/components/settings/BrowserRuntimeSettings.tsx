@@ -402,7 +402,6 @@ function identityActiveTaskLabel(
   status: BrowserIdentityStatusReport | undefined,
 ): string {
   if (!status) return '未检查'
-  if (status.activeTaskCount === null) return '等待任务状态'
   return `${status.activeTaskCount} 个任务`
 }
 

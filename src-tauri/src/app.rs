@@ -296,6 +296,10 @@ pub struct AppState {
     /// Browser context manager — per-session Chrome lifecycle for Browser Agent v2.
     pub browser_context_manager: Arc<crate::browser::BrowserContextManager>,
 
+    /// Live browser identity task registry — tracks identity-backed browser
+    /// tasks in this app process so revocation can drain and checkpoint them.
+    pub browser_identity_task_registry: Arc<crate::browser::identity_tasks::BrowserIdentityTaskRegistry>,
+
     // Evaluation harness
     pub trajectory_store: Arc<crate::harness::TrajectoryStore>,
     pub tool_budget: Arc<crate::harness::ToolBudgetManager>,
@@ -840,6 +844,9 @@ impl AppState {
             recall_ctx_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             browser_service: Arc::new(crate::browser::BrowserService::new()),
             browser_context_manager,
+            browser_identity_task_registry: Arc::new(
+                crate::browser::identity_tasks::BrowserIdentityTaskRegistry::default(),
+            ),
             trajectory_store,
             tool_budget,
             token_budget_collector: crate::agent::telemetry::TokenBudgetCollector::new(),

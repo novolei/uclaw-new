@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 6C Settings browser identity status
+> Current phase: Phase 6D identity active-task drain tracker
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -25,7 +25,7 @@
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4X merged to `main` / `origin/main`; exit audit complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` / `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` | Closed for user-visible Settings, Doctor, prompt, checkpoint, deep-link, read-only IPC, and dry-run action evidence. Real runtime execution/provider work moves to Phase 5+. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A-5F merged to `main` / `origin/main`; exit gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff` / `codex/browser-runtime-phase5f-action-state-diff` | Closed for feature-flagged Playwright CLI thin lane. Provider promotion and parity routing remain Phase 8. |
-| Phase 6 | Browser identity authorization and profile UX | Phase 6A-6B merged; Phase 6C Settings identity status PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6c-settings-identity-status` / `codex/browser-runtime-phase6c-settings-identity-status` | Merge PR #463 if CLEAN, then continue to connect/auth-window or task-drain UX. |
+| Phase 6 | Browser identity authorization and profile UX | Phase 6A-6C merged; Phase 6D identity drain tracker PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6d-identity-drain-tracker` / `codex/browser-runtime-phase6d-identity-drain-tracker` | Fresh-review PR #464, merge if clean, then continue Phase 6. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Not started | Unassigned | TBD | Wait for chromiumoxide, CLI, and MCP lanes. |
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Not started | Unassigned | TBD | Wait for observable provider behavior and harness scorecards. |
@@ -111,6 +111,8 @@
 | 2026-05-24 | Merge Phase 5F and start Phase 6A identity revocation contract. | PR #460 merged as `76fea14c`; Phase 5 now covers the feature flag, app-managed pack, supervised child worker, JSON envelope, declarative actions, raw-script exclusion, timeout/kill, locator/coordinate fallback, risk screenshots, artifact refs, and compact state-diff evidence. | Phase 6 starts with revoked-visible identity metadata and resolve/load blocking before Settings connect/status UI or task drain behavior. |
 | 2026-05-24 | Merge Phase 6A and start Phase 6B identity IPC. | PR #461 merged as `a5fff49e`; identity metadata can now preserve revoked status while blocking resolve/load and deleting secrets. | Phase 6B exposes safe list/revoke IPC and frontend bridge contracts without Settings UI, auth WebView, task drain, or raw secret exposure. |
 | 2026-05-24 | Merge Phase 6B and start Phase 6C Settings identity status. | PR #462 merged as `e824ef07`; safe identity list/revoke IPC and frontend bridge types now exist. | Phase 6C may render identity status and user-triggered revoke in Settings, but still excludes connect/import, auth WebView, task drain, TaskEvents, and provider promotion. |
+| 2026-05-24 | Merge Phase 6C and start Phase 6D identity active-task drain tracker. | PR #463 merged as `367a9361`; Settings now shows identity status and user-triggered revoke, but active-task count is still `null`. ADR Phase 6 still requires active task display, bounded revoke drain, and paused checkpoint. | Phase 6D adds the live active-task/drain boundary so revoke is no longer a display-only action for running identity-backed tasks. It must keep new logic in focused modules and avoid any dry-run lane caused by large-file fear. |
+| 2026-05-24 | Open Phase 6D identity active-task drain tracker PR. | PR #464 contains the process-local identity task registry, active-task IPC summaries, bounded revoke drain deadline, safe-boundary checkpointing, thin `tauri_commands.rs` registry wiring, focused regressions, and GitNexus staged detect MEDIUM with no HIGH/CRITICAL. | Fresh reviewer should audit the behavioral runtime wiring before merge; if accepted and GitHub reports CLEAN, merge and continue the next Phase 6 slice. |
 
 ---
 
@@ -119,9 +121,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6c-settings-identity-status` |
-| Current phase branch | `codex/browser-runtime-phase6c-settings-identity-status` |
-| Current local base | `e824ef07 Merge pull request #462 from novolei/codex/browser-runtime-phase6b-identity-ipc` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6d-identity-drain-tracker` |
+| Current phase branch | `codex/browser-runtime-phase6d-identity-drain-tracker` |
+| Current local base | `367a9361 Merge pull request #463 from novolei/codex/browser-runtime-phase6c-settings-identity-status` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -175,8 +177,9 @@
 | Phase 5F action-state-diff implementation commit | Merged through PR #460 as `7c045fdd feat(browser): add playwright cli action state diffs`; merge commit `76fea14c`. |
 | Phase 6A identity-revocation implementation commit | Merged through PR #461 as `6214f9fb feat(browser): add identity revocation contract`; merge commit `a5fff49e`. |
 | Phase 6B identity-IPC implementation commit | Merged through PR #462 as `d8089416 feat(browser): expose identity ipc contract`; merge commit `e824ef07`. |
-| Phase 6C Settings identity-status implementation commit | In progress on `codex/browser-runtime-phase6c-settings-identity-status`. |
-| Known pre-existing tracked changes | None in the Phase 6C Settings identity-status worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Phase 6C Settings identity-status implementation commit | Merged through PR #463 as `374a2200 feat(browser): show identity status in settings`; merge commit `367a9361`. |
+| Phase 6D identity-drain-tracker implementation commit | PR #464 open from `codex/browser-runtime-phase6d-identity-drain-tracker`; implementation commit subject `feat(browser): track identity task drain`. |
+| Known pre-existing tracked changes | None in the Phase 6D identity-drain-tracker worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
 | Linked ignored runtime resources | `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -4596,7 +4599,7 @@ Phase 6C can start because:
   Settings Browser Identity status rows, safe profile list rendering, unknown
   active-task state, and user-triggered one-click revoke.
 - Current PR:
-  PR #463: https://github.com/novolei/uclaw-new/pull/463
+  PR #463: https://github.com/novolei/uclaw-new/pull/463 merged.
 - Non-goal:
   no backend changes, connect/import flow, authorization WebView,
   `tauri_commands.rs`, `agentic_loop.rs`, task drain, paused checkpoint,
@@ -4644,8 +4647,121 @@ Phase 6C can start because:
 
 ### Phase 6C Settings Identity Status Next Action
 
-- Merge PR #463 if GitHub reports CLEAN and checks stay green, then continue
-  to the next Phase 6 slice.
+- PR #463 merged into `main` and `origin/main` as `367a9361`.
+- Continue with Phase 6D identity active-task drain tracker from merge commit
+  `367a9361`.
+
+## Phase 6D Identity Active-Task Drain Tracker Entry Criteria
+
+Phase 6D can start because:
+
+- PR #463 merged Settings identity status/revoke UI into `main` /
+  `origin/main`;
+- ADR Phase 6 still requires active task display, bounded revoke drain, and
+  paused checkpoint behavior;
+- existing `BrowserAgentLoop` already resolves/uses authorized browser identity
+  profiles and already persists `PausedCheckpointed` browser task state;
+- `agentic_loop.rs` and `tauri_commands.rs` are not special DMZ files, but new
+  behavior should still stay in focused browser modules with only thin
+  large-file wiring when the runtime path needs it;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6d-identity-drain-tracker`;
+- the branch starts from `367a9361`, the current `origin/main`.
+
+## Phase 6D Identity Active-Task Drain Tracker Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase6d-identity-drain-tracker.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6d-identity-drain-tracker`
+- Branch:
+  `codex/browser-runtime-phase6d-identity-drain-tracker`
+- Scope:
+  process-local identity active-task registry, safe IPC active-task summaries,
+  bounded revocation drain deadline, and browser task checkpoint at safe action
+  boundaries after revoke.
+- Current PR:
+  PR #464, `https://github.com/novolei/uclaw-new/pull/464`.
+- Non-goal:
+  no authorization WebView, Settings connect/import flow, global TaskEvent DB
+  emission, user-choice UI after checkpoint, isolated-profile fallback,
+  reauthorize flow, payment confirmation, provider promotion, DB migration,
+  external Chrome attach, or raw auth material exposure.
+- Rollback:
+  revert this PR; identity revoke returns to Phase 6B/6C behavior where
+  revoked profiles block new use but active running tasks are not counted or
+  drain-checkpointed.
+
+### Phase 6D Identity Active-Task Drain Tracker Impact Notes
+
+- GitNexus impact before edits reported LOW risk for `AppState` struct and
+  impl, `BrowserAgentLoop` struct and impl, `BrowserTaskTool`,
+  `BrowserTaskResumeTool`, `list_browser_identities`, and
+  `revoke_browser_identity`: 0 direct callers and 0 affected processes for each
+  resolved symbol.
+- This phase deliberately audits the earlier dry-run concern: if implementation
+  needs large-file integration, it should make a narrow, tested integration
+  rather than creating a docs-only permission PR. The final shape keeps business
+  logic in browser modules and uses `tauri_commands.rs` only for six lines of
+  tool-construction wiring that passes the shared identity task registry into
+  the existing browser task tools.
+- GitNexus could not resolve `send_message` / `send_agent_message` as impact
+  targets in `tauri_commands.rs`; this is recorded as a high-attention
+  large-file integration note, not a reason to keep the behavior in a dry-run
+  lane. The resolved existing symbols above all reported LOW pre-edit impact.
+- Fresh reviewer Mendel found two real safety gaps in PR #464 before merge:
+  revoked-identity checkpoints could be resumed without an identity guard, and
+  revocation between task registration and startup auth injection could still
+  allow storage state to be applied. The PR now persists `identityProfileId` /
+  `identityRevoked` checkpoint metadata, blocks implicit resume of revoked
+  identity checkpoints until explicit replacement auth is provided, and checks
+  revocation immediately after registration before context/storage injection.
+
+### Phase 6D Identity Active-Task Drain Tracker Verification Notes
+
+- `cd ui && npm test -- --run src/lib/tauri-bridge.browser-identity.test.ts src/components/settings/BrowserRuntimeSettings.test.tsx`
+  returned `2 passed` files and `16 passed` tests.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::identity`
+  returned `15 passed; 0 failed; 2651 filtered out`.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::identity_tasks`
+  returned `4 passed; 0 failed; 2662 filtered out`.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::identity_ipc`
+  returned `4 passed; 0 failed; 2662 filtered out`.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::agent_loop`
+  returned `8 passed; 0 failed; 2658 filtered out` after the reviewer-finding
+  fixes.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  returned `41 passed; 0 failed; 2625 filtered out`.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  returned `53 passed; 0 failed; 2613 filtered out`.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  returned `6 passed; 0 failed; 2660 filtered out`.
+- `rustfmt --edition 2021 --check src-tauri/src/browser/identity_tasks.rs src-tauri/src/browser/identity_ipc.rs src-tauri/src/browser/agent_loop.rs src-tauri/src/browser/tools.rs`
+  passed.
+- `git diff --check` passed.
+- GitNexus staged `detect_changes` reported `risk_level: medium`,
+  `changed_files: 13`, `changed_count: 73`, `affected_count: 1`; the only
+  affected process was the expected
+  `BrowserRuntimeSettings -> ListBrowserIdentities` frontend identity status
+  read flow.
+- After reviewer-finding fixes, GitNexus staged `detect_changes` on the
+  incremental patch reported `risk_level: low`, `changed_files: 2`,
+  `changed_count: 16`, `affected_count: 0`.
+- Whole-file `rustfmt --edition 2021 --check` including `app.rs`,
+  `browser/mod.rs`, and `tauri_commands.rs` is not clean because those legacy
+  large files/modules pull in broad pre-existing formatting drift. This phase
+  avoids a mechanical rewrite of unrelated code and verifies the focused
+  browser modules instead.
+- The Phase 6D worktree needed local ignored links to `ui/node_modules`,
+  `src-tauri/pyembed`, `src-tauri/bunembed`, and
+  `src-tauri/gbrain-source` from the primary worktree for focused verification;
+  these links remain ignored and are not part of the PR.
+
+### Phase 6D Identity Active-Task Drain Tracker Next Action
+
+- Spawn a fresh reviewer for PR #464. If reviewer accepts, GitHub reports
+  mergeable, and no checks fail, merge PR #464, sync primary `main`, and start
+  the next Phase 6 slice.
 
 ---
 
