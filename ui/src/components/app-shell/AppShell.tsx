@@ -32,6 +32,11 @@ import {
 import { currentConversationIdAtom } from '@/atoms/chat-atoms'
 import { tabsAtom, activeTabIdAtom, openTab } from '@/atoms/tab-atoms'
 import { activeWorkspaceIdAtom, selectWorkspaceAtom } from '@/atoms/workspace'
+import {
+  settingsOpenAtom,
+  settingsTabAtom,
+  type SettingsTab,
+} from '@/atoms/settings-tab'
 import { SearchPalette } from '@/components/search/SearchPalette'
 import { cn } from '@/lib/utils'
 import { installScrollToMessage } from '@/lib/scroll-to-message'
@@ -105,6 +110,8 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const setAllPendingAskUserRequests = useSetAtom(allPendingAskUserRequestsAtom)
   const setAllPendingExitPlanRequests = useSetAtom(allPendingExitPlanRequestsAtom)
   const selectWorkspace = useSetAtom(selectWorkspaceAtom)
+  const setSettingsOpen = useSetAtom(settingsOpenAtom)
+  const setSettingsTab = useSetAtom(settingsTabAtom)
 
   React.useEffect(() => {
     const dispose = installScrollToMessage()
@@ -216,7 +223,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const handleSearchResultSelect = React.useCallback((payload:
     | { kind: 'thread'; thread: { id: string; kind: 'chat' | 'agent'; workspaceId: string } }
     | { kind: 'workspace'; workspace: { id: string; name: string } }
-    | { kind: 'settings'; settings: { id: string } }
+    | { kind: 'settings'; settings: { id: string; settingsTab?: SettingsTab } }
     | { kind: 'search_hit'; hit: { source: string; sourceId: string; messageId?: string } }
   ) => {
     switch (payload.kind) {
@@ -251,11 +258,10 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         break
       }
       case 'settings': {
-        // Navigate to settings tab. The settings tab id convention from existing code:
-        setActiveTabId('settings')
-        // TODO: Optionally pass a deep-link hint via a separate atom if one exists.
-        // For now, just open the settings panel; the user can pick the right page.
-        console.warn('Settings deep-link not yet implemented')
+        if (payload.settings.settingsTab) {
+          setSettingsTab(payload.settings.settingsTab)
+        }
+        setSettingsOpen(true)
         break
       }
       case 'search_hit': {
@@ -293,7 +299,20 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
         break
       }
     }
-  }, [tabs, setTabs, setActiveTabId, setAppMode, setCurrentConversationId, setCurrentAgentSessionId, agentSessions, setCurrentAgentWorkspaceId, activeWorkspaceId, selectWorkspace])
+  }, [
+    tabs,
+    setTabs,
+    setActiveTabId,
+    setAppMode,
+    setCurrentConversationId,
+    setCurrentAgentSessionId,
+    agentSessions,
+    setCurrentAgentWorkspaceId,
+    activeWorkspaceId,
+    selectWorkspace,
+    setSettingsOpen,
+    setSettingsTab,
+  ])
 
   return (
     <AppShellProvider value={contextValue}>

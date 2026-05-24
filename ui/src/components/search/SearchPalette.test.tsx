@@ -66,6 +66,7 @@ vi.mock('@/lib/tauri-bridge', () => ({
     { id: 'ws-2', name: 'Downloads', conversationCount: 1 },
     { id: 'ws-3', name: 'me', icon: '👤', conversationCount: 3 },
   ]),
+  searchFragments: vi.fn(async () => []),
 }))
 
 describe('SearchPalette', () => {
@@ -120,6 +121,8 @@ describe('SearchPalette', () => {
     await screen.findByText('设置与命令')
     expect(screen.getByText('服务商配置')).toBeInTheDocument()
     expect(screen.getByText('Provider / API Key / Base URL')).toBeInTheDocument()
+    expect(screen.getByText('浏览器运行时')).toBeInTheDocument()
+    expect(screen.getByText('Runtime pack / Startup Doctor / repair')).toBeInTheDocument()
   })
 
   it('renders workspaces with thread count pill', async () => {
@@ -184,6 +187,22 @@ describe('SearchPalette', () => {
       kind: 'search_hit',
       hit: expect.objectContaining({ messageId: 'msg-1', sourceId: 'sess-1' }),
     }))
+  })
+
+  it('calls onSelect with browser runtime settings deep-link payload', async () => {
+    const onSelect = vi.fn()
+    const { store, user } = renderWithProviders(<SearchPalette onSelect={onSelect} />)
+    store.set(searchPaletteOpenAtom, true)
+    const item = await screen.findByText('浏览器运行时')
+    await user.click(item)
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'settings',
+      settings: expect.objectContaining({
+        id: 'settings:browser-runtime',
+        settingsTab: 'browserRuntime',
+      }),
+    }))
+    expect(store.get(searchPaletteOpenAtom)).toBe(false)
   })
 
   // ===== SCOPE BEHAVIOR =====
