@@ -33,8 +33,11 @@ pub mod rollout_bridge;
 pub use context_manager::BrowserContextManager;
 pub use playwright_cli::{
     build_playwright_cli_request_envelope, playwright_cli_capabilities,
-    playwright_cli_provider_status, PlaywrightCliAction, PlaywrightCliActionKind,
-    PlaywrightCliAddress, PlaywrightCliEnvelopeError, PlaywrightCliRequestEnvelope,
+    playwright_cli_provider_status, run_playwright_cli_child_worker, PlaywrightCliAction,
+    PlaywrightCliActionKind, PlaywrightCliAddress, PlaywrightCliChildWorkerConfig,
+    PlaywrightCliEnvelopeError, PlaywrightCliRequestEnvelope, PlaywrightCliWorkerError,
+    PlaywrightCliWorkerErrorEnvelope, PlaywrightCliWorkerResultEnvelope,
+    PlaywrightCliWorkerStatus,
     PlaywrightCliRuntimeEnv, DEFAULT_PLAYWRIGHT_CLI_ACTION_TIMEOUT_MS,
     PLAYWRIGHT_CLI_DECLARATIVE_ACTIONS, PLAYWRIGHT_CLI_ENVELOPE_SCHEMA_VERSION,
     PLAYWRIGHT_CLI_PROVIDER_ID,

@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 5B-preflight B Settings live runtime path mapping
+> Current phase: Phase 5B Playwright CLI child-worker execution boundary
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -24,7 +24,7 @@
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4X merged to `main` / `origin/main`; exit audit complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` / `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` | Closed for user-visible Settings, Doctor, prompt, checkpoint, deep-link, read-only IPC, and dry-run action evidence. Real runtime execution/provider work moves to Phase 5+. |
-| Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A provider contract, goal-mode docs hygiene, dry-run drift audit, and Phase 5B-preflight A merged; Phase 5B-preflight B PR #455 open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5b-preflight-settings-paths` / `codex/browser-runtime-phase5b-preflight-settings-paths` | Merge Phase 5B-preflight B, then continue to the Playwright CLI child-worker execution slice. |
+| Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A provider contract, goal-mode docs hygiene, dry-run drift audit, Phase 5B preflights merged; Phase 5B child-worker PR #456 open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5b-cli-child-worker` / `codex/browser-runtime-phase5b-cli-child-worker` | Merge PR #456 if GitHub remains CLEAN, then continue to the next ADR Phase 5 slice. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Not started | Unassigned | TBD | Wait for chromiumoxide, CLI, and MCP lanes. |
@@ -101,7 +101,7 @@
 | 2026-05-24 | Merge goal-mode docs hygiene and start a dry-run drift audit before Phase 5B. | PR #452 merged as `8608b694`; the user explicitly asked to audit Phase 1-5A for dry-run/code-shape drift caused by old `agentic_loop.rs` / `tauri_commands.rs` constraints. | Audit first, then continue. If the audit confirms runtime-pack real adapters are the only remaining dry-run drift, schedule a Phase 5B-preflight runtime-pack step-runner slice before the Playwright child-worker slice. |
 | 2026-05-24 | Merge dry-run drift audit and start Phase 5B-preflight A. | PR #453 merged as `cd6ccc61`; the audit found no `agentic_loop.rs` / `tauri_commands.rs` design drift, but did find optimistic runtime-pack readiness and missing real runner/probe adapters. | Phase 5B-preflight A fixes strict readiness and adds a concrete local runtime-pack runner boundary before any Playwright CLI child worker. |
 | 2026-05-24 | Merge Phase 5B-preflight A and start Settings live path mapping. | PR #454 merged as `6694d888`; it contained strict runtime-pack readiness defaults, a local-first managed step runner, focused runtime-pack tests, default browser-runtime regressions, and GitNexus staged detect LOW. | Phase 5B-preflight B exposes live runtime root/current pack path in Settings before Playwright child-worker execution. |
-| 2026-05-24 | Open Phase 5B-preflight B Settings runtime path PR. | PR #455 contains frontend runtime root/current pack type mapping, Settings display rows, focused UI tests, default browser-runtime regressions, and GitNexus staged detect MEDIUM with no HIGH/CRITICAL. | Merge if GitHub reports CLEAN; next slice should start Playwright CLI child-worker execution behind the feature flag. |
+| 2026-05-24 | Merge Phase 5B-preflight B and start Phase 5B child-worker execution. | PR #455 merged as `681070db`; it contained frontend runtime root/current pack type mapping, Settings display rows, focused UI tests, default browser-runtime regressions, and GitNexus staged detect MEDIUM with no HIGH/CRITICAL. | Phase 5B proper may add a supervised short-lived Playwright CLI child-worker boundary behind the feature flag, but must not promote the provider, route tasks, add IPC, or introduce global npm/user Playwright production paths. |
 
 ---
 
@@ -110,9 +110,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5b-preflight-settings-paths` |
-| Current phase branch | `codex/browser-runtime-phase5b-preflight-settings-paths` |
-| Current local base | `6694d888 Merge pull request #454 from novolei/codex/browser-runtime-phase5b-preflight-runtime-pack-runner` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5b-cli-child-worker` |
+| Current phase branch | `codex/browser-runtime-phase5b-cli-child-worker` |
+| Current local base | `681070db Merge pull request #455 from novolei/codex/browser-runtime-phase5b-preflight-settings-paths` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -158,8 +158,9 @@
 | Goal-mode docs hygiene commit | Merged through PR #452 as `c1ea0f34 docs(goal): align browser runtime goal-mode rules`; merge commit `8608b694`. |
 | Dry-run drift audit commit | Merged through PR #453 as `4542eff9 docs(browser): audit dry-run drift before phase5b`; merge commit `cd6ccc61`. |
 | Phase 5B-preflight A implementation commit | Merged through PR #454 as `b1ba9f54 feat(browser): add runtime pack local runner`; merge commit `6694d888`. |
-| Phase 5B-preflight B implementation commit | PR #455 open as `feat(browser): show runtime pack paths in settings` on `codex/browser-runtime-phase5b-preflight-settings-paths`. |
-| Known pre-existing tracked changes | None in the Phase 5B-preflight B worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Phase 5B-preflight B implementation commit | Merged through PR #455 as `67454c4a feat(browser): show runtime pack paths in settings`; merge commit `681070db`. |
+| Phase 5B child-worker implementation commit | PR #456 open as `03a435d2 feat(browser): run playwright cli child worker` on `codex/browser-runtime-phase5b-cli-child-worker`. |
+| Known pre-existing tracked changes | None in the Phase 5B child-worker worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
 | Linked ignored runtime resources | `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -3947,7 +3948,7 @@ Phase 5B-preflight B can start because:
   frontend type/view-model/Settings display mapping for live runtime root and
   current pack directory.
 - Current PR:
-  pending.
+  PR #455 merged.
 - Non-goal:
   no runtime-pack mutation, Playwright CLI child-worker execution, provider
   promotion, backend IPC change, DB migration, `agentic_loop.rs`, or
@@ -3995,8 +3996,96 @@ Phase 5B-preflight B can start because:
 
 ### Phase 5B-Preflight B Next Action
 
-- Merge PR #455 if GitHub reports CLEAN.
-- If merged, continue to the Playwright CLI child-worker execution slice.
+- PR #455 merged. Continue to Phase 5B proper: Playwright CLI child-worker
+  execution boundary.
+
+## Phase 5B Child Worker Entry Criteria
+
+Phase 5B child-worker execution can start because:
+
+- PR #455 merged the live runtime root/current-pack path display into `main`
+  and `origin/main`;
+- Phase 5A already defined the `browser.playwright_cli` provider readiness and
+  JSON request envelope contract;
+- Phase 5B-preflight A added the app-managed local runtime-pack runner boundary
+  and strict readiness probes, so the CLI worker can depend on
+  `current_pack_dir` rather than global Node or user-installed Playwright;
+- this slice is behind the existing feature/provider contract and does not
+  promote `browser.playwright_cli` into task routing;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5b-cli-child-worker`;
+- the branch starts from `681070db`, the current `origin/main`.
+
+## Phase 5B Child Worker Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase5b-cli-child-worker.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5b-cli-child-worker`
+- Branch:
+  `codex/browser-runtime-phase5b-cli-child-worker`
+- Scope:
+  supervised short-lived child-worker process boundary for the existing
+  Playwright CLI request envelope, including app-managed Node/worker paths,
+  stdin/stdout protocol, timeout kill, nonzero-exit handling, and fail-closed
+  path validation.
+- Current PR:
+  PR #456 (`https://github.com/novolei/uclaw-new/pull/456`).
+- Non-goal:
+  no provider promotion, task routing, IPC, Settings/UI change, DB migration,
+  `agentic_loop.rs`, `tauri_commands.rs`, global npm, or user-installed
+  Playwright production path.
+- Rollback:
+  revert this PR; the Phase 5A provider contract and Phase 5B preflight
+  runtime-pack work remain usable and the CLI provider stays unavailable until
+  the feature/runtime probes pass.
+
+### Phase 5B Child Worker Impact Notes
+
+- `npx gitnexus analyze` indexed the Phase 5B child-worker worktree
+  (`36,951 nodes | 61,021 edges | 999 clusters | 300 flows`). Existing UI test
+  scope extraction warnings appeared for automation tests unrelated to this
+  phase. GitNexus-updated `AGENTS.md` / `CLAUDE.md` statistic noise was
+  restored before implementation.
+- GitNexus impact for `PlaywrightCliRequestEnvelope` reported LOW risk, 1
+  direct caller, 0 affected processes.
+- GitNexus impact for `playwright_cli_provider_status` reported LOW risk, 4
+  direct test callers, 0 affected processes.
+- GitNexus impact for `build_playwright_cli_request_envelope` reported LOW
+  risk, 2 direct test callers, 0 affected processes.
+- `src-tauri/src/browser/mod.rs` receives additive exports only. Its broader
+  legacy formatting drift is intentionally left untouched.
+
+### Phase 5B Child Worker Verification Notes
+
+- Focused Playwright CLI verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::playwright_cli`
+  returned `13 passed; 0 failed; 2632 filtered out`.
+- Focused runtime-pack verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  returned `41 passed; 0 failed; 2604 filtered out`.
+- Focused browser runtime regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  returned `53 passed; 0 failed; 2592 filtered out`.
+- Existing provider regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  returned `6 passed; 0 failed; 2639 filtered out`.
+- Formatting check passed for the substantive changed Rust file:
+  `rustfmt --edition 2021 --check src-tauri/src/browser/playwright_cli.rs`.
+- `rustfmt --edition 2021 --check src-tauri/src/browser/mod.rs` still reports
+  pre-existing legacy formatting changes throughout sibling browser modules;
+  this PR keeps `mod.rs` to additive exports to avoid unrelated churn.
+- Whitespace check passed:
+  `git diff --check -- src-tauri/src/browser/playwright_cli.rs src-tauri/src/browser/mod.rs docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-phase5b-cli-child-worker.md`.
+- GitNexus staged detect reported LOW risk: 4 files, 26 symbols, 0 affected
+  processes.
+
+### Phase 5B Child Worker Next Action
+
+- PR #456 is open and GitHub reported mergeStateStatus `CLEAN` with no status
+  checks listed at creation time.
+- If GitHub remains CLEAN and no HIGH/CRITICAL issue appears, merge and sync
+  `main`, then continue to the next ADR Phase 5 slice.
 
 ---
 
