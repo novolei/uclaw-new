@@ -1,13 +1,18 @@
 //! Playwright CLI provider contract shell.
 //!
 //! This module is intentionally pure. It defines the feature-flagged provider
-//! readiness shape and JSON request envelope for future short-lived Playwright
-//! child workers, but it does not spawn Node, launch Playwright, mutate runtime
-//! packs, or execute browser actions.
+//! readiness shape, JSON request envelope, and supervised child-worker boundary
+//! for short-lived Playwright workers. Provider promotion and task routing stay
+//! outside this module.
 
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::Command;
+use tokio::time::timeout;
 
 use super::provider::{
     BrowserCapabilityProbe, BrowserProbeStatus, BrowserProviderCapabilities,
@@ -128,6 +133,75 @@ pub struct PlaywrightCliRequestEnvelope {
     pub timeout_ms: u64,
     pub artifact_policy: String,
     pub runtime: PlaywrightCliRuntimeEnv,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaywrightCliChildWorkerConfig {
+    pub node_binary_path: PathBuf,
+    pub worker_script_path: PathBuf,
+    pub timeout_ms: u64,
+}
+
+impl PlaywrightCliChildWorkerConfig {
+    pub fn from_runtime_env(runtime: &PlaywrightCliRuntimeEnv) -> Self {
+        Self {
+            node_binary_path: runtime
+                .current_pack_dir
+                .join("node")
+                .join("bin")
+                .join("node"),
+            worker_script_path: runtime
+                .current_pack_dir
+                .join("worker")
+                .join("uclaw-playwright-worker.mjs"),
+            timeout_ms: DEFAULT_PLAYWRIGHT_CLI_ACTION_TIMEOUT_MS,
+        }
+    }
+
+    pub fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaywrightCliWorkerStatus {
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaywrightCliWorkerErrorEnvelope {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaywrightCliWorkerResultEnvelope {
+    pub schema_version: u16,
+    pub provider_id: String,
+    pub request_id: String,
+    pub status: PlaywrightCliWorkerStatus,
+    pub summary: String,
+    pub artifact_refs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<PlaywrightCliWorkerErrorEnvelope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlaywrightCliWorkerError {
+    RuntimePathEscapesPack { path: PathBuf, pack_dir: PathBuf },
+    SpawnFailed(String),
+    StdinWriteFailed(String),
+    StdoutReadFailed(String),
+    StderrReadFailed(String),
+    TimedOut { timeout_ms: u64 },
+    NonZeroExit { code: Option<i32>, stderr: String },
+    InvalidJson(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,9 +329,146 @@ pub fn build_playwright_cli_request_envelope(
     })
 }
 
+pub async fn run_playwright_cli_child_worker(
+    envelope: &PlaywrightCliRequestEnvelope,
+    config: PlaywrightCliChildWorkerConfig,
+) -> Result<PlaywrightCliWorkerResultEnvelope, PlaywrightCliWorkerError> {
+    validate_worker_path(&config.node_binary_path, &envelope.runtime.current_pack_dir)?;
+    validate_worker_path(
+        &config.worker_script_path,
+        &envelope.runtime.current_pack_dir,
+    )?;
+
+    let mut command = Command::new(&config.node_binary_path);
+    command
+        .arg(&config.worker_script_path)
+        .current_dir(&envelope.runtime.current_pack_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    for env_var in &envelope.runtime.env {
+        command.env(&env_var.name, &env_var.value);
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| PlaywrightCliWorkerError::SpawnFailed(error.to_string()))?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| PlaywrightCliWorkerError::StdinWriteFailed("stdin unavailable".into()))?;
+    let request_bytes = serde_json::to_vec(envelope)
+        .map_err(|error| PlaywrightCliWorkerError::StdinWriteFailed(error.to_string()))?;
+    stdin
+        .write_all(&request_bytes)
+        .await
+        .map_err(|error| PlaywrightCliWorkerError::StdinWriteFailed(error.to_string()))?;
+    stdin
+        .write_all(b"\n")
+        .await
+        .map_err(|error| PlaywrightCliWorkerError::StdinWriteFailed(error.to_string()))?;
+    stdin
+        .shutdown()
+        .await
+        .map_err(|error| PlaywrightCliWorkerError::StdinWriteFailed(error.to_string()))?;
+    drop(stdin);
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| PlaywrightCliWorkerError::StdoutReadFailed("stdout unavailable".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| PlaywrightCliWorkerError::StderrReadFailed("stderr unavailable".into()))?;
+    let stdout_task = tokio::spawn(read_pipe_to_string(stdout));
+    let stderr_task = tokio::spawn(read_pipe_to_string(stderr));
+
+    let status = match timeout(Duration::from_millis(config.timeout_ms), child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => return Err(PlaywrightCliWorkerError::SpawnFailed(error.to_string())),
+        Err(_) => {
+            let _ = child.kill().await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(PlaywrightCliWorkerError::TimedOut {
+                timeout_ms: config.timeout_ms,
+            });
+        }
+    };
+
+    let stdout = stdout_task
+        .await
+        .map_err(|error| PlaywrightCliWorkerError::StdoutReadFailed(error.to_string()))?
+        .map_err(|error| PlaywrightCliWorkerError::StdoutReadFailed(error.to_string()))?;
+    let stderr = stderr_task
+        .await
+        .map_err(|error| PlaywrightCliWorkerError::StderrReadFailed(error.to_string()))?
+        .map_err(|error| PlaywrightCliWorkerError::StderrReadFailed(error.to_string()))?;
+
+    if !status.success() {
+        return Err(PlaywrightCliWorkerError::NonZeroExit {
+            code: status.code(),
+            stderr,
+        });
+    }
+
+    let result = serde_json::from_str::<PlaywrightCliWorkerResultEnvelope>(&stdout)
+        .map_err(|error| PlaywrightCliWorkerError::InvalidJson(error.to_string()))?;
+    if result.schema_version != PLAYWRIGHT_CLI_ENVELOPE_SCHEMA_VERSION
+        || result.provider_id != PLAYWRIGHT_CLI_PROVIDER_ID
+        || result.request_id != envelope.request_id
+    {
+        return Err(PlaywrightCliWorkerError::InvalidJson(
+            "worker result envelope does not match request envelope".into(),
+        ));
+    }
+    Ok(result)
+}
+
+async fn read_pipe_to_string<R>(mut reader: R) -> std::io::Result<String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut output = String::new();
+    reader.read_to_string(&mut output).await?;
+    Ok(output)
+}
+
+fn validate_worker_path(
+    path: &PathBuf,
+    current_pack_dir: &PathBuf,
+) -> Result<(), PlaywrightCliWorkerError> {
+    let canonical_pack_dir = current_pack_dir.canonicalize().map_err(|_| {
+        PlaywrightCliWorkerError::RuntimePathEscapesPack {
+            path: path.clone(),
+            pack_dir: current_pack_dir.clone(),
+        }
+    })?;
+    let canonical_path =
+        path.canonicalize()
+            .map_err(|_| PlaywrightCliWorkerError::RuntimePathEscapesPack {
+                path: path.clone(),
+                pack_dir: current_pack_dir.clone(),
+            })?;
+    if canonical_path.starts_with(&canonical_pack_dir) {
+        Ok(())
+    } else {
+        Err(PlaywrightCliWorkerError::RuntimePathEscapesPack {
+            path: path.clone(),
+            pack_dir: current_pack_dir.clone(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
 
     use super::super::runtime_pack::{
         diagnose_runtime_pack, plan_runtime_pack_operation, BrowserRuntimePackAction,
@@ -435,8 +646,209 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_worker_runs_app_managed_node_and_parses_one_result_envelope() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let envelope = fixture_envelope(temp.path());
+        write_executable(
+            &envelope.runtime.current_pack_dir.join("node").join("bin").join("node"),
+            "#!/bin/sh\ntest -f \"$1\" || exit 9\nIFS= read -r _request || exit 8\nprintf '%s\\n' '{\"schemaVersion\":1,\"providerId\":\"browser.playwright_cli\",\"requestId\":\"req-worker\",\"status\":\"succeeded\",\"summary\":\"fixture action completed\",\"artifactRefs\":[\"artifact://browser/1\"]}'\n",
+        );
+        write_executable(
+            &envelope
+                .runtime
+                .current_pack_dir
+                .join("worker")
+                .join("uclaw-playwright-worker.mjs"),
+            "#!/bin/sh\n# fixture worker path marker\n",
+        );
+
+        let result = run_playwright_cli_child_worker(
+            &envelope,
+            PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
+                .with_timeout_ms(1_000),
+        )
+        .await
+        .expect("worker result");
+
+        assert_eq!(
+            result.schema_version,
+            PLAYWRIGHT_CLI_ENVELOPE_SCHEMA_VERSION
+        );
+        assert_eq!(result.provider_id, PLAYWRIGHT_CLI_PROVIDER_ID);
+        assert_eq!(result.request_id, "req-worker");
+        assert_eq!(result.status, PlaywrightCliWorkerStatus::Succeeded);
+        assert_eq!(result.artifact_refs, vec!["artifact://browser/1"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_worker_rejects_node_path_outside_app_managed_pack() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let envelope = fixture_envelope(temp.path());
+        let config = PlaywrightCliChildWorkerConfig {
+            node_binary_path: PathBuf::from("/usr/bin/node"),
+            worker_script_path: envelope
+                .runtime
+                .current_pack_dir
+                .join("worker")
+                .join("uclaw-playwright-worker.mjs"),
+            timeout_ms: 1_000,
+        };
+
+        let error = run_playwright_cli_child_worker(&envelope, config)
+            .await
+            .expect_err("global node path should be rejected");
+
+        assert!(matches!(
+            error,
+            PlaywrightCliWorkerError::RuntimePathEscapesPack { .. }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_worker_timeout_kills_hung_worker() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let envelope = fixture_envelope(temp.path());
+        write_executable(
+            &envelope
+                .runtime
+                .current_pack_dir
+                .join("node")
+                .join("bin")
+                .join("node"),
+            "#!/bin/sh\nexec \"$1\"\n",
+        );
+        write_executable(
+            &envelope
+                .runtime
+                .current_pack_dir
+                .join("worker")
+                .join("uclaw-playwright-worker.mjs"),
+            "#!/bin/sh\ncat >/dev/null\nsleep 2\n",
+        );
+
+        let error = run_playwright_cli_child_worker(
+            &envelope,
+            PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime).with_timeout_ms(25),
+        )
+        .await
+        .expect_err("hung worker should time out");
+
+        assert_eq!(error, PlaywrightCliWorkerError::TimedOut { timeout_ms: 25 });
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_worker_reports_nonzero_exit_with_stderr() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let envelope = fixture_envelope(temp.path());
+        write_executable(
+            &envelope
+                .runtime
+                .current_pack_dir
+                .join("node")
+                .join("bin")
+                .join("node"),
+            "#!/bin/sh\necho worker failed >&2\nexit 17\n",
+        );
+        write_executable(
+            &envelope
+                .runtime
+                .current_pack_dir
+                .join("worker")
+                .join("uclaw-playwright-worker.mjs"),
+            "#!/bin/sh\n# fixture worker path marker\n",
+        );
+
+        let error = run_playwright_cli_child_worker(
+            &envelope,
+            PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
+                .with_timeout_ms(1_000),
+        )
+        .await
+        .expect_err("worker should report nonzero exit");
+
+        assert!(matches!(
+            error,
+            PlaywrightCliWorkerError::NonZeroExit {
+                code: Some(17),
+                stderr
+            } if stderr.contains("worker failed")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_worker_rejects_mismatched_result_envelope() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let envelope = fixture_envelope(temp.path());
+        write_executable(
+            &envelope
+                .runtime
+                .current_pack_dir
+                .join("node")
+                .join("bin")
+                .join("node"),
+            "#!/bin/sh\nIFS= read -r _request || exit 8\nprintf '%s\\n' '{\"schemaVersion\":1,\"providerId\":\"browser.playwright_cli\",\"requestId\":\"wrong-request\",\"status\":\"succeeded\",\"summary\":\"fixture action completed\",\"artifactRefs\":[]}'\n",
+        );
+        write_executable(
+            &envelope
+                .runtime
+                .current_pack_dir
+                .join("worker")
+                .join("uclaw-playwright-worker.mjs"),
+            "#!/bin/sh\n# fixture worker path marker\n",
+        );
+
+        let error = run_playwright_cli_child_worker(
+            &envelope,
+            PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
+                .with_timeout_ms(1_000),
+        )
+        .await
+        .expect_err("mismatched result should be rejected");
+
+        assert_eq!(
+            error,
+            PlaywrightCliWorkerError::InvalidJson(
+                "worker result envelope does not match request envelope".into()
+            )
+        );
+    }
+
     fn ready_runtime_report() -> BrowserRuntimePackStatusReport {
         runtime_report_from_probe(BrowserRuntimePackProbe::ready())
+    }
+
+    fn fixture_envelope(root: &Path) -> PlaywrightCliRequestEnvelope {
+        let manifest = BrowserRuntimePackManifest::v1_default();
+        let paths = BrowserRuntimePackPaths::from_root(root.join("runtime"), &manifest);
+        PlaywrightCliRequestEnvelope {
+            schema_version: PLAYWRIGHT_CLI_ENVELOPE_SCHEMA_VERSION,
+            provider_id: PLAYWRIGHT_CLI_PROVIDER_ID.to_string(),
+            request_id: "req-worker".to_string(),
+            action: PlaywrightCliAction::Screenshot { full_page: false },
+            timeout_ms: DEFAULT_PLAYWRIGHT_CLI_ACTION_TIMEOUT_MS,
+            artifact_policy: "risk_based".to_string(),
+            runtime: PlaywrightCliRuntimeEnv {
+                manifest_pack_version: manifest.pack_version,
+                runtime_root: paths.runtime_root,
+                current_pack_dir: paths.current_pack_dir,
+                env: vec![],
+            },
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_executable(path: &Path, contents: &str) {
+        fs::create_dir_all(path.parent().expect("script parent")).expect("script parent");
+        fs::write(path, contents).expect("script contents");
+        let mut permissions = fs::metadata(path).expect("script metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("script executable");
     }
 
     fn missing_runtime_report() -> BrowserRuntimePackStatusReport {
