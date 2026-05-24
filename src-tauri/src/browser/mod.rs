@@ -18,6 +18,7 @@ pub mod recovery;
 pub mod runtime_contracts;
 pub mod runtime_pack;
 pub mod runtime_pack_ipc;
+pub mod runtime_pack_runner;
 pub mod runtime_supervisor;
 pub mod script_runner;
 pub mod session_state;
@@ -72,6 +73,7 @@ pub use runtime_pack::{
     BrowserRuntimePackStepRunOutcome, BrowserRuntimePackStepRunner,
     BrowserRuntimePackUpdateDecision, BrowserRuntimePackUpdateKind, BrowserRuntimePackUpdatePolicy,
 };
+pub use runtime_pack_runner::BrowserRuntimePackLocalStepRunner;
 pub use runtime_supervisor::{
     BrowserRuntimeArtifactPack, BrowserRuntimeDeadlineProfile, BrowserRuntimeDegradation,
     BrowserRuntimeDoctorOutcome, BrowserRuntimeSessionSummary, BrowserRuntimeSupervisor,
