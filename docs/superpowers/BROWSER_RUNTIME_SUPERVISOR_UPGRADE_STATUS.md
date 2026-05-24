@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 6A Browser identity revocation contract
+> Current phase: Phase 6B Browser identity IPC contract
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -25,7 +25,7 @@
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4X merged to `main` / `origin/main`; exit audit complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` / `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` | Closed for user-visible Settings, Doctor, prompt, checkpoint, deep-link, read-only IPC, and dry-run action evidence. Real runtime execution/provider work moves to Phase 5+. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A-5F merged to `main` / `origin/main`; exit gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff` / `codex/browser-runtime-phase5f-action-state-diff` | Closed for feature-flagged Playwright CLI thin lane. Provider promotion and parity routing remain Phase 8. |
-| Phase 6 | Browser identity authorization and profile UX | Phase 6A revocation contract PR #461 open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6a-identity-revocation-contract` / `codex/browser-runtime-phase6a-identity-revocation-contract` | Merge PR #461 if GitHub reports CLEAN, then continue to Settings identity status/connect UX. |
+| Phase 6 | Browser identity authorization and profile UX | Phase 6A merged; Phase 6B identity IPC in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6b-identity-ipc` / `codex/browser-runtime-phase6b-identity-ipc` | Open PR for safe identity list/revoke IPC, then continue to Settings identity status/connect UX. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Not started | Unassigned | TBD | Wait for chromiumoxide, CLI, and MCP lanes. |
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Not started | Unassigned | TBD | Wait for observable provider behavior and harness scorecards. |
@@ -109,6 +109,7 @@
 | 2026-05-24 | Merge Phase 5D provider adapter and start Phase 5E fixture gates. | PR #458 merged as `78561429`; it added the callable feature/runtime-gated adapter and structured provider execution results without task routing or provider promotion. | Phase 5E is a verification slice to close ADR Phase 5 gate evidence for locator fallback, coordinate fallback, risk screenshot policy, and remaining declarative action outputs. |
 | 2026-05-24 | Merge Phase 5E fixture gates and start Phase 5F action state diff. | PR #459 merged as `e3e57f72`; it covered success/failure envelopes, timeout/kill, locator and coordinate fallback, risk screenshot behavior, artifact refs, no raw script, and declarative action outputs. ADR Phase 5 still explicitly asks for action result plus DOM/state diff on stable locator clicks, type, and wait. | Phase 5F adds compact state-diff evidence to click/type/wait outputs before Phase 6. It must not route tasks, promote the provider, add IPC/UI, or leak raw page text. |
 | 2026-05-24 | Merge Phase 5F and start Phase 6A identity revocation contract. | PR #460 merged as `76fea14c`; Phase 5 now covers the feature flag, app-managed pack, supervised child worker, JSON envelope, declarative actions, raw-script exclusion, timeout/kill, locator/coordinate fallback, risk screenshots, artifact refs, and compact state-diff evidence. | Phase 6 starts with revoked-visible identity metadata and resolve/load blocking before Settings connect/status UI or task drain behavior. |
+| 2026-05-24 | Merge Phase 6A and start Phase 6B identity IPC. | PR #461 merged as `a5fff49e`; identity metadata can now preserve revoked status while blocking resolve/load and deleting secrets. | Phase 6B exposes safe list/revoke IPC and frontend bridge contracts without Settings UI, auth WebView, task drain, or raw secret exposure. |
 
 ---
 
@@ -117,9 +118,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6a-identity-revocation-contract` |
-| Current phase branch | `codex/browser-runtime-phase6a-identity-revocation-contract` |
-| Current local base | `76fea14c Merge pull request #460 from novolei/codex/browser-runtime-phase5f-action-state-diff` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6b-identity-ipc` |
+| Current phase branch | `codex/browser-runtime-phase6b-identity-ipc` |
+| Current local base | `a5fff49e Merge pull request #461 from novolei/codex/browser-runtime-phase6a-identity-revocation-contract` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -171,8 +172,9 @@
 | Phase 5D provider-adapter implementation commit | Merged through PR #458 as `48e4b7a3 feat(browser): add playwright cli provider adapter`; merge commit `78561429`. |
 | Phase 5E fixture-gates implementation commit | Merged through PR #459 as `a8345e97 test(browser): cover playwright cli fixture gates`; merge commit `e3e57f72`. |
 | Phase 5F action-state-diff implementation commit | Merged through PR #460 as `7c045fdd feat(browser): add playwright cli action state diffs`; merge commit `76fea14c`. |
-| Phase 6A identity-revocation implementation commit | PR #461 open as `b412b368 feat(browser): add identity revocation contract` on `codex/browser-runtime-phase6a-identity-revocation-contract`. |
-| Known pre-existing tracked changes | None in the Phase 6A identity-revocation worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Phase 6A identity-revocation implementation commit | Merged through PR #461 as `6214f9fb feat(browser): add identity revocation contract`; merge commit `a5fff49e`. |
+| Phase 6B identity-IPC implementation commit | In progress on `codex/browser-runtime-phase6b-identity-ipc`. |
+| Known pre-existing tracked changes | None in the Phase 6B identity-IPC worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
 | Linked ignored runtime resources | `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -4479,9 +4481,92 @@ Phase 6A can start because:
 
 ### Phase 6A Identity Revocation Contract Next Action
 
-- PR #461 is open.
-- If GitHub reports CLEAN and no HIGH/CRITICAL issue appears, merge and sync
-  `main`, then continue to Settings identity status/connect UX.
+- PR #461 merged into `main` and `origin/main` as `a5fff49e`.
+- Continue with Phase 6B identity IPC from merge commit `a5fff49e`.
+
+## Phase 6B Identity IPC Contract Entry Criteria
+
+Phase 6B can start because:
+
+- PR #461 merged the revoked-visible backend identity contract into `main` /
+  `origin/main`;
+- ADR Phase 6 requires Settings to show authorized identity status, last-used
+  time, active tasks, and one-click revoke;
+- a safe IPC/bridge contract should exist before rendering Settings UI, so the
+  UI never consumes raw backend identity metadata with `secret_handle`;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6b-identity-ipc`;
+- the branch starts from `a5fff49e`, the current `origin/main`.
+
+## Phase 6B Identity IPC Contract Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase6b-identity-ipc.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6b-identity-ipc`
+- Branch:
+  `codex/browser-runtime-phase6b-identity-ipc`
+- Scope:
+  safe browser identity status/revocation IPC and frontend bridge types/calls.
+- Current PR:
+  not opened yet.
+- Non-goal:
+  no Settings UI, connect flow, authorization WebView, `tauri_commands.rs`,
+  `agentic_loop.rs`, task drain, paused checkpoint, payment confirmation,
+  external Chrome attach, DB migration, provider promotion, or raw
+  storage-state/secret-handle exposure.
+- Rollback:
+  revert this PR; Phase 6A backend identity metadata and revocation behavior
+  remain available to internal callers.
+
+### Phase 6B Identity IPC Contract Impact Notes
+
+- GitNexus impact for `src-tauri/src/main.rs::main` before command registration
+  reported LOW risk, 0 direct callers, and 0 affected processes.
+- `src-tauri/src/main.rs` is touched only to register additive Tauri commands.
+- `src-tauri/src/browser/identity_ipc.rs` returns frontend-safe summaries that
+  omit `secret_handle`; active task counts are explicitly `null` until a later
+  task-drain phase owns active-task tracking.
+- This slice does not emit TaskEvents, mutate tasks, launch a browser, or read
+  storage-state secrets over IPC.
+
+### Phase 6B Identity IPC Contract Verification Notes
+
+- Focused identity IPC verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::identity_ipc`
+  returned `3 passed; 0 failed; 2655 filtered out`.
+- Focused identity verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::identity`
+  returned `10 passed; 0 failed; 2648 filtered out`.
+- Focused frontend bridge verification passed:
+  `cd ui && npm test -- --run src/lib/tauri-bridge.browser-identity.test.ts`
+  returned `1 passed`, `2 passed`.
+- Formatting check passed for the new Rust module:
+  `rustfmt --edition 2021 --check src-tauri/src/browser/identity_ipc.rs`.
+- Whole-file `rustfmt --edition 2021 --check --config skip_children=true`
+  against `src-tauri/src/main.rs` and `src-tauri/src/browser/mod.rs` still
+  reports pre-existing legacy formatting churn outside this PR's edited lines;
+  that unrelated reformat was intentionally not accepted into this phase.
+- Default browser-runtime regression checks passed:
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+    returned `41 passed; 0 failed; 2617 filtered out`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+    returned `53 passed; 0 failed; 2605 filtered out`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+    returned `6 passed; 0 failed; 2652 filtered out`.
+- `git diff --check -- docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-phase6b-identity-ipc.md src-tauri/src/browser/identity_ipc.rs src-tauri/src/browser/mod.rs src-tauri/src/main.rs ui/src/lib/tauri-bridge.ts ui/src/lib/tauri-bridge.browser-identity.test.ts`
+  returned no whitespace errors.
+- GitNexus staged detect after indexing the Phase 6B worktree reported MEDIUM
+  risk, 7 changed files, 67 changed symbols, and 4 affected processes rooted in
+  `src-tauri/src/main.rs::main` command registration:
+  `Main -> PinnedSpecSortableId`, `Main -> Parent`, `Main -> Home_dir`, and
+  `Main -> ProcessLock`. No HIGH/CRITICAL risk was reported.
+
+### Phase 6B Identity IPC Contract Next Action
+
+- Open PR for Phase 6B. If GitHub reports CLEAN and checks stay green, merge
+  and continue to Settings identity status/connect UX as the next Phase 6
+  slice.
 
 ---
 
