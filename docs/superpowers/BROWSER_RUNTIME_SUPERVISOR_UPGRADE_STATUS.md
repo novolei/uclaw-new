@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 4J paused-waiting runtime contract open as PR #436
+> Current phase: Phase 4K paused-waiting task projection open as PR #437
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -23,7 +23,7 @@
 | Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
-| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4I merged; Phase 4J paused-waiting runtime contract open as PR #436 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4j-paused-waiting-contract` / `codex/browser-runtime-phase4j-paused-waiting-contract` | Merge PR #436 if GitHub reports CLEAN, then continue with task-runtime wiring in a separate scoped phase because it may touch agent-loop boundaries. |
+| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4J merged; Phase 4K paused-waiting task projection open as PR #437 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4k-task-runtime-pause-wiring` / `codex/browser-runtime-phase4k-task-runtime-pause-wiring` | Merge PR #437 if GitHub reports CLEAN, then plan true runtime prompt dispatch / task pause creation as a separate browser task-runtime phase. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
@@ -71,6 +71,8 @@
 | 2026-05-24 | Open Phase 4I error recovery settings deep-link PR. | PR #435 contains `open_browser_runtime_settings`, focused direct/grouped renderer tests, final HIGH GitNexus detect notes, and reviewer acceptance from Ptolemy and Jason. | Merge if GitHub reports CLEAN; next Phase 4 work should plan task checkpoint/defer semantics separately because it may touch task runtime boundaries. |
 | 2026-05-24 | Merge Phase 4I and start Phase 4J as a backend paused-waiting contract. | PR #435 merged as `ab65fab8`; ADR Phase 4 still requires deferral to checkpoint tasks as `paused_waiting_for_browser_runtime` unless a no-browser fallback can satisfy the request. | Phase 4J adds only the browser task status string and rollout conversion contract; agent-loop wiring, prompt dispatch, IPC, and real checkpoint writes remain later slices. |
 | 2026-05-24 | Open Phase 4J paused-waiting runtime contract PR. | PR #436 contains `PausedWaitingForBrowserRuntime`, task-store roundtrip coverage, rollout bridge checkpoint/boundary conversion, and Phase 4J plan/tracker updates. GitNexus staged detect is LOW with 0 affected processes. | Merge if GitHub reports CLEAN; next slice should plan task-runtime wiring separately before any real prompt dispatch or checkpoint side effects. |
+| 2026-05-24 | Merge Phase 4J and start Phase 4K as frontend paused-waiting projection. | PR #436 merged as `1f8739ec`; backend can now emit `paused_waiting_for_browser_runtime`, but frontend Browser task projection types and monitor copy do not yet recognize that status. | Phase 4K is deliberately projection-only because true prompt dispatch/runtime gating touches browser task execution boundaries; Phase 4L should own that wiring after a separate plan. |
+| 2026-05-24 | Open Phase 4K paused-waiting task projection PR. | PR #437 contains frontend status union updates, BrowserTaskMonitor readable waiting-runtime rendering, focused monitor/hook tests, and reviewer acceptance for the CRITICAL pre-edit UI path. | Merge if GitHub reports CLEAN; next slice must not be folded into this PR and should plan task-runtime prompt dispatch separately. |
 
 ---
 
@@ -79,9 +81,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4j-paused-waiting-contract` |
-| Current phase branch | `codex/browser-runtime-phase4j-paused-waiting-contract` |
-| Current local base | `ab65fab8 Merge pull request #435 from novolei/codex/browser-runtime-phase4i-error-recovery-deep-link` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4k-task-runtime-pause-wiring` |
+| Current phase branch | `codex/browser-runtime-phase4k-task-runtime-pause-wiring` |
+| Current local base | `1f8739ec Merge pull request #436 from novolei/codex/browser-runtime-phase4j-paused-waiting-contract` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -108,9 +110,10 @@
 | Phase 4G implementation commit | Merged through PR #433 as `a3bcb459 feat(browser): link startup doctor to runtime settings`; merge commit `5dd0745c`. |
 | Phase 4H implementation commit | Merged through PR #434 as `d02ae409 feat(browser): link task-time prompt to runtime settings`; merge commit `bf6a4693`. |
 | Phase 4I implementation commit | Merged through PR #435 as `007c89ea feat(browser): link recovery errors to runtime settings`; merge commit `ab65fab8`. |
-| Phase 4J implementation commit | Open as PR #436 from `codex/browser-runtime-phase4j-paused-waiting-contract`; implementation commit is the PR branch tip with subject `feat(browser): add paused-waiting runtime task status`. |
-| Known pre-existing tracked changes | None in the Phase 4J worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | Phase 4J used ignored local `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` links from the primary worktree for Rust verification only. |
+| Phase 4J implementation commit | Merged through PR #436 as `24ae4b22 feat(browser): add paused-waiting runtime task status`; merge commit `1f8739ec`. |
+| Phase 4K implementation commit | Open as PR #437 from `codex/browser-runtime-phase4k-task-runtime-pause-wiring`; implementation commit is the PR branch tip with subject `feat(browser): show paused-waiting runtime task status`. |
+| Known pre-existing tracked changes | None in the Phase 4K worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | Phase 4K used ignored local `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` links from the primary worktree for verification only. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -2276,6 +2279,101 @@ Recommended Phase 4J checks:
 - GitNexus `detect_changes` with compare scope against `origin/main`
   reported LOW risk: 6 changed files, 27 changed symbols, 0 affected
   processes.
+
+## Phase 4K Entry Criteria
+
+Phase 4K can start because:
+
+- PR #436 merged the backend `paused_waiting_for_browser_runtime` status and
+  rollout conversion into `main` and `origin/main`;
+- the Phase 4K worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4k-task-runtime-pause-wiring`;
+- the branch starts from `1f8739ec`, the current `origin/main`;
+- frontend task projection types and the Browser task monitor do not yet
+  recognize the new paused-waiting status;
+- true runtime prompt dispatch and browser-task pause creation would touch
+  execution boundaries, so this PR is intentionally a frontend projection slice.
+
+Recommended Phase 4K checks:
+
+- `BrowserTaskStatus` frontend type unions include
+  `paused_waiting_for_browser_runtime`;
+- `BrowserTaskMonitor` renders the new status as a waiting/checkpoint state
+  with user-readable copy;
+- browser task event hooks can store the new status without dropping or
+  misclassifying the run;
+- no BrowserPanel layout, event subscription, IPC, runtime-pack, provider, or
+  Settings behavior changes.
+
+## Phase 4K Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase4k-paused-waiting-projection.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4k-task-runtime-pause-wiring`
+- Branch:
+  `codex/browser-runtime-phase4k-task-runtime-pause-wiring`
+- Scope:
+  make `paused_waiting_for_browser_runtime` visible and typed in frontend
+  browser task projection only.
+- Current PR:
+  PR #437.
+- DMZ files:
+  none planned.
+- Migration:
+  none planned.
+- Rollback:
+  revert the frontend status type additions, monitor rendering/tests, this
+  status file update, and the Phase 4K plan file.
+
+### Phase 4K Impact Notes
+
+- `npx gitnexus analyze` indexed the Phase 4K worktree before impact analysis.
+  It updated only `AGENTS.md` / `CLAUDE.md` statistics, and those noise changes
+  were restored.
+- Pre-edit GitNexus impact for `BrowserTaskStatus` type aliases in
+  `ui/src/atoms/browser-atoms.ts` and `ui/src/lib/tauri-bridge.ts` could not
+  resolve the type alias symbols, so those aliases are treated as unknown
+  impact.
+- Pre-edit GitNexus impact for `BrowserTaskMonitor` reported CRITICAL risk
+  because it sits under `BrowserPanel` and reaches BrowserViewer, Preview,
+  Tabs, Automation, and KaleidoscopeShell paths.
+- Fresh reviewer sub-agent Aristotle returned `REVIEW ACCEPTED`, provided the
+  slice stays projection-only and includes focused monitor, hook, BrowserPanel,
+  and UI build verification.
+- This slice does not change browser execution, prompt dispatch, backend IPC,
+  runtime-pack actions, provider selection, Settings, or checkpoint writes.
+- Staged GitNexus detect reported LOW risk: 7 changed files, 20 changed
+  symbols, 0 affected processes.
+
+### Phase 4K Verification Notes
+
+- `cd ui && npm test -- --run src/components/browser/BrowserTaskMonitor.test.tsx`
+  passed: 1 passed, 0 failed.
+- `cd ui && npm test -- --run src/hooks/useBrowserTaskEvents.test.tsx`
+  passed: 4 passed, 0 failed.
+- `cd ui && npm test -- --run src/components/browser/BrowserPanel.test.tsx`
+  passed: 1 passed, 0 failed, with the existing Jotai `atomFamily`
+  deprecation warning.
+- `cd ui && npm run build` passed, with existing Vite dynamic import and
+  chunk-size warnings.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  passed: 32 passed, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  passed: 44 passed, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  passed: 6 passed, 0 failed.
+- `git diff --check -- docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md
+  docs/superpowers/plans/2026-05-24-browser-runtime-phase4k-paused-waiting-projection.md
+  ui/src/atoms/browser-atoms.ts ui/src/lib/tauri-bridge.ts
+  ui/src/components/browser/BrowserTaskMonitor.tsx
+  ui/src/components/browser/BrowserTaskMonitor.test.tsx
+  ui/src/hooks/useBrowserTaskEvents.test.tsx` passed.
+- `git diff --cached --check` passed.
+- `git diff -- AGENTS.md CLAUDE.md` was empty after restoring GitNexus
+  statistics noise.
+- GitNexus `detect_changes` with staged scope reported LOW risk: 7 changed
+  files, 20 changed symbols, 0 affected processes.
 
 ---
 

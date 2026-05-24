@@ -51,6 +51,30 @@ describe('useBrowserTaskEvents', () => {
     expect(store.get(browserTaskRunAtom).get('sess-1')?.task).toBe('Search')
   })
 
+  it('stores paused-waiting runtime task run status', async () => {
+    const store = createStore()
+    let onRun: Parameters<typeof bridge.listenBrowserTaskRun>[0] | null = null
+    bridge.listenBrowserTaskRun.mockImplementationOnce((handler) => {
+      onRun = handler
+      return Promise.resolve(vi.fn())
+    })
+
+    renderHook(() => useBrowserTaskEvents('sess-1'), { wrapper: wrapper(store) })
+    await flush()
+
+    act(() => {
+      onRun?.({
+        runId: 'run-1',
+        sessionId: 'sess-1',
+        task: 'Search',
+        status: 'paused_waiting_for_browser_runtime',
+        steps: [],
+      })
+    })
+
+    expect(store.get(browserTaskRunAtom).get('sess-1')?.status).toBe('paused_waiting_for_browser_runtime')
+  })
+
   it('upserts task steps in step order', async () => {
     const store = createStore()
     let onStep: Parameters<typeof bridge.listenBrowserTaskStep>[0] | null = null
@@ -82,5 +106,39 @@ describe('useBrowserTaskEvents', () => {
 
     const steps = store.get(browserTaskRunAtom).get('sess-1')?.steps
     expect(steps?.map((s) => s.actionName)).toEqual(['decide', 'browser_click'])
+  })
+
+  it('upserts paused-waiting runtime status from task steps', async () => {
+    const store = createStore()
+    let onStep: Parameters<typeof bridge.listenBrowserTaskStep>[0] | null = null
+    bridge.listenBrowserTaskStep.mockImplementationOnce((handler) => {
+      onStep = handler
+      return Promise.resolve(vi.fn())
+    })
+
+    renderHook(() => useBrowserTaskEvents('sess-1'), { wrapper: wrapper(store) })
+    await flush()
+
+    act(() => {
+      onStep?.({
+        runId: 'run-1',
+        sessionId: 'sess-1',
+        status: 'paused_waiting_for_browser_runtime',
+        step: {
+          stepIndex: 1,
+          phase: 'done',
+          observationSummary: '',
+          reasoning: 'Browser runtime preparation was deferred.',
+          actionName: 'checkpoint_pause',
+          actionArgs: {},
+          ok: false,
+          message: null,
+          error: 'Browser task is waiting for runtime preparation.',
+          timestampMs: 123,
+        },
+      })
+    })
+
+    expect(store.get(browserTaskRunAtom).get('sess-1')?.status).toBe('paused_waiting_for_browser_runtime')
   })
 })

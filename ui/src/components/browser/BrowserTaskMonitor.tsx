@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useAtomValue } from 'jotai'
 import { Brain, CheckCircle2, Eye, MousePointer2, RefreshCw, XCircle } from 'lucide-react'
-import { browserTaskRunAtom, type BrowserTaskStepEntry, type BrowserTaskStepPhase } from '@/atoms/browser-atoms'
+import { browserTaskRunAtom, type BrowserTaskStatus, type BrowserTaskStepEntry, type BrowserTaskStepPhase } from '@/atoms/browser-atoms'
 import { cn } from '@/lib/utils'
 
 interface BrowserTaskMonitorProps {
@@ -39,6 +39,11 @@ function StepRow({ step }: { step: BrowserTaskStepEntry }): React.ReactElement {
   )
 }
 
+function statusLabel(status: BrowserTaskStatus): string {
+  if (status === 'paused_waiting_for_browser_runtime') return 'waiting for runtime'
+  return status
+}
+
 export function BrowserTaskMonitor({ sessionId }: BrowserTaskMonitorProps): React.ReactElement | null {
   const runMap = useAtomValue(browserTaskRunAtom)
   const run = runMap.get(sessionId)
@@ -48,7 +53,8 @@ export function BrowserTaskMonitor({ sessionId }: BrowserTaskMonitorProps): Reac
   const done = run.status === 'completed'
   const failed = run.status === 'failed' || run.status === 'stopped'
   const needsUser = run.status === 'needs_user_intervention'
-  const checkpointed = run.status === 'paused_checkpointed'
+  const waitingRuntime = run.status === 'paused_waiting_for_browser_runtime'
+  const checkpointed = run.status === 'paused_checkpointed' || waitingRuntime
 
   return (
     <div className="border-t border-border/50 bg-background/95">
@@ -67,7 +73,7 @@ export function BrowserTaskMonitor({ sessionId }: BrowserTaskMonitorProps): Reac
           checkpointed && 'bg-violet-500/10 text-violet-600',
           !done && !failed && !needsUser && !checkpointed && 'bg-blue-500/10 text-blue-600',
         )}>
-          {run.status}
+          {statusLabel(run.status)}
         </span>
       </div>
       <div className="max-h-36 overflow-y-auto py-1">
