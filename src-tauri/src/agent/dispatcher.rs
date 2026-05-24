@@ -1,23 +1,25 @@
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use async_trait::async_trait;
-use tauri::Emitter;
-use crate::agent::types::*;
-use crate::agent::tools::tool::{
-    execute_tool_with_context, ToolExecutionContext, ToolRegistry, ToolOutput,
-};
 use crate::agent::gep::repository::GeneRepository;
-use crate::agent::gep::retrieval::{GeneRetriever, GeneMatch, format_gene_injection};
-use crate::agent::gep::types::{Capsule, CapsuleOutcome, OutcomeStatus, BlastRadius, EnvFingerprint, EvolutionEvent};
+use crate::agent::gep::retrieval::{format_gene_injection, GeneMatch, GeneRetriever};
+use crate::agent::gep::types::{
+    BlastRadius, Capsule, CapsuleOutcome, EnvFingerprint, EvolutionEvent, OutcomeStatus,
+};
+use crate::agent::tools::tool::{
+    execute_tool_with_context, ToolExecutionContext, ToolOutput, ToolRegistry,
+};
+use crate::agent::types::*;
 use crate::app::PendingApprovals;
+use crate::error::Error;
 use crate::infra::InfraService;
 use crate::llm::LlmProvider;
-use crate::error::Error;
-use crate::safety::{SafetyManager, SafetyMode, ApprovalDecision};
+use crate::safety::{ApprovalDecision, SafetyManager, SafetyMode};
+use async_trait::async_trait;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::Mutex;
+use tauri::Emitter;
 
-use crate::agent::retry::AgentRetryEvent;
 use crate::agent::llm_stream::StreamSink;
+use crate::agent::retry::AgentRetryEvent;
 
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
 /// It assembles the conversation context, delegates LLM calls, and executes tools.
@@ -59,9 +61,7 @@ pub struct ChatDelegate {
     /// the rest of the delegate's short-lived locks do: never held
     /// across awaits.
     last_memory_context_snapshot:
-        std::sync::Mutex<
-            Option<crate::agent::context_diff::LineFragmentSnapshot>,
-        >,
+        std::sync::Mutex<Option<crate::agent::context_diff::LineFragmentSnapshot>>,
     /// InfraService for publishing tool execution events
     infra_service: Option<Arc<InfraService>>,
     /// Optional trajectory store for recording tool turns
@@ -194,7 +194,11 @@ impl ChatDelegate {
         workspace_root: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
-            llm, tools, app_handle, model, system_prompt,
+            llm,
+            tools,
+            app_handle,
+            model,
+            system_prompt,
             stop_flag: Arc::new(AtomicBool::new(false)),
             safety_manager,
             safety_mode,
@@ -241,10 +245,7 @@ impl ChatDelegate {
     /// `Arc` to the dispatcher, which keeps a clone alongside the
     /// caller's clone. Both are dropped at the same time (end of agent
     /// loop), which tears down the ticker via Drop.
-    pub fn set_heartbeat(
-        &mut self,
-        hb: Arc<crate::agent::heartbeat::HeartbeatSupervisor>,
-    ) {
+    pub fn set_heartbeat(&mut self, hb: Arc<crate::agent::heartbeat::HeartbeatSupervisor>) {
         self.heartbeat = Some(hb);
     }
 
@@ -278,8 +279,7 @@ impl ChatDelegate {
     /// without having to wait for a screenshot to actually trigger the
     /// strip path.
     pub fn set_provider(&mut self, provider: String) {
-        let supports_images =
-            crate::agent::image_policy::supports_images(&provider, &self.model);
+        let supports_images = crate::agent::image_policy::supports_images(&provider, &self.model);
         tracing::info!(
             provider = %provider,
             model = %self.model,
@@ -331,8 +331,7 @@ impl ChatDelegate {
         let blast_radius = match &self.workspace_root {
             Some(root) => {
                 let repo_path = root.to_string_lossy();
-                crate::agent::gep::git_integration::compute_blast_radius(&repo_path)
-                    .unwrap_or(None)
+                crate::agent::gep::git_integration::compute_blast_radius(&repo_path).unwrap_or(None)
             }
             None => None,
         };
@@ -340,11 +339,18 @@ impl ChatDelegate {
         let now_ts = chrono::Utc::now().timestamp_millis();
 
         for gm in &gene_matches {
-            let capsule_id = format!("cap_{}", uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string());
+            let capsule_id = format!(
+                "cap_{}",
+                uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string()
+            );
 
             // Determine outcome status from recent tool errors
             let (outcome_status, outcome_score) = {
-                let errors = self.recent_tool_errors.lock().map(|e| e.clone()).unwrap_or_default();
+                let errors = self
+                    .recent_tool_errors
+                    .lock()
+                    .map(|e| e.clone())
+                    .unwrap_or_default();
                 if errors.is_empty() {
                     (OutcomeStatus::Success, 0.85)
                 } else if errors.len() <= 2 {
@@ -354,7 +360,9 @@ impl ChatDelegate {
                 }
             };
 
-            let br = blast_radius.clone().unwrap_or(BlastRadius { files: 0, lines: 0 });
+            let br = blast_radius
+                .clone()
+                .unwrap_or(BlastRadius { files: 0, lines: 0 });
 
             let capsule = Capsule {
                 id: capsule_id.clone(),
@@ -384,7 +392,8 @@ impl ChatDelegate {
                 if let Ok(repo) = repo_arc.lock() {
                     let prev_capsules = repo.list_capsules(&gm.gene.gene_id).unwrap_or_default();
                     let effective_streak = capsule.compute_effective_streak(&prev_capsules, now_ts);
-                    let prev_successes = prev_capsules.iter()
+                    let prev_successes = prev_capsules
+                        .iter()
                         .filter(|c| c.outcome.status == OutcomeStatus::Success)
                         .count() as u32;
 
@@ -421,9 +430,7 @@ impl ChatDelegate {
                         created_at: now_ts,
                     };
                     if let Err(e) = repo.store_event(&event) {
-                        tracing::warn!(
-                            "[ChatDelegate] Failed to store EvolutionEvent: {}", e
-                        );
+                        tracing::warn!("[ChatDelegate] Failed to store EvolutionEvent: {}", e);
                     }
                 }
             }
@@ -448,11 +455,9 @@ impl ChatDelegate {
                     "lines": br.lines,
                 });
 
-                infra.publish_capsule_created(
-                    "local",
-                    &gm.gene.gene_id,
-                    metadata,
-                ).await;
+                infra
+                    .publish_capsule_created("local", &gm.gene.gene_id, metadata)
+                    .await;
 
                 tracing::info!(
                     gene_id = %gm.gene.gene_id,
@@ -473,7 +478,8 @@ impl ChatDelegate {
                     for gm in &gene_matches {
                         if let Ok(capsules) = repo.list_capsules(&gm.gene.gene_id) {
                             if let Some(latest) = capsules.first() {
-                                let prev: Vec<Capsule> = capsules.iter().skip(1).take(5).cloned().collect();
+                                let prev: Vec<Capsule> =
+                                    capsules.iter().skip(1).take(5).cloned().collect();
                                 let streak = latest.compute_effective_streak(&prev, now_ts);
                                 streaks.insert(gm.gene.gene_id.clone(), streak);
                             }
@@ -666,7 +672,7 @@ impl ChatDelegate {
     /// minute boundary). Moving it here keeps the system prompt byte-stable
     /// across all iterations in a session so cache_control: ephemeral hits
     /// reliably from iteration 2 onward.
-    fn build_dynamic_context(&self) -> String {
+    fn build_dynamic_context(&self, messages: &[crate::agent::types::ChatMessage]) -> String {
         use chrono::{Datelike, Local, Timelike};
         let now = Local::now();
         let weekday = match now.weekday() {
@@ -680,7 +686,12 @@ impl ChatDelegate {
         };
         let time_str = format!(
             "{}年{}月{}日 {} {:02}:{:02}",
-            now.year(), now.month(), now.day(), weekday, now.hour(), now.minute(),
+            now.year(),
+            now.month(),
+            now.day(),
+            weekday,
+            now.hour(),
+            now.minute(),
         );
         let mut block = format!(
             "<system_info>\n当前时间: {}\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。",
@@ -716,10 +727,8 @@ impl ChatDelegate {
             // mechanism for "saw it last turn". The delta block is
             // pure additional signal, not a replacement.
             const SIGNIFICANT_DRIFT_THRESHOLD: f32 = 0.40;
-            let new_snapshot = crate::agent::context_diff::LineFragmentSnapshot::from_text(
-                "memory_context",
-                ctx,
-            );
+            let new_snapshot =
+                crate::agent::context_diff::LineFragmentSnapshot::from_text("memory_context", ctx);
             let prior = self
                 .last_memory_context_snapshot
                 .lock()
@@ -736,10 +745,7 @@ impl ChatDelegate {
                     None
                 }
                 Some(prior_snap) => {
-                    let diff = crate::agent::context_diff::line_diff(
-                        prior_snap,
-                        &new_snapshot,
-                    );
+                    let diff = crate::agent::context_diff::line_diff(prior_snap, &new_snapshot);
                     let stats = diff.stats();
                     if diff.is_empty() {
                         tracing::debug!(
@@ -748,9 +754,7 @@ impl ChatDelegate {
                             "[M2-D] turn=N memory_context unchanged emitted=full cache_state=hit-expected",
                         );
                         None
-                    } else if stats
-                        .is_significant_change(SIGNIFICANT_DRIFT_THRESHOLD)
-                    {
+                    } else if stats.is_significant_change(SIGNIFICANT_DRIFT_THRESHOLD) {
                         tracing::info!(
                             added = stats.added,
                             removed = stats.removed,
@@ -761,8 +765,7 @@ impl ChatDelegate {
                         );
                         None
                     } else {
-                        let annotation =
-                            crate::agent::context_diff::render_delta_annotation(&diff);
+                        let annotation = crate::agent::context_diff::render_delta_annotation(&diff);
                         tracing::info!(
                             added = stats.added,
                             removed = stats.removed,
@@ -810,6 +813,68 @@ impl ChatDelegate {
             block.push_str(&self.gbrain_knowledge_block);
         }
 
+        // Active Plan Injection: if there is an uncompleted plan file active in
+        // this session or present on disk, inject its full markdown content
+        // into the dynamic context. This prevents the agent from being blind to
+        // the existing plan upon starting a new turn and redundantly recreating
+        // it with plan_write.
+        let active_plan_filename = extract_active_plan_from_history(messages).or_else(|| {
+            let root = self.workspace_root.as_deref()?;
+            if root.as_os_str().is_empty() {
+                return None;
+            }
+            let plans_dir = root.join(".uclaw").join("plans");
+            let entries = std::fs::read_dir(&plans_dir).ok()?;
+            let mut candidates = Vec::new();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                    continue;
+                }
+                if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                    // Only consider it a candidate if it's uncompleted and has undone steps
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        if content.contains("status: completed") {
+                            continue;
+                        }
+                        let has_undone = crate::agent::plan_state::pending_plan_steps_in_file(
+                            Some(root),
+                            filename,
+                        )
+                        .is_some();
+                        if !has_undone {
+                            continue;
+                        }
+                        if let Ok(meta) = entry.metadata() {
+                            if let Ok(modified) = meta.modified() {
+                                candidates.push((modified, filename.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+            candidates.sort_by(|a, b| b.0.cmp(&a.0));
+            candidates.first().map(|(_, filename)| filename.clone())
+        });
+
+        if let Some(ref filename) = active_plan_filename {
+            if let Some(ref root) = self.workspace_root {
+                let path = root.join(".uclaw").join("plans").join(filename);
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    let has_undone =
+                        crate::agent::plan_state::pending_plan_steps_in_file(Some(root), filename)
+                            .is_some();
+                    if !content.contains("status: completed") && has_undone {
+                        block.push_str("\n\n<active_plan>\n文件名: ");
+                        block.push_str(filename);
+                        block.push_str("\n注意: 这是当前任务正在实施的计划文件。无需重新调用 `plan_write` 创建新计划！请继续实施以下计划中尚未完成的步骤。当且仅当一个步骤实际开发、测试、验证通过后，调用 `plan_update` 标记该步骤为 done: true。未开发完成前切勿将其标记为 done。\n\n");
+                        block.push_str(&content);
+                        block.push_str("\n</active_plan>");
+                    }
+                }
+            }
+        }
+
         block
     }
 
@@ -820,7 +885,12 @@ impl ChatDelegate {
         if let Some(m) = self.safety_mode.as_ref() {
             return m.clone();
         }
-        self.safety_manager.read().await.policy().global_mode.clone()
+        self.safety_manager
+            .read()
+            .await
+            .policy()
+            .global_mode
+            .clone()
     }
 
     /// Returns a cloneable handle that can be used to signal the loop to stop.
@@ -831,11 +901,14 @@ impl ChatDelegate {
     /// Emit a text delta to the frontend
     fn emit_text_delta(&self, chunk: &str) {
         let seq = self.chunk_seq.fetch_add(1, Ordering::Relaxed);
-        let _ = self.app_handle.emit("chat:stream-chunk", serde_json::json!({
-            "conversationId": self.conversation_id,
-            "delta": chunk,
-            "seq": seq,
-        }));
+        let _ = self.app_handle.emit(
+            "chat:stream-chunk",
+            serde_json::json!({
+                "conversationId": self.conversation_id,
+                "delta": chunk,
+                "seq": seq,
+            }),
+        );
         // Bundle 27-A — feed the partial buffer + beat. The buffer is
         // what gets persisted as "[interrupted-recovered]" assistant
         // text if the process dies mid-stream. Done as fire-and-forget
@@ -866,73 +939,86 @@ impl ChatDelegate {
         input: &serde_json::Value,
         preview_target: Option<&str>,
     ) {
-        let _ = self.app_handle.emit("chat:stream-tool-activity", serde_json::json!({
-            "conversationId": self.conversation_id,
-            "activity": {
-                "type": "tool_start",
-                "toolName": name,
-                "toolCallId": id,
-                "input": input,
-                "previewTarget": preview_target,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            }
-        }));
+        let _ = self.app_handle.emit(
+            "chat:stream-tool-activity",
+            serde_json::json!({
+                "conversationId": self.conversation_id,
+                "activity": {
+                    "type": "tool_start",
+                    "toolName": name,
+                    "toolCallId": id,
+                    "input": input,
+                    "previewTarget": preview_target,
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                }
+            }),
+        );
         // Bundle 27-A — tool boundaries are the typical place where
         // the agent hangs (browser navigate, long bash, MCP roundtrip).
         // Mark activity at start AND completion so heartbeat reflects
         // the actual stage.
         self.beat(&format!(
             "{}:{}",
-            crate::agent::heartbeat::stages::TOOL_CALL, name
+            crate::agent::heartbeat::stages::TOOL_CALL,
+            name
         ));
     }
 
     /// Emit a tool result to the frontend
     fn emit_tool_result(&self, name: &str, id: &str, output: &ToolOutput) {
-        let _ = self.app_handle.emit("chat:stream-tool-activity", serde_json::json!({
-            "conversationId": self.conversation_id,
-            "activity": {
-                "type": "tool_result",
-                "toolName": name,
-                "toolCallId": id,
-                "result": output.result,
-                "durationMs": output.duration_ms,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-                // Soft-error detection: tools like bash signal failure via
-                // { ok: false, exit_code: 1, ... } even though the underlying
-                // execution succeeded. Mirror the frontend fallback here so
-                // both the live render and the persisted snapshot see the
-                // same isError value.
-                "isError": detect_soft_tool_error(&output.result),
-            }
-        }));
+        let _ = self.app_handle.emit(
+            "chat:stream-tool-activity",
+            serde_json::json!({
+                "conversationId": self.conversation_id,
+                "activity": {
+                    "type": "tool_result",
+                    "toolName": name,
+                    "toolCallId": id,
+                    "result": output.result,
+                    "durationMs": output.duration_ms,
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                    // Soft-error detection: tools like bash signal failure via
+                    // { ok: false, exit_code: 1, ... } even though the underlying
+                    // execution succeeded. Mirror the frontend fallback here so
+                    // both the live render and the persisted snapshot see the
+                    // same isError value.
+                    "isError": detect_soft_tool_error(&output.result),
+                }
+            }),
+        );
     }
 
     /// Emit a hard-error tool result so the frontend can flip the activity
     /// to "failed" state immediately, instead of letting it spin until the
     /// whole turn completes.
     fn emit_tool_error(&self, name: &str, id: &str, err_msg: &str, duration_ms: u64) {
-        let _ = self.app_handle.emit("chat:stream-tool-activity", serde_json::json!({
-            "conversationId": self.conversation_id,
-            "activity": {
-                "type": "tool_result",
-                "toolName": name,
-                "toolCallId": id,
-                "result": { "ok": false, "error": err_msg },
-                "durationMs": duration_ms,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-                "isError": true,
-            }
-        }));
+        let _ = self.app_handle.emit(
+            "chat:stream-tool-activity",
+            serde_json::json!({
+                "conversationId": self.conversation_id,
+                "activity": {
+                    "type": "tool_result",
+                    "toolName": name,
+                    "toolCallId": id,
+                    "result": { "ok": false, "error": err_msg },
+                    "durationMs": duration_ms,
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                    "isError": true,
+                }
+            }),
+        );
     }
 
     /// Emit a completion event to the frontend
     fn emit_done(&self, text: &str, truncated: bool) {
-        let _ = self.app_handle.emit("chat:stream-complete", serde_json::json!({
-            "conversationId": self.conversation_id,
-            "text": text,
-            "truncated": truncated,
-        }));
+        let _ = self.app_handle.emit(
+            "chat:stream-complete",
+            serde_json::json!({
+                "conversationId": self.conversation_id,
+                "text": text,
+                "truncated": truncated,
+            }),
+        );
         // Bundle 27-A fix (2026-05-22) — DO NOT call `hb.shutdown()` here.
         // Earlier draft removed the flight file at emit_done, which meant
         // the kill-recovery window was approximately zero: by the time the
@@ -960,11 +1046,14 @@ impl ChatDelegate {
     /// Emit thinking block to the frontend
     fn emit_thinking(&self, text: &str) {
         let seq = self.thinking_seq.fetch_add(1, Ordering::Relaxed);
-        let _ = self.app_handle.emit("chat:stream-reasoning", serde_json::json!({
-            "conversationId": self.conversation_id,
-            "delta": text,
-            "seq": seq,
-        }));
+        let _ = self.app_handle.emit(
+            "chat:stream-reasoning",
+            serde_json::json!({
+                "conversationId": self.conversation_id,
+                "delta": text,
+                "seq": seq,
+            }),
+        );
     }
 
     /// Emit thinking-done event to the frontend
@@ -1015,29 +1104,42 @@ impl ChatDelegate {
                     let month_start = crate::cost_store::current_month_start_ms();
                     let total_after = crate::cost_store::monthly_total(&state, month_start);
                     let total_before = (total_after - cost).max(0.0);
-                    if let Some(threshold) = crate::cost_store::fired_threshold(total_before, total_after, budget) {
-                        let _ = self.app_handle.emit("budget:threshold", crate::ipc::BudgetThresholdPayload {
-                            threshold,
-                            current: total_after,
-                            budget,
-                        });
+                    if let Some(threshold) =
+                        crate::cost_store::fired_threshold(total_before, total_after, budget)
+                    {
+                        let _ = self.app_handle.emit(
+                            "budget:threshold",
+                            crate::ipc::BudgetThresholdPayload {
+                                threshold,
+                                current: total_after,
+                                budget,
+                            },
+                        );
                     }
                 }
             }
         }
 
-        let _ = self.app_handle.emit("agent:turn_cost", serde_json::json!({
-            "conversationId": self.conversation_id,
-            "inputTokens": turn_cost.input_tokens,
-            "outputTokens": turn_cost.output_tokens,
-            "cacheReadTokens": turn_cost.cache_read_tokens,
-            "cacheCreationTokens": turn_cost.cache_creation_tokens,
-            "costUsd": turn_cost.cost_usd,
-        }));
+        let _ = self.app_handle.emit(
+            "agent:turn_cost",
+            serde_json::json!({
+                "conversationId": self.conversation_id,
+                "inputTokens": turn_cost.input_tokens,
+                "outputTokens": turn_cost.output_tokens,
+                "cacheReadTokens": turn_cost.cache_read_tokens,
+                "cacheCreationTokens": turn_cost.cache_creation_tokens,
+                "costUsd": turn_cost.cost_usd,
+            }),
+        );
     }
 
     /// Emit context stats after each LLM call
-    fn emit_context_stats(&self, messages: &[ChatMessage], cumulative_input: u32, cumulative_output: u32) {
+    fn emit_context_stats(
+        &self,
+        messages: &[ChatMessage],
+        cumulative_input: u32,
+        cumulative_output: u32,
+    ) {
         let model_context_length = get_model_context_length(&self.model);
         let system_prompt_tokens = estimate_tokens(&self.system_prompt);
         let mut messages_tokens: u32 = 0;
@@ -1052,8 +1154,8 @@ impl ChatDelegate {
             for block in &msg.content {
                 match block {
                     ContentBlock::ToolUse { name, input, .. } => {
-                        tool_use_tokens += estimate_tokens(name)
-                            + estimate_tokens(&input.to_string()) + 10;
+                        tool_use_tokens +=
+                            estimate_tokens(name) + estimate_tokens(&input.to_string()) + 10;
                     }
                     ContentBlock::ToolResult { content, .. } => {
                         tool_use_tokens += estimate_tokens(content) + 5;
@@ -1131,10 +1233,13 @@ impl ChatDelegate {
     /// discard any partially received streaming content before fallback.
     fn emit_stream_reset(&self) {
         tracing::debug!("Emitting stream reset to frontend");
-        let _ = self.app_handle.emit("agent:stream-reset", serde_json::json!({
-            "conversationId": self.conversation_id,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-        }));
+        let _ = self.app_handle.emit(
+            "agent:stream-reset",
+            serde_json::json!({
+                "conversationId": self.conversation_id,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }),
+        );
     }
 
     /// Emit the `agent:retry` IPC event. Failures are non-fatal — we only
@@ -1166,17 +1271,19 @@ impl ChatDelegate {
     /// Spawns a background task to perform unified memory/gbrain extraction after a turn completes.
     fn spawn_post_turn_extraction(&self, reason_ctx: &ReasoningContext) {
         use crate::agent::types::{ContentBlock, MessageRole};
-        
+
         // Find the latest User-role message text
         let user_text = reason_ctx
             .messages
             .iter()
             .rev()
             .find(|m| matches!(m.role, MessageRole::User))
-            .and_then(|m| m.content.iter().find_map(|c| match c {
-                ContentBlock::Text { text } => Some(text.clone()),
-                _ => None,
-            }));
+            .and_then(|m| {
+                m.content.iter().find_map(|c| match c {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+            });
 
         let text = match user_text {
             Some(t) if !t.trim().is_empty() => t,
@@ -1184,11 +1291,7 @@ impl ChatDelegate {
         };
 
         let session_id = self.conversation_id.clone();
-        let turn_id = format!(
-            "{}-{}",
-            session_id,
-            self.turn_index.load(Ordering::Relaxed)
-        );
+        let turn_id = format!("{}-{}", session_id, self.turn_index.load(Ordering::Relaxed));
 
         // Learning extractor
         if self.learning_enabled {
@@ -1292,7 +1395,9 @@ impl ChatDelegate {
                                     .content
                                     .iter()
                                     .filter_map(|block| match block {
-                                        crate::mcp::ContentBlock::Text { text } => Some(text.as_str()),
+                                        crate::mcp::ContentBlock::Text { text } => {
+                                            Some(text.as_str())
+                                        }
                                         _ => None,
                                     })
                                     .collect::<Vec<_>>()
@@ -1350,9 +1455,12 @@ impl StreamSink for ChatDelegate {
 /// - Default: 16384.
 fn compute_max_tokens(model: &str, thinking_enabled: bool) -> u32 {
     let m = model.to_lowercase();
-    let base = if m.contains("sonnet-4") || m.contains("sonnet4")
-        || m.contains("opus-4-6") || m.contains("opus-4-7")
-        || m.contains("opus-4-8") || m.contains("opus-4-9")
+    let base = if m.contains("sonnet-4")
+        || m.contains("sonnet4")
+        || m.contains("opus-4-6")
+        || m.contains("opus-4-7")
+        || m.contains("opus-4-8")
+        || m.contains("opus-4-9")
         || m.contains("opus-5")
     {
         32768
@@ -1395,11 +1503,13 @@ fn text_signals_plan_work(text: &str) -> bool {
     // "implement / add / write / finish" — they're the strongest signal that
     // the agent narrated intent to act on a plan step.
     let plan_keywords = [
-        "plan", "step", "task", "todo",
-        "计划", "步骤", "任务", "待办",
-        "实现", "添加", "编写", "完成",
+        "plan", "step", "task", "todo", "计划", "步骤", "任务", "待办", "实现", "添加", "编写",
+        "完成",
     ];
-    if plan_keywords.iter().any(|kw| lower.contains(kw) || text.contains(kw)) {
+    if plan_keywords
+        .iter()
+        .any(|kw| lower.contains(kw) || text.contains(kw))
+    {
         return true;
     }
 
@@ -1413,11 +1523,25 @@ fn text_signals_plan_work(text: &str) -> bool {
     // for "about to do X" but "正在" only matches "currently doing X".
     if text.len() < 200 {
         let continuation_markers = [
-            "continue", "continuing", "next", "working on",
-            "继续", "接下来", "下一步", "正在",
-            "现在", "目前", "马上", "即将", "开始", "下面",
+            "continue",
+            "continuing",
+            "next",
+            "working on",
+            "继续",
+            "接下来",
+            "下一步",
+            "正在",
+            "现在",
+            "目前",
+            "马上",
+            "即将",
+            "开始",
+            "下面",
         ];
-        if continuation_markers.iter().any(|m| lower.contains(m) || text.contains(m)) {
+        if continuation_markers
+            .iter()
+            .any(|m| lower.contains(m) || text.contains(m))
+        {
             return true;
         }
     }
@@ -1467,7 +1591,11 @@ fn extract_active_plan_from_history(
                         pending_writes.insert(id.clone(), ());
                     }
                 }
-                ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } => {
                     if !pending_writes.contains_key(tool_use_id) {
                         continue;
                     }
@@ -1495,7 +1623,9 @@ fn extract_active_plan_from_history(
 /// after the basename — defensive only, the producer never emits these).
 fn parse_plan_write_result_filename(result_text: &str) -> Option<String> {
     let prefix = "Plan created at ";
-    let path_str = result_text.find(prefix).map(|i| &result_text[i + prefix.len()..])?;
+    let path_str = result_text
+        .find(prefix)
+        .map(|i| &result_text[i + prefix.len()..])?;
     // Trim at first newline / whitespace separator in case the message
     // continues after the path.
     let path_str = path_str.lines().next().unwrap_or(path_str).trim();
@@ -1579,7 +1709,11 @@ impl LoopDelegate for ChatDelegate {
         LoopSignal::Continue
     }
 
-    async fn before_llm_call(&self, _reason_ctx: &mut ReasoningContext, _iteration: usize) -> Option<LoopOutcome> {
+    async fn before_llm_call(
+        &self,
+        _reason_ctx: &mut ReasoningContext,
+        _iteration: usize,
+    ) -> Option<LoopOutcome> {
         None
     }
 
@@ -1617,19 +1751,26 @@ impl LoopDelegate for ChatDelegate {
 
         // Inject matched GEP Genes as control signals
         if let Some(ref retriever) = self.gene_retriever {
-            let last_user_text = reason_ctx.messages.iter().rev()
+            let last_user_text = reason_ctx
+                .messages
+                .iter()
+                .rev()
                 .find(|m| matches!(m.role, crate::agent::types::MessageRole::User))
-                .and_then(|m| m.content.iter().find_map(|b| {
-                    if let crate::agent::types::ContentBlock::Text { text } = b {
-                        Some(text.as_str())
-                    } else {
-                        None
-                    }
-                }))
+                .and_then(|m| {
+                    m.content.iter().find_map(|b| {
+                        if let crate::agent::types::ContentBlock::Text { text } = b {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                })
                 .unwrap_or("");
 
             if !last_user_text.is_empty() {
-                let tool_errors: Vec<String> = self.recent_tool_errors.lock()
+                let tool_errors: Vec<String> = self
+                    .recent_tool_errors
+                    .lock()
                     .map(|e| e.clone())
                     .unwrap_or_default();
                 let matches = retriever.match_genes(last_user_text, &tool_errors, 2).await;
@@ -1656,8 +1797,13 @@ impl LoopDelegate for ChatDelegate {
         if let Some(ref db) = self.db {
             if let Ok(conn) = db.lock() {
                 let window_start = chrono::Utc::now().timestamp_millis() - 7 * 24 * 60 * 60 * 1000;
-                if let Ok(stats) = crate::agent::mode_suggest_store::query_per_pattern_stats(&conn, window_start) {
-                    let total_decided: u32 = stats.iter().map(|s| s.accepted + s.skipped + s.silenced).sum();
+                if let Ok(stats) =
+                    crate::agent::mode_suggest_store::query_per_pattern_stats(&conn, window_start)
+                {
+                    let total_decided: u32 = stats
+                        .iter()
+                        .map(|s| s.accepted + s.skipped + s.silenced)
+                        .sum();
                     let total_accepted: u32 = stats.iter().map(|s| s.accepted).sum();
                     if total_decided >= 10 {
                         let agg_rate = total_accepted as f32 / total_decided as f32;
@@ -1680,9 +1826,13 @@ impl LoopDelegate for ChatDelegate {
         }
 
         // Phase 3 Step 3.5: Dynamic Project-Rule Condensation
-        let active_files = crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER.get_active_files();
+        let active_files =
+            crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER.get_active_files();
         let project_rules = if let Some(ref root) = self.workspace_root {
-            crate::agent::rule_context_builder::RuleContextBuilder::build_context(root, &active_files)
+            crate::agent::rule_context_builder::RuleContextBuilder::build_context(
+                root,
+                &active_files,
+            )
         } else {
             String::new()
         };
@@ -1709,8 +1859,7 @@ impl LoopDelegate for ChatDelegate {
         // The system message stays at index 0 — we only audit the
         // conversation portion to keep the algorithm focused.
         let conversation: Vec<ChatMessage> = messages.drain(1..).collect();
-        let (patched, audit_stats) =
-            crate::agent::call_audit::audit_chat_history(conversation);
+        let (patched, audit_stats) = crate::agent::call_audit::audit_chat_history(conversation);
         messages.extend(patched);
         if !audit_stats.is_clean() {
             tracing::warn!(
@@ -1753,8 +1902,7 @@ impl LoopDelegate for ChatDelegate {
                             })
                             .unwrap_or(false);
                         if is_screenshot {
-                            *content = crate::agent::image_policy::DEFAULT_PLACEHOLDER
-                                .to_string();
+                            *content = crate::agent::image_policy::DEFAULT_PLACEHOLDER.to_string();
                             stripped += 1;
                         }
                     }
@@ -1784,14 +1932,17 @@ impl LoopDelegate for ChatDelegate {
         // Keeping time out of the system prompt preserves byte-stability for caching.
         if let Some(last_user_idx) = messages.iter().rposition(|m| {
             matches!(m.role, crate::agent::types::MessageRole::User)
-                && m.content.iter().any(|b| matches!(b, crate::agent::types::ContentBlock::Text { .. }))
+                && m.content
+                    .iter()
+                    .any(|b| matches!(b, crate::agent::types::ContentBlock::Text { .. }))
         }) {
-            let dyn_ctx = self.build_dynamic_context();
+            let dyn_ctx = self.build_dynamic_context(&messages);
             if !dyn_ctx.is_empty() {
-                if let Some(crate::agent::types::ContentBlock::Text { text }) =
-                    messages[last_user_idx].content.iter_mut().find(|b| {
-                        matches!(b, crate::agent::types::ContentBlock::Text { .. })
-                    })
+                if let Some(crate::agent::types::ContentBlock::Text { text }) = messages
+                    [last_user_idx]
+                    .content
+                    .iter_mut()
+                    .find(|b| matches!(b, crate::agent::types::ContentBlock::Text { .. }))
                 {
                     *text = format!("{}\n\n{}", dyn_ctx, text);
                 }
@@ -1821,10 +1972,11 @@ impl LoopDelegate for ChatDelegate {
             let mut total_stats = crate::agent::tool_shaping::normalize::NormalizeStats::default();
             for def in defs.iter_mut() {
                 let raw = std::mem::replace(&mut def.parameters, serde_json::Value::Null);
-                let (rewritten, stats) = crate::agent::tool_shaping::normalize::normalize_tool_schema(
-                    raw,
-                    crate::agent::tool_shaping::normalize::DEFAULT_MAX_NESTING_DEPTH,
-                );
+                let (rewritten, stats) =
+                    crate::agent::tool_shaping::normalize::normalize_tool_schema(
+                        raw,
+                        crate::agent::tool_shaping::normalize::DEFAULT_MAX_NESTING_DEPTH,
+                    );
                 def.parameters = rewritten;
                 total_stats.examples_dropped += stats.examples_dropped;
                 total_stats.enums_deduped += stats.enums_deduped;
@@ -1855,17 +2007,20 @@ impl LoopDelegate for ChatDelegate {
             // Hashed AFTER normalization so the cache key reflects the actual
             // payload the LLM sees, not the raw registry shape.
             let hash: u64 = {
-                use std::hash::{Hash, Hasher};
                 use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
                 let mut h = DefaultHasher::new();
-                for d in &defs { d.name.hash(&mut h); }
+                for d in &defs {
+                    d.name.hash(&mut h);
+                }
                 h.finish()
             };
             if let Ok(mut prev) = self.last_tool_defs_hash.lock() {
                 if let Some(p) = *prev {
                     if p != hash {
                         tracing::warn!(
-                            prev_hash = p, new_hash = hash,
+                            prev_hash = p,
+                            new_hash = hash,
                             "Tool list changed mid-turn — Anthropic cache miss likely"
                         );
                     }
@@ -1884,17 +2039,31 @@ impl LoopDelegate for ChatDelegate {
 
         // Token cost breakdown — helps diagnose context bloat.
         let sys_tok = estimate_tokens(&full_system_prompt);
-        let tool_tok: u32 = tools.iter().map(|t| {
-            estimate_tokens(&t.name) + estimate_tokens(&t.description) + estimate_tokens(&t.parameters.to_string())
-        }).sum();
-        let msg_tok: u32 = messages.iter().skip(1 /* skip system */).map(|m| {
-            m.content.iter().map(|b| match b {
-                ContentBlock::Text { text } => estimate_tokens(text),
-                ContentBlock::ToolResult { content, .. } => estimate_tokens(content) + 5,
-                ContentBlock::ToolUse { name, input, .. } => estimate_tokens(name) + estimate_tokens(&input.to_string()) + 10,
-                _ => 5,
-            }).sum::<u32>()
-        }).sum();
+        let tool_tok: u32 = tools
+            .iter()
+            .map(|t| {
+                estimate_tokens(&t.name)
+                    + estimate_tokens(&t.description)
+                    + estimate_tokens(&t.parameters.to_string())
+            })
+            .sum();
+        let msg_tok: u32 = messages
+            .iter()
+            .skip(1 /* skip system */)
+            .map(|m| {
+                m.content
+                    .iter()
+                    .map(|b| match b {
+                        ContentBlock::Text { text } => estimate_tokens(text),
+                        ContentBlock::ToolResult { content, .. } => estimate_tokens(content) + 5,
+                        ContentBlock::ToolUse { name, input, .. } => {
+                            estimate_tokens(name) + estimate_tokens(&input.to_string()) + 10
+                        }
+                        _ => 5,
+                    })
+                    .sum::<u32>()
+            })
+            .sum();
         tracing::info!(
             model = %self.model,
             message_count = messages.len(),
@@ -2060,10 +2229,9 @@ impl LoopDelegate for ChatDelegate {
                 self.workspace_root.as_deref(),
                 &filename,
             ),
-            None => crate::agent::plan_state::pending_plan_steps(
-                self.workspace_root.as_deref(),
-                300,
-            ),
+            None => {
+                crate::agent::plan_state::pending_plan_steps(self.workspace_root.as_deref(), 300)
+            }
         };
         if let Some(undone) = undone_opt {
             // ── Relevance gate: only nudge if the response signals plan work ──
@@ -2078,7 +2246,11 @@ impl LoopDelegate for ChatDelegate {
             // thinking and emitted only a transition stub" (large output_tokens
             // + tiny text), nudge anyway. This catches Chinese phrasings the
             // keyword list will never cover.
-            let output_tokens = metadata.usage.as_ref().map(|u| u.output_tokens).unwrap_or(0);
+            let output_tokens = metadata
+                .usage
+                .as_ref()
+                .map(|u| u.output_tokens)
+                .unwrap_or(0);
             let signals_work = text_signals_plan_work(text)
                 || signals_truncated_plan_continuation(text.len(), output_tokens);
             if !signals_work {
@@ -2095,7 +2267,9 @@ impl LoopDelegate for ChatDelegate {
                 );
                 // Fall through to emit_done / Return below — let the complete
                 // answer reach the user without hijacking the conversation.
-            } else if reason_ctx.consecutive_plan_guard_nudges >= crate::agent::types::MAX_PLAN_GUARD_NUDGES {
+            } else if reason_ctx.consecutive_plan_guard_nudges
+                >= crate::agent::types::MAX_PLAN_GUARD_NUDGES
+            {
                 tracing::warn!(
                     undone_steps = undone,
                     nudges = reason_ctx.consecutive_plan_guard_nudges,
@@ -2161,13 +2335,20 @@ impl LoopDelegate for ChatDelegate {
             // in this loop, we let it through with a logged warning so a
             // genuinely-completed step doesn't loop forever.
             if tc.name == "plan_update"
-                && tc.arguments.get("done").and_then(|v| v.as_bool()).unwrap_or(false)
+                && tc
+                    .arguments
+                    .get("done")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
                 && reason_ctx.mutations_since_last_plan_done == 0
-                && reason_ctx.mutation_challenges_issued < crate::agent::types::MAX_MUTATION_CHALLENGES
+                && reason_ctx.mutation_challenges_issued
+                    < crate::agent::types::MAX_MUTATION_CHALLENGES
             {
                 // Treat a `note` of >= 20 chars as evidence: if the LLM
                 // bothered to type a real explanation we let it through.
-                let note_len = tc.arguments.get("note")
+                let note_len = tc
+                    .arguments
+                    .get("note")
                     .and_then(|v| v.as_str())
                     .map(|s| s.trim().len())
                     .unwrap_or(0);
@@ -2241,7 +2422,12 @@ impl LoopDelegate for ChatDelegate {
                                 session_mode,
                             )
                         } else {
-                            mgr.should_approve(&tc.name, &tc.arguments, &tool_approval, session_mode)
+                            mgr.should_approve(
+                                &tc.name,
+                                &tc.arguments,
+                                &tool_approval,
+                                session_mode,
+                            )
                         }
                     };
 
@@ -2268,15 +2454,18 @@ impl LoopDelegate for ChatDelegate {
                             let rx = self.pending_approvals.register(tc.id.clone());
 
                             // Emit structured approval request event (includes sessionId for frontend)
-                            let _ = self.app_handle.emit("agent:need_approval", serde_json::json!({
-                                "toolName": tc.name,
-                                "toolId": tc.id,
-                                "arguments": tc.arguments,
-                                "reason": reason,
-                                "sessionId": self.conversation_id,
-                                "riskLevel": "medium",
-                                "timestamp": chrono::Utc::now().to_rfc3339(),
-                            }));
+                            let _ = self.app_handle.emit(
+                                "agent:need_approval",
+                                serde_json::json!({
+                                    "toolName": tc.name,
+                                    "toolId": tc.id,
+                                    "arguments": tc.arguments,
+                                    "reason": reason,
+                                    "sessionId": self.conversation_id,
+                                    "riskLevel": "medium",
+                                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                                }),
+                            );
 
                             // Await user's approval decision
                             let approval_result = match rx.await {
@@ -2284,7 +2473,13 @@ impl LoopDelegate for ChatDelegate {
                                 Err(_) => {
                                     // Channel dropped — treat as rejection
                                     tracing::warn!(tool = %tc.name, "Approval channel dropped, treating as rejected");
-                                    crate::app::ApprovalResult { approved: false, always_allow: false, tool_name: None, path_scope: None, paths: None }
+                                    crate::app::ApprovalResult {
+                                        approved: false,
+                                        always_allow: false,
+                                        tool_name: None,
+                                        path_scope: None,
+                                        paths: None,
+                                    }
                                 }
                             };
 
@@ -2296,11 +2491,14 @@ impl LoopDelegate for ChatDelegate {
                                     true,
                                 ));
                                 // Emit rejection event so frontend knows
-                                let _ = self.app_handle.emit("agent:tool-rejected", serde_json::json!({
-                                    "toolName": tc.name,
-                                    "toolCallId": tc.id,
-                                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                                }));
+                                let _ = self.app_handle.emit(
+                                    "agent:tool-rejected",
+                                    serde_json::json!({
+                                        "toolName": tc.name,
+                                        "toolCallId": tc.id,
+                                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                                    }),
+                                );
                                 continue;
                             }
 
@@ -2323,7 +2521,12 @@ impl LoopDelegate for ChatDelegate {
                     // open the panel without keeping a hardcoded
                     // "write-ish tool name" list (drives PR auto-preview).
                     let preview_target = tool.preview_target_path(&tc.arguments);
-                    self.emit_tool_start(&tc.name, &tc.id, &tc.arguments, preview_target.as_deref());
+                    self.emit_tool_start(
+                        &tc.name,
+                        &tc.id,
+                        &tc.arguments,
+                        preview_target.as_deref(),
+                    );
                     tracing::info!(tool = %tc.name, id = %tc.id, "Executing tool");
 
                     // ─── Path-aware sandbox (Phase 3) ───────────────────
@@ -2348,10 +2551,8 @@ impl LoopDelegate for ChatDelegate {
                     if !candidate_paths.is_empty() && self.workspace_root.is_some() {
                         use crate::safety::path_policy::PathDecision;
                         let workspace_root = self.workspace_root.clone().unwrap();
-                        let (ws_attached, sess_attached) = load_attached_dirs_for_session(
-                            &self.app_handle,
-                            &self.conversation_id,
-                        );
+                        let (ws_attached, sess_attached) =
+                            load_attached_dirs_for_session(&self.app_handle, &self.conversation_id);
                         let path_decision = {
                             let mgr = self.safety_manager.read().await;
                             mgr.check_paths(
@@ -2372,11 +2573,14 @@ impl LoopDelegate for ChatDelegate {
                                     &format!("Error: {}", reason),
                                     true,
                                 ));
-                                let _ = self.app_handle.emit("agent:tool-rejected", serde_json::json!({
-                                    "toolName": tc.name,
-                                    "toolCallId": tc.id,
-                                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                                }));
+                                let _ = self.app_handle.emit(
+                                    "agent:tool-rejected",
+                                    serde_json::json!({
+                                        "toolName": tc.name,
+                                        "toolCallId": tc.id,
+                                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                                    }),
+                                );
                                 continue;
                             }
                             PathDecision::Prompt { reason } => {
@@ -2393,38 +2597,52 @@ impl LoopDelegate for ChatDelegate {
                                     "sessionId": self.conversation_id,
                                     "timestamp": chrono::Utc::now().to_rfc3339(),
                                 }));
-                                let path_result = rx.await.unwrap_or_else(|_| {
-                                    crate::app::ApprovalResult {
+                                let path_result =
+                                    rx.await.unwrap_or_else(|_| crate::app::ApprovalResult {
                                         approved: false,
                                         always_allow: false,
                                         tool_name: None,
                                         path_scope: Some("deny".into()),
                                         paths: None,
-                                    }
-                                });
+                                    });
                                 if !path_result.approved {
-                                    let paths_str = candidate_paths.iter()
+                                    let paths_str = candidate_paths
+                                        .iter()
                                         .map(|p| p.display().to_string())
                                         .collect::<Vec<_>>()
                                         .join(", ");
                                     reason_ctx.messages.push(ChatMessage::user_tool_result(
                                         &tc.id,
-                                        &format!("Error: User denied access to path(s): {}", paths_str),
+                                        &format!(
+                                            "Error: User denied access to path(s): {}",
+                                            paths_str
+                                        ),
                                         true,
                                     ));
-                                    let _ = self.app_handle.emit("agent:tool-rejected", serde_json::json!({
-                                        "toolName": tc.name,
-                                        "toolCallId": tc.id,
-                                        "timestamp": chrono::Utc::now().to_rfc3339(),
-                                    }));
+                                    let _ = self.app_handle.emit(
+                                        "agent:tool-rejected",
+                                        serde_json::json!({
+                                            "toolName": tc.name,
+                                            "toolCallId": tc.id,
+                                            "timestamp": chrono::Utc::now().to_rfc3339(),
+                                        }),
+                                    );
                                     continue;
                                 }
                                 if path_result.path_scope.as_deref() == Some("session") {
-                                    let paths_to_grant = path_result.paths.clone()
-                                        .unwrap_or_else(|| candidate_paths.iter().map(|p| p.display().to_string()).collect());
+                                    let paths_to_grant =
+                                        path_result.paths.clone().unwrap_or_else(|| {
+                                            candidate_paths
+                                                .iter()
+                                                .map(|p| p.display().to_string())
+                                                .collect()
+                                        });
                                     let mut mgr = self.safety_manager.write().await;
                                     for p in paths_to_grant {
-                                        mgr.allow_path_for_session(&self.conversation_id, std::path::PathBuf::from(p));
+                                        mgr.allow_path_for_session(
+                                            &self.conversation_id,
+                                            std::path::PathBuf::from(p),
+                                        );
                                     }
                                 }
                                 // "once" falls through without persisting
@@ -2447,7 +2665,10 @@ impl LoopDelegate for ChatDelegate {
                     let tool_args_for_spawn = {
                         let mut args = tc.arguments.clone();
                         if let Some(obj) = args.as_object_mut() {
-                            obj.insert("_tool_call_id".to_string(), serde_json::Value::String(tc.id.clone()));
+                            obj.insert(
+                                "_tool_call_id".to_string(),
+                                serde_json::Value::String(tc.id.clone()),
+                            );
                         } else {
                             tracing::warn!(
                                 tool = %tc.name,
@@ -2467,9 +2688,13 @@ impl LoopDelegate for ChatDelegate {
                                 )
                                 .await
                             }
-                            None => Err(crate::agent::tools::tool::ToolError::NotFound(tool_name_for_panic)),
+                            None => Err(crate::agent::tools::tool::ToolError::NotFound(
+                                tool_name_for_panic,
+                            )),
                         }
-                    }).await {
+                    })
+                    .await
+                    {
                         Ok(Ok(out)) => Ok(out),
                         Ok(Err(e)) => Err(e),
                         Err(join_err) if join_err.is_panic() => {
@@ -2481,7 +2706,10 @@ impl LoopDelegate for ChatDelegate {
                         }
                         Err(join_err) => {
                             tracing::error!(tool = %tc.name, %join_err, "tool join error");
-                            Err(crate::agent::tools::tool::ToolError::Execution(format!("Tool join error: {}", join_err)))
+                            Err(crate::agent::tools::tool::ToolError::Execution(format!(
+                                "Tool join error: {}",
+                                join_err
+                            )))
                         }
                     };
                     // Execute tool
@@ -2495,13 +2723,19 @@ impl LoopDelegate for ChatDelegate {
                             );
                             self.emit_tool_result(&tc.name, &tc.id, &output);
 
-                            let raw_result_str = serde_json::to_string(&output.result).unwrap_or_else(|_| "{}".into());
+                            let raw_result_str = serde_json::to_string(&output.result)
+                                .unwrap_or_else(|_| "{}".into());
 
                             // Apply budget truncation (must happen before trajectory recording
                             // so the stored result matches what the LLM actually sees)
                             let turn_idx = self.turn_index.fetch_add(1, Ordering::Relaxed);
                             let result_str = if let Some(ref budget) = self.tool_budget {
-                                budget.apply(&tc.name, raw_result_str, &self.conversation_id, turn_idx)
+                                budget.apply(
+                                    &tc.name,
+                                    raw_result_str,
+                                    &self.conversation_id,
+                                    turn_idx,
+                                )
                             } else {
                                 raw_result_str
                             };
@@ -2512,7 +2746,8 @@ impl LoopDelegate for ChatDelegate {
                             let trajectory_is_error = detect_soft_tool_error(&output.result);
                             if let Some(ref store) = self.trajectory_store {
                                 use crate::harness::trajectory::TurnRecord;
-                                let tool_args_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
+                                let tool_args_json =
+                                    serde_json::to_string(&tc.arguments).unwrap_or_default();
                                 let record = TurnRecord {
                                     id: uuid::Uuid::new_v4().to_string(),
                                     session_id: self.conversation_id.clone(),
@@ -2534,19 +2769,24 @@ impl LoopDelegate for ChatDelegate {
 
                             // Publish ToolExecuted event to InfraService
                             if let Some(ref infra) = self.infra_service {
-                                let input_summary = truncate_utf8(&serde_json::to_string(&tc.arguments).unwrap_or_default(), 500);
+                                let input_summary = truncate_utf8(
+                                    &serde_json::to_string(&tc.arguments).unwrap_or_default(),
+                                    500,
+                                );
                                 let output_summary = truncate_utf8(&result_str, 500);
-                                infra.publish_tool_executed(
-                                    "local",
-                                    &tc.name,
-                                    &output_summary,
-                                    serde_json::json!({
-                                        "tool_name": tc.name,
-                                        "success": true,
-                                        "duration_ms": duration_ms,
-                                        "tool_input": input_summary,
-                                    }),
-                                ).await;
+                                infra
+                                    .publish_tool_executed(
+                                        "local",
+                                        &tc.name,
+                                        &output_summary,
+                                        serde_json::json!({
+                                            "tool_name": tc.name,
+                                            "success": true,
+                                            "duration_ms": duration_ms,
+                                            "tool_input": input_summary,
+                                        }),
+                                    )
+                                    .await;
                             }
 
                             // Detect soft errors (e.g. bash non-zero exit) so the persisted
@@ -2564,7 +2804,11 @@ impl LoopDelegate for ChatDelegate {
                                             .or_else(|| output.result.get("output"))
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("tool error");
-                                        errors.push(format!("{}: {}", tc.name, truncate_utf8(err_text, 200)));
+                                        errors.push(format!(
+                                            "{}: {}",
+                                            tc.name,
+                                            truncate_utf8(err_text, 200)
+                                        ));
                                     }
                                 }
                             }
@@ -2583,9 +2827,8 @@ impl LoopDelegate for ChatDelegate {
                             if !soft_error
                                 && crate::agent::types::is_mutating_tool(&tc.name, &tc.arguments)
                             {
-                                reason_ctx.mutations_since_last_plan_done = reason_ctx
-                                    .mutations_since_last_plan_done
-                                    .saturating_add(1);
+                                reason_ctx.mutations_since_last_plan_done =
+                                    reason_ctx.mutations_since_last_plan_done.saturating_add(1);
                             }
                             // Any successful tool call ends the truncation
                             // streak and plan-guard nudge streak.
@@ -2597,7 +2840,11 @@ impl LoopDelegate for ChatDelegate {
                             // call was the soft-blocked path it `continue`d
                             // above and never reaches here.
                             if tc.name == "plan_update"
-                                && tc.arguments.get("done").and_then(|v| v.as_bool()).unwrap_or(false)
+                                && tc
+                                    .arguments
+                                    .get("done")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false)
                             {
                                 reason_ctx.mutations_since_last_plan_done = 0;
                                 reason_ctx.mutation_challenges_issued = 0;
@@ -2624,7 +2871,9 @@ impl LoopDelegate for ChatDelegate {
                             if let Some(ref infra) = self.infra_service {
                                 let err_msg = e.to_string();
                                 // Pattern 1: exit_plan_mode rejection → "User rejected the plan. Feedback: ..."
-                                if tc.name == "exit_plan_mode" && err_msg.starts_with("User rejected the plan.") {
+                                if tc.name == "exit_plan_mode"
+                                    && err_msg.starts_with("User rejected the plan.")
+                                {
                                     let feedback = err_msg
                                         .strip_prefix("User rejected the plan. Feedback: ")
                                         .unwrap_or(&err_msg)
@@ -2654,7 +2903,8 @@ impl LoopDelegate for ChatDelegate {
                             let turn_idx = self.turn_index.fetch_add(1, Ordering::Relaxed);
                             if let Some(ref store) = self.trajectory_store {
                                 use crate::harness::trajectory::TurnRecord;
-                                let tool_args_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
+                                let tool_args_json =
+                                    serde_json::to_string(&tc.arguments).unwrap_or_default();
                                 let record = TurnRecord {
                                     id: uuid::Uuid::new_v4().to_string(),
                                     session_id: self.conversation_id.clone(),
@@ -2676,19 +2926,24 @@ impl LoopDelegate for ChatDelegate {
 
                             // Publish ToolExecuted event (failure) to InfraService
                             if let Some(ref infra) = self.infra_service {
-                                let input_summary = truncate_utf8(&serde_json::to_string(&tc.arguments).unwrap_or_default(), 500);
+                                let input_summary = truncate_utf8(
+                                    &serde_json::to_string(&tc.arguments).unwrap_or_default(),
+                                    500,
+                                );
                                 let error_summary = truncate_utf8(&e.to_string(), 500);
-                                infra.publish_tool_executed(
-                                    "local",
-                                    &tc.name,
-                                    &error_summary,
-                                    serde_json::json!({
-                                        "tool_name": tc.name,
-                                        "success": false,
-                                        "duration_ms": duration_ms,
-                                        "tool_input": input_summary,
-                                    }),
-                                ).await;
+                                infra
+                                    .publish_tool_executed(
+                                        "local",
+                                        &tc.name,
+                                        &error_summary,
+                                        serde_json::json!({
+                                            "tool_name": tc.name,
+                                            "success": false,
+                                            "duration_ms": duration_ms,
+                                            "tool_input": input_summary,
+                                        }),
+                                    )
+                                    .await;
                             }
 
                             reason_ctx.messages.push(ChatMessage::user_tool_result(
@@ -2758,7 +3013,10 @@ impl LoopDelegate for ChatDelegate {
     }
 
     async fn on_tool_intent_nudge(&self, text: &str, _ctx: &mut ReasoningContext) {
-        self.emit_thinking(&format!("Detected tool intent in: {}", truncate_utf8(text, 100)));
+        self.emit_thinking(&format!(
+            "Detected tool intent in: {}",
+            truncate_utf8(text, 100)
+        ));
     }
 
     /// Generate a semantic summary of compacted messages for context compression.
@@ -2811,20 +3069,18 @@ impl LoopDelegate for ChatDelegate {
         // the same reasons as M2-T1a (#324): testable, fail-safe, ready for
         // the M2-A baseline.md rewrite.
         const SUMMARY_TEMPLATE: &str = "You are a conversation summarizer. Below is a transcript of earlier conversation turns that have been compacted from the active context window.\n\nProduce a concise summary (3-8 sentences) covering:\n- Key decisions made and their rationale\n- Files that were read, modified, or created (with paths)\n- Tools that were used and their outcomes\n- The current task state and what remains to be done\n- Any important constraints, preferences, or edge cases discovered\n\nWrite the summary in the same language as the conversation.\nBe specific — include file paths, tool names, and concrete details.\n\nConversation transcript:\n{{transcript}}";
-        let summary_prompt = uclaw_utils_template::render(
-            SUMMARY_TEMPLATE,
-            [("transcript", transcript.as_str())],
-        )
-        .unwrap_or_else(|e| {
-            // Fall back to the literal template — losing the {{transcript}}
-            // substitution but keeping the instruction body. Better than
-            // panicking the agent loop on a typo.
-            tracing::warn!(
-                "M2-T1b: summary template render failed: {e}; \
+        let summary_prompt =
+            uclaw_utils_template::render(SUMMARY_TEMPLATE, [("transcript", transcript.as_str())])
+                .unwrap_or_else(|e| {
+                    // Fall back to the literal template — losing the {{transcript}}
+                    // substitution but keeping the instruction body. Better than
+                    // panicking the agent loop on a typo.
+                    tracing::warn!(
+                        "M2-T1b: summary template render failed: {e}; \
                  falling back to literal template (without transcript)"
-            );
-            SUMMARY_TEMPLATE.to_string()
-        });
+                    );
+                    SUMMARY_TEMPLATE.to_string()
+                });
 
         let config = crate::llm::CompletionConfig {
             model: self.model.clone(),
@@ -2866,11 +3122,16 @@ impl LoopDelegate for ChatDelegate {
     }
 
     /// Generate a StructuredFold summary of compacted messages for context compression.
-    async fn summarize_to_fold(&self, messages: &[ChatMessage]) -> Option<crate::agent::compact::StructuredFold> {
+    async fn summarize_to_fold(
+        &self,
+        messages: &[ChatMessage],
+    ) -> Option<crate::agent::compact::StructuredFold> {
         if messages.is_empty() {
             return None;
         }
-        match crate::agent::compact::summarize_to_fold(self.llm.clone(), &self.model, messages).await {
+        match crate::agent::compact::summarize_to_fold(self.llm.clone(), &self.model, messages)
+            .await
+        {
             Ok(fold) => Some(fold),
             Err(e) => {
                 tracing::warn!("LLM fold summarization failed: {:?}", e);
@@ -3036,9 +3297,15 @@ mod panic_recovery_tests {
 
     #[async_trait]
     impl Tool for PanickyTool {
-        fn name(&self) -> &str { "panicky" }
-        fn description(&self) -> &str { "test-only" }
-        fn parameters_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+        fn name(&self) -> &str {
+            "panicky"
+        }
+        fn description(&self) -> &str {
+            "test-only"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
         fn requires_approval(&self, _: &serde_json::Value) -> ApprovalRequirement {
             ApprovalRequirement::Never
         }
@@ -3054,13 +3321,12 @@ mod panic_recovery_tests {
     async fn tool_panic_converts_to_tool_error() {
         let tool = PanickyTool;
         let tool_name = tool.name().to_string();
-        let join = tokio::task::spawn(async move {
-            tool.execute(serde_json::json!({})).await
-        });
+        let join = tokio::task::spawn(async move { tool.execute(serde_json::json!({})).await });
         let result = match join.await {
             Ok(r) => r,
             Err(e) if e.is_panic() => Err(ToolError::Execution(format!(
-                "Tool '{}' crashed unexpectedly.", tool_name
+                "Tool '{}' crashed unexpectedly.",
+                tool_name
             ))),
             Err(e) => Err(ToolError::Execution(format!("Join error: {}", e))),
         };
@@ -3068,7 +3334,8 @@ mod panic_recovery_tests {
         let msg = format!("{}", result.unwrap_err());
         assert!(
             msg.contains("panicky") && msg.contains("crashed"),
-            "expected panic-recovery error, got: {}", msg
+            "expected panic-recovery error, got: {}",
+            msg
         );
     }
 }
@@ -3099,11 +3366,7 @@ mod manifest_suppression_tests {
     #[test]
     fn manifest_appended_before_skill_search_used() {
         let flag = AtomicBool::new(false);
-        let out = compose_with_suppression(
-            "You are an agent.",
-            "\n\nMANIFEST_BLOCK",
-            &flag,
-        );
+        let out = compose_with_suppression("You are an agent.", "\n\nMANIFEST_BLOCK", &flag);
         assert!(out.contains("MANIFEST_BLOCK"));
     }
 
@@ -3136,7 +3399,11 @@ mod manifest_suppression_tests {
         for &used in &[false, true] {
             let flag = AtomicBool::new(used);
             let out = compose_with_suppression("base", "", &flag);
-            assert_eq!(out, "base", "empty manifest should not produce divergent output; used={}", used);
+            assert_eq!(
+                out, "base",
+                "empty manifest should not produce divergent output; used={}",
+                used
+            );
         }
     }
 
@@ -3147,12 +3414,12 @@ mod manifest_suppression_tests {
     #[test]
     fn flag_stays_set_after_subsequent_non_skill_search_calls() {
         let flag = AtomicBool::new(false);
-        flag.store(true, Ordering::Relaxed);  // simulate skill_search
-        // Simulate a subsequent tool call that is NOT skill_search —
-        // mirroring `execute_tool_calls`'s any() check which only
-        // sets-true, never sets-false.
-        // (No-op — the flag has nothing in execute_tool_calls that
-        //  resets it; this test pins that fact.)
+        flag.store(true, Ordering::Relaxed); // simulate skill_search
+                                             // Simulate a subsequent tool call that is NOT skill_search —
+                                             // mirroring `execute_tool_calls`'s any() check which only
+                                             // sets-true, never sets-false.
+                                             // (No-op — the flag has nothing in execute_tool_calls that
+                                             //  resets it; this test pins that fact.)
         assert!(flag.load(Ordering::Relaxed));
     }
 }
@@ -3174,7 +3441,8 @@ mod manifest_cap_tests {
 
     fn fresh_store() -> MemoryGraphStore {
         let conn = Connection::open_in_memory().expect("open in-memory db");
-        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).expect("V4 schema");
+        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH)
+            .expect("V4 schema");
         MemoryGraphStore::new(Arc::new(Mutex::new(conn)))
     }
 
@@ -3188,12 +3456,19 @@ mod manifest_cap_tests {
         // empty, no assertion needed beyond "doesn't panic".
         let store = fresh_store();
         let manifest = build_skills_manifest(
-            &registry, &store, "default",
-            30, 800, StrategyBias::Balanced, None,
+            &registry,
+            &store,
+            "default",
+            30,
+            800,
+            StrategyBias::Balanced,
+            None,
         );
         // No skills loaded → empty manifest is correct.
-        assert!(manifest.is_empty() || manifest.contains("Learned Skills"),
-            "manifest must either be empty or contain the documented header");
+        assert!(
+            manifest.is_empty() || manifest.contains("Learned Skills"),
+            "manifest must either be empty or contain the documented header"
+        );
     }
 
     /// Lower cap = no panic, no overrun. The cap argument is a soft
@@ -3205,8 +3480,13 @@ mod manifest_cap_tests {
         let registry = SkillsRegistry::new();
         let store = fresh_store();
         let manifest = build_skills_manifest(
-            &registry, &store, "default",
-            30, 256, StrategyBias::Balanced, None,
+            &registry,
+            &store,
+            "default",
+            30,
+            256,
+            StrategyBias::Balanced,
+            None,
         );
         // Empty registry + empty store → empty manifest, no panic.
         let _ = manifest;
@@ -3238,7 +3518,9 @@ mod plan_guard_relevance_tests {
     fn mentions_plan_steps() {
         // Agent references plan/task concepts.
         assert!(text_signals_plan_work("I'll start on step 3 now."));
-        assert!(text_signals_plan_work("Moving to the next task in the plan"));
+        assert!(text_signals_plan_work(
+            "Moving to the next task in the plan"
+        ));
         assert!(text_signals_plan_work("步骤 2 已完成，现在开始步骤 3"));
         assert!(text_signals_plan_work("计划还剩两个待办项"));
     }
@@ -3342,7 +3624,10 @@ mod plan_guard_relevance_tests {
             that plague C and C++ programs without needing a garbage collector. \
             The trade-off is a steeper learning curve, but the compiler provides \
             excellent error messages to guide developers.";
-        assert!(long_answer.len() >= 200, "sanity: test answer should be >= 200 chars");
+        assert!(
+            long_answer.len() >= 200,
+            "sanity: test answer should be >= 200 chars"
+        );
         assert!(!text_signals_plan_work(long_answer));
     }
 
@@ -3537,11 +3822,8 @@ mod active_plan_history_tests {
     #[test]
     fn plan_update_without_filename_is_skipped() {
         // Malformed argument shouldn't crash or surface a bogus result.
-        let bad = ChatMessage::assistant_with_tool_use(
-            "call_x",
-            "plan_update",
-            json!({"step_index": 0}),
-        );
+        let bad =
+            ChatMessage::assistant_with_tool_use("call_x", "plan_update", json!({"step_index": 0}));
         assert_eq!(extract_active_plan_from_history(&[bad]), None);
     }
 
@@ -3584,9 +3866,7 @@ mod active_plan_history_tests {
 // ───────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod memory_context_delta_render_tests {
-    use crate::agent::context_diff::{
-        line_diff, render_delta_annotation, LineFragmentSnapshot,
-    };
+    use crate::agent::context_diff::{line_diff, render_delta_annotation, LineFragmentSnapshot};
 
     /// Mirror of the dispatcher's render decision. Returns
     /// `(emitted_block, kind_label)` where `kind_label` is one of
@@ -3667,10 +3947,8 @@ mod memory_context_delta_render_tests {
     fn dispatcher_small_drift_emits_full_block_plus_delta_annotation() {
         // Prior: 5 lines. New: 4 unchanged + 1 changed (value flip).
         // Drift = 1/5 = 0.20, below 0.40 threshold → small drift path.
-        let prior_text =
-            "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- preferred_language: en\n";
-        let new_text =
-            "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- preferred_language: zh\n";
+        let prior_text = "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- preferred_language: en\n";
+        let new_text = "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- preferred_language: zh\n";
         let prior = LineFragmentSnapshot::from_text("memory_context", prior_text);
         let (block, kind) = render_memory_context(Some(&prior), new_text);
         assert_eq!(kind, "full+delta");
@@ -3700,8 +3978,7 @@ mod memory_context_delta_render_tests {
         // is_significant_change checks (removed + changed) / prior, so
         // pure-add never crosses 40%. We expect full+delta.
         let prior_text = "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- e: 5\n";
-        let new_text =
-            "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- e: 5\n- last_query: foo\n";
+        let new_text = "- a: 1\n- b: 2\n- c: 3\n- d: 4\n- e: 5\n- last_query: foo\n";
         let prior = LineFragmentSnapshot::from_text("memory_context", prior_text);
         let (block, kind) = render_memory_context(Some(&prior), new_text);
         assert_eq!(kind, "full+delta");
@@ -3749,7 +4026,7 @@ mod memory_context_delta_render_tests {
     #[test]
     fn reordered_lines_emit_full_block_no_annotation() {
         let prior_text = "- a: 1\n- b: 2\n- c: 3\n";
-        let new_text = "- c: 3\n- a: 1\n- b: 2\n";  // same keys, reordered
+        let new_text = "- c: 3\n- a: 1\n- b: 2\n"; // same keys, reordered
         let prior = LineFragmentSnapshot::from_text("memory_context", prior_text);
         let (block, kind) = render_memory_context(Some(&prior), new_text);
         assert_eq!(kind, "full");
