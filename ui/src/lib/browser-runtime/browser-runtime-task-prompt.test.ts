@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { StartupRuntimePackStatusReport } from '@/lib/startup/startup-doctor'
-import { deriveBrowserRuntimeTaskTimePrompt } from './browser-runtime-task-prompt'
+import {
+  browserTaskRuntimeDecisionPayloadForAction,
+  deriveBrowserRuntimeTaskTimePrompt,
+} from './browser-runtime-task-prompt'
 
 function runtimeReport(
   overrides: Partial<StartupRuntimePackStatusReport> = {},
@@ -98,6 +101,9 @@ describe('browser runtime task-time prompt model', () => {
         expect.objectContaining({
           id: 'defer',
           checkpointStatus: 'paused_waiting_for_browser_runtime',
+          browserTaskRequestPatch: {
+            runtime_preparation_decision: 'defer',
+          },
           eventNames: ['browser.runtime.task_time.defer.checkpointed'],
         }),
         expect.objectContaining({
@@ -106,6 +112,12 @@ describe('browser runtime task-time prompt model', () => {
         }),
       ]),
     )
+
+    const deferAction = model.actions.find((action) => action.id === 'defer')
+    expect(deferAction).toBeDefined()
+    expect(browserTaskRuntimeDecisionPayloadForAction(deferAction!)).toEqual({
+      runtime_preparation_decision: 'defer',
+    })
   })
 
   it('lets tasks continue without browser when a fallback can satisfy the request', () => {
@@ -147,6 +159,7 @@ describe('browser runtime task-time prompt model', () => {
         expect.objectContaining({
           id: 'defer',
           checkpointStatus: undefined,
+          browserTaskRequestPatch: undefined,
           eventNames: ['browser.runtime.task_time.defer.recorded'],
         }),
         expect.objectContaining({
@@ -156,6 +169,10 @@ describe('browser runtime task-time prompt model', () => {
         }),
       ]),
     )
+
+    const deferAction = model.actions.find((action) => action.id === 'defer')
+    expect(deferAction).toBeDefined()
+    expect(browserTaskRuntimeDecisionPayloadForAction(deferAction!)).toBeUndefined()
   })
 
   it('blocks prepare now when runtime preparation is blocked', () => {
