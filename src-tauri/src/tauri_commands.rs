@@ -11934,26 +11934,6 @@ pub struct BrowserLoginCompletionProbe {
     pub message: Option<String>,
 }
 
-fn webview_cookie_to_cookie_info(
-    cookie: &tauri::webview::Cookie<'_>,
-    fallback_host: &str,
-    fallback_secure: bool,
-) -> crate::browser::context::CookieInfo {
-    crate::browser::context::CookieInfo {
-        name: cookie.name().to_string(),
-        value: cookie.value().to_string(),
-        domain: cookie
-            .domain()
-            .map(|domain| domain.to_string())
-            .unwrap_or_else(|| fallback_host.to_string()),
-        path: cookie.path().unwrap_or("/").to_string(),
-        secure: cookie.secure().unwrap_or(fallback_secure),
-        http_only: cookie.http_only().unwrap_or(false),
-        same_site: cookie.same_site().map(|same_site| format!("{same_site:?}")),
-        expires: 0.0,
-    }
-}
-
 #[tauri::command]
 pub async fn browser_ui_complete_login(
     session_id: String,
@@ -11967,7 +11947,7 @@ pub async fn browser_ui_complete_login(
     let ctx = state.browser_context_manager.get_or_create(&session_id).await
         .map_err(|e| e.to_string())?;
     let cookies = ctx.get_cookies(&tab_id, Some(&url)).await.map_err(|e| e.to_string())?;
-    if !is_likely_authenticated_cookie(&url, &cookies) {
+    if !crate::browser::identity_authorization::is_likely_authenticated_cookie(&url, &cookies) {
         return Ok(BrowserLoginCompletionProbe {
             completed: false,
             payload: None,
@@ -11998,17 +11978,40 @@ pub async fn browser_webview_complete_login(
     let scoped_cookies = webview.cookies_for_url(parsed_url.clone()).map_err(|e| e.to_string())?;
     let mut cookie_infos: Vec<crate::browser::context::CookieInfo> = scoped_cookies
         .iter()
-        .map(|cookie| webview_cookie_to_cookie_info(cookie, fallback_host, fallback_secure))
+        .map(|cookie| {
+            crate::browser::identity_authorization::cookie_info_from_webview_cookie(
+                cookie,
+                fallback_host,
+                fallback_secure,
+            )
+        })
         .collect();
 
-    if !is_likely_authenticated_cookie(&url, &cookie_infos) {
+    if !crate::browser::identity_authorization::is_likely_authenticated_cookie(
+        &url,
+        &cookie_infos,
+    ) {
         let all_cookies = webview.cookies().map_err(|e| e.to_string())?;
         cookie_infos = all_cookies
             .iter()
-            .map(|cookie| webview_cookie_to_cookie_info(cookie, fallback_host, fallback_secure))
-            .filter(|cookie| cookie_matches_login_host(&cookie.domain, fallback_host))
+            .map(|cookie| {
+                crate::browser::identity_authorization::cookie_info_from_webview_cookie(
+                    cookie,
+                    fallback_host,
+                    fallback_secure,
+                )
+            })
+            .filter(|cookie| {
+                crate::browser::identity_authorization::cookie_matches_login_host(
+                    &cookie.domain,
+                    fallback_host,
+                )
+            })
             .collect();
-        if !is_likely_authenticated_cookie(&url, &cookie_infos) {
+        if !crate::browser::identity_authorization::is_likely_authenticated_cookie(
+            &url,
+            &cookie_infos,
+        ) {
             let cookie_names = cookie_infos
                 .iter()
                 .take(12)
@@ -12033,23 +12036,8 @@ pub async fn browser_webview_complete_login(
         }
     }
 
-    let state_snapshot = crate::browser::identity::PlaywrightStorageState {
-        cookies: cookie_infos
-            .into_iter()
-            .filter(|cookie| !cookie.name.trim().is_empty())
-            .map(|cookie| crate::browser::identity::PlaywrightCookie {
-                name: cookie.name,
-                value: cookie.value,
-                domain: cookie.domain,
-                path: cookie.path,
-                expires: None,
-                http_only: cookie.http_only,
-                secure: cookie.secure,
-                same_site: cookie.same_site,
-            })
-            .collect(),
-        origins: Vec::new(),
-    };
+    let state_snapshot =
+        crate::browser::identity_authorization::storage_state_from_cookies(cookie_infos);
     complete_browser_login_from_storage_state(spec_id, label, url, state_snapshot, app_handle, state).await
 }
 
@@ -12063,26 +12051,28 @@ async fn complete_browser_login_from_storage_state(
 ) -> Result<BrowserLoginCompletionProbe, String> {
     let broker = crate::browser::identity::BrowserAuthProfileBroker::system_default()
         .map_err(|e| e.to_string())?;
-    let origin_pattern = origin_pattern_for_url(&url).unwrap_or_else(|| url.clone());
-    let profile = broker
-        .import_playwright_storage_state(
-            crate::browser::identity::BrowserIdentityProfileInput {
-                label: format!("{label} ({spec_id})"),
-                origin_pattern,
-                kind: crate::browser::identity::BrowserIdentityKind::StorageState,
-                provider: crate::browser::identity::BrowserIdentityProvider::Playwright,
-                scope: crate::browser::identity::BrowserIdentityScope::Workspace,
-            },
-            &state_snapshot.to_json_string().map_err(|e| e.to_string())?,
+    let auth_report =
+        crate::browser::identity_ipc::complete_browser_identity_authorization_for_broker(
+            &broker,
+            format!("{label} ({spec_id})"),
+            url.clone(),
+            crate::browser::identity::BrowserIdentityScope::Workspace,
+            &state_snapshot,
+            state_snapshot.cookies.len(),
+            state_snapshot.origins.len(),
         )
         .map_err(|e| e.to_string())?;
+    let profile_id = auth_report
+        .profile_id
+        .clone()
+        .ok_or_else(|| "browser identity authorization did not return a profile id".to_string())?;
 
     let completed_at = chrono::Utc::now().timestamp_millis();
     let payload = BrowserLoginCompletionPayload {
         spec_id: spec_id.clone(),
         label: label.clone(),
         url: url.clone(),
-        profile_id: profile.id.clone(),
+        profile_id: profile_id.clone(),
         status: "live".to_string(),
         completed_at,
     };
@@ -12107,7 +12097,7 @@ async fn complete_browser_login_from_storage_state(
             url.clone(),
             serde_json::json!({
                 "status": "live",
-                "profileId": profile.id,
+                "profileId": profile_id,
                 "label": label,
                 "completedAt": completed_at,
             }),
@@ -12123,80 +12113,12 @@ async fn complete_browser_login_from_storage_state(
     })
 }
 
-fn origin_pattern_for_url(raw_url: &str) -> Option<String> {
-    let parsed = url::Url::parse(raw_url).ok()?;
-    let host = parsed.host_str()?;
-    Some(format!("{}://{}", parsed.scheme(), host))
-}
-
-fn cookie_matches_login_host(cookie_domain: &str, login_host: &str) -> bool {
-    let cookie_domain = cookie_domain.trim_start_matches('.').to_ascii_lowercase();
-    let login_host = login_host.to_ascii_lowercase();
-    !cookie_domain.is_empty()
-        && !login_host.is_empty()
-        && (login_host == cookie_domain
-            || login_host.ends_with(&format!(".{cookie_domain}"))
-            || cookie_domain.ends_with(&format!(".{login_host}"))
-            || same_site_suffix_matches(&cookie_domain, &login_host))
-}
-
-fn same_site_suffix_matches(left: &str, right: &str) -> bool {
-    fn site_suffix(host: &str) -> Option<String> {
-        let mut parts = host.rsplit('.');
-        let tld = parts.next()?;
-        let registrable = parts.next()?;
-        Some(format!("{registrable}.{tld}"))
-    }
-    site_suffix(left)
-        .zip(site_suffix(right))
-        .is_some_and(|(left, right)| left == right)
-}
-
-fn is_likely_authenticated_cookie(url: &str, cookies: &[crate::browser::context::CookieInfo]) -> bool {
-    let host = url::Url::parse(url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()))
-        .unwrap_or_default();
-    let strong_names: &[&str] = if host.contains("bilibili.com") {
-        &["sessdata", "dedeuserid", "bili_jct"]
-    } else if host.contains("douyin.com") {
-        &[
-            "sessionid",
-            "sessionid_ss",
-            "sid_guard",
-            "uid_tt",
-            "uid_tt_ss",
-            "sid_tt",
-            "sid_ucp_v1",
-            "ssid_ucp_v1",
-            "sid_ucp_sso_v1",
-            "ssid_ucp_sso_v1",
-            "passport_auth_status",
-            "passport_auth_status_ss",
-            "sso_uid_tt",
-            "sso_uid_tt_ss",
-            "toutiao_sso_user",
-            "toutiao_sso_user_ss",
-        ]
-    } else {
-        &["session", "auth", "token", "login", "user"]
-    };
-
-    cookies.iter().any(|cookie| {
-        let name = cookie.name.to_ascii_lowercase();
-        strong_names.iter().any(|needle| {
-            if host.contains("bilibili.com") || host.contains("douyin.com") {
-                name == *needle
-            } else {
-                name.contains(needle)
-            }
-        })
-    })
-}
-
 #[cfg(test)]
 mod browser_login_completion_tests {
     use super::*;
+    use crate::browser::identity_authorization::{
+        cookie_matches_login_host, is_likely_authenticated_cookie,
+    };
     use chromiumoxide::cdp::browser_protocol::input::DispatchMouseEventType;
 
     fn cookie(name: &str) -> crate::browser::context::CookieInfo {
