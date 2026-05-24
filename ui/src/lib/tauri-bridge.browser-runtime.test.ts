@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
-import { getBrowserRuntimeStatus } from './tauri-bridge'
-import type { StartupRuntimePackStatusReport } from './startup/startup-doctor'
+import { dryRunBrowserRuntimeAction, getBrowserRuntimeStatus } from './tauri-bridge'
+import type {
+  BrowserRuntimePackExecutionReport,
+  StartupRuntimePackStatusReport,
+} from './startup/startup-doctor'
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
@@ -47,5 +50,39 @@ describe('browser runtime tauri bridge', () => {
 
     await expect(getBrowserRuntimeStatus()).resolves.toEqual(report)
     expect(invoke).toHaveBeenCalledWith('get_browser_runtime_status')
+  })
+
+  it('requests a no-side-effect Browser Runtime action dry run', async () => {
+    const report: BrowserRuntimePackExecutionReport = {
+      operation: 'repair',
+      mode: 'dry_run',
+      status: 'succeeded',
+      summary: 'Dry run succeeded: Repair Browser runtime pack.',
+      artifactId: 'browser-runtime-repair-dry_run_succeeded',
+      eventNames: ['browser.runtime.repair.dry_run_succeeded'],
+      stepReports: [
+        {
+          step: 'run_doctor',
+          status: 'would_run',
+          label: 'Run Browser runtime doctor after repair.',
+          usesNetwork: false,
+          destructive: false,
+          requiresConfirmation: false,
+        },
+      ],
+      manifestPackVersion: 'browser-runtime-pack-v1',
+      runtimeRoot: '/uclaw/browser-runtime',
+      currentPackDir: '/uclaw/browser-runtime/current',
+      usesNetwork: false,
+      destructive: false,
+      requiresConfirmation: false,
+      keepsCurrentPack: true,
+    }
+    vi.mocked(invoke).mockResolvedValueOnce(report)
+
+    await expect(dryRunBrowserRuntimeAction('repair')).resolves.toEqual(report)
+    expect(invoke).toHaveBeenCalledWith('dry_run_browser_runtime_action', {
+      action: 'repair',
+    })
   })
 })

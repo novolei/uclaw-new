@@ -2,10 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { screen, waitFor } from '@/test-utils/render'
 import { renderWithProviders } from '@/test-utils/render'
 import { BrowserRuntimeSettings } from './BrowserRuntimeSettings'
-import type { StartupRuntimePackStatusReport } from '@/lib/startup/startup-doctor'
-import { getBrowserRuntimeStatus } from '@/lib/tauri-bridge'
+import type {
+  BrowserRuntimePackExecutionReport,
+  StartupRuntimePackStatusReport,
+} from '@/lib/startup/startup-doctor'
+import { dryRunBrowserRuntimeAction, getBrowserRuntimeStatus } from '@/lib/tauri-bridge'
 
 vi.mock('@/lib/tauri-bridge', () => ({
+  dryRunBrowserRuntimeAction: vi.fn(),
   getBrowserRuntimeStatus: vi.fn(),
 }))
 
@@ -33,8 +37,37 @@ function runtimeReport(manifestPackVersion = '1.48.2-uclaw.1'): StartupRuntimePa
   }
 }
 
+function dryRunReport(): BrowserRuntimePackExecutionReport {
+  return {
+    operation: 'repair',
+    mode: 'dry_run',
+    status: 'succeeded',
+    summary: 'Dry run succeeded: Repair Browser runtime pack after policy checks.',
+    artifactId: 'browser-runtime-repair-dry_run_succeeded',
+    eventNames: ['browser.runtime.repair.dry_run_succeeded'],
+    stepReports: [
+      {
+        step: 'run_doctor',
+        status: 'would_run',
+        label: 'Run Browser runtime doctor after repair.',
+        usesNetwork: false,
+        destructive: false,
+        requiresConfirmation: false,
+      },
+    ],
+    manifestPackVersion: '1.48.2-uclaw.1',
+    runtimeRoot: '/uclaw/browser-runtime',
+    currentPackDir: '/uclaw/browser-runtime/current',
+    usesNetwork: false,
+    destructive: false,
+    requiresConfirmation: false,
+    keepsCurrentPack: true,
+  }
+}
+
 describe('BrowserRuntimeSettings', () => {
   beforeEach(() => {
+    vi.mocked(dryRunBrowserRuntimeAction).mockReset()
     vi.mocked(getBrowserRuntimeStatus).mockReset()
   })
 
@@ -185,6 +218,164 @@ describe('BrowserRuntimeSettings', () => {
     expect(screen.getByText('回滚到上一个可用 Browser runtime pack，需要明确确认并等待后端执行边界接入。')).toBeInTheDocument()
     expect(screen.getByText('需要确认')).toBeInTheDocument()
     expect(screen.getByText('无副作用')).toBeInTheDocument()
+  })
+
+  it('requests backend dry-run evidence for live runtime action controls', async () => {
+    vi.mocked(getBrowserRuntimeStatus).mockResolvedValueOnce({
+      ...runtimeReport(),
+      ready: false,
+      canRunBrowserTasks: false,
+      primaryAction: 'repair',
+      doctor: {
+        status: 'needs_repair',
+        ready: false,
+        issue: 'corrupt_cache',
+        remediation: 'Runtime cache is corrupt.',
+        actions: ['repair'],
+        manifestPackVersion: '1.48.2-uclaw.1',
+        rollbackAvailable: true,
+        activeTasks: 0,
+      },
+      operationPlan: {
+        status: 'planned',
+        summary: 'Repair Browser runtime pack after policy checks.',
+        eventNames: ['browser.runtime.repair.planned'],
+      },
+    })
+    vi.mocked(dryRunBrowserRuntimeAction).mockResolvedValueOnce(dryRunReport())
+
+    const { user } = renderWithProviders(<BrowserRuntimeSettings />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '修复' })).toBeEnabled()
+    })
+
+    await user.click(screen.getByRole('button', { name: '修复' }))
+
+    await waitFor(() => {
+      expect(dryRunBrowserRuntimeAction).toHaveBeenCalledWith('repair')
+    })
+    expect(screen.getByText('Dry run succeeded: Repair Browser runtime pack after policy checks.')).toBeInTheDocument()
+    expect(screen.getByText('browser.runtime.repair.dry_run_succeeded')).toBeInTheDocument()
+    expect(screen.getByText('browser-runtime-repair-dry_run_succeeded')).toBeInTheDocument()
+    expect(screen.getByText('1 steps')).toBeInTheDocument()
+  })
+
+  it('clears stale dry-run evidence when a later dry-run request fails', async () => {
+    vi.mocked(getBrowserRuntimeStatus).mockResolvedValueOnce({
+      ...runtimeReport(),
+      ready: false,
+      canRunBrowserTasks: false,
+      primaryAction: 'repair',
+      doctor: {
+        status: 'needs_repair',
+        ready: false,
+        issue: 'corrupt_cache',
+        remediation: 'Runtime cache is corrupt.',
+        actions: ['repair'],
+        manifestPackVersion: '1.48.2-uclaw.1',
+        rollbackAvailable: true,
+        activeTasks: 0,
+      },
+      operationPlan: {
+        status: 'planned',
+        summary: 'Repair Browser runtime pack after policy checks.',
+        eventNames: ['browser.runtime.repair.planned'],
+      },
+    })
+    vi.mocked(dryRunBrowserRuntimeAction)
+      .mockResolvedValueOnce(dryRunReport())
+      .mockRejectedValueOnce(new Error('dry-run unavailable'))
+
+    const { user } = renderWithProviders(<BrowserRuntimeSettings />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '修复' })).toBeEnabled()
+    })
+
+    await user.click(screen.getByRole('button', { name: '修复' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Dry run succeeded: Repair Browser runtime pack after policy checks.')).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByRole('button', { name: '修复' }))
+
+    await waitFor(() => {
+      expect(dryRunBrowserRuntimeAction).toHaveBeenCalledTimes(2)
+    })
+    expect(screen.queryByText('Dry run succeeded: Repair Browser runtime pack after policy checks.')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Repair Browser runtime pack after policy checks.').length).toBeGreaterThan(0)
+  })
+
+  it('keeps retry-when-online as a local preview until it has distinct dry-run evidence', async () => {
+    vi.mocked(getBrowserRuntimeStatus).mockResolvedValueOnce({
+      ...runtimeReport(),
+      ready: false,
+      canRunBrowserTasks: false,
+      primaryAction: 'retry_when_online',
+      doctor: {
+        status: 'deferred',
+        ready: false,
+        issue: 'offline_download',
+        remediation: 'Browser runtime can retry when network returns.',
+        actions: ['retry_when_online'],
+        manifestPackVersion: '1.48.2-uclaw.1',
+        rollbackAvailable: false,
+        activeTasks: 0,
+      },
+      operationPlan: {
+        status: 'deferred',
+        summary: 'Runtime pack preparation is deferred while offline.',
+        eventNames: ['browser.runtime.prepare.deferred'],
+      },
+    })
+
+    const { user } = renderWithProviders(<BrowserRuntimeSettings />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '联网后重试' })).toBeEnabled()
+    })
+
+    await user.click(screen.getByRole('button', { name: '联网后重试' }))
+
+    expect(dryRunBrowserRuntimeAction).not.toHaveBeenCalled()
+    expect(screen.getAllByText('Runtime pack preparation is deferred while offline.').length).toBeGreaterThan(0)
+  })
+
+  it('keeps explicit status previews from invoking action dry runs', async () => {
+    const { user } = renderWithProviders(
+      <BrowserRuntimeSettings
+        status={{
+          report: {
+            ...runtimeReport(),
+            ready: false,
+            canRunBrowserTasks: false,
+            primaryAction: 'repair',
+            doctor: {
+              status: 'needs_repair',
+              ready: false,
+              issue: 'corrupt_cache',
+              remediation: 'Runtime cache is corrupt.',
+              actions: ['repair'],
+              manifestPackVersion: '1.48.2-uclaw.1',
+              rollbackAvailable: true,
+              activeTasks: 0,
+            },
+            operationPlan: {
+              status: 'planned',
+              summary: 'Repair Browser runtime pack after policy checks.',
+              eventNames: ['browser.runtime.repair.planned'],
+            },
+          },
+        }}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: '修复' }))
+
+    expect(dryRunBrowserRuntimeAction).not.toHaveBeenCalled()
+    expect(screen.getAllByText('Repair Browser runtime pack after policy checks.').length).toBeGreaterThan(0)
   })
 
   it('previews auto-prepare control without disabling browser capability', async () => {

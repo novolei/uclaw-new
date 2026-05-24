@@ -1,11 +1,14 @@
-//! Read-only IPC boundary for Browser runtime-pack status.
+//! IPC boundary for Browser runtime-pack status and no-side-effect dry runs.
 
 use crate::error::Error;
 
 use super::runtime_pack::{
-    inspect_runtime_pack_status, BrowserRuntimePackFilesystemProbeOptions,
-    BrowserRuntimePackManifest, BrowserRuntimePackNetworkState, BrowserRuntimePackPaths,
-    BrowserRuntimePackPlanTrigger, BrowserRuntimePackStatusReport, BrowserRuntimePackStatusRequest,
+    diagnose_runtime_pack, execute_runtime_pack_plan_dry_run, inspect_runtime_pack_status,
+    plan_runtime_pack_operation, probe_runtime_pack_filesystem, BrowserRuntimePackAction,
+    BrowserRuntimePackExecutionReport, BrowserRuntimePackFilesystemProbeOptions,
+    BrowserRuntimePackManifest, BrowserRuntimePackNetworkState, BrowserRuntimePackOperation,
+    BrowserRuntimePackOperationRequest, BrowserRuntimePackPaths, BrowserRuntimePackPlanTrigger,
+    BrowserRuntimePackStatusReport, BrowserRuntimePackStatusRequest,
 };
 
 #[tauri::command]
@@ -13,10 +16,27 @@ pub async fn get_browser_runtime_status() -> Result<BrowserRuntimePackStatusRepo
     inspect_default_browser_runtime_status()
 }
 
+#[tauri::command]
+pub async fn dry_run_browser_runtime_action(
+    action: BrowserRuntimePackAction,
+) -> Result<BrowserRuntimePackExecutionReport, Error> {
+    dry_run_default_browser_runtime_action(action)
+}
+
 pub fn inspect_default_browser_runtime_status() -> Result<BrowserRuntimePackStatusReport, Error> {
     let manifest = BrowserRuntimePackManifest::v1_default();
     let paths = BrowserRuntimePackPaths::from_uclaw_home(&manifest)?;
     Ok(inspect_browser_runtime_status(&manifest, &paths))
+}
+
+pub fn dry_run_default_browser_runtime_action(
+    action: BrowserRuntimePackAction,
+) -> Result<BrowserRuntimePackExecutionReport, Error> {
+    let manifest = BrowserRuntimePackManifest::v1_default();
+    let paths = BrowserRuntimePackPaths::from_uclaw_home(&manifest)?;
+    Ok(dry_run_browser_runtime_action_for_paths(
+        &manifest, &paths, action,
+    ))
 }
 
 fn inspect_browser_runtime_status(
@@ -36,10 +56,40 @@ fn inspect_browser_runtime_status(
     )
 }
 
+fn dry_run_browser_runtime_action_for_paths(
+    manifest: &BrowserRuntimePackManifest,
+    paths: &BrowserRuntimePackPaths,
+    action: BrowserRuntimePackAction,
+) -> BrowserRuntimePackExecutionReport {
+    let filesystem = probe_runtime_pack_filesystem(
+        manifest,
+        paths,
+        BrowserRuntimePackFilesystemProbeOptions::default(),
+    );
+    let doctor = diagnose_runtime_pack(manifest, &filesystem.probe);
+    let operation = BrowserRuntimePackOperation::from_action(action);
+    let plan = plan_runtime_pack_operation(
+        manifest,
+        paths,
+        &doctor,
+        BrowserRuntimePackOperationRequest {
+            operation,
+            trigger: BrowserRuntimePackPlanTrigger::Settings,
+            network_state: BrowserRuntimePackNetworkState::Online,
+            auto_prepare_enabled: true,
+            user_confirmed: false,
+            active_tasks: doctor.active_tasks,
+        },
+    );
+
+    execute_runtime_pack_plan_dry_run(&plan)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::runtime_pack::{
-        BrowserRuntimePackAction, BrowserRuntimePackDoctorStatus, BrowserRuntimePackOperation,
+        BrowserRuntimePackDoctorStatus, BrowserRuntimePackExecutionMode,
+        BrowserRuntimePackExecutionStatus, BrowserRuntimePackOperation,
         BrowserRuntimePackPlanStatus,
     };
     use super::*;
@@ -88,5 +138,58 @@ mod tests {
         assert_eq!(value["doctor"]["status"], "needs_prepare");
         assert_eq!(value["operationPlan"]["status"], "planned");
         assert_eq!(value["eventNames"][0], "browser.runtime.manifest.checked",);
+    }
+
+    #[test]
+    fn dry_run_action_reports_plan_without_creating_runtime_files() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let manifest = BrowserRuntimePackManifest::v1_default();
+        let paths =
+            BrowserRuntimePackPaths::from_root(temp_dir.path().join("browser-runtime"), &manifest);
+
+        let report = dry_run_browser_runtime_action_for_paths(
+            &manifest,
+            &paths,
+            BrowserRuntimePackAction::Prepare,
+        );
+
+        assert_eq!(report.operation, BrowserRuntimePackOperation::Prepare);
+        assert_eq!(report.mode, BrowserRuntimePackExecutionMode::DryRun);
+        assert_eq!(report.status, BrowserRuntimePackExecutionStatus::Succeeded);
+        assert!(report.uses_network);
+        assert!(!report.destructive);
+        assert!(!paths.runtime_root.exists());
+        assert!(report
+            .event_names
+            .iter()
+            .any(|name| name == "browser.runtime.prepare.dry_run_succeeded"));
+    }
+
+    #[test]
+    fn dry_run_action_serializes_frontend_execution_report() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let manifest = BrowserRuntimePackManifest::v1_default();
+        let paths =
+            BrowserRuntimePackPaths::from_root(temp_dir.path().join("browser-runtime"), &manifest);
+
+        let report = dry_run_browser_runtime_action_for_paths(
+            &manifest,
+            &paths,
+            BrowserRuntimePackAction::Prepare,
+        );
+        let value = serde_json::to_value(&report).expect("serialize execution report");
+
+        assert_eq!(value["operation"], "prepare");
+        assert_eq!(value["mode"], "dry_run");
+        assert_eq!(value["destructive"], false);
+        assert_eq!(value["stepReports"][0]["status"], "would_run");
+        assert!(value["artifactId"]
+            .as_str()
+            .expect("artifact id")
+            .contains("prepare"));
+        assert!(value["artifactId"]
+            .as_str()
+            .expect("artifact id")
+            .contains("succeeded"));
     }
 }

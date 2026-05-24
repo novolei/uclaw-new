@@ -63,6 +63,47 @@ export type BrowserRuntimePackPlanStatus =
   | 'deferred'
   | 'blocked'
 
+export type BrowserRuntimePackOperation =
+  | 'prepare'
+  | 'repair'
+  | 'reinstall'
+  | 'cleanup'
+  | 'rollback'
+  | 'keep_current'
+
+export type BrowserRuntimePackExecutionMode = 'dry_run' | 'managed'
+
+export type BrowserRuntimePackExecutionStatus =
+  | 'succeeded'
+  | 'no_op'
+  | 'requires_confirmation'
+  | 'deferred'
+  | 'blocked'
+  | 'failed'
+
+export type BrowserRuntimePackPlanStepKind =
+  | 'check_manifest'
+  | 'check_network_policy'
+  | 'require_user_confirmation'
+  | 'download_archive'
+  | 'verify_sha256'
+  | 'unpack_staging'
+  | 'install_pack'
+  | 'run_doctor'
+  | 'promote_pack'
+  | 'retain_rollback'
+  | 'cleanup_preview'
+  | 'cleanup_old_packs'
+  | 'restore_rollback'
+  | 'keep_current'
+  | 'defer'
+
+export type BrowserRuntimePackStepExecutionStatus =
+  | 'would_run'
+  | 'skipped'
+  | 'completed'
+  | 'failed'
+
 export interface StartupRuntimePackDoctorStatus {
   status: BrowserRuntimePackDoctorStatus
   ready: boolean
@@ -78,6 +119,34 @@ export interface StartupRuntimePackOperationPlan {
   status: BrowserRuntimePackPlanStatus
   summary: string
   eventNames?: string[]
+}
+
+export interface BrowserRuntimePackStepExecutionReport {
+  step: BrowserRuntimePackPlanStepKind
+  status: BrowserRuntimePackStepExecutionStatus
+  label: string
+  path?: string
+  usesNetwork: boolean
+  destructive: boolean
+  requiresConfirmation: boolean
+  error?: string
+}
+
+export interface BrowserRuntimePackExecutionReport {
+  operation: BrowserRuntimePackOperation
+  mode: BrowserRuntimePackExecutionMode
+  status: BrowserRuntimePackExecutionStatus
+  summary: string
+  artifactId: string
+  eventNames: string[]
+  stepReports: BrowserRuntimePackStepExecutionReport[]
+  manifestPackVersion: string
+  runtimeRoot: string
+  currentPackDir: string
+  usesNetwork: boolean
+  destructive: boolean
+  requiresConfirmation: boolean
+  keepsCurrentPack: boolean
 }
 
 export interface StartupRuntimePackStatusReport {

@@ -19,7 +19,8 @@ import {
   type BrowserRuntimeSettingsInput,
   type BrowserRuntimeSettingsAction,
 } from '@/lib/browser-runtime/browser-runtime-settings'
-import { getBrowserRuntimeStatus } from '@/lib/tauri-bridge'
+import type { BrowserRuntimePackAction, BrowserRuntimePackExecutionReport } from '@/lib/startup/startup-doctor'
+import { dryRunBrowserRuntimeAction, getBrowserRuntimeStatus } from '@/lib/tauri-bridge'
 import { SettingsCard, SettingsRow, SettingsSection } from './primitives'
 
 interface BrowserRuntimeSettingsProps {
@@ -40,11 +41,24 @@ const ACTION_ICONS: Record<BrowserRuntimeSettingsAction['id'], React.ReactNode> 
   run_doctor: <Bug />,
 }
 
+const DRY_RUN_ACTIONS = new Set<BrowserRuntimeSettingsAction['id']>([
+  'prepare',
+  'repair',
+  'reinstall',
+  'cleanup',
+  'rollback',
+  'keep_current',
+])
+
 export function BrowserRuntimeSettings({
   status,
 }: BrowserRuntimeSettingsProps): React.ReactElement {
   const [liveStatus, setLiveStatus] = React.useState<BrowserRuntimeSettingsInput | undefined>()
+  const [dryRunReports, setDryRunReports] = React.useState<
+    Partial<Record<BrowserRuntimeSettingsAction['id'], BrowserRuntimePackExecutionReport>>
+  >({})
   const refreshGenerationRef = React.useRef(0)
+  const dryRunGenerationRef = React.useRef(0)
   const mountedRef = React.useRef(false)
 
   React.useEffect(() => {
@@ -52,6 +66,7 @@ export function BrowserRuntimeSettings({
     return () => {
       mountedRef.current = false
       refreshGenerationRef.current += 1
+      dryRunGenerationRef.current += 1
     }
   }, [])
 
@@ -74,6 +89,36 @@ export function BrowserRuntimeSettings({
     }
   }, [status])
 
+  const dryRunAction = React.useCallback(async (actionId: BrowserRuntimeSettingsAction['id']) => {
+    if (status || !isDryRunAction(actionId)) return
+
+    const generation = dryRunGenerationRef.current + 1
+    dryRunGenerationRef.current = generation
+    setDryRunReports((current) => {
+      const next = { ...current }
+      delete next[actionId]
+      return next
+    })
+
+    try {
+      const report = await dryRunBrowserRuntimeAction(actionId)
+      if (mountedRef.current && dryRunGenerationRef.current === generation) {
+        setDryRunReports((current) => ({
+          ...current,
+          [actionId]: report,
+        }))
+      }
+    } catch {
+      if (mountedRef.current && dryRunGenerationRef.current === generation) {
+        setDryRunReports((current) => {
+          const next = { ...current }
+          delete next[actionId]
+          return next
+        })
+      }
+    }
+  }, [status])
+
   React.useEffect(() => {
     if (status) {
       refreshGenerationRef.current += 1
@@ -84,12 +129,17 @@ export function BrowserRuntimeSettings({
     void refreshLiveStatus()
   }, [refreshLiveStatus, status])
 
+  React.useEffect(() => {
+    setDryRunReports({})
+  }, [liveStatus, status])
+
   const model = deriveBrowserRuntimeSettingsViewModel(status ?? liveStatus)
   const [selectedActionId, setSelectedActionId] =
     React.useState<BrowserRuntimeSettingsAction['id'] | null>(null)
   const selectedAction =
     model.actions.find((action) => action.id === selectedActionId)
     ?? model.actions.find((action) => action.enabled)
+  const selectedDryRunReport = selectedAction ? dryRunReports[selectedAction.id] : undefined
 
   return (
     <div className="space-y-8">
@@ -128,6 +178,8 @@ export function BrowserRuntimeSettings({
                   setSelectedActionId(action.id)
                   if (action.id === 'run_doctor' && !status) {
                     void refreshLiveStatus()
+                  } else if (DRY_RUN_ACTIONS.has(action.id) && !status) {
+                    void dryRunAction(action.id)
                   }
                 }}
               >
@@ -144,25 +196,49 @@ export function BrowserRuntimeSettings({
           <SettingsCard>
             <SettingsRow
               label={selectedAction.preview.title}
-              description={selectedAction.preview.summary}
+              description={selectedDryRunReport?.summary ?? selectedAction.preview.summary}
             >
-              <Badge variant={selectedAction.preview.destructive ? 'destructive' : 'outline'}>
-                {selectedAction.preview.requiresConfirmation ? '需要确认' : '预览'}
+              <Badge
+                variant={
+                  selectedDryRunReport?.destructive || selectedAction.preview.destructive
+                    ? 'destructive'
+                    : 'outline'
+                }
+              >
+                {selectedDryRunReport
+                  ? 'Dry run'
+                  : selectedAction.preview.requiresConfirmation ? '需要确认' : '预览'}
               </Badge>
             </SettingsRow>
             <SettingsRow
               label="事件"
-              description={selectedAction.preview.eventNames.length > 0
-                ? selectedAction.preview.eventNames.join(' · ')
+              description={(selectedDryRunReport?.eventNames ?? selectedAction.preview.eventNames).length > 0
+                ? (selectedDryRunReport?.eventNames ?? selectedAction.preview.eventNames).join(' · ')
                 : '等待后端事件接入'}
             >
               <span className="text-xs text-muted-foreground">无副作用</span>
             </SettingsRow>
+            {selectedDryRunReport ? (
+              <SettingsRow
+                label="Dry-run artifact"
+                description={selectedDryRunReport.artifactId}
+              >
+                <span className="text-xs text-muted-foreground">
+                  {selectedDryRunReport.stepReports.length} steps
+                </span>
+              </SettingsRow>
+            ) : null}
           </SettingsCard>
         </SettingsSection>
       )}
     </div>
   )
+}
+
+function isDryRunAction(
+  actionId: BrowserRuntimeSettingsAction['id'],
+): actionId is BrowserRuntimePackAction {
+  return DRY_RUN_ACTIONS.has(actionId)
 }
 
 function badgeVariant(

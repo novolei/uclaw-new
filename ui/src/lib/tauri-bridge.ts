@@ -12,7 +12,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { open as openShell } from '@tauri-apps/plugin-shell';
-import type { StartupRuntimePackStatusReport } from '@/lib/startup/startup-doctor';
+import type {
+  BrowserRuntimePackAction,
+  BrowserRuntimePackExecutionReport,
+  StartupRuntimePackStatusReport,
+} from '@/lib/startup/startup-doctor';
 import type {
   Settings,
   PatchSettingsInput,
@@ -177,6 +181,11 @@ export const patchSettings = (input: PatchSettingsInput): Promise<Settings> =>
 
 export const getBrowserRuntimeStatus = (): Promise<StartupRuntimePackStatusReport> =>
   invoke('get_browser_runtime_status');
+
+export const dryRunBrowserRuntimeAction = (
+  action: BrowserRuntimePackAction,
+): Promise<BrowserRuntimePackExecutionReport> =>
+  invoke('dry_run_browser_runtime_action', { action });
 
 export const getPlatform = (): Promise<PlatformInfo> =>
   invoke('get_platform');
