@@ -1356,6 +1356,50 @@ fn signals_truncated_plan_continuation(text_len: usize, output_tokens: u32) -> b
     output_tokens > 800 && text_len < 100
 }
 
+const BROWSER_TASK_TOOL_NAME: &str = "browser_task";
+const BROWSER_TASK_RUNTIME_PATCH_SNAKE: &str = "browser_task_request_patch";
+const BROWSER_TASK_RUNTIME_PATCH_CAMEL: &str = "browserTaskRequestPatch";
+const BROWSER_TASK_RUNTIME_DECISION_SNAKE: &str = "runtime_preparation_decision";
+const BROWSER_TASK_RUNTIME_DECISION_CAMEL: &str = "runtimePreparationDecision";
+
+fn prepare_tool_call_for_dispatch(mut tool_call: ToolCall) -> ToolCall {
+    if tool_call.name == BROWSER_TASK_TOOL_NAME {
+        tool_call.arguments = apply_browser_task_runtime_dispatch_patch(tool_call.arguments);
+    }
+    tool_call
+}
+
+fn apply_browser_task_runtime_dispatch_patch(arguments: serde_json::Value) -> serde_json::Value {
+    let serde_json::Value::Object(mut args) = arguments else {
+        return arguments;
+    };
+
+    let patch = args
+        .remove(BROWSER_TASK_RUNTIME_PATCH_SNAKE)
+        .or_else(|| args.remove(BROWSER_TASK_RUNTIME_PATCH_CAMEL));
+
+    if !args.contains_key(BROWSER_TASK_RUNTIME_DECISION_SNAKE) {
+        if let Some(decision) = patch
+            .as_ref()
+            .and_then(runtime_decision_from_browser_task_patch)
+        {
+            args.insert(
+                BROWSER_TASK_RUNTIME_DECISION_SNAKE.to_string(),
+                serde_json::Value::String(decision.to_string()),
+            );
+        }
+    }
+
+    serde_json::Value::Object(args)
+}
+
+fn runtime_decision_from_browser_task_patch(patch: &serde_json::Value) -> Option<&str> {
+    patch
+        .get(BROWSER_TASK_RUNTIME_DECISION_SNAKE)
+        .or_else(|| patch.get(BROWSER_TASK_RUNTIME_DECISION_CAMEL))
+        .and_then(serde_json::Value::as_str)
+}
+
 #[async_trait]
 impl LoopDelegate for ChatDelegate {
     async fn check_signals(&self) -> LoopSignal {
@@ -2082,6 +2126,11 @@ impl LoopDelegate for ChatDelegate {
         tool_calls: Vec<ToolCall>,
         reason_ctx: &mut ReasoningContext,
     ) -> Result<Option<LoopOutcome>, Error> {
+        let tool_calls = tool_calls
+            .into_iter()
+            .map(prepare_tool_call_for_dispatch)
+            .collect::<Vec<_>>();
+
         // PR 2026-05-13 token-cost optim: once the agent reaches for
         // `skill_search` in this loop, the system-prompt manifest has
         // served its purpose (catalog discovery → tool delegation).
@@ -2874,6 +2923,84 @@ fn load_attached_dirs_for_session(
         .map(parse)
         .unwrap_or_default();
     (ws_attached, sess_attached)
+}
+
+#[cfg(test)]
+mod browser_runtime_dispatch_patch_tests {
+    use super::*;
+
+    fn tool_call(name: &str, arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: "tool-call-1".to_string(),
+            name: name.to_string(),
+            arguments,
+        }
+    }
+
+    #[test]
+    fn browser_task_request_patch_is_flattened_before_dispatch() {
+        let prepared = prepare_tool_call_for_dispatch(tool_call(
+            "browser_task",
+            serde_json::json!({
+                "task": "Open billing",
+                "browser_task_request_patch": {
+                    "runtime_preparation_decision": "defer"
+                }
+            }),
+        ));
+
+        assert_eq!(prepared.name, "browser_task");
+        assert_eq!(prepared.arguments["task"], "Open billing");
+        assert_eq!(prepared.arguments["runtime_preparation_decision"], "defer");
+        assert!(prepared.arguments["browser_task_request_patch"].is_null());
+    }
+
+    #[test]
+    fn browser_task_request_patch_accepts_camel_case_bridge_payload() {
+        let prepared = prepare_tool_call_for_dispatch(tool_call(
+            "browser_task",
+            serde_json::json!({
+                "task": "Open billing",
+                "browserTaskRequestPatch": {
+                    "runtimePreparationDecision": "defer"
+                }
+            }),
+        ));
+
+        assert_eq!(prepared.arguments["runtime_preparation_decision"], "defer");
+        assert!(prepared.arguments["browserTaskRequestPatch"].is_null());
+    }
+
+    #[test]
+    fn explicit_runtime_decision_is_not_overridden() {
+        let prepared = prepare_tool_call_for_dispatch(tool_call(
+            "browser_task",
+            serde_json::json!({
+                "task": "Open billing",
+                "runtime_preparation_decision": "ready",
+                "browser_task_request_patch": {
+                    "runtime_preparation_decision": "defer"
+                }
+            }),
+        ));
+
+        assert_eq!(prepared.arguments["runtime_preparation_decision"], "ready");
+        assert!(prepared.arguments["browser_task_request_patch"].is_null());
+    }
+
+    #[test]
+    fn non_browser_tools_are_not_patched() {
+        let original = serde_json::json!({
+            "question": "Continue?",
+            "browser_task_request_patch": {
+                "runtime_preparation_decision": "defer"
+            }
+        });
+        let prepared = prepare_tool_call_for_dispatch(tool_call("ask_user", original.clone()));
+
+        assert_eq!(prepared.name, "ask_user");
+        assert_eq!(prepared.arguments, original);
+    }
 }
 
 #[cfg(test)]
