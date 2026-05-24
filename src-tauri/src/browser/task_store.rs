@@ -45,11 +45,7 @@ impl BrowserTaskStore {
     pub fn persist_run(&self, run: &BrowserTaskRun) -> rusqlite::Result<()> {
         let conn = self.db.lock().expect("browser task db mutex poisoned");
         let now = chrono::Utc::now().timestamp_millis();
-        let created_at = run
-            .steps
-            .first()
-            .map(|s| s.timestamp_ms)
-            .unwrap_or(now);
+        let created_at = run.steps.first().map(|s| s.timestamp_ms).unwrap_or(now);
         conn.execute(
             "INSERT INTO browser_task_runs (run_id, session_id, task, status, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -235,7 +231,9 @@ impl BrowserTaskStore {
                 checkpoint.session_id,
                 checkpoint.step_index,
                 checkpoint.active_tab_id,
-                checkpoint.memory.as_ref()
+                checkpoint
+                    .memory
+                    .as_ref()
                     .and_then(|m| serde_json::to_string(m).ok()),
                 serde_json::to_string(&checkpoint.loop_state).unwrap_or_else(|_| "{}".to_string()),
                 checkpoint.created_at,
@@ -244,7 +242,10 @@ impl BrowserTaskStore {
         Ok(checkpoint)
     }
 
-    pub fn latest_checkpoint(&self, run_id: &str) -> rusqlite::Result<Option<BrowserTaskCheckpoint>> {
+    pub fn latest_checkpoint(
+        &self,
+        run_id: &str,
+    ) -> rusqlite::Result<Option<BrowserTaskCheckpoint>> {
         let conn = self.db.lock().expect("browser task db mutex poisoned");
         conn.query_row(
             "SELECT checkpoint_id, run_id, session_id, step_index, active_tab_id,
@@ -264,11 +265,13 @@ impl BrowserTaskStore {
                     step_index: row.get::<_, i64>(3)? as u32,
                     active_tab_id: row.get(4)?,
                     memory: memory_json.and_then(|json| serde_json::from_str(&json).ok()),
-                    loop_state: serde_json::from_str(&loop_state_json).unwrap_or(serde_json::Value::Null),
+                    loop_state: serde_json::from_str(&loop_state_json)
+                        .unwrap_or(serde_json::Value::Null),
                     created_at: row.get(7)?,
                 })
             },
-        ).optional()
+        )
+        .optional()
     }
 
     fn persist_memory(&self, memory: &BrowserTaskMemory) -> rusqlite::Result<()> {
@@ -315,6 +318,7 @@ fn status_to_str(status: &BrowserTaskStatus) -> &'static str {
         BrowserTaskStatus::Failed => "failed",
         BrowserTaskStatus::Stopped => "stopped",
         BrowserTaskStatus::NeedsUserIntervention => "needs_user_intervention",
+        BrowserTaskStatus::PausedWaitingForBrowserRuntime => "paused_waiting_for_browser_runtime",
         BrowserTaskStatus::PausedCheckpointed => "paused_checkpointed",
     }
 }
@@ -325,6 +329,7 @@ fn status_from_str(value: &str) -> BrowserTaskStatus {
         "failed" => BrowserTaskStatus::Failed,
         "stopped" => BrowserTaskStatus::Stopped,
         "needs_user_intervention" => BrowserTaskStatus::NeedsUserIntervention,
+        "paused_waiting_for_browser_runtime" => BrowserTaskStatus::PausedWaitingForBrowserRuntime,
         "paused_checkpointed" => BrowserTaskStatus::PausedCheckpointed,
         _ => BrowserTaskStatus::Running,
     }
@@ -396,9 +401,14 @@ mod tests {
         assert_eq!(loaded.steps.len(), 1);
         assert_eq!(loaded.status, BrowserTaskStatus::Running);
 
-        let memory = store.load_memory("session-1").unwrap().expect("memory exists");
+        let memory = store
+            .load_memory("session-1")
+            .unwrap()
+            .expect("memory exists");
         assert_eq!(memory.session_id, "session-1");
-        assert!(memory.visited_urls.contains(&"https://example.test".to_string()));
+        assert!(memory
+            .visited_urls
+            .contains(&"https://example.test".to_string()));
         assert_eq!(memory.open_tabs.len(), 1);
     }
 
@@ -415,11 +425,47 @@ mod tests {
             steps: vec![],
         };
         store.persist_run(&run).unwrap();
-        store.persist_checkpoint(&run, 4, Some("tab-9"), None, serde_json::json!({"loop": "state"})).unwrap();
+        store
+            .persist_checkpoint(
+                &run,
+                4,
+                Some("tab-9"),
+                None,
+                serde_json::json!({"loop": "state"}),
+            )
+            .unwrap();
 
-        let checkpoint = store.latest_checkpoint("run-checkpoint").unwrap().expect("checkpoint exists");
+        let checkpoint = store
+            .latest_checkpoint("run-checkpoint")
+            .unwrap()
+            .expect("checkpoint exists");
         assert_eq!(checkpoint.run_id, "run-checkpoint");
         assert_eq!(checkpoint.step_index, 4);
         assert_eq!(checkpoint.active_tab_id.as_deref(), Some("tab-9"));
+    }
+
+    #[test]
+    fn roundtrips_paused_waiting_for_browser_runtime_status() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        let store = BrowserTaskStore::new(Arc::new(Mutex::new(conn)));
+        let run = BrowserTaskRun {
+            run_id: "run-waiting-runtime".to_string(),
+            session_id: "session-1".to_string(),
+            task: "Runtime gated research".to_string(),
+            status: BrowserTaskStatus::PausedWaitingForBrowserRuntime,
+            steps: vec![],
+        };
+
+        store.persist_run(&run).unwrap();
+
+        let loaded = store
+            .load_run("run-waiting-runtime")
+            .unwrap()
+            .expect("run exists");
+        assert_eq!(
+            loaded.status,
+            BrowserTaskStatus::PausedWaitingForBrowserRuntime
+        );
     }
 }

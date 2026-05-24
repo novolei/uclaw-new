@@ -33,6 +33,7 @@ pub enum BrowserTaskStatus {
     Failed,
     Stopped,
     NeedsUserIntervention,
+    PausedWaitingForBrowserRuntime,
     PausedCheckpointed,
 }
 
