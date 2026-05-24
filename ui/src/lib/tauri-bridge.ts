@@ -1864,6 +1864,7 @@ export type BrowserTaskStatus =
   | 'failed'
   | 'stopped'
   | 'needs_user_intervention'
+  | 'paused_waiting_for_browser_runtime'
   | 'paused_checkpointed'
 export type BrowserTaskStepPhase = 'observe' | 'decide' | 'act' | 'recover' | 'user_intervention' | 'done'
 
