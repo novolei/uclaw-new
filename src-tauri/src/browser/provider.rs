@@ -2,7 +2,9 @@
 //!
 //! This module is intentionally pure: it does not launch Chromium, mutate
 //! profiles, call CDP, or run setup. It gives the runtime/UI a stable shape for
-//! status, setup diagnostics, and capability probes.
+//! status, setup diagnostics, capability probes, and route decisions.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -280,6 +282,9 @@ impl BrowserProviderStatus {
 pub struct BrowserProviderRouteRequest {
     pub selection: BrowserProviderSelectionRequest,
     pub disabled_provider_ids: Vec<String>,
+    /// Provider id for an explicit recovery attempt. This is intentionally not
+    /// "the provider selected on the previous route"; ordinary capability-based
+    /// provider changes must remain `Selected`, not `RolledBack`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_provider_id: Option<String>,
 }
@@ -436,6 +441,78 @@ pub fn decide_browser_provider_route(
         selected_provider_id,
         candidates,
         event_intents,
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BrowserProviderRouter {
+    statuses: BTreeMap<String, BrowserProviderStatus>,
+    disabled_provider_ids: Vec<String>,
+    last_selected_provider_id: Option<String>,
+    recovery_provider_id: Option<String>,
+}
+
+impl BrowserProviderRouter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn upsert_status(&mut self, status: BrowserProviderStatus) {
+        self.statuses.insert(status.provider_id.clone(), status);
+    }
+
+    pub fn statuses(&self) -> Vec<&BrowserProviderStatus> {
+        self.statuses.values().collect()
+    }
+
+    pub fn disable_provider(&mut self, provider_id: impl Into<String>) {
+        let provider_id = provider_id.into();
+        if !self
+            .disabled_provider_ids
+            .iter()
+            .any(|disabled| disabled == &provider_id)
+        {
+            self.disabled_provider_ids.push(provider_id);
+            self.disabled_provider_ids.sort();
+        }
+    }
+
+    pub fn enable_provider(&mut self, provider_id: &str) {
+        self.disabled_provider_ids
+            .retain(|disabled| disabled != provider_id);
+    }
+
+    pub fn disabled_provider_ids(&self) -> &[String] {
+        &self.disabled_provider_ids
+    }
+
+    pub fn set_recovery_provider_id(&mut self, provider_id: Option<String>) {
+        self.recovery_provider_id = provider_id;
+    }
+
+    pub fn recovery_provider_id(&self) -> Option<&str> {
+        self.recovery_provider_id.as_deref()
+    }
+
+    pub fn last_selected_provider_id(&self) -> Option<&str> {
+        self.last_selected_provider_id.as_deref()
+    }
+
+    pub fn route(
+        &mut self,
+        selection: BrowserProviderSelectionRequest,
+    ) -> BrowserProviderRouteDecision {
+        let request = BrowserProviderRouteRequest {
+            selection,
+            disabled_provider_ids: self.disabled_provider_ids.clone(),
+            previous_provider_id: self.recovery_provider_id.take(),
+        };
+        let statuses = self.statuses.values().cloned().collect::<Vec<_>>();
+        let decision = decide_browser_provider_route(&request, &statuses);
+        if let Some(selected_provider_id) = decision.selected_provider_id.clone() {
+            self.last_selected_provider_id = Some(selected_provider_id);
+        }
+        decision
     }
 }
 
