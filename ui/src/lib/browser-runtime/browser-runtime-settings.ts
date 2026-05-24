@@ -225,7 +225,7 @@ function actionSummary(
     case 'enable_auto_prepare':
       return '恢复启动/后台自动准备；不会立即下载或修复运行时。'
     case 'run_doctor':
-      return '重新运行 Startup Doctor / Browser Runtime 检查，等待后端 IPC 接入。'
+      return '刷新 Startup Doctor / Browser Runtime 状态，只读取本地运行时状态。'
     default:
       return fallbackSummary
   }
