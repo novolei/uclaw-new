@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 7G MCP selection policy
+> Current phase: Phase 8A provider route decision
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -26,8 +26,8 @@
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4X merged to `main` / `origin/main`; exit audit complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` / `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` | Closed for user-visible Settings, Doctor, prompt, checkpoint, deep-link, read-only IPC, and dry-run action evidence. Real runtime execution/provider work moves to Phase 5+. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A-5F merged to `main` / `origin/main`; exit gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff` / `codex/browser-runtime-phase5f-action-state-diff` | Closed for feature-flagged Playwright CLI thin lane. Provider promotion and parity routing remain Phase 8. |
 | Phase 6 | Browser identity authorization and profile UX | Phase 6A-6F merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6f-identity-boundary-actions` / `codex/browser-runtime-phase6f-identity-boundary-actions` | Closed for safe identity revoke/drain/active-task/resume boundary contracts; auth WebView and payment confirmation remain future work. |
-| Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7F merged; Phase 7G MCP selection policy in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7g-mcp-selection-policy` / `codex/browser-runtime-phase7g-mcp-selection-policy` | Add a pure provider ranking contract proving MCP does not outrank Playwright CLI unless MCP-specific capability is explicitly required. |
-| Phase 8 | Provider abstraction, parity harness, and default selection | Not started | Unassigned | TBD | Wait for chromiumoxide, CLI, and MCP lanes. |
+| Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7G merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7g-mcp-selection-policy` / `codex/browser-runtime-phase7g-mcp-selection-policy` | Closed for MCP sidecar, stdio action boundary, artifact/error routing, and MCP-vs-CLI selection guardrail. |
+| Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A provider route decision in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8a-provider-route-decision` / `codex/browser-runtime-phase8a-provider-route-decision` | Add a pure provider route decision contract over status snapshots before live task routing. |
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Not started | Unassigned | TBD | Wait for observable provider behavior and harness scorecards. |
 | Phase 10 | Optional hosted providers and hard-site escape hatches | Not started | Unassigned | TBD | Wait for local-first provider routing and policy prompts. |
 
@@ -122,6 +122,7 @@
 | 2026-05-24 | Merge Phase 7D and start Phase 7E as the MCP stdio action boundary. | PR #471 merged as `0d1ef4b1`; fresh reviewer Confucius returned `REVIEW ACCEPTED` after the flaky timing assertion was replaced with deterministic startup-exit stderr evidence. | Phase 7E moves beyond sidecar spawn by translating fixed uClaw actions into supervised MCP `initialize` and `tools/call` stdio JSON-RPC against an app-managed child process. |
 | 2026-05-24 | Merge Phase 7E and start Phase 7F as MCP artifact/error routing. | PR #472 merged as `d21b9fa2`; fresh reviewer Boole returned `REVIEW ACCEPTED` after timeout poisoning and stable snapshot arguments were added. | Phase 7F converts sidecar success/error outputs into provider-level result DTOs carrying artifact refs, event metadata, error codes, and retryability, while still avoiding Phase 8 provider promotion. |
 | 2026-05-24 | Merge Phase 7F and start Phase 7G as MCP selection policy. | PR #473 merged as `359b94e9`; fresh reviewer Locke returned `REVIEW ACCEPTED` with only non-blocking DTO/fixture follow-ups. | Phase 7G encodes the ADR rule that MCP must stay behind the CLI thin lane unless the task explicitly requires MCP-specific capability, without wiring live task routing or provider promotion. |
+| 2026-05-24 | Merge Phase 7G and start Phase 8A as provider route decision. | PR #474 merged as `6d1704e0`; fresh reviewer Dalton returned `REVIEW ACCEPTED` after checking scope boundaries, ranking behavior, tests, and tracker consistency. | Phase 8A starts provider abstraction with a pure route decision contract over provider status snapshots and event intentions, while live routing remains the next Phase 8 slice. |
 
 ---
 
@@ -130,9 +131,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7g-mcp-selection-policy` |
-| Current phase branch | `codex/browser-runtime-phase7g-mcp-selection-policy` |
-| Current local base | `359b94e9 feat(browser): route MCP artifact errors` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8a-provider-route-decision` |
+| Current phase branch | `codex/browser-runtime-phase8a-provider-route-decision` |
+| Current local base | `6d1704e0 Merge pull request #474 from novolei/codex/browser-runtime-phase7g-mcp-selection-policy` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -196,8 +197,9 @@
 | Phase 7D MCP sidecar runner implementation commit | Merged through PR #471 as `18b97544 feat(browser): start playwright mcp sidecar`; merge commit `0d1ef4b1`. |
 | Phase 7E MCP stdio action boundary implementation commit | Merged through PR #472 as `111eada1 feat(browser): add mcp stdio action boundary`; merge commit `d21b9fa2`. |
 | Phase 7F MCP artifact/error routing implementation commit | Merged through PR #473 as `1d2512bf feat(browser): route mcp artifact errors`; merge commit `359b94e9`. |
-| Phase 7G MCP selection policy implementation commit | In progress on `codex/browser-runtime-phase7g-mcp-selection-policy`. |
-| Known pre-existing tracked changes | None in the Phase 7G MCP selection policy worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes; this phase starts from `origin/main` after PR #473 was merged. |
+| Phase 7G MCP selection policy implementation commit | Merged through PR #474 as `9388c666 feat(browser): add mcp selection policy`; merge commit `6d1704e0`. |
+| Phase 8A provider route decision implementation commit | In progress on `codex/browser-runtime-phase8a-provider-route-decision`. |
+| Known pre-existing tracked changes | None in the Phase 8A provider route decision worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes; this phase starts from `origin/main` after PR #474 was merged. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -5534,11 +5536,10 @@ Phase 7G can start because:
   `BrowserProviderSelectionCandidate` contract and a
   `rank_browser_provider_candidates` helper over capability cards.
 - Current PR:
-  PR #474 (`https://github.com/novolei/uclaw-new/pull/474`), merge state
-  pending reviewer / GitHub refresh.
-- Current commit:
-  `feat(browser): add mcp selection policy`; final SHA will be recorded after
-  PR publication/merge to avoid self-referential amend churn.
+  PR #474 (`https://github.com/novolei/uclaw-new/pull/474`), merged as
+  `6d1704e0`.
+- Implementation commit:
+  `9388c666 feat(browser): add mcp selection policy`.
 - Non-goal:
   no live provider selection, provider promotion, task routing, TaskEvent
   emission, UI, Tauri IPC, DB migration, runtime side effects, global npm, raw
@@ -5589,8 +5590,92 @@ Phase 7G can start because:
 
 ### Phase 7G MCP Selection Policy Next Action
 
-- Merge PR #474 automatically if GitHub still reports CLEAN and no user
-  worktree files are affected, then sync `main` and continue with Phase 8.
+- Closed. PR #474 merged as `6d1704e0`; continue with Phase 8A from
+  `origin/main` to add a provider route decision contract before live task
+  routing.
+
+## Phase 8A Provider Route Decision Entry Criteria
+
+Phase 8A can start because:
+
+- PR #474 merged Phase 7G MCP selection policy to `main` / `origin/main`;
+- chromiumoxide, Playwright CLI, and Playwright MCP all have provider status or
+  capability surfaces that can be compared as data;
+- ADR Phase 8 requires provider choice to become a runtime policy decision
+  backed by scorecards/events rather than a code fork;
+- this slice can model provider selection, degradation, and rollback event
+  intentions without emitting events or wiring live task routing;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8a-provider-route-decision`;
+- the branch starts from `6d1704e0`, the current `origin/main`.
+
+## Phase 8A Provider Route Decision Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase8a-provider-route-decision.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8a-provider-route-decision`
+- Branch:
+  `codex/browser-runtime-phase8a-provider-route-decision`
+- Scope:
+  add pure provider route request, candidate, event-intention, and decision
+  DTOs plus a `decide_browser_provider_route` helper over provider status
+  snapshots.
+- Current PR:
+  PR #475 (`https://github.com/novolei/uclaw-new/pull/475`), merge state
+  pending reviewer / GitHub refresh.
+- Current commit:
+  `feat(browser): add provider route decision`; final SHA will be recorded
+  after PR publication/merge to avoid self-referential amend churn.
+- Non-goal:
+  no live provider routing, provider promotion, agent-loop wiring, TaskEvent
+  emission, UI, Tauri IPC, DB migration, runtime side effects, hosted provider
+  implementation, or `agentic_loop.rs` / `tauri_commands.rs` edits.
+- Rollback:
+  revert this PR; Phase 7 ranking and provider status surfaces remain intact.
+
+### Phase 8A Provider Route Decision Impact Notes
+
+- GitNexus index was refreshed for the Phase 8A worktree before impact checks;
+  generated AGENTS/CLAUDE statistics changes were restored as noise.
+- GitNexus impact before edits reported LOW risk for
+  `BrowserProviderStatus`: 0 direct callers, 0 affected processes.
+- GitNexus impact before edits reported LOW risk for
+  `BrowserProviderCapabilities`: 3 direct callers, 0 affected processes.
+- GitNexus impact before edits reported LOW risk for
+  `BrowserProviderReadiness`: 0 direct callers, 0 affected processes.
+- GitNexus impact before edits reported LOW risk for
+  `BrowserProviderSelectionRequest`: 4 direct test callers, 0 affected
+  processes.
+- Phase 8A keeps `agentic_loop.rs` and `tauri_commands.rs` untouched because
+  it is the route decision substrate. Phase 8B should wire a focused live route
+  path once this decision is reviewable.
+
+### Phase 8A Provider Route Decision Verification Notes
+
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  passed: 11 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_contracts`
+  passed: 9 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  passed: 58 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  passed: 42 tests, 0 failed.
+- `rustfmt --edition 2021 --check src-tauri/src/browser/provider.rs src-tauri/src/browser/provider_tests.rs`
+  passed.
+- `git diff --check -- docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-phase8a-provider-route-decision.md src-tauri/src/browser/provider.rs src-tauri/src/browser/provider_tests.rs`
+  passed.
+- GitNexus staged detect reported 4 changed files, 19 changed symbols, 0
+  affected processes, `risk_level: low`; no HIGH or CRITICAL risk.
+- Fresh reviewer Anscombe returned `REVIEW ACCEPTED` for PR #475. Non-blocking
+  follow-up: before Phase 8B live routing, tighten or document the exact
+  `previous_provider_id` semantics so ordinary provider changes and rollback
+  from an unavailable previous provider cannot be confused.
+
+### Phase 8A Provider Route Decision Next Action
+
+- Merge PR #475 automatically if GitHub still reports CLEAN and no user
+  worktree files are affected, then sync `main` and continue with Phase 8B.
 
 ---
 
