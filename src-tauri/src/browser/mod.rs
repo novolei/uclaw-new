@@ -16,6 +16,7 @@ pub mod provider;
 pub mod recovery;
 pub mod runtime_contracts;
 pub mod runtime_pack;
+pub mod runtime_pack_ipc;
 pub mod runtime_supervisor;
 pub mod script_runner;
 pub mod session_state;
