@@ -1,8 +1,13 @@
-import { describe, expect, it } from 'vitest'
-import { screen } from '@/test-utils/render'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { screen, waitFor } from '@/test-utils/render'
 import { renderWithProviders } from '@/test-utils/render'
 import { BrowserRuntimeSettings } from './BrowserRuntimeSettings'
 import type { StartupRuntimePackStatusReport } from '@/lib/startup/startup-doctor'
+import { getBrowserRuntimeStatus } from '@/lib/tauri-bridge'
+
+vi.mock('@/lib/tauri-bridge', () => ({
+  getBrowserRuntimeStatus: vi.fn(),
+}))
 
 function runtimeReport(): StartupRuntimePackStatusReport {
   return {
@@ -29,7 +34,15 @@ function runtimeReport(): StartupRuntimePackStatusReport {
 }
 
 describe('BrowserRuntimeSettings', () => {
-  it('renders a readonly default surface before IPC wiring lands', () => {
+  beforeEach(() => {
+    vi.mocked(getBrowserRuntimeStatus).mockReset()
+  })
+
+  it('renders a readonly default surface while live status is pending', () => {
+    vi.mocked(getBrowserRuntimeStatus).mockReturnValue(
+      new Promise<StartupRuntimePackStatusReport>(() => {}),
+    )
+
     renderWithProviders(<BrowserRuntimeSettings />)
 
     expect(screen.getByText('浏览器运行时')).toBeInTheDocument()
@@ -37,6 +50,20 @@ describe('BrowserRuntimeSettings', () => {
     expect(screen.getAllByText('等待运行时状态').length).toBeGreaterThan(1)
     expect(screen.getByRole('button', { name: '准备' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '运行诊断' })).toBeDisabled()
+  })
+
+  it('loads live runtime status through the dedicated read-only bridge', async () => {
+    vi.mocked(getBrowserRuntimeStatus).mockResolvedValueOnce(runtimeReport())
+
+    renderWithProviders(<BrowserRuntimeSettings />)
+
+    await waitFor(() => {
+      expect(getBrowserRuntimeStatus).toHaveBeenCalledTimes(1)
+    })
+    await waitFor(() => {
+      expect(screen.getByText('1.48.2-uclaw.1')).toBeInTheDocument()
+    })
+    expect(screen.getByRole('button', { name: '保持当前' })).toBeEnabled()
   })
 
   it('renders runtime metadata from the Phase 2 status report adapter', () => {
