@@ -56,19 +56,17 @@ export function BrowserRuntimeSettings({
           <SettingsRow label="状态" icon={<Activity size={16} />} description={model.statusDetail}>
             <Badge variant={badgeVariant(model.statusKind)}>{model.statusLabel}</Badge>
           </SettingsRow>
-          <SettingsRow label="最后检查" description={model.lastCheckedLabel}>
-            <span className="text-sm text-muted-foreground">{model.updateStateLabel}</span>
-          </SettingsRow>
+          <SettingsRow label="最后检查" description={model.lastCheckedLabel} />
           <SettingsRow label="版本" description={model.releaseChannelLabel}>
             <span className="text-sm font-medium">{model.versionLabel}</span>
           </SettingsRow>
+          <SettingsRow label="更新状态" description={model.updateStateLabel} />
           <SettingsRow label="体积" description={model.artifactSizeLabel}>
             <HardDrive size={16} className="text-muted-foreground" />
           </SettingsRow>
           <SettingsRow label="运行时路径" description={model.runtimePackPathLabel} />
-          <SettingsRow label="回滚" description={model.rollbackLabel}>
-            <span className="text-sm text-muted-foreground">{model.developerFallbackLabel}</span>
-          </SettingsRow>
+          <SettingsRow label="回滚" description={model.rollbackLabel} />
+          <SettingsRow label="开发者回退" description={model.developerFallbackLabel} />
           <SettingsRow label="自动准备" description={model.autoPrepareLabel} />
         </SettingsCard>
       </SettingsSection>

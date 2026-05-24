@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 4S readonly status IPC PR open
+> Current phase: Phase 4T Browser Runtime Settings status field clarity PR open
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -23,7 +23,7 @@
 | Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
-| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4R merged; Phase 4S readonly Browser Runtime status IPC open as PR #445 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4s-readonly-status-ipc` / `codex/browser-runtime-phase4s-readonly-status-ipc` | Merge PR #445 if GitHub reports CLEAN; then continue with the next Phase 4 Settings/Doctor live-read slice without runtime-pack execution or provider promotion. |
+| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4S merged; Phase 4T Settings status field clarity open as PR #446 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4t-settings-status-clarity` / `codex/browser-runtime-phase4t-settings-status-clarity` | Merge PR #446 if GitHub reports CLEAN; then continue with live read-only Settings/Doctor status consumption without runtime action execution. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
@@ -89,6 +89,8 @@
 | 2026-05-24 | Open Phase 4R Settings IPC review pack PR. | PR #444 contains only the tracker and Phase 4R plan, records DMZ/HIGH impact gates, default Rust regressions, whitespace checks, and GitNexus staged detect LOW. | Merge only if GitHub reports CLEAN and the fresh reviewer accepts the writer/reviewer pack. |
 | 2026-05-24 | Merge Phase 4R and start Phase 4S as a read-only status IPC slice. | PR #444 merged as `c4a31567`; reviewer Noether returned `REVIEW ACCEPTED`; GitNexus impact for `main` and `inspect_runtime_pack_status` is LOW, while `getSettings` remains HIGH and must stay untouched. | Phase 4S may add a dedicated read-only Browser Runtime status command and frontend bridge, but no Settings live wiring, runtime-pack execution, provider promotion, or shared settings initialization changes. |
 | 2026-05-24 | Open Phase 4S readonly status IPC PR. | PR #445 contains the dedicated read-only `get_browser_runtime_status` command, standalone frontend bridge, focused Rust/UI tests, default browser-runtime regressions, and GitNexus staged detect MEDIUM with no HIGH/CRITICAL. | Merge if GitHub reports CLEAN; next Phase 4 slice should consume this command from Settings or Doctor without folding in action execution, provider promotion, or shared `getSettings` changes. |
+| 2026-05-24 | Merge Phase 4S and start Phase 4T as a Settings clarity follow-up. | PR #445 merged as `88f552f3`; a fresh PR #427 reviewer accepted the HIGH blast radius but flagged ambiguous update-state/developer-fallback rows as Important. | Phase 4T fixes only the display ambiguity in Browser Runtime Settings; live IPC consumption, runtime actions, provider promotion, and shared `getSettings` changes remain later slices. |
+| 2026-05-24 | Open Phase 4T Settings status clarity PR. | PR #446 contains first-class Settings rows for update state and developer fallback state, focused Settings component tests, default browser-runtime regressions, and GitNexus staged detect LOW with 0 affected processes. | Merge if GitHub reports CLEAN; next Phase 4 slice should consume the read-only status command from Settings or Doctor without folding in runtime action execution. |
 
 ---
 
@@ -97,9 +99,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4s-readonly-status-ipc` |
-| Current phase branch | `codex/browser-runtime-phase4s-readonly-status-ipc` |
-| Current local base | `c4a31567 Merge pull request #444 from novolei/codex/browser-runtime-phase4r-settings-ipc-review-pack` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4t-settings-status-clarity` |
+| Current phase branch | `codex/browser-runtime-phase4t-settings-status-clarity` |
+| Current local base | `88f552f3 Merge pull request #445 from novolei/codex/browser-runtime-phase4s-readonly-status-ipc` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -135,7 +137,8 @@
 | Phase 4P implementation commit | Merged through PR #442 as `2db901d8 feat(browser): add task-time dispatch patch boundary`; merge commit `1fd68675`. |
 | Phase 4Q implementation commit | Merged through PR #443 as `11e6032f feat(browser): model task-time dispatch effects`; merge commit `1db302be`. |
 | Phase 4R implementation commit | Merged through PR #444 as `60925a1e docs(browser): add settings ipc review pack`; merge commit `c4a31567`. |
-| Phase 4S implementation commit | Open as PR #445 with `1648d622 feat(browser): add readonly runtime status ipc`. |
+| Phase 4S implementation commit | Merged through PR #445 as `a66ec2ce feat(browser): add readonly runtime status ipc`; merge commit `88f552f3`. |
+| Phase 4T implementation commit | Open as PR #446 with `fix(browser): clarify runtime settings status rows`; current head is tracked by the PR after tracker metadata amend. |
 | Known pre-existing tracked changes | None in the Phase 4S worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
 | Linked ignored runtime resources | Phase 4S may use ignored local `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` links from the primary worktree for verification only. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
@@ -3077,6 +3080,86 @@ Recommended Phase 4S checks:
   reported `risk_level: medium`, 7 changed files, 18 changed symbols, and the
   same 4 affected `main`-rooted processes. No HIGH or CRITICAL risk was
   reported.
+
+## Phase 4T Entry Criteria
+
+Phase 4T can start because:
+
+- PR #445 merged the read-only status IPC command/bridge into `main` and
+  `origin/main`;
+- a fresh reviewer sub-agent for PR #427 returned `GitNexus HIGH Assessment:
+  ACCEPTABLE`, confirming the HIGH risk was Settings fanout rather than hidden
+  runtime mutation;
+- the same reviewer flagged the Browser Runtime Settings update-state and
+  developer-fallback rows as ambiguous and `Important`;
+- the Phase 4T worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4t-settings-status-clarity`;
+- the branch starts from `88f552f3`, the current `origin/main`;
+- GitNexus impact for `BrowserRuntimeSettings` is LOW, with 1 direct dependent
+  (`SettingsContent`) and 2 affected Settings processes;
+- GitNexus impact for `deriveBrowserRuntimeSettingsViewModel` is LOW, with 1
+  direct dependent (`BrowserRuntimeSettings`) and 2 affected Settings
+  processes.
+
+Recommended Phase 4T checks:
+
+- render update state as its own Settings row;
+- render developer fallback state as its own Settings row;
+- keep the existing view model and action previews intact unless tests require
+  a minimal adjustment;
+- do not wire live IPC, Settings persistence, runtime-pack execution, provider
+  selection, root `App`, `getSettings`, or DMZ files.
+
+## Phase 4T Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase4t-settings-status-clarity.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4t-settings-status-clarity`
+- Branch:
+  `codex/browser-runtime-phase4t-settings-status-clarity`
+- Scope:
+  Browser Runtime Settings display clarity for update state and developer
+  fallback state.
+- Current PR:
+  PR #446 (`codex/browser-runtime-phase4t-settings-status-clarity`).
+- DMZ files:
+  none planned.
+- Migration:
+  none planned.
+- Rollback:
+  revert this PR; no persistent side effects.
+
+### Phase 4T Impact Notes
+
+- `npx gitnexus analyze` indexed the Phase 4T worktree before impact analysis.
+  GitNexus rewrote only AGENTS/CLAUDE stats, and those noise changes were
+  restored.
+- `ui/src/components/settings/BrowserRuntimeSettings.tsx::BrowserRuntimeSettings`:
+  GitNexus impact LOW, 1 direct dependent (`SettingsContent`), 2 affected
+  Settings processes, 1 affected module (`Settings`).
+- `ui/src/lib/browser-runtime/browser-runtime-settings.ts::deriveBrowserRuntimeSettingsViewModel`:
+  GitNexus impact LOW, 1 direct dependent (`BrowserRuntimeSettings`), 2
+  affected Settings processes, 1 affected module (`Settings`).
+- This slice changes no IPC, backend code, runtime-pack execution, provider
+  selection, DB migrations, TaskEvents, root `App`, shared `getSettings`, or
+  DMZ files.
+
+### Phase 4T Verification Notes
+
+- `cd ui && npm test -- --run src/components/settings/BrowserRuntimeSettings.test.tsx`
+  passed: 1 file; 4 tests.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  passed: 34 tests; 0 failed; 2591 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  passed: 46 tests; 0 failed; 2579 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  passed: 6 tests; 0 failed; 2619 filtered out.
+- `rustfmt --edition 2021 --check <changed-rust-files>` is N/A; Phase 4T
+  changes no Rust files.
+- `git diff --check -- <changed-files>` passed with no output.
+- GitNexus staged detect reported `risk_level: low`, 4 changed files, 13
+  changed symbols, and 0 affected processes.
 
 ---
 
