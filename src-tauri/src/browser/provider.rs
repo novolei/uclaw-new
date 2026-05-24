@@ -6,6 +6,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::runtime_contracts::{
+    browser_provider_capability_cards, rank_browser_provider_candidates,
+    BrowserProviderSelectionRequest, BrowserTaskEventName,
+};
+
 pub const LOCAL_CHROMIUM_PROVIDER_ID: &str = "browser.local_chromium";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,6 +272,179 @@ impl BrowserProviderStatus {
             remediation,
             notes: probe.notes,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserProviderRouteRequest {
+    pub selection: BrowserProviderSelectionRequest,
+    pub disabled_provider_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_provider_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserProviderRouteDecisionStatus {
+    Selected,
+    RolledBack,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserProviderRouteCandidate {
+    pub provider_id: String,
+    pub rank: u16,
+    pub readiness: BrowserProviderReadiness,
+    pub eligible: bool,
+    pub selection_reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserProviderRouteEventIntent {
+    pub event_name: BrowserTaskEventName,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserProviderRouteDecision {
+    pub status: BrowserProviderRouteDecisionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_provider_id: Option<String>,
+    pub candidates: Vec<BrowserProviderRouteCandidate>,
+    pub event_intents: Vec<BrowserProviderRouteEventIntent>,
+}
+
+pub fn decide_browser_provider_route(
+    request: &BrowserProviderRouteRequest,
+    statuses: &[BrowserProviderStatus],
+) -> BrowserProviderRouteDecision {
+    let ranked_candidates =
+        rank_browser_provider_candidates(&request.selection, browser_provider_capability_cards());
+    let mut candidates = Vec::new();
+    let mut event_intents = Vec::new();
+    let mut selected_provider_id = None;
+
+    for ranked in ranked_candidates {
+        let Some(status) = statuses
+            .iter()
+            .find(|status| status.provider_id == ranked.provider_id)
+        else {
+            candidates.push(BrowserProviderRouteCandidate {
+                provider_id: ranked.provider_id.to_string(),
+                rank: ranked.rank,
+                readiness: BrowserProviderReadiness::Unavailable,
+                eligible: false,
+                selection_reason: ranked.reason.to_string(),
+                blocked_reason: Some("provider_status_missing".to_string()),
+            });
+            continue;
+        };
+
+        let disabled = request
+            .disabled_provider_ids
+            .iter()
+            .any(|provider_id| provider_id == status.provider_id.as_str());
+        let blocked_reason = if disabled {
+            Some("provider_disabled".to_string())
+        } else if !status.ready {
+            Some(format!(
+                "provider_readiness_{}",
+                browser_provider_readiness_slug(status.readiness)
+            ))
+        } else {
+            None
+        };
+        let eligible = blocked_reason.is_none();
+
+        if !status.ready {
+            event_intents.push(BrowserProviderRouteEventIntent {
+                event_name: BrowserTaskEventName::ProviderDegraded,
+                provider_id: Some(status.provider_id.clone()),
+                reason: blocked_reason
+                    .clone()
+                    .unwrap_or_else(|| "provider_not_ready".to_string()),
+            });
+        }
+
+        if eligible && selected_provider_id.is_none() {
+            selected_provider_id = Some(status.provider_id.clone());
+        }
+
+        candidates.push(BrowserProviderRouteCandidate {
+            provider_id: status.provider_id.clone(),
+            rank: ranked.rank,
+            readiness: status.readiness,
+            eligible,
+            selection_reason: ranked.reason.to_string(),
+            blocked_reason,
+        });
+    }
+
+    let status = match selected_provider_id.as_deref() {
+        Some(selected)
+            if request
+                .previous_provider_id
+                .as_deref()
+                .is_some_and(|previous| previous != selected) =>
+        {
+            BrowserProviderRouteDecisionStatus::RolledBack
+        }
+        Some(_) => BrowserProviderRouteDecisionStatus::Selected,
+        None => BrowserProviderRouteDecisionStatus::Blocked,
+    };
+
+    match status {
+        BrowserProviderRouteDecisionStatus::Selected => {
+            event_intents.push(BrowserProviderRouteEventIntent {
+                event_name: BrowserTaskEventName::ProviderSelected,
+                provider_id: selected_provider_id.clone(),
+                reason: "provider_selected".to_string(),
+            });
+        }
+        BrowserProviderRouteDecisionStatus::RolledBack => {
+            event_intents.push(BrowserProviderRouteEventIntent {
+                event_name: BrowserTaskEventName::ProviderRolledBack,
+                provider_id: request.previous_provider_id.clone(),
+                reason: "previous_provider_unavailable_or_disabled".to_string(),
+            });
+            event_intents.push(BrowserProviderRouteEventIntent {
+                event_name: BrowserTaskEventName::ProviderSelected,
+                provider_id: selected_provider_id.clone(),
+                reason: "fallback_provider_selected".to_string(),
+            });
+        }
+        BrowserProviderRouteDecisionStatus::Blocked => {
+            event_intents.push(BrowserProviderRouteEventIntent {
+                event_name: BrowserTaskEventName::ProviderDegraded,
+                provider_id: None,
+                reason: "no_eligible_provider".to_string(),
+            });
+        }
+    }
+
+    BrowserProviderRouteDecision {
+        status,
+        selected_provider_id,
+        candidates,
+        event_intents,
+    }
+}
+
+const fn browser_provider_readiness_slug(readiness: BrowserProviderReadiness) -> &'static str {
+    match readiness {
+        BrowserProviderReadiness::Ready => "ready",
+        BrowserProviderReadiness::NeedsSetup => "needs_setup",
+        BrowserProviderReadiness::Degraded => "degraded",
+        BrowserProviderReadiness::Unavailable => "unavailable",
     }
 }
 
