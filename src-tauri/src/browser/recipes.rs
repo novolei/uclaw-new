@@ -409,6 +409,365 @@ pub fn validate_browser_recipe_candidate(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRecipeLocatorCacheKey {
+    pub recipe_id: String,
+    pub action_id: String,
+    pub site_origin: String,
+    pub route_pattern: String,
+    pub dom_fingerprint: String,
+    pub instruction_family: String,
+    pub provider_id: String,
+    pub provider_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRecipeLocatorCacheEntry {
+    pub schema_version: u16,
+    pub key: BrowserRecipeLocatorCacheKey,
+    pub action_kind: BrowserRecipeActionKind,
+    pub addressing: BrowserRecipeAddressing,
+    pub wait_condition: Option<String>,
+    pub expected_state_diff: Option<String>,
+    pub artifact_refs: Vec<String>,
+    pub redaction: BrowserRecipeRedactionReport,
+    pub validation_success_count: u16,
+    pub validation_failure_count: u16,
+    pub promotion_state: BrowserRecipePromotionState,
+    pub rollback_recipe_id: Option<String>,
+}
+
+impl BrowserRecipeLocatorCacheEntry {
+    fn has_rollback_recipe_id(&self) -> bool {
+        self.rollback_recipe_id
+            .as_deref()
+            .map(|recipe_id| !recipe_id.trim().is_empty())
+            .unwrap_or(false)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserRecipeLocatorCacheBuildStatus {
+    Cached,
+    ActionMissing,
+    CandidateRejected,
+    LocatorRejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRecipeLocatorCacheBuildResult {
+    pub status: BrowserRecipeLocatorCacheBuildStatus,
+    pub entry: Option<BrowserRecipeLocatorCacheEntry>,
+    pub validation: Option<BrowserRecipeLocatorCacheValidation>,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserRecipeLocatorCacheStatus {
+    CacheReady,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRecipeLocatorCacheValidation {
+    pub status: BrowserRecipeLocatorCacheStatus,
+    pub rejection_reasons: Vec<String>,
+}
+
+pub fn build_browser_recipe_locator_cache_entry(
+    candidate: &BrowserRecipeCandidate,
+    action_id: &str,
+) -> BrowserRecipeLocatorCacheBuildResult {
+    let candidate_validation = validate_browser_recipe_candidate(candidate);
+    if candidate_validation.status == BrowserRecipeCandidateStatus::Rejected {
+        return BrowserRecipeLocatorCacheBuildResult {
+            status: BrowserRecipeLocatorCacheBuildStatus::CandidateRejected,
+            entry: None,
+            validation: None,
+            reasons: candidate_validation.rejection_reasons,
+        };
+    }
+
+    let Some(action) = candidate
+        .actions
+        .iter()
+        .find(|action| action.action_id == action_id)
+    else {
+        return BrowserRecipeLocatorCacheBuildResult {
+            status: BrowserRecipeLocatorCacheBuildStatus::ActionMissing,
+            entry: None,
+            validation: None,
+            reasons: vec!["action_missing".to_string()],
+        };
+    };
+
+    let mut artifact_refs = candidate.evidence.artifact_refs.clone();
+    artifact_refs.extend(action.artifact_refs.clone());
+
+    let entry = BrowserRecipeLocatorCacheEntry {
+        schema_version: BROWSER_RECIPE_SCHEMA_VERSION,
+        key: BrowserRecipeLocatorCacheKey {
+            recipe_id: candidate.recipe_id.clone(),
+            action_id: action.action_id.clone(),
+            site_origin: candidate.key.site_origin.clone(),
+            route_pattern: candidate.key.route_pattern.clone(),
+            dom_fingerprint: candidate.key.dom_fingerprint.clone(),
+            instruction_family: candidate.key.instruction_family.clone(),
+            provider_id: candidate.key.provider_id.clone(),
+            provider_version: candidate.key.provider_version.clone(),
+        },
+        action_kind: action.kind,
+        addressing: action.addressing.clone(),
+        wait_condition: action.wait_condition.clone(),
+        expected_state_diff: action.expected_state_diff.clone(),
+        artifact_refs: unique_non_empty(artifact_refs),
+        redaction: candidate.redaction.clone(),
+        validation_success_count: candidate.evidence.replay_success_count,
+        validation_failure_count: candidate.evidence.replay_failure_count,
+        promotion_state: candidate.promotion_state,
+        rollback_recipe_id: candidate
+            .rollback_recipe_id
+            .clone()
+            .filter(|recipe_id| !recipe_id.trim().is_empty()),
+    };
+
+    let validation = validate_browser_recipe_locator_cache_entry(&entry);
+    let status = if validation.status == BrowserRecipeLocatorCacheStatus::CacheReady {
+        BrowserRecipeLocatorCacheBuildStatus::Cached
+    } else {
+        BrowserRecipeLocatorCacheBuildStatus::LocatorRejected
+    };
+    let reasons = validation.rejection_reasons.clone();
+
+    BrowserRecipeLocatorCacheBuildResult {
+        status,
+        entry: Some(entry),
+        validation: Some(validation),
+        reasons,
+    }
+}
+
+pub fn validate_browser_recipe_locator_cache_entry(
+    entry: &BrowserRecipeLocatorCacheEntry,
+) -> BrowserRecipeLocatorCacheValidation {
+    let mut rejection_reasons = Vec::new();
+
+    if entry.schema_version != BROWSER_RECIPE_SCHEMA_VERSION {
+        rejection_reasons.push("schema_version_mismatch".to_string());
+    }
+    if entry.key.recipe_id.trim().is_empty() {
+        rejection_reasons.push("recipe_id_missing".to_string());
+    }
+    if entry.key.action_id.trim().is_empty() {
+        rejection_reasons.push("action_id_missing".to_string());
+    }
+    if entry.key.site_origin.trim().is_empty() {
+        rejection_reasons.push("site_origin_missing".to_string());
+    }
+    if entry.key.route_pattern.trim().is_empty() {
+        rejection_reasons.push("route_pattern_missing".to_string());
+    }
+    if entry.key.dom_fingerprint.trim().is_empty() {
+        rejection_reasons.push("dom_fingerprint_missing".to_string());
+    }
+    if entry.key.instruction_family.trim().is_empty() {
+        rejection_reasons.push("instruction_family_missing".to_string());
+    }
+    if entry.key.provider_id.trim().is_empty() {
+        rejection_reasons.push("provider_id_missing".to_string());
+    }
+    if entry.key.provider_version.trim().is_empty() {
+        rejection_reasons.push("provider_version_missing".to_string());
+    }
+    if entry.addressing.is_transient_coordinate() {
+        rejection_reasons.push("transient_pixel_coordinates_detected".to_string());
+    }
+    if !entry.addressing.has_stable_locator() {
+        rejection_reasons.push("stable_locator_missing".to_string());
+    }
+    if entry.artifact_refs.is_empty() {
+        rejection_reasons.push("artifact_refs_missing".to_string());
+    }
+    if entry.validation_success_count == 0 {
+        rejection_reasons.push("locator_validation_missing".to_string());
+    }
+    if entry.validation_failure_count > 0 {
+        rejection_reasons.push("locator_validation_failed".to_string());
+    }
+    if !entry.has_rollback_recipe_id() {
+        rejection_reasons.push("rollback_recipe_id_missing".to_string());
+    }
+
+    rejection_reasons.extend(entry.redaction.rejection_reasons());
+    rejection_reasons.sort();
+    rejection_reasons.dedup();
+
+    BrowserRecipeLocatorCacheValidation {
+        status: if rejection_reasons.is_empty() {
+            BrowserRecipeLocatorCacheStatus::CacheReady
+        } else {
+            BrowserRecipeLocatorCacheStatus::Rejected
+        },
+        rejection_reasons,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRecipeLocatorReuseRequest {
+    pub recipe_id: String,
+    pub action_id: String,
+    pub current_dom_fingerprint: String,
+    pub current_provider_id: String,
+    pub current_provider_version: String,
+    pub production_replay_allowed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserRecipeLocatorReuseDecisionStatus {
+    LocatorReusable,
+    RecipeIdMismatch,
+    ActionIdMismatch,
+    FingerprintMismatch,
+    ProviderVersionMismatch,
+    LocatorInvalid,
+    NotPromoted,
+    ProductionReplayDisabled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRecipeLocatorReuseDecision {
+    pub status: BrowserRecipeLocatorReuseDecisionStatus,
+    pub recipe_id: String,
+    pub action_id: String,
+    pub fallback_to_observation: bool,
+    pub reasons: Vec<String>,
+    pub artifact_refs: Vec<String>,
+}
+
+pub fn decide_browser_recipe_locator_reuse(
+    entry: &BrowserRecipeLocatorCacheEntry,
+    request: &BrowserRecipeLocatorReuseRequest,
+) -> BrowserRecipeLocatorReuseDecision {
+    if entry.key.recipe_id != request.recipe_id {
+        return locator_reuse_decision(
+            entry,
+            request,
+            BrowserRecipeLocatorReuseDecisionStatus::RecipeIdMismatch,
+            true,
+            "recipe_id_mismatch",
+        );
+    }
+    if entry.key.action_id != request.action_id {
+        return locator_reuse_decision(
+            entry,
+            request,
+            BrowserRecipeLocatorReuseDecisionStatus::ActionIdMismatch,
+            true,
+            "action_id_mismatch",
+        );
+    }
+
+    let validation = validate_browser_recipe_locator_cache_entry(entry);
+    if validation.status == BrowserRecipeLocatorCacheStatus::Rejected {
+        return locator_reuse_decision_with_reasons(
+            entry,
+            request,
+            BrowserRecipeLocatorReuseDecisionStatus::LocatorInvalid,
+            true,
+            validation.rejection_reasons,
+        );
+    }
+
+    if entry.promotion_state != BrowserRecipePromotionState::Promoted {
+        return locator_reuse_decision(
+            entry,
+            request,
+            BrowserRecipeLocatorReuseDecisionStatus::NotPromoted,
+            true,
+            "recipe_not_promoted",
+        );
+    }
+    if !request.production_replay_allowed {
+        return locator_reuse_decision(
+            entry,
+            request,
+            BrowserRecipeLocatorReuseDecisionStatus::ProductionReplayDisabled,
+            true,
+            "production_replay_disabled",
+        );
+    }
+    if entry.key.dom_fingerprint != request.current_dom_fingerprint {
+        return locator_reuse_decision(
+            entry,
+            request,
+            BrowserRecipeLocatorReuseDecisionStatus::FingerprintMismatch,
+            true,
+            "dom_fingerprint_mismatch",
+        );
+    }
+    if entry.key.provider_id != request.current_provider_id
+        || entry.key.provider_version != request.current_provider_version
+    {
+        return locator_reuse_decision(
+            entry,
+            request,
+            BrowserRecipeLocatorReuseDecisionStatus::ProviderVersionMismatch,
+            true,
+            "provider_version_mismatch",
+        );
+    }
+
+    locator_reuse_decision(
+        entry,
+        request,
+        BrowserRecipeLocatorReuseDecisionStatus::LocatorReusable,
+        false,
+        "locator_reuse_allowed",
+    )
+}
+
+fn locator_reuse_decision(
+    entry: &BrowserRecipeLocatorCacheEntry,
+    request: &BrowserRecipeLocatorReuseRequest,
+    status: BrowserRecipeLocatorReuseDecisionStatus,
+    fallback_to_observation: bool,
+    reason: &str,
+) -> BrowserRecipeLocatorReuseDecision {
+    locator_reuse_decision_with_reasons(
+        entry,
+        request,
+        status,
+        fallback_to_observation,
+        vec![reason.to_string()],
+    )
+}
+
+fn locator_reuse_decision_with_reasons(
+    entry: &BrowserRecipeLocatorCacheEntry,
+    request: &BrowserRecipeLocatorReuseRequest,
+    status: BrowserRecipeLocatorReuseDecisionStatus,
+    fallback_to_observation: bool,
+    reasons: Vec<String>,
+) -> BrowserRecipeLocatorReuseDecision {
+    BrowserRecipeLocatorReuseDecision {
+        status,
+        recipe_id: request.recipe_id.clone(),
+        action_id: request.action_id.clone(),
+        fallback_to_observation,
+        reasons,
+        artifact_refs: entry.artifact_refs.clone(),
+    }
+}
+
 fn unique_non_empty(values: Vec<String>) -> Vec<String> {
     let mut values: Vec<String> = values
         .into_iter()
@@ -922,12 +1281,161 @@ mod tests {
         assert!(!result.validation.promotion_ready);
     }
 
+    #[test]
+    fn locator_cache_builds_reusable_entry_from_promoted_candidate_action() {
+        let mut candidate = base_candidate();
+        candidate.promotion_state = BrowserRecipePromotionState::Promoted;
+
+        let build = build_browser_recipe_locator_cache_entry(&candidate, "click-submit");
+
+        assert_eq!(build.status, BrowserRecipeLocatorCacheBuildStatus::Cached);
+        assert!(build.reasons.is_empty());
+        let entry = build.entry.expect("locator cache entry");
+        assert_eq!(entry.key.recipe_id, "recipe:example-login:1");
+        assert_eq!(entry.key.action_id, "click-submit");
+        assert_eq!(entry.validation_success_count, 3);
+        assert_eq!(entry.validation_failure_count, 0);
+        assert_eq!(
+            entry.artifact_refs,
+            vec!["artifact://browser/trace-1".to_string()]
+        );
+
+        let decision =
+            decide_browser_recipe_locator_reuse(&entry, &matching_locator_reuse_request(&entry));
+
+        assert_eq!(
+            decision.status,
+            BrowserRecipeLocatorReuseDecisionStatus::LocatorReusable
+        );
+        assert!(!decision.fallback_to_observation);
+    }
+
+    #[test]
+    fn locator_cache_falls_back_until_candidate_is_promoted() {
+        let candidate = base_candidate();
+        let build = build_browser_recipe_locator_cache_entry(&candidate, "click-submit");
+        let entry = build.entry.expect("locator cache entry");
+
+        let decision =
+            decide_browser_recipe_locator_reuse(&entry, &matching_locator_reuse_request(&entry));
+
+        assert_eq!(
+            decision.status,
+            BrowserRecipeLocatorReuseDecisionStatus::NotPromoted
+        );
+        assert!(decision.fallback_to_observation);
+    }
+
+    #[test]
+    fn locator_cache_rejects_failed_validation_counts() {
+        let mut candidate = base_candidate();
+        candidate.evidence.replay_failure_count = 1;
+
+        let build = build_browser_recipe_locator_cache_entry(&candidate, "click-submit");
+
+        assert_eq!(
+            build.status,
+            BrowserRecipeLocatorCacheBuildStatus::LocatorRejected
+        );
+        assert!(build
+            .reasons
+            .contains(&"locator_validation_failed".to_string()));
+        assert_eq!(
+            build.validation.expect("locator validation").status,
+            BrowserRecipeLocatorCacheStatus::Rejected
+        );
+    }
+
+    #[test]
+    fn locator_cache_rejects_candidate_redaction_before_building_entry() {
+        let mut candidate = base_candidate();
+        candidate.redaction.secrets_detected = vec!["token".to_string()];
+
+        let build = build_browser_recipe_locator_cache_entry(&candidate, "click-submit");
+
+        assert_eq!(
+            build.status,
+            BrowserRecipeLocatorCacheBuildStatus::CandidateRejected
+        );
+        assert!(build.entry.is_none());
+        assert!(build.reasons.contains(&"secrets_detected".to_string()));
+    }
+
+    #[test]
+    fn locator_cache_reuse_invalidates_fingerprint_and_provider_mismatch() {
+        let mut candidate = base_candidate();
+        candidate.promotion_state = BrowserRecipePromotionState::Promoted;
+        let entry = build_browser_recipe_locator_cache_entry(&candidate, "click-submit")
+            .entry
+            .expect("locator cache entry");
+
+        let fingerprint_decision = decide_browser_recipe_locator_reuse(
+            &entry,
+            &BrowserRecipeLocatorReuseRequest {
+                current_dom_fingerprint: "dom:a11y-v1:changed".to_string(),
+                ..matching_locator_reuse_request(&entry)
+            },
+        );
+        let provider_decision = decide_browser_recipe_locator_reuse(
+            &entry,
+            &BrowserRecipeLocatorReuseRequest {
+                current_provider_version: "playwright-cli@2.0.0".to_string(),
+                ..matching_locator_reuse_request(&entry)
+            },
+        );
+
+        assert_eq!(
+            fingerprint_decision.status,
+            BrowserRecipeLocatorReuseDecisionStatus::FingerprintMismatch
+        );
+        assert!(fingerprint_decision.fallback_to_observation);
+        assert_eq!(
+            provider_decision.status,
+            BrowserRecipeLocatorReuseDecisionStatus::ProviderVersionMismatch
+        );
+        assert!(provider_decision.fallback_to_observation);
+    }
+
+    #[test]
+    fn locator_cache_rejects_blank_locator_metadata() {
+        let mut candidate = base_candidate();
+        candidate.actions[0].addressing = BrowserRecipeAddressing::SemanticLocator {
+            role: Some(" ".to_string()),
+            label: None,
+            text: None,
+            test_id: Some(String::new()),
+        };
+
+        let build = build_browser_recipe_locator_cache_entry(&candidate, "click-submit");
+
+        assert_eq!(
+            build.status,
+            BrowserRecipeLocatorCacheBuildStatus::CandidateRejected
+        );
+        assert!(build
+            .reasons
+            .contains(&"stable_locator_missing".to_string()));
+    }
+
     fn matching_replay_request(candidate: &BrowserRecipeCandidate) -> BrowserRecipeReplayRequest {
         BrowserRecipeReplayRequest {
             recipe_id: candidate.recipe_id.clone(),
             current_dom_fingerprint: candidate.key.dom_fingerprint.clone(),
             current_provider_id: candidate.key.provider_id.clone(),
             current_provider_version: candidate.key.provider_version.clone(),
+            production_replay_allowed: true,
+        }
+    }
+
+    fn matching_locator_reuse_request(
+        entry: &BrowserRecipeLocatorCacheEntry,
+    ) -> BrowserRecipeLocatorReuseRequest {
+        BrowserRecipeLocatorReuseRequest {
+            recipe_id: entry.key.recipe_id.clone(),
+            action_id: entry.key.action_id.clone(),
+            current_dom_fingerprint: entry.key.dom_fingerprint.clone(),
+            current_provider_id: entry.key.provider_id.clone(),
+            current_provider_version: entry.key.provider_version.clone(),
             production_replay_allowed: true,
         }
     }
