@@ -18,6 +18,7 @@ pub mod playwright_cli;
 pub mod playwright_mcp;
 pub mod playwright_mcp_sidecar;
 pub mod provider;
+pub mod provider_defaults;
 pub mod provider_execution;
 pub mod recovery;
 pub mod runtime_contracts;
