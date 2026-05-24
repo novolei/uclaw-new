@@ -15,6 +15,7 @@ pub mod memory_adapter;
 pub mod observation;
 pub mod perception;
 pub mod playwright_cli;
+pub mod playwright_mcp;
 pub mod provider;
 pub mod recovery;
 pub mod runtime_contracts;
@@ -43,6 +44,16 @@ pub use playwright_cli::{
     PlaywrightCliRuntimeEnv, DEFAULT_PLAYWRIGHT_CLI_ACTION_TIMEOUT_MS,
     PLAYWRIGHT_CLI_DECLARATIVE_ACTIONS, PLAYWRIGHT_CLI_ENVELOPE_SCHEMA_VERSION,
     PLAYWRIGHT_CLI_PROVIDER_ID,
+};
+pub use playwright_mcp::{
+    build_playwright_mcp_request_envelope, build_playwright_mcp_sidecar_spec,
+    playwright_mcp_capabilities, playwright_mcp_provider_status, PlaywrightMcpAction,
+    PlaywrightMcpActionKind, PlaywrightMcpBrowserName, PlaywrightMcpCapability,
+    PlaywrightMcpEnvelopeError, PlaywrightMcpProfileMode, PlaywrightMcpRequestEnvelope,
+    PlaywrightMcpSidecarSpec, PlaywrightMcpSidecarSpecError, PlaywrightMcpSidecarSpecRequest,
+    DEFAULT_PLAYWRIGHT_MCP_ACTION_TIMEOUT_MS, DEFAULT_PLAYWRIGHT_MCP_NAVIGATION_TIMEOUT_MS,
+    PLAYWRIGHT_MCP_DEFAULT_CAPABILITIES, PLAYWRIGHT_MCP_ENVELOPE_SCHEMA_VERSION,
+    PLAYWRIGHT_MCP_PACKAGE_NAME, PLAYWRIGHT_MCP_PROVIDER_ID, PLAYWRIGHT_MCP_UCLAW_ACTIONS,
 };
 pub use provider::{
     local_chromium_capabilities, local_chromium_status, BrowserCapabilityProbe,
