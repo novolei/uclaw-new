@@ -93,6 +93,31 @@ pub struct BrowserRecipeActionTemplate {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BrowserRecipeActionObservation {
+    pub action_id: String,
+    pub kind: BrowserRecipeActionKind,
+    pub addressing: BrowserRecipeAddressing,
+    pub wait_condition: Option<String>,
+    pub expected_state_diff: Option<String>,
+    pub artifact_refs: Vec<String>,
+    pub succeeded: bool,
+}
+
+impl BrowserRecipeActionObservation {
+    fn into_template(self) -> BrowserRecipeActionTemplate {
+        BrowserRecipeActionTemplate {
+            action_id: self.action_id,
+            kind: self.kind,
+            addressing: self.addressing,
+            wait_condition: self.wait_condition,
+            expected_state_diff: self.expected_state_diff,
+            artifact_refs: unique_non_empty(self.artifact_refs),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BrowserDomainSkillCandidate {
     pub stable_url_patterns: Vec<String>,
     pub selector_notes: Vec<String>,
@@ -210,6 +235,109 @@ pub struct BrowserRecipeCandidateValidation {
     pub rejection_reasons: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRecipeNormalizationInput {
+    pub recipe_id: String,
+    pub key: BrowserRecipeKey,
+    pub actions: Vec<BrowserRecipeActionObservation>,
+    pub domain_skill_candidate: Option<BrowserDomainSkillCandidate>,
+    pub redaction: BrowserRecipeRedactionReport,
+    pub artifact_refs: Vec<String>,
+    pub harness_case_ids: Vec<String>,
+    pub replay_success_count: u16,
+    pub replay_failure_count: u16,
+    pub redaction_review_artifact_ref: Option<String>,
+    pub rollback_recipe_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserRecipeNormalizationStatus {
+    CandidateBuilt,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRecipeNormalizationResult {
+    pub status: BrowserRecipeNormalizationStatus,
+    pub candidate: BrowserRecipeCandidate,
+    pub validation: BrowserRecipeCandidateValidation,
+    pub rejected_action_ids: Vec<String>,
+    pub normalization_reasons: Vec<String>,
+}
+
+pub fn normalize_browser_recipe_candidate(
+    input: BrowserRecipeNormalizationInput,
+) -> BrowserRecipeNormalizationResult {
+    let mut rejected_action_ids = Vec::new();
+    let mut normalization_reasons = Vec::new();
+    let mut action_templates = Vec::new();
+    let mut action_artifact_refs = Vec::new();
+    let mut replay_failure_count = input.replay_failure_count;
+
+    for action in input.actions {
+        if action.succeeded {
+            action_artifact_refs.extend(action.artifact_refs.iter().cloned());
+            action_templates.push(action.into_template());
+        } else {
+            rejected_action_ids.push(action.action_id.clone());
+            replay_failure_count = replay_failure_count.saturating_add(1);
+        }
+    }
+    rejected_action_ids.sort();
+    rejected_action_ids.dedup();
+
+    if !rejected_action_ids.is_empty() {
+        normalization_reasons.push("failed_action_observation".to_string());
+    }
+
+    let mut artifact_refs = input.artifact_refs;
+    artifact_refs.extend(action_artifact_refs);
+
+    let candidate = BrowserRecipeCandidate {
+        schema_version: BROWSER_RECIPE_SCHEMA_VERSION,
+        recipe_id: input.recipe_id,
+        key: input.key,
+        actions: action_templates,
+        domain_skill_candidate: input.domain_skill_candidate,
+        redaction: input.redaction,
+        evidence: BrowserRecipeEvidence {
+            artifact_refs: unique_non_empty(artifact_refs),
+            harness_case_ids: unique_non_empty(input.harness_case_ids),
+            replay_success_count: input.replay_success_count,
+            replay_failure_count,
+            redaction_review_artifact_ref: input
+                .redaction_review_artifact_ref
+                .filter(|artifact_ref| !artifact_ref.trim().is_empty()),
+        },
+        promotion_state: BrowserRecipePromotionState::Candidate,
+        rollback_recipe_id: input
+            .rollback_recipe_id
+            .filter(|recipe_id| !recipe_id.trim().is_empty()),
+    };
+
+    let validation = validate_browser_recipe_candidate(&candidate);
+    normalization_reasons.extend(validation.rejection_reasons.iter().cloned());
+    normalization_reasons.sort();
+    normalization_reasons.dedup();
+
+    let status = if normalization_reasons.is_empty() {
+        BrowserRecipeNormalizationStatus::CandidateBuilt
+    } else {
+        BrowserRecipeNormalizationStatus::Rejected
+    };
+
+    BrowserRecipeNormalizationResult {
+        status,
+        candidate,
+        validation,
+        rejected_action_ids,
+        normalization_reasons,
+    }
+}
+
 pub fn validate_browser_recipe_candidate(
     candidate: &BrowserRecipeCandidate,
 ) -> BrowserRecipeCandidateValidation {
@@ -279,6 +407,17 @@ pub fn validate_browser_recipe_candidate(
         promotion_ready,
         rejection_reasons,
     }
+}
+
+fn unique_non_empty(values: Vec<String>) -> Vec<String> {
+    let mut values: Vec<String> = values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    values.sort();
+    values.dedup();
+    values
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -662,6 +801,127 @@ mod tests {
         assert!(!decision.fallback_to_observation);
     }
 
+    #[test]
+    fn normalization_builds_candidate_from_successful_action_evidence() {
+        let result = normalize_browser_recipe_candidate(base_normalization_input());
+
+        assert_eq!(
+            result.status,
+            BrowserRecipeNormalizationStatus::CandidateBuilt
+        );
+        assert!(result.rejected_action_ids.is_empty());
+        assert!(result.normalization_reasons.is_empty());
+        assert_eq!(result.candidate.actions.len(), 2);
+        assert_eq!(result.candidate.evidence.replay_success_count, 2);
+        assert_eq!(result.candidate.evidence.replay_failure_count, 0);
+        assert_eq!(
+            result.candidate.evidence.artifact_refs,
+            vec![
+                "artifact://browser/action-click".to_string(),
+                "artifact://browser/action-navigate".to_string(),
+                "artifact://browser/run".to_string(),
+            ]
+        );
+        assert_eq!(
+            result.validation.status,
+            BrowserRecipeCandidateStatus::CandidateReady
+        );
+        assert!(result.validation.promotion_ready);
+    }
+
+    #[test]
+    fn normalization_rejects_failed_action_observations() {
+        let mut input = base_normalization_input();
+        input.actions.push(BrowserRecipeActionObservation {
+            action_id: "wait-failed".to_string(),
+            kind: BrowserRecipeActionKind::Wait,
+            addressing: BrowserRecipeAddressing::NoElement,
+            wait_condition: Some("selector:#missing".to_string()),
+            expected_state_diff: None,
+            artifact_refs: vec!["artifact://browser/wait-timeout".to_string()],
+            succeeded: false,
+        });
+
+        let result = normalize_browser_recipe_candidate(input);
+
+        assert_eq!(result.status, BrowserRecipeNormalizationStatus::Rejected);
+        assert_eq!(result.rejected_action_ids, vec!["wait-failed".to_string()]);
+        assert!(result
+            .normalization_reasons
+            .contains(&"failed_action_observation".to_string()));
+        assert_eq!(result.candidate.actions.len(), 2);
+        assert_eq!(result.candidate.evidence.replay_failure_count, 1);
+        assert!(!result.validation.promotion_ready);
+    }
+
+    #[test]
+    fn normalization_keeps_redaction_rejection_visible() {
+        let mut input = base_normalization_input();
+        input.redaction.private_user_data_detected = vec!["email".to_string()];
+
+        let result = normalize_browser_recipe_candidate(input);
+
+        assert_eq!(result.status, BrowserRecipeNormalizationStatus::Rejected);
+        assert_eq!(
+            result.validation.status,
+            BrowserRecipeCandidateStatus::Rejected
+        );
+        assert!(result
+            .normalization_reasons
+            .contains(&"private_user_data_detected".to_string()));
+    }
+
+    #[test]
+    fn normalization_rejects_transient_coordinate_observations() {
+        let mut input = base_normalization_input();
+        input.actions[1].addressing = BrowserRecipeAddressing::CoordinateFallback {
+            x: 32,
+            y: 48,
+            reason: "last click position".to_string(),
+        };
+
+        let result = normalize_browser_recipe_candidate(input);
+
+        assert_eq!(result.status, BrowserRecipeNormalizationStatus::Rejected);
+        assert_eq!(
+            result.validation.status,
+            BrowserRecipeCandidateStatus::Rejected
+        );
+        assert!(result
+            .normalization_reasons
+            .contains(&"transient_pixel_coordinates_detected".to_string()));
+    }
+
+    #[test]
+    fn normalization_filters_blank_evidence_and_rollback_before_validation() {
+        let mut input = base_normalization_input();
+        input.artifact_refs = vec!["   ".to_string(), String::new()];
+        input.actions.clear();
+        input.harness_case_ids = vec!["   ".to_string()];
+        input.redaction_review_artifact_ref = Some("   ".to_string());
+        input.rollback_recipe_id = Some("   ".to_string());
+
+        let result = normalize_browser_recipe_candidate(input);
+
+        assert_eq!(result.status, BrowserRecipeNormalizationStatus::Rejected);
+        assert!(result.candidate.actions.is_empty());
+        assert!(result.candidate.evidence.artifact_refs.is_empty());
+        assert!(result.candidate.evidence.harness_case_ids.is_empty());
+        assert!(result
+            .candidate
+            .evidence
+            .redaction_review_artifact_ref
+            .is_none());
+        assert!(result.candidate.rollback_recipe_id.is_none());
+        assert!(result
+            .normalization_reasons
+            .contains(&"actions_missing".to_string()));
+        assert!(result
+            .normalization_reasons
+            .contains(&"rollback_recipe_id_missing".to_string()));
+        assert!(!result.validation.promotion_ready);
+    }
+
     fn matching_replay_request(candidate: &BrowserRecipeCandidate) -> BrowserRecipeReplayRequest {
         BrowserRecipeReplayRequest {
             recipe_id: candidate.recipe_id.clone(),
@@ -715,6 +975,68 @@ mod tests {
                 redaction_review_artifact_ref: Some("artifact://redaction/review-1".to_string()),
             },
             promotion_state: BrowserRecipePromotionState::HarnessReady,
+            rollback_recipe_id: Some("recipe:example-login:0".to_string()),
+        }
+    }
+
+    fn base_normalization_input() -> BrowserRecipeNormalizationInput {
+        BrowserRecipeNormalizationInput {
+            recipe_id: "recipe:example-login:1".to_string(),
+            key: BrowserRecipeKey {
+                site_origin: "https://example.test".to_string(),
+                route_pattern: "/login".to_string(),
+                dom_fingerprint: "dom:a11y-v1:abcd".to_string(),
+                instruction_family: "login-status-check".to_string(),
+                provider_id: "browser.playwright_cli".to_string(),
+                provider_version: "playwright-cli@1.53.0".to_string(),
+            },
+            actions: vec![
+                BrowserRecipeActionObservation {
+                    action_id: "navigate-login".to_string(),
+                    kind: BrowserRecipeActionKind::Navigate,
+                    addressing: BrowserRecipeAddressing::NoElement,
+                    wait_condition: Some("url_contains:/login".to_string()),
+                    expected_state_diff: Some("url changed".to_string()),
+                    artifact_refs: vec![
+                        "artifact://browser/action-navigate".to_string(),
+                        "artifact://browser/action-navigate".to_string(),
+                    ],
+                    succeeded: true,
+                },
+                BrowserRecipeActionObservation {
+                    action_id: "click-submit".to_string(),
+                    kind: BrowserRecipeActionKind::Click,
+                    addressing: BrowserRecipeAddressing::SemanticLocator {
+                        role: Some("button".to_string()),
+                        label: Some("Continue".to_string()),
+                        text: None,
+                        test_id: None,
+                    },
+                    wait_condition: Some("url_contains:/dashboard".to_string()),
+                    expected_state_diff: Some("url changed".to_string()),
+                    artifact_refs: vec!["artifact://browser/action-click".to_string()],
+                    succeeded: true,
+                },
+            ],
+            domain_skill_candidate: Some(BrowserDomainSkillCandidate {
+                stable_url_patterns: vec!["/login".to_string()],
+                selector_notes: vec!["Prefer button role labels".to_string()],
+                private_api_shapes: vec!["GET /api/session".to_string()],
+                wait_conditions: vec!["dashboard navigation".to_string()],
+                iframe_shadow_dom_notes: Vec::new(),
+                auth_boundaries: vec!["requires managed identity".to_string()],
+                known_traps: vec!["avoid saving entered credentials".to_string()],
+            }),
+            redaction: BrowserRecipeRedactionReport::clean_reviewed(),
+            artifact_refs: vec![
+                " artifact://browser/run ".to_string(),
+                String::new(),
+                "artifact://browser/action-click".to_string(),
+            ],
+            harness_case_ids: vec!["browser.recipe.example-login".to_string()],
+            replay_success_count: 2,
+            replay_failure_count: 0,
+            redaction_review_artifact_ref: Some("artifact://redaction/review-1".to_string()),
             rollback_recipe_id: Some("recipe:example-login:0".to_string()),
         }
     }

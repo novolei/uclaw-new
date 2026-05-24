@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 9A recipe candidate contract
+> Current phase: Phase 9B recipe normalization intake
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -28,7 +28,7 @@
 | Phase 6 | Browser identity authorization and profile UX | Phase 6A-6F merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6f-identity-boundary-actions` / `codex/browser-runtime-phase6f-identity-boundary-actions` | Closed for safe identity revoke/drain/active-task/resume boundary contracts; auth WebView and payment confirmation remain future work. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7G merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7g-mcp-selection-policy` / `codex/browser-runtime-phase7g-mcp-selection-policy` | Closed for MCP sidecar, stdio action boundary, artifact/error routing, and MCP-vs-CLI selection guardrail. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8J merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8j-provider-default-policy` / `codex/browser-runtime-phase8j-provider-default-policy` | Closed for provider route evidence and reversible default policy; Phase 9 recipe work starts from merge commit `cab8f161`. |
-| Phase 9 | Recipes, locator cache, and domain-skill candidates | Phase 9A recipe candidate contract PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9a-recipe-contract` / `codex/browser-runtime-phase9a-recipe-contract` | Review and merge PR #486 if reviewer accepts, GitHub reports CLEAN, and no HIGH/CRITICAL risk appears. |
+| Phase 9 | Recipes, locator cache, and domain-skill candidates | Phase 9A merged to `main` / `origin/main`; Phase 9B PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9b-recipe-normalization` / `codex/browser-runtime-phase9b-recipe-normalization` | Review and merge PR #487 if reviewer accepts, GitHub reports CLEAN, and no HIGH/CRITICAL risk appears. |
 | Phase 10 | Optional hosted providers and hard-site escape hatches | Not started | Unassigned | TBD | Wait for local-first provider routing and policy prompts. |
 
 ---
@@ -140,6 +140,7 @@
 | 2026-05-24 | Merge Phase 8J and start Phase 9A as recipe candidate contract. | PR #484 merged as `cab8f161`; fresh reviewer Faraday returned `REVIEW ACCEPTED` after two fallback/promotion blocker fixes. | Phase 9A starts with a pure recipe candidate/redaction/fingerprint/provider-version contract. It must not replay recipes, write domain skills, persist locator caches, add UI/IPC/DB, or mutate production behavior. |
 | 2026-05-24 | Open Phase 9A recipe candidate contract PR. | PR #486 contains the pure recipe candidate contract, redaction rejection, promotion-readiness and rollback metadata, fingerprint/provider-version replay gates, focused browser regressions, and GitNexus staged detect LOW with 0 affected processes. | Fresh reviewer should audit the pure-contract boundary before merge; if accepted and GitHub reports CLEAN, merge and continue to the next Phase 9 slice. |
 | 2026-05-24 | Rebase Phase 9A after unrelated NexusMemory main advance. | PR #485 merged `prep/nexus-memory` as `e5a98220` while Phase 9A was in flight. | Phase 9A branch rebased cleanly onto `e5a98220` so PR #486 stays based on current `origin/main`; Browser Runtime scope remains unchanged. |
+| 2026-05-24 | Merge Phase 9A and start Phase 9B as recipe normalization intake. | PR #486 merged as `5228d0ab` after fresh reviewer Mill returned `REVIEW ACCEPTED`; Phase 9A final commit was `fb2276a9 feat(browser): add recipe candidate contract`. | Phase 9B adds only a pure intake builder from action observations to recipe candidates. It must not replay recipes, persist locator caches, write domain skills, add UI/IPC/DB, or change provider behavior. |
 
 ---
 
@@ -148,9 +149,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9a-recipe-contract` |
-| Current phase branch | `codex/browser-runtime-phase9a-recipe-contract` |
-| Current local base | `e5a98220 Merge pull request #485 from novolei/prep/nexus-memory` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9b-recipe-normalization` |
+| Current phase branch | `codex/browser-runtime-phase9b-recipe-normalization` |
+| Current local base | `5228d0ab Merge pull request #486 from novolei/codex/browser-runtime-phase9a-recipe-contract` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -225,8 +226,9 @@
 | Phase 8H CLI selected-route execution implementation commit | Merged through PR #482 as `c2f5f388 feat(browser): execute selected cli provider routes`; merge commit `49c274de`. |
 | Phase 8I provider parity matrix harness implementation commit | Merged through PR #483 as `fd7dc776 feat(browser): add provider parity matrix harness`; merge commit `5a664789`. |
 | Phase 8J provider default policy gate implementation commit | Merged through PR #484 as `d7673862 feat(browser): add provider default policy gate`; merge commit `cab8f161`. |
-| Phase 9A recipe candidate contract implementation commit | Open in PR #486 from `codex/browser-runtime-phase9a-recipe-contract` as current branch `HEAD` with subject `feat(browser): add recipe candidate contract`. |
-| Known pre-existing tracked changes | None in the Phase 9A recipe candidate contract worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes; this phase originally started from `origin/main` after PR #484 was merged and was cleanly rebased onto `e5a98220` after unrelated PR #485 advanced `main`. |
+| Phase 9A recipe candidate contract implementation commit | Merged through PR #486 as `fb2276a9 feat(browser): add recipe candidate contract`; merge commit `5228d0ab`. |
+| Phase 9B recipe normalization intake implementation commit | Open in PR #487 from `codex/browser-runtime-phase9b-recipe-normalization` as current branch `HEAD` with subject `feat(browser): normalize recipe candidates`. |
+| Known pre-existing tracked changes | None in the Phase 9B recipe normalization worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -6640,7 +6642,87 @@ Phase 9A can start because:
 
 ### Phase 9A Recipe Candidate Contract Next Action
 
-- Request a fresh reviewer for PR #486, check GitHub mergeability, and merge
+- Closed. PR #486 merged as `5228d0ab`; continue with Phase 9B from
+  `origin/main` to add a pure recipe normalization intake boundary before any
+  replay execution, locator cache persistence, domain-skill writes, UI, IPC,
+  DB migration, or provider behavior change.
+
+## Phase 9B Recipe Normalization Intake Entry Criteria
+
+Phase 9B can start because:
+
+- PR #486 merged Phase 9A's pure recipe candidate/replay contract into `main`
+  and `origin/main`;
+- ADR Phase 9 requires recipes and domain-skill candidates, but production
+  replay/promotion still needs a deterministic candidate intake boundary first;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9b-recipe-normalization`;
+- the branch starts from `5228d0ab`, the current `origin/main`;
+- this slice can add a pure normalization helper without replaying recipes,
+  persisting locator caches, writing domain skills, adding UI/IPC/DB, or
+  mutating provider behavior.
+
+## Phase 9B Recipe Normalization Intake Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase9b-recipe-normalization.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9b-recipe-normalization`
+- Branch:
+  `codex/browser-runtime-phase9b-recipe-normalization`
+- Scope:
+  add pure recipe action-observation DTOs, normalization input/output DTOs, a
+  deterministic builder from successful action observations to
+  `BrowserRecipeCandidate`, failed-action rejection metadata, artifact/harness
+  evidence normalization, and focused tests.
+- Current PR:
+  PR #487 (`https://github.com/novolei/uclaw-new/pull/487`).
+- Current commit:
+  current branch `HEAD` with subject `feat(browser): normalize recipe
+  candidates`.
+- Non-goal:
+  no recipe replay execution, locator cache persistence, production promotion,
+  domain-skill file writes, UI, IPC, Settings, DB migration, provider route
+  change, hosted provider integration, `agentic_loop.rs`, or
+  `tauri_commands.rs` changes.
+- Rollback:
+  revert this PR; Phase 9A candidate/replay validation remains unchanged.
+
+### Phase 9B Recipe Normalization Intake Impact Notes
+
+- GitNexus index was refreshed for the Phase 9B worktree before edits;
+  generated AGENTS/CLAUDE statistics changes were restored as noise.
+- GitNexus file-level impact for `src-tauri/src/browser/recipes.rs` reported
+  LOW risk with 0 impacted symbols and 0 affected processes before editing the
+  recipe contract module.
+- New normalization code is isolated in `src-tauri/src/browser/recipes.rs` and
+  is not consumed by live task routing, provider selection, UI, IPC, DB, or
+  persistence.
+- The intake builder deliberately marks failed action observations as rejected
+  and increments replay-failure evidence so candidates cannot silently look
+  promotion-ready.
+
+### Phase 9B Recipe Normalization Intake Verification Notes
+
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::recipes`
+  passed: 16 passed, 0 failed, 2753 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  passed: 42 passed, 0 failed, 2727 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  passed: 59 passed, 0 failed, 2710 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  passed: 16 passed, 0 failed, 2753 filtered out.
+- `rustfmt --edition 2021 --check src-tauri/src/browser/recipes.rs` passed.
+- `git diff --check -- src-tauri/src/browser/recipes.rs
+  docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md
+  docs/superpowers/plans/2026-05-24-browser-runtime-phase9b-recipe-normalization.md`
+  passed.
+- GitNexus staged detect reported `risk_level: low`, `changed_files: 3`,
+  `changed_count: 45`, `affected_count: 0`, and `affected_processes: []`.
+
+### Phase 9B Recipe Normalization Intake Next Action
+
+- Request a fresh reviewer for PR #487, check GitHub mergeability, and merge
   only if reviewer accepts, GitHub reports CLEAN, tests stay green, and no
   HIGH/CRITICAL risk appears.
 
