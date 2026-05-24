@@ -17,6 +17,7 @@ pub struct AutomationToolRegistryDeps {
 pub fn planned_tool_names(spec_permissions: &[Permission], gbrain_declared: bool) -> Vec<String> {
     let mut names = vec![
         "read_file".to_string(),
+        "get_file_skeleton".to_string(),
         "write_file".to_string(),
         "grep".to_string(),
         "glob".to_string(),
@@ -156,6 +157,7 @@ pub fn register_base_tools(tools: &mut ToolRegistry, workspace_root: PathBuf) {
     let ws = workspace_root;
     tools.register(builtin::file::ReadFileTool::new(ws.clone()));
     tools.register(builtin::file::WriteFileTool::new(ws.clone()));
+    tools.register(builtin::get_file_skeleton::GetFileSkeletonTool::new(ws.clone()));
     tools.register(builtin::search::GrepTool::new(ws.clone()));
     tools.register(builtin::search::GlobTool::new(ws.clone()));
     tools.register(builtin::web::WebFetchTool::new());

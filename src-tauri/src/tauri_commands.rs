@@ -1875,6 +1875,7 @@ pub async fn send_message(
         .unwrap_or_else(|| state.workspace_root.clone());
     tools.register(builtin::file::ReadFileTool::new(workspace.clone()));
     tools.register(builtin::file::WriteFileTool::new(workspace.clone()));
+    tools.register(builtin::get_file_skeleton::GetFileSkeletonTool::new(workspace.clone()));
     tools.register(builtin::search::GrepTool::new(workspace.clone()));
     tools.register(builtin::search::GlobTool::new(workspace.clone()));
     tools.register(builtin::web::WebFetchTool::new());
@@ -10487,6 +10488,7 @@ pub async fn send_agent_message(
     let mut tools = ToolRegistry::new();
     tools.register(builtin::file::ReadFileTool::new(workspace.clone()));
     tools.register(builtin::file::WriteFileTool::new(workspace.clone()));
+    tools.register(builtin::get_file_skeleton::GetFileSkeletonTool::new(workspace.clone()));
     tools.register(builtin::search::GrepTool::new(workspace.clone()));
     tools.register(builtin::search::GlobTool::new(workspace.clone()));
     tools.register(builtin::web::WebFetchTool::new());
@@ -14538,6 +14540,7 @@ pub async fn start_agent_teams(
                 let mut tool_reg = ToolRegistry::new();
                 tool_reg.register(builtin::file::ReadFileTool::new(workspace.clone()));
                 tool_reg.register(builtin::file::WriteFileTool::new(workspace.clone()));
+                tool_reg.register(builtin::get_file_skeleton::GetFileSkeletonTool::new(workspace.clone()));
                 tool_reg.register(builtin::search::GrepTool::new(workspace.clone()));
                 tool_reg.register(builtin::search::GlobTool::new(workspace.clone()));
                 tool_reg.register(builtin::web::WebFetchTool::new());

@@ -1150,6 +1150,163 @@ impl ChatDelegate {
             } => true,
         }
     }
+
+    /// Spawns a background task to perform unified memory/gbrain extraction after a turn completes.
+    fn spawn_post_turn_extraction(&self, reason_ctx: &ReasoningContext) {
+        use crate::agent::types::{ContentBlock, MessageRole};
+        
+        // Find the latest User-role message text
+        let user_text = reason_ctx
+            .messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::User))
+            .and_then(|m| m.content.iter().find_map(|c| match c {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            }));
+
+        let text = match user_text {
+            Some(t) if !t.trim().is_empty() => t,
+            _ => return,
+        };
+
+        let session_id = self.conversation_id.clone();
+        let turn_id = format!(
+            "{}-{}",
+            session_id,
+            self.turn_index.load(Ordering::Relaxed)
+        );
+
+        // Learning extractor
+        if self.learning_enabled {
+            if let Some(buffer) = self.learning_buffer.as_ref().cloned() {
+                let llm = self.learning_llm.clone();
+                let db = self.learning_db.clone();
+                let daily_budget = self.learning_llm_daily_budget;
+                let session_id_clone = session_id.clone();
+                let turn_id_clone = turn_id.clone();
+                let text_clone = text.clone();
+                tokio::spawn(async move {
+                    let llm_allowed = match (&db, llm.as_ref()) {
+                        (Some(db_arc), Some(_)) if daily_budget > 0 => {
+                            let spent = crate::cost_store::today_learning_tokens(db_arc);
+                            spent < daily_budget
+                        }
+                        _ => false,
+                    };
+                    let llm_for_call = if llm_allowed { llm.as_ref() } else { None };
+                    let n = crate::learning::extractor::extract_from_chat_turn(
+                        &text_clone,
+                        &session_id_clone,
+                        &turn_id_clone,
+                        &buffer,
+                        llm_allowed,
+                        llm_for_call,
+                    )
+                    .await;
+                    if n > 0 {
+                        tracing::debug!(
+                            candidates = n,
+                            "[ChatDelegate] learning::extractor pushed candidates"
+                        );
+                    }
+                });
+            }
+        }
+
+        // gbrain extractor
+        if self.gbrain_extractor_enabled {
+            let llm = self.gbrain_extract_llm.clone();
+            let db = self.gbrain_extract_db.clone();
+            let mcp_mgr = self.gbrain_extract_mcp_mgr.clone();
+            let daily_budget = self.gbrain_extract_daily_budget;
+            let llm_present = llm.is_some();
+            if llm_present && db.is_some() && mcp_mgr.is_some() && daily_budget > 0 {
+                let text_clone = text.clone();
+                tokio::spawn(async move {
+                    let llm = match llm {
+                        Some(l) => l,
+                        None => return,
+                    };
+                    let db = match db {
+                        Some(d) => d,
+                        None => return,
+                    };
+                    let mcp_mgr = match mcp_mgr {
+                        Some(m) => m,
+                        None => return,
+                    };
+                    let spent = crate::cost_store::today_gbrain_extract_tokens(&db);
+                    if spent >= daily_budget {
+                        tracing::debug!(
+                            spent,
+                            budget = daily_budget,
+                            "[ChatDelegate] gbrain extractor — budget exhausted, skipping"
+                        );
+                        return;
+                    }
+                    let proposals = crate::gbrain::chat_extractor::extract_from_chat_turn(
+                        &text_clone,
+                        "",
+                        &llm,
+                    )
+                    .await;
+                    if proposals.is_empty() {
+                        return;
+                    }
+                    let actionable: Vec<_> = proposals
+                        .into_iter()
+                        .filter(|p| {
+                            p.confidence >= crate::gbrain::chat_extractor::MIN_ACT_CONFIDENCE
+                        })
+                        .collect();
+                    tracing::debug!(
+                        count = actionable.len(),
+                        "[ChatDelegate] gbrain extractor — firing put_page calls"
+                    );
+                    for proposal in actionable {
+                        let args = serde_json::json!({
+                            "slug": proposal.slug,
+                            "content": proposal.content,
+                        });
+                        let result = {
+                            let mgr = mcp_mgr.read().await;
+                            mgr.call_tool("gbrain", "put_page", args).await
+                        };
+                        match result {
+                            Ok(result) if result.is_error => {
+                                let text = result
+                                    .content
+                                    .iter()
+                                    .filter_map(|block| match block {
+                                        crate::mcp::ContentBlock::Text { text } => Some(text.as_str()),
+                                        _ => None,
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                let mut mgr = mcp_mgr.write().await;
+                                mgr.set_error("gbrain", Some(text));
+                            }
+                            Ok(_) => {
+                                let mut mgr = mcp_mgr.write().await;
+                                mgr.set_error("gbrain", None);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    slug = %proposal.slug,
+                                    error = %e,
+                                    "[ChatDelegate] gbrain extractor — put_page failed"
+                                );
+                                let mut mgr = mcp_mgr.write().await;
+                                mgr.set_error("gbrain", Some(e.to_string()));
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -1410,186 +1567,7 @@ impl LoopDelegate for ChatDelegate {
         LoopSignal::Continue
     }
 
-    async fn before_llm_call(&self, reason_ctx: &mut ReasoningContext, iteration: usize) -> Option<LoopOutcome> {
-        // Memory OS Sprint 2.0 — chat-turn extractor hook.
-        // Only fires at iteration=0 (first LLM call after the new user
-        // message), and only when the learning pipeline is wired and
-        // enabled. Failures are explicitly logged-and-swallowed inside
-        // the spawned task so producer bugs cannot stall the LLM call.
-        if iteration == 0 && self.learning_enabled {
-            if let Some(buffer) = self.learning_buffer.as_ref().cloned() {
-                // Find the latest User-role message text. The agent loop
-                // always appends the new turn before before_llm_call fires.
-                let user_text = reason_ctx
-                    .messages
-                    .iter()
-                    .rev()
-                    .find(|m| matches!(m.role, MessageRole::User))
-                    .and_then(|m| m.content.iter().find_map(|c| match c {
-                        ContentBlock::Text { text } => Some(text.clone()),
-                        _ => None,
-                    }));
-                if let Some(text) = user_text {
-                    if !text.trim().is_empty() {
-                        let session_id = self.conversation_id.clone();
-                        let turn_id = format!(
-                            "{}-{}",
-                            session_id,
-                            self.turn_index.load(Ordering::Relaxed)
-                        );
-                        let llm = self.learning_llm.clone();
-                        let db = self.learning_db.clone();
-                        let daily_budget = self.learning_llm_daily_budget;
-                        tokio::spawn(async move {
-                            // Sprint 2.1b — check today's spend before LLM layer.
-                            // The regex layer is free and always runs; the LLM
-                            // layer fires only when regex empty + budget left.
-                            let llm_allowed = match (&db, llm.as_ref()) {
-                                (Some(db_arc), Some(_)) if daily_budget > 0 => {
-                                    // Sync DB query — no .await. cost_records
-                                    // lookups are cheap (1 indexed row), and
-                                    // we're already inside a spawned task so
-                                    // blocking briefly here doesn't stall the
-                                    // agent loop.
-                                    let spent =
-                                        crate::cost_store::today_learning_tokens(db_arc);
-                                    spent < daily_budget
-                                }
-                                _ => false,
-                            };
-                            let llm_for_call = if llm_allowed { llm.as_ref() } else { None };
-                            let n = crate::learning::extractor::extract_from_chat_turn(
-                                &text,
-                                &session_id,
-                                &turn_id,
-                                &buffer,
-                                llm_allowed,
-                                llm_for_call,
-                            )
-                            .await;
-                            if n > 0 {
-                                tracing::debug!(
-                                    candidates = n,
-                                    "[ChatDelegate] learning::extractor pushed candidates"
-                                );
-                            }
-                        });
-                    }
-                }
-            }
-        }
-
-        // Sprint 2.4b — gbrain chat-turn auto-extractor. Sibling of the
-        // learning extractor above; same iteration=0 + budget-gate shape.
-        // Proposals returned by the extractor with confidence >=
-        // MIN_ACT_CONFIDENCE are fired as mcp__gbrain__put_page calls.
-        // All failure modes (LLM error, budget exhausted, MCP call
-        // failed) are logged + swallowed so producer bugs never stall
-        // the LLM call.
-        if iteration == 0 && self.gbrain_extractor_enabled {
-            let user_text = reason_ctx
-                .messages
-                .iter()
-                .rev()
-                .find(|m| matches!(m.role, MessageRole::User))
-                .and_then(|m| m.content.iter().find_map(|c| match c {
-                    ContentBlock::Text { text } => Some(text.clone()),
-                    _ => None,
-                }));
-            if let Some(text) = user_text {
-                if !text.trim().is_empty() {
-                    let llm = self.gbrain_extract_llm.clone();
-                    let db = self.gbrain_extract_db.clone();
-                    let mcp_mgr = self.gbrain_extract_mcp_mgr.clone();
-                    let daily_budget = self.gbrain_extract_daily_budget;
-                    let llm_present = llm.is_some();
-                    if llm_present && db.is_some() && mcp_mgr.is_some() && daily_budget > 0 {
-                        tokio::spawn(async move {
-                            let llm = match llm {
-                                Some(l) => l,
-                                None => return,
-                            };
-                            let db = match db {
-                                Some(d) => d,
-                                None => return,
-                            };
-                            let mcp_mgr = match mcp_mgr {
-                                Some(m) => m,
-                                None => return,
-                            };
-                            let spent = crate::cost_store::today_gbrain_extract_tokens(&db);
-                            if spent >= daily_budget {
-                                tracing::debug!(
-                                    spent,
-                                    budget = daily_budget,
-                                    "[ChatDelegate] gbrain extractor — budget exhausted, skipping"
-                                );
-                                return;
-                            }
-                            let proposals =
-                                crate::gbrain::chat_extractor::extract_from_chat_turn(
-                                    &text,
-                                    "",
-                                    &llm,
-                                )
-                                .await;
-                            if proposals.is_empty() {
-                                return;
-                            }
-                            let actionable: Vec<_> = proposals
-                                .into_iter()
-                                .filter(|p| {
-                                    p.confidence
-                                        >= crate::gbrain::chat_extractor::MIN_ACT_CONFIDENCE
-                                })
-                                .collect();
-                            tracing::debug!(
-                                count = actionable.len(),
-                                "[ChatDelegate] gbrain extractor — firing put_page calls"
-                            );
-                            for proposal in actionable {
-                                let args = serde_json::json!({
-                                    "slug": proposal.slug,
-                                    "content": proposal.content,
-                                });
-                                let result = {
-                                    let mgr = mcp_mgr.read().await;
-                                    mgr.call_tool("gbrain", "put_page", args).await
-                                };
-                                match result {
-                                    Ok(result) if result.is_error => {
-                                        let text = result
-                                            .content
-                                            .iter()
-                                            .filter_map(|block| match block {
-                                                crate::mcp::ContentBlock::Text { text } => Some(text.as_str()),
-                                                _ => None,
-                                            })
-                                            .collect::<Vec<_>>()
-                                            .join("\n");
-                                        let mut mgr = mcp_mgr.write().await;
-                                        mgr.set_error("gbrain", Some(text));
-                                    }
-                                    Ok(_) => {
-                                        let mut mgr = mcp_mgr.write().await;
-                                        mgr.set_error("gbrain", None);
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            slug = %proposal.slug,
-                                            error = %e,
-                                            "[ChatDelegate] gbrain extractor — put_page failed"
-                                        );
-                                        let mut mgr = mcp_mgr.write().await;
-                                        mgr.set_error("gbrain", Some(e.to_string()));
-                                    }
-                                }
-                            }
-                        });
-                    }
-                }
-            }
-        }
+    async fn before_llm_call(&self, _reason_ctx: &mut ReasoningContext, _iteration: usize) -> Option<LoopOutcome> {
         None
     }
 
@@ -1683,6 +1661,20 @@ impl LoopDelegate for ChatDelegate {
                 }
             }
         }
+
+        // Phase 3 Step 3.5: Dynamic Project-Rule Condensation
+        let active_files = crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER.get_active_files();
+        let project_rules = if let Some(ref root) = self.workspace_root {
+            crate::agent::rule_context_builder::RuleContextBuilder::build_context(root, &active_files)
+        } else {
+            String::new()
+        };
+        if !project_rules.is_empty() {
+            full_system_prompt.push_str(&project_rules);
+        }
+
+        // Phase 4 Step 4.2: 5-Tier Prompt Ladder alignment
+        full_system_prompt = crate::agent::compact::cache_align::pad_to_ladder(&full_system_prompt);
 
         let mut messages = vec![ChatMessage::system(&full_system_prompt)];
         // Skip compacted messages — they stay in memory for UI replay
@@ -2111,6 +2103,7 @@ impl LoopDelegate for ChatDelegate {
             }
         }
 
+        self.spawn_post_turn_extraction(reason_ctx);
         self.emit_done(text, was_truncated);
         TextAction::Return(LoopOutcome::Response {
             text: text.to_string(),

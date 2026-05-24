@@ -29,65 +29,6 @@ impl EditTool {
         }
     }
 
-    /// Apply a single search-replace edit to `content`.
-    fn apply_edit(content: &str, old_text: &str, new_text: &str) -> Result<String, ToolError> {
-        if old_text.is_empty() {
-            return Err(ToolError::InvalidParams(
-                "old_text must not be empty for search_replace edits".into(),
-            ));
-        }
-
-        // Try exact match first
-        if let Some(pos) = content.find(old_text) {
-            // Ensure unique match
-            if content[pos + old_text.len()..].contains(old_text) {
-                warn!("old_text matches multiple locations; replacing first occurrence");
-            }
-            let mut result = String::with_capacity(content.len());
-            result.push_str(&content[..pos]);
-            result.push_str(new_text);
-            result.push_str(&content[pos + old_text.len()..]);
-            return Ok(result);
-        }
-
-        Err(ToolError::Execution(
-            "old_text not found in file. Make sure the text matches exactly including whitespace and indentation.".into(),
-        ))
-    }
-
-    /// Insert `new_text` at the given 1-based line number, or append if line is None.
-    fn apply_insert(content: &str, new_text: &str, line: Option<u64>) -> String {
-        let lines: Vec<&str> = content.lines().collect();
-        match line {
-            Some(line_num) => {
-                let idx = (line_num as usize).saturating_sub(1).min(lines.len());
-                let mut result_lines: Vec<&str> = Vec::with_capacity(lines.len() + 1);
-                result_lines.extend_from_slice(&lines[..idx]);
-                // new_text may be multi-line
-                let new_lines: Vec<&str> = new_text.lines().collect();
-                result_lines.extend(new_lines);
-                result_lines.extend_from_slice(&lines[idx..]);
-                let mut out = result_lines.join("\n");
-                if content.ends_with('\n') {
-                    out.push('\n');
-                }
-                out
-            }
-            None => {
-                // Append
-                let mut out = content.to_string();
-                if !out.ends_with('\n') && !out.is_empty() {
-                    out.push('\n');
-                }
-                out.push_str(new_text);
-                if !out.ends_with('\n') {
-                    out.push('\n');
-                }
-                out
-            }
-        }
-    }
-
     /// Generate a unified diff between two strings.
     fn generate_diff(original: &str, modified: &str, path: &str) -> String {
         let diff = TextDiff::from_lines(original, modified);
@@ -104,6 +45,31 @@ impl EditTool {
             format!("--- {path}\n+++ {path}\n{output}")
         }
     }
+}
+
+/// Find the character index range for a range of 0-based lines (inclusive)
+fn find_line_char_range(content: &str, start_line_idx: usize, end_line_idx: usize) -> (usize, usize) {
+    let mut start_pos = None;
+    let mut end_pos = None;
+    let mut current_pos = 0;
+    
+    let lines: Vec<&str> = content.split('\n').collect();
+    for (idx, line) in lines.iter().enumerate() {
+        let line_len_with_nl = line.len() + 1;
+        if idx == start_line_idx {
+            start_pos = Some(current_pos);
+        }
+        if idx == end_line_idx {
+            let line_end_with_nl = (current_pos + line_len_with_nl).min(content.len());
+            end_pos = Some(line_end_with_nl);
+            break;
+        }
+        current_pos += line_len_with_nl;
+    }
+    
+    let start = start_pos.unwrap_or(content.len());
+    let end = end_pos.unwrap_or(content.len());
+    (start, end)
 }
 
 #[async_trait]
@@ -133,7 +99,9 @@ impl Tool for EditTool {
                         "properties": {
                             "old_text": { "type": "string", "description": "Exact text to find; empty = insert mode." },
                             "new_text": { "type": "string", "description": "Replacement or text to insert." },
-                            "insert_line": { "type": "integer", "description": "1-based line for insertion (only when old_text is empty)." }
+                            "insert_line": { "type": "integer", "description": "1-based line for insertion (only when old_text is empty)." },
+                            "anchor": { "type": "string", "description": "Optional starting anchor for stateful Myers Diff alignment." },
+                            "end_anchor": { "type": "string", "description": "Optional ending anchor for stateful Myers Diff alignment." }
                         },
                         "required": ["old_text", "new_text"]
                     }
@@ -166,6 +134,14 @@ impl Tool for EditTool {
         }
 
         let full_path = self.resolve_path(path);
+
+        // Step 2.5: Active File External Change Watcher check
+        if crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER.is_stale(&full_path) {
+            return Err(ToolError::Execution(
+                "File has been modified externally by the user. Run read_file tool to synchronize.".into()
+            ));
+        }
+
         info!(path = %full_path.display(), edits = edits.len(), "Applying edits");
 
         // Read the original content
@@ -174,33 +150,150 @@ impl Tool for EditTool {
         })?;
 
         let mut content = original.clone();
-        let mut applied = 0;
+        
+        // Resolve each edit to character ranges
+        struct ResolvedEdit {
+            start_pos: usize,
+            end_pos: usize,
+            new_text: String,
+        }
+
+        let mut resolved_edits = Vec::new();
+        let mut current_search_pos = 0;
 
         for (i, edit) in edits.iter().enumerate() {
-            let old_text = edit["old_text"]
-                .as_str()
-                .ok_or_else(|| ToolError::InvalidParams(format!("edits[{}].old_text must be a string", i)))?;
-            let new_text = edit["new_text"]
-                .as_str()
-                .ok_or_else(|| ToolError::InvalidParams(format!("edits[{}].new_text must be a string", i)))?;
+            let old_text = edit.get("old_text")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidParams(format!("edits[{}].old_text is required and must be a string", i)))?;
+            let new_text = edit.get("new_text")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidParams(format!("edits[{}].new_text is required and must be a string", i)))?;
+            let insert_line = edit.get("insert_line").and_then(|v| v.as_u64());
+            let anchor = edit.get("anchor").and_then(|v| v.as_str());
+            let end_anchor = edit.get("end_anchor").and_then(|v| v.as_str());
 
-            if old_text.is_empty() {
-                // Insert mode
-                let insert_line = edit["insert_line"].as_u64();
-                debug!(edit_index = i, insert_line = ?insert_line, "Inserting text");
-                content = Self::apply_insert(&content, new_text, insert_line);
+            if let Some(anchor_str) = anchor {
+                // Anchor-based edit!
+                let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+                let anchors = crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER.get_anchors(&full_path)
+                    .unwrap_or_else(|| {
+                        let a = crate::agent::anchor_state::initialize_anchors(&lines);
+                        crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER.register_file_lines(&full_path, &lines);
+                        a
+                    });
+
+                let start_idx = anchors.iter().position(|r| r == anchor_str)
+                    .ok_or_else(|| ToolError::Execution(format!(
+                        "Start anchor '{}' not found in file. Make sure you have the correct anchor.",
+                        anchor_str
+                    )))?;
+
+                let end_idx = if let Some(end_anchor_str) = end_anchor {
+                    anchors.iter().skip(start_idx).position(|r| r == end_anchor_str)
+                        .map(|p| start_idx + p)
+                        .ok_or_else(|| ToolError::Execution(format!(
+                            "End anchor '{}' not found after start anchor in file.",
+                            end_anchor_str
+                        )))?
+                } else {
+                    start_idx
+                };
+
+                let (start_pos, end_pos) = find_line_char_range(&content, start_idx, end_idx);
+                let mut formatted_new_text = new_text.to_string();
+                if !formatted_new_text.ends_with('\n') && content[start_pos..end_pos].ends_with('\n') {
+                    formatted_new_text.push('\n');
+                }
+
+                resolved_edits.push(ResolvedEdit {
+                    start_pos,
+                    end_pos,
+                    new_text: formatted_new_text,
+                });
+
+            } else if old_text.is_empty() {
+                // Insert mode!
+                let (start_pos, end_pos) = match insert_line {
+                    Some(line_num) => {
+                        let lines_count = content.lines().count();
+                        let line_idx = (line_num as usize).saturating_sub(1).min(lines_count);
+                        if line_idx >= lines_count {
+                            (content.len(), content.len())
+                        } else {
+                            let (start, _) = find_line_char_range(&content, line_idx, line_idx);
+                            (start, start)
+                        }
+                    }
+                    None => {
+                        (content.len(), content.len())
+                    }
+                };
+
+                let mut formatted_new_text = new_text.to_string();
+                if !formatted_new_text.ends_with('\n') {
+                    formatted_new_text.push('\n');
+                }
+                if insert_line.is_none() && start_pos == content.len() && !content.ends_with('\n') && !content.is_empty() {
+                    formatted_new_text = format!("\n{}", formatted_new_text);
+                }
+
+                resolved_edits.push(ResolvedEdit {
+                    start_pos,
+                    end_pos,
+                    new_text: formatted_new_text,
+                });
+
             } else {
-                // Search-replace mode
-                debug!(edit_index = i, old_len = old_text.len(), new_len = new_text.len(), "Replacing text");
-                content = Self::apply_edit(&content, old_text, new_text)?;
+                // Search-replace mode!
+                let mut pos = content[current_search_pos..].find(old_text).map(|p| p + current_search_pos);
+                if pos.is_none() {
+                    pos = content.find(old_text);
+                }
+
+                let start_pos = pos.ok_or_else(|| ToolError::Execution(format!(
+                    "old_text '{}' not found in file. Make sure the text matches exactly including whitespace and indentation.",
+                    old_text
+                )))?;
+                let end_pos = start_pos + old_text.len();
+
+                current_search_pos = end_pos;
+
+                resolved_edits.push(ResolvedEdit {
+                    start_pos,
+                    end_pos,
+                    new_text: new_text.to_string(),
+                });
             }
+        }
+
+        // Sort bottom-to-top (descending by start_pos, then end_pos)
+        resolved_edits.sort_by(|a, b| {
+            b.start_pos.cmp(&a.start_pos)
+                .then_with(|| b.end_pos.cmp(&a.end_pos))
+        });
+
+        let mut applied = 0;
+        for re in resolved_edits {
+            let mut new_content = String::with_capacity(content.len() + re.new_text.len());
+            new_content.push_str(&content[..re.start_pos]);
+            new_content.push_str(&re.new_text);
+            new_content.push_str(&content[re.end_pos..]);
+            content = new_content;
             applied += 1;
         }
+
+        // Register expected write before fs::write so watcher doesn't see it as external change
+        crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER.register_expected_write(&full_path);
 
         // Write back
         fs::write(&full_path, &content).await.map_err(|e| {
             ToolError::Execution(format!("Cannot write {}: {}", full_path.display(), e))
         })?;
+
+        // Align anchors
+        let old_lines: Vec<String> = original.lines().map(|s| s.to_string()).collect();
+        let new_lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+        crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER.align_file_anchors(&full_path, &old_lines, &new_lines);
 
         // Generate diff
         let diff = Self::generate_diff(&original, &content, path);
@@ -228,3 +321,4 @@ mod path_args_tests {
         assert_eq!(tool.path_args(&args), vec!["lib.rs"]);
     }
 }
+

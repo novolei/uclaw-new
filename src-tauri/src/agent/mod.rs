@@ -1,4 +1,7 @@
 pub mod agentic_loop;
+pub mod anchor_state;
+pub mod skeleton;
+pub mod rule_context_builder;
 // M1-T2c — RegularTask: SessionTask wrap of run_agentic_loop.
 pub mod regular_task;
 // M2-A pilot — BaselineBlock trait + 3-block registry.

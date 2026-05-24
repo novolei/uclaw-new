@@ -23,9 +23,6 @@ use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 use crate::infra::{InfraEventType, InfraService};
-use crate::memory_graph::models::{
-    MemoryKeyword, MemoryNode, MemoryNodeKind, MemoryVersion, MemoryVersionStatus,
-};
 use crate::memory_graph::store::MemoryGraphStore;
 use crate::memubot_config::MemorizationConfig;
 use crate::memu::client::MemUClient;
@@ -240,7 +237,7 @@ impl MemorizationService {
                         match persist_result {
                             Ok(guard) => {
                                 if let Some(ref store) = *guard {
-                                    match persist_memorize_results(store, &space_id, &result.items) {
+                                    match persist_memorize_results(store, memu.as_ref().map(|arc| arc.as_ref()), &space_id, &result.items).await {
                                         Ok(count) => info!(
                                             "[MemorizationService] Persisted {} memory items from memU extraction",
                                             count
@@ -705,12 +702,12 @@ impl ManagedService for MemorizationService {
 ///
 /// TODO: 待 MemoryGraphStore::with_transaction() 实现后，将整个 for 循环包装在事务中，
 /// 确保所有节点、版本、关键词的创建操作原子性提交或回滚。
-fn persist_memorize_results(
+async fn persist_memorize_results(
     store: &MemoryGraphStore,
-    space_id: &str,
+    memu_client: Option<&MemUClient>,
+    _space_id: &str,
     items: &[serde_json::Value],
 ) -> anyhow::Result<usize> {
-    let now = chrono::Utc::now().to_rfc3339();
     let mut count = 0;
 
     for item in items {
@@ -733,65 +730,97 @@ fn persist_memorize_results(
             .or_else(|| item.get("category"))
             .and_then(|v| v.as_str())
             .unwrap_or("curated");
-        let kind = match kind_str.to_lowercase().as_str() {
-            "boot" => MemoryNodeKind::Boot,
-            "identity" => MemoryNodeKind::Identity,
-            "value" => MemoryNodeKind::Value,
-            "user_profile" | "userprofile" => MemoryNodeKind::UserProfile,
-            "directive" => MemoryNodeKind::Directive,
-            "episode" => MemoryNodeKind::Episode,
-            "procedure" => MemoryNodeKind::Procedure,
-            "reference" => MemoryNodeKind::Reference,
-            _ => MemoryNodeKind::Curated,
-        };
 
-        let node_id = uuid::Uuid::new_v4().to_string();
-        let node = MemoryNode {
-            id: node_id.clone(),
-            space_id: space_id.to_string(),
-            kind,
-            title: title.to_string(),
-            metadata: item.get("metadata").cloned(),
-            created_at: now.clone(),
-            updated_at: now.clone(),
-        };
+        match kind_str.to_lowercase().as_str() {
+            "user_profile" | "userprofile" | "identity" | "style" | "goal" => {
+                // Route to user_profile_facets SQLite table
+                let class = match kind_str.to_lowercase().as_str() {
+                    "style" => "style",
+                    "goal" => "goal",
+                    _ => "identity",
+                };
 
-        if let Err(e) = store.create_node(&node) {
-            warn!("Failed to create memory node '{}': {}", title, e);
-            continue;
+                let conn = store.conn.lock().map_err(|e| anyhow::anyhow!("DB lock error: {}", e))?;
+                
+                // Check if a row with the same class and name already exists to preserve created_at and facet_id
+                let mut existing: Option<(String, i64)> = None;
+                if let Ok(mut stmt) = conn.prepare("SELECT facet_id, created_at FROM user_profile_facets WHERE class = ?1 AND name = ?2") {
+                    if let Ok(mut rows) = stmt.query(rusqlite::params![class, title]) {
+                        if let Ok(Some(row)) = rows.next() {
+                            if let (Ok(fid), Ok(cat)) = (row.get::<_, String>(0), row.get::<_, i64>(1)) {
+                                existing = Some((fid, cat));
+                            }
+                        }
+                    }
+                }
+
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                let (facet_id, created_at) = match existing {
+                    Some((fid, cat)) => (fid, cat),
+                    None => (format!("facet-{}", uuid::Uuid::new_v4()), now_ms),
+                };
+
+                conn.execute(
+                    "INSERT OR REPLACE INTO user_profile_facets \
+                     (facet_id, class, name, value, state, stability, \
+                      cue_families_json, evidence_count, last_seen_at, \
+                      created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    rusqlite::params![
+                        facet_id,
+                        class,
+                        title,
+                        content,
+                        "active",
+                        0.90f64,
+                        "{}",
+                        1i64,
+                        now_ms,
+                        created_at,
+                        now_ms,
+                    ],
+                )?;
+                count += 1;
+            }
+            "episode" => {
+                // Route to memu.db SQLite via MemUClient
+                if let Some(client) = memu_client {
+                    match client.create_item("episode", content, vec!["episode".to_string()], None).await {
+                        Ok(_) => {
+                            count += 1;
+                        }
+                        Err(e) => {
+                            warn!("Failed to create episode in memU: {}", e);
+                        }
+                    }
+                } else {
+                    warn!("MemUClient is unavailable, skipping episode memory: {}", title);
+                }
+            }
+            _ => {
+                // Route to offline Markdown files
+                let drafts_dir = uclaw_utils_home::uclaw_home_pathbuf()
+                    .map_err(|e| anyhow::anyhow!("Failed to get uClaw home: {}", e))?
+                    .join("inbox/gbrain_drafts/");
+
+                std::fs::create_dir_all(&drafts_dir)?;
+
+                let safe_title: String = title
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+                    .collect();
+                let filename = format!("{}_{}.md", safe_title, uuid::Uuid::new_v4());
+                let file_path = drafts_dir.join(filename);
+
+                let now_rfc = chrono::Utc::now().to_rfc3339();
+                let markdown_content = format!(
+                    "---\ntitle: {:?}\nkind: {:?}\ncreated_at: {:?}\n---\n\n{}",
+                    title, kind_str, now_rfc, content
+                );
+                std::fs::write(&file_path, markdown_content)?;
+                count += 1;
+            }
         }
-
-        let version_id = uuid::Uuid::new_v4().to_string();
-        let version = MemoryVersion {
-            id: version_id,
-            node_id: node_id.clone(),
-            supersedes_version_id: None,
-            status: MemoryVersionStatus::Active,
-            content: content.to_string(),
-            metadata: item.get("metadata").cloned(),
-            embedding_json: None,
-            created_at: now.clone(),
-        };
-
-        if let Err(e) = store.create_version(&version) {
-            warn!("Failed to create memory version for '{}': {}", title, e);
-            continue;
-        }
-
-        // 关键词提取: 简单启发式 — 从 title 提取词语
-        let keywords = extract_keywords_from_title(title);
-        for kw in &keywords {
-            let keyword = MemoryKeyword {
-                id: uuid::Uuid::new_v4().to_string(),
-                space_id: space_id.to_string(),
-                node_id: node_id.clone(),
-                keyword: kw.clone(),
-                created_at: now.clone(),
-            };
-            let _ = store.create_keyword(&keyword);
-        }
-
-        count += 1;
     }
 
     Ok(count)
