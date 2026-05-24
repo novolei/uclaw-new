@@ -12,6 +12,12 @@ export type BrowserRuntimeTaskTimePromptActionId =
   | 'defer'
   | 'continue_without_browser'
 
+export type BrowserRuntimePreparationDecision = 'ready' | 'defer'
+
+export interface BrowserTaskRuntimeDecisionPayload {
+  runtime_preparation_decision: BrowserRuntimePreparationDecision
+}
+
 export interface BrowserRuntimeTaskTimePromptInput {
   report?: StartupRuntimePackStatusReport
   browserRequired: boolean
@@ -27,6 +33,7 @@ export interface BrowserRuntimeTaskTimePromptAction {
   summary: string
   eventNames: string[]
   checkpointStatus?: 'paused_waiting_for_browser_runtime'
+  browserTaskRequestPatch?: BrowserTaskRuntimeDecisionPayload
 }
 
 export interface BrowserRuntimeTaskTimePromptViewModel {
@@ -88,6 +95,9 @@ export function deriveBrowserRuntimeTaskTimePrompt(
         checkpointStatus: checkpointOnDefer
           ? 'paused_waiting_for_browser_runtime'
           : undefined,
+        browserTaskRequestPatch: checkpointOnDefer
+          ? { runtime_preparation_decision: 'defer' }
+          : undefined,
       },
       {
         id: 'continue_without_browser',
@@ -101,6 +111,12 @@ export function deriveBrowserRuntimeTaskTimePrompt(
       },
     ],
   }
+}
+
+export function browserTaskRuntimeDecisionPayloadForAction(
+  action: BrowserRuntimeTaskTimePromptAction,
+): BrowserTaskRuntimeDecisionPayload | undefined {
+  return action.browserTaskRequestPatch
 }
 
 function promptStatus(
