@@ -1,25 +1,29 @@
 //! Supervised Playwright MCP sidecar process boundary.
 //!
-//! This module only starts and supervises the app-managed MCP server process.
-//! It does not speak raw MCP tools, promote providers, or route Browser tasks.
+//! This module starts and supervises the app-managed MCP server process, then
+//! translates uClaw browser actions into a small fixed MCP `tools/call` surface.
+//! It does not expose generic raw MCP tools, promote providers, or route
+//! Browser tasks.
 
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncReadExt;
-use tokio::process::{Child, Command};
+use serde_json::{json, Value};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use super::playwright_mcp::{
-    PlaywrightMcpRequestEnvelope, PLAYWRIGHT_MCP_ENVELOPE_SCHEMA_VERSION,
-    PLAYWRIGHT_MCP_PROVIDER_ID,
+    PlaywrightMcpAction, PlaywrightMcpActionKind, PlaywrightMcpRequestEnvelope,
+    PLAYWRIGHT_MCP_ENVELOPE_SCHEMA_VERSION, PLAYWRIGHT_MCP_PROVIDER_ID,
 };
 use super::runtime_pack::{BrowserRuntimePackEnvVar, BrowserRuntimePackStatusReport};
 
 pub const DEFAULT_PLAYWRIGHT_MCP_STARTUP_TIMEOUT_MS: u64 = 250;
+pub const PLAYWRIGHT_MCP_STDIO_PROTOCOL_VERSION: &str = "2024-11-05";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaywrightMcpSidecarRunnerConfig {
@@ -73,12 +77,17 @@ pub struct PlaywrightMcpSidecarLaunchSummary {
 #[derive(Debug)]
 pub struct PlaywrightMcpSidecarHandle {
     pub summary: PlaywrightMcpSidecarLaunchSummary,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
     child: Child,
     stderr_task: JoinHandle<std::io::Result<String>>,
+    poisoned: bool,
 }
 
 impl PlaywrightMcpSidecarHandle {
     pub async fn terminate(mut self) -> Result<(), PlaywrightMcpSidecarRunnerError> {
+        self.poisoned = true;
+        let _ = self.stdin.shutdown().await;
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;
         self.stderr_task.abort();
@@ -86,13 +95,49 @@ impl PlaywrightMcpSidecarHandle {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaywrightMcpSidecarArtifactKind {
+    Snapshot,
+    LocatorDiscovery,
+    Trace,
+    ActionResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaywrightMcpSidecarArtifactRef {
+    pub kind: PlaywrightMcpSidecarArtifactKind,
+    pub description: String,
+    pub path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaywrightMcpSidecarActionResult {
+    pub schema_version: u16,
+    pub provider_id: String,
+    pub request_id: String,
+    pub action_kind: PlaywrightMcpActionKind,
+    pub mcp_tool_name: String,
+    pub read_only: bool,
+    pub raw_tools_exposed: bool,
+    pub artifact_refs: Vec<PlaywrightMcpSidecarArtifactRef>,
+    pub result: Value,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum PlaywrightMcpSidecarRunnerError {
     RuntimePathEscapesPack { path: PathBuf, pack_dir: PathBuf },
     SpawnFailed(String),
+    StdinUnavailable,
+    StdoutUnavailable,
     StderrUnavailable,
     RawToolExposureBlocked,
     ExitedDuringStartup { code: Option<i32>, stderr: String },
+    JsonRpcTimeout { method: String, timeout_ms: u64 },
+    JsonRpcProtocol(String),
+    JsonRpcError { code: i64, message: String },
 }
 
 pub async fn start_playwright_mcp_sidecar(
@@ -134,6 +179,14 @@ pub async fn start_playwright_mcp_sidecar(
     let mut child = command
         .spawn()
         .map_err(|error| PlaywrightMcpSidecarRunnerError::SpawnFailed(error.to_string()))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or(PlaywrightMcpSidecarRunnerError::StdinUnavailable)?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or(PlaywrightMcpSidecarRunnerError::StdoutUnavailable)?;
     let stderr = child
         .stderr
         .take()
@@ -162,10 +215,252 @@ pub async fn start_playwright_mcp_sidecar(
         )),
         Err(_) => Ok(PlaywrightMcpSidecarHandle {
             summary,
+            stdin,
+            stdout: BufReader::new(stdout),
             child,
             stderr_task,
+            poisoned: false,
         }),
     }
+}
+
+pub async fn execute_playwright_mcp_sidecar_action(
+    handle: &mut PlaywrightMcpSidecarHandle,
+    envelope: &PlaywrightMcpRequestEnvelope,
+) -> Result<PlaywrightMcpSidecarActionResult, PlaywrightMcpSidecarRunnerError> {
+    if envelope.sidecar.expose_raw_tools {
+        return Err(PlaywrightMcpSidecarRunnerError::RawToolExposureBlocked);
+    }
+
+    let timeout_ms = envelope.timeout_ms;
+    write_json_rpc(
+        handle,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": PLAYWRIGHT_MCP_STDIO_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "uclaw-browser-runtime",
+                    "version": "phase7e"
+                }
+            }
+        }),
+    )
+    .await?;
+    let _ = read_json_rpc_response(handle, 1, "initialize", timeout_ms).await?;
+    write_json_rpc(
+        handle,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }),
+    )
+    .await?;
+
+    let tool_call = PlaywrightMcpSidecarToolCall::from_action(&envelope.action);
+    write_json_rpc(
+        handle,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": tool_call.name,
+                "arguments": tool_call.arguments
+            }
+        }),
+    )
+    .await?;
+    let result = read_json_rpc_response(handle, 2, "tools/call", timeout_ms).await?;
+
+    Ok(PlaywrightMcpSidecarActionResult {
+        schema_version: PLAYWRIGHT_MCP_ENVELOPE_SCHEMA_VERSION,
+        provider_id: PLAYWRIGHT_MCP_PROVIDER_ID.to_string(),
+        request_id: envelope.request_id.clone(),
+        action_kind: envelope.action.kind(),
+        mcp_tool_name: tool_call.name.to_string(),
+        read_only: tool_call.read_only,
+        raw_tools_exposed: false,
+        artifact_refs: tool_call.artifact_refs,
+        result,
+    })
+}
+
+struct PlaywrightMcpSidecarToolCall {
+    name: &'static str,
+    arguments: Value,
+    read_only: bool,
+    artifact_refs: Vec<PlaywrightMcpSidecarArtifactRef>,
+}
+
+impl PlaywrightMcpSidecarToolCall {
+    fn from_action(action: &PlaywrightMcpAction) -> Self {
+        match action {
+            PlaywrightMcpAction::AccessibilitySnapshot { .. } => Self {
+                name: "browser_snapshot",
+                arguments: json!({ "depth": 8 }),
+                read_only: true,
+                artifact_refs: vec![PlaywrightMcpSidecarArtifactRef {
+                    kind: PlaywrightMcpSidecarArtifactKind::Snapshot,
+                    description: "MCP accessibility snapshot".to_string(),
+                    path: None,
+                }],
+            },
+            PlaywrightMcpAction::DiscoverLocators { goal, .. } => Self {
+                name: "browser_snapshot",
+                arguments: json!({ "depth": 8 }),
+                read_only: true,
+                artifact_refs: vec![PlaywrightMcpSidecarArtifactRef {
+                    kind: PlaywrightMcpSidecarArtifactKind::LocatorDiscovery,
+                    description: format!("MCP locator discovery snapshot for goal: {goal}"),
+                    path: None,
+                }],
+            },
+            PlaywrightMcpAction::Trace { reason, .. } => Self {
+                name: "browser_start_tracing",
+                arguments: json!({}),
+                read_only: true,
+                artifact_refs: vec![PlaywrightMcpSidecarArtifactRef {
+                    kind: PlaywrightMcpSidecarArtifactKind::Trace,
+                    description: format!("MCP trace capture started for reason: {reason}"),
+                    path: None,
+                }],
+            },
+            PlaywrightMcpAction::Navigate { url } => Self {
+                name: "browser_navigate",
+                arguments: json!({ "url": url }),
+                read_only: false,
+                artifact_refs: vec![PlaywrightMcpSidecarArtifactRef {
+                    kind: PlaywrightMcpSidecarArtifactKind::ActionResult,
+                    description: "MCP navigation result".to_string(),
+                    path: None,
+                }],
+            },
+            PlaywrightMcpAction::Click { locator } => Self {
+                name: "browser_click",
+                arguments: json!({
+                    "target": locator,
+                    "element": "uClaw requested target"
+                }),
+                read_only: false,
+                artifact_refs: vec![PlaywrightMcpSidecarArtifactRef {
+                    kind: PlaywrightMcpSidecarArtifactKind::ActionResult,
+                    description: "MCP click result".to_string(),
+                    path: None,
+                }],
+            },
+            PlaywrightMcpAction::Type { locator, text } => Self {
+                name: "browser_type",
+                arguments: json!({
+                    "target": locator,
+                    "element": "uClaw requested target",
+                    "text": text
+                }),
+                read_only: false,
+                artifact_refs: vec![PlaywrightMcpSidecarArtifactRef {
+                    kind: PlaywrightMcpSidecarArtifactKind::ActionResult,
+                    description: "MCP type result".to_string(),
+                    path: None,
+                }],
+            },
+        }
+    }
+}
+
+async fn write_json_rpc(
+    handle: &mut PlaywrightMcpSidecarHandle,
+    message: Value,
+) -> Result<(), PlaywrightMcpSidecarRunnerError> {
+    if handle.poisoned {
+        return Err(PlaywrightMcpSidecarRunnerError::JsonRpcProtocol(
+            "MCP sidecar handle is closed after a protocol fault".to_string(),
+        ));
+    }
+    let mut payload = serde_json::to_vec(&message)
+        .map_err(|error| PlaywrightMcpSidecarRunnerError::JsonRpcProtocol(error.to_string()))?;
+    payload.push(b'\n');
+    handle
+        .stdin
+        .write_all(&payload)
+        .await
+        .map_err(|error| PlaywrightMcpSidecarRunnerError::JsonRpcProtocol(error.to_string()))?;
+    handle
+        .stdin
+        .flush()
+        .await
+        .map_err(|error| PlaywrightMcpSidecarRunnerError::JsonRpcProtocol(error.to_string()))?;
+    Ok(())
+}
+
+async fn read_json_rpc_response(
+    handle: &mut PlaywrightMcpSidecarHandle,
+    expected_id: u64,
+    method: &str,
+    timeout_ms: u64,
+) -> Result<Value, PlaywrightMcpSidecarRunnerError> {
+    if handle.poisoned {
+        return Err(PlaywrightMcpSidecarRunnerError::JsonRpcProtocol(
+            "MCP sidecar handle is closed after a protocol fault".to_string(),
+        ));
+    }
+    let mut line = String::new();
+    let read = match timeout(
+        Duration::from_millis(timeout_ms),
+        handle.stdout.read_line(&mut line),
+    )
+    .await
+    {
+        Ok(result) => result
+            .map_err(|error| PlaywrightMcpSidecarRunnerError::JsonRpcProtocol(error.to_string()))?,
+        Err(_) => {
+            poison_sidecar_handle(handle).await;
+            return Err(PlaywrightMcpSidecarRunnerError::JsonRpcTimeout {
+                method: method.to_string(),
+                timeout_ms,
+            });
+        }
+    };
+    if read == 0 {
+        return Err(PlaywrightMcpSidecarRunnerError::JsonRpcProtocol(format!(
+            "{method} closed stdout before response"
+        )));
+    }
+
+    let response: Value = serde_json::from_str(&line)
+        .map_err(|error| PlaywrightMcpSidecarRunnerError::JsonRpcProtocol(error.to_string()))?;
+    if response.get("id").and_then(Value::as_u64) != Some(expected_id) {
+        return Err(PlaywrightMcpSidecarRunnerError::JsonRpcProtocol(format!(
+            "{method} returned unexpected response id: {line}"
+        )));
+    }
+    if let Some(error) = response.get("error") {
+        return Err(PlaywrightMcpSidecarRunnerError::JsonRpcError {
+            code: error.get("code").and_then(Value::as_i64).unwrap_or(-1),
+            message: error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("MCP JSON-RPC error")
+                .to_string(),
+        });
+    }
+
+    response.get("result").cloned().ok_or_else(|| {
+        PlaywrightMcpSidecarRunnerError::JsonRpcProtocol(format!(
+            "{method} response missing result"
+        ))
+    })
+}
+
+async fn poison_sidecar_handle(handle: &mut PlaywrightMcpSidecarHandle) {
+    handle.poisoned = true;
+    let _ = handle.stdin.shutdown().await;
+    let _ = handle.child.kill().await;
+    let _ = handle.child.wait().await;
+    handle.stderr_task.abort();
 }
 
 async fn read_pipe_to_string<R>(mut reader: R) -> std::io::Result<String>
@@ -253,6 +548,50 @@ mod tests {
         assert_eq!(config.current_pack_dir, report.current_pack_dir);
     }
 
+    #[test]
+    fn mcp_tool_mapping_covers_locator_trace_navigation_and_type() {
+        let locator =
+            PlaywrightMcpSidecarToolCall::from_action(&PlaywrightMcpAction::DiscoverLocators {
+                url: None,
+                goal: "Find checkout".to_string(),
+            });
+        assert_eq!(locator.name, "browser_snapshot");
+        assert_eq!(locator.arguments["depth"], 8);
+        assert!(locator.arguments.get("boxes").is_none());
+        assert!(locator.read_only);
+        assert_eq!(
+            locator.artifact_refs[0].kind,
+            PlaywrightMcpSidecarArtifactKind::LocatorDiscovery
+        );
+
+        let trace = PlaywrightMcpSidecarToolCall::from_action(&PlaywrightMcpAction::Trace {
+            url: None,
+            reason: "debug failed checkout".to_string(),
+        });
+        assert_eq!(trace.name, "browser_start_tracing");
+        assert!(trace.read_only);
+        assert_eq!(
+            trace.artifact_refs[0].kind,
+            PlaywrightMcpSidecarArtifactKind::Trace
+        );
+
+        let navigate = PlaywrightMcpSidecarToolCall::from_action(&PlaywrightMcpAction::Navigate {
+            url: "https://example.test".to_string(),
+        });
+        assert_eq!(navigate.name, "browser_navigate");
+        assert_eq!(navigate.arguments["url"], "https://example.test");
+        assert!(!navigate.read_only);
+
+        let typed = PlaywrightMcpSidecarToolCall::from_action(&PlaywrightMcpAction::Type {
+            locator: "input[name=email]".to_string(),
+            text: "hello@example.test".to_string(),
+        });
+        assert_eq!(typed.name, "browser_type");
+        assert_eq!(typed.arguments["target"], "input[name=email]");
+        assert_eq!(typed.arguments["text"], "hello@example.test");
+        assert!(!typed.read_only);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn sidecar_runner_starts_app_managed_mcp_process_without_npx() {
@@ -276,6 +615,145 @@ mod tests {
         assert!(!handle.summary.raw_tools_exposed);
 
         handle.terminate().await.expect("terminate sidecar");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sidecar_executes_snapshot_action_over_mcp_stdio() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let envelope = fixture_envelope(temp.path());
+        let transcript_path = temp.path().join("mcp-transcript.jsonl");
+        let config =
+            prepare_stdio_sidecar_fixture(&envelope, &transcript_path, false).expect("fixture");
+        let mut handle = start_playwright_mcp_sidecar(&envelope, config)
+            .await
+            .expect("sidecar starts");
+
+        let result = execute_playwright_mcp_sidecar_action(&mut handle, &envelope)
+            .await
+            .expect("stdio action");
+
+        assert_eq!(result.request_id, "req-mcp-sidecar");
+        assert_eq!(
+            result.action_kind,
+            PlaywrightMcpActionKind::AccessibilitySnapshot
+        );
+        assert_eq!(result.mcp_tool_name, "browser_snapshot");
+        assert!(result.read_only);
+        assert!(!result.raw_tools_exposed);
+        assert_eq!(
+            result.artifact_refs[0].kind,
+            PlaywrightMcpSidecarArtifactKind::Snapshot
+        );
+        assert!(result
+            .result
+            .to_string()
+            .contains("snapshot: button Submit [ref=e1]"));
+
+        handle.terminate().await.expect("terminate sidecar");
+        let transcript = fs::read_to_string(transcript_path).expect("transcript");
+        assert!(transcript.contains("\"method\":\"initialize\""));
+        assert!(transcript.contains("\"method\":\"tools/call\""));
+        assert!(transcript.contains("\"name\":\"browser_snapshot\""));
+        assert!(transcript.contains("\"depth\":8"));
+        assert!(!transcript.contains("\"boxes\":true"));
+        assert!(!transcript.contains("\"method\":\"tools/list\""));
+        assert!(!transcript.contains("mcp__"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sidecar_translates_click_action_without_generic_raw_tools() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut envelope = fixture_envelope(temp.path());
+        envelope.request_id = "req-click".to_string();
+        envelope.action = PlaywrightMcpAction::Click {
+            locator: "button[aria-label='Submit']".to_string(),
+        };
+        let transcript_path = temp.path().join("mcp-click-transcript.jsonl");
+        let config =
+            prepare_stdio_sidecar_fixture(&envelope, &transcript_path, false).expect("fixture");
+        let mut handle = start_playwright_mcp_sidecar(&envelope, config)
+            .await
+            .expect("sidecar starts");
+
+        let result = execute_playwright_mcp_sidecar_action(&mut handle, &envelope)
+            .await
+            .expect("stdio action");
+
+        assert_eq!(result.action_kind, PlaywrightMcpActionKind::Click);
+        assert_eq!(result.mcp_tool_name, "browser_click");
+        assert!(!result.read_only);
+        assert_eq!(
+            result.artifact_refs[0].kind,
+            PlaywrightMcpSidecarArtifactKind::ActionResult
+        );
+
+        handle.terminate().await.expect("terminate sidecar");
+        let transcript = fs::read_to_string(transcript_path).expect("transcript");
+        assert!(transcript.contains("\"name\":\"browser_click\""));
+        assert!(transcript.contains("\"target\":\"button[aria-label='Submit']\""));
+        assert!(!transcript.contains("\"method\":\"tools/list\""));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sidecar_action_reports_mcp_json_rpc_errors() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let envelope = fixture_envelope(temp.path());
+        let transcript_path = temp.path().join("mcp-error-transcript.jsonl");
+        let config =
+            prepare_stdio_sidecar_fixture(&envelope, &transcript_path, true).expect("fixture");
+        let mut handle = start_playwright_mcp_sidecar(&envelope, config)
+            .await
+            .expect("sidecar starts");
+
+        let error = execute_playwright_mcp_sidecar_action(&mut handle, &envelope)
+            .await
+            .expect_err("stdio action should report json-rpc error");
+
+        assert_eq!(
+            error,
+            PlaywrightMcpSidecarRunnerError::JsonRpcError {
+                code: -32000,
+                message: "snapshot denied".to_string()
+            }
+        );
+        handle.terminate().await.expect("terminate sidecar");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sidecar_action_timeout_poison_kills_handle_before_reuse() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut envelope = fixture_envelope(temp.path());
+        envelope.timeout_ms = 50;
+        let transcript_path = temp.path().join("mcp-timeout-transcript.jsonl");
+        let config = prepare_timeout_sidecar_fixture(&envelope, &transcript_path).expect("fixture");
+        let mut handle = start_playwright_mcp_sidecar(&envelope, config)
+            .await
+            .expect("sidecar starts");
+
+        let error = execute_playwright_mcp_sidecar_action(&mut handle, &envelope)
+            .await
+            .expect_err("stdio action should time out");
+        assert_eq!(
+            error,
+            PlaywrightMcpSidecarRunnerError::JsonRpcTimeout {
+                method: "initialize".to_string(),
+                timeout_ms: 50
+            }
+        );
+        assert!(handle.poisoned);
+
+        let reuse_error = execute_playwright_mcp_sidecar_action(&mut handle, &envelope)
+            .await
+            .expect_err("poisoned handle should not be reused");
+        assert!(matches!(
+            reuse_error,
+            PlaywrightMcpSidecarRunnerError::JsonRpcProtocol(message)
+                if message.contains("closed after a protocol fault")
+        ));
     }
 
     #[cfg(unix)]
@@ -354,7 +832,7 @@ mod tests {
             user_data_dir: report.current_pack_dir.join("mcp-profile"),
             storage_state_path: None,
             capabilities: Vec::new(),
-            action_timeout_ms: Some(250),
+            action_timeout_ms: Some(1_500),
             navigation_timeout_ms: Some(500),
             expose_raw_tools: false,
         })
@@ -407,6 +885,62 @@ mod tests {
             "#!/bin/sh\nshift\necho mcp boot failed >&2\nprintf '%s\\n' \"$@\" >&2\nexit 17\n",
         )?;
         config.startup_timeout_ms = 3_000;
+        Ok(config)
+    }
+
+    #[cfg(unix)]
+    fn prepare_stdio_sidecar_fixture(
+        envelope: &PlaywrightMcpRequestEnvelope,
+        transcript_path: &Path,
+        fail_tool_call: bool,
+    ) -> std::io::Result<PlaywrightMcpSidecarRunnerConfig> {
+        let mut config = prepare_sidecar_fixture(envelope, 500)?;
+        let call_response = if fail_tool_call {
+            r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"snapshot denied"}}"#
+        } else {
+            r#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"snapshot: button Submit [ref=e1]"}],"isError":false}}"#
+        };
+        let initialize_response = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"fake-playwright-mcp","version":"test"}}}"#;
+        let script = format!(
+            r#"#!/bin/sh
+initialize_response='{}'
+call_response='{}'
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$MCP_TRANSCRIPT"
+  if printf '%s' "$line" | grep -q '"method":"initialize"'; then
+    printf '%s\n' "$initialize_response"
+  elif printf '%s' "$line" | grep -q '"method":"tools/call"'; then
+    printf '%s\n' "$call_response"
+  fi
+done
+"#,
+            initialize_response, call_response
+        );
+        write_executable(&config.node_binary_path, &script)?;
+        config.env.push(BrowserRuntimePackEnvVar {
+            name: "MCP_TRANSCRIPT".to_string(),
+            value: transcript_path.to_path_buf(),
+        });
+        Ok(config)
+    }
+
+    #[cfg(unix)]
+    fn prepare_timeout_sidecar_fixture(
+        envelope: &PlaywrightMcpRequestEnvelope,
+        transcript_path: &Path,
+    ) -> std::io::Result<PlaywrightMcpSidecarRunnerConfig> {
+        let mut config = prepare_sidecar_fixture(envelope, 500)?;
+        let script = r#"#!/bin/sh
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$MCP_TRANSCRIPT"
+  sleep 2
+done
+"#;
+        write_executable(&config.node_binary_path, script)?;
+        config.env.push(BrowserRuntimePackEnvVar {
+            name: "MCP_TRANSCRIPT".to_string(),
+            value: transcript_path.to_path_buf(),
+        });
         Ok(config)
     }
 
