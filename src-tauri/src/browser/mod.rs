@@ -8,6 +8,7 @@ pub mod decision;
 pub mod dom_state;
 pub mod hosted_provider;
 pub mod identity;
+pub mod identity_authorization;
 pub mod identity_ipc;
 pub mod identity_tasks;
 pub mod intervention_bridge;

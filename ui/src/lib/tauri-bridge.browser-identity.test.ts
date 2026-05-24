@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
-import { listBrowserIdentities, revokeBrowserIdentity } from './tauri-bridge'
+import {
+  completeBrowserIdentityAuthorizationFromTab,
+  completeBrowserIdentityAuthorizationFromWebview,
+  listBrowserIdentities,
+  revokeBrowserIdentity,
+} from './tauri-bridge'
 import type {
+  BrowserIdentityAuthorizationReport,
   BrowserIdentityRevocationReport,
   BrowserIdentityStatusReport,
 } from './tauri-bridge'
@@ -102,6 +108,68 @@ describe('browser identity tauri bridge', () => {
     await expect(revokeBrowserIdentity('auth-example')).resolves.toEqual(report)
     expect(invoke).toHaveBeenCalledWith('revoke_browser_identity', {
       profileId: 'auth-example',
+    })
+  })
+
+  it('completes browser identity authorization from a managed tab', async () => {
+    const report: BrowserIdentityAuthorizationReport = {
+      completed: true,
+      profile: {
+        id: 'auth-example',
+        label: 'Example',
+        originPattern: 'https://app.example.com',
+        kind: 'storage_state',
+        provider: 'playwright',
+        scope: 'global',
+        createdAtMs: 1,
+        lastUsedAtMs: null,
+        lastVerifiedAtMs: null,
+        expiresAtMs: null,
+        revokedAtMs: null,
+        status: 'unknown',
+        revoked: false,
+      },
+      profileId: 'auth-example',
+      originPattern: 'https://app.example.com',
+      capturedCookieCount: 1,
+      capturedOriginCount: 1,
+      message: null,
+    }
+    vi.mocked(invoke).mockResolvedValueOnce(report)
+    const input = {
+      sessionId: 'identity-auth:example',
+      tabId: 'tab-1',
+      label: 'Example',
+      url: 'https://app.example.com/login',
+      scope: 'global' as const,
+    }
+
+    await expect(completeBrowserIdentityAuthorizationFromTab(input)).resolves.toEqual(report)
+    expect(invoke).toHaveBeenCalledWith('complete_browser_identity_authorization_from_tab', {
+      input,
+    })
+  })
+
+  it('completes browser identity authorization from a webview', async () => {
+    const report: BrowserIdentityAuthorizationReport = {
+      completed: false,
+      profile: null,
+      profileId: null,
+      originPattern: null,
+      capturedCookieCount: 0,
+      capturedOriginCount: 0,
+      message: 'Waiting for the site to write authenticated browser state.',
+    }
+    vi.mocked(invoke).mockResolvedValueOnce(report)
+    const input = {
+      webviewLabel: 'identity-auth-example',
+      label: 'Example',
+      url: 'https://app.example.com/login',
+    }
+
+    await expect(completeBrowserIdentityAuthorizationFromWebview(input)).resolves.toEqual(report)
+    expect(invoke).toHaveBeenCalledWith('complete_browser_identity_authorization_from_webview', {
+      input,
     })
   })
 })

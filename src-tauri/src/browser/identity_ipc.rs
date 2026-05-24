@@ -1,14 +1,18 @@
-//! IPC boundary for browser identity visibility and revocation.
+//! IPC boundary for browser identity visibility, authorization, and revocation.
 
-use serde::Serialize;
-use tauri::State;
+use serde::{Deserialize, Serialize};
+use tauri::{Manager, State};
 
 use crate::app::AppState;
 use crate::error::Error;
 
 use super::identity::{
     BrowserAuthProfileBroker, BrowserIdentityError, BrowserIdentityKind, BrowserIdentityProfile,
-    BrowserIdentityProvider, BrowserIdentityScope, BrowserIdentityStatus,
+    BrowserIdentityProvider, BrowserIdentityScope, BrowserIdentityStatus, PlaywrightStorageState,
+};
+use super::identity_authorization::{
+    cookie_info_from_webview_cookie, cookie_matches_login_host, import_authorized_storage_state,
+    is_likely_authenticated_cookie, storage_state_from_cookies, BrowserIdentityAuthorizationImport,
 };
 use super::identity_tasks::{
     BrowserIdentityActiveTaskSummary, BrowserIdentityTaskRegistry,
@@ -53,6 +57,39 @@ pub struct BrowserIdentityRevocationReport {
     pub drain_deadline_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserIdentityAuthorizationTabInput {
+    pub session_id: String,
+    pub tab_id: String,
+    pub label: String,
+    pub url: String,
+    #[serde(default)]
+    pub scope: Option<BrowserIdentityScope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserIdentityAuthorizationWebviewInput {
+    pub webview_label: String,
+    pub label: String,
+    pub url: String,
+    #[serde(default)]
+    pub scope: Option<BrowserIdentityScope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserIdentityAuthorizationReport {
+    pub completed: bool,
+    pub profile: Option<BrowserIdentityProfileSummary>,
+    pub profile_id: Option<String>,
+    pub origin_pattern: Option<String>,
+    pub captured_cookie_count: usize,
+    pub captured_origin_count: usize,
+    pub message: Option<String>,
+}
+
 #[tauri::command]
 pub async fn list_browser_identities(
     state: State<'_, AppState>,
@@ -60,6 +97,100 @@ pub async fn list_browser_identities(
     let broker = BrowserAuthProfileBroker::system_default().map_err(identity_error_to_error)?;
     browser_identity_status_for_broker(&broker, Some(&state.browser_identity_task_registry))
         .map_err(identity_error_to_error)
+}
+
+#[tauri::command]
+pub async fn complete_browser_identity_authorization_from_tab(
+    state: State<'_, AppState>,
+    input: BrowserIdentityAuthorizationTabInput,
+) -> Result<BrowserIdentityAuthorizationReport, Error> {
+    let ctx = state
+        .browser_context_manager
+        .get_or_create(&input.session_id)
+        .await
+        .map_err(|error| Error::Internal(error.to_string()))?;
+    let cookies = ctx
+        .get_cookies(&input.tab_id, Some(&input.url))
+        .await
+        .map_err(|error| Error::Internal(error.to_string()))?;
+    if !is_likely_authenticated_cookie(&input.url, &cookies) {
+        return Ok(browser_identity_authorization_pending_report(
+            cookies.len(),
+            0,
+            "Waiting for the site to write authenticated browser state.",
+        ));
+    }
+
+    let state_snapshot = ctx
+        .capture_storage_state(&input.tab_id, &input.url)
+        .await
+        .map_err(|error| Error::Internal(error.to_string()))?;
+    let captured_cookie_count = state_snapshot.cookies.len();
+    let captured_origin_count = state_snapshot.origins.len();
+    let broker = BrowserAuthProfileBroker::system_default().map_err(identity_error_to_error)?;
+    complete_browser_identity_authorization_for_broker(
+        &broker,
+        input.label,
+        input.url,
+        input.scope.unwrap_or(BrowserIdentityScope::Global),
+        &state_snapshot,
+        captured_cookie_count,
+        captured_origin_count,
+    )
+    .map_err(identity_error_to_error)
+}
+
+#[tauri::command]
+pub async fn complete_browser_identity_authorization_from_webview(
+    app_handle: tauri::AppHandle,
+    input: BrowserIdentityAuthorizationWebviewInput,
+) -> Result<BrowserIdentityAuthorizationReport, Error> {
+    let parsed_url =
+        url::Url::parse(&input.url).map_err(|error| Error::InvalidInput(error.to_string()))?;
+    let fallback_host = parsed_url.host_str().unwrap_or_default();
+    let fallback_secure = parsed_url.scheme() == "https";
+    let webview = app_handle
+        .get_webview_window(&input.webview_label)
+        .ok_or_else(|| Error::NotFound(format!("login webview {}", input.webview_label)))?;
+    let scoped_cookies = webview
+        .cookies_for_url(parsed_url.clone())
+        .map_err(|error| Error::Internal(error.to_string()))?;
+    let mut cookie_infos: Vec<_> = scoped_cookies
+        .iter()
+        .map(|cookie| cookie_info_from_webview_cookie(cookie, fallback_host, fallback_secure))
+        .collect();
+
+    if !is_likely_authenticated_cookie(&input.url, &cookie_infos) {
+        let all_cookies = webview
+            .cookies()
+            .map_err(|error| Error::Internal(error.to_string()))?;
+        cookie_infos = all_cookies
+            .iter()
+            .map(|cookie| cookie_info_from_webview_cookie(cookie, fallback_host, fallback_secure))
+            .filter(|cookie| cookie_matches_login_host(&cookie.domain, fallback_host))
+            .collect();
+        if !is_likely_authenticated_cookie(&input.url, &cookie_infos) {
+            return Ok(browser_identity_authorization_pending_report(
+                cookie_infos.len(),
+                0,
+                "Waiting for the site to write authenticated browser state.",
+            ));
+        }
+    }
+
+    let state_snapshot = storage_state_from_cookies(cookie_infos);
+    let captured_cookie_count = state_snapshot.cookies.len();
+    let broker = BrowserAuthProfileBroker::system_default().map_err(identity_error_to_error)?;
+    complete_browser_identity_authorization_for_broker(
+        &broker,
+        input.label,
+        input.url,
+        input.scope.unwrap_or(BrowserIdentityScope::Global),
+        &state_snapshot,
+        captured_cookie_count,
+        0,
+    )
+    .map_err(identity_error_to_error)
 }
 
 #[tauri::command]
@@ -150,6 +281,49 @@ fn summarize_browser_identity_profile(
         revoked_at_ms: profile.revoked_at_ms,
         status: profile.status,
         revoked,
+    }
+}
+
+pub fn complete_browser_identity_authorization_for_broker(
+    broker: &BrowserAuthProfileBroker,
+    label: String,
+    url: String,
+    scope: BrowserIdentityScope,
+    state_snapshot: &PlaywrightStorageState,
+    captured_cookie_count: usize,
+    captured_origin_count: usize,
+) -> Result<BrowserIdentityAuthorizationReport, BrowserIdentityError> {
+    let profile = import_authorized_storage_state(
+        broker,
+        BrowserIdentityAuthorizationImport { label, url, scope },
+        state_snapshot,
+    )?;
+    let summary = summarize_browser_identity_profile(profile);
+
+    Ok(BrowserIdentityAuthorizationReport {
+        completed: true,
+        profile_id: Some(summary.id.clone()),
+        origin_pattern: Some(summary.origin_pattern.clone()),
+        profile: Some(summary),
+        captured_cookie_count,
+        captured_origin_count,
+        message: None,
+    })
+}
+
+fn browser_identity_authorization_pending_report(
+    captured_cookie_count: usize,
+    captured_origin_count: usize,
+    message: &str,
+) -> BrowserIdentityAuthorizationReport {
+    BrowserIdentityAuthorizationReport {
+        completed: false,
+        profile: None,
+        profile_id: None,
+        origin_pattern: None,
+        captured_cookie_count,
+        captured_origin_count,
+        message: Some(message.to_string()),
     }
 }
 
@@ -284,5 +458,60 @@ mod tests {
         assert_eq!(revoke.active_task_count, 1);
         assert_eq!(revoke.active_tasks[0].run_id, "run-active");
         assert!(revoke.drain_deadline_ms.is_some());
+    }
+
+    #[test]
+    fn authorization_report_imports_global_profile_without_secret_material() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let broker = BrowserAuthProfileBroker::new_with_secret_store(
+            temp.path().join("profiles.json"),
+            Arc::new(MemoryBrowserSecretStore::default()),
+        );
+        let state_snapshot = PlaywrightStorageState::from_json_str(
+            r#"{
+              "cookies": [{"name":"sid","value":"token","domain":".example.com","path":"/"}],
+              "origins": [{"origin":"https://app.example.com","localStorage":[]}]
+            }"#,
+        )
+        .expect("storage state");
+
+        let report = complete_browser_identity_authorization_for_broker(
+            &broker,
+            "Example Login".to_string(),
+            "https://app.example.com/login".to_string(),
+            BrowserIdentityScope::Global,
+            &state_snapshot,
+            state_snapshot.cookies.len(),
+            state_snapshot.origins.len(),
+        )
+        .expect("authorization report");
+        let value = serde_json::to_value(&report).expect("serialize report");
+
+        assert!(report.completed);
+        assert_eq!(
+            report.origin_pattern.as_deref(),
+            Some("https://app.example.com")
+        );
+        assert_eq!(report.captured_cookie_count, 1);
+        assert_eq!(report.captured_origin_count, 1);
+        assert_eq!(
+            report.profile.as_ref().expect("profile").scope,
+            BrowserIdentityScope::Global
+        );
+        assert!(report.profile_id.is_some());
+        assert!(value["profile"].get("secretHandle").is_none());
+    }
+
+    #[test]
+    fn authorization_pending_report_hides_profile_fields() {
+        let report = browser_identity_authorization_pending_report(
+            2,
+            0,
+            "Waiting for the site to write authenticated browser state.",
+        );
+        assert!(!report.completed);
+        assert_eq!(report.captured_cookie_count, 2);
+        assert!(report.profile.is_none());
+        assert!(report.profile_id.is_none());
     }
 }

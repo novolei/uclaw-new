@@ -253,8 +253,43 @@ export interface BrowserIdentityRevocationReport {
   drainDeadlineMs: number | null;
 }
 
+export interface BrowserIdentityAuthorizationTabInput {
+  sessionId: string;
+  tabId: string;
+  label: string;
+  url: string;
+  scope?: BrowserIdentityScope | null;
+}
+
+export interface BrowserIdentityAuthorizationWebviewInput {
+  webviewLabel: string;
+  label: string;
+  url: string;
+  scope?: BrowserIdentityScope | null;
+}
+
+export interface BrowserIdentityAuthorizationReport {
+  completed: boolean;
+  profile: BrowserIdentityProfileSummary | null;
+  profileId: string | null;
+  originPattern: string | null;
+  capturedCookieCount: number;
+  capturedOriginCount: number;
+  message: string | null;
+}
+
 export const listBrowserIdentities = (): Promise<BrowserIdentityStatusReport> =>
   invoke('list_browser_identities');
+
+export const completeBrowserIdentityAuthorizationFromTab = (
+  input: BrowserIdentityAuthorizationTabInput,
+): Promise<BrowserIdentityAuthorizationReport> =>
+  invoke('complete_browser_identity_authorization_from_tab', { input });
+
+export const completeBrowserIdentityAuthorizationFromWebview = (
+  input: BrowserIdentityAuthorizationWebviewInput,
+): Promise<BrowserIdentityAuthorizationReport> =>
+  invoke('complete_browser_identity_authorization_from_webview', { input });
 
 export const revokeBrowserIdentity = (
   profileId: string,
