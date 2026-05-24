@@ -63,6 +63,50 @@ pub fn align_to_1024_tokens(text: &str) -> String {
     aligned
 }
 
+/// Align a static block using a 5-Tier Prompt Ladder of token sizes:
+/// 2048, 4096, 8192, 16384, 32768 tokens.
+/// Utilizes a lightweight heuristic of 1 token ≈ 4.1 characters to pad with a
+/// `<!-- pad: N bytes -->` HTML comment.
+pub fn pad_to_ladder(text: &str) -> String {
+    if text.trim().is_empty() {
+        return String::new();
+    }
+
+    let estimated_tokens = (text.len() as f32 / 4.1).round() as usize;
+    let tiers = [2048, 4096, 8192, 16384, 32768];
+    
+    // Find the smallest tier >= estimated_tokens
+    let target_tier = match tiers.iter().find(|&&t| t >= estimated_tokens) {
+        Some(&t) => t,
+        None => {
+            // Fall back to aligning to nearest 1024 boundary
+            let next_1024 = ((estimated_tokens + 1023) / 1024) * 1024;
+            next_1024
+        }
+    };
+
+    if target_tier <= estimated_tokens {
+        return text.to_string();
+    }
+
+    let tokens_needed = target_tier - estimated_tokens;
+    let chars_needed = (tokens_needed as f32 * 4.1).round() as usize;
+    
+    let base_overhead = "\n\n<!-- pad:  -->\n";
+    if chars_needed <= base_overhead.len() {
+        return text.to_string();
+    }
+
+    let padding_len = chars_needed - base_overhead.len();
+    let padding_spaces = " ".repeat(padding_len);
+
+    let mut padded = text.trim_end().to_string();
+    padded.push_str("\n\n<!-- pad: ");
+    padded.push_str(&padding_spaces);
+    padded.push_str(" -->\n");
+    padded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +132,17 @@ mod tests {
 
         let aligned_spaces = align_to_1024_tokens("   \n\t ");
         assert_eq!(aligned_spaces, "");
+    }
+
+    #[test]
+    fn test_pad_to_ladder() {
+        let text = "Short text needing padding";
+        let padded = pad_to_ladder(text);
+        assert!(padded.contains("<!-- pad:"));
+        assert!(padded.len() > text.len());
+        
+        let est_tokens = (padded.len() as f32 / 4.1).round() as usize;
+        // Should align to the first tier: 2048 tokens
+        assert!(est_tokens >= 2040 && est_tokens <= 2056);
     }
 }

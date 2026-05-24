@@ -487,6 +487,42 @@ pub async fn run_agentic_loop(
     LoopOutcome::MaxIterations
 }
 
+/// Purges any orphaned ToolResult blocks from active messages where the
+/// corresponding ToolUse has been compacted. If a message becomes empty
+/// after purging, it is marked as compacted.
+pub fn purge_orphaned_tool_results(messages: &mut [ChatMessage]) {
+    // 1. Collect all active tool call IDs (from messages where compacted == false)
+    let mut active_tool_call_ids = std::collections::HashSet::new();
+    for msg in messages.iter() {
+        if !msg.compacted {
+            for block in &msg.content {
+                if let ContentBlock::ToolUse { id, .. } = block {
+                    active_tool_call_ids.insert(id.clone());
+                }
+            }
+        }
+    }
+
+    // 2. Scan all messages where compacted == false, and filter out orphaned ToolResult blocks.
+    for msg in messages.iter_mut() {
+        if !msg.compacted {
+            // Filter content blocks in place
+            msg.content.retain(|block| {
+                if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                    active_tool_call_ids.contains(tool_use_id)
+                } else {
+                    true
+                }
+            });
+
+            // 3. If the message becomes empty after purging, mark it as compacted
+            if msg.content.is_empty() {
+                msg.compacted = true;
+            }
+        }
+    }
+}
+
 // ─── Context Compression ────────────────────────────────────────────────
 
 /// Compress conversation context if token usage exceeds configured thresholds.
@@ -515,7 +551,7 @@ async fn compress_context_if_needed(
 
     let estimated_tokens = reason_ctx.estimate_token_count();
     let hard_limit = (effective_budget as f32 * config.hard_truncation_threshold) as usize;
-    let soft_limit = (effective_budget as f32 * config.compression_threshold) as usize;
+    let soft_limit = (effective_budget as f32 * 0.75) as usize;
 
     if estimated_tokens >= hard_limit {
         // Hard truncation: aggressively remove oldest messages until under soft limit
@@ -584,6 +620,8 @@ fn force_compact_sync(reason_ctx: &mut ReasoningContext, keep_turns: usize) {
     for i in 0..split_idx {
         reason_ctx.messages[i].compacted = true;
     }
+
+    purge_orphaned_tool_results(&mut reason_ctx.messages);
 
     // Synchronous fold using the extractive fallback fold
     let fallback_fold = crate::agent::compact::summarize::extractive_fallback_fold(&messages_to_compact);
@@ -757,6 +795,8 @@ async fn soft_compress_context(
         reason_ctx.messages[i].compacted = true;
     }
 
+    purge_orphaned_tool_results(&mut reason_ctx.messages);
+
     // Build L1 archive summary: Call summarize_to_fold, fallback to extractive fold on failure
     let fold = if let Some(f) = delegate.summarize_to_fold(&messages_to_compact).await {
         tracing::info!(
@@ -925,6 +965,8 @@ fn hard_truncate_context(reason_ctx: &mut ReasoningContext, target_tokens: usize
             break; // all messages already compacted
         }
     }
+
+    purge_orphaned_tool_results(&mut reason_ctx.messages);
 
     if removed > 0 {
         reason_ctx.messages.insert(
@@ -1159,5 +1201,273 @@ mod compaction_safety_tests {
         // Let's verify find_safe_compaction_boundary resolves this to index 4.
         let safe_idx = find_safe_compaction_boundary(&msgs, 2);
         assert_eq!(safe_idx, 4);
+    }
+
+    #[test]
+    fn test_purge_orphaned_tool_results_basic_purged() {
+        // Case 1: ToolUse is compacted (or not in any active message) but ToolResult remains -> purged
+        let mut messages = vec![
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "tool-1".to_string(),
+                    name: "read_file".to_string(),
+                    input: json!({}),
+                }],
+                compacted: true,
+            },
+            ChatMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".to_string(),
+                    content: "file content".to_string(),
+                    is_error: Some(false),
+                }],
+                compacted: false,
+            },
+        ];
+        purge_orphaned_tool_results(&mut messages);
+        assert!(messages[1].compacted);
+        assert!(messages[1].content.is_empty());
+    }
+
+    #[test]
+    fn test_purge_orphaned_tool_results_active_kept() {
+        // Case 2: ToolUse and ToolResult both active -> NOT deleted
+        let mut messages = vec![
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "tool-1".to_string(),
+                    name: "read_file".to_string(),
+                    input: json!({}),
+                }],
+                compacted: false,
+            },
+            ChatMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".to_string(),
+                    content: "file content".to_string(),
+                    is_error: Some(false),
+                }],
+                compacted: false,
+            },
+        ];
+        purge_orphaned_tool_results(&mut messages);
+        assert!(!messages[0].compacted);
+        assert!(!messages[1].compacted);
+        assert_eq!(messages[1].content.len(), 1);
+    }
+
+    #[test]
+    fn test_purge_orphaned_tool_results_empty_message_marked_compacted() {
+        // Case 3: Purging causing empty message -> message marked compacted
+        let mut messages = vec![
+            ChatMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "orphan-1".to_string(),
+                    content: "result".to_string(),
+                    is_error: Some(false),
+                }],
+                compacted: false,
+            },
+        ];
+        purge_orphaned_tool_results(&mut messages);
+        assert!(messages[0].compacted);
+        assert!(messages[0].content.is_empty());
+    }
+
+    #[test]
+    fn test_purge_orphaned_tool_results_multi_mixed() {
+        // Case 5: Multi-tool calls, multi-results, out-of-order, cross-message boundaries
+        let mut messages = vec![
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "tool-compacted".to_string(),
+                        name: "web_search".to_string(),
+                        input: json!({}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "tool-active".to_string(),
+                        name: "read_file".to_string(),
+                        input: json!({}),
+                    },
+                ],
+                compacted: true,
+            },
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "tool-compacted".to_string(),
+                    name: "web_search".to_string(),
+                    input: json!({}),
+                }],
+                compacted: true,
+            },
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "tool-active".to_string(),
+                    name: "read_file".to_string(),
+                    input: json!({}),
+                }],
+                compacted: false,
+            },
+            ChatMessage {
+                role: MessageRole::User,
+                content: vec![
+                    ContentBlock::Text { text: "Here is a prefix text".to_string() },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "tool-compacted".to_string(),
+                        content: "compacted result".to_string(),
+                        is_error: Some(false),
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "tool-active".to_string(),
+                        content: "active result".to_string(),
+                        is_error: Some(false),
+                    },
+                ],
+                compacted: false,
+            },
+        ];
+        purge_orphaned_tool_results(&mut messages);
+        assert!(!messages[3].compacted);
+        assert_eq!(messages[3].content.len(), 2);
+        match &messages[3].content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "Here is a prefix text"),
+            _ => panic!("Expected text block"),
+        }
+        match &messages[3].content[1] {
+            ContentBlock::ToolResult { tool_use_id, .. } => assert_eq!(tool_use_id, "tool-active"),
+            _ => panic!("Expected tool result block"),
+        }
+    }
+
+    #[test]
+    fn test_purge_orphaned_tool_results_all_compact_paths() {
+        // Case 4: soft_compress_context / hard_truncate_context / force_compact_sync three paths do not produce orphaned ToolResults
+        let mut reason_ctx = ReasoningContext {
+            messages: vec![
+                ChatMessage {
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::Text { text: "Hello".to_string() }],
+                    compacted: false,
+                },
+                ChatMessage {
+                    role: MessageRole::Assistant,
+                    content: vec![ContentBlock::ToolUse {
+                        id: "tool-1".to_string(),
+                        name: "read_file".to_string(),
+                        input: json!({}),
+                    }],
+                    compacted: false,
+                },
+                ChatMessage {
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::ToolResult {
+                        tool_use_id: "tool-1".to_string(),
+                        content: "content".to_string(),
+                        is_error: Some(false),
+                    }],
+                    compacted: false,
+                },
+                ChatMessage {
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::Text { text: "Keep this".to_string() }],
+                    compacted: false,
+                },
+            ],
+            system_prompt: "system".to_string(),
+            force_text: false,
+            thread_state: ThreadState::Completed,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            mutations_since_last_plan_done: 0,
+            mutation_challenges_issued: 0,
+            consecutive_length_truncations: 0,
+            partial_code_buffer: None,
+            consecutive_plan_guard_nudges: 0,
+            cancellation_token: None,
+        };
+
+        // If we force compact with keep_turns = 1, it will compact older messages.
+        // It will compact Hello, and tool-1 ToolUse, but if tool-1 ToolResult is kept active,
+        // it will become orphaned. Calling force_compact_sync should heal this!
+        force_compact_sync(&mut reason_ctx, 1);
+
+        // Let's check that tool-1 ToolResult is either compacted or removed, so no active orphaned tool result exists
+        for msg in &reason_ctx.messages {
+            if !msg.compacted {
+                for block in &msg.content {
+                    if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                        assert_ne!(tool_use_id, "tool-1", "Should not have active tool-1 ToolResult");
+                    }
+                }
+            }
+        }
+
+        // Let's test hard_truncate_context
+        let mut reason_ctx_hard = ReasoningContext {
+            messages: vec![
+                ChatMessage {
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::Text { text: "Hello".to_string() }],
+                    compacted: false,
+                },
+                ChatMessage {
+                    role: MessageRole::Assistant,
+                    content: vec![ContentBlock::ToolUse {
+                        id: "tool-2".to_string(),
+                        name: "read_file".to_string(),
+                        input: json!({}),
+                    }],
+                    compacted: false,
+                },
+                ChatMessage {
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::ToolResult {
+                        tool_use_id: "tool-2".to_string(),
+                        content: "content".to_string(),
+                        is_error: Some(false),
+                    }],
+                    compacted: false,
+                },
+                ChatMessage {
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::Text { text: "Keep this".to_string() }],
+                    compacted: false,
+                },
+            ],
+            system_prompt: "system".to_string(),
+            force_text: false,
+            thread_state: ThreadState::Completed,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            mutations_since_last_plan_done: 0,
+            mutation_challenges_issued: 0,
+            consecutive_length_truncations: 0,
+            partial_code_buffer: None,
+            consecutive_plan_guard_nudges: 0,
+            cancellation_token: None,
+        };
+
+        // Truncate to a target token size of 5 tokens, which will force logical marking of older messages.
+        hard_truncate_context(&mut reason_ctx_hard, 5);
+
+        // Check that tool-2 ToolResult is not orphaned (either compacted or removed)
+        for msg in &reason_ctx_hard.messages {
+            if !msg.compacted {
+                for block in &msg.content {
+                    if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                        assert_ne!(tool_use_id, "tool-2", "Should not have active tool-2 ToolResult");
+                    }
+                }
+            }
+        }
     }
 }
