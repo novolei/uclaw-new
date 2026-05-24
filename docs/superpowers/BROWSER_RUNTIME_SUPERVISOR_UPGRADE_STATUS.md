@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 8J provider default policy gate
+> Current phase: Phase 9A recipe candidate contract
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -27,8 +27,8 @@
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A-5F merged to `main` / `origin/main`; exit gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff` / `codex/browser-runtime-phase5f-action-state-diff` | Closed for feature-flagged Playwright CLI thin lane. Provider promotion and parity routing remain Phase 8. |
 | Phase 6 | Browser identity authorization and profile UX | Phase 6A-6F merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6f-identity-boundary-actions` / `codex/browser-runtime-phase6f-identity-boundary-actions` | Closed for safe identity revoke/drain/active-task/resume boundary contracts; auth WebView and payment confirmation remain future work. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7G merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7g-mcp-selection-policy` / `codex/browser-runtime-phase7g-mcp-selection-policy` | Closed for MCP sidecar, stdio action boundary, artifact/error routing, and MCP-vs-CLI selection guardrail. |
-| Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8I merged; Phase 8J provider default policy gate PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8j-provider-default-policy` / `codex/browser-runtime-phase8j-provider-default-policy` | Review and merge PR #484 if reviewer accepts, GitHub reports CLEAN, and no HIGH/CRITICAL risk appears. |
-| Phase 9 | Recipes, locator cache, and domain-skill candidates | Not started | Unassigned | TBD | Wait for observable provider behavior and harness scorecards. |
+| Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8J merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8j-provider-default-policy` / `codex/browser-runtime-phase8j-provider-default-policy` | Closed for provider route evidence and reversible default policy; Phase 9 recipe work starts from merge commit `cab8f161`. |
+| Phase 9 | Recipes, locator cache, and domain-skill candidates | Phase 9A recipe candidate contract PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9a-recipe-contract` / `codex/browser-runtime-phase9a-recipe-contract` | Review and merge PR #486 if reviewer accepts, GitHub reports CLEAN, and no HIGH/CRITICAL risk appears. |
 | Phase 10 | Optional hosted providers and hard-site escape hatches | Not started | Unassigned | TBD | Wait for local-first provider routing and policy prompts. |
 
 ---
@@ -137,6 +137,9 @@
 | 2026-05-24 | Open Phase 8I provider parity matrix harness PR. | PR #483 contains the model-free provider parity matrix module, shared navigate/click forced-route cases, fallback artifact-visibility evidence, attachable harness artifact output, focused harness/provider/runtime regressions, and GitNexus staged detect LOW with 0 affected processes. | Fresh reviewer should audit the harness evidence and no-promotion boundary before merge; if accepted and GitHub reports CLEAN, merge and continue to the next Phase 8 slice. |
 | 2026-05-24 | Merge Phase 8I and start Phase 8J as provider default policy gate. | PR #483 merged as `5a664789`; fresh reviewer Schrodinger returned `REVIEW ACCEPTED` and GitHub reported CLEAN before merge. | Phase 8J owns only a pure, reversible default-provider decision contract. It must not mutate settings, promote CLI/MCP/hosted providers, change route ranking, add UI/IPC/DB, or execute providers. |
 | 2026-05-24 | Open Phase 8J provider default policy gate PR. | PR #484 contains the pure default-provider policy contract, reversible promotion/fallback decisions, rollback provider metadata, focused provider/runtime regressions, and GitNexus staged detect LOW with 0 affected processes. | Fresh reviewer should audit the no-promotion boundary and fallback policy gates before merge; if accepted and GitHub reports CLEAN, merge and continue to the next ADR phase. |
+| 2026-05-24 | Merge Phase 8J and start Phase 9A as recipe candidate contract. | PR #484 merged as `cab8f161`; fresh reviewer Faraday returned `REVIEW ACCEPTED` after two fallback/promotion blocker fixes. | Phase 9A starts with a pure recipe candidate/redaction/fingerprint/provider-version contract. It must not replay recipes, write domain skills, persist locator caches, add UI/IPC/DB, or mutate production behavior. |
+| 2026-05-24 | Open Phase 9A recipe candidate contract PR. | PR #486 contains the pure recipe candidate contract, redaction rejection, promotion-readiness and rollback metadata, fingerprint/provider-version replay gates, focused browser regressions, and GitNexus staged detect LOW with 0 affected processes. | Fresh reviewer should audit the pure-contract boundary before merge; if accepted and GitHub reports CLEAN, merge and continue to the next Phase 9 slice. |
+| 2026-05-24 | Rebase Phase 9A after unrelated NexusMemory main advance. | PR #485 merged `prep/nexus-memory` as `e5a98220` while Phase 9A was in flight. | Phase 9A branch rebased cleanly onto `e5a98220` so PR #486 stays based on current `origin/main`; Browser Runtime scope remains unchanged. |
 
 ---
 
@@ -145,9 +148,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8j-provider-default-policy` |
-| Current phase branch | `codex/browser-runtime-phase8j-provider-default-policy` |
-| Current local base | `5a664789 Merge pull request #483 from novolei/codex/browser-runtime-phase8i-provider-parity-matrix` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9a-recipe-contract` |
+| Current phase branch | `codex/browser-runtime-phase9a-recipe-contract` |
+| Current local base | `e5a98220 Merge pull request #485 from novolei/prep/nexus-memory` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -221,8 +224,9 @@
 | Phase 8G CLI/MCP provider candidate route-input implementation commit | Merged through PR #481 as `a52482a4 feat(browser): add provider route candidate inputs`; merge commit `e527ec45`. |
 | Phase 8H CLI selected-route execution implementation commit | Merged through PR #482 as `c2f5f388 feat(browser): execute selected cli provider routes`; merge commit `49c274de`. |
 | Phase 8I provider parity matrix harness implementation commit | Merged through PR #483 as `fd7dc776 feat(browser): add provider parity matrix harness`; merge commit `5a664789`. |
-| Phase 8J provider default policy gate implementation commit | Open in PR #484 from `codex/browser-runtime-phase8j-provider-default-policy` as current branch `HEAD` with subject `feat(browser): add provider default policy gate`. |
-| Known pre-existing tracked changes | None in the Phase 8J provider default policy gate worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes; this phase starts from `origin/main` after PR #483 was merged. |
+| Phase 8J provider default policy gate implementation commit | Merged through PR #484 as `d7673862 feat(browser): add provider default policy gate`; merge commit `cab8f161`. |
+| Phase 9A recipe candidate contract implementation commit | Open in PR #486 from `codex/browser-runtime-phase9a-recipe-contract` as current branch `HEAD` with subject `feat(browser): add recipe candidate contract`. |
+| Known pre-existing tracked changes | None in the Phase 9A recipe candidate contract worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes; this phase originally started from `origin/main` after PR #484 was merged and was cleanly rebased onto `e5a98220` after unrelated PR #485 advanced `main`. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -6514,7 +6518,129 @@ Phase 8J can start because:
 
 ### Phase 8J Provider Default Policy Gate Next Action
 
-- Request a fresh reviewer for PR #484, check GitHub mergeability, and merge
+- Closed. PR #484 merged as `cab8f161`; continue with Phase 9A from
+  `origin/main` to add a pure recipe candidate contract before any replay,
+  persistence, UI, IPC, or production promotion.
+
+## Phase 9A Recipe Candidate Contract Entry Criteria
+
+Phase 9A can start because:
+
+- PR #484 merged Phase 8J provider default policy to `main` / `origin/main`;
+- ADR Phase 9 requires recipes, locator cache, and domain-skill candidates only
+  after provider behavior is observable;
+- provider route evidence, parity harnesses, and reversible default policy now
+  exist, but there is no recipe candidate contract for redaction, fingerprints,
+  provider-version invalidation, promotion state, or rollback;
+- this slice can add a pure contract without replaying recipes, writing domain
+  skills, persisting locator caches, adding UI/IPC/DB, or mutating production
+  behavior;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9a-recipe-contract`;
+- the branch originally started from `cab8f161` after PR #484 and was cleanly
+  rebased onto `e5a98220`, the current `origin/main`, after unrelated PR #485
+  landed while Phase 9A was in flight.
+
+## Phase 9A Recipe Candidate Contract Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase9a-recipe-contract.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9a-recipe-contract`
+- Branch:
+  `codex/browser-runtime-phase9a-recipe-contract`
+- Scope:
+  add pure recipe/domain-skill candidate DTOs, candidate validation, redaction
+  rejection, promotion-readiness metadata, rollback metadata, replay decision
+  gates for fingerprint/provider-version mismatch, and tests.
+- Current PR:
+  PR #486 (`https://github.com/novolei/uclaw-new/pull/486`).
+- Current commit:
+  current branch `HEAD` with subject `feat(browser): add recipe candidate
+  contract`.
+- Non-goal:
+  no recipe replay execution, locator cache persistence, production promotion,
+  domain-skill file writes, UI, IPC, Settings, DB migration, provider route
+  change, hosted provider integration, `agentic_loop.rs`, or `tauri_commands.rs`
+  changes.
+- Rollback:
+  revert this PR; Phase 8 provider routing/default policy remains unchanged.
+
+### Phase 9A Recipe Candidate Contract Impact Notes
+
+- GitNexus index was refreshed for the Phase 9A worktree before edits;
+  generated AGENTS/CLAUDE statistics changes were restored as noise.
+- GitNexus did not resolve `browser/mod.rs` as a symbol target and returned
+  UNKNOWN. The edit is intentionally kept to one additive module export.
+- New recipe contract code is isolated in `src-tauri/src/browser/recipes.rs`
+  and is not consumed by live task routing, provider selection, UI, IPC, DB, or
+  persistence.
+- Fresh reviewer Averroes blocked the first PR revision because replay could
+  allow a promoted-but-invalid candidate, ignored request/candidate recipe-id
+  mismatch, and allowed promotion readiness with replay failures. The contract
+  now fails closed for invalid replay candidates, adds a recipe-id mismatch
+  status, and requires zero replay failures for promotion evidence.
+- Fresh reviewer Lagrange blocked the second PR revision because empty rollback
+  metadata and blank semantic locators could still pass the replay contract.
+  The contract now trims semantic locator fields and rollback ids before
+  treating them as stable/present.
+
+### Phase 9A Recipe Candidate Contract Verification Notes
+
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::recipes`
+  passed: 6 passed, 0 failed, 2740 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_defaults`
+  passed: 6 passed, 0 failed, 2740 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  passed: 16 passed, 0 failed, 2730 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  passed: 59 passed, 0 failed, 2687 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  passed: 42 passed, 0 failed, 2704 filtered out.
+- `rustfmt --edition 2021 --check src-tauri/src/browser/recipes.rs`
+  passed.
+- `rustfmt --edition 2021 --check --config skip_children=true
+  src-tauri/src/browser/mod.rs` still reports pre-existing legacy formatting
+  drift in the module root; this phase intentionally does not reformat the
+  legacy file beyond the one additive `pub mod recipes;` export.
+- `git diff --check -- src-tauri/src/browser/recipes.rs
+  src-tauri/src/browser/mod.rs
+  docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md
+  docs/superpowers/plans/2026-05-24-browser-runtime-phase9a-recipe-contract.md`
+  passed.
+- GitNexus staged detect reported `risk_level: low`, `changed_files: 4`,
+  `changed_count: 15`, `affected_count: 0`, and `affected_processes: []`.
+- After clean rebase onto `e5a98220`, reran
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::recipes`:
+  6 passed, 0 failed, 2753 filtered out.
+- After clean rebase onto `e5a98220`, reran
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`:
+  59 passed, 0 failed, 2700 filtered out.
+- After reviewer fixes, reran
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::recipes`:
+  9 passed, 0 failed, 2753 filtered out.
+- After reviewer fixes, reran
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`:
+  16 passed, 0 failed, 2746 filtered out.
+- After reviewer fixes, reran
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`:
+  42 passed, 0 failed, 2720 filtered out.
+- After second reviewer fixes, reran
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::recipes`:
+  11 passed, 0 failed, 2753 filtered out.
+- After second reviewer fixes, reran
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`:
+  16 passed, 0 failed, 2748 filtered out.
+- After second reviewer fixes, reran
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`:
+  59 passed, 0 failed, 2705 filtered out.
+- After second reviewer fixes, reran
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`:
+  42 passed, 0 failed, 2722 filtered out.
+
+### Phase 9A Recipe Candidate Contract Next Action
+
+- Request a fresh reviewer for PR #486, check GitHub mergeability, and merge
   only if reviewer accepts, GitHub reports CLEAN, tests stay green, and no
   HIGH/CRITICAL risk appears.
 
