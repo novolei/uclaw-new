@@ -29,6 +29,19 @@ pub fn clamp_max_steps(max_steps: Option<u32>) -> u32 {
     max_steps.unwrap_or(8).clamp(1, 25)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserTaskRuntimePreparationDecision {
+    Ready,
+    Defer,
+}
+
+impl Default for BrowserTaskRuntimePreparationDecision {
+    fn default() -> Self {
+        Self::Ready
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserTaskRequest {
@@ -41,6 +54,8 @@ pub struct BrowserTaskRequest {
     pub resume_run_id: Option<String>,
     pub auth_profile_id: Option<String>,
     pub auth_origin: Option<String>,
+    #[serde(default)]
+    pub runtime_preparation_decision: BrowserTaskRuntimePreparationDecision,
 }
 
 pub struct BrowserAgentLoop {
@@ -65,7 +80,9 @@ impl BrowserAgentLoop {
             action_registry,
             task_store: None,
             ask_user_bridge: None,
-            auth_profile_broker: BrowserAuthProfileBroker::system_default().ok().map(Arc::new),
+            auth_profile_broker: BrowserAuthProfileBroker::system_default()
+                .ok()
+                .map(Arc::new),
             long_term_memory: None,
         }
     }
@@ -75,7 +92,10 @@ impl BrowserAgentLoop {
         self
     }
 
-    pub fn with_ask_user_bridge(mut self, ask_user_bridge: Option<Arc<BrowserAskUserBridge>>) -> Self {
+    pub fn with_ask_user_bridge(
+        mut self,
+        ask_user_bridge: Option<Arc<BrowserAskUserBridge>>,
+    ) -> Self {
         self.ask_user_bridge = ask_user_bridge;
         self
     }
@@ -107,12 +127,39 @@ impl BrowserAgentLoop {
                 status: BrowserTaskStatus::Running,
                 steps: Vec::new(),
             });
+        if should_pause_for_runtime_preparation(&request) {
+            let step_index = run
+                .steps
+                .last()
+                .map(|step| step.step_index + 1)
+                .unwrap_or(0);
+            run.status = BrowserTaskStatus::PausedWaitingForBrowserRuntime;
+            self.push_step(
+                &mut run,
+                runtime_preparation_pause_step(step_index, &request),
+            );
+            self.emit_run(&run);
+            self.persist_checkpoint(
+                &run,
+                step_index,
+                None,
+                None,
+                "browser runtime preparation deferred",
+            );
+            self.record_final_state(&run).await;
+            return Ok(run);
+        }
         run.status = BrowserTaskStatus::Running;
         self.emit_run(&run);
 
-        let mut step_index = run.steps.last().map(|step| step.step_index + 1).unwrap_or(0);
+        let mut step_index = run
+            .steps
+            .last()
+            .map(|step| step.step_index + 1)
+            .unwrap_or(0);
         let auth_profile = self.resolve_auth_profile(&request)?;
-        let auth_profile_requested = request.auth_profile_id.is_some() || request.auth_origin.is_some();
+        let auth_profile_requested =
+            request.auth_profile_id.is_some() || request.auth_origin.is_some();
         let identity_profile_id = auth_profile
             .as_ref()
             .map(|(profile, _)| profile.id.as_str());
@@ -146,7 +193,8 @@ impl BrowserAgentLoop {
         {
             tab_id
         } else if let Some(start_url) = request.start_url.as_deref() {
-            ctx.navigate("new", start_url, self.ctx_mgr.app_handle()).await?
+            ctx.navigate("new", start_url, self.ctx_mgr.app_handle())
+                .await?
         } else {
             ctx.active_or_first_tab_id()
                 .await
@@ -158,23 +206,31 @@ impl BrowserAgentLoop {
             if let Some((profile, state)) = auth_profile.as_ref() {
                 ctx.apply_storage_state(&active_tab_id, state, self.ctx_mgr.app_handle())
                     .await?;
-                self.push_step(&mut run, BrowserTaskStep {
-                    step_index,
-                    phase: BrowserTaskStepPhase::Act,
-                    observation_summary: String::new(),
-                    reasoning: "Applied authorized browser auth profile before task startup.".to_string(),
-                    action_name: "browser_auth_profile_apply".to_string(),
-                    action_args: serde_json::json!({
-                        "profileId": profile.id.clone(),
-                        "label": profile.label.clone(),
-                        "originPattern": profile.origin_pattern.clone(),
-                    }),
-                    ok: true,
-                    message: Some(format!("Applied auth profile '{}' for browser task.", profile.label)),
-                    error: None,
-                    timestamp_ms: chrono::Utc::now().timestamp_millis(),
-                });
-                self.record_auth_profile_applied(&run, profile, &active_tab_id).await;
+                self.push_step(
+                    &mut run,
+                    BrowserTaskStep {
+                        step_index,
+                        phase: BrowserTaskStepPhase::Act,
+                        observation_summary: String::new(),
+                        reasoning: "Applied authorized browser auth profile before task startup."
+                            .to_string(),
+                        action_name: "browser_auth_profile_apply".to_string(),
+                        action_args: serde_json::json!({
+                            "profileId": profile.id.clone(),
+                            "label": profile.label.clone(),
+                            "originPattern": profile.origin_pattern.clone(),
+                        }),
+                        ok: true,
+                        message: Some(format!(
+                            "Applied auth profile '{}' for browser task.",
+                            profile.label
+                        )),
+                        error: None,
+                        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                    },
+                );
+                self.record_auth_profile_applied(&run, profile, &active_tab_id)
+                    .await;
                 step_index += 1;
                 if let Some(start_url) = request.start_url.as_deref() {
                     active_tab_id = ctx
@@ -188,70 +244,75 @@ impl BrowserAgentLoop {
         let mut acknowledged_boundaries: HashSet<String> = HashSet::new();
 
         'segments: loop {
-        for _ in 0..segment_steps {
-            let mut observation = match ctx.observe_with_visual(&active_tab_id, false, true).await {
-                Ok(observation) => observation,
-                Err(error) => {
-                    let err = error.to_string();
-                    match self
-                        .recover_after_error(
-                            &mut run,
-                            &mut active_tab_id,
-                            step_index,
-                            &err,
-                            &None,
-                            identity_profile_id,
-                        )
-                        .await?
-                    {
-                        RecoveryOutcome::Continue(next_step_index) => {
-                            step_index = next_step_index;
-                            continue;
+            for _ in 0..segment_steps {
+                let mut observation =
+                    match ctx.observe_with_visual(&active_tab_id, false, true).await {
+                        Ok(observation) => observation,
+                        Err(error) => {
+                            let err = error.to_string();
+                            match self
+                                .recover_after_error(
+                                    &mut run,
+                                    &mut active_tab_id,
+                                    step_index,
+                                    &err,
+                                    &None,
+                                    identity_profile_id,
+                                )
+                                .await?
+                            {
+                                RecoveryOutcome::Continue(next_step_index) => {
+                                    step_index = next_step_index;
+                                    continue;
+                                }
+                                RecoveryOutcome::Stop => {
+                                    run.status = BrowserTaskStatus::Failed;
+                                    self.emit_run(&run);
+                                    self.persist_checkpoint(
+                                        &run,
+                                        step_index,
+                                        Some(&active_tab_id),
+                                        latest_memory.as_ref(),
+                                        "observation failed",
+                                    );
+                                    self.record_final_state(&run).await;
+                                    return Ok(run);
+                                }
+                            }
                         }
-                        RecoveryOutcome::Stop => {
-                            run.status = BrowserTaskStatus::Failed;
-                            self.emit_run(&run);
-                            self.persist_checkpoint(
-                                &run,
-                                step_index,
-                                Some(&active_tab_id),
-                                latest_memory.as_ref(),
-                                "observation failed",
-                            );
-                            self.record_final_state(&run).await;
-                            return Ok(run);
-                        }
-                    }
-                }
-            };
-            observation.screenshot_b64 = None;
-            let mut observation_json = serde_json::to_value(&observation)?;
-            strip_raw_screenshot(&mut observation_json);
-            let memory = self.update_memory(&request, &observation_json);
-            latest_memory = memory.clone().or(latest_memory);
-            self.record_visual_observation(&run, &observation_json).await;
-            self.push_step(&mut run, BrowserTaskStep {
-                step_index,
-                phase: BrowserTaskStepPhase::Observe,
-                observation_summary: summarize_observation(&observation),
-                reasoning: "Captured current browser state for planning.".to_string(),
-                action_name: "observe".to_string(),
-                action_args: serde_json::json!({
-                    "tabId": active_tab_id,
-                    "includeScreenshot": false
-                }),
-                ok: true,
-                message: Some("Observed current browser state.".to_string()),
-                error: None,
-                timestamp_ms: chrono::Utc::now().timestamp_millis(),
-            });
-            step_index += 1;
+                    };
+                observation.screenshot_b64 = None;
+                let mut observation_json = serde_json::to_value(&observation)?;
+                strip_raw_screenshot(&mut observation_json);
+                let memory = self.update_memory(&request, &observation_json);
+                latest_memory = memory.clone().or(latest_memory);
+                self.record_visual_observation(&run, &observation_json)
+                    .await;
+                self.push_step(
+                    &mut run,
+                    BrowserTaskStep {
+                        step_index,
+                        phase: BrowserTaskStepPhase::Observe,
+                        observation_summary: summarize_observation(&observation),
+                        reasoning: "Captured current browser state for planning.".to_string(),
+                        action_name: "observe".to_string(),
+                        action_args: serde_json::json!({
+                            "tabId": active_tab_id,
+                            "includeScreenshot": false
+                        }),
+                        ok: true,
+                        message: Some("Observed current browser state.".to_string()),
+                        error: None,
+                        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                    },
+                );
+                step_index += 1;
 
-            if let Some(boundary) = detect_intervention_boundary(&observation_json) {
-                let boundary_fingerprint = boundary_fingerprint(&boundary);
-                if acknowledged_boundaries.contains(&boundary_fingerprint) {
-                    run.status = BrowserTaskStatus::NeedsUserIntervention;
-                    self.push_step(&mut run, BrowserTaskStep {
+                if let Some(boundary) = detect_intervention_boundary(&observation_json) {
+                    let boundary_fingerprint = boundary_fingerprint(&boundary);
+                    if acknowledged_boundaries.contains(&boundary_fingerprint) {
+                        run.status = BrowserTaskStatus::NeedsUserIntervention;
+                        self.push_step(&mut run, BrowserTaskStep {
                         step_index,
                         phase: BrowserTaskStepPhase::UserIntervention,
                         observation_summary: summarize_observation(&observation),
@@ -265,150 +326,54 @@ impl BrowserAgentLoop {
                         ),
                         timestamp_ms: chrono::Utc::now().timestamp_millis(),
                     });
+                        self.emit_run(&run);
+                        self.persist_checkpoint(
+                            &run,
+                            step_index,
+                            Some(&active_tab_id),
+                            latest_memory.as_ref(),
+                            "human boundary still present after continue",
+                        );
+                        self.record_final_state(&run).await;
+                        return Ok(run);
+                    }
+                    let reason = boundary.reason.clone();
+                    run.status = BrowserTaskStatus::NeedsUserIntervention;
+                    self.record_boundary(&run, &boundary).await;
+                    self.push_step(
+                        &mut run,
+                        BrowserTaskStep {
+                            step_index,
+                            phase: BrowserTaskStepPhase::UserIntervention,
+                            observation_summary: summarize_observation(&observation),
+                            reasoning: boundary.reason.clone(),
+                            action_name: "needs_user_intervention".to_string(),
+                            action_args: serde_json::to_value(&boundary)?,
+                            ok: false,
+                            message: Some(reason.clone()),
+                            error: None,
+                            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                        },
+                    );
                     self.emit_run(&run);
                     self.persist_checkpoint(
                         &run,
                         step_index,
                         Some(&active_tab_id),
                         latest_memory.as_ref(),
-                        "human boundary still present after continue",
+                        "human boundary",
                     );
-                    self.record_final_state(&run).await;
-                    return Ok(run);
-                }
-                let reason = boundary.reason.clone();
-                run.status = BrowserTaskStatus::NeedsUserIntervention;
-                self.record_boundary(&run, &boundary).await;
-                self.push_step(&mut run, BrowserTaskStep {
-                    step_index,
-                    phase: BrowserTaskStepPhase::UserIntervention,
-                    observation_summary: summarize_observation(&observation),
-                    reasoning: boundary.reason.clone(),
-                    action_name: "needs_user_intervention".to_string(),
-                    action_args: serde_json::to_value(&boundary)?,
-                    ok: false,
-                    message: Some(reason.clone()),
-                    error: None,
-                    timestamp_ms: chrono::Utc::now().timestamp_millis(),
-                });
-                self.emit_run(&run);
-                self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref(), "human boundary");
-                if let Some(decision) = self.ask_for_intervention(&run, &reason).await? {
-                    self.push_intervention_answer_step(
-                        &mut run,
-                        step_index + 1,
-                        decision,
-                        "Browser user-intervention prompt was answered.",
-                    );
-                    match decision {
-                        BrowserInterventionDecision::Continue
-                        | BrowserInterventionDecision::ContinueWithSteps(_) => {
-                            acknowledged_boundaries.insert(boundary_fingerprint);
-                            run.status = BrowserTaskStatus::Running;
-                            self.emit_run(&run);
-                            step_index += 2;
-                            continue;
-                        }
-                        BrowserInterventionDecision::Stop => {
-                            run.status = BrowserTaskStatus::Stopped;
-                            self.emit_run(&run);
-                        }
-                    }
-                }
-                return Ok(run);
-            }
-
-            let decision = self
-                .decision_adapter
-                .decide(
-                    &request.task,
-                    &observation_json,
-                    memory.as_ref(),
-                    &request.available_file_paths,
-                    &run.steps,
-                )
-                .await?;
-            self.push_step(&mut run, BrowserTaskStep {
-                step_index,
-                phase: BrowserTaskStepPhase::Decide,
-                observation_summary: summarize_observation(&observation),
-                reasoning: decision.reasoning.clone(),
-                action_name: "decide".to_string(),
-                action_args: serde_json::to_value(&decision.action)?,
-                ok: !matches!(
-                    decision.status,
-                    BrowserDecisionStatus::Failed | BrowserDecisionStatus::NeedsUserIntervention
-                ),
-                message: decision.final_answer.clone(),
-                error: if matches!(
-                    decision.status,
-                    BrowserDecisionStatus::Failed | BrowserDecisionStatus::NeedsUserIntervention
-                ) {
-                    decision.final_answer.clone()
-                } else {
-                    None
-                },
-                timestamp_ms: chrono::Utc::now().timestamp_millis(),
-            });
-            step_index += 1;
-
-            match decision.status {
-                BrowserDecisionStatus::Done => {
-                    run.status = BrowserTaskStatus::Completed;
-                    self.push_step(&mut run, BrowserTaskStep {
-                        step_index,
-                        phase: BrowserTaskStepPhase::Done,
-                        observation_summary: summarize_observation(&observation),
-                        reasoning: "Browser task reported completion.".to_string(),
-                        action_name: "done".to_string(),
-                        action_args: serde_json::json!({ "task": request.task }),
-                        ok: true,
-                        message: decision.final_answer,
-                        error: None,
-                        timestamp_ms: chrono::Utc::now().timestamp_millis(),
-                    });
-                    self.emit_run(&run);
-                    self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref(), "completed");
-                    self.record_final_state(&run).await;
-                    return Ok(run);
-                }
-                BrowserDecisionStatus::Failed => {
-                    run.status = BrowserTaskStatus::Failed;
-                    self.emit_run(&run);
-                    self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref(), "failed");
-                    self.record_final_state(&run).await;
-                    return Ok(run);
-                }
-                BrowserDecisionStatus::NeedsUserIntervention => {
-                    let reason = decision
-                        .final_answer
-                        .clone()
-                        .unwrap_or_else(|| "Browser decision requested user intervention.".to_string());
-                    run.status = BrowserTaskStatus::NeedsUserIntervention;
-                    self.push_step(&mut run, BrowserTaskStep {
-                        step_index,
-                        phase: BrowserTaskStepPhase::UserIntervention,
-                        observation_summary: summarize_observation(&observation),
-                        reasoning: "Browser decision requested user intervention.".to_string(),
-                        action_name: "needs_user_intervention".to_string(),
-                        action_args: serde_json::json!({ "task": request.task }),
-                        ok: false,
-                        message: Some(reason.clone()),
-                        error: None,
-                        timestamp_ms: chrono::Utc::now().timestamp_millis(),
-                    });
-                    self.emit_run(&run);
-                    self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref(), "decision requested intervention");
-                    if let Some(user_decision) = self.ask_for_intervention(&run, &reason).await? {
+                    if let Some(decision) = self.ask_for_intervention(&run, &reason).await? {
                         self.push_intervention_answer_step(
                             &mut run,
                             step_index + 1,
-                            user_decision,
-                            "Browser decision-intervention prompt was answered.",
+                            decision,
+                            "Browser user-intervention prompt was answered.",
                         );
-                        match user_decision {
+                        match decision {
                             BrowserInterventionDecision::Continue
                             | BrowserInterventionDecision::ContinueWithSteps(_) => {
+                                acknowledged_boundaries.insert(boundary_fingerprint);
                                 run.status = BrowserTaskStatus::Running;
                                 self.emit_run(&run);
                                 step_index += 2;
@@ -422,23 +387,155 @@ impl BrowserAgentLoop {
                     }
                     return Ok(run);
                 }
-                BrowserDecisionStatus::Continue => {}
-            }
 
-            let action = decision
-                .action
-                .clone()
-                .ok_or_else(|| anyhow!("browser decision status=continue but action was null"))?;
-            let action_args = serde_json::to_value(&action)?;
-            let action_args_text = serde_json::to_string(&action_args)?;
-            let fingerprint = make_fingerprint(
-                &observation.url,
-                action_name(&action),
-                &action_args_text,
-            );
-            if loop_detector.record(&fingerprint) {
-                run.status = BrowserTaskStatus::Failed;
-                self.push_step(&mut run, BrowserTaskStep {
+                let decision = self
+                    .decision_adapter
+                    .decide(
+                        &request.task,
+                        &observation_json,
+                        memory.as_ref(),
+                        &request.available_file_paths,
+                        &run.steps,
+                    )
+                    .await?;
+                self.push_step(
+                    &mut run,
+                    BrowserTaskStep {
+                        step_index,
+                        phase: BrowserTaskStepPhase::Decide,
+                        observation_summary: summarize_observation(&observation),
+                        reasoning: decision.reasoning.clone(),
+                        action_name: "decide".to_string(),
+                        action_args: serde_json::to_value(&decision.action)?,
+                        ok: !matches!(
+                            decision.status,
+                            BrowserDecisionStatus::Failed
+                                | BrowserDecisionStatus::NeedsUserIntervention
+                        ),
+                        message: decision.final_answer.clone(),
+                        error: if matches!(
+                            decision.status,
+                            BrowserDecisionStatus::Failed
+                                | BrowserDecisionStatus::NeedsUserIntervention
+                        ) {
+                            decision.final_answer.clone()
+                        } else {
+                            None
+                        },
+                        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                    },
+                );
+                step_index += 1;
+
+                match decision.status {
+                    BrowserDecisionStatus::Done => {
+                        run.status = BrowserTaskStatus::Completed;
+                        self.push_step(
+                            &mut run,
+                            BrowserTaskStep {
+                                step_index,
+                                phase: BrowserTaskStepPhase::Done,
+                                observation_summary: summarize_observation(&observation),
+                                reasoning: "Browser task reported completion.".to_string(),
+                                action_name: "done".to_string(),
+                                action_args: serde_json::json!({ "task": request.task }),
+                                ok: true,
+                                message: decision.final_answer,
+                                error: None,
+                                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                            },
+                        );
+                        self.emit_run(&run);
+                        self.persist_checkpoint(
+                            &run,
+                            step_index,
+                            Some(&active_tab_id),
+                            latest_memory.as_ref(),
+                            "completed",
+                        );
+                        self.record_final_state(&run).await;
+                        return Ok(run);
+                    }
+                    BrowserDecisionStatus::Failed => {
+                        run.status = BrowserTaskStatus::Failed;
+                        self.emit_run(&run);
+                        self.persist_checkpoint(
+                            &run,
+                            step_index,
+                            Some(&active_tab_id),
+                            latest_memory.as_ref(),
+                            "failed",
+                        );
+                        self.record_final_state(&run).await;
+                        return Ok(run);
+                    }
+                    BrowserDecisionStatus::NeedsUserIntervention => {
+                        let reason = decision.final_answer.clone().unwrap_or_else(|| {
+                            "Browser decision requested user intervention.".to_string()
+                        });
+                        run.status = BrowserTaskStatus::NeedsUserIntervention;
+                        self.push_step(
+                            &mut run,
+                            BrowserTaskStep {
+                                step_index,
+                                phase: BrowserTaskStepPhase::UserIntervention,
+                                observation_summary: summarize_observation(&observation),
+                                reasoning: "Browser decision requested user intervention."
+                                    .to_string(),
+                                action_name: "needs_user_intervention".to_string(),
+                                action_args: serde_json::json!({ "task": request.task }),
+                                ok: false,
+                                message: Some(reason.clone()),
+                                error: None,
+                                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                            },
+                        );
+                        self.emit_run(&run);
+                        self.persist_checkpoint(
+                            &run,
+                            step_index,
+                            Some(&active_tab_id),
+                            latest_memory.as_ref(),
+                            "decision requested intervention",
+                        );
+                        if let Some(user_decision) =
+                            self.ask_for_intervention(&run, &reason).await?
+                        {
+                            self.push_intervention_answer_step(
+                                &mut run,
+                                step_index + 1,
+                                user_decision,
+                                "Browser decision-intervention prompt was answered.",
+                            );
+                            match user_decision {
+                                BrowserInterventionDecision::Continue
+                                | BrowserInterventionDecision::ContinueWithSteps(_) => {
+                                    run.status = BrowserTaskStatus::Running;
+                                    self.emit_run(&run);
+                                    step_index += 2;
+                                    continue;
+                                }
+                                BrowserInterventionDecision::Stop => {
+                                    run.status = BrowserTaskStatus::Stopped;
+                                    self.emit_run(&run);
+                                }
+                            }
+                        }
+                        return Ok(run);
+                    }
+                    BrowserDecisionStatus::Continue => {}
+                }
+
+                let action = decision.action.clone().ok_or_else(|| {
+                    anyhow!("browser decision status=continue but action was null")
+                })?;
+                let action_args = serde_json::to_value(&action)?;
+                let action_args_text = serde_json::to_string(&action_args)?;
+                let fingerprint =
+                    make_fingerprint(&observation.url, action_name(&action), &action_args_text);
+                if loop_detector.record(&fingerprint) {
+                    run.status = BrowserTaskStatus::Failed;
+                    self.push_step(&mut run, BrowserTaskStep {
                     step_index,
                     phase: BrowserTaskStepPhase::Recover,
                     observation_summary: summarize_observation(&observation),
@@ -451,124 +548,152 @@ impl BrowserAgentLoop {
                     timestamp_ms: chrono::Utc::now().timestamp_millis(),
                 });
                     self.emit_run(&run);
-                    self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref(), "loop detected");
+                    self.persist_checkpoint(
+                        &run,
+                        step_index,
+                        Some(&active_tab_id),
+                        latest_memory.as_ref(),
+                        "loop detected",
+                    );
                     self.record_final_state(&run).await;
                     return Ok(run);
                 }
 
-            match self
-                .action_registry
-                .execute_with_identity(
-                    &request.session_id,
-                    identity_profile_id,
-                    action.clone(),
-                )
-                .await
-            {
-                Ok(result) => {
-                    if let Some(tab_id) = result.tab_id.as_ref() {
-                        active_tab_id = tab_id.clone();
-                    } else if let Some(tab_id) = tab_id_from_action(&action) {
-                        active_tab_id = tab_id;
-                    }
-                    self.push_step(&mut run, BrowserTaskStep {
-                        step_index,
-                        phase: BrowserTaskStepPhase::Act,
-                        observation_summary: String::new(),
-                        reasoning: format!("Executed {}.", result.action_name),
-                        action_name: result.action_name,
-                        action_args,
-                        ok: result.ok,
-                        message: result.message,
-                        error: result.error,
-                        timestamp_ms: chrono::Utc::now().timestamp_millis(),
-                    });
-                    step_index += 1;
-                }
-                Err(error) => {
-                    let err = error.to_string();
-                    self.push_step(&mut run, BrowserTaskStep {
-                        step_index,
-                        phase: BrowserTaskStepPhase::Act,
-                        observation_summary: String::new(),
-                        reasoning: "Browser action failed.".to_string(),
-                        action_name: action_name(&action).to_string(),
-                        action_args: action_args.clone(),
-                        ok: false,
-                        message: None,
-                        error: Some(err.clone()),
-                        timestamp_ms: chrono::Utc::now().timestamp_millis(),
-                    });
-                    step_index += 1;
-
-                    match self
-                        .recover_after_error(
+                match self
+                    .action_registry
+                    .execute_with_identity(&request.session_id, identity_profile_id, action.clone())
+                    .await
+                {
+                    Ok(result) => {
+                        if let Some(tab_id) = result.tab_id.as_ref() {
+                            active_tab_id = tab_id.clone();
+                        } else if let Some(tab_id) = tab_id_from_action(&action) {
+                            active_tab_id = tab_id;
+                        }
+                        self.push_step(
                             &mut run,
-                            &mut active_tab_id,
-                            step_index,
-                            &err,
-                            &Some(action.clone()),
-                            identity_profile_id,
-                        )
-                        .await?
-                    {
-                        RecoveryOutcome::Continue(next_step_index) => {
-                            step_index = next_step_index;
-                            continue;
-                        }
-                        RecoveryOutcome::Stop => {
-                            run.status = BrowserTaskStatus::Failed;
-                            self.emit_run(&run);
-                            self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref(), "recovery stopped");
-                            self.record_final_state(&run).await;
-                            return Ok(run);
+                            BrowserTaskStep {
+                                step_index,
+                                phase: BrowserTaskStepPhase::Act,
+                                observation_summary: String::new(),
+                                reasoning: format!("Executed {}.", result.action_name),
+                                action_name: result.action_name,
+                                action_args,
+                                ok: result.ok,
+                                message: result.message,
+                                error: result.error,
+                                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                            },
+                        );
+                        step_index += 1;
+                    }
+                    Err(error) => {
+                        let err = error.to_string();
+                        self.push_step(
+                            &mut run,
+                            BrowserTaskStep {
+                                step_index,
+                                phase: BrowserTaskStepPhase::Act,
+                                observation_summary: String::new(),
+                                reasoning: "Browser action failed.".to_string(),
+                                action_name: action_name(&action).to_string(),
+                                action_args: action_args.clone(),
+                                ok: false,
+                                message: None,
+                                error: Some(err.clone()),
+                                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                            },
+                        );
+                        step_index += 1;
+
+                        match self
+                            .recover_after_error(
+                                &mut run,
+                                &mut active_tab_id,
+                                step_index,
+                                &err,
+                                &Some(action.clone()),
+                                identity_profile_id,
+                            )
+                            .await?
+                        {
+                            RecoveryOutcome::Continue(next_step_index) => {
+                                step_index = next_step_index;
+                                continue;
+                            }
+                            RecoveryOutcome::Stop => {
+                                run.status = BrowserTaskStatus::Failed;
+                                self.emit_run(&run);
+                                self.persist_checkpoint(
+                                    &run,
+                                    step_index,
+                                    Some(&active_tab_id),
+                                    latest_memory.as_ref(),
+                                    "recovery stopped",
+                                );
+                                self.record_final_state(&run).await;
+                                return Ok(run);
+                            }
                         }
                     }
                 }
             }
-        }
 
-        run.status = BrowserTaskStatus::PausedCheckpointed;
-        self.push_step(&mut run, BrowserTaskStep {
-            step_index,
-            phase: BrowserTaskStepPhase::Done,
-            observation_summary: String::new(),
-            reasoning: format!("Paused at checkpoint after reaching max_steps={segment_steps}."),
-            action_name: "checkpoint_pause".to_string(),
-            action_args: serde_json::json!({ "maxSteps": segment_steps }),
-            ok: false,
-            message: None,
-            error: Some("Browser task reached max_steps and saved a resumable checkpoint.".to_string()),
-            timestamp_ms: chrono::Utc::now().timestamp_millis(),
-        });
-        self.persist_checkpoint(&run, step_index, Some(&active_tab_id), latest_memory.as_ref(), "max steps reached");
-        self.emit_run(&run);
-        if let Some(decision) = self.ask_for_checkpoint(&run).await? {
-            self.push_intervention_answer_step(
+            run.status = BrowserTaskStatus::PausedCheckpointed;
+            self.push_step(
                 &mut run,
-                step_index + 1,
-                decision,
-                "Browser checkpoint prompt was answered.",
+                BrowserTaskStep {
+                    step_index,
+                    phase: BrowserTaskStepPhase::Done,
+                    observation_summary: String::new(),
+                    reasoning: format!(
+                        "Paused at checkpoint after reaching max_steps={segment_steps}."
+                    ),
+                    action_name: "checkpoint_pause".to_string(),
+                    action_args: serde_json::json!({ "maxSteps": segment_steps }),
+                    ok: false,
+                    message: None,
+                    error: Some(
+                        "Browser task reached max_steps and saved a resumable checkpoint."
+                            .to_string(),
+                    ),
+                    timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                },
             );
-            match decision {
-                BrowserInterventionDecision::Continue => {
-                    segment_steps = clamp_max_steps(Some(8));
-                    run.status = BrowserTaskStatus::Running;
-                    self.emit_run(&run);
-                    step_index += 2;
-                    continue 'segments;
+            self.persist_checkpoint(
+                &run,
+                step_index,
+                Some(&active_tab_id),
+                latest_memory.as_ref(),
+                "max steps reached",
+            );
+            self.emit_run(&run);
+            if let Some(decision) = self.ask_for_checkpoint(&run).await? {
+                self.push_intervention_answer_step(
+                    &mut run,
+                    step_index + 1,
+                    decision,
+                    "Browser checkpoint prompt was answered.",
+                );
+                match decision {
+                    BrowserInterventionDecision::Continue => {
+                        segment_steps = clamp_max_steps(Some(8));
+                        run.status = BrowserTaskStatus::Running;
+                        self.emit_run(&run);
+                        step_index += 2;
+                        continue 'segments;
+                    }
+                    BrowserInterventionDecision::ContinueWithSteps(steps) => {
+                        segment_steps = clamp_max_steps(Some(steps));
+                        run.status = BrowserTaskStatus::Running;
+                        self.emit_run(&run);
+                        step_index += 2;
+                        continue 'segments;
+                    }
+                    BrowserInterventionDecision::Stop => {}
                 }
-                BrowserInterventionDecision::ContinueWithSteps(steps) => {
-                    segment_steps = clamp_max_steps(Some(steps));
-                    run.status = BrowserTaskStatus::Running;
-                    self.emit_run(&run);
-                    step_index += 2;
-                    continue 'segments;
-                }
-                BrowserInterventionDecision::Stop => {}
             }
-        }
-        return Ok(run);
+            return Ok(run);
         }
     }
 
@@ -579,22 +704,25 @@ impl BrowserAgentLoop {
         decision: BrowserInterventionDecision,
         reasoning: &str,
     ) {
-        self.push_step(run, BrowserTaskStep {
-            step_index,
-            phase: BrowserTaskStepPhase::UserIntervention,
-            observation_summary: String::new(),
-            reasoning: reasoning.to_string(),
-            action_name: "ask_user_response".to_string(),
-            action_args: serde_json::json!({ "decision": decision.label() }),
-            ok: !matches!(decision, BrowserInterventionDecision::Stop),
-            message: Some(format!("User answered: {}", decision.label())),
-            error: if matches!(decision, BrowserInterventionDecision::Stop) {
-                Some("User chose to stop the browser task.".to_string())
-            } else {
-                None
+        self.push_step(
+            run,
+            BrowserTaskStep {
+                step_index,
+                phase: BrowserTaskStepPhase::UserIntervention,
+                observation_summary: String::new(),
+                reasoning: reasoning.to_string(),
+                action_name: "ask_user_response".to_string(),
+                action_args: serde_json::json!({ "decision": decision.label() }),
+                ok: !matches!(decision, BrowserInterventionDecision::Stop),
+                message: Some(format!("User answered: {}", decision.label())),
+                error: if matches!(decision, BrowserInterventionDecision::Stop) {
+                    Some("User chose to stop the browser task.".to_string())
+                } else {
+                    None
+                },
+                timestamp_ms: chrono::Utc::now().timestamp_millis(),
             },
-            timestamp_ms: chrono::Utc::now().timestamp_millis(),
-        });
+        );
     }
 
     async fn ask_for_intervention(
@@ -607,12 +735,18 @@ impl BrowserAgentLoop {
         };
         Ok(Some(
             bridge
-                .ask(BrowserInterventionPrompt::human_boundary(&run.run_id, reason))
+                .ask(BrowserInterventionPrompt::human_boundary(
+                    &run.run_id,
+                    reason,
+                ))
                 .await?,
         ))
     }
 
-    async fn ask_for_checkpoint(&self, run: &BrowserTaskRun) -> Result<Option<BrowserInterventionDecision>> {
+    async fn ask_for_checkpoint(
+        &self,
+        run: &BrowserTaskRun,
+    ) -> Result<Option<BrowserInterventionDecision>> {
         let Some(bridge) = self.ask_user_bridge.as_ref() else {
             return Ok(None);
         };
@@ -635,47 +769,65 @@ impl BrowserAgentLoop {
         let kind = classify_browser_error(error);
         let (ok, message) = match kind {
             BrowserRecoveryKind::RefreshTabsAndRetry => {
-                let ctx = self.ctx_mgr
+                let ctx = self
+                    .ctx_mgr
                     .get_or_create_with_identity(&run.session_id, identity_profile_id)
                     .await?;
                 if let Some(tab_id) = ctx.active_or_first_tab_id().await {
                     *active_tab_id = tab_id;
-                    (true, "Refreshed active tab id; retrying with a fresh observation.".to_string())
+                    (
+                        true,
+                        "Refreshed active tab id; retrying with a fresh observation.".to_string(),
+                    )
                 } else {
-                    (false, "No live browser tab remains after refresh.".to_string())
+                    (
+                        false,
+                        "No live browser tab remains after refresh.".to_string(),
+                    )
                 }
             }
             BrowserRecoveryKind::RefreshDomAndRetry => {
-                let ctx = self.ctx_mgr
+                let ctx = self
+                    .ctx_mgr
                     .get_or_create_with_identity(&run.session_id, identity_profile_id)
                     .await?;
                 ctx.invalidate_dom_cache(active_tab_id).await;
-                (true, "Invalidated DOM cache; retrying with a fresh observation.".to_string())
+                (
+                    true,
+                    "Invalidated DOM cache; retrying with a fresh observation.".to_string(),
+                )
             }
             BrowserRecoveryKind::WaitAndRetry => {
                 sleep(Duration::from_millis(800)).await;
-                (true, "Waited for page stability; retrying with a fresh observation.".to_string())
+                (
+                    true,
+                    "Waited for page stability; retrying with a fresh observation.".to_string(),
+                )
             }
-            BrowserRecoveryKind::Stop => {
-                (false, "Error is not recoverable by the browser agent.".to_string())
-            }
+            BrowserRecoveryKind::Stop => (
+                false,
+                "Error is not recoverable by the browser agent.".to_string(),
+            ),
         };
 
-        self.push_step(run, BrowserTaskStep {
-            step_index,
-            phase: BrowserTaskStepPhase::Recover,
-            observation_summary: String::new(),
-            reasoning: format!("Recovery classification: {kind:?}."),
-            action_name: "recover".to_string(),
-            action_args: serde_json::json!({
-                "kind": format!("{kind:?}"),
-                "failedAction": failed_action,
-            }),
-            ok,
-            message: Some(message),
-            error: if ok { None } else { Some(error.to_string()) },
-            timestamp_ms: chrono::Utc::now().timestamp_millis(),
-        });
+        self.push_step(
+            run,
+            BrowserTaskStep {
+                step_index,
+                phase: BrowserTaskStepPhase::Recover,
+                observation_summary: String::new(),
+                reasoning: format!("Recovery classification: {kind:?}."),
+                action_name: "recover".to_string(),
+                action_args: serde_json::json!({
+                    "kind": format!("{kind:?}"),
+                    "failedAction": failed_action,
+                }),
+                ok,
+                message: Some(message),
+                error: if ok { None } else { Some(error.to_string()) },
+                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            },
+        );
 
         if ok {
             Ok(RecoveryOutcome::Continue(step_index + 1))
@@ -691,12 +843,15 @@ impl BrowserAgentLoop {
                 tracing::warn!(run_id = %run.run_id, error = %e, "failed to persist browser task step");
             }
         }
-        let _ = self.ctx_mgr.app_handle().emit("browser:task-step", serde_json::json!({
-            "runId": run.run_id,
-            "sessionId": run.session_id,
-            "status": run.status,
-            "step": step,
-        }));
+        let _ = self.ctx_mgr.app_handle().emit(
+            "browser:task-step",
+            serde_json::json!({
+                "runId": run.run_id,
+                "sessionId": run.session_id,
+                "status": run.status,
+                "step": step,
+            }),
+        );
     }
 
     fn emit_run(&self, run: &BrowserTaskRun) {
@@ -735,7 +890,9 @@ impl BrowserAgentLoop {
         tab_id: &str,
     ) {
         if let Some(adapter) = self.long_term_memory.as_ref() {
-            adapter.record_auth_profile_applied(run, profile, tab_id).await;
+            adapter
+                .record_auth_profile_applied(run, profile, tab_id)
+                .await;
         }
     }
 
@@ -745,7 +902,9 @@ impl BrowserAgentLoop {
         observation_json: &serde_json::Value,
     ) {
         if let Some(adapter) = self.long_term_memory.as_ref() {
-            adapter.record_visual_observation(run, observation_json).await;
+            adapter
+                .record_visual_observation(run, observation_json)
+                .await;
         }
     }
 
@@ -802,7 +961,9 @@ impl BrowserAgentLoop {
                 "stepCount": run.steps.len(),
                 "reason": reason,
             });
-            if let Err(e) = store.persist_checkpoint(run, step_index, active_tab_id, memory, loop_state) {
+            if let Err(e) =
+                store.persist_checkpoint(run, step_index, active_tab_id, memory, loop_state)
+            {
                 tracing::warn!(run_id = %run.run_id, error = %e, "failed to persist browser task checkpoint");
             }
         }
@@ -866,6 +1027,40 @@ enum RecoveryOutcome {
     Stop,
 }
 
+fn should_pause_for_runtime_preparation(request: &BrowserTaskRequest) -> bool {
+    matches!(
+        request.runtime_preparation_decision,
+        BrowserTaskRuntimePreparationDecision::Defer
+    )
+}
+
+fn runtime_preparation_pause_step(
+    step_index: u32,
+    request: &BrowserTaskRequest,
+) -> BrowserTaskStep {
+    BrowserTaskStep {
+        step_index,
+        phase: BrowserTaskStepPhase::UserIntervention,
+        observation_summary: String::new(),
+        reasoning: "Browser runtime preparation was deferred before browser automation started."
+            .to_string(),
+        action_name: "browser_runtime_preparation_deferred".to_string(),
+        action_args: serde_json::json!({
+            "decision": "defer",
+            "task": request.task,
+        }),
+        ok: false,
+        message: Some(
+            "Browser runtime preparation was deferred; resume after runtime setup is ready."
+                .to_string(),
+        ),
+        error: Some(
+            "Browser task paused while waiting for Browser runtime preparation.".to_string(),
+        ),
+        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+    }
+}
+
 fn summarize_observation(observation: &BrowserObservation) -> String {
     let mut text = observation.page_text.trim().replace('\n', " ");
     if text.chars().count() > 240 {
@@ -891,7 +1086,7 @@ fn tab_id_from_action(action: &BrowserAction) -> Option<String> {
         | BrowserAction::Evaluate { tab_id, .. }
         | BrowserAction::GetState { tab_id, .. }
         | BrowserAction::SwitchTab { tab_id } => Some(tab_id.clone()),
-        | BrowserAction::UploadFile { tab_id, .. } => Some(tab_id.clone()),
+        BrowserAction::UploadFile { tab_id, .. } => Some(tab_id.clone()),
         BrowserAction::ListTabs | BrowserAction::CloseTab { .. } => None,
     }
 }
@@ -985,5 +1180,63 @@ mod tests {
             normalize_origin_for_lookup("http://localhost:3000/path").as_deref(),
             Some("http://localhost:3000")
         );
+    }
+
+    #[test]
+    fn runtime_preparation_decision_defaults_to_ready() {
+        let request: BrowserTaskRequest = serde_json::from_value(serde_json::json!({
+            "sessionId": "s1",
+            "task": "check a page",
+            "maxSteps": 4,
+            "startUrl": null,
+            "availableFilePaths": [],
+            "resumeRunId": null,
+            "authProfileId": null,
+            "authOrigin": null
+        }))
+        .expect("request should deserialize with default runtime decision");
+
+        assert_eq!(
+            request.runtime_preparation_decision,
+            BrowserTaskRuntimePreparationDecision::Ready
+        );
+        assert!(!should_pause_for_runtime_preparation(&request));
+    }
+
+    #[test]
+    fn deferred_runtime_preparation_requests_pause_checkpoint() {
+        let request = BrowserTaskRequest {
+            session_id: "s1".to_string(),
+            task: "open the dashboard".to_string(),
+            max_steps: Some(8),
+            start_url: Some("https://example.com".to_string()),
+            available_file_paths: Vec::new(),
+            resume_run_id: None,
+            auth_profile_id: None,
+            auth_origin: None,
+            runtime_preparation_decision: BrowserTaskRuntimePreparationDecision::Defer,
+        };
+
+        assert!(should_pause_for_runtime_preparation(&request));
+
+        let step = runtime_preparation_pause_step(3, &request);
+
+        assert_eq!(step.step_index, 3);
+        assert_eq!(step.phase, BrowserTaskStepPhase::UserIntervention);
+        assert_eq!(
+            step.action_name,
+            "browser_runtime_preparation_deferred".to_string()
+        );
+        assert_eq!(step.action_args["decision"], serde_json::json!("defer"));
+        assert_eq!(
+            step.action_args["task"],
+            serde_json::json!("open the dashboard")
+        );
+        assert!(!step.ok);
+        assert!(step
+            .error
+            .as_deref()
+            .expect("pause step should have error copy")
+            .contains("waiting for Browser runtime preparation"));
     }
 }
