@@ -6,6 +6,7 @@ import {
   CircleDashed,
   Loader2,
   ShieldAlert,
+  Settings,
   XCircle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -23,6 +24,7 @@ export interface StartupSplashProps {
   viewModel?: StartupDoctorViewModel
   detailsExpanded?: boolean
   onDetailsExpandedChange?: (expanded: boolean) => void
+  onOpenBrowserRuntimeSettings?: () => void
 }
 
 const phaseTone: Record<StartupDoctorPhase, string> = {
@@ -87,16 +89,27 @@ function startupRecoverySurface(viewModel: StartupDoctorViewModel): StartupRecov
   return null
 }
 
+function hasBrowserRuntimeAttention(checks: StartupDoctorCheck[]): boolean {
+  return checks.some(
+    (check) =>
+      check.id.includes('browser-runtime') &&
+      (check.status === 'failed' || check.status === 'warning'),
+  )
+}
+
 export function StartupSplash({
   viewModel = deriveStartupDoctorViewModel(),
   detailsExpanded,
   onDetailsExpandedChange,
+  onOpenBrowserRuntimeSettings,
 }: StartupSplashProps): React.ReactElement {
   const [internalExpanded, setInternalExpanded] = React.useState(viewModel.detailsRecommended)
   const isControlled = detailsExpanded !== undefined
   const expanded = isControlled ? detailsExpanded : internalExpanded
   const progress = clampStartupProgress(viewModel.progress)
   const recoverySurface = startupRecoverySurface(viewModel)
+  const showBrowserRuntimeSettings =
+    Boolean(onOpenBrowserRuntimeSettings) && hasBrowserRuntimeAttention(viewModel.checks)
 
   const setExpanded = (next: boolean) => {
     if (!isControlled) setInternalExpanded(next)
@@ -177,16 +190,32 @@ export function StartupSplash({
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-foreground">{recoverySurface.title}</p>
                     <p className="mt-1 text-sm leading-6 text-muted-foreground">{recoverySurface.message}</p>
-                    {!expanded ? (
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="sm"
-                        className="mt-3 h-8"
-                        onClick={() => setExpanded(true)}
-                      >
-                        View diagnostics
-                      </Button>
+                    {!expanded || showBrowserRuntimeSettings ? (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {!expanded ? (
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            className="h-8"
+                            onClick={() => setExpanded(true)}
+                          >
+                            View diagnostics
+                          </Button>
+                        ) : null}
+                        {showBrowserRuntimeSettings ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8 gap-2"
+                            onClick={onOpenBrowserRuntimeSettings}
+                          >
+                            <Settings aria-hidden className="h-3.5 w-3.5" />
+                            Browser Runtime Settings
+                          </Button>
+                        ) : null}
+                      </div>
                     ) : null}
                   </div>
                 </div>
