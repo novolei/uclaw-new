@@ -189,6 +189,8 @@ pub struct PlaywrightCliWorkerResultEnvelope {
     pub summary: String,
     pub artifact_refs: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<PlaywrightCliWorkerErrorEnvelope>,
 }
 
@@ -472,11 +474,12 @@ mod tests {
 
     use super::super::runtime_pack::{
         diagnose_runtime_pack, plan_runtime_pack_operation, BrowserRuntimePackAction,
-        BrowserRuntimePackFilesystemProbeReport, BrowserRuntimePackFilesystemSnapshot,
-        BrowserRuntimePackManifest, BrowserRuntimePackManifestLoadOutcome,
-        BrowserRuntimePackManifestLoadStatus, BrowserRuntimePackNetworkState,
-        BrowserRuntimePackOperation, BrowserRuntimePackOperationRequest, BrowserRuntimePackPaths,
-        BrowserRuntimePackPlanTrigger, BrowserRuntimePackProbe, BrowserRuntimePackStatusReport,
+        BrowserRuntimePackEnvVar, BrowserRuntimePackFilesystemProbeReport,
+        BrowserRuntimePackFilesystemSnapshot, BrowserRuntimePackManifest,
+        BrowserRuntimePackManifestLoadOutcome, BrowserRuntimePackManifestLoadStatus,
+        BrowserRuntimePackNetworkState, BrowserRuntimePackOperation,
+        BrowserRuntimePackOperationRequest, BrowserRuntimePackPaths, BrowserRuntimePackPlanTrigger,
+        BrowserRuntimePackProbe, BrowserRuntimePackStatusReport,
     };
     use super::*;
 
@@ -653,7 +656,7 @@ mod tests {
         let envelope = fixture_envelope(temp.path());
         write_executable(
             &envelope.runtime.current_pack_dir.join("node").join("bin").join("node"),
-            "#!/bin/sh\ntest -f \"$1\" || exit 9\nIFS= read -r _request || exit 8\nprintf '%s\\n' '{\"schemaVersion\":1,\"providerId\":\"browser.playwright_cli\",\"requestId\":\"req-worker\",\"status\":\"succeeded\",\"summary\":\"fixture action completed\",\"artifactRefs\":[\"artifact://browser/1\"]}'\n",
+            "#!/bin/sh\ntest -f \"$1\" || exit 9\nsleep 0.1\nprintf '%s\\n' '{\"schemaVersion\":1,\"providerId\":\"browser.playwright_cli\",\"requestId\":\"req-worker\",\"status\":\"succeeded\",\"summary\":\"fixture action completed\",\"artifactRefs\":[\"artifact://browser/1\"]}'\n",
         );
         write_executable(
             &envelope
@@ -752,7 +755,7 @@ mod tests {
                 .join("node")
                 .join("bin")
                 .join("node"),
-            "#!/bin/sh\necho worker failed >&2\nexit 17\n",
+            "#!/bin/sh\nsleep 0.1\necho worker failed >&2\nexit 17\n",
         );
         write_executable(
             &envelope
@@ -792,7 +795,7 @@ mod tests {
                 .join("node")
                 .join("bin")
                 .join("node"),
-            "#!/bin/sh\nIFS= read -r _request || exit 8\nprintf '%s\\n' '{\"schemaVersion\":1,\"providerId\":\"browser.playwright_cli\",\"requestId\":\"wrong-request\",\"status\":\"succeeded\",\"summary\":\"fixture action completed\",\"artifactRefs\":[]}'\n",
+            "#!/bin/sh\nsleep 0.1\nprintf '%s\\n' '{\"schemaVersion\":1,\"providerId\":\"browser.playwright_cli\",\"requestId\":\"wrong-request\",\"status\":\"succeeded\",\"summary\":\"fixture action completed\",\"artifactRefs\":[]}'\n",
         );
         write_executable(
             &envelope
@@ -819,18 +822,86 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worker_script_executes_screenshot_with_fake_playwright_module() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut envelope = fixture_envelope_with_action(
+            temp.path(),
+            PlaywrightCliAction::Screenshot { full_page: true },
+        );
+        let artifact_dir = envelope.runtime.current_pack_dir.join("artifacts");
+        envelope.runtime.env.push(BrowserRuntimePackEnvVar {
+            name: "UCLAW_BROWSER_ARTIFACT_DIR".to_string(),
+            value: artifact_dir.clone(),
+        });
+        prepare_real_worker_fixture(&envelope).expect("worker fixture");
+
+        let result = run_playwright_cli_child_worker(
+            &envelope,
+            PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
+                .with_timeout_ms(2_000),
+        )
+        .await
+        .expect("worker result");
+
+        assert_eq!(result.status, PlaywrightCliWorkerStatus::Succeeded);
+        assert_eq!(result.summary, "captured screenshot (8 bytes)");
+        assert_eq!(result.artifact_refs.len(), 1);
+        assert!(result.artifact_refs[0].starts_with("file://"));
+        assert_eq!(result.output.as_ref().expect("output")["fullPage"], true);
+        assert_eq!(result.output.as_ref().expect("output")["bytes"], 8);
+        assert!(artifact_dir.join("req-worker-screenshot.png").is_file());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worker_script_returns_structured_failure_for_locator_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let envelope = fixture_envelope_with_action(
+            temp.path(),
+            PlaywrightCliAction::Click {
+                target: PlaywrightCliAddress::SemanticLocator {
+                    locator: "text=missing".to_string(),
+                },
+            },
+        );
+        prepare_real_worker_fixture(&envelope).expect("worker fixture");
+
+        let result = run_playwright_cli_child_worker(
+            &envelope,
+            PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
+                .with_timeout_ms(2_000),
+        )
+        .await
+        .expect("worker result");
+
+        assert_eq!(result.status, PlaywrightCliWorkerStatus::Failed);
+        let error = result.error.expect("worker error");
+        assert_eq!(error.code, "action_failed");
+        assert!(!error.retryable);
+        assert!(error.message.contains("missing locator"));
+    }
+
     fn ready_runtime_report() -> BrowserRuntimePackStatusReport {
         runtime_report_from_probe(BrowserRuntimePackProbe::ready())
     }
 
     fn fixture_envelope(root: &Path) -> PlaywrightCliRequestEnvelope {
+        fixture_envelope_with_action(root, PlaywrightCliAction::Screenshot { full_page: false })
+    }
+
+    fn fixture_envelope_with_action(
+        root: &Path,
+        action: PlaywrightCliAction,
+    ) -> PlaywrightCliRequestEnvelope {
         let manifest = BrowserRuntimePackManifest::v1_default();
         let paths = BrowserRuntimePackPaths::from_root(root.join("runtime"), &manifest);
         PlaywrightCliRequestEnvelope {
             schema_version: PLAYWRIGHT_CLI_ENVELOPE_SCHEMA_VERSION,
             provider_id: PLAYWRIGHT_CLI_PROVIDER_ID.to_string(),
             request_id: "req-worker".to_string(),
-            action: PlaywrightCliAction::Screenshot { full_page: false },
+            action,
             timeout_ms: DEFAULT_PLAYWRIGHT_CLI_ACTION_TIMEOUT_MS,
             artifact_policy: "risk_based".to_string(),
             runtime: PlaywrightCliRuntimeEnv {
@@ -840,6 +911,136 @@ mod tests {
                 env: vec![],
             },
         }
+    }
+
+    #[cfg(unix)]
+    fn prepare_real_worker_fixture(envelope: &PlaywrightCliRequestEnvelope) -> std::io::Result<()> {
+        let node_path = envelope
+            .runtime
+            .current_pack_dir
+            .join("node")
+            .join("bin")
+            .join("node");
+        let node_binary = find_node_binary().expect("node binary for fixture");
+        write_executable(
+            &node_path,
+            &format!(
+                "#!/bin/sh\nexec \"{}\" \"$@\"\n",
+                node_binary.display().to_string().replace('"', "\\\"")
+            ),
+        );
+        write_executable(
+            &envelope
+                .runtime
+                .current_pack_dir
+                .join("worker")
+                .join("uclaw-playwright-worker.mjs"),
+            include_str!("../../resources/browser-runtime/worker/uclaw-playwright-worker.mjs"),
+        );
+        write_fake_playwright_module(&envelope.runtime.current_pack_dir)
+    }
+
+    #[cfg(unix)]
+    fn find_node_binary() -> Option<PathBuf> {
+        let output = std::process::Command::new("sh")
+            .arg("-lc")
+            .arg("command -v node")
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let path = String::from_utf8(output.stdout).ok()?.trim().to_string();
+        if path.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(path))
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_fake_playwright_module(pack_dir: &Path) -> std::io::Result<()> {
+        let module_dir = pack_dir.join("node_modules").join("playwright");
+        fs::create_dir_all(&module_dir)?;
+        fs::write(
+            module_dir.join("package.json"),
+            r#"{"name":"playwright","type":"module","main":"index.js"}"#,
+        )?;
+        fs::write(
+            module_dir.join("index.js"),
+            r#"
+function makeLocator(name) {
+  return {
+    async click() {
+      if (name.includes('missing')) throw new Error('missing locator');
+    },
+    async fill(text) {
+      if (!text) throw new Error('empty text');
+    },
+    async textContent() {
+      return `text:${name}`;
+    },
+    async waitFor() {
+      if (name.includes('missing')) throw new Error('missing locator');
+    }
+  };
+}
+
+const page = {
+  _url: 'about:blank',
+  setDefaultTimeout() {},
+  async goto(url) {
+    this._url = url;
+  },
+  url() {
+    return this._url;
+  },
+  locator(selector) {
+    return makeLocator(selector);
+  },
+  getByText(text) {
+    return makeLocator(`text=${text}`);
+  },
+  getByLabel(label) {
+    return makeLocator(`label=${label}`);
+  },
+  getByTestId(testId) {
+    return makeLocator(`testid=${testId}`);
+  },
+  getByRole(role, options) {
+    return makeLocator(`role=${role};name=${options?.name ?? ''}`);
+  },
+  mouse: {
+    async click() {}
+  },
+  keyboard: {
+    async type() {}
+  },
+  async screenshot() {
+    return Buffer.from('fake-png');
+  },
+  async textContent(selector) {
+    return `body:${selector}`;
+  },
+  async waitForTimeout() {}
+};
+
+export const chromium = {
+  async launch() {
+    return {
+      async newContext() {
+        return {
+          async newPage() {
+            return page;
+          }
+        };
+      },
+      async close() {}
+    };
+  }
+};
+"#,
+        )
     }
 
     #[cfg(unix)]
