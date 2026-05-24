@@ -79,27 +79,31 @@ async function runAction(page, request) {
       };
     case 'click': {
       const target = resolveTarget(page, action.target);
-      if (target.kind === 'coordinates') {
-        await page.mouse.click(action.target.x, action.target.y);
-      } else {
-        await target.locator.click({ timeout });
-      }
+      const stateDiff = await observeActionStateDiff(page, async () => {
+        if (target.kind === 'coordinates') {
+          await page.mouse.click(action.target.x, action.target.y);
+        } else {
+          await target.locator.click({ timeout });
+        }
+      });
       return {
         summary: `clicked ${action.target.kind}`,
-        output: { addressingKind: action.target.kind },
+        output: { addressingKind: action.target.kind, stateDiff },
       };
     }
     case 'type': {
       const target = resolveTarget(page, action.target);
-      if (target.kind === 'coordinates') {
-        await page.mouse.click(action.target.x, action.target.y);
-        await page.keyboard.type(action.text);
-      } else {
-        await target.locator.fill(action.text, { timeout });
-      }
+      const stateDiff = await observeActionStateDiff(page, async () => {
+        if (target.kind === 'coordinates') {
+          await page.mouse.click(action.target.x, action.target.y);
+          await page.keyboard.type(action.text);
+        } else {
+          await target.locator.fill(action.text, { timeout });
+        }
+      });
       return {
         summary: `typed ${action.text.length} characters into ${action.target.kind}`,
-        output: { addressingKind: action.target.kind, textLength: action.text.length },
+        output: { addressingKind: action.target.kind, textLength: action.text.length, stateDiff },
       };
     }
     case 'screenshot': {
@@ -124,14 +128,16 @@ async function runAction(page, request) {
     case 'wait': {
       const target = resolveTarget(page, action.target);
       const waitTimeout = action.timeoutMs ?? action.timeout_ms ?? timeout;
-      if (target.kind === 'coordinates') {
-        await page.waitForTimeout?.(waitTimeout);
-      } else {
-        await target.locator.waitFor({ state: 'visible', timeout: waitTimeout });
-      }
+      const stateDiff = await observeActionStateDiff(page, async () => {
+        if (target.kind === 'coordinates') {
+          await page.waitForTimeout?.(waitTimeout);
+        } else {
+          await target.locator.waitFor({ state: 'visible', timeout: waitTimeout });
+        }
+      });
       return {
         summary: `waited for ${action.target.kind}`,
-        output: { addressingKind: action.target.kind, timeoutMs: waitTimeout },
+        output: { addressingKind: action.target.kind, timeoutMs: waitTimeout, stateDiff },
       };
     }
     default:
@@ -174,6 +180,69 @@ function domElementSelector(elementId) {
 
 function cssString(value) {
   return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+async function observeActionStateDiff(page, action) {
+  const before = await captureStateSnapshot(page);
+  await action();
+  const after = await captureStateSnapshot(page);
+  return diffStateSnapshots(before, after);
+}
+
+async function captureStateSnapshot(page) {
+  const url = normalizeNullable(await safeRead(() => page.url?.()));
+  const title = normalizeNullable(await safeRead(() => page.title?.()));
+  const bodyText = normalizeNullable(await safeRead(() => page.textContent?.('body', { timeout: 250 })));
+  const activeElement = normalizeNullable(await safeRead(() => page.evaluate?.(() => {
+    const element = globalThis.document?.activeElement;
+    if (!element) return null;
+    return {
+      tagName: element.tagName ?? null,
+      id: element.id ?? null,
+      name: element.getAttribute?.('name') ?? null,
+      role: element.getAttribute?.('role') ?? null,
+    };
+  })));
+
+  return {
+    url,
+    title,
+    bodyTextHash: bodyText === null ? null : hashString(bodyText),
+    bodyTextLength: bodyText === null ? null : bodyText.length,
+    activeElement,
+  };
+}
+
+function diffStateSnapshots(before, after) {
+  const changedFields = Object.keys(after).filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
+  return {
+    observed: true,
+    before,
+    after,
+    changedFields,
+  };
+}
+
+async function safeRead(reader) {
+  try {
+    const value = reader();
+    return value && typeof value.then === 'function' ? await value : value;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeNullable(value) {
+  return value === undefined ? null : value;
+}
+
+function hashString(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
 async function maybeWriteScreenshotArtifact(requestId, bytes) {

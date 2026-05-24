@@ -1316,6 +1316,7 @@ mod tests {
                 result.output.as_ref().expect("output")["addressingKind"],
                 expected_kind
             );
+            assert_state_diff_observed(&result.output.as_ref().expect("output")["stateDiff"]);
         }
     }
 
@@ -1341,6 +1342,7 @@ mod tests {
             type_result.output.as_ref().expect("type output")["textLength"],
             5
         );
+        assert_state_diff_observed(&type_result.output.as_ref().expect("type output")["stateDiff"]);
 
         let extract_result =
             run_real_worker_fixture(PlaywrightCliAction::Extract { target: None }, 5_000).await;
@@ -1367,6 +1369,7 @@ mod tests {
             wait_result.output.as_ref().expect("wait output")["timeoutMs"],
             33
         );
+        assert_state_diff_observed(&wait_result.output.as_ref().expect("wait output")["stateDiff"]);
     }
 
     fn ready_runtime_report() -> BrowserRuntimePackStatusReport {
@@ -1461,6 +1464,17 @@ mod tests {
         .expect("worker result")
     }
 
+    fn assert_state_diff_observed(diff: &serde_json::Value) {
+        assert_eq!(diff["observed"], true);
+        assert!(diff["before"]["url"].is_string());
+        assert!(diff["after"]["url"].is_string());
+        assert!(diff["before"]["bodyTextHash"].is_string());
+        assert!(diff["after"]["bodyTextHash"].is_string());
+        assert!(diff["before"]["bodyTextLength"].is_number());
+        assert!(diff["after"]["bodyTextLength"].is_number());
+        assert!(diff["changedFields"].is_array());
+    }
+
     #[cfg(unix)]
     fn find_node_binary() -> Option<PathBuf> {
         let output = std::process::Command::new("sh")
@@ -1516,6 +1530,9 @@ const page = {
   url() {
     return this._url;
   },
+  async title() {
+    return 'Fake Page';
+  },
   locator(selector) {
     return makeLocator(selector);
   },
@@ -1542,6 +1559,9 @@ const page = {
   },
   async textContent(selector) {
     return `body:${selector}`;
+  },
+  async evaluate() {
+    return { tagName: 'BODY', id: null, name: null, role: null };
   },
   async waitForTimeout() {}
 };
