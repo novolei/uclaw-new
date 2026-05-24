@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 6D identity active-task drain tracker
+> Current phase: Phase 6E Settings active-task details
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -25,7 +25,7 @@
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4X merged to `main` / `origin/main`; exit audit complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` / `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` | Closed for user-visible Settings, Doctor, prompt, checkpoint, deep-link, read-only IPC, and dry-run action evidence. Real runtime execution/provider work moves to Phase 5+. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A-5F merged to `main` / `origin/main`; exit gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff` / `codex/browser-runtime-phase5f-action-state-diff` | Closed for feature-flagged Playwright CLI thin lane. Provider promotion and parity routing remain Phase 8. |
-| Phase 6 | Browser identity authorization and profile UX | Phase 6A-6C merged; Phase 6D identity drain tracker PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6d-identity-drain-tracker` / `codex/browser-runtime-phase6d-identity-drain-tracker` | Fresh-review PR #464, merge if clean, then continue Phase 6. |
+| Phase 6 | Browser identity authorization and profile UX | Phase 6A-6D merged; Phase 6E Settings active-task details in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6e-settings-active-task-details` / `codex/browser-runtime-phase6e-settings-active-task-details` | Render live identity active-task details in Settings, then open PR. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Not started | Unassigned | TBD | Wait for chromiumoxide, CLI, and MCP lanes. |
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Not started | Unassigned | TBD | Wait for observable provider behavior and harness scorecards. |
@@ -113,6 +113,7 @@
 | 2026-05-24 | Merge Phase 6B and start Phase 6C Settings identity status. | PR #462 merged as `e824ef07`; safe identity list/revoke IPC and frontend bridge types now exist. | Phase 6C may render identity status and user-triggered revoke in Settings, but still excludes connect/import, auth WebView, task drain, TaskEvents, and provider promotion. |
 | 2026-05-24 | Merge Phase 6C and start Phase 6D identity active-task drain tracker. | PR #463 merged as `367a9361`; Settings now shows identity status and user-triggered revoke, but active-task count is still `null`. ADR Phase 6 still requires active task display, bounded revoke drain, and paused checkpoint. | Phase 6D adds the live active-task/drain boundary so revoke is no longer a display-only action for running identity-backed tasks. It must keep new logic in focused modules and avoid any dry-run lane caused by large-file fear. |
 | 2026-05-24 | Open Phase 6D identity active-task drain tracker PR. | PR #464 contains the process-local identity task registry, active-task IPC summaries, bounded revoke drain deadline, safe-boundary checkpointing, thin `tauri_commands.rs` registry wiring, focused regressions, and GitNexus staged detect MEDIUM with no HIGH/CRITICAL. | Fresh reviewer should audit the behavioral runtime wiring before merge; if accepted and GitHub reports CLEAN, merge and continue the next Phase 6 slice. |
+| 2026-05-24 | Merge Phase 6D and start Phase 6E Settings active-task details. | PR #464 merged as `f4f8788f`; fresh reviewer Mendel accepted the reviewer-finding fixes for revoked checkpoint resume and startup auth injection guard. Phase 6D IPC now returns real active task summaries. | Phase 6E consumes those real summaries in Settings so users can see which identity-backed tasks are active/draining before revoke decisions. Authorization WebView, reauthorize, isolated fallback, end-task UI, and payment confirmation remain separate PRs. |
 
 ---
 
@@ -121,9 +122,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6d-identity-drain-tracker` |
-| Current phase branch | `codex/browser-runtime-phase6d-identity-drain-tracker` |
-| Current local base | `367a9361 Merge pull request #463 from novolei/codex/browser-runtime-phase6c-settings-identity-status` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6e-settings-active-task-details` |
+| Current phase branch | `codex/browser-runtime-phase6e-settings-active-task-details` |
+| Current local base | `f4f8788f Merge pull request #464 from novolei/codex/browser-runtime-phase6d-identity-drain-tracker` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -178,9 +179,10 @@
 | Phase 6A identity-revocation implementation commit | Merged through PR #461 as `6214f9fb feat(browser): add identity revocation contract`; merge commit `a5fff49e`. |
 | Phase 6B identity-IPC implementation commit | Merged through PR #462 as `d8089416 feat(browser): expose identity ipc contract`; merge commit `e824ef07`. |
 | Phase 6C Settings identity-status implementation commit | Merged through PR #463 as `374a2200 feat(browser): show identity status in settings`; merge commit `367a9361`. |
-| Phase 6D identity-drain-tracker implementation commit | PR #464 open from `codex/browser-runtime-phase6d-identity-drain-tracker`; implementation commit subject `feat(browser): track identity task drain`. |
-| Known pre-existing tracked changes | None in the Phase 6D identity-drain-tracker worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only. |
+| Phase 6D identity-drain-tracker implementation commit | Merged through PR #464 as `d62505bb feat(browser): track identity task drain`; merge commit `f4f8788f`. |
+| Phase 6E Settings active-task details implementation commit | In progress on `codex/browser-runtime-phase6e-settings-active-task-details`. |
+| Known pre-existing tracked changes | None in the Phase 6E Settings active-task details worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -4759,9 +4761,77 @@ Phase 6D can start because:
 
 ### Phase 6D Identity Active-Task Drain Tracker Next Action
 
-- Spawn a fresh reviewer for PR #464. If reviewer accepts, GitHub reports
-  mergeable, and no checks fail, merge PR #464, sync primary `main`, and start
-  the next Phase 6 slice.
+- Closed. PR #464 merged as `f4f8788f`; continue with Phase 6E from
+  `origin/main`.
+
+## Phase 6E Settings Active-Task Details Entry Criteria
+
+Phase 6E can start because:
+
+- PR #464 merged Phase 6D active identity task summaries and revoke drain
+  checkpointing into `main` / `origin/main`;
+- ADR Phase 6 says Settings must show active tasks, not only authorized/revoked
+  identity counts;
+- Settings already reads `list_browser_identities`, and the frontend bridge now
+  includes `activeTasks` with safe run/session/task/status metadata;
+- this slice consumes real live IPC data and does not create another dry-run
+  permission lane;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6e-settings-active-task-details`;
+- the branch starts from `f4f8788f`, the current `origin/main`.
+
+## Phase 6E Settings Active-Task Details Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase6e-settings-active-task-details.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6e-settings-active-task-details`
+- Branch:
+  `codex/browser-runtime-phase6e-settings-active-task-details`
+- Scope:
+  render identity active-task rows from `BrowserIdentityStatusReport.activeTasks`
+  in Browser Runtime Settings, including task, status, run/session id, and drain
+  deadline when present.
+- Current PR:
+  not opened yet.
+- Non-goal:
+  no authorization WebView, Settings connect/import flow, reauthorize flow,
+  isolated-profile fallback, end-task UI, payment confirmation, backend IPC
+  changes, provider promotion, DB migration, or raw auth material display.
+- Rollback:
+  revert this PR; Settings returns to active-task count-only display while the
+  Phase 6D backend registry/IPC contract remains intact.
+
+### Phase 6E Settings Active-Task Details Impact Notes
+
+- GitNexus impact before edits reported LOW risk for `BrowserRuntimeSettings`:
+  0 direct callers and 0 affected processes.
+- GitNexus impact before edits reported LOW risk for `identityActiveTaskLabel`:
+  one direct caller, the local `BrowserRuntimeSettings` function.
+
+### Phase 6E Settings Active-Task Details Verification Notes
+
+- `cd ui && npm test -- --run src/components/settings/BrowserRuntimeSettings.test.tsx`
+  passed: 1 file, 15 tests.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  passed: 41 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  passed: 53 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  passed: 6 tests, 0 failed.
+- `git diff --check -- docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-phase6e-settings-active-task-details.md ui/src/components/settings/BrowserRuntimeSettings.tsx ui/src/components/settings/BrowserRuntimeSettings.test.tsx`
+  passed.
+- GitNexus staged detect reported `risk_level: none`, `changed_count: 0`,
+  `affected_count: 0`; no HIGH or CRITICAL risk.
+- The first focused UI test attempt needed the ignored `ui/node_modules`
+  symlink in this worktree; Rust regressions used ignored runtime-resource
+  symlinks from the primary worktree. These local verification aids are not
+  staged.
+
+### Phase 6E Settings Active-Task Details Next Action
+
+- Run `git diff --check`, GitNexus staged detect, commit, push, and open the
+  Phase 6E PR.
 
 ---
 

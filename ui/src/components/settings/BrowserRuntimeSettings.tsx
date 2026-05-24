@@ -27,6 +27,7 @@ import {
   getBrowserRuntimeStatus,
   listBrowserIdentities,
   revokeBrowserIdentity,
+  type BrowserIdentityActiveTaskSummary,
   type BrowserIdentityProfileSummary,
   type BrowserIdentityStatusReport,
 } from '@/lib/tauri-bridge'
@@ -267,6 +268,37 @@ export function BrowserRuntimeSettings({
             </div>
           </SettingsCard>
         ) : null}
+
+        {identityStatus?.activeTasks.length ? (
+          <SettingsCard divided={false}>
+            <div className="divide-y divide-border">
+              {identityStatus.activeTasks.map((task) => (
+                <div
+                  key={task.runId}
+                  className="grid gap-3 p-4 md:grid-cols-[minmax(0,1fr)_auto]"
+                >
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-sm font-medium">{task.task}</span>
+                      <Badge variant={task.drainDeadlineMs ? 'secondary' : 'outline'}>
+                        {identityTaskStatusLabel(task.status)}
+                      </Badge>
+                    </div>
+                    <div className="mt-1 truncate text-xs text-muted-foreground">
+                      {task.sessionId} · {task.runId}
+                    </div>
+                  </div>
+                  <div className="text-left text-xs text-muted-foreground md:text-right">
+                    <div>更新 {formatIdentityTimestamp(task.updatedAtMs)}</div>
+                    {task.drainDeadlineMs ? (
+                      <div>撤销 drain 至 {formatIdentityTimestamp(task.drainDeadlineMs)}</div>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </SettingsCard>
+        ) : null}
       </SettingsSection>
 
       <SettingsSection title="操作">
@@ -410,6 +442,27 @@ function identityProfileStatusLabel(profile: BrowserIdentityProfileSummary): str
   if (profile.status === 'live') return '可用'
   if (profile.status === 'stale') return '需刷新'
   return '未知'
+}
+
+function identityTaskStatusLabel(status: BrowserIdentityActiveTaskSummary['status']): string {
+  switch (status) {
+    case 'running':
+      return '运行中'
+    case 'completed':
+      return '已完成'
+    case 'failed':
+      return '失败'
+    case 'stopped':
+      return '已停止'
+    case 'needs_user_intervention':
+      return '等待用户'
+    case 'paused_waiting_for_browser_runtime':
+      return '等待运行时'
+    case 'paused_checkpointed':
+      return '已检查点暂停'
+    default:
+      return status
+  }
 }
 
 function identityProviderLabel(provider: BrowserIdentityProfileSummary['provider']): string {
