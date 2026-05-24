@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 9C locator cache contract
+> Current phase: Phase 9D domain-skill candidate gate
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -28,7 +28,7 @@
 | Phase 6 | Browser identity authorization and profile UX | Phase 6A-6F merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6f-identity-boundary-actions` / `codex/browser-runtime-phase6f-identity-boundary-actions` | Closed for safe identity revoke/drain/active-task/resume boundary contracts; auth WebView and payment confirmation remain future work. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7G merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7g-mcp-selection-policy` / `codex/browser-runtime-phase7g-mcp-selection-policy` | Closed for MCP sidecar, stdio action boundary, artifact/error routing, and MCP-vs-CLI selection guardrail. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8J merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8j-provider-default-policy` / `codex/browser-runtime-phase8j-provider-default-policy` | Closed for provider route evidence and reversible default policy; Phase 9 recipe work starts from merge commit `cab8f161`. |
-| Phase 9 | Recipes, locator cache, and domain-skill candidates | Phase 9A-9B merged to `main` / `origin/main`; Phase 9C PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9c-locator-cache-contract` / `codex/browser-runtime-phase9c-locator-cache-contract` | Review and merge PR #488 if reviewer accepts, GitHub reports CLEAN, and no HIGH/CRITICAL risk appears. |
+| Phase 9 | Recipes, locator cache, and domain-skill candidates | Phase 9A-9C merged to `main` / `origin/main`; Phase 9D PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9d-domain-skill-candidate-gate` / `codex/browser-runtime-phase9d-domain-skill-candidate-gate` | Review and merge PR #489 if reviewer accepts, GitHub reports CLEAN, and no HIGH/CRITICAL risk appears. |
 | Phase 10 | Optional hosted providers and hard-site escape hatches | Not started | Unassigned | TBD | Wait for local-first provider routing and policy prompts. |
 
 ---
@@ -142,6 +142,7 @@
 | 2026-05-24 | Rebase Phase 9A after unrelated NexusMemory main advance. | PR #485 merged `prep/nexus-memory` as `e5a98220` while Phase 9A was in flight. | Phase 9A branch rebased cleanly onto `e5a98220` so PR #486 stays based on current `origin/main`; Browser Runtime scope remains unchanged. |
 | 2026-05-24 | Merge Phase 9A and start Phase 9B as recipe normalization intake. | PR #486 merged as `5228d0ab` after fresh reviewer Mill returned `REVIEW ACCEPTED`; Phase 9A final commit was `fb2276a9 feat(browser): add recipe candidate contract`. | Phase 9B adds only a pure intake builder from action observations to recipe candidates. It must not replay recipes, persist locator caches, write domain skills, add UI/IPC/DB, or change provider behavior. |
 | 2026-05-25 | Merge Phase 9B and start Phase 9C as a locator cache contract. | PR #487 merged as `930530cb` after fresh reviewer Hume returned `REVIEW ACCEPTED`; Phase 9B final commit was `884dfac2 feat(browser): normalize recipe candidates`. | Phase 9C adds only pure locator-cache eligibility and reuse decisions. It must not persist caches, replay actions, write domain skills, add UI/IPC/DB, or change provider behavior. |
+| 2026-05-25 | Merge Phase 9C and start Phase 9D as a domain-skill candidate gate. | PR #488 merged as `d96f432d` after fresh reviewer Zeno returned `REVIEW ACCEPTED`; Phase 9C final commit was `52ada9a7 feat(browser): add recipe locator cache contract`. | Phase 9D adds only a pure eligibility gate for domain-skill candidates. It must not write domain-skill files, replay actions, persist locators, add UI/IPC/DB, or change provider behavior. |
 
 ---
 
@@ -150,9 +151,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9c-locator-cache-contract` |
-| Current phase branch | `codex/browser-runtime-phase9c-locator-cache-contract` |
-| Current local base | `930530cb Merge pull request #487 from novolei/codex/browser-runtime-phase9b-recipe-normalization` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9d-domain-skill-candidate-gate` |
+| Current phase branch | `codex/browser-runtime-phase9d-domain-skill-candidate-gate` |
+| Current local base | `d96f432d Merge pull request #488 from novolei/codex/browser-runtime-phase9c-locator-cache-contract` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -229,8 +230,9 @@
 | Phase 8J provider default policy gate implementation commit | Merged through PR #484 as `d7673862 feat(browser): add provider default policy gate`; merge commit `cab8f161`. |
 | Phase 9A recipe candidate contract implementation commit | Merged through PR #486 as `fb2276a9 feat(browser): add recipe candidate contract`; merge commit `5228d0ab`. |
 | Phase 9B recipe normalization intake implementation commit | Merged through PR #487 as `884dfac2 feat(browser): normalize recipe candidates`; merge commit `930530cb`. |
-| Phase 9C locator cache contract implementation commit | Open in PR #488 from `codex/browser-runtime-phase9c-locator-cache-contract` as current branch `HEAD` with subject `feat(browser): add recipe locator cache contract`. |
-| Known pre-existing tracked changes | None in the Phase 9C locator cache contract worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes. |
+| Phase 9C locator cache contract implementation commit | Merged through PR #488 as `52ada9a7 feat(browser): add recipe locator cache contract`; merge commit `d96f432d`. |
+| Phase 9D domain-skill candidate gate implementation commit | Open in PR #489 from `codex/browser-runtime-phase9d-domain-skill-candidate-gate` as current branch `HEAD` with subject `feat(browser): gate domain skill candidates`. |
+| Known pre-existing tracked changes | None in the Phase 9D domain-skill candidate gate worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -6805,7 +6807,94 @@ Phase 9C can start because:
 
 ### Phase 9C Locator Cache Contract Next Action
 
-- Request a fresh reviewer for PR #488, check GitHub mergeability, and merge
+- Closed. PR #488 merged as `d96f432d`; continue with Phase 9D from
+  `origin/main` to add a pure domain-skill candidate gate before any
+  domain-skill file writes, replay execution, locator persistence, UI, IPC, DB
+  migration, or provider behavior change.
+
+## Phase 9D Domain-Skill Candidate Gate Entry Criteria
+
+Phase 9D can start because:
+
+- PR #488 merged Phase 9C's pure locator cache contract into `main` and
+  `origin/main`;
+- ADR Phase 9 requires domain-skill candidates to be redacted, harness-gated,
+  promotion-gated, and rollback-backed before any production use;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9d-domain-skill-candidate-gate`;
+- the branch starts from `d96f432d`, the current `origin/main`;
+- this slice can add a pure domain-skill candidate gate without writing
+  domain-skill files, replaying actions, persisting locators, adding UI/IPC/DB,
+  or mutating provider behavior.
+
+## Phase 9D Domain-Skill Candidate Gate Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase9d-domain-skill-candidate-gate.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9d-domain-skill-candidate-gate`
+- Branch:
+  `codex/browser-runtime-phase9d-domain-skill-candidate-gate`
+- Scope:
+  add pure domain-skill candidate gate status/report DTOs, a deterministic
+  validator from `BrowserRecipeCandidate`, redaction/evidence/harness/rollback
+  checks, promotion eligibility, and focused tests.
+- Current PR:
+  PR #489 (`https://github.com/novolei/uclaw-new/pull/489`).
+- Current commit:
+  current branch `HEAD` with subject `feat(browser): gate domain skill
+  candidates`.
+- Non-goal:
+  no domain-skill file writes, recipe replay execution, locator cache
+  persistence, production promotion, UI, IPC, Settings, DB migration, provider
+  route change, hosted provider integration, `agentic_loop.rs`, or
+  `tauri_commands.rs` changes.
+- Rollback:
+  revert this PR; Phase 9A/9B/9C recipe contracts remain unchanged.
+
+### Phase 9D Domain-Skill Candidate Gate Impact Notes
+
+- GitNexus index was refreshed for the Phase 9D worktree before edits;
+  generated AGENTS/CLAUDE statistics changes were restored as noise.
+- GitNexus file-level impact for `src-tauri/src/browser/recipes.rs` reported
+  LOW risk with 0 impacted symbols and 0 affected processes before editing the
+  recipe contract module.
+- New domain-skill candidate gate code is isolated in
+  `src-tauri/src/browser/recipes.rs` and is not consumed by live task routing,
+  provider selection, UI, IPC, DB, or persistence.
+- The gate deliberately distinguishes clean-but-not-promoted candidates from
+  rejected candidates so future file generation can remain explicit and
+  rollbackable.
+- Fresh reviewer Bohr blocked PR #489 on whitespace-only domain/evidence
+  fields being treated as present. The fix trims all domain-skill and harness
+  evidence presence checks before promotion eligibility, keeping reports
+  normalized through `unique_non_empty`.
+
+### Phase 9D Domain-Skill Candidate Gate Verification Notes
+
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::recipes`
+  passed before reviewer fix: 27 passed, 0 failed, 2753 filtered out.
+- After the reviewer whitespace-only gate fix,
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::recipes`
+  passed: 28 passed, 0 failed, 2753 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  passed after the reviewer fix: 42 passed, 0 failed, 2739 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  passed after the reviewer fix: 59 passed, 0 failed, 2722 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  passed after the reviewer fix: 16 passed, 0 failed, 2765 filtered out.
+- `rustfmt --edition 2021 --check src-tauri/src/browser/recipes.rs` passed
+  after the reviewer fix.
+- `git diff --check -- src-tauri/src/browser/recipes.rs
+  docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md
+  docs/superpowers/plans/2026-05-24-browser-runtime-phase9d-domain-skill-candidate-gate.md`
+  passed after the reviewer fix.
+- GitNexus staged detect reported `risk_level: low`, `changed_files: 3`,
+  `changed_count: 30`, `affected_count: 0`, and `affected_processes: []`.
+
+### Phase 9D Domain-Skill Candidate Gate Next Action
+
+- Request a fresh reviewer for PR #489, check GitHub mergeability, and merge
   only if reviewer accepts, GitHub reports CLEAN, tests stay green, and no
   HIGH/CRITICAL risk appears.
 
