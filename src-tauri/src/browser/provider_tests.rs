@@ -305,3 +305,160 @@ fn route_decision_blocks_when_no_provider_is_eligible() {
         Some("no_eligible_provider")
     );
 }
+
+#[test]
+fn router_upserts_statuses_and_routes_ready_provider() {
+    let mut router = BrowserProviderRouter::new();
+    router.upsert_status(ready_status(local_chromium_capabilities()));
+    router.upsert_status(ready_status(
+        crate::browser::playwright_cli::playwright_cli_capabilities(),
+    ));
+
+    assert_eq!(router.statuses().len(), 2);
+
+    let decision = router.route(BrowserProviderSelectionRequest {
+        action: Some("click".into()),
+        observation_mode: None,
+        requires_mcp_specific_capability: false,
+    });
+
+    assert_eq!(
+        decision.status,
+        BrowserProviderRouteDecisionStatus::Selected
+    );
+    assert_eq!(
+        decision.selected_provider_id.as_deref(),
+        Some(LOCAL_CHROMIUM_PROVIDER_ID)
+    );
+    assert_eq!(
+        router.last_selected_provider_id(),
+        Some(LOCAL_CHROMIUM_PROVIDER_ID)
+    );
+}
+
+#[test]
+fn router_disable_and_enable_provider_controls_fallback() {
+    let mut router = BrowserProviderRouter::new();
+    router.upsert_status(ready_status(local_chromium_capabilities()));
+    router.upsert_status(ready_status(
+        crate::browser::playwright_cli::playwright_cli_capabilities(),
+    ));
+    router.disable_provider(LOCAL_CHROMIUM_PROVIDER_ID);
+
+    let fallback = router.route(BrowserProviderSelectionRequest {
+        action: Some("click".into()),
+        observation_mode: None,
+        requires_mcp_specific_capability: false,
+    });
+
+    assert_eq!(
+        fallback.selected_provider_id.as_deref(),
+        Some(crate::browser::playwright_cli::PLAYWRIGHT_CLI_PROVIDER_ID)
+    );
+    assert_eq!(
+        router.disabled_provider_ids(),
+        &[LOCAL_CHROMIUM_PROVIDER_ID.to_string()]
+    );
+
+    router.enable_provider(LOCAL_CHROMIUM_PROVIDER_ID);
+    let local = router.route(BrowserProviderSelectionRequest {
+        action: Some("click".into()),
+        observation_mode: None,
+        requires_mcp_specific_capability: false,
+    });
+
+    assert_eq!(
+        local.selected_provider_id.as_deref(),
+        Some(LOCAL_CHROMIUM_PROVIDER_ID)
+    );
+}
+
+#[test]
+fn router_tracks_previous_provider_for_rollback_intentions() {
+    let mut router = BrowserProviderRouter::new();
+    router.upsert_status(ready_status(local_chromium_capabilities()));
+    router.upsert_status(ready_status(
+        crate::browser::playwright_cli::playwright_cli_capabilities(),
+    ));
+    router.set_recovery_provider_id(Some(LOCAL_CHROMIUM_PROVIDER_ID.to_string()));
+    router.disable_provider(LOCAL_CHROMIUM_PROVIDER_ID);
+
+    let decision = router.route(BrowserProviderSelectionRequest {
+        action: Some("click".into()),
+        observation_mode: None,
+        requires_mcp_specific_capability: false,
+    });
+
+    assert_eq!(
+        decision.status,
+        BrowserProviderRouteDecisionStatus::RolledBack
+    );
+    assert_eq!(
+        router.last_selected_provider_id(),
+        Some(crate::browser::playwright_cli::PLAYWRIGHT_CLI_PROVIDER_ID)
+    );
+    assert_eq!(router.recovery_provider_id(), None);
+    assert!(decision.event_intents.iter().any(|event| {
+        event.event_name == BrowserTaskEventName::ProviderRolledBack
+            && event.provider_id.as_deref() == Some(LOCAL_CHROMIUM_PROVIDER_ID)
+    }));
+}
+
+#[test]
+fn router_keeps_capability_driven_provider_change_selected_not_rollback() {
+    let mut router = BrowserProviderRouter::new();
+    router.upsert_status(ready_status(local_chromium_capabilities()));
+    router.upsert_status(ready_status(
+        crate::browser::playwright_mcp::playwright_mcp_capabilities(),
+    ));
+
+    let local = router.route(BrowserProviderSelectionRequest {
+        action: Some("click".into()),
+        observation_mode: None,
+        requires_mcp_specific_capability: false,
+    });
+
+    assert_eq!(
+        local.selected_provider_id.as_deref(),
+        Some(LOCAL_CHROMIUM_PROVIDER_ID)
+    );
+
+    let mcp = router.route(BrowserProviderSelectionRequest {
+        action: Some("click".into()),
+        observation_mode: Some("accessibility_snapshot".into()),
+        requires_mcp_specific_capability: true,
+    });
+
+    assert_eq!(mcp.status, BrowserProviderRouteDecisionStatus::Selected);
+    assert_eq!(
+        mcp.selected_provider_id.as_deref(),
+        Some(crate::browser::playwright_mcp::PLAYWRIGHT_MCP_PROVIDER_ID)
+    );
+    assert!(!mcp
+        .event_intents
+        .iter()
+        .any(|event| event.event_name == BrowserTaskEventName::ProviderRolledBack));
+    assert_eq!(
+        router.last_selected_provider_id(),
+        Some(crate::browser::playwright_mcp::PLAYWRIGHT_MCP_PROVIDER_ID)
+    );
+}
+
+#[test]
+fn router_blocks_when_status_snapshot_is_missing() {
+    let mut router = BrowserProviderRouter::new();
+
+    let decision = router.route(BrowserProviderSelectionRequest {
+        action: Some("navigate".into()),
+        observation_mode: Some("network_console".into()),
+        requires_mcp_specific_capability: true,
+    });
+
+    assert_eq!(decision.status, BrowserProviderRouteDecisionStatus::Blocked);
+    assert_eq!(decision.selected_provider_id, None);
+    assert_eq!(router.last_selected_provider_id(), None);
+    assert_eq!(
+        decision.candidates[0].blocked_reason.as_deref(),
+        Some("provider_status_missing")
+    );
+}
