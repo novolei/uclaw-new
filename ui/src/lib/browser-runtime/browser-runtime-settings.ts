@@ -56,6 +56,7 @@ export interface BrowserRuntimeSettingsViewModel {
   lastCheckedLabel: string
   versionLabel: string
   artifactSizeLabel: string
+  runtimeRootLabel: string
   runtimePackPathLabel: string
   releaseChannelLabel: string
   updateStateLabel: string
@@ -93,7 +94,8 @@ export function deriveBrowserRuntimeSettingsViewModel(
     lastCheckedLabel: formatLastChecked(input.lastCheckedAtMs),
     versionLabel: report?.manifestPackVersion ?? '未检查',
     artifactSizeLabel: formatArtifactSize(input.artifactSizeBytes),
-    runtimePackPathLabel: input.runtimePackPath ?? '等待运行时状态',
+    runtimeRootLabel: report?.runtimeRoot ?? '等待运行时状态',
+    runtimePackPathLabel: report?.currentPackDir ?? input.runtimePackPath ?? '等待运行时状态',
     releaseChannelLabel: input.releaseChannel ?? 'stable',
     updateStateLabel: updateStateLabel(input.updateState ?? 'unknown'),
     rollbackLabel: report?.doctor.rollbackAvailable ? '可用' : '不可用',

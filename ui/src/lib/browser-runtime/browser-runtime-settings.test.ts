@@ -10,6 +10,9 @@ function runtimeReport(
 ): StartupRuntimePackStatusReport {
   const base: StartupRuntimePackStatusReport = {
     manifestPackVersion: '1.48.2-uclaw.1',
+    runtimeRoot: '/Users/ryan/Library/Application Support/uClaw/browser-runtime',
+    currentPackDir:
+      '/Users/ryan/Library/Application Support/uClaw/browser-runtime/packs/browser-runtime-pack-v1',
     ready: true,
     canRunBrowserTasks: true,
     primaryAction: 'keep_current',
@@ -61,6 +64,12 @@ describe('browser runtime settings view model', () => {
     expect(model.statusKind).toBe('ready')
     expect(model.versionLabel).toBe('1.48.2-uclaw.1')
     expect(model.artifactSizeLabel).toBe('512 MiB')
+    expect(model.runtimeRootLabel).toBe(
+      '/Users/ryan/Library/Application Support/uClaw/browser-runtime',
+    )
+    expect(model.runtimePackPathLabel).toBe(
+      '/Users/ryan/Library/Application Support/uClaw/browser-runtime/packs/browser-runtime-pack-v1',
+    )
     expect(model.rollbackLabel).toBe('可用')
     expect(model.actions).toEqual(
       expect.arrayContaining([
@@ -121,9 +130,19 @@ describe('browser runtime settings view model', () => {
 
     expect(model.statusKind).toBe('unknown')
     expect(model.versionLabel).toBe('未检查')
+    expect(model.runtimeRootLabel).toBe('等待运行时状态')
     expect(model.runtimePackPathLabel).toBe('等待运行时状态')
     expect(model.autoPrepareLabel).toBe('等待运行时状态')
     expect(model.actions.every((action) => !action.enabled)).toBe(true)
+  })
+
+  it('keeps legacy runtime pack path previews when no live report exists', () => {
+    const model = deriveBrowserRuntimeSettingsViewModel({
+      runtimePackPath: '/preview/browser-runtime/current',
+    })
+
+    expect(model.runtimeRootLabel).toBe('等待运行时状态')
+    expect(model.runtimePackPathLabel).toBe('/preview/browser-runtime/current')
   })
 
   it('keeps auto-prepare disabled semantics separate from browser capability', () => {

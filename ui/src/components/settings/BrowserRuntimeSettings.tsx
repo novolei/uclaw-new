@@ -156,7 +156,8 @@ export function BrowserRuntimeSettings({
           <SettingsRow label="体积" description={model.artifactSizeLabel}>
             <HardDrive size={16} className="text-muted-foreground" />
           </SettingsRow>
-          <SettingsRow label="运行时路径" description={model.runtimePackPathLabel} />
+          <SettingsRow label="运行时根目录" description={model.runtimeRootLabel} />
+          <SettingsRow label="当前 pack" description={model.runtimePackPathLabel} />
           <SettingsRow label="回滚" description={model.rollbackLabel} />
           <SettingsRow label="开发者回退" description={model.developerFallbackLabel} />
           <SettingsRow label="自动准备" description={model.autoPrepareLabel} />

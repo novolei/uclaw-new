@@ -151,6 +151,8 @@ export interface BrowserRuntimePackExecutionReport {
 
 export interface StartupRuntimePackStatusReport {
   manifestPackVersion: string
+  runtimeRoot?: string
+  currentPackDir?: string
   doctor: StartupRuntimePackDoctorStatus
   primaryAction: BrowserRuntimePackAction
   operationPlan: StartupRuntimePackOperationPlan

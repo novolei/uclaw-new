@@ -26,6 +26,8 @@ describe('browser runtime tauri bridge', () => {
   it('queries the dedicated read-only Browser Runtime status command', async () => {
     const report: StartupRuntimePackStatusReport = {
       manifestPackVersion: 'browser-runtime-pack-v1',
+      runtimeRoot: '/uclaw/browser-runtime',
+      currentPackDir: '/uclaw/browser-runtime/current',
       ready: false,
       canRunBrowserTasks: false,
       primaryAction: 'prepare',
