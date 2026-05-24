@@ -6,11 +6,19 @@ import type {
   BrowserRuntimePackExecutionReport,
   StartupRuntimePackStatusReport,
 } from '@/lib/startup/startup-doctor'
-import { dryRunBrowserRuntimeAction, getBrowserRuntimeStatus } from '@/lib/tauri-bridge'
+import {
+  dryRunBrowserRuntimeAction,
+  getBrowserRuntimeStatus,
+  listBrowserIdentities,
+  revokeBrowserIdentity,
+  type BrowserIdentityStatusReport,
+} from '@/lib/tauri-bridge'
 
 vi.mock('@/lib/tauri-bridge', () => ({
   dryRunBrowserRuntimeAction: vi.fn(),
   getBrowserRuntimeStatus: vi.fn(),
+  listBrowserIdentities: vi.fn(),
+  revokeBrowserIdentity: vi.fn(),
 }))
 
 function runtimeReport(manifestPackVersion = '1.48.2-uclaw.1'): StartupRuntimePackStatusReport {
@@ -67,10 +75,66 @@ function dryRunReport(): BrowserRuntimePackExecutionReport {
   }
 }
 
+function identityReport(
+  overrides: Partial<BrowserIdentityStatusReport> = {},
+): BrowserIdentityStatusReport {
+  return {
+    profiles: [],
+    authorizedCount: 0,
+    revokedCount: 0,
+    activeTaskCount: null,
+    ...overrides,
+  }
+}
+
+function authorizedIdentityReport(): BrowserIdentityStatusReport {
+  return identityReport({
+    profiles: [
+      {
+        id: 'auth-example',
+        label: 'Example',
+        originPattern: 'https://*.example.com',
+        kind: 'storage_state',
+        provider: 'playwright',
+        scope: 'global',
+        createdAtMs: 1_770_000_000_000,
+        lastUsedAtMs: 1_770_000_010_000,
+        lastVerifiedAtMs: null,
+        expiresAtMs: null,
+        revokedAtMs: null,
+        status: 'live',
+        revoked: false,
+      },
+    ],
+    authorizedCount: 1,
+    revokedCount: 0,
+  })
+}
+
+function revokedIdentityReport(): BrowserIdentityStatusReport {
+  return identityReport({
+    profiles: [
+      {
+        ...authorizedIdentityReport().profiles[0],
+        status: 'revoked',
+        revoked: true,
+        revokedAtMs: 1_770_000_020_000,
+      },
+    ],
+    authorizedCount: 0,
+    revokedCount: 1,
+  })
+}
+
 describe('BrowserRuntimeSettings', () => {
   beforeEach(() => {
     vi.mocked(dryRunBrowserRuntimeAction).mockReset()
     vi.mocked(getBrowserRuntimeStatus).mockReset()
+    vi.mocked(listBrowserIdentities).mockReset()
+    vi.mocked(revokeBrowserIdentity).mockReset()
+    vi.mocked(listBrowserIdentities).mockReturnValue(
+      new Promise<BrowserIdentityStatusReport>(() => {}),
+    )
   })
 
   it('renders a readonly default surface while live status is pending', () => {
@@ -85,6 +149,50 @@ describe('BrowserRuntimeSettings', () => {
     expect(screen.getAllByText('等待运行时状态').length).toBeGreaterThan(1)
     expect(screen.getByRole('button', { name: '准备' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '运行诊断' })).toBeDisabled()
+  })
+
+  it('loads browser identity status through the dedicated bridge', async () => {
+    vi.mocked(listBrowserIdentities).mockResolvedValueOnce(authorizedIdentityReport())
+
+    renderWithProviders(<BrowserRuntimeSettings />)
+
+    await waitFor(() => {
+      expect(listBrowserIdentities).toHaveBeenCalledTimes(1)
+    })
+    expect(screen.getByText('浏览器身份')).toBeInTheDocument()
+    expect(screen.getByText('Example')).toBeInTheDocument()
+    expect(screen.getByText('https://*.example.com · Playwright · Global')).toBeInTheDocument()
+    expect(screen.getByText('1 可用 / 0 已撤销')).toBeInTheDocument()
+    expect(screen.getByText('等待任务状态')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '撤销 Example' })).toBeEnabled()
+  })
+
+  it('revokes a browser identity and refreshes status', async () => {
+    vi.mocked(listBrowserIdentities)
+      .mockResolvedValueOnce(authorizedIdentityReport())
+      .mockResolvedValueOnce(revokedIdentityReport())
+    vi.mocked(revokeBrowserIdentity).mockResolvedValueOnce({
+      profile: revokedIdentityReport().profiles[0],
+      revoked: true,
+      activeTaskCount: null,
+    })
+
+    const { user } = renderWithProviders(<BrowserRuntimeSettings />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '撤销 Example' })).toBeEnabled()
+    })
+
+    await user.click(screen.getByRole('button', { name: '撤销 Example' }))
+
+    await waitFor(() => {
+      expect(revokeBrowserIdentity).toHaveBeenCalledWith('auth-example')
+    })
+    await waitFor(() => {
+      expect(listBrowserIdentities).toHaveBeenCalledTimes(2)
+    })
+    expect(screen.getByRole('button', { name: '已撤销 Example' })).toBeDisabled()
+    expect(screen.getByText('0 可用 / 1 已撤销')).toBeInTheDocument()
   })
 
   it('loads live runtime status through the dedicated read-only bridge', async () => {
