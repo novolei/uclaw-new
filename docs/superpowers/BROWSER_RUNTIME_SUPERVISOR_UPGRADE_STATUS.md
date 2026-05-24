@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 4E Browser Runtime task-time prompt UI in progress
+> Current phase: Phase 4F Browser Runtime settings deep link in progress
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -23,7 +23,7 @@
 | Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
-| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4D merged; Phase 4E task-time prompt UI in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4e-task-time-prompt-ui` / `codex/browser-runtime-phase4e-task-time-prompt-ui` | Finish additive task-time prompt UI before IPC, deep links, TaskEvents, or checkpoint writes. |
+| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4E merged; Phase 4F SearchPalette settings deep link in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4f-settings-deep-link` / `codex/browser-runtime-phase4f-settings-deep-link` | Finish the SearchPalette -> Browser Runtime Settings deep link before Startup Doctor/task-time/error-surface links or backend side effects. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
@@ -63,6 +63,7 @@
 | 2026-05-24 | Merge Phase 4B action-intent previews and start Phase 4C auto-prepare semantics. | PR #428 merged as `d3f9f995`; ADR Phase 4 still requires disable-auto-prepare controls and explicit semantics that browser automation remains available for task-time prompts. | Phase 4C adds only local auto-prepare control previews; settings persistence, IPC, deep links, and task checkpointing remain later Phase 4 slices. |
 | 2026-05-24 | Merge Phase 4C auto-prepare semantics and start Phase 4D as a pure task-time prompt model. | PR #429 merged as `50b5ab8f`; ADR Phase 4 still requires task-time prepare/defer/no-browser decisions and `paused_waiting_for_browser_runtime` checkpoint semantics. | Phase 4D adds a pure frontend model only; UI rendering, IPC, TaskEvents, and actual checkpoint writes remain later slices. |
 | 2026-05-24 | Merge Phase 4D task-time prompt model and start Phase 4E as additive prompt UI. | PR #430 merged as `7d4f70e0`; ADR Phase 4 still needs users to see and select the task-time choices before backend wiring is safe. | Phase 4E renders the prompt model only; App/task runtime wiring, IPC, TaskEvents, deep links, and checkpoint writes remain later slices. |
+| 2026-05-24 | Merge Phase 4E task-time prompt UI and start Phase 4F as the first settings deep-link slice. | PR #431 merged as `ab59f9aa`; AppShell already had a SearchPalette settings TODO, and ADR Phase 4 requires Settings deep links from multiple surfaces. | Phase 4F wires SearchPalette only; Startup Doctor, task-time prompt, error/recovery links, IPC, TaskEvents, and checkpoint writes remain later slices. |
 
 ---
 
@@ -71,9 +72,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4e-task-time-prompt-ui` |
-| Current phase branch | `codex/browser-runtime-phase4e-task-time-prompt-ui` |
-| Current local base | `7d4f70e0 Merge pull request #430 from novolei/codex/browser-runtime-phase4d-task-time-prompt-model` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4f-settings-deep-link` |
+| Current phase branch | `codex/browser-runtime-phase4f-settings-deep-link` |
+| Current local base | `ab59f9aa Merge pull request #431 from novolei/codex/browser-runtime-phase4e-task-time-prompt-ui` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -95,9 +96,10 @@
 | Phase 4B implementation commit | Merged through PR #428 as `9aca960d feat(browser): add runtime settings action intents`; merge commit `d3f9f995`. |
 | Phase 4C implementation commit | Merged through PR #429 as `985af8e3 feat(browser): add auto-prepare settings intent`; merge commit `50b5ab8f`. |
 | Phase 4D implementation commit | Merged through PR #430 as `ab359858 feat(browser): add task-time runtime prompt model`; merge commit `7d4f70e0`. |
-| Phase 4E implementation commit | Current PR #431 on `codex/browser-runtime-phase4e-task-time-prompt-ui`; implementation is the branch tip commit. |
-| Known pre-existing tracked changes | None in the Phase 4E worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | Phase 4E may use ignored local `ui/node_modules` from the primary worktree for Vitest verification. Rust resource links may be added only if the default browser-runtime regressions need them. |
+| Phase 4E implementation commit | Merged through PR #431 as `b27410dc feat(browser): add task-time runtime prompt UI`; merge commit `ab59f9aa`. |
+| Phase 4F implementation commit | Open in PR #432 on `codex/browser-runtime-phase4f-settings-deep-link`; implementation commit is the PR branch tip. |
+| Known pre-existing tracked changes | None in the Phase 4F worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | Phase 4F may use ignored local `ui/node_modules` from the primary worktree for Vitest/build verification. Rust resource links may be added only if the default browser-runtime regressions need them. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -1485,7 +1487,7 @@ Recommended Phase 4B checks:
   with no IPC, no backend command, no TaskEvent emission, and no runtime
   filesystem/network/process side effects.
 - Current PR:
-  [#431](https://github.com/novolei/uclaw-new/pull/431).
+  [#428](https://github.com/novolei/uclaw-new/pull/428) merged.
 - DMZ files:
   none planned.
 - Migration:
@@ -1580,7 +1582,7 @@ Recommended Phase 4C checks:
   disabling/enabling startup/background auto-prepare, while keeping browser
   automation capability and task-time preparation separate.
 - Current PR:
-  not opened yet.
+  [#429](https://github.com/novolei/uclaw-new/pull/429) merged.
 - DMZ files:
   none planned.
 - Migration:
@@ -1676,7 +1678,7 @@ Recommended Phase 4D checks:
   defer/checkpoint-intent, and continue-without-browser choices from runtime
   status and explicit task fallback context.
 - Current PR:
-  not opened yet.
+  [#430](https://github.com/novolei/uclaw-new/pull/430) merged.
 - DMZ files:
   none planned.
 - Migration:
@@ -1758,7 +1760,7 @@ Recommended Phase 4E checks:
   shows checkpoint/event-preview metadata, and reports local action selection
   to a caller callback.
 - Current PR:
-  not opened yet.
+  [#431](https://github.com/novolei/uclaw-new/pull/431) merged.
 - DMZ files:
   none planned.
 - Migration:
@@ -1798,6 +1800,101 @@ Recommended Phase 4E checks:
 - Final staged GitNexus detect for the Phase 4E worktree reported
   `risk_level: low`, `changed_files: 4`, `changed_count: 33`, and
   `affected_processes: []`.
+- Phase 4E task-time prompt UI was merged through PR #431 as
+  `ab59f9aa Merge pull request #431 from novolei/codex/browser-runtime-phase4e-task-time-prompt-ui`.
+
+## Phase 4F Entry Criteria
+
+Phase 4F can start because:
+
+- PR #431 merged the standalone task-time prompt UI into `main` and
+  `origin/main`;
+- the Phase 4F worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4f-settings-deep-link`;
+- the branch starts from `ab59f9aa`, the current `origin/main`;
+- ADR Phase 4 requires Settings deep links from SearchPalette, Startup Doctor,
+  task-time prompts, and error/recovery surfaces;
+- AppShell currently has a SearchPalette settings TODO, making SearchPalette the
+  narrowest reversible first deep-link source.
+
+Recommended Phase 4F checks:
+
+- SearchPalette renders the Browser Runtime settings shortcut with a clear hint;
+- selecting the Browser Runtime shortcut emits a settings payload carrying
+  `settingsTab: 'browserRuntime'`;
+- AppShell opens the Settings dialog on a supplied settings tab without
+  creating fake tabs or backend side effects;
+- focused SearchPalette tests pass;
+- UI build verifies AppShell type wiring;
+- default browser-runtime Rust regressions still pass.
+
+## Phase 4F Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase4f-settings-deep-link.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4f-settings-deep-link`
+- Branch:
+  `codex/browser-runtime-phase4f-settings-deep-link`
+- Scope:
+  wire SearchPalette settings items to explicit Settings tabs and open the
+  existing Settings dialog on the Browser Runtime tab when that shortcut is
+  selected.
+- Current PR:
+  [#432](https://github.com/novolei/uclaw-new/pull/432).
+- DMZ files:
+  none planned.
+- Migration:
+  none planned.
+- Rollback:
+  revert the SearchPalette/AppShell deep-link changes, this status file update,
+  and the Phase 4F plan file.
+
+### Phase 4F Impact Notes
+
+- `npx gitnexus analyze` indexed the Phase 4F worktree before impact analysis.
+  It updated only `AGENTS.md` / `CLAUDE.md` statistics, and those noise changes
+  were restored.
+- Pre-edit GitNexus impact for `SearchPalette` in
+  `ui/src/components/search/SearchPalette.tsx` reported LOW risk, one direct
+  caller (`AppShell`), affected process labels `App` and `AppShell`.
+- Pre-edit GitNexus impact for `SETTINGS_ITEMS` reported LOW risk, zero direct
+  callers, and zero affected processes.
+- Pre-edit GitNexus impact for `SettingsItem` reported LOW risk with AppShell
+  import/file relationship only.
+- Pre-edit GitNexus impact for `handleSearchResultSelect` in
+  `ui/src/components/app-shell/AppShell.tsx` reported LOW risk, zero direct
+  callers, and zero affected processes.
+- This slice does not change backend IPC, settings persistence, runtime-pack
+  Rust behavior, provider selection, Startup Doctor, task checkpointing, DB
+  migrations, TaskEvents, or real runtime side effects.
+
+### Phase 4F Verification Notes
+
+- Focused SearchPalette verification passed:
+  `cd ui && npm test -- --run src/components/search/SearchPalette.test.tsx`
+  completed with 1 file / 17 tests passed.
+- UI build verification passed:
+  `cd ui && npm run build` completed successfully, with the existing Vite
+  dynamic-import/chunk-size warnings only.
+- Default Browser Runtime Rust regressions passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  completed with 32 passed;
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  completed with 44 passed;
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  completed with 6 passed. Existing unrelated Rust warnings remained.
+- Phase 4F linked ignored local `ui/node_modules`, `src-tauri/pyembed`,
+  `src-tauri/bunembed`, and `src-tauri/gbrain-source` resources from the
+  primary worktree for local verification only.
+- `rustfmt --edition 2021 --check <changed-rust-files>` is not applicable for
+  this phase because no Rust files changed.
+- Whitespace checks passed:
+  `git diff --check -- <changed-files>` and `git diff --cached --check`
+  produced no output.
+- Staged GitNexus detect for the Phase 4F worktree reported MEDIUM risk:
+  5 changed files, 32 changed symbols, and 5 affected AppShell process labels.
+  No HIGH or CRITICAL risk was reported.
 
 ---
 

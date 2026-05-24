@@ -29,6 +29,7 @@ import {
   SlidersHorizontal,
   Brain,
   Settings as SettingsIcon,
+  HardDrive,
   Hash,
   type LucideIcon,
 } from 'lucide-react'
@@ -47,6 +48,7 @@ import type { RecentThread } from '@/lib/agent-types'
 import type { SpaceSummary } from '@/lib/types'
 import { FragmentDetailPopover } from '@/components/memory/FragmentDetailPopover'
 import { SUBTYPE_COLORS } from '@/components/memory/FragmentCard'
+import type { SettingsTab } from '@/atoms/settings-tab'
 
 // ===== Types =====
 
@@ -68,6 +70,7 @@ interface SettingsItem {
   label: string
   hint: string
   icon: LucideIcon
+  settingsTab: SettingsTab
 }
 
 const SETTINGS_ITEMS: SettingsItem[] = [
@@ -76,29 +79,41 @@ const SETTINGS_ITEMS: SettingsItem[] = [
     label: '服务商配置',
     hint: 'Provider / API Key / Base URL',
     icon: SlidersHorizontal,
+    settingsTab: 'connectivity',
   },
   {
     id: 'settings:models',
     label: '模型配置',
     hint: '主聊天模型 / Thinking 支持',
     icon: Brain,
+    settingsTab: 'intelligence',
   },
   {
     id: 'settings:memory',
     label: '记忆设置',
     hint: 'Memory / 编译 / 晋升',
     icon: Brain,
+    settingsTab: 'memoryRecall',
+  },
+  {
+    id: 'settings:browser-runtime',
+    label: '浏览器运行时',
+    hint: 'Runtime pack / Startup Doctor / repair',
+    icon: HardDrive,
+    settingsTab: 'browserRuntime',
   },
   {
     id: 'settings:appearance',
     label: '外观设置',
     hint: '主题 / 字体 / 衬线',
     icon: SettingsIcon,
+    settingsTab: 'general',
   },
 ]
 
 const MAX_RECENT_BROWSE = 8
 const MAX_RECENT_SEARCH = 5
+const MAX_SETTINGS_BROWSE = 4
 const FTS_DEBOUNCE_MS = 150
 
 // ===== Helpers =====
@@ -283,7 +298,7 @@ export function SearchPalette({ onSelect }: SearchPaletteProps): React.ReactElem
     return workspaces.filter((w) => w.name.toLowerCase().includes(q))
   }, [workspaces, q])
   const filteredSettings = React.useMemo(() => {
-    if (!q) return SETTINGS_ITEMS.slice(0, 3)
+    if (!q) return SETTINGS_ITEMS.slice(0, MAX_SETTINGS_BROWSE)
     return SETTINGS_ITEMS.filter((s) =>
       `${s.label} ${s.hint}`.toLowerCase().includes(q),
     )
