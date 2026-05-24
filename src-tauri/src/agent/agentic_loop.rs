@@ -553,29 +553,152 @@ pub fn force_compact(reason_ctx: &mut ReasoningContext, keep_turns: usize) {
 /// Internal helper shared by `force_compact` and available for cases
 /// where async LLM access is not feasible.
 fn force_compact_sync(reason_ctx: &mut ReasoningContext, keep_turns: usize) {
-    let total = reason_ctx.messages.len();
-    if total <= keep_turns {
+    let active_indices: Vec<usize> = reason_ctx.messages.iter()
+        .enumerate()
+        .filter(|(_, m)| !m.compacted)
+        .map(|(i, _)| i)
+        .collect();
+    let active_count = active_indices.len();
+    if active_count <= keep_turns {
         return;
     }
 
-    let removed_count = total - keep_turns;
+    let desired_removed = active_count - keep_turns;
+    let desired_split_idx = active_indices[desired_removed];
+
+    // Transaction-safe boundary calculation
+    let split_idx = find_safe_compaction_boundary(&reason_ctx.messages, desired_split_idx);
+
+    // Messages to compact
+    let messages_to_compact: Vec<ChatMessage> = reason_ctx.messages[0..split_idx].iter()
+        .filter(|m| !m.compacted)
+        .cloned()
+        .collect();
+    if messages_to_compact.is_empty() {
+        return;
+    }
+
+    let removed_count = messages_to_compact.len();
 
     // Logical marking
-    for i in 0..removed_count {
+    for i in 0..split_idx {
         reason_ctx.messages[i].compacted = true;
     }
 
-    // Template placeholder summary
-    let removed: Vec<&ChatMessage> = reason_ctx.messages[..removed_count].iter().collect();
-    let summary = build_compression_summary_refs(&removed, removed_count);
+    // Synchronous fold using the extractive fallback fold
+    let fallback_fold = crate::agent::compact::summarize::extractive_fallback_fold(&messages_to_compact);
+    let fold_markdown = fallback_fold.to_markdown();
+    let padded_summary = crate::agent::compact::cache_align::align_to_1024_tokens(&fold_markdown);
+
+    let summary = format!(
+        "[Context compressed: {} earlier messages compacted]\n\n{}",
+        removed_count,
+        padded_summary
+    );
 
     reason_ctx.messages.insert(0, ChatMessage::user(&summary));
 
     tracing::info!(
         removed = removed_count,
         remaining = reason_ctx.messages.len(),
-        "Context force-compacted (sync, placeholder summary)"
+        "Context force-compacted (sync, extractive fold summary)"
     );
+}
+
+/// Keep only the last `keep_turns` messages, inserting a L1 archive summary
+/// placeholder. Uses LayeredContextBuilder for proper L0/L1 structural
+/// organization and model-aware token budgeting. (P2 fix: 2026-05-16)
+///
+/// Now uses logical marking (`compacted = true`) instead of physical `drain()`.
+/// Compacted messages stay in the vec for full replay in the frontend but are
+/// skipped by `estimate_token_count` and the LLM context builder.
+/// (P1 logical-marking: 2026-05-16)
+///
+/// When `delegate.summarize_for_compression` returns a summary, it is used as
+/// the L1 archive summary. Otherwise, falls back to the template-based placeholder.
+fn is_boundary_safe(messages: &[ChatMessage], split_idx: usize) -> bool {
+    if split_idx == 0 || split_idx >= messages.len() {
+        return false;
+    }
+
+    // 1. The first message on the active side (at split_idx) must be a human User message
+    let active_first = &messages[split_idx];
+    if active_first.role != MessageRole::User {
+        return false;
+    }
+    // Check if it contains any ToolResult content blocks
+    let has_tool_result = active_first.content.iter().any(|block| {
+        matches!(block, ContentBlock::ToolResult { .. })
+    });
+    if has_tool_result {
+        return false;
+    }
+
+    // 2. Check for split tool transactions.
+    // Collect all ToolUse IDs on the compacted side (0..split_idx)
+    let mut compacted_tool_use_ids = std::collections::HashSet::new();
+    for msg in &messages[0..split_idx] {
+        for block in &msg.content {
+            if let ContentBlock::ToolUse { id, .. } = block {
+                compacted_tool_use_ids.insert(id.clone());
+            }
+        }
+    }
+
+    // Collect all ToolResult tool_use_ids on the active side (split_idx..)
+    let mut active_tool_result_ids = std::collections::HashSet::new();
+    for msg in &messages[split_idx..] {
+        for block in &msg.content {
+            if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                active_tool_result_ids.insert(tool_use_id.clone());
+            }
+        }
+    }
+
+    // If there is any intersection between compacted_tool_use_ids and active_tool_result_ids,
+    // then at least one tool transaction has been split!
+    let has_split = compacted_tool_use_ids.intersection(&active_tool_result_ids).next().is_some();
+    if has_split {
+        return false;
+    }
+
+    true
+}
+
+fn find_safe_compaction_boundary(messages: &[ChatMessage], desired_split: usize) -> usize {
+    if messages.is_empty() {
+        return 0;
+    }
+
+    let max_len = messages.len();
+    let mut offset = 0;
+    while desired_split + offset < max_len || desired_split >= offset {
+        if desired_split + offset < max_len && is_boundary_safe(messages, desired_split + offset) {
+            return desired_split + offset;
+        }
+        if offset > 0 && desired_split >= offset && is_boundary_safe(messages, desired_split - offset) {
+            return desired_split - offset;
+        }
+        offset += 1;
+        if offset > max_len {
+            break;
+        }
+    }
+
+    // Fallback: If no safe boundary could be found, find any User message that is not a tool result
+    for i in (1..messages.len()).rev() {
+        if messages[i].role == MessageRole::User {
+            let has_tool_result = messages[i].content.iter().any(|block| {
+                matches!(block, ContentBlock::ToolResult { .. })
+            });
+            if !has_tool_result {
+                return i;
+            }
+        }
+    }
+
+    // Hard fallback: return desired_split
+    desired_split
 }
 
 /// Keep only the last `keep_turns` messages, inserting a L1 archive summary
@@ -595,32 +718,70 @@ async fn soft_compress_context(
     model_window: u32,
     delegate: &dyn LoopDelegate,
 ) {
-    let total = reason_ctx.messages.len();
-    if total <= keep_turns {
+    let active_indices: Vec<usize> = reason_ctx.messages.iter()
+        .enumerate()
+        .filter(|(_, m)| !m.compacted)
+        .map(|(i, _)| i)
+        .collect();
+    let active_count = active_indices.len();
+
+    // Double-Threshold Trigger
+    if active_count <= keep_turns + 4 { // OVERFLOW_TURNS = 4
+        tracing::debug!(
+            active_count,
+            keep_turns,
+            "Bypassing context compression: active turns within target+overflow safety window (Double-Threshold)"
+        );
         return;
     }
 
-    let removed_count = total - keep_turns;
+    let desired_removed = active_count - keep_turns;
+    let desired_split_idx = active_indices[desired_removed];
 
-    // Logical marking: set compacted=true on the oldest messages instead of
-    // draining them. This preserves full history for the frontend to replay.
-    for i in 0..removed_count {
+    // Transaction-safe boundary calculation
+    let split_idx = find_safe_compaction_boundary(&reason_ctx.messages, desired_split_idx);
+
+    // Messages to compact in this turn
+    let messages_to_compact: Vec<ChatMessage> = reason_ctx.messages[0..split_idx].iter()
+        .filter(|m| !m.compacted)
+        .cloned()
+        .collect();
+    if messages_to_compact.is_empty() {
+        return;
+    }
+
+    let removed_count = messages_to_compact.len();
+
+    // Logical marking of messages before split_idx as compacted
+    for i in 0..split_idx {
         reason_ctx.messages[i].compacted = true;
     }
 
-    // Build L1 archive summary from the compacted messages.
-    // Try LLM-based summarization first; fall back to template placeholder.
-    let removed: Vec<&ChatMessage> = reason_ctx.messages[..removed_count].iter().collect();
-    let summary = if let Some(llm_summary) = delegate.summarize_for_compression(&removed.iter().map(|m| (*m).clone()).collect::<Vec<_>>()).await {
+    // Build L1 archive summary: Call summarize_to_fold, fallback to extractive fold on failure
+    let fold = if let Some(f) = delegate.summarize_to_fold(&messages_to_compact).await {
         tracing::info!(
-            summary_type = "llm",
+            summary_type = "llm_fold",
             removed = removed_count,
-            "Using LLM-generated compression summary"
+            "Using LLM-generated StructuredFold for context compaction"
         );
-        format!("[Context compressed: {} earlier messages summarized below]\n\n{}", removed_count, llm_summary)
+        f
     } else {
-        build_compression_summary_refs(&removed, removed_count)
+        tracing::info!(
+            summary_type = "fallback_fold",
+            removed = removed_count,
+            "LLM fold summarization failed/returned None, falling back to extractive fold"
+        );
+        crate::agent::compact::summarize::extractive_fallback_fold(&messages_to_compact)
     };
+
+    let fold_markdown = fold.to_markdown();
+    let padded_summary = crate::agent::compact::cache_align::align_to_1024_tokens(&fold_markdown);
+
+    let summary = format!(
+        "[Context compressed: {} earlier messages compacted]\n\n{}",
+        removed_count,
+        padded_summary
+    );
 
     // ── Assemble with model-aware LayeredContextBuilder ───────────────
     // Estimate L0 token budget from the remaining (non-compacted) messages.
@@ -641,7 +802,6 @@ async fn soft_compress_context(
     let layered_config = if model_window > 0 {
         LayeredContextConfig::from_model_window(model_window)
     } else {
-        // Fallback: use the l0_estimate as the max, with reasonable L1 budget
         LayeredContextConfig {
             max_context_tokens: l0_estimate + 4000,
             l0_target_tokens: l0_estimate.max(1),
@@ -654,16 +814,6 @@ async fn soft_compress_context(
     builder.add_archive(&summary);
 
     // Prepend L1 archive summary as system-style user message at position 0.
-    // Maintains backward-compatible behavior: summary is a ChatMessage::user
-    // with a special marker prefix so the LLM recognizes it as metadata.
-    //
-    // Future work: when async LLM summarization is available, replace the
-    // placeholder with a proper semantic summary and use builder.build()
-    // for full L1→L2→L0 structural ordering.
-    //
-    // NOTE (2026-05-16): LLM summarization is now available via
-    // `delegate.summarize_for_compression()`. The summary text above
-    // is either LLM-generated or the template placeholder.
     reason_ctx
         .messages
         .insert(0, ChatMessage::user(&summary));
@@ -904,5 +1054,110 @@ mod interactive_tool_gate_tests {
             user_tool_result("c2"),
         ];
         assert!(!last_tool_was_interactive(&msgs));
+    }
+}
+
+#[cfg(test)]
+mod compaction_safety_tests {
+    use super::*;
+    use crate::agent::types::{ChatMessage, ContentBlock, MessageRole};
+    use serde_json::json;
+
+    fn assistant_tool_use(id: &str, name: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: id.to_string(),
+                name: name.to_string(),
+                input: json!({}),
+            }],
+            compacted: false,
+        }
+    }
+
+    fn user_tool_result(id: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: "result text".to_string(),
+                is_error: Some(false),
+            }],
+            compacted: false,
+        }
+    }
+
+    fn user_human(text: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Text { text: text.to_string() }],
+            compacted: false,
+        }
+    }
+
+    fn assistant_text(text: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::Assistant,
+            content: vec![ContentBlock::Text { text: text.to_string() }],
+            compacted: false,
+        }
+    }
+
+    #[test]
+    fn test_is_boundary_safe_basic() {
+        // split_idx is out of bounds or zero
+        assert!(!is_boundary_safe(&[], 0));
+
+        let msgs = vec![
+            user_human("hello"),
+            assistant_text("hi"),
+            user_human("how are you"),
+        ];
+
+        // split at index 1: remaining starts with Assistant text -> unsafe
+        assert!(!is_boundary_safe(&msgs, 1));
+
+        // split at index 2: remaining starts with User human -> safe
+        assert!(is_boundary_safe(&msgs, 2));
+    }
+
+    #[test]
+    fn test_is_boundary_safe_tool_split() {
+        let msgs = vec![
+            user_human("run tool"),
+            assistant_tool_use("tool-1", "read_file"),
+            user_tool_result("tool-1"),
+            assistant_text("done with tool"),
+            user_human("next question"),
+        ];
+
+        // Slicing at index 2 splits "tool-1" tool use (index 1) and tool result (index 2) -> unsafe
+        assert!(!is_boundary_safe(&msgs, 2));
+
+        // Slicing at index 3 splits "tool-1" tool use (index 1) and tool result (index 2) -> wait,
+        // actually, both tool use (1) and tool result (2) are on the compacted side (< 3).
+        // But the first message on the active side (index 3) is an Assistant message -> unsafe due to role
+        assert!(!is_boundary_safe(&msgs, 3));
+
+        // Slicing at index 4: compacted side has (0, 1, 2, 3), active side has (4).
+        // active starts with User human (4), and no tool split -> safe!
+        assert!(is_boundary_safe(&msgs, 4));
+    }
+
+    #[test]
+    fn test_find_safe_compaction_boundary_adjusts() {
+        let msgs = vec![
+            user_human("run tool"),
+            assistant_tool_use("tool-1", "read_file"),
+            user_tool_result("tool-1"),
+            assistant_text("done with tool"),
+            user_human("next question"),
+        ];
+
+        // We desire to split at index 2 (which is unsafe).
+        // The nearest safe boundary is index 4 (since it starts with user_human("next question")).
+        // Let's verify find_safe_compaction_boundary resolves this to index 4.
+        let safe_idx = find_safe_compaction_boundary(&msgs, 2);
+        assert_eq!(safe_idx, 4);
     }
 }

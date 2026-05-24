@@ -2855,6 +2855,20 @@ impl LoopDelegate for ChatDelegate {
         }
     }
 
+    /// Generate a StructuredFold summary of compacted messages for context compression.
+    async fn summarize_to_fold(&self, messages: &[ChatMessage]) -> Option<crate::agent::compact::StructuredFold> {
+        if messages.is_empty() {
+            return None;
+        }
+        match crate::agent::compact::summarize_to_fold(self.llm.clone(), &self.model, messages).await {
+            Ok(fold) => Some(fold),
+            Err(e) => {
+                tracing::warn!("LLM fold summarization failed: {:?}", e);
+                None
+            }
+        }
+    }
+
     /// After each iteration, generate Capsules for any Gene matches from this turn.
     async fn after_iteration(&self, _iteration: usize) {
         self.generate_capsule_for_turn().await;

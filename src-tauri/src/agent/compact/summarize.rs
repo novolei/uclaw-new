@@ -27,7 +27,7 @@ use crate::agent::types::{ChatMessage, ContentBlock, MessageRole};
 use crate::error::Error;
 use crate::llm::{CompletionConfig, LlmProvider};
 
-use super::fold::StructuredFold;
+use super::fold::{MicroCapsule, StructuredFold};
 
 /// Token budget guidance for the summarizer prompt. The LLM is asked
 /// to compress N input tokens of conversation into ~`TARGET_FOLD_TOKENS`
@@ -115,6 +115,90 @@ pub async fn summarize_to_fold(
     })
 }
 
+/// Extractive fallback to construct a basic [`StructuredFold`] consisting
+/// of chronologically mapped [`MicroCapsule`]s directly from raw messages.
+/// This acts as a robust fail-safe to guarantee zero-loss turn recall even
+/// when the LLM service is down, misbehaving, or rate-limited.
+pub fn extractive_fallback_fold(messages: &[ChatMessage]) -> StructuredFold {
+    let mut capsules = Vec::new();
+    let mut current_turn_index = 0;
+
+    let mut current_user_query = String::new();
+    let mut current_outcomes = Vec::new();
+
+    for msg in messages {
+        match msg.role {
+            MessageRole::User => {
+                // Flush the previous turn if we have one
+                if !current_user_query.is_empty() {
+                    let agent_outcome = if current_outcomes.is_empty() {
+                        "No outcome recorded.".to_string()
+                    } else {
+                        current_outcomes.join("; ")
+                    };
+                    capsules.push(MicroCapsule {
+                        turn_index: current_turn_index,
+                        user_query: truncate_string(&current_user_query, 200),
+                        agent_outcome: truncate_string(&agent_outcome, 300),
+                    });
+                    current_turn_index += 1;
+                    current_outcomes.clear();
+                }
+
+                // Gather user query
+                let mut parts = Vec::new();
+                for block in &msg.content {
+                    if let ContentBlock::Text { text } = block {
+                        parts.push(text.trim().to_string());
+                    }
+                }
+                current_user_query = parts.join(" ");
+            }
+            MessageRole::Assistant => {
+                for block in &msg.content {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            if !text.trim().is_empty() {
+                                current_outcomes.push(format!("Responded: {}", text.trim()));
+                            }
+                        }
+                        ContentBlock::ToolUse { name, .. } => {
+                            current_outcomes.push(format!("Called tool: {}", name));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Flush the last turn
+    if !current_user_query.is_empty() {
+        let agent_outcome = if current_outcomes.is_empty() {
+            "No outcome recorded.".to_string()
+        } else {
+            current_outcomes.join("; ")
+        };
+        capsules.push(MicroCapsule {
+            turn_index: current_turn_index,
+            user_query: truncate_string(&current_user_query, 200),
+            agent_outcome: truncate_string(&agent_outcome, 300),
+        });
+    }
+
+    StructuredFold::default().with_micro_capsules(capsules)
+}
+
+fn truncate_string(s: &str, max_len: usize) -> String {
+    if s.chars().count() > max_len {
+        let truncated: String = s.chars().take(max_len - 3).collect();
+        format!("{}...", truncated)
+    } else {
+        s.to_string()
+    }
+}
+
 // ── prompt construction ───────────────────────────────────────────────
 
 fn build_system_prompt() -> String {
@@ -136,7 +220,8 @@ OUTPUT FORMAT (strict — return ONLY this JSON, no surrounding text):
   "failed_attempts":     [ {{"what_was_tried": "...", "why_it_failed": "...", "evidence": null }} ],
   "active_constraints":  [],
   "next_actions":        [ "..." ],
-  "rollback_points":     [ {{"id": "ckpt-...", "note": "..." }} ]
+  "rollback_points":     [ {{"id": "ckpt-...", "note": "..." }} ],
+  "micro_capsules":      [ {{"turn_index": 1, "user_query": "user request verbatim", "agent_outcome": "what the agent tried and the brief result" }} ]
 }}
 
 Rules:
@@ -147,7 +232,8 @@ Rules:
 4. `active_constraints` may stay `[]` — the constraint type is internal.
 5. Compress aggressively. Target output ~{target} tokens of JSON.
 6. Preserve any tool / file / URL identifiers verbatim — agents need exact strings.
-7. Do not add commentary, markdown, or apology text. JSON only."#,
+7. Do not add commentary, markdown, or apology text. JSON only.
+8. Under 'micro_capsules', chronologically record EVERY conversation turn from the transcript. `turn_index` should match the index of the user request. Keep user_query as close to verbatim as possible (summarized only if extremely long), and agent_outcome as a concise summary of what was accomplished or observed during that turn. This is critical for exact turn-by-turn recollection."#,
         target = TARGET_FOLD_TOKENS
     )
 }
@@ -427,6 +513,7 @@ mod tests {
     fn build_system_prompt_includes_token_target() {
         let p = build_system_prompt();
         assert!(p.contains("800"));
-        assert!(p.contains("StructuredFold JSON"));
+        assert!(p.contains("structured fold"));
+        assert!(p.contains("micro_capsules"));
     }
 }
