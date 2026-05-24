@@ -62,6 +62,10 @@ On first launch the Rust side creates:
 - `~/.uclaw/` — `config.json`, `llm_config.json`, `uclaw.db` (main SQLite), plus per-feature DBs (`memorization.db`, `proactive.db`).
 - `~/Documents/workground/` — workspace root for artifacts/files exposed to the agent.
 
+This section describes the runtime layout only. Code must not construct
+`~/.uclaw` by hand with `dirs::home_dir()`; use `uclaw_utils_home` helpers so
+tests, sandboxing, and platform-specific paths stay consistent.
+
 A local HTTP API listens on `127.0.0.1:27270` (Axum, with WebSocket support).
 Spun up in a dedicated thread with its own Tokio runtime in `main.rs`,
 independent of Tauri's async runtime — keep that boundary in mind when adding
@@ -92,6 +96,8 @@ Key module roles:
   search, shell, web, plan, self_eval) plus MCP and memU tool adapters. Loop:
   `check_signals → compress_context → before_llm → call_llm → handle_response → after_iteration`.
   **Cost capture** lives at `agent/dispatcher.rs::emit_turn_cost`.
+  `agentic_loop.rs` is already large; keep it as orchestration and put new
+  behavior in focused `agent/*` modules when possible.
 - **`llm/` and `providers/`** — `llm/` provides the lower-level provider trait
   + `anthropic`/`openai` clients; `providers/` is the higher-level
   configuration/registry/service wrapping multiple providers with credential
@@ -108,7 +114,7 @@ Key module roles:
 - **`harness/`** — evaluation harness for agent testing (≈ ADR §6 Harness Layer).
 - **`services/` + `infra/`** — `ServiceManager` lifecycle manager and `InfraService` in-process message bus.
 - **`safety/`** — `SafetyManager` enforces tool policies; risky tool calls go through `pending_approvals`.
-- **`tauri_commands.rs`** — single flat module exposing every IPC command. Adding a new command requires both defining it here **and** listing it in the `invoke_handler!` macro in `main.rs`. Currently a DMZ file (see `BEHAVIOR.md` §8).
+- **`tauri_commands.rs`** — single flat module exposing every IPC command. Adding a new command requires both defining it here **and** listing it in the `invoke_handler!` macro in `main.rs`. This file is under normal code-change discipline: GitNexus impact for changed symbols, narrow scope, focused command-path tests, and fresh review only when the change is broad or risky. Keep it thin: move command logic into feature modules and leave `tauri_commands.rs` as request parsing, state lookup, and delegation whenever practical.
 - **`cost_store.rs`** — per-turn cost persistence into `cost_records`. Best-effort.
 - **`db/migrations.rs`** — embedded migrations run on every startup; each migration is idempotent.
 - **`secrets/`** — credential management for provider API keys.
