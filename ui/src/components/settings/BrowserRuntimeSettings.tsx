@@ -6,6 +6,8 @@ import {
   Download,
   HardDrive,
   History,
+  KeyRound,
+  LogOut,
   Power,
   RefreshCw,
   RotateCcw,
@@ -20,7 +22,14 @@ import {
   type BrowserRuntimeSettingsAction,
 } from '@/lib/browser-runtime/browser-runtime-settings'
 import type { BrowserRuntimePackAction, BrowserRuntimePackExecutionReport } from '@/lib/startup/startup-doctor'
-import { dryRunBrowserRuntimeAction, getBrowserRuntimeStatus } from '@/lib/tauri-bridge'
+import {
+  dryRunBrowserRuntimeAction,
+  getBrowserRuntimeStatus,
+  listBrowserIdentities,
+  revokeBrowserIdentity,
+  type BrowserIdentityProfileSummary,
+  type BrowserIdentityStatusReport,
+} from '@/lib/tauri-bridge'
 import { SettingsCard, SettingsRow, SettingsSection } from './primitives'
 
 interface BrowserRuntimeSettingsProps {
@@ -57,8 +66,11 @@ export function BrowserRuntimeSettings({
   const [dryRunReports, setDryRunReports] = React.useState<
     Partial<Record<BrowserRuntimeSettingsAction['id'], BrowserRuntimePackExecutionReport>>
   >({})
+  const [identityStatus, setIdentityStatus] = React.useState<BrowserIdentityStatusReport | undefined>()
+  const [revokingProfileId, setRevokingProfileId] = React.useState<string | null>(null)
   const refreshGenerationRef = React.useRef(0)
   const dryRunGenerationRef = React.useRef(0)
+  const identityGenerationRef = React.useRef(0)
   const mountedRef = React.useRef(false)
 
   React.useEffect(() => {
@@ -67,6 +79,7 @@ export function BrowserRuntimeSettings({
       mountedRef.current = false
       refreshGenerationRef.current += 1
       dryRunGenerationRef.current += 1
+      identityGenerationRef.current += 1
     }
   }, [])
 
@@ -119,6 +132,36 @@ export function BrowserRuntimeSettings({
     }
   }, [status])
 
+  const refreshIdentityStatus = React.useCallback(async () => {
+    const generation = identityGenerationRef.current + 1
+    identityGenerationRef.current = generation
+
+    try {
+      const report = await listBrowserIdentities()
+      if (mountedRef.current && identityGenerationRef.current === generation) {
+        setIdentityStatus(report)
+      }
+    } catch {
+      // Keep the last displayed identity status when a refresh fails.
+    }
+  }, [])
+
+  const revokeIdentity = React.useCallback(async (profileId: string) => {
+    if (revokingProfileId) return
+
+    setRevokingProfileId(profileId)
+    try {
+      await revokeBrowserIdentity(profileId)
+      await refreshIdentityStatus()
+    } catch {
+      // Keep the current profile list if revocation fails.
+    } finally {
+      if (mountedRef.current) {
+        setRevokingProfileId(null)
+      }
+    }
+  }, [refreshIdentityStatus, revokingProfileId])
+
   React.useEffect(() => {
     if (status) {
       refreshGenerationRef.current += 1
@@ -128,6 +171,10 @@ export function BrowserRuntimeSettings({
 
     void refreshLiveStatus()
   }, [refreshLiveStatus, status])
+
+  React.useEffect(() => {
+    void refreshIdentityStatus()
+  }, [refreshIdentityStatus])
 
   React.useEffect(() => {
     setDryRunReports({})
@@ -162,6 +209,64 @@ export function BrowserRuntimeSettings({
           <SettingsRow label="开发者回退" description={model.developerFallbackLabel} />
           <SettingsRow label="自动准备" description={model.autoPrepareLabel} />
         </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="浏览器身份" description="uClaw-managed browser identity">
+        <SettingsCard>
+          <SettingsRow
+            label="状态"
+            icon={<KeyRound size={16} />}
+            description={identityStatusDetail(identityStatus)}
+          >
+            <Badge variant={identityBadgeVariant(identityStatus)}>
+              {identityStatusLabel(identityStatus)}
+            </Badge>
+          </SettingsRow>
+          <SettingsRow label="授权身份" description={identityCountLabel(identityStatus)} />
+          <SettingsRow label="上次使用" description={latestIdentityLastUsedLabel(identityStatus)} />
+          <SettingsRow label="活跃任务" description={identityActiveTaskLabel(identityStatus)} />
+        </SettingsCard>
+
+        {identityStatus?.profiles.length ? (
+          <SettingsCard divided={false}>
+            <div className="divide-y divide-border">
+              {identityStatus.profiles.map((profile) => (
+                <div
+                  key={profile.id}
+                  className="flex items-center justify-between gap-4 p-4"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium">{profile.label}</span>
+                      <Badge variant={profile.revoked ? 'secondary' : 'outline'}>
+                        {identityProfileStatusLabel(profile)}
+                      </Badge>
+                    </div>
+                    <div className="mt-1 truncate text-xs text-muted-foreground">
+                      {profile.originPattern} · {identityProviderLabel(profile.provider)} · {identityScopeLabel(profile.scope)}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      上次使用 {formatIdentityTimestamp(profile.lastUsedAtMs)}
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={profile.revoked || revokingProfileId === profile.id}
+                    aria-label={profile.revoked ? `已撤销 ${profile.label}` : `撤销 ${profile.label}`}
+                    onClick={() => {
+                      void revokeIdentity(profile.id)
+                    }}
+                  >
+                    <LogOut />
+                    {profile.revoked ? '已撤销' : '撤销'}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </SettingsCard>
+        ) : null}
       </SettingsSection>
 
       <SettingsSection title="操作">
@@ -240,6 +345,110 @@ function isDryRunAction(
   actionId: BrowserRuntimeSettingsAction['id'],
 ): actionId is BrowserRuntimePackAction {
   return DRY_RUN_ACTIONS.has(actionId)
+}
+
+function identityStatusLabel(
+  status: BrowserIdentityStatusReport | undefined,
+): string {
+  if (!status) return '未检查'
+  if (status.authorizedCount > 0) return '已授权'
+  if (status.revokedCount > 0) return '已撤销'
+  return '未连接'
+}
+
+function identityStatusDetail(
+  status: BrowserIdentityStatusReport | undefined,
+): string {
+  if (!status) return '等待身份状态。'
+  if (status.authorizedCount > 0) {
+    return `${status.authorizedCount} 个可用身份，${status.revokedCount} 个已撤销。`
+  }
+  if (status.revokedCount > 0) {
+    return `${status.revokedCount} 个已撤销身份。`
+  }
+  return '未连接浏览器身份。'
+}
+
+function identityBadgeVariant(
+  status: BrowserIdentityStatusReport | undefined,
+): React.ComponentProps<typeof Badge>['variant'] {
+  if (!status) return 'outline'
+  if (status.authorizedCount > 0) return 'default'
+  if (status.revokedCount > 0) return 'secondary'
+  return 'outline'
+}
+
+function identityCountLabel(
+  status: BrowserIdentityStatusReport | undefined,
+): string {
+  if (!status) return '未检查'
+  return `${status.authorizedCount} 可用 / ${status.revokedCount} 已撤销`
+}
+
+function latestIdentityLastUsedLabel(
+  status: BrowserIdentityStatusReport | undefined,
+): string {
+  if (!status) return '未检查'
+  const latest = Math.max(
+    ...status.profiles
+      .map((profile) => profile.lastUsedAtMs ?? 0)
+      .filter((timestamp) => timestamp > 0),
+  )
+  if (!Number.isFinite(latest) || latest <= 0) return '未知'
+  return formatIdentityTimestamp(latest)
+}
+
+function identityActiveTaskLabel(
+  status: BrowserIdentityStatusReport | undefined,
+): string {
+  if (!status) return '未检查'
+  if (status.activeTaskCount === null) return '等待任务状态'
+  return `${status.activeTaskCount} 个任务`
+}
+
+function identityProfileStatusLabel(profile: BrowserIdentityProfileSummary): string {
+  if (profile.revoked) return '已撤销'
+  if (profile.status === 'live') return '可用'
+  if (profile.status === 'stale') return '需刷新'
+  return '未知'
+}
+
+function identityProviderLabel(provider: BrowserIdentityProfileSummary['provider']): string {
+  switch (provider) {
+    case 'system_chrome':
+      return 'System Chrome'
+    case 'playwright':
+      return 'Playwright'
+    case 'browser_use':
+      return 'Browser Use'
+    case 'manual_import':
+      return 'Manual import'
+    default:
+      return provider
+  }
+}
+
+function identityScopeLabel(scope: BrowserIdentityProfileSummary['scope']): string {
+  switch (scope) {
+    case 'global':
+      return 'Global'
+    case 'workspace':
+      return 'Workspace'
+    case 'session':
+      return 'Session'
+    default:
+      return scope
+  }
+}
+
+function formatIdentityTimestamp(timestampMs: number | null): string {
+  if (!timestampMs) return '未知'
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(timestampMs))
 }
 
 function badgeVariant(
