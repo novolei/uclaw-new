@@ -8,6 +8,7 @@ fn default_manifest_carries_pinned_runtime_versions_and_release_metadata() {
     assert_eq!(manifest.pack_version, "browser-runtime-pack-v1");
     assert_eq!(manifest.node_version, "22.16.0");
     assert_eq!(manifest.playwright_version, "1.53.0");
+    assert_eq!(manifest.playwright_mcp_version, "1.53.0");
     assert_eq!(manifest.worker_version, "0.1.0");
     assert_eq!(manifest.chromium_revision, "1181");
     assert_eq!(manifest.minimum_app_version, "0.1.0");
@@ -48,6 +49,14 @@ fn path_policy_derives_uclaw_managed_runtime_root_and_playwright_browsers_env() 
             .current_pack_dir
             .join("node_modules")
             .join("playwright")
+    );
+    assert_eq!(
+        paths.playwright_mcp_package_dir,
+        paths
+            .current_pack_dir
+            .join("node_modules")
+            .join("@playwright")
+            .join("mcp")
     );
     assert_eq!(
         paths.worker_script_path,
@@ -115,6 +124,16 @@ fn doctor_classifies_missing_runtime_components_as_prepare_or_repair() {
         missing_playwright.issue,
         Some(BrowserRuntimePackIssue::MissingPlaywrightPackage)
     );
+
+    let missing_mcp = diagnose_runtime_pack(
+        &manifest,
+        &BrowserRuntimePackProbe {
+            playwright_mcp_package_present: false,
+            ..BrowserRuntimePackProbe::ready()
+        },
+    );
+    assert!(missing_mcp.ready);
+    assert_eq!(missing_mcp.issue, None);
 
     let missing_browser = diagnose_runtime_pack(
         &manifest,
@@ -886,6 +905,63 @@ fn manifest_loader_reports_missing_loaded_and_invalid_json() {
 }
 
 #[test]
+fn legacy_manifest_without_mcp_version_stays_cli_ready() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let manifest = BrowserRuntimePackManifest::v1_default();
+    let paths = BrowserRuntimePackPaths::from_root(temp.path(), &manifest);
+
+    let mut legacy_manifest = serde_json::to_value(&manifest).expect("manifest value");
+    legacy_manifest
+        .as_object_mut()
+        .expect("manifest object")
+        .remove("playwrightMcpVersion");
+
+    fs::create_dir_all(paths.node_binary_path.parent().expect("node parent")).expect("node dir");
+    fs::write(&paths.node_binary_path, "").expect("node binary");
+    fs::create_dir_all(&paths.playwright_package_dir).expect("playwright package");
+    fs::create_dir_all(paths.worker_script_path.parent().expect("worker parent"))
+        .expect("worker dir");
+    fs::write(&paths.worker_script_path, "").expect("worker script");
+    fs::create_dir_all(
+        paths
+            .chromium_binary_path
+            .parent()
+            .expect("chromium parent"),
+    )
+    .expect("chromium dir");
+    fs::write(&paths.chromium_binary_path, "").expect("chromium binary");
+    fs::write(
+        &paths.manifest_path,
+        serde_json::to_string_pretty(&legacy_manifest).expect("serialize legacy manifest"),
+    )
+    .expect("manifest");
+
+    let report = probe_runtime_pack_filesystem(
+        &manifest,
+        &paths,
+        BrowserRuntimePackFilesystemProbeOptions {
+            worker_startup_ok: true,
+            real_page_probe_ok: true,
+            ..BrowserRuntimePackFilesystemProbeOptions::default()
+        },
+    );
+
+    assert_eq!(
+        report.manifest_load.status,
+        BrowserRuntimePackManifestLoadStatus::Loaded
+    );
+    assert_eq!(report.manifest_load.manifest, Some(manifest.clone()));
+    assert!(!report.snapshot.cache_corrupt);
+    assert!(report.snapshot.versions_match);
+    assert!(!report.snapshot.playwright_mcp_package_present);
+    assert!(!report.probe.playwright_mcp_package_present);
+
+    let doctor = diagnose_runtime_pack(&manifest, &report.probe);
+    assert!(doctor.ready);
+    assert_eq!(doctor.issue, None);
+}
+
+#[test]
 fn filesystem_probe_maps_present_runtime_pack_to_ready_probe() {
     let temp = tempfile::tempdir().expect("tempdir");
     let manifest = BrowserRuntimePackManifest::v1_default();
@@ -894,6 +970,7 @@ fn filesystem_probe_maps_present_runtime_pack_to_ready_probe() {
     fs::create_dir_all(paths.node_binary_path.parent().expect("node parent")).expect("node dir");
     fs::write(&paths.node_binary_path, "").expect("node binary");
     fs::create_dir_all(&paths.playwright_package_dir).expect("playwright package");
+    fs::create_dir_all(&paths.playwright_mcp_package_dir).expect("playwright mcp package");
     fs::create_dir_all(paths.worker_script_path.parent().expect("worker parent"))
         .expect("worker dir");
     fs::write(&paths.worker_script_path, "").expect("worker script");
@@ -925,6 +1002,7 @@ fn filesystem_probe_maps_present_runtime_pack_to_ready_probe() {
     assert!(default_report.snapshot.manifest_present);
     assert!(default_report.snapshot.node_present);
     assert!(default_report.snapshot.playwright_package_present);
+    assert!(default_report.snapshot.playwright_mcp_package_present);
     assert!(default_report.snapshot.worker_script_present);
     assert!(default_report.snapshot.browser_binary_present);
     assert!(default_report.snapshot.previous_pack_available);
@@ -953,6 +1031,7 @@ fn filesystem_probe_flags_version_mismatch_invalid_manifest_and_missing_worker()
     fs::create_dir_all(paths.node_binary_path.parent().expect("node parent")).expect("node dir");
     fs::write(&paths.node_binary_path, "").expect("node binary");
     fs::create_dir_all(&paths.playwright_package_dir).expect("playwright package");
+    fs::create_dir_all(&paths.playwright_mcp_package_dir).expect("playwright mcp package");
     fs::create_dir_all(
         paths
             .chromium_binary_path
@@ -1009,6 +1088,7 @@ fn write_ready_runtime_pack(
     fs::create_dir_all(paths.node_binary_path.parent().expect("node parent")).expect("node dir");
     fs::write(&paths.node_binary_path, "").expect("node binary");
     fs::create_dir_all(&paths.playwright_package_dir).expect("playwright package");
+    fs::create_dir_all(&paths.playwright_mcp_package_dir).expect("playwright mcp package");
     fs::create_dir_all(paths.worker_script_path.parent().expect("worker parent"))
         .expect("worker dir");
     fs::write(&paths.worker_script_path, "").expect("worker script");
