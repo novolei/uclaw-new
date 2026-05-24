@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Clock3, Download, PauseCircle, PlayCircle } from 'lucide-react'
+import { Clock3, Download, PauseCircle, PlayCircle, Settings } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import type {
@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 interface BrowserRuntimeTaskTimePromptProps {
   model: BrowserRuntimeTaskTimePromptViewModel
   onAction?: (action: BrowserRuntimeTaskTimePromptAction) => void
+  onOpenBrowserRuntimeSettings?: () => void
   className?: string
 }
 
@@ -23,6 +24,7 @@ const ACTION_ICONS: Record<BrowserRuntimeTaskTimePromptAction['id'], React.React
 export function BrowserRuntimeTaskTimePrompt({
   model,
   onAction,
+  onOpenBrowserRuntimeSettings,
   className,
 }: BrowserRuntimeTaskTimePromptProps): React.ReactElement | null {
   const primaryAction = model.actions.find((action) => action.primary && action.enabled)
@@ -98,16 +100,30 @@ export function BrowserRuntimeTaskTimePrompt({
               {eventPreview(model.actions)}
             </p>
           </div>
-          <Button
-            type="button"
-            size="sm"
-            disabled={!primaryAction}
-            aria-label={primaryAction ? `推荐操作：${primaryAction.label}` : '等待推荐操作'}
-            onClick={() => primaryAction && onAction?.(primaryAction)}
-          >
-            {primaryAction ? ACTION_ICONS[primaryAction.id] : <Clock3 />}
-            {primaryAction?.label ?? '等待选择'}
-          </Button>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            {onOpenBrowserRuntimeSettings ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={onOpenBrowserRuntimeSettings}
+              >
+                <Settings aria-hidden className="h-3.5 w-3.5" />
+                Browser Runtime Settings
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              size="sm"
+              disabled={!primaryAction}
+              aria-label={primaryAction ? `推荐操作：${primaryAction.label}` : '等待推荐操作'}
+              onClick={() => primaryAction && onAction?.(primaryAction)}
+            >
+              {primaryAction ? ACTION_ICONS[primaryAction.id] : <Clock3 />}
+              {primaryAction?.label ?? '等待选择'}
+            </Button>
+          </div>
         </div>
       </div>
     </section>

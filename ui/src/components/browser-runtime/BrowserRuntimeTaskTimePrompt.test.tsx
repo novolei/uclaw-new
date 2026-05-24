@@ -136,6 +136,75 @@ describe('BrowserRuntimeTaskTimePrompt', () => {
     expect(onAction).toHaveBeenCalledWith(expect.objectContaining({ id: 'prepare_now' }))
   })
 
+  it('links task-time prompt attention to Browser Runtime settings', async () => {
+    const model = deriveBrowserRuntimeTaskTimePrompt({
+      report: runtimeReport({
+        ready: false,
+        canRunBrowserTasks: false,
+        primaryAction: 'prepare',
+        doctor: {
+          status: 'needs_prepare',
+          ready: false,
+          issue: 'missing_manifest',
+          remediation: 'Runtime pack is missing.',
+          actions: ['prepare', 'defer'],
+          manifestPackVersion: '1.48.2-uclaw.1',
+          rollbackAvailable: false,
+          activeTasks: 0,
+        },
+        operationPlan: {
+          status: 'planned',
+          summary: 'Prepare Browser runtime pack.',
+          eventNames: ['browser.runtime.prepare.planned'],
+        },
+      }),
+      browserRequired: true,
+      noBrowserFallbackAvailable: false,
+    })
+    const onOpenBrowserRuntimeSettings = vi.fn()
+    const { user } = renderWithProviders(
+      <BrowserRuntimeTaskTimePrompt
+        model={model}
+        onOpenBrowserRuntimeSettings={onOpenBrowserRuntimeSettings}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Browser Runtime Settings' }))
+
+    expect(onOpenBrowserRuntimeSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('hides the Browser Runtime settings link when no callback is supplied', () => {
+    const model = deriveBrowserRuntimeTaskTimePrompt({
+      report: runtimeReport({
+        ready: false,
+        canRunBrowserTasks: false,
+        primaryAction: 'prepare',
+        doctor: {
+          status: 'needs_prepare',
+          ready: false,
+          issue: 'missing_manifest',
+          remediation: 'Runtime pack is missing.',
+          actions: ['prepare', 'defer'],
+          manifestPackVersion: '1.48.2-uclaw.1',
+          rollbackAvailable: false,
+          activeTasks: 0,
+        },
+        operationPlan: {
+          status: 'planned',
+          summary: 'Prepare Browser runtime pack.',
+          eventNames: ['browser.runtime.prepare.planned'],
+        },
+      }),
+      browserRequired: true,
+      noBrowserFallbackAvailable: false,
+    })
+
+    renderWithProviders(<BrowserRuntimeTaskTimePrompt model={model} />)
+
+    expect(screen.queryByRole('button', { name: 'Browser Runtime Settings' })).not.toBeInTheDocument()
+  })
+
   it('renders a no-browser fallback as the primary action when preparation is blocked', () => {
     const model = deriveBrowserRuntimeTaskTimePrompt({
       report: runtimeReport({
