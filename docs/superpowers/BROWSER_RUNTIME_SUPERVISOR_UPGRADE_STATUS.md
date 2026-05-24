@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 4Q task-time dispatch effects PR open
+> Current phase: Phase 4R settings IPC review pack PR open
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -23,7 +23,7 @@
 | Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
-| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4P merged; Phase 4Q task-time dispatch effects PR #443 open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4q-task-time-dispatch-effects` / `codex/browser-runtime-phase4q-task-time-dispatch-effects` | Merge PR #443 if GitHub reports CLEAN; then continue the next Phase 4 IPC/review-pack slice separately. |
+| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4Q merged; Phase 4R settings IPC review pack PR #444 open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4r-settings-ipc-review-pack` / `codex/browser-runtime-phase4r-settings-ipc-review-pack` | Merge PR #444 if GitHub reports CLEAN and fresh reviewer accepts; then continue the read-only Settings status IPC slice separately. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
@@ -85,6 +85,8 @@
 | 2026-05-24 | Open Phase 4P task-time dispatch patch boundary PR. | PR #442 contains dispatcher-only Browser task runtime prompt patch normalization, focused dispatcher tests, default browser-runtime regressions, and staged GitNexus LOW detect. | Merge if GitHub reports CLEAN; future prompt/UI/IPC wiring remains separate and must not be folded into PR #442. |
 | 2026-05-24 | Merge Phase 4P and start Phase 4Q as pure task-time dispatch-effect modeling. | PR #442 merged as `1fd68675`; backend dispatcher can now consume serialized Browser task request patches. | Phase 4Q gives `prepare_now`, `defer`, and `continue_without_browser` typed frontend dispatch effects without live agent-loop wiring, IPC, runtime-pack execution, or no-browser execution. |
 | 2026-05-24 | Open Phase 4Q task-time dispatch effects PR. | PR #443 contains typed frontend dispatch effects for prepare/defer/no-browser decisions, focused prompt-model tests, prompt UI regression coverage, default Rust browser-runtime regressions, and GitNexus staged detect LOW with no affected processes. | Merge if GitHub reports CLEAN; next Phase 4 work should not fold IPC, runtime-pack execution, no-browser execution, or DMZ task-loop wiring into PR #443. |
+| 2026-05-24 | Merge Phase 4Q and start Phase 4R as a Settings IPC review pack. | PR #443 merged as `1db302be`; Phase 4 still needs real Settings/Doctor status and action IPC, but backend command wiring touches DMZ `tauri_commands.rs`, while shared frontend `getSettings` impact is HIGH. | Phase 4R records writer/reviewer gates only; no Tauri command, frontend invoke, runtime-pack execution, provider promotion, or user-data mutation in this PR. |
+| 2026-05-24 | Open Phase 4R Settings IPC review pack PR. | PR #444 contains only the tracker and Phase 4R plan, records DMZ/HIGH impact gates, default Rust regressions, whitespace checks, and GitNexus staged detect LOW. | Merge only if GitHub reports CLEAN and the fresh reviewer accepts the writer/reviewer pack. |
 
 ---
 
@@ -93,9 +95,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4q-task-time-dispatch-effects` |
-| Current phase branch | `codex/browser-runtime-phase4q-task-time-dispatch-effects` |
-| Current local base | `1fd68675 Merge pull request #442 from novolei/codex/browser-runtime-phase4p-task-time-dispatch-patch` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4r-settings-ipc-review-pack` |
+| Current phase branch | `codex/browser-runtime-phase4r-settings-ipc-review-pack` |
+| Current local base | `1db302be Merge pull request #443 from novolei/codex/browser-runtime-phase4q-task-time-dispatch-effects` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -129,9 +131,10 @@
 | Phase 4N implementation commit | Merged through PR #440 as `d5068b30 feat(browser): add task-time tool call patch boundary`; merge commit `08a2b65f`. |
 | Phase 4O implementation commit | Merged through PR #441 as `d4026f18 docs(browser): add prompt dispatch review pack`; merge commit `4d67f487`. |
 | Phase 4P implementation commit | Merged through PR #442 as `2db901d8 feat(browser): add task-time dispatch patch boundary`; merge commit `1fd68675`. |
-| Phase 4Q implementation commit | Open through PR #443 as `c6ae404f feat(browser): model task-time dispatch effects`. |
-| Known pre-existing tracked changes | None in the Phase 4Q worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | Phase 4Q may use ignored local `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` links from the primary worktree for verification only. |
+| Phase 4Q implementation commit | Merged through PR #443 as `11e6032f feat(browser): model task-time dispatch effects`; merge commit `1db302be`. |
+| Phase 4R implementation commit | Open through PR #444 as `docs(browser): add settings ipc review pack`; exact head recorded by PR #444 after final tracker amend. |
+| Known pre-existing tracked changes | None in the Phase 4R worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | None needed for this docs-only Phase 4R slice. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -2901,6 +2904,86 @@ Recommended Phase 4Q checks:
 - Local setup caveat: this worktree used ignored symlinks for
   `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and
   `src-tauri/gbrain-source`; none are staged or committed.
+
+## Phase 4R Entry Criteria
+
+Phase 4R can start because:
+
+- PR #443 merged the frontend task-time dispatch-effect model into `main` and
+  `origin/main`;
+- the Phase 4R worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4r-settings-ipc-review-pack`;
+- the branch starts from `1db302be`, the current `origin/main`;
+- remaining Phase 4 Settings/Doctor status and action wiring likely requires a
+  Tauri IPC command and backend command registration in DMZ `tauri_commands.rs`;
+- GitNexus impact for shared frontend `getSettings` is HIGH, so future writer
+  work must avoid it or receive fresh reviewer acceptance.
+
+Recommended Phase 4R checks:
+
+- keep the phase docs-only and do not edit Tauri commands or frontend invoke
+  calls;
+- record a writer/reviewer plan for the next read-only status IPC slice;
+- define allowed files, non-goals, rollback, and verification before any
+  runtime-pack execution work;
+- preserve the merged 4Q dispatch-effect tracker state.
+
+## Phase 4R Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase4r-settings-ipc-review-pack.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4r-settings-ipc-review-pack`
+- Branch:
+  `codex/browser-runtime-phase4r-settings-ipc-review-pack`
+- Scope:
+  docs-only writer/reviewer pack for Settings runtime status/action IPC.
+- Current PR:
+  PR #444.
+- DMZ files:
+  none edited; future `tauri_commands.rs` work requires writer/reviewer
+  acceptance.
+- Migration:
+  none planned.
+- Rollback:
+  revert this docs-only PR.
+
+### Phase 4R Impact Notes
+
+- `npx gitnexus analyze` indexed the Phase 4R worktree before impact analysis.
+- `ui/src/lib/tauri-bridge.ts::getSettings`: GitNexus impact HIGH, 6 direct
+  callers, 2 affected processes (`App`, `GeneralSettings`), and modules Atoms,
+  Settings, and Hooks.
+- `ui/src/components/settings/BrowserRuntimeSettings.tsx::BrowserRuntimeSettings`:
+  GitNexus impact LOW, 1 direct caller, 2 affected processes
+  (`SettingsPanel`, `SettingsContent`).
+- `ui/src/components/settings/SettingsPanel.tsx::SettingsPanel`: GitNexus
+  impact LOW, 0 direct callers, 0 affected processes.
+- `src-tauri/src/tauri_commands.rs::get_settings` was not resolved by the
+  current GitNexus index, but `tauri_commands.rs` is a DMZ file; future backend
+  IPC command additions must therefore use the Phase 4R reviewer plan.
+- This slice changes no Rust, UI, IPC, DB migration, runtime-pack execution,
+  Playwright launch, provider selection, root `App`, `agentic_loop.rs`, or
+  `tauri_commands.rs`.
+
+### Phase 4R Verification Notes
+
+- Default Rust browser-runtime regressions passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  returned `32 passed`, `0 failed`, `2591 filtered out`;
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  returned `44 passed`, `0 failed`, `2579 filtered out`;
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  returned `6 passed`, `0 failed`, `2617 filtered out`.
+- `rustfmt --edition 2021 --check <changed-rust-files>` is not applicable:
+  Phase 4R changes no Rust files.
+- `git diff --check -- docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-phase4r-settings-ipc-review-pack.md`
+  returned no output.
+- GitNexus staged detect reported `risk_level: low`, `changed_files: 2`,
+  13 changed symbols, and `affected_processes: []`.
+- Local setup caveat: this worktree used ignored symlinks for
+  `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source`;
+  none are staged or committed.
 
 ---
 
