@@ -232,6 +232,93 @@ pub fn browser_provider_capability_card(
         .find(|card| card.provider_id == provider_id)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserProviderSelectionRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observation_mode: Option<String>,
+    pub requires_mcp_specific_capability: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserProviderSelectionCandidate {
+    pub provider_id: &'static str,
+    pub lane: BrowserProviderLane,
+    pub rank: u16,
+    pub reason: &'static str,
+}
+
+pub fn rank_browser_provider_candidates(
+    request: &BrowserProviderSelectionRequest,
+    cards: &[BrowserProviderCapabilityCard],
+) -> Vec<BrowserProviderSelectionCandidate> {
+    let mut candidates = cards
+        .iter()
+        .filter(|card| browser_provider_card_matches_selection_request(card, request))
+        .map(|card| BrowserProviderSelectionCandidate {
+            provider_id: card.provider_id,
+            lane: card.lane,
+            rank: browser_provider_lane_selection_rank(card.lane, request),
+            reason: browser_provider_lane_selection_reason(card.lane, request),
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by_key(|candidate| (candidate.rank, candidate.provider_id));
+    candidates
+}
+
+fn browser_provider_card_matches_selection_request(
+    card: &BrowserProviderCapabilityCard,
+    request: &BrowserProviderSelectionRequest,
+) -> bool {
+    if let Some(action) = request.action.as_deref() {
+        if !card.supported_actions.contains(&action) {
+            return false;
+        }
+    }
+
+    if let Some(observation_mode) = request.observation_mode.as_deref() {
+        if !card.observation_modes.contains(&observation_mode) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn browser_provider_lane_selection_rank(
+    lane: BrowserProviderLane,
+    request: &BrowserProviderSelectionRequest,
+) -> u16 {
+    match lane {
+        BrowserProviderLane::LocalChromium => 0,
+        BrowserProviderLane::PlaywrightCli => 10,
+        BrowserProviderLane::PlaywrightMcp if request.requires_mcp_specific_capability => 5,
+        BrowserProviderLane::PlaywrightMcp => 20,
+        BrowserProviderLane::RawCdp => 80,
+        BrowserProviderLane::Hosted => 90,
+    }
+}
+
+fn browser_provider_lane_selection_reason(
+    lane: BrowserProviderLane,
+    request: &BrowserProviderSelectionRequest,
+) -> &'static str {
+    match lane {
+        BrowserProviderLane::LocalChromium => "local_supervisor_default",
+        BrowserProviderLane::PlaywrightCli => "playwright_cli_thin_lane",
+        BrowserProviderLane::PlaywrightMcp if request.requires_mcp_specific_capability => {
+            "mcp_specific_capability_required"
+        }
+        BrowserProviderLane::PlaywrightMcp => "mcp_feature_lane_after_cli",
+        BrowserProviderLane::RawCdp => "guarded_low_level_fallback",
+        BrowserProviderLane::Hosted => "opt_in_remote_boundary",
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserTaskEventName {
