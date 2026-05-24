@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 5A Playwright CLI provider contract in progress
+> Current phase: Goal-mode docs hygiene after Phase 5A merge
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -24,7 +24,7 @@
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4X merged to `main` / `origin/main`; exit audit complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` / `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` | Closed for user-visible Settings, Doctor, prompt, checkpoint, deep-link, read-only IPC, and dry-run action evidence. Real runtime execution/provider work moves to Phase 5+. |
-| Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A provider contract in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5a-cli-provider-contract` / `codex/browser-runtime-phase5a-cli-provider-contract` | Add a pure Playwright CLI provider contract/envelope shell behind the disabled feature flag; do not spawn Node/Playwright or promote providers. |
+| Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A provider contract merged to `main` / `origin/main`; goal-mode docs hygiene in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-goal-mode-docs-hygiene` / `codex/browser-runtime-goal-mode-docs-hygiene` | Land the docs hygiene PR so goal-mode phase-pack work is not slowed by obsolete branch templates or over-strict DMZ wording; next implementation slice should continue Phase 5B. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Not started | Unassigned | TBD | Wait for chromiumoxide, CLI, and MCP lanes. |
@@ -97,6 +97,7 @@
 | 2026-05-24 | Merge Phase 4V and start Phase 4W as a Settings run-doctor refresh. | PR #448 merged as `5bd70bd4`; Settings and Startup Doctor now both consume the dedicated read-only status bridge. GitNexus impact for the shared bridge is HIGH because it fans into Settings, Startup, and root `App`, and fresh reviewer Carver accepted a Settings-local refresh plan. | Phase 4W may make the existing Settings `run_doctor` button refresh status through the read-only bridge, but must not change backend IPC, execute runtime actions, mutate packs, or touch provider selection. |
 | 2026-05-24 | Merge Phase 4W and start Phase 4X as Settings action dry-run IPC. | PR #449 merged as `f24a88b4`; Settings can now refresh read-only status on demand. Runtime-pack action buttons still need backend planner evidence before any real execution is safe. | Phase 4X may add a dedicated dry-run Tauri command and Settings rendering for execution reports, but must not perform real prepare/repair/reinstall/cleanup/rollback, emit TaskEvents, promote providers, or mutate runtime files. `main.rs` command registration is a narrow DMZ touch and must be reviewer-visible. |
 | 2026-05-24 | Close Phase 4 after PR #450 and start Phase 5A as a pure CLI provider contract. | PR #450 merged as `3dbd9500`; fresh reviewer Galileo returned `REVIEW ACCEPTED`; ADR Phase 4 user-visible Settings/Doctor/task-time prompt/defer/dry-run surfaces are now in place, while real Playwright provider execution belongs to Phase 5. | Phase 5A may define readiness and JSON action-envelope contracts for `browser.playwright_cli`, but must not spawn Node/Playwright, execute browser actions, promote the provider, add IPC, or mutate runtime packs. |
+| 2026-05-24 | Merge Phase 5A and start goal-mode docs hygiene before Phase 5B. | PR #451 merged as `947b3aee`; fresh reviewer Mencius returned `REVIEW ACCEPTED`. The user then asked to audit `AGENTS.md`, `BEHAVIOR.md`, and `CONTEXT.md` for goal-mode friction, especially over-strict DMZ language around `agentic_loop.rs` and `tauri_commands.rs`. | This docs-only sidecar may align behavior docs with phase-pack goal mode and remove file-name-only DMZ gates for runtime hot paths. It must not add runtime behavior or fold in Phase 5B implementation. |
 
 ---
 
@@ -105,9 +106,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5a-cli-provider-contract` |
-| Current phase branch | `codex/browser-runtime-phase5a-cli-provider-contract` |
-| Current local base | `3dbd9500 Merge pull request #450 from novolei/codex/browser-runtime-phase4x-settings-action-dry-run-ipc` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-goal-mode-docs-hygiene` |
+| Current phase branch | `codex/browser-runtime-goal-mode-docs-hygiene` |
+| Current local base | `947b3aee Merge pull request #451 from novolei/codex/browser-runtime-phase5a-cli-provider-contract` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -149,9 +150,10 @@
 | Phase 4V implementation commit | Merged through PR #448 as `befe2656 feat(browser): read runtime status in startup doctor`; merge commit `5bd70bd4`. |
 | Phase 4W implementation commit | Merged through PR #449 as `166504ad feat(browser): refresh runtime doctor from settings`; merge commit `f24a88b4`. |
 | Phase 4X implementation commit | Merged through PR #450 as `069dafd4 feat(browser): dry-run runtime actions from settings`; merge commit `3dbd9500`. |
-| Phase 5A implementation commit | Current PR #451 on `codex/browser-runtime-phase5a-cli-provider-contract` as `feat(browser): add playwright cli provider contract`; exact head SHA is the PR head. |
-| Known pre-existing tracked changes | None in the Phase 5A worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | Phase 5A may use ignored local `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` links from the primary worktree for verification only if Rust verification needs them. |
+| Phase 5A implementation commit | Merged through PR #451 as `b420bff5 feat(browser): add playwright cli provider contract`; merge commit `947b3aee`. |
+| Goal-mode docs hygiene commit | In progress on `codex/browser-runtime-goal-mode-docs-hygiene`; PR pending. |
+| Known pre-existing tracked changes | None in the docs hygiene worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | Not needed for docs hygiene. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -3637,6 +3639,78 @@ Recommended Phase 5A checks:
   changed symbols, and 0 affected processes; no HIGH or CRITICAL risk was
   reported.
 
+## Goal-Mode Docs Hygiene Entry Criteria
+
+This sidecar can start because:
+
+- PR #451 merged Phase 5A into `main` and `origin/main`;
+- the user explicitly requested a review of `AGENTS.md`, `BEHAVIOR.md`, and
+  `CONTEXT.md` for goal-mode conflicts or unreasonable design;
+- the current behavior docs still had obsolete branch/plan templates and
+  over-strict DMZ wording that could turn review discipline into false
+  blockers during phase-pack work;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-goal-mode-docs-hygiene`;
+- the branch starts from `947b3aee`, the current `origin/main`.
+
+## Goal-Mode Docs Hygiene Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-goal-mode-docs-hygiene.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-goal-mode-docs-hygiene`
+- Branch:
+  `codex/browser-runtime-goal-mode-docs-hygiene`
+- Scope:
+  docs-only alignment of goal-mode branch naming, plan naming, primary-worktree
+  sync, docs-only GitNexus expectations, high-attention policy-file wording,
+  and removal of special DMZ constraints for `agentic_loop.rs` /
+  `tauri_commands.rs`.
+- Current PR:
+  pending.
+- Non-goal:
+  no Phase 5B implementation, code changes, IPC, provider promotion, runtime
+  pack mutation, or DB migration.
+- Rollback:
+  revert this docs PR; no runtime state, browser sessions, provider selection,
+  database rows, or user data are changed.
+
+### Goal-Mode Docs Hygiene Impact Notes
+
+- `AGENTS.md` and `BEHAVIOR.md` now describe high-attention policy files as
+  reviewable boundaries rather than forbidden files.
+- `agentic_loop.rs` and `tauri_commands.rs` are no longer special DMZ files;
+  they follow normal code discipline: plan, GitNexus impact, narrow diff,
+  focused tests, and fresh review only when broad/risky/HIGH-impact.
+- Because both files are already large, new behavior should generally go into
+  focused modules, leaving `agentic_loop.rs` as orchestration and
+  `tauri_commands.rs` as thin IPC delegation.
+- Before continuing Phase 5B, audit Phase 1 through Phase 5A for any target or
+  design drift caused by the previous `agentic_loop.rs` / `tauri_commands.rs`
+  constraints. Pay special attention to Phase 4O-4P prompt dispatch choices and
+  Phase 4R-4X Settings/IPC choices. Also audit whether any code remained in
+  dry-run lanes only because the old constraints made real `agentic_loop.rs` or
+  `tauri_commands.rs` integration feel too risky. If the audit finds drift,
+  create a dedicated corrective phase before resuming later Browser Runtime
+  phases.
+- Explicit goal-mode DRI/user authorization permits proceeding through
+  high-attention or HIGH/CRITICAL gates, while tests, fresh review, unclear
+  scope, and unsafe side effects remain real blockers.
+- Docs-only edits that do not modify code symbols do not require symbol impact,
+  but still require GitNexus detect before commit.
+
+### Goal-Mode Docs Hygiene Verification Notes
+
+- `rg -n "prep/codex-absorption|<M\\*-T\\*>|requires a writer/reviewer|tauri_commands\\.rs.*special DMZ|agentic_loop\\.rs.*special DMZ|once uclaw-utils-home lands" AGENTS.md BEHAVIOR.md CONTEXT.md`
+  returned no stale-rule matches.
+- `git diff --check -- AGENTS.md BEHAVIOR.md CONTEXT.md docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-goal-mode-docs-hygiene.md`
+  passed with no output.
+- `npx gitnexus analyze` indexed the docs hygiene worktree. It updated
+  auto-managed GitNexus stats in `AGENTS.md` / `CLAUDE.md`; those noise changes
+  were restored.
+- GitNexus staged `detect_changes` reported LOW risk, 5 changed files, 31
+  changed symbols, and 0 affected processes.
+
 ---
 
 ## Per-Phase Closed Loop
@@ -3675,7 +3749,8 @@ Each phase plan under `docs/superpowers/plans/` must include:
 - Keep the PR narrow and reversible.
 - Prefer pure DTOs/adapters before runtime behavior.
 - Preserve existing user changes.
-- Avoid DMZ files unless explicitly planned.
+- Treat high-attention files as planned, narrow edits; `agentic_loop.rs` and
+  `tauri_commands.rs` use normal code discipline and should stay thin.
 - Keep tests in sibling `*_tests.rs` files for Rust modules.
 
 ### 5. Verify

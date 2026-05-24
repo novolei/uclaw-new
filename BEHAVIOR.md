@@ -24,19 +24,24 @@ always run these four phases in order:
 
 1. **Explore** — read files, ask clarifying questions, do not modify anything.
    Use subagents for broad reads to keep your main context clean.
-2. **Plan** — write a plan to `docs/superpowers/plans/<M*-T*>-<topic>.md`.
+2. **Plan** — write a plan to `docs/superpowers/plans/<date>-<task>.md`
+   or the active tracker's more specific plan filename convention.
    The plan must answer ADR §18's 11 questions (intent / autonomy / truth source /
    TaskEvent / context / capability / hooks / projection / harness / rollback /
    what this does not own).
 3. **Implement** — small commits, each independently compilable. Use
    `verify-then-commit`: every commit's body lists the verification command and
    its expected output.
-4. **Commit + PR** — push to a `prep/codex-absorption-pr<N>-<name>` branch
-   cherry-picked from `origin/main` so the PR diff shows only the current task.
-   Open one PR per plan.
+4. **Commit + PR** — push from a clean branch based on `origin/main` so the PR
+   diff shows only the current task. Use the branch naming required by the
+   active goal/tracker/plan (for example `codex/<browser-runtime-phase-name>`
+   for Browser Runtime phase-pack work); otherwise use `prep/<task>` or
+   `codex/<task>`. Open one PR per plan.
 
 **Skip Plan Mode** only for: typos, ≤ 1-file mechanical fixes, doc-only changes,
-or hotfixes with an obvious root cause and a ≤ 1-file fix.
+or hotfixes with an obvious root cause and a ≤ 1-file fix. Do not skip Plan
+Mode for behavior-contract changes, tracker-governed long-running goals, or
+docs changes that alter how agents are allowed to operate.
 
 ## 2. Context Discipline — Keep CLAUDE.md Concise
 
@@ -100,6 +105,11 @@ belongs to the human's IDE**. Cowork and other AI sessions live in
 subordinate worktrees under `~/Documents/uclaw-cowork`, `~/Documents/uclaw-worktrees/<task>`,
 or `.claude/worktrees/<task>` (`.claude/worktrees/` is gitignored).
 
+Long-running goal-mode PR chains may fast-forward the primary `main` after a PR
+has merged, but implementation edits stay in the phase worktree. Preserve
+untracked or unrelated human files in the primary worktree; do not delete,
+reset, or overwrite them.
+
 ## 6. Context Management — Compact Proactively, Clear Between Tasks
 
 - Run `/compact <focus>` at roughly 60% context utilization. Manual compaction
@@ -129,18 +139,54 @@ Patterns:
 Always include the verification command **and its expected output** in the
 commit body.
 
-## 8. Writer / Reviewer — Separate Sessions for Fresh-Eye Review
+## 8. High-Attention Files and Fresh-Eye Review
 
-For P0 tasks (anything touching DMZ files: `agentic_loop.rs`, `tauri_commands.rs`,
-`CLAUDE.md`, `db/migrations.rs`, `Cargo.toml` workspace root, or anything
-flagged HIGH/CRITICAL by `gitnexus impact`), use two sessions:
+Some policy and repository-structure files have enough blast radius that casual
+edits are dangerous: `CLAUDE.md`, `db/migrations.rs`, `Cargo.toml` workspace
+root, and `BEHAVIOR.md`. Treat these as high-attention files, not forbidden
+files.
+
+Runtime hot-path files such as `agentic_loop.rs` and `tauri_commands.rs` are no
+longer special DMZ files. They are ordinary code under the normal senior
+engineering discipline: plan the slice, run GitNexus impact for changed
+symbols, keep the diff narrow, run focused tests, and request fresh review when
+the change is broad, risky, or HIGH/CRITICAL. Do not create a docs-only
+"permission PR" just because these files are involved.
+
+Because these two files are already large, new behavior should usually live in
+focused modules that they call into. Prefer thin orchestration in
+`agentic_loop.rs` and thin IPC shims in `tauri_commands.rs`; avoid adding large
+business-logic blocks there unless the plan explains why extraction would make
+the change less clear or less safe.
+
+For high-attention edits:
+
+- Use an isolated worktree.
+- State the reason, allowed files, rollback path, and verification in the plan
+  or tracker.
+- Keep the diff narrow and avoid folding unrelated cleanup into the PR.
+- Put a short DMZ/high-attention note in the PR body.
+- Run GitNexus impact for edited code symbols and `detect-changes` before
+  commit.
+
+Use a fresh reviewer before merge when the edit is behavioral, broad, risky,
+or anything is flagged HIGH/CRITICAL by GitNexus. A reviewer may be a separate
+agent/session; the reviewer does not need to be a second human unless the DRI
+asks for that.
 
 - **Writer session** implements the change and pushes the prep branch.
-- **Reviewer session** (a fresh `/clear` or a separate IDE) reviews the diff
-  without reading the writer's transcript. The reviewer's prompt is
-  `gh pr diff <number>` plus `gitnexus context <main_symbol>` and nothing else.
+- **Reviewer session** reviews the diff without relying on the writer's
+  transcript. A good prompt includes `gh pr diff <number>`, the plan/tracker,
+  and GitNexus context for the main edited symbol when code symbols changed.
 
 This avoids the "writer rationalizing their own bug" failure mode.
+
+In goal mode, an explicit DRI/user instruction to proceed through a
+high-attention or HIGH/CRITICAL gate is authorization to keep moving, not an
+instruction to be reckless. Do the work when the ADR/design is clear, tests are
+green, and the logic is reviewable. Stop only for real blockers: unclear
+requirements, failing verification, unsafe real-world side effects, reviewer
+blocking findings, or unresolved HIGH/CRITICAL risk without authorization.
 
 ## 9. Deterministic Enforcement — Hooks, Not Vibes
 
@@ -194,9 +240,8 @@ of which agent or IDE is acting:
   guard (lands in Phase 0.5-T7) backs this up at execution time.
 - **`dirs::home_dir().*".uclaw"` is banned**. Use `uclaw_utils_home::uclaw_home()`
   (and the directory helpers `uclaw_skills_dir()`, `uclaw_sessions_dir()`,
-  `uclaw_plugins_dir()`, etc.) once `uclaw-utils-home` lands (Phase 0.5-T5).
-  The pre-commit hook blocks the pattern; the existing call sites are
-  allowlisted until Phase 0.5-T6 sweeps them.
+  `uclaw_plugins_dir()`, etc.). The pre-commit hook blocks the pattern; any
+  remaining legacy call site must stay on an explicit allowlist until swept.
 - **ADR §18 11 questions**: every strategic spec must answer 11 questions
   (intent, autonomy, truth source, TaskEvent, context, capability, hooks,
   projection, harness, rollback, what it does not own). See
@@ -204,8 +249,10 @@ of which agent or IDE is acting:
 - **Active migration registry** lives in `CONTEXT.md`. Reserve your V-number
   there before writing any schema migration.
 - **GitNexus discipline** — see the auto-managed `<!-- gitnexus:start -->`
-  block in `CLAUDE.md`. MUST run `gitnexus impact` before editing any symbol;
-  MUST run `gitnexus detect-changes` before committing.
+  block in `CLAUDE.md` / `AGENTS.md`. MUST run `gitnexus impact` before
+  editing any code symbol; MUST run `gitnexus detect-changes` before
+  committing. Docs-only edits that do not modify code symbols do not require
+  symbol impact, but they still require detect-changes before commit.
 
 ---
 
@@ -263,8 +310,10 @@ behavior contract:
 2. Update every IDE entry file's "Inline critical rules" section to mirror
    any new critical rule.
 3. Update CLAUDE.md (and CONTEXT.md if relevant) with cross-references.
-4. The DRI (see §10) reviews and merges. Bypassing the DRI on a behavior-spec
-   change is itself a behavior violation.
+4. The DRI (see §10) reviews and merges. If the DRI is the requesting user in a
+   live goal-mode session, that explicit request counts as authorization to open
+   the behavior-spec PR; still use an isolated worktree, document the rationale,
+   and obtain a fresh review before merge.
 
 **Last reviewed**: 2026-05-20
 **Next scheduled review**: 2026-08-20 (quarterly cadence)
