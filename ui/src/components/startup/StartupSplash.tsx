@@ -14,11 +14,13 @@ import { cn } from '@/lib/utils'
 import {
   clampStartupProgress,
   deriveStartupDoctorViewModel,
+  deriveStartupDoctorViewModelFromRuntimePackStatus,
   type StartupDoctorCheck,
   type StartupDoctorCheckStatus,
   type StartupDoctorPhase,
   type StartupDoctorViewModel,
 } from '@/lib/startup/startup-doctor'
+import { getBrowserRuntimeStatus } from '@/lib/tauri-bridge'
 
 export interface StartupSplashProps {
   viewModel?: StartupDoctorViewModel
@@ -98,11 +100,13 @@ function hasBrowserRuntimeAttention(checks: StartupDoctorCheck[]): boolean {
 }
 
 export function StartupSplash({
-  viewModel = deriveStartupDoctorViewModel(),
+  viewModel: providedViewModel,
   detailsExpanded,
   onDetailsExpandedChange,
   onOpenBrowserRuntimeSettings,
 }: StartupSplashProps): React.ReactElement {
+  const [liveViewModel, setLiveViewModel] = React.useState<StartupDoctorViewModel | undefined>()
+  const viewModel = providedViewModel ?? liveViewModel ?? deriveStartupDoctorViewModel()
   const [internalExpanded, setInternalExpanded] = React.useState(viewModel.detailsRecommended)
   const isControlled = detailsExpanded !== undefined
   const expanded = isControlled ? detailsExpanded : internalExpanded
@@ -110,6 +114,36 @@ export function StartupSplash({
   const recoverySurface = startupRecoverySurface(viewModel)
   const showBrowserRuntimeSettings =
     Boolean(onOpenBrowserRuntimeSettings) && hasBrowserRuntimeAttention(viewModel.checks)
+
+  React.useEffect(() => {
+    if (providedViewModel) {
+      setLiveViewModel(undefined)
+      return
+    }
+
+    let cancelled = false
+    void getBrowserRuntimeStatus()
+      .then((report) => {
+        if (!cancelled) {
+          setLiveViewModel(deriveStartupDoctorViewModelFromRuntimePackStatus(report))
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLiveViewModel(undefined)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [providedViewModel])
+
+  React.useEffect(() => {
+    if (!isControlled && viewModel.detailsRecommended) {
+      setInternalExpanded(true)
+    }
+  }, [isControlled, viewModel.detailsRecommended])
 
   const setExpanded = (next: boolean) => {
     if (!isControlled) setInternalExpanded(next)
