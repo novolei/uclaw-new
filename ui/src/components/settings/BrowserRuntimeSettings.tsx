@@ -44,33 +44,45 @@ export function BrowserRuntimeSettings({
   status,
 }: BrowserRuntimeSettingsProps): React.ReactElement {
   const [liveStatus, setLiveStatus] = React.useState<BrowserRuntimeSettingsInput | undefined>()
+  const refreshGenerationRef = React.useRef(0)
+  const mountedRef = React.useRef(false)
+
+  React.useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      refreshGenerationRef.current += 1
+    }
+  }, [])
+
+  const refreshLiveStatus = React.useCallback(async () => {
+    if (status) return
+
+    const generation = refreshGenerationRef.current + 1
+    refreshGenerationRef.current = generation
+
+    try {
+      const report = await getBrowserRuntimeStatus()
+      if (mountedRef.current && refreshGenerationRef.current === generation) {
+        setLiveStatus({
+          report,
+          lastCheckedAtMs: Date.now(),
+        })
+      }
+    } catch {
+      // Keep the last displayed status when a manual refresh fails.
+    }
+  }, [status])
 
   React.useEffect(() => {
     if (status) {
+      refreshGenerationRef.current += 1
       setLiveStatus(undefined)
       return
     }
 
-    let cancelled = false
-    void getBrowserRuntimeStatus()
-      .then((report) => {
-        if (!cancelled) {
-          setLiveStatus({
-            report,
-            lastCheckedAtMs: Date.now(),
-          })
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setLiveStatus(undefined)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [status])
+    void refreshLiveStatus()
+  }, [refreshLiveStatus, status])
 
   const model = deriveBrowserRuntimeSettingsViewModel(status ?? liveStatus)
   const [selectedActionId, setSelectedActionId] =
@@ -112,7 +124,12 @@ export function BrowserRuntimeSettings({
                 size="sm"
                 disabled={!action.enabled}
                 aria-label={action.label}
-                onClick={() => setSelectedActionId(action.id)}
+                onClick={() => {
+                  setSelectedActionId(action.id)
+                  if (action.id === 'run_doctor' && !status) {
+                    void refreshLiveStatus()
+                  }
+                }}
               >
                 {ACTION_ICONS[action.id]}
                 {action.label}

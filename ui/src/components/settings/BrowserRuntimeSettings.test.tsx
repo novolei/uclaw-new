@@ -9,9 +9,9 @@ vi.mock('@/lib/tauri-bridge', () => ({
   getBrowserRuntimeStatus: vi.fn(),
 }))
 
-function runtimeReport(): StartupRuntimePackStatusReport {
+function runtimeReport(manifestPackVersion = '1.48.2-uclaw.1'): StartupRuntimePackStatusReport {
   return {
-    manifestPackVersion: '1.48.2-uclaw.1',
+    manifestPackVersion,
     ready: true,
     canRunBrowserTasks: true,
     primaryAction: 'keep_current',
@@ -21,7 +21,7 @@ function runtimeReport(): StartupRuntimePackStatusReport {
       ready: true,
       remediation: 'Browser runtime is ready.',
       actions: ['keep_current'],
-      manifestPackVersion: '1.48.2-uclaw.1',
+      manifestPackVersion,
       rollbackAvailable: true,
       activeTasks: 0,
     },
@@ -64,6 +64,62 @@ describe('BrowserRuntimeSettings', () => {
       expect(screen.getByText('1.48.2-uclaw.1')).toBeInTheDocument()
     })
     expect(screen.getByRole('button', { name: '保持当前' })).toBeEnabled()
+  })
+
+  it('refreshes live runtime status from the run-doctor action', async () => {
+    vi.mocked(getBrowserRuntimeStatus)
+      .mockResolvedValueOnce(runtimeReport('1.48.2-uclaw.1'))
+      .mockResolvedValueOnce(runtimeReport('1.49.0-uclaw.1'))
+
+    const { user } = renderWithProviders(<BrowserRuntimeSettings />)
+
+    await waitFor(() => {
+      expect(screen.getByText('1.48.2-uclaw.1')).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByRole('button', { name: '运行诊断' }))
+
+    await waitFor(() => {
+      expect(getBrowserRuntimeStatus).toHaveBeenCalledTimes(2)
+    })
+    await waitFor(() => {
+      expect(screen.getByText('1.49.0-uclaw.1')).toBeInTheDocument()
+    })
+    expect(screen.getByText('刷新 Startup Doctor / Browser Runtime 状态，只读取本地运行时状态。')).toBeInTheDocument()
+  })
+
+  it('keeps explicit status previews from invoking run-doctor refreshes', async () => {
+    const { user } = renderWithProviders(
+      <BrowserRuntimeSettings
+        status={{
+          report: runtimeReport(),
+        }}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: '运行诊断' }))
+
+    expect(getBrowserRuntimeStatus).not.toHaveBeenCalled()
+    expect(screen.getByText('刷新 Startup Doctor / Browser Runtime 状态，只读取本地运行时状态。')).toBeInTheDocument()
+  })
+
+  it('keeps the last live status when run-doctor refresh fails', async () => {
+    vi.mocked(getBrowserRuntimeStatus)
+      .mockResolvedValueOnce(runtimeReport('1.48.2-uclaw.1'))
+      .mockRejectedValueOnce(new Error('runtime status unavailable'))
+
+    const { user } = renderWithProviders(<BrowserRuntimeSettings />)
+
+    await waitFor(() => {
+      expect(screen.getByText('1.48.2-uclaw.1')).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByRole('button', { name: '运行诊断' }))
+
+    await waitFor(() => {
+      expect(getBrowserRuntimeStatus).toHaveBeenCalledTimes(2)
+    })
+    expect(screen.getByText('1.48.2-uclaw.1')).toBeInTheDocument()
   })
 
   it('renders runtime metadata from the Phase 2 status report adapter', () => {
