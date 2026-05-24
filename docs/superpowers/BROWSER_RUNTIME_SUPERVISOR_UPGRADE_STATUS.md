@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 8H CLI selected-route execution
+> Current phase: Phase 8I provider parity matrix harness
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -27,7 +27,7 @@
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A-5F merged to `main` / `origin/main`; exit gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff` / `codex/browser-runtime-phase5f-action-state-diff` | Closed for feature-flagged Playwright CLI thin lane. Provider promotion and parity routing remain Phase 8. |
 | Phase 6 | Browser identity authorization and profile UX | Phase 6A-6F merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6f-identity-boundary-actions` / `codex/browser-runtime-phase6f-identity-boundary-actions` | Closed for safe identity revoke/drain/active-task/resume boundary contracts; auth WebView and payment confirmation remain future work. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7G merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7g-mcp-selection-policy` / `codex/browser-runtime-phase7g-mcp-selection-policy` | Closed for MCP sidecar, stdio action boundary, artifact/error routing, and MCP-vs-CLI selection guardrail. |
-| Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8G merged; Phase 8H CLI selected-route execution PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8h-cli-selected-execution` / `codex/browser-runtime-phase8h-cli-selected-execution` | Fresh reviewer should audit PR #482, then merge if accepted and GitHub reports CLEAN. |
+| Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8H merged; Phase 8I provider parity matrix harness PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8i-provider-parity-matrix` / `codex/browser-runtime-phase8i-provider-parity-matrix` | Fresh reviewer should audit PR #483, then merge if accepted and GitHub reports CLEAN. |
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Not started | Unassigned | TBD | Wait for observable provider behavior and harness scorecards. |
 | Phase 10 | Optional hosted providers and hard-site escape hatches | Not started | Unassigned | TBD | Wait for local-first provider routing and policy prompts. |
 
@@ -133,6 +133,8 @@
 | 2026-05-24 | Open Phase 8G CLI/MCP provider candidate route-input PR. | PR #481 contains route options for feature flags, optional runtime-pack readiness evidence, disabled provider IDs, focused provider execution tests, and GitNexus staged detect LOW with 0 affected processes. | Fresh reviewer should audit the candidate input boundary and safe-default behavior before merge; if accepted and GitHub reports CLEAN, merge and continue to the next Phase 8 slice. |
 | 2026-05-24 | Merge Phase 8G and start Phase 8H as CLI selected-route execution. | PR #481 merged as `e527ec45`; fresh reviewer Herschel returned `REVIEW ACCEPTED` and GitHub reported CLEAN. | Phase 8H may execute explicitly selected Playwright CLI routes through the existing app-managed worker adapter, but must keep safe defaults local and avoid provider promotion, MCP execution, UI, IPC, DB, or raw scripts. |
 | 2026-05-24 | Open Phase 8H CLI selected-route execution PR. | PR #482 contains selected CLI route execution through the existing app-managed worker adapter, BrowserActionResult normalization, unsupported-action blocking, focused provider execution tests, and GitNexus staged detect LOW with 0 affected processes. | Fresh reviewer should audit selected-provider execution semantics and safe-default behavior before merge; if accepted and GitHub reports CLEAN, merge and continue to the next Phase 8 slice. |
+| 2026-05-24 | Merge Phase 8H and start Phase 8I as provider parity matrix harness. | PR #482 merged as `49c274de`; fresh reviewer Lovelace returned `REVIEW ACCEPTED` and reran `browser::provider_execution`. | Phase 8I should add model-free parity matrix evidence that the same harness case can route across local Chromium, Playwright CLI, Playwright MCP, and mock hosted providers, plus fallback artifact visibility, without promotion or real hosted/MCP execution. |
+| 2026-05-24 | Open Phase 8I provider parity matrix harness PR. | PR #483 contains the model-free provider parity matrix module, shared navigate/click forced-route cases, fallback artifact-visibility evidence, attachable harness artifact output, focused harness/provider/runtime regressions, and GitNexus staged detect LOW with 0 affected processes. | Fresh reviewer should audit the harness evidence and no-promotion boundary before merge; if accepted and GitHub reports CLEAN, merge and continue to the next Phase 8 slice. |
 
 ---
 
@@ -141,9 +143,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8h-cli-selected-execution` |
-| Current phase branch | `codex/browser-runtime-phase8h-cli-selected-execution` |
-| Current local base | `e527ec45 Merge pull request #481 from novolei/codex/browser-runtime-phase8g-cli-provider-candidate` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8i-provider-parity-matrix` |
+| Current phase branch | `codex/browser-runtime-phase8i-provider-parity-matrix` |
+| Current local base | `49c274de Merge pull request #482 from novolei/codex/browser-runtime-phase8h-cli-selected-execution` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -215,8 +217,9 @@
 | Phase 8E live route signals implementation commit | Merged through PR #479 as `6550fa6c feat(browser): emit live provider route signals`; merge commit `19b99593`. |
 | Phase 8F provider execution boundary implementation commit | Merged through PR #480 as `74ddeb03 feat(browser): extract provider action execution boundary`; merge commit `49b71dd0`. |
 | Phase 8G CLI/MCP provider candidate route-input implementation commit | Merged through PR #481 as `a52482a4 feat(browser): add provider route candidate inputs`; merge commit `e527ec45`. |
-| Phase 8H CLI selected-route execution implementation commit | Open in PR #482 as branch HEAD `feat(browser): execute selected cli provider routes`; merge commit to be recorded after landing. |
-| Known pre-existing tracked changes | None in the Phase 8H CLI selected-route execution worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes; this phase starts from `origin/main` after PR #481 was merged. |
+| Phase 8H CLI selected-route execution implementation commit | Merged through PR #482 as `c2f5f388 feat(browser): execute selected cli provider routes`; merge commit `49c274de`. |
+| Phase 8I provider parity matrix harness implementation commit | Open in PR #483 as `feat(browser): add provider parity matrix harness`; merge commit to be recorded after landing. |
+| Known pre-existing tracked changes | None in the Phase 8I provider parity matrix harness worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes; this phase starts from `origin/main` after PR #482 was merged. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -6327,7 +6330,94 @@ Phase 8H can start because:
 
 ### Phase 8H CLI Selected-Route Execution Next Action
 
-- Request a fresh reviewer for PR #482, merge if accepted and GitHub reports
+- Closed. PR #482 merged as `49c274de`; continue with Phase 8I from
+  `origin/main` to add provider parity matrix harness evidence before any
+  default provider promotion.
+
+## Phase 8I Provider Parity Matrix Harness Entry Criteria
+
+Phase 8I can start because:
+
+- PR #482 merged selected Playwright CLI provider execution to `main` /
+  `origin/main`;
+- ADR Phase 8 requires provider choice to be backed by scorecards and the same
+  browser harness case to run across local Chromium, Playwright CLI,
+  Playwright MCP where appropriate, and a mock hosted provider;
+- current route decisions and capability cards exist, but there is no
+  model-free parity matrix artifact tying shared cases, provider isolation,
+  fallback, and artifact visibility together;
+- this slice can add harness evidence without changing route ranking,
+  promoting providers, adding UI/IPC/DB, or executing hosted/MCP providers;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8i-provider-parity-matrix`;
+- the branch starts from `49c274de`, the current `origin/main`.
+
+## Phase 8I Provider Parity Matrix Harness Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase8i-provider-parity-matrix.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8i-provider-parity-matrix`
+- Branch:
+  `codex/browser-runtime-phase8i-provider-parity-matrix`
+- Scope:
+  add a model-free provider parity matrix harness module that forces shared
+  navigate/click cases through each expected provider card and records fallback
+  artifact visibility when local Chromium is disabled.
+- Current PR:
+  PR #483: `https://github.com/novolei/uclaw-new/pull/483`.
+- Current commit:
+  `feat(browser): add provider parity matrix harness`.
+- Non-goal:
+  no provider promotion, live default selection change, real hosted execution,
+  MCP live execution, UI, IPC, Settings, DB migration, raw tools/scripts, or
+  runtime-pack mutation.
+- Rollback:
+  revert this PR; Phase 8H provider execution remains unchanged.
+
+### Phase 8I Provider Parity Matrix Harness Impact Notes
+
+- GitNexus index was refreshed for the Phase 8I worktree before impact checks;
+  generated AGENTS/CLAUDE statistics changes were restored as noise.
+- GitNexus impact before edits reported MEDIUM for read-only route/card
+  dependencies `BrowserProviderRouteRequest`, `decide_browser_provider_route`,
+  and `browser_provider_capability_cards`; no HIGH/CRITICAL risk was observed.
+- The implementation does not modify route ranking or provider cards. It adds
+  a new harness adapter module and a module export only.
+
+### Phase 8I Provider Parity Matrix Harness Verification Notes
+
+- Provider parity harness verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib harness::adapters::browser_provider`
+  completed with `4 passed; 0 failed; 2730 filtered out`.
+- Provider route regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  completed with `16 passed; 0 failed; 2718 filtered out`.
+- Runtime contracts regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_contracts`
+  completed with `10 passed; 0 failed; 2724 filtered out`.
+- Provider route rollout bridge regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::rollout_bridge`
+  completed with `12 passed; 0 failed; 2722 filtered out`.
+- Browser runtime regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  completed with `59 passed; 0 failed; 2675 filtered out`.
+- Runtime-pack regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  completed with `42 passed; 0 failed; 2692 filtered out`.
+- Rust formatting check passed:
+  `rustfmt --edition 2021 --check --config skip_children=true src-tauri/src/harness/adapters/browser_provider.rs src-tauri/src/harness/adapters/mod.rs`.
+  The `skip_children=true` guard is intentional because rustfmt follows module
+  children from `mod.rs` and would rewrite unrelated legacy adapter files.
+- Diff hygiene passed:
+  `git diff --check -- src-tauri/src/harness/adapters/browser_provider.rs src-tauri/src/harness/adapters/mod.rs docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-phase8i-provider-parity-matrix.md`.
+- GitNexus staged detect:
+  `scope=staged` completed with LOW risk: 4 changed files, 15 changed symbols,
+  0 affected processes.
+
+### Phase 8I Provider Parity Matrix Harness Next Action
+
+- Request a fresh reviewer for PR #483, merge if accepted and GitHub reports
   CLEAN, then sync `main` and continue to the next Phase 8 slice.
 
 ---
