@@ -433,6 +433,15 @@ pub enum TaskEvent {
         code: String,
         message: String,
     },
+    /// Domain-specific observable signal that is not a warning, tool call,
+    /// checkpoint, or terminal state.
+    Signal {
+        ts: String,
+        source: TaskEventSource,
+        task_id: String,
+        code: String,
+        message: String,
+    },
     TaskFinished {
         ts: String,
         source: TaskEventSource,
@@ -479,6 +488,7 @@ impl TaskEvent {
             Self::Checkpoint { .. } => "checkpoint",
             Self::BoundaryYield { .. } => "boundary_yield",
             Self::Warning { .. } => "warning",
+            Self::Signal { .. } => "signal",
             Self::TaskFinished { .. } => "task_finished",
         }
     }
@@ -498,6 +508,7 @@ impl TaskEvent {
             | Self::Checkpoint { source, .. }
             | Self::BoundaryYield { source, .. }
             | Self::Warning { source, .. }
+            | Self::Signal { source, .. }
             | Self::TaskFinished { source, .. } => *source,
         }
     }
@@ -517,6 +528,7 @@ impl TaskEvent {
             | Self::Checkpoint { task_id, .. }
             | Self::BoundaryYield { task_id, .. }
             | Self::Warning { task_id, .. }
+            | Self::Signal { task_id, .. }
             | Self::TaskFinished { task_id, .. } => task_id,
         }
     }
@@ -536,6 +548,7 @@ impl TaskEvent {
             | Self::Checkpoint { ts, .. }
             | Self::BoundaryYield { ts, .. }
             | Self::Warning { ts, .. }
+            | Self::Signal { ts, .. }
             | Self::TaskFinished { ts, .. } => ts,
         }
     }

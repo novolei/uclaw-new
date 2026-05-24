@@ -1,4 +1,11 @@
 use super::*;
+use crate::browser::playwright_cli_capabilities;
+use crate::browser::provider::{
+    decide_browser_provider_route, local_chromium_capabilities, BrowserCapabilityProbe,
+    BrowserProviderCapabilities, BrowserProviderReadinessProbe, BrowserProviderRouteRequest,
+    BrowserProviderStatus, BrowserSetupCheck, LOCAL_CHROMIUM_PROVIDER_ID,
+};
+use crate::browser::runtime_contracts::BrowserProviderSelectionRequest;
 use crate::browser::session_state::BrowserTaskStep;
 
 fn step(
@@ -30,6 +37,36 @@ fn run_with(status: BrowserTaskStatus, steps: Vec<BrowserTaskStep>) -> BrowserTa
         status,
         steps,
     }
+}
+
+fn ready_provider_status(capabilities: BrowserProviderCapabilities) -> BrowserProviderStatus {
+    BrowserProviderStatus::from_probe(
+        capabilities.clone(),
+        BrowserProviderReadinessProbe {
+            provider_id: capabilities.provider_id,
+            setup_checks: vec![BrowserSetupCheck::passed("setup", "Provider setup")],
+            capability_probes: vec![BrowserCapabilityProbe::passed("click", true)],
+            active_contexts: 0,
+            notes: Vec::new(),
+        },
+    )
+}
+
+fn degraded_provider_status(capabilities: BrowserProviderCapabilities) -> BrowserProviderStatus {
+    BrowserProviderStatus::from_probe(
+        capabilities.clone(),
+        BrowserProviderReadinessProbe {
+            provider_id: capabilities.provider_id,
+            setup_checks: vec![BrowserSetupCheck::passed("setup", "Provider setup")],
+            capability_probes: vec![BrowserCapabilityProbe::failed(
+                "click",
+                true,
+                "Provider click probe failed.",
+            )],
+            active_contexts: 0,
+            notes: Vec::new(),
+        },
+    )
 }
 
 #[test]
@@ -224,4 +261,123 @@ fn empty_steps_completed_emits_started_then_finished() {
     assert_eq!(events.len(), 2);
     assert!(matches!(events[0], TaskEvent::TaskStarted { .. }));
     assert!(matches!(events[1], TaskEvent::TaskFinished { .. }));
+}
+
+#[test]
+fn provider_route_selected_intent_emits_browser_signal() {
+    let request = BrowserProviderRouteRequest {
+        selection: BrowserProviderSelectionRequest {
+            action: Some("click".into()),
+            observation_mode: None,
+            requires_mcp_specific_capability: false,
+        },
+        disabled_provider_ids: Vec::new(),
+        previous_provider_id: None,
+    };
+    let decision = decide_browser_provider_route(
+        &request,
+        &[ready_provider_status(local_chromium_capabilities())],
+    );
+
+    let events = provider_route_decision_to_events(&decision, "browser-run-1");
+
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        TaskEvent::Signal {
+            source,
+            task_id,
+            code,
+            message,
+            ..
+        } => {
+            assert_eq!(*source, TaskEventSource::Browser);
+            assert_eq!(task_id, "browser-run-1");
+            assert_eq!(code, "browser.provider.selected");
+            let payload: serde_json::Value = serde_json::from_str(message).unwrap();
+            assert_eq!(payload["providerId"], LOCAL_CHROMIUM_PROVIDER_ID);
+            assert_eq!(payload["selectedProviderId"], LOCAL_CHROMIUM_PROVIDER_ID);
+            assert_eq!(payload["routeStatus"], "selected");
+            assert_eq!(payload["reason"], "provider_selected");
+        }
+        other => panic!("expected provider route Signal, got {other:?}"),
+    }
+}
+
+#[test]
+fn provider_route_degraded_candidate_emits_signal_without_warning_count() {
+    let request = BrowserProviderRouteRequest {
+        selection: BrowserProviderSelectionRequest {
+            action: Some("click".into()),
+            observation_mode: None,
+            requires_mcp_specific_capability: false,
+        },
+        disabled_provider_ids: Vec::new(),
+        previous_provider_id: None,
+    };
+    let decision = decide_browser_provider_route(
+        &request,
+        &[
+            degraded_provider_status(local_chromium_capabilities()),
+            ready_provider_status(playwright_cli_capabilities()),
+        ],
+    );
+
+    let events = provider_route_decision_to_events(&decision, "browser-run-1");
+
+    assert!(events.iter().any(|event| match event {
+        TaskEvent::Signal { code, message, .. } if code == "browser.provider.degraded" => {
+            let payload: serde_json::Value = serde_json::from_str(message).unwrap();
+            payload["providerId"] == LOCAL_CHROMIUM_PROVIDER_ID
+                && payload["reason"] == "provider_readiness_degraded"
+        }
+        _ => false,
+    }));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, TaskEvent::Warning { .. })));
+}
+
+#[test]
+fn provider_route_rollback_emits_previous_and_fallback_signals() {
+    let request = BrowserProviderRouteRequest {
+        selection: BrowserProviderSelectionRequest {
+            action: Some("click".into()),
+            observation_mode: None,
+            requires_mcp_specific_capability: false,
+        },
+        disabled_provider_ids: vec![LOCAL_CHROMIUM_PROVIDER_ID.to_string()],
+        previous_provider_id: Some(LOCAL_CHROMIUM_PROVIDER_ID.to_string()),
+    };
+    let decision = decide_browser_provider_route(
+        &request,
+        &[
+            ready_provider_status(local_chromium_capabilities()),
+            ready_provider_status(playwright_cli_capabilities()),
+        ],
+    );
+
+    let events = provider_route_decision_to_events(&decision, "browser-run-1");
+    let codes = events
+        .iter()
+        .map(TaskEvent::kind)
+        .collect::<Vec<&'static str>>();
+
+    assert!(codes.iter().all(|kind| *kind == "signal"));
+    assert!(events.iter().any(|event| match event {
+        TaskEvent::Signal { code, message, .. } if code == "browser.provider.rolled_back" => {
+            let payload: serde_json::Value = serde_json::from_str(message).unwrap();
+            payload["providerId"] == LOCAL_CHROMIUM_PROVIDER_ID
+                && payload["routeStatus"] == "rolled_back"
+                && payload["reason"] == "previous_provider_unavailable_or_disabled"
+        }
+        _ => false,
+    }));
+    assert!(events.iter().any(|event| match event {
+        TaskEvent::Signal { code, message, .. } if code == "browser.provider.selected" => {
+            let payload: serde_json::Value = serde_json::from_str(message).unwrap();
+            payload["providerId"] == crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID
+                && payload["reason"] == "fallback_provider_selected"
+        }
+        _ => false,
+    }));
 }

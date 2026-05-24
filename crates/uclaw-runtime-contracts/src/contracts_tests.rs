@@ -172,7 +172,7 @@ fn task_event_budget_exhausted_carries_dimension() {
 }
 
 #[test]
-fn task_event_kind_covers_all_thirteen_variants() {
+fn task_event_kind_covers_all_fourteen_variants() {
     let ts = "2026-05-20T12:00:00Z".to_string();
     let src = TaskEventSource::AgentLoop;
     let tid = "task-001".to_string();
@@ -264,6 +264,13 @@ fn task_event_kind_covers_all_thirteen_variants() {
             code: "cost_warning".into(),
             message: "approaching cap".into(),
         },
+        TaskEvent::Signal {
+            ts: ts.clone(),
+            source: src,
+            task_id: tid.clone(),
+            code: "browser.provider.selected".into(),
+            message: "{\"providerId\":\"browser.local_chromium\"}".into(),
+        },
         TaskEvent::TaskFinished {
             ts,
             source: src,
@@ -271,7 +278,7 @@ fn task_event_kind_covers_all_thirteen_variants() {
             verdict: TaskVerdict::Completed { summary: None },
         },
     ];
-    assert_eq!(variants.len(), 13);
+    assert_eq!(variants.len(), 14);
     let kinds: Vec<&'static str> = variants.iter().map(|v| v.kind()).collect();
     // All distinct + snake-case shape.
     let mut sorted = kinds.clone();
@@ -279,8 +286,8 @@ fn task_event_kind_covers_all_thirteen_variants() {
     sorted.dedup();
     assert_eq!(
         sorted.len(),
-        13,
-        "all 13 variants must have distinct kind() strings"
+        14,
+        "all 14 variants must have distinct kind() strings"
     );
     for k in &kinds {
         assert!(

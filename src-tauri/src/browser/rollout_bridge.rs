@@ -25,6 +25,7 @@
 //!     PausedCheckpointed     → `Checkpoint` + `BoundaryYield`, no terminator
 //!     Running                → no terminator (caller appends later)
 
+use crate::browser::provider::BrowserProviderRouteDecision;
 use crate::browser::session_state::{BrowserTaskRun, BrowserTaskStatus, BrowserTaskStepPhase};
 use crate::runtime::contracts::{PermissionDecision, TaskEvent, TaskEventSource, TaskVerdict};
 
@@ -176,6 +177,42 @@ pub fn browser_run_to_events(run: &BrowserTaskRun, intent_id: &str) -> Vec<TaskE
     }
 
     out
+}
+
+/// Convert provider route decision intents into rollout-visible task signals.
+///
+/// Provider selection is normal browser runtime state, not a warning. The
+/// generic `Signal` event keeps provider selection/degradation/rollback visible
+/// without incrementing task warning counts or pretending the route decision is
+/// a browser tool call.
+pub fn provider_route_decision_to_events(
+    decision: &BrowserProviderRouteDecision,
+    task_id: &str,
+) -> Vec<TaskEvent> {
+    decision
+        .event_intents
+        .iter()
+        .map(|intent| TaskEvent::Signal {
+            ts: chrono::Utc::now().to_rfc3339(),
+            source: TaskEventSource::Browser,
+            task_id: task_id.to_string(),
+            code: intent.event_name.as_str().to_string(),
+            message: provider_route_signal_message(decision, intent),
+        })
+        .collect()
+}
+
+fn provider_route_signal_message(
+    decision: &BrowserProviderRouteDecision,
+    intent: &crate::browser::provider::BrowserProviderRouteEventIntent,
+) -> String {
+    serde_json::json!({
+        "providerId": intent.provider_id.as_deref(),
+        "reason": intent.reason,
+        "routeStatus": decision.status,
+        "selectedProviderId": decision.selected_provider_id.as_deref(),
+    })
+    .to_string()
 }
 
 // ────────────────────────────────────────────────────────────────────────
