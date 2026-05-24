@@ -57,8 +57,11 @@ pub use playwright_mcp::{
     PLAYWRIGHT_MCP_PACKAGE_NAME, PLAYWRIGHT_MCP_PROVIDER_ID, PLAYWRIGHT_MCP_UCLAW_ACTIONS,
 };
 pub use playwright_mcp_sidecar::{
-    start_playwright_mcp_sidecar, PlaywrightMcpSidecarHandle, PlaywrightMcpSidecarLaunchSummary,
-    PlaywrightMcpSidecarRunnerConfig, PlaywrightMcpSidecarRunnerError,
+    execute_playwright_mcp_sidecar_action, start_playwright_mcp_sidecar,
+    PlaywrightMcpSidecarActionResult, PlaywrightMcpSidecarArtifactKind,
+    PlaywrightMcpSidecarArtifactRef, PlaywrightMcpSidecarHandle,
+    PlaywrightMcpSidecarLaunchSummary, PlaywrightMcpSidecarRunnerConfig,
+    PlaywrightMcpSidecarRunnerError, PLAYWRIGHT_MCP_STDIO_PROTOCOL_VERSION,
     DEFAULT_PLAYWRIGHT_MCP_STARTUP_TIMEOUT_MS,
 };
 pub use provider::{
