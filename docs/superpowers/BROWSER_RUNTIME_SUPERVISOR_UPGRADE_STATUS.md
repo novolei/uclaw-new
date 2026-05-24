@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 4N task-time tool-call patch boundary open as PR #440
+> Current phase: Phase 4O prompt dispatch review pack open as PR #441
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -23,7 +23,7 @@
 | Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
-| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4M merged; Phase 4N task-time tool-call patch boundary open as PR #440 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4n-task-time-tool-call-patch` / `codex/browser-runtime-phase4n-task-time-tool-call-patch` | Merge PR #440 if GitHub reports CLEAN; next slice should wire prompt dispatch only with a separate impact/reviewer plan. |
+| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4N merged; Phase 4O prompt dispatch review pack open as PR #441 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4o-prompt-dispatch-review-pack` / `codex/browser-runtime-phase4o-prompt-dispatch-review-pack` | Merge PR #441 if GitHub reports CLEAN and the fresh reviewer accepts the HIGH/DMZ gate plan; next slice may implement only an accepted low-risk prompt-dispatch boundary. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
@@ -79,6 +79,8 @@
 | 2026-05-24 | Open Phase 4M task-time decision bridge PR. | PR #439 contains typed prompt-action metadata that maps checkpointed defer to `runtime_preparation_decision: "defer"`, focused prompt tests, default Rust regressions, and staged GitNexus `risk_level: none`. | Merge if GitHub reports CLEAN; next Phase 4 slice must separately plan prompt dispatch / tool-call mutation because that may touch task-runtime or approval boundaries. |
 | 2026-05-24 | Merge Phase 4M and start Phase 4N as a pure tool-call patch boundary. | PR #439 merged as `a0dd62e5`; frontend prompt actions now carry the defer payload, but dispatch/approval hot paths still need a clean helper boundary before wiring. | Phase 4N adds only a pure helper for applying defer metadata to serialized `browser_task` arguments. Prompt dispatch, tool approval mutation, Settings IPC, backend execution, and DMZ edits remain later slices. |
 | 2026-05-24 | Open Phase 4N task-time tool-call patch boundary PR. | PR #440 contains pure `browser_task` argument patch helpers, focused prompt-model coverage, default Rust regressions, and staged GitNexus LOW detect. | Merge if GitHub reports CLEAN; actual prompt dispatch / approval wiring remains a separate Phase 4 slice. |
+| 2026-05-24 | Merge Phase 4N and start Phase 4O as a prompt-dispatch review pack. | PR #440 merged as `08a2b65f`; GitNexus impact for `run_agentic_loop` is HIGH and the file is DMZ, while `dispatcher.rs::execute_tool_calls` and `BrowserTaskTool.execute` are LOW. | Phase 4O is docs-only and records writer/reviewer gates before any prompt-dispatch implementation. Do not edit `agentic_loop.rs` without fresh reviewer acceptance. |
+| 2026-05-24 | Open Phase 4O prompt-dispatch review pack PR. | PR #441 contains only tracker/plan changes, default Rust regressions, whitespace checks, and staged GitNexus LOW detect. Fresh reviewer Popper is reviewing the HIGH/DMZ gate plan. | Merge if PR #441 is CLEAN and reviewer accepts; next implementation PR must keep to an accepted low-risk dispatch boundary or stop again for reviewer approval. |
 
 ---
 
@@ -87,9 +89,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4n-task-time-tool-call-patch` |
-| Current phase branch | `codex/browser-runtime-phase4n-task-time-tool-call-patch` |
-| Current local base | `a0dd62e5 Merge pull request #439 from novolei/codex/browser-runtime-phase4m-task-time-decision-bridge` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4o-prompt-dispatch-review-pack` |
+| Current phase branch | `codex/browser-runtime-phase4o-prompt-dispatch-review-pack` |
+| Current local base | `08a2b65f Merge pull request #440 from novolei/codex/browser-runtime-phase4n-task-time-tool-call-patch` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -120,9 +122,10 @@
 | Phase 4K implementation commit | Merged through PR #437 as `7b667f4a feat(browser): show paused-waiting runtime task status`; merge commit `5bd56ba1`. |
 | Phase 4L implementation commit | Merged through PR #438 as `f0fa0b39 feat(browser): add task runtime pause gate`; merge commit `a566decf`. |
 | Phase 4M implementation commit | Merged through PR #439 as `1c844a19 feat(browser): bridge task-time runtime decision`; merge commit `a0dd62e5`. |
-| Phase 4N implementation commit | Open as PR #440 from `codex/browser-runtime-phase4n-task-time-tool-call-patch`; implementation commit title `feat(browser): add task-time tool call patch boundary`. |
-| Known pre-existing tracked changes | None in the Phase 4N worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | Phase 4N may use ignored local `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` links from the primary worktree for verification only. |
+| Phase 4N implementation commit | Merged through PR #440 as `d5068b30 feat(browser): add task-time tool call patch boundary`; merge commit `08a2b65f`. |
+| Phase 4O implementation commit | Open as PR #441 from `codex/browser-runtime-phase4o-prompt-dispatch-review-pack`; implementation commit title `docs(browser): add prompt dispatch review pack`. |
+| Known pre-existing tracked changes | None in the Phase 4O worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | Phase 4O is docs-only; ignored local runtime links are not required unless verification scope changes. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -2650,6 +2653,87 @@ Recommended Phase 4N checks:
 - `git diff --check -- <changed-files>` returned no output.
 - `git diff --cached --check` returned no output.
 - GitNexus staged detect reported `risk_level: low`, `changed_files: 4`, 15
+  changed symbols, and `affected_processes: []`.
+
+## Phase 4O Entry Criteria
+
+Phase 4O can start because:
+
+- PR #440 merged the pure task-time tool-call patch helper into `main` and
+  `origin/main`;
+- the Phase 4O worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4o-prompt-dispatch-review-pack`;
+- the branch starts from `08a2b65f`, the current `origin/main`;
+- actual prompt dispatch / approval wiring is the next Phase 4 behavior, but
+  it sits near `dispatcher.rs`, browser tools, and the DMZ `agentic_loop.rs`;
+- GitNexus impact for `run_agentic_loop` is HIGH, so implementation must stop
+  until a reviewer plan exists.
+
+Recommended Phase 4O checks:
+
+- document allowed writer scopes for the next implementation PR;
+- document the HIGH/DMZ stop gate for `agentic_loop.rs`;
+- document low-risk candidate boundaries that do not require global loop
+  changes;
+- keep this phase docs-only with no backend, UI, IPC, DB, runtime-pack, or
+  provider behavior changes.
+
+## Phase 4O Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase4o-prompt-dispatch-review-pack.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4o-prompt-dispatch-review-pack`
+- Branch:
+  `codex/browser-runtime-phase4o-prompt-dispatch-review-pack`
+- Scope:
+  prompt-dispatch impact notes, reviewer checklist, and next writer gates only.
+- Current PR:
+  PR #441 (`codex/browser-runtime-phase4o-prompt-dispatch-review-pack`).
+- DMZ files:
+  none edited. `agentic_loop.rs` is explicitly blocked without reviewer
+  acceptance.
+- Migration:
+  none planned.
+- Rollback:
+  revert this docs-only review pack.
+
+### Phase 4O Impact Notes
+
+- `npx gitnexus analyze` indexed the Phase 4O worktree before impact analysis.
+  It updated only `AGENTS.md` / `CLAUDE.md` statistics, and those noise changes
+  were restored.
+- GitNexus impact for `ChatDelegate.execute_tool_calls` in
+  `src-tauri/src/agent/dispatcher.rs` reported LOW risk: 0 direct callers, 0
+  affected processes, 0 affected modules.
+- GitNexus impact for `run_agentic_loop` in
+  `src-tauri/src/agent/agentic_loop.rs` reported HIGH risk: 4 direct callers,
+  7 impacted symbols, 0 affected processes, and direct module impact across
+  Agent, Channels, and Runtime. `agentic_loop.rs` is a DMZ file.
+- GitNexus context identified `BrowserTaskTool.execute` in
+  `src-tauri/src/browser/tools.rs`; impact for that method reported LOW risk:
+  0 direct callers, 0 affected processes, 0 affected modules.
+- This slice does not change prompt dispatch, tool approval, Settings IPC,
+  backend browser task execution, runtime-pack execution, Playwright launch,
+  provider selection, DB migrations, root `App`, `agentic_loop.rs`, or
+  `tauri_commands.rs`.
+
+### Phase 4O Verification Notes
+
+- Default Rust browser-runtime regressions passed even though Phase 4O changes
+  docs only:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  returned `32 passed; 0 failed; 2587 filtered out`;
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  returned `44 passed; 0 failed; 2575 filtered out`; and
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  returned `6 passed; 0 failed; 2613 filtered out`.
+- No Rust files changed, so
+  `rustfmt --edition 2021 --check <changed-rust-files>` is not applicable for
+  Phase 4O.
+- `git diff --check -- docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-phase4o-prompt-dispatch-review-pack.md`
+  and `git diff --cached --check` returned no output.
+- GitNexus staged detect reported `risk_level: low`, `changed_files: 2`, 12
   changed symbols, and `affected_processes: []`.
 
 ---
