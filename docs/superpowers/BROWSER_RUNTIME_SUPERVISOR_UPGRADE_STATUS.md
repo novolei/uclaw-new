@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 8C provider scorecard contract
+> Current phase: Phase 8D provider route events
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -27,7 +27,7 @@
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A-5F merged to `main` / `origin/main`; exit gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff` / `codex/browser-runtime-phase5f-action-state-diff` | Closed for feature-flagged Playwright CLI thin lane. Provider promotion and parity routing remain Phase 8. |
 | Phase 6 | Browser identity authorization and profile UX | Phase 6A-6F merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6f-identity-boundary-actions` / `codex/browser-runtime-phase6f-identity-boundary-actions` | Closed for safe identity revoke/drain/active-task/resume boundary contracts; auth WebView and payment confirmation remain future work. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7G merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7g-mcp-selection-policy` / `codex/browser-runtime-phase7g-mcp-selection-policy` | Closed for MCP sidecar, stdio action boundary, artifact/error routing, and MCP-vs-CLI selection guardrail. |
-| Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8B merged; Phase 8C provider scorecard contract PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8c-provider-scorecard` / `codex/browser-runtime-phase8c-provider-scorecard` | Review and merge PR #477, then continue Phase 8D live routing/event wiring. |
+| Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8C merged; Phase 8D provider route events PR open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8d-provider-route-events` / `codex/browser-runtime-phase8d-provider-route-events` | Review and merge PR #478, then continue live provider routing hookup. |
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Not started | Unassigned | TBD | Wait for observable provider behavior and harness scorecards. |
 | Phase 10 | Optional hosted providers and hard-site escape hatches | Not started | Unassigned | TBD | Wait for local-first provider routing and policy prompts. |
 
@@ -125,6 +125,7 @@
 | 2026-05-24 | Merge Phase 7G and start Phase 8A as provider route decision. | PR #474 merged as `6d1704e0`; fresh reviewer Dalton returned `REVIEW ACCEPTED` after checking scope boundaries, ranking behavior, tests, and tracker consistency. | Phase 8A starts provider abstraction with a pure route decision contract over provider status snapshots and event intentions, while live routing remains the next Phase 8 slice. |
 | 2026-05-24 | Merge Phase 8A and start Phase 8B as provider router surface. | PR #475 merged as `f8a3a2cc`; fresh reviewer Anscombe returned `REVIEW ACCEPTED`, with a non-blocking note to clarify `previous_provider_id` semantics before live routing. | Phase 8B introduces a small in-memory router surface for provider status snapshots, disabled providers, and previous-provider tracking before agent-loop/IPC wiring. |
 | 2026-05-24 | Merge Phase 8B and start Phase 8C as provider scorecard contract. | PR #476 merged as `814bfb40`; fresh reviewer Socrates returned `REVIEW ACCEPTED` after the rollback-semantics blocker was fixed. | Phase 8C adds explicit harness score metadata to provider capability cards before live routing/default promotion, so provider choice remains evidence-backed. |
+| 2026-05-24 | Merge Phase 8C and start Phase 8D as provider route events. | PR #477 merged as `42a764fb`; fresh reviewer Hooke returned `REVIEW ACCEPTED` after the `BrowserRuntimeTransition` deserialize regression was fixed. | Phase 8D must turn route event intents into rollout-visible TaskEvents, while keeping fixture counts as evidence metadata rather than runtime quality scores. |
 
 ---
 
@@ -133,9 +134,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8c-provider-scorecard` |
-| Current phase branch | `codex/browser-runtime-phase8c-provider-scorecard` |
-| Current local base | `814bfb40 Merge pull request #476 from novolei/codex/browser-runtime-phase8b-provider-router-surface` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8d-provider-route-events` |
+| Current phase branch | `codex/browser-runtime-phase8d-provider-route-events` |
+| Current local base | `42a764fb Merge pull request #477 from novolei/codex/browser-runtime-phase8c-provider-scorecard` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -202,8 +203,9 @@
 | Phase 7G MCP selection policy implementation commit | Merged through PR #474 as `9388c666 feat(browser): add mcp selection policy`; merge commit `6d1704e0`. |
 | Phase 8A provider route decision implementation commit | Merged through PR #475 as `5ca12d86 feat(browser): add provider route decision`; merge commit `f8a3a2cc`. |
 | Phase 8B provider router surface implementation commit | Merged through PR #476 as `a391b496 feat(browser): add provider router surface`; merge commit `814bfb40`. |
-| Phase 8C provider scorecard contract implementation commit | Open in PR #477 as the PR branch HEAD commit `feat(browser): add provider scorecard metadata`. |
-| Known pre-existing tracked changes | None in the Phase 8C provider scorecard worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes; this phase starts from `origin/main` after PR #476 was merged. |
+| Phase 8C provider scorecard contract implementation commit | Merged through PR #477 as `1522a18e feat(browser): add provider scorecard metadata`; merge commit `42a764fb`. |
+| Phase 8D provider route events implementation commit | Open in PR #478 as the PR branch HEAD commit `feat(browser): emit provider route signals`. |
+| Known pre-existing tracked changes | None in the Phase 8D provider route events worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes; this phase starts from `origin/main` after PR #477 was merged. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -5836,7 +5838,92 @@ Phase 8C can start because:
 
 ### Phase 8C Provider Scorecard Contract Next Action
 
-- Fresh reviewer for PR #477, then merge if accepted and GitHub reports CLEAN.
+- Closed. PR #477 merged as `42a764fb`; continue with Phase 8D from
+  `origin/main` to make provider route decisions rollout-visible without
+  changing provider defaults.
+
+## Phase 8D Provider Route Events Entry Criteria
+
+Phase 8D can start because:
+
+- PR #477 merged Phase 8C scorecard metadata to `main` / `origin/main`;
+- ADR Phase 8 requires provider selection, degradation, and rollback events;
+- Phase 8A/8B already produce route event intents, but those intents are not
+  yet materialized into canonical `TaskEvent`s;
+- this slice can add an observable event bridge without switching live action
+  execution, promoting providers, writing settings, emitting DB migrations, or
+  changing UI;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8d-provider-route-events`;
+- the branch starts from `42a764fb`, the current `origin/main`.
+
+## Phase 8D Provider Route Events Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase8d-provider-route-events.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8d-provider-route-events`
+- Branch:
+  `codex/browser-runtime-phase8d-provider-route-events`
+- Scope:
+  add a generic `TaskEvent::Signal` and a pure rollout bridge that turns
+  provider route event intents into Browser-source signals with
+  selected/degraded/rollback metadata.
+- Current PR:
+  PR #478: <https://github.com/novolei/uclaw-new/pull/478>
+- Current commit:
+  PR branch HEAD commit `feat(browser): emit provider route signals`.
+- Non-goal:
+  no live provider execution routing, default promotion, UI, Tauri IPC,
+  settings persistence, DB migration, hosted provider implementation, or
+  `agentic_loop.rs` / `tauri_commands.rs` edits.
+- Rollback:
+  revert this PR; Phase 8A route decisions, Phase 8B router state, and Phase
+  8C scorecard metadata remain intact.
+
+### Phase 8D Provider Route Events Impact Notes
+
+- GitNexus index was refreshed for the Phase 8D worktree before impact checks;
+  generated AGENTS/CLAUDE statistics changes were restored as noise.
+- GitNexus impact before edits reported LOW risk for
+  `BrowserProviderRouteEventIntent`: 1 direct caller, 0 affected processes.
+- GitNexus impact before edits reported MEDIUM risk for `browser_run_to_events`
+  because it has 9 direct callers and 1 affected process; Phase 8D uses it only
+  as nearby bridge context and does not change that function.
+- GitNexus impact before edits reported LOW risk for the `TaskEvent` enum and
+  impl: 0 affected processes.
+- Phase 8D intentionally keeps Phase 8C fixture counts as evidence metadata
+  only; live score computation/default promotion remains later Phase 8 work.
+
+### Phase 8D Provider Route Events Verification Notes
+
+- Runtime contracts verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml -p uclaw-runtime-contracts`
+  returned `20 passed; 0 failed`.
+- Provider route event bridge verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::rollout_bridge`
+  returned `11 passed; 0 failed; 2710 filtered out`.
+- Provider regression verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  returned `16 passed; 0 failed; 2705 filtered out`.
+- Browser runtime regression verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  returned `59 passed; 0 failed; 2662 filtered out`.
+- Runtime-pack regression verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  returned `42 passed; 0 failed; 2679 filtered out`.
+- Formatting and whitespace checks passed:
+  `rustfmt --edition 2021 --check crates/uclaw-runtime-contracts/src/lib.rs crates/uclaw-runtime-contracts/src/contracts_tests.rs src-tauri/src/browser/rollout_bridge.rs src-tauri/src/browser/rollout_bridge_tests.rs`
+  and `git diff --check -- crates/uclaw-runtime-contracts/src/lib.rs crates/uclaw-runtime-contracts/src/contracts_tests.rs src-tauri/src/browser/rollout_bridge.rs src-tauri/src/browser/rollout_bridge_tests.rs docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-phase8d-provider-route-events.md`
+  returned no output.
+- GitNexus staged detect reported `risk_level: medium`, `changed_files: 6`,
+  `changed_count: 24`, and 3 affected `emit_browser_run_into_session_dir`
+  processes due to nearby rollout bridge symbol mapping. The live
+  `emit_browser_run_into_session_dir` function body is not changed.
+
+### Phase 8D Provider Route Events Next Action
+
+- Fresh reviewer for PR #478, then merge if accepted and GitHub reports CLEAN.
 
 ---
 
