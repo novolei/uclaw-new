@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 4U Browser Runtime Settings live status read PR open
+> Current phase: Phase 4V Startup Doctor live status read in progress
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -23,7 +23,7 @@
 | Phase 1 | Supervisor around current chromiumoxide runtime | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase1-supervisor` / `codex/browser-runtime-phase1-supervisor` | Closed for shell slice; later wiring slices must use this supervisor surface. |
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
-| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4T merged; Phase 4U Settings live status read open as PR #447 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4u-settings-live-status-read` / `codex/browser-runtime-phase4u-settings-live-status-read` | Merge PR #447 if GitHub reports CLEAN; then continue with the next Settings/Doctor read-only slice without runtime action execution. |
+| Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4U merged; Phase 4V Startup Doctor live status read in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4v-startup-doctor-live-status-read` / `codex/browser-runtime-phase4v-startup-doctor-live-status-read` | Finish the read-only Startup Doctor status consumption PR; do not fold in runtime action execution, provider promotion, or shared Settings IPC. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Not started | Unassigned | TBD | Wait for Phase 2 runtime pack and Phase 1 supervisor. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
@@ -93,6 +93,7 @@
 | 2026-05-24 | Open Phase 4T Settings status clarity PR. | PR #446 contains first-class Settings rows for update state and developer fallback state, focused Settings component tests, default browser-runtime regressions, and GitNexus staged detect LOW with 0 affected processes. | Merge if GitHub reports CLEAN; next Phase 4 slice should consume the read-only status command from Settings or Doctor without folding in runtime action execution. |
 | 2026-05-24 | Merge Phase 4T and start Phase 4U as a Settings live status read. | PR #446 merged as `aa6838d6`; Phase 4S already added a dedicated read-only status bridge, and the Settings rows are now unambiguous. | Phase 4U may call `getBrowserRuntimeStatus` from Browser Runtime Settings, but must not wire action execution, shared `getSettings`, Startup Doctor, provider promotion, or backend mutations. |
 | 2026-05-24 | Open Phase 4U Settings live status read PR. | PR #447 contains the read-only Settings bridge call, explicit-status preview bypass, focused Settings tests, default browser-runtime regressions, and GitNexus staged detect LOW with 0 affected processes. | Merge if GitHub reports CLEAN; next Phase 4 slice should continue read-only Doctor/Settings status consumption or plan action execution separately. |
+| 2026-05-24 | Merge Phase 4U and start Phase 4V as a Startup Doctor live status read. | PR #447 merged as `ffc7b811`; Settings now consumes the dedicated read-only status bridge, while Startup Doctor still rendered static/default status on launch. | Phase 4V may call `getBrowserRuntimeStatus` from Startup Splash when no explicit preview model is supplied, but must not execute runtime actions, edit backend IPC, or touch provider selection. |
 
 ---
 
@@ -101,9 +102,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4u-settings-live-status-read` |
-| Current phase branch | `codex/browser-runtime-phase4u-settings-live-status-read` |
-| Current local base | `aa6838d6 Merge pull request #446 from novolei/codex/browser-runtime-phase4t-settings-status-clarity` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4v-startup-doctor-live-status-read` |
+| Current phase branch | `codex/browser-runtime-phase4v-startup-doctor-live-status-read` |
+| Current local base | `ffc7b811 Merge pull request #447 from novolei/codex/browser-runtime-phase4u-settings-live-status-read` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -141,9 +142,10 @@
 | Phase 4R implementation commit | Merged through PR #444 as `60925a1e docs(browser): add settings ipc review pack`; merge commit `c4a31567`. |
 | Phase 4S implementation commit | Merged through PR #445 as `a66ec2ce feat(browser): add readonly runtime status ipc`; merge commit `88f552f3`. |
 | Phase 4T implementation commit | Merged through PR #446 as `ac9537b9 fix(browser): clarify runtime settings status rows`; merge commit `aa6838d6`. |
-| Phase 4U implementation commit | Open as PR #447 with `feat(browser): read runtime status in settings`; current head is tracked by the PR after tracker metadata amend. |
-| Known pre-existing tracked changes | None in the Phase 4U worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | Phase 4U may use ignored local `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` links from the primary worktree for verification only. |
+| Phase 4U implementation commit | Merged through PR #447 as `a09bd1b6 feat(browser): read runtime status in settings`; merge commit `ffc7b811`. |
+| Phase 4V implementation commit | In progress on `codex/browser-runtime-phase4v-startup-doctor-live-status-read`; PR pending. |
+| Known pre-existing tracked changes | None in the Phase 4V worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | Phase 4V may use ignored local `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` links from the primary worktree for verification only. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -3238,6 +3240,97 @@ Recommended Phase 4U checks:
   changes no Rust files.
 - `git diff --check -- <changed-files>` passed with no output.
 - GitNexus staged detect reported `risk_level: low`, 4 changed files, 15
+  changed symbols, and 0 affected processes.
+
+## Phase 4V Entry Criteria
+
+Phase 4V can start because:
+
+- PR #447 merged the Browser Runtime Settings live status read into `main` and
+  `origin/main`;
+- PR #445 already added the dedicated read-only `get_browser_runtime_status`
+  backend command and `getBrowserRuntimeStatus` frontend bridge;
+- Startup Doctor already has
+  `deriveStartupDoctorViewModelFromRuntimePackStatus` as the pure adapter for
+  runtime-pack reports;
+- the Phase 4V worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4v-startup-doctor-live-status-read`;
+- the branch starts from `ffc7b811`, the current `origin/main`;
+- GitNexus impact for `StartupSplash` is LOW, with 2 direct dependents
+  (`App` and `startup-splash-preview.tsx`) and 1 affected process;
+- GitNexus impact for `deriveStartupDoctorViewModelFromRuntimePackStatus` is
+  LOW, with 1 direct dependent and 0 affected processes;
+- GitNexus impact for `getBrowserRuntimeStatus` is LOW, with 0 direct
+  dependents and 0 affected processes before this phase.
+
+Recommended Phase 4V checks:
+
+- load status through `getBrowserRuntimeStatus` only when no explicit
+  `viewModel` prop is supplied;
+- preserve previews/tests by letting explicit `viewModel` props bypass the live
+  read;
+- keep bridge failures non-mutating and local to the readonly default startup
+  state;
+- do not wire runtime action execution, Settings actions, shared `getSettings`,
+  backend changes, runtime-pack execution, provider selection, TaskEvents, or
+  DMZ files.
+
+## Phase 4V Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase4v-startup-doctor-live-status-read.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4v-startup-doctor-live-status-read`
+- Branch:
+  `codex/browser-runtime-phase4v-startup-doctor-live-status-read`
+- Scope:
+  Startup Splash consumes the dedicated read-only runtime status bridge for
+  Startup Doctor checks when no explicit preview model is supplied.
+- Current PR:
+  PR #448 (`codex/browser-runtime-phase4v-startup-doctor-live-status-read`).
+- DMZ files:
+  none planned.
+- Migration:
+  none planned.
+- Rollback:
+  revert this PR; no persistent side effects.
+
+### Phase 4V Impact Notes
+
+- `npx gitnexus analyze` indexed the Phase 4V worktree before impact analysis.
+  GitNexus rewrote only AGENTS/CLAUDE stats, and those noise changes were
+  restored.
+- `ui/src/components/startup/StartupSplash.tsx::StartupSplash`: GitNexus
+  impact LOW, 2 direct dependents (`App` and `startup-splash-preview.tsx`), 1
+  affected process, and 1 affected module (`Hooks`).
+- `ui/src/lib/startup/startup-doctor.ts::deriveStartupDoctorViewModelFromRuntimePackStatus`:
+  GitNexus impact LOW, 1 direct dependent, 0 affected processes, and 1 affected
+  module (`Startup`).
+- `ui/src/lib/tauri-bridge.ts::getBrowserRuntimeStatus`: GitNexus impact LOW,
+  0 direct dependents and 0 affected processes before this phase.
+- This slice changes no backend code, runtime-pack execution, provider
+  selection, DB migrations, TaskEvents, shared `getSettings`, Settings action
+  execution, or DMZ files.
+
+### Phase 4V Verification Notes
+
+- `cd ui && npm test -- --run src/components/startup/StartupSplash.test.tsx`
+  passed: 1 file; 11 tests.
+- Initial focused UI test attempt failed with `vitest: command not found`
+  because the new worktree did not have `ui/node_modules`; linking the ignored
+  `ui/node_modules` from the primary worktree fixed local dependency setup.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  passed: 34 tests; 0 failed; 2591 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  passed: 46 tests; 0 failed; 2579 filtered out.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  passed: 6 tests; 0 failed; 2619 filtered out.
+- `rustfmt --edition 2021 --check <changed-rust-files>` is N/A; Phase 4V
+  changes no Rust files.
+- `git diff --check -- <changed-files>` passed with no output.
+- GitNexus staged detect reported `risk_level: low`, 4 changed files, 20
+  changed symbols, and 0 affected processes before PR creation; after reviewer
+  minor fixes, staged detect reported `risk_level: low`, 2 changed files, 5
   changed symbols, and 0 affected processes.
 
 ---
