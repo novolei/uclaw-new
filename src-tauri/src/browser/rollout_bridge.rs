@@ -21,6 +21,7 @@
 //!     Failed                 → `TaskVerdict::Failed { error_code: "browser_failed", message }`
 //!     Stopped                → `TaskVerdict::Cancelled { reason: Some("stopped") }`
 //!     NeedsUserIntervention  → `BoundaryYield`, no terminator
+//!     PausedWaitingForBrowserRuntime → `Checkpoint` + `BoundaryYield`, no terminator
 //!     PausedCheckpointed     → `Checkpoint` + `BoundaryYield`, no terminator
 //!     Running                → no terminator (caller appends later)
 
@@ -130,6 +131,21 @@ pub fn browser_run_to_events(run: &BrowserTaskRun, intent_id: &str) -> Vec<TaskE
                 source: src,
                 task_id: task_id.clone(),
                 reason: "browser needs user intervention".into(),
+            });
+            None
+        }
+        BrowserTaskStatus::PausedWaitingForBrowserRuntime => {
+            out.push(TaskEvent::Checkpoint {
+                ts: now(),
+                source: src,
+                task_id: task_id.clone(),
+                checkpoint_ref: format!("browser:{task_id}:paused_waiting_for_browser_runtime"),
+            });
+            out.push(TaskEvent::BoundaryYield {
+                ts: now(),
+                source: src,
+                task_id: task_id.clone(),
+                reason: "browser runtime unavailable; task paused".into(),
             });
             None
         }

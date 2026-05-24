@@ -159,6 +159,33 @@ fn paused_checkpointed_emits_checkpoint_boundary_and_no_finished() {
 }
 
 #[test]
+fn paused_waiting_runtime_emits_checkpoint_boundary_and_no_finished() {
+    let run = run_with(BrowserTaskStatus::PausedWaitingForBrowserRuntime, vec![]);
+    let events = browser_run_to_events(&run, "intent-A");
+
+    assert_eq!(events.len(), 3);
+    assert!(matches!(events[0], TaskEvent::TaskStarted { .. }));
+    match &events[1] {
+        TaskEvent::Checkpoint { checkpoint_ref, .. } => {
+            assert_eq!(
+                checkpoint_ref,
+                "browser:browser-run-1:paused_waiting_for_browser_runtime"
+            );
+        }
+        other => panic!("expected Checkpoint, got {other:?}"),
+    }
+    match &events[2] {
+        TaskEvent::BoundaryYield { reason, .. } => {
+            assert_eq!(reason, "browser runtime unavailable; task paused");
+        }
+        other => panic!("expected BoundaryYield, got {other:?}"),
+    }
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, TaskEvent::TaskFinished { .. })));
+}
+
+#[test]
 fn running_run_emits_no_terminator() {
     let run = run_with(
         BrowserTaskStatus::Running,
