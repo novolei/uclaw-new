@@ -31,8 +31,8 @@ import {
   updateConversationTitle,
 } from '@/lib/tauri-bridge'
 
-interface StreamChunkEvent { conversationId: string; delta: string }
-interface StreamReasoningEvent { conversationId: string; delta: string }
+interface StreamChunkEvent { conversationId: string; delta: string; seq?: number }
+interface StreamReasoningEvent { conversationId: string; delta: string; seq?: number }
 interface StreamCompleteEvent { conversationId: string }
 interface StreamErrorEvent { conversationId: string; error: string }
 interface StreamToolActivityEvent { conversationId: string; activity: any }
@@ -52,6 +52,9 @@ export function registerPendingTitle(conversationId: string, input: GenerateTitl
 }
 
 // ─── Module-level singleton ───────────────────────────────────────────────────
+
+const lastChatChunkSeq = new Map<string, number>()
+const lastChatReasoningSeq = new Map<string, number>()
 
 let chatCleanupFns: Array<() => void> = []
 let chatInitialized = false
@@ -82,14 +85,42 @@ function startChatListeners(store: Store): void {
   // ===== 1. 流式内容块 =====
   chatCleanupFns.push(
     onStreamChunk((event: StreamChunkEvent) => {
-      updateState(event.conversationId, (s) => ({ ...s, content: s.content + event.delta }))
+      const sid = event.conversationId
+      if (event.seq !== undefined) {
+        if (event.seq === 0) {
+          lastChatChunkSeq.delete(sid)
+        }
+        const last = lastChatChunkSeq.get(sid)
+        if (last !== undefined && event.seq <= last) return
+        lastChatChunkSeq.set(sid, event.seq)
+      }
+      updateState(sid, (s) => {
+        const isNewStream = event.seq === 0
+        return { ...s, content: isNewStream ? event.delta : (s.content + event.delta) }
+      })
     })
   )
 
   // ===== 2. 流式推理内容 =====
   chatCleanupFns.push(
     onStreamReasoning((event: StreamReasoningEvent) => {
-      updateState(event.conversationId, (s) => ({ ...s, reasoning: s.reasoning + event.delta }))
+      const sid = event.conversationId
+      if (event.seq !== undefined) {
+        if (event.seq === 0) {
+          lastChatReasoningSeq.delete(sid)
+        }
+        const last = lastChatReasoningSeq.get(sid)
+        if (last !== undefined && event.seq <= last) return
+        lastChatReasoningSeq.set(sid, event.seq)
+      }
+      updateState(sid, (s) => {
+        const isNewStream = event.seq === 0
+        return {
+          ...s,
+          reasoning: isNewStream ? event.delta : ((s.reasoning ?? '') + event.delta),
+          content: isNewStream ? '' : s.content,
+        }
+      })
     })
   )
 
@@ -183,6 +214,8 @@ function startChatListeners(store: Store): void {
       chatInitialized = false
       for (const fn of chatCleanupFns) fn()
       chatCleanupFns = []
+      lastChatChunkSeq.clear()
+      lastChatReasoningSeq.clear()
     })
   }
 }

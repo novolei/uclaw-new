@@ -330,6 +330,8 @@ export interface HealthCheckResponse {
 export interface TurnCost {
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
   costUsd: string;
 }
 

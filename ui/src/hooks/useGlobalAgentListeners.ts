@@ -128,17 +128,19 @@ if (import.meta.hot) {
     cleanupFns = []
     initialized = false
     lastReasoningSeq.clear()
+    lastChunkSeq.clear()
     autoPreviewSeq.clear()
     pendingWriteRawPaths.clear()
   })
 }
 
-// Per-session last-processed seq numbers for chat:stream-reasoning deduplication.
+// Per-session last-processed seq numbers for chat:stream-reasoning and chat:stream-chunk deduplication.
 // The backend includes a monotonically increasing `seq` with each delta; we skip
 // any event whose seq is not strictly greater than the last one we processed.
 // This defends against double-delivery that would otherwise cause word-by-word
-// duplication in the streaming thinking block.
+// duplication in the streaming blocks.
 const lastReasoningSeq = new Map<string, number>()
+const lastChunkSeq = new Map<string, number>()
 
 function startAgentListeners(store: Store): void {
   if (initialized) return
@@ -157,12 +159,24 @@ function startAgentListeners(store: Store): void {
 
   // chat:stream-chunk → append streaming content
   reg(
-    listen<{ conversationId: string; delta: string }>('chat:stream-chunk', ({ payload }) => {
+    listen<{ conversationId: string; delta: string; seq?: number }>('chat:stream-chunk', ({ payload }) => {
       const sid = payload.conversationId
+
+      if (payload.seq !== undefined) {
+        if (payload.seq === 0) {
+          lastChunkSeq.delete(sid)
+        }
+        const last = lastChunkSeq.get(sid)
+        if (last !== undefined && payload.seq <= last) return
+        lastChunkSeq.set(sid, payload.seq)
+      }
+
       store.set(agentStreamingStatesAtom, (prev) => {
         const existing = prev.get(sid) ?? createInitialStreamState()
         const next = new Map(prev)
-        next.set(sid, { ...existing, content: existing.content + payload.delta })
+        const isNewStream = payload.seq === 0
+        const content = isNewStream ? payload.delta : (existing.content + payload.delta)
+        next.set(sid, { ...existing, content })
         return next
       })
       store.set(agentStreamErrorsAtom, (prev) => {
@@ -185,6 +199,8 @@ function startAgentListeners(store: Store): void {
   reg(
     listen<{ conversationId: string; timestamp: string }>('agent:stream-reset', ({ payload }) => {
       const sid = payload.conversationId
+      lastReasoningSeq.delete(sid)
+      lastChunkSeq.delete(sid)
       store.set(agentStreamingStatesAtom, (prev) => {
         const existing = prev.get(sid)
         if (!existing) return prev
@@ -338,11 +354,8 @@ function startAgentListeners(store: Store): void {
       const sid = payload.conversationId
 
       // Deduplicate: if the backend includes a seq number, skip events we've already processed.
-      // Reset the tracked seq when a new stream starts (reasoning is undefined = fresh state).
       if (payload.seq !== undefined) {
-        const currentReasoning = store.get(agentStreamingStatesAtom).get(sid)?.reasoning
-        if (currentReasoning === undefined) {
-          // New stream started — clear old seq so seq=0 is accepted again.
+        if (payload.seq === 0) {
           lastReasoningSeq.delete(sid)
         }
         const last = lastReasoningSeq.get(sid)
@@ -353,7 +366,14 @@ function startAgentListeners(store: Store): void {
       store.set(agentStreamingStatesAtom, (prev) => {
         const existing = prev.get(sid) ?? createInitialStreamState()
         const next = new Map(prev)
-        next.set(sid, { ...existing, reasoning: (existing.reasoning ?? '') + payload.delta })
+        const isNewStream = payload.seq === 0
+        const reasoning = isNewStream ? payload.delta : ((existing.reasoning ?? '') + payload.delta)
+        next.set(sid, {
+          ...existing,
+          running: true,
+          reasoning,
+          content: isNewStream ? '' : existing.content,
+        })
         return next
       })
     })
@@ -728,7 +748,14 @@ function startAgentListeners(store: Store): void {
 
   // agent:turn_cost → store per-turn token usage in streaming state
   reg(
-    listen<{ conversationId: string; inputTokens: number; outputTokens: number; costUsd: string }>(
+    listen<{
+      conversationId: string;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens?: number;
+      cacheCreationTokens?: number;
+      costUsd: string;
+    }>(
       'agent:turn_cost',
       ({ payload }) => {
         const sid = payload.conversationId
@@ -740,6 +767,8 @@ function startAgentListeners(store: Store): void {
             ...existing,
             inputTokens: payload.inputTokens,
             outputTokens: payload.outputTokens,
+            cacheReadTokens: payload.cacheReadTokens ?? 0,
+            cacheCreationTokens: payload.cacheCreationTokens ?? 0,
             costUsd: parseFloat(payload.costUsd.replace('$', '')),
           })
           return next

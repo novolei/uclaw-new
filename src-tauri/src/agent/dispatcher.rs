@@ -76,6 +76,9 @@ pub struct ChatDelegate {
     /// Lets the frontend deduplicate events that arrive more than once (e.g. due
     /// to HMR or React Strict Mode registering multiple listeners).
     thinking_seq: Arc<AtomicU64>,
+    /// Per-session monotonic sequence counter for chat:stream-chunk events.
+    /// Lets the frontend deduplicate events that arrive more than once.
+    chunk_seq: Arc<AtomicU64>,
     /// Workspace root used to source `uclaw.md` for prompt composition.
     workspace_root: Option<std::path::PathBuf>,
     /// Pre-built skill manifest block, set via set_skills_manifest_block
@@ -205,6 +208,7 @@ impl ChatDelegate {
             turn_index: Arc::new(AtomicU32::new(0)),
             thinking_enabled: false,
             thinking_seq: Arc::new(AtomicU64::new(0)),
+            chunk_seq: Arc::new(AtomicU64::new(0)),
             workspace_root,
             skills_manifest_block: String::new(),
             skill_search_used: AtomicBool::new(false),
@@ -826,9 +830,11 @@ impl ChatDelegate {
 
     /// Emit a text delta to the frontend
     fn emit_text_delta(&self, chunk: &str) {
+        let seq = self.chunk_seq.fetch_add(1, Ordering::Relaxed);
         let _ = self.app_handle.emit("chat:stream-chunk", serde_json::json!({
             "conversationId": self.conversation_id,
             "delta": chunk,
+            "seq": seq,
         }));
         // Bundle 27-A — feed the partial buffer + beat. The buffer is
         // what gets persisted as "[interrupted-recovered]" assistant
@@ -977,11 +983,15 @@ impl ChatDelegate {
         let turn_cost = TurnCostInfo {
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_creation_tokens: usage.cache_creation_tokens,
             cost_usd: format_cost(cost),
         };
         tracing::info!(
             input_tokens = usage.input_tokens,
             output_tokens = usage.output_tokens,
+            cache_read_tokens = usage.cache_read_tokens,
+            cache_creation_tokens = usage.cache_creation_tokens,
             cost_usd = %turn_cost.cost_usd,
             "Emitting agent:turn_cost"
         );
@@ -1020,6 +1030,8 @@ impl ChatDelegate {
             "conversationId": self.conversation_id,
             "inputTokens": turn_cost.input_tokens,
             "outputTokens": turn_cost.output_tokens,
+            "cacheReadTokens": turn_cost.cache_read_tokens,
+            "cacheCreationTokens": turn_cost.cache_creation_tokens,
             "costUsd": turn_cost.cost_usd,
         }));
     }
@@ -1576,6 +1588,11 @@ impl LoopDelegate for ChatDelegate {
         reason_ctx: &mut ReasoningContext,
         _iteration: usize,
     ) -> Result<RespondOutput, Error> {
+        // Reset sequence counters on every new LLM call to ensure deduplication
+        // and streaming state resets work correctly on the frontend for multi-iteration turns.
+        self.chunk_seq.store(0, Ordering::Relaxed);
+        self.thinking_seq.store(0, Ordering::Relaxed);
+
         // Bundle 27-A fix (2026-05-22) — beat LLM_CALL at the top so the UI
         // heartbeat indicator switches to "正在请求 LLM" immediately on the
         // iteration boundary. Before this, the indicator stayed at the
