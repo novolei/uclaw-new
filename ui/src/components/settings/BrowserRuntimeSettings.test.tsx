@@ -56,6 +56,10 @@ describe('BrowserRuntimeSettings', () => {
 
     expect(screen.getAllByText('可用').length).toBeGreaterThan(1)
     expect(screen.getByText('1.48.2-uclaw.1')).toBeInTheDocument()
+    expect(screen.getByText('更新状态')).toBeInTheDocument()
+    expect(screen.getByText('当前版本')).toBeInTheDocument()
+    expect(screen.getByText('开发者回退')).toBeInTheDocument()
+    expect(screen.getByText('未启用')).toBeInTheDocument()
     expect(screen.getByText('734 MiB')).toBeInTheDocument()
     expect(screen.getByText('/uclaw/browser-runtime/v1')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '保持当前' })).toBeEnabled()
