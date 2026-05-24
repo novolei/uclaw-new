@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 10A hosted-provider capability contract
+> Current phase: Phase 10B hosted-provider harness matrix
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -29,7 +29,7 @@
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7G merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7g-mcp-selection-policy` / `codex/browser-runtime-phase7g-mcp-selection-policy` | Closed for MCP sidecar, stdio action boundary, artifact/error routing, and MCP-vs-CLI selection guardrail. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8J merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8j-provider-default-policy` / `codex/browser-runtime-phase8j-provider-default-policy` | Closed for provider route evidence and reversible default policy; Phase 9 recipe work starts from merge commit `cab8f161`. |
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Phase 9A-9E merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9e-harness-matrix` / `codex/browser-runtime-phase9e-harness-matrix` | Closed for pure recipe/domain-skill harness coverage; no production replay, locator persistence, or domain-skill writes were introduced. |
-| Phase 10 | Optional hosted providers and hard-site escape hatches | Phase 10A in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase10a-hosted-provider-contract` / `codex/browser-runtime-phase10a-hosted-provider-contract` | Add a pure hosted-provider capability/policy contract for disabled fallback, data-boundary prompt, artifact capture, cost visibility, and local fallback before any real hosted SDK or network path. |
+| Phase 10 | Optional hosted providers and hard-site escape hatches | Phase 10B in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase10b-hosted-provider-harness` / `codex/browser-runtime-phase10b-hosted-provider-harness` | Add a pure hosted-provider harness matrix that proves disabled fallback, data-boundary prompt, artifact capture, cost visibility, local fallback, and opt-in mock-hosted readiness before closing ADR Phase 10. |
 
 ---
 
@@ -145,6 +145,7 @@
 | 2026-05-25 | Merge Phase 9C and start Phase 9D as a domain-skill candidate gate. | PR #488 merged as `d96f432d` after fresh reviewer Zeno returned `REVIEW ACCEPTED`; Phase 9C final commit was `52ada9a7 feat(browser): add recipe locator cache contract`. | Phase 9D adds only a pure eligibility gate for domain-skill candidates. It must not write domain-skill files, replay actions, persist locators, add UI/IPC/DB, or change provider behavior. |
 | 2026-05-25 | Merge Phase 9D and start Phase 9E as a recipe/domain-skill harness matrix. | PR #489 merged as `769e0d1e` after reviewer Bohr blocked a whitespace-only evidence bug, the branch was fixed, and fresh reviewer Euclid returned `REVIEW ACCEPTED`; Phase 9D final commit was `fe3418b2 feat(browser): gate domain skill candidates`. | Phase 9E turns the ADR Phase 9 gate into a pure matrix report. It must not execute replay, persist locators, write domain skills, add UI/IPC/DB, or change provider behavior. |
 | 2026-05-25 | Merge Phase 9E and start Phase 10A as a hosted-provider capability contract. | PR #490 merged as `c16a6720` after reviewer Arendt blocked an artifact-preservation bug, the branch was fixed, and fresh reviewer Cicero returned `REVIEW ACCEPTED`; Phase 9E final commit was `d00fd124 feat(browser): add recipe harness matrix`. | Phase 10A starts with a pure hosted-provider contract behind `BrowserProvider`/capability-card policy. It must not add a real hosted SDK, network path, credentials, UI, IPC, DB migration, provider promotion, or live execution. |
+| 2026-05-24 | Merge Phase 10A and start Phase 10B as a hosted-provider harness matrix. | PR #491 merged as `568a0af0` after reviewer Ramanujan blocked a fail-closed status bug, the branch was fixed, and fresh reviewer Avicenna returned `REVIEW ACCEPTED`; Phase 10A final commit was `55b361d6 feat(browser): add hosted provider policy contract`. | Phase 10B owns only pure harness evidence for the ADR Phase 10 gate. It must not add hosted SDKs, credentials, real network execution, provider promotion, UI, IPC, DB migration, `agentic_loop.rs`, or `tauri_commands.rs` changes. |
 
 ---
 
@@ -153,9 +154,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase10a-hosted-provider-contract` |
-| Current phase branch | `codex/browser-runtime-phase10a-hosted-provider-contract` |
-| Current local base | `c16a6720 Merge pull request #490 from novolei/codex/browser-runtime-phase9e-harness-matrix` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase10b-hosted-provider-harness` |
+| Current phase branch | `codex/browser-runtime-phase10b-hosted-provider-harness` |
+| Current local base | `568a0af0 Merge pull request #491 from novolei/codex/browser-runtime-phase10a-hosted-provider-contract` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -235,8 +236,9 @@
 | Phase 9C locator cache contract implementation commit | Merged through PR #488 as `52ada9a7 feat(browser): add recipe locator cache contract`; merge commit `d96f432d`. |
 | Phase 9D domain-skill candidate gate implementation commit | Merged through PR #489 as `fe3418b2 feat(browser): gate domain skill candidates`; merge commit `769e0d1e`. |
 | Phase 9E recipe/domain-skill harness matrix implementation commit | Merged through PR #490 as `d00fd124 feat(browser): add recipe harness matrix`; merge commit `c16a6720`. |
-| Phase 10A hosted-provider capability contract implementation commit | In progress on `codex/browser-runtime-phase10a-hosted-provider-contract`; no PR yet. |
-| Known pre-existing tracked changes | None in the Phase 10A hosted-provider contract worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes. |
+| Phase 10A hosted-provider capability contract implementation commit | Merged through PR #491 as `55b361d6 feat(browser): add hosted provider policy contract`; merge commit `568a0af0`. |
+| Phase 10B hosted-provider harness matrix implementation commit | Open in PR #492 as current branch head `feat(browser): add hosted provider harness matrix`; pending merge. |
+| Known pre-existing tracked changes | None in the Phase 10B hosted-provider harness worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -7024,9 +7026,9 @@ Phase 10A can start because:
   hosted provider status conversion, capability-card cost/profile/data-boundary
   declarations, and focused fallback/policy tests.
 - Current PR:
-  none yet.
+  PR #491 merged as `568a0af0`.
 - Current commit:
-  none yet.
+  `55b361d6 feat(browser): add hosted provider policy contract`
 - Non-goal:
   no real hosted provider SDK, network call, credential storage, live hosted
   execution, provider default mutation, route promotion, UI, IPC, Settings, DB
@@ -7108,9 +7110,104 @@ Phase 10A can start because:
 
 ### Phase 10A Hosted-Provider Capability Contract Next Action
 
-- Stage final files, run GitNexus staged detect, commit, push PR, request a
-  fresh reviewer, and merge only if reviewer accepts, GitHub reports CLEAN,
-  tests stay green, and no HIGH/CRITICAL risk appears.
+- Closed. PR #491 merged as `568a0af0`; continue with Phase 10B from
+  `origin/main` to cover the ADR Phase 10 hosted-provider gate with a pure
+  harness matrix before considering the Browser Runtime Supervisor ADR
+  complete.
+
+## Phase 10B Hosted-Provider Harness Matrix Entry Criteria
+
+Phase 10B can start because:
+
+- PR #491 merged Phase 10A's hosted-provider capability/policy contract into
+  `main` and `origin/main`;
+- ADR Phase 10 still requires harness coverage for hosted-provider disabled
+  fallback, data-boundary prompt, artifact capture, cost visibility, and local
+  provider fallback;
+- a pure harness adapter can compose Phase 10A's gate/status contract without
+  adding a hosted vendor SDK, network call, credential store, UI, IPC, DB
+  migration, provider promotion, or live execution;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase10b-hosted-provider-harness`;
+- the branch starts from `568a0af0`, the current `origin/main`.
+
+## Phase 10B Hosted-Provider Harness Matrix Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase10b-hosted-provider-harness.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase10b-hosted-provider-harness`
+- Branch:
+  `codex/browser-runtime-phase10b-hosted-provider-harness`
+- Scope:
+  add an attachable hosted-provider harness matrix report that evaluates
+  disabled fallback, data-boundary prompt required, artifact capture required,
+  cost visibility required, local fallback required, and opt-in mock-hosted
+  ready paths through the Phase 10A pure gate/status contract.
+- Current PR:
+  PR #492: `https://github.com/novolei/uclaw-new/pull/492`
+- Current commit:
+  Current PR head: `feat(browser): add hosted provider harness matrix`
+- Non-goal:
+  no hosted provider SDK, network call, credential storage, live hosted browser
+  execution, provider default mutation, route promotion, UI, IPC, Settings, DB
+  migration, TaskEvent emission, `agentic_loop.rs`, or `tauri_commands.rs`
+  changes.
+- Rollback:
+  revert this PR; Phase 10A hosted-provider policy, Phase 9 recipe/domain-skill
+  harnesses, and Phase 8 provider routing/default policy remain unchanged.
+
+### Phase 10B Hosted-Provider Harness Matrix Impact Notes
+
+- GitNexus index was refreshed for the Phase 10B worktree before edits;
+  generated AGENTS/CLAUDE statistics changes were restored as noise.
+- GitNexus pre-change impact for `src-tauri/src/harness/adapters/mod.rs`
+  returned UNKNOWN because file-level module exports are not resolved as a
+  graph symbol. The edit is intentionally limited to one additive
+  `pub mod hosted_provider;` export.
+- New `src-tauri/src/harness/adapters/hosted_provider.rs` defines additive
+  harness DTOs, a default matrix builder, artifact attachment, and focused
+  tests without modifying existing provider, runtime, UI, IPC, DB, or task-loop
+  symbols.
+- This slice explicitly rechecks the prior dry-run concern: it does not avoid
+  `agentic_loop.rs` or `tauri_commands.rs` out of fear; those files are not
+  needed to prove the ADR Phase 10 harness gate and should stay thin.
+
+### Phase 10B Hosted-Provider Harness Matrix Verification Notes
+
+- Hosted-provider harness focused verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib harness::adapters::hosted_provider`
+  completed with `4 passed; 0 failed; 2792 filtered out`.
+- Hosted-provider contract regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::hosted_provider`
+  completed with `6 passed; 0 failed; 2790 filtered out`.
+- Runtime-pack regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  completed with `42 passed; 0 failed; 2754 filtered out`.
+- Default browser-runtime regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  completed with `59 passed; 0 failed; 2737 filtered out`.
+- Provider route regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  completed with `16 passed; 0 failed; 2780 filtered out`.
+- Rust formatting passed for changed Rust files:
+  `rustfmt --edition 2021 --check
+  src-tauri/src/harness/adapters/hosted_provider.rs` and
+  `rustfmt --edition 2021 --check --config skip_children=true
+  src-tauri/src/harness/adapters/mod.rs`.
+- Diff hygiene passed:
+  `git diff --check -- src-tauri/src/harness/adapters/hosted_provider.rs
+  src-tauri/src/harness/adapters/mod.rs
+  docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md
+  docs/superpowers/plans/2026-05-24-browser-runtime-phase10b-hosted-provider-harness.md`.
+- GitNexus staged detect reported LOW: `changed_files: 4`,
+  `changed_count: 16`, `affected_count: 0`, `affected_processes: []`.
+
+### Phase 10B Hosted-Provider Harness Matrix Next Action
+
+- Commit, push PR, request a fresh reviewer, and merge only if reviewer
+  accepts, GitHub reports CLEAN, tests stay green, and no HIGH/CRITICAL risk
+  appears.
 
 ---
 
