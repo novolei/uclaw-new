@@ -189,11 +189,12 @@ pub fn provider_route_decision_to_events(
     decision: &BrowserProviderRouteDecision,
     task_id: &str,
 ) -> Vec<TaskEvent> {
+    let batch_ts = chrono::Utc::now().to_rfc3339();
     decision
         .event_intents
         .iter()
         .map(|intent| TaskEvent::Signal {
-            ts: chrono::Utc::now().to_rfc3339(),
+            ts: batch_ts.clone(),
             source: TaskEventSource::Browser,
             task_id: task_id.to_string(),
             code: intent.event_name.as_str().to_string(),
@@ -261,6 +262,39 @@ pub async fn emit_browser_run_into_session_dir(
     }
     // Drop the handle to close the mpsc; the writer task drains
     // remaining events from the channel before exiting.
+    drop(handle);
+}
+
+/// Emit provider route signals for a live browser task if rollout is enabled.
+///
+/// This is intentionally separate from `emit_browser_run_into_session_dir`:
+/// provider route decisions happen before each action, while full run emission
+/// still happens at task completion/yield boundaries.
+pub async fn emit_browser_provider_route_into_session_dir(
+    decision: &BrowserProviderRouteDecision,
+    task_id: &str,
+    db_path: Option<std::path::PathBuf>,
+) {
+    if !crate::agent::rollout_integration::rollout_enabled_by_env() {
+        return;
+    }
+    let sessions_dir = uclaw_utils_home::uclaw_home_pathbuf()
+        .map(|p| p.join("sessions"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.uclaw/sessions"));
+    let handle = match crate::runtime::rollout::RolloutWriter::spawn(sessions_dir, db_path).await {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(
+                task_id = %task_id,
+                "browser rollout: failed to spawn provider route writer: {e}"
+            );
+            return;
+        }
+    };
+    let events = provider_route_decision_to_events(decision, task_id);
+    for ev in events {
+        handle.emit(ev);
+    }
     drop(handle);
 }
 
