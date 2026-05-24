@@ -48,13 +48,18 @@ pub use playwright_cli::{
 };
 pub use playwright_mcp::{
     build_playwright_mcp_request_envelope, build_playwright_mcp_sidecar_spec,
-    playwright_mcp_capabilities, playwright_mcp_provider_status, PlaywrightMcpAction,
-    PlaywrightMcpActionKind, PlaywrightMcpBrowserName, PlaywrightMcpCapability,
-    PlaywrightMcpEnvelopeError, PlaywrightMcpProfileMode, PlaywrightMcpRequestEnvelope,
-    PlaywrightMcpSidecarSpec, PlaywrightMcpSidecarSpecError, PlaywrightMcpSidecarSpecRequest,
-    DEFAULT_PLAYWRIGHT_MCP_ACTION_TIMEOUT_MS, DEFAULT_PLAYWRIGHT_MCP_NAVIGATION_TIMEOUT_MS,
-    PLAYWRIGHT_MCP_DEFAULT_CAPABILITIES, PLAYWRIGHT_MCP_ENVELOPE_SCHEMA_VERSION,
-    PLAYWRIGHT_MCP_PACKAGE_NAME, PLAYWRIGHT_MCP_PROVIDER_ID, PLAYWRIGHT_MCP_UCLAW_ACTIONS,
+    playwright_mcp_capabilities, playwright_mcp_provider_result_from_envelope_error,
+    playwright_mcp_provider_result_from_runner_error,
+    playwright_mcp_provider_result_from_sidecar_result, playwright_mcp_provider_status,
+    PlaywrightMcpAction, PlaywrightMcpActionKind, PlaywrightMcpBrowserName,
+    PlaywrightMcpCapability, PlaywrightMcpEnvelopeError, PlaywrightMcpProfileMode,
+    PlaywrightMcpProviderArtifactRef, PlaywrightMcpProviderExecutionError,
+    PlaywrightMcpProviderExecutionResult, PlaywrightMcpProviderExecutionStatus,
+    PlaywrightMcpRequestEnvelope, PlaywrightMcpSidecarSpec, PlaywrightMcpSidecarSpecError,
+    PlaywrightMcpSidecarSpecRequest, DEFAULT_PLAYWRIGHT_MCP_ACTION_TIMEOUT_MS,
+    DEFAULT_PLAYWRIGHT_MCP_NAVIGATION_TIMEOUT_MS, PLAYWRIGHT_MCP_DEFAULT_CAPABILITIES,
+    PLAYWRIGHT_MCP_ENVELOPE_SCHEMA_VERSION, PLAYWRIGHT_MCP_PACKAGE_NAME,
+    PLAYWRIGHT_MCP_PROVIDER_ID, PLAYWRIGHT_MCP_UCLAW_ACTIONS,
 };
 pub use playwright_mcp_sidecar::{
     execute_playwright_mcp_sidecar_action, start_playwright_mcp_sidecar,
