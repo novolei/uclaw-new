@@ -10,6 +10,8 @@ pub enum BrowserIdentityError {
     Keyring(String),
     #[error("browser identity profile not found: {0}")]
     ProfileNotFound(String),
+    #[error("browser identity profile is revoked: {0}")]
+    ProfileRevoked(String),
     #[error("browser identity secret not found: {0}")]
     SecretNotFound(String),
     #[error("browser identity invalid input: {0}")]
@@ -50,6 +52,7 @@ pub enum BrowserIdentityStatus {
     Live,
     Stale,
     Unknown,
+    Revoked,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,11 +74,21 @@ pub struct BrowserIdentityProfile {
     pub scope: BrowserIdentityScope,
     pub secret_handle: String,
     pub created_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_verified_at_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at_ms: Option<i64>,
     pub status: BrowserIdentityStatus,
+}
+
+impl BrowserIdentityProfile {
+    pub fn is_revoked(&self) -> bool {
+        self.status == BrowserIdentityStatus::Revoked || self.revoked_at_ms.is_some()
+    }
 }
 
 impl BrowserIdentityProfileInput {
