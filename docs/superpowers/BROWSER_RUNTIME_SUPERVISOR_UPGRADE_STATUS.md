@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 6E Settings active-task details
+> Current phase: Phase 6F identity boundary actions
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -25,7 +25,7 @@
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4X merged to `main` / `origin/main`; exit audit complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` / `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` | Closed for user-visible Settings, Doctor, prompt, checkpoint, deep-link, read-only IPC, and dry-run action evidence. Real runtime execution/provider work moves to Phase 5+. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A-5F merged to `main` / `origin/main`; exit gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff` / `codex/browser-runtime-phase5f-action-state-diff` | Closed for feature-flagged Playwright CLI thin lane. Provider promotion and parity routing remain Phase 8. |
-| Phase 6 | Browser identity authorization and profile UX | Phase 6A-6D merged; Phase 6E Settings active-task details in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6e-settings-active-task-details` / `codex/browser-runtime-phase6e-settings-active-task-details` | Render live identity active-task details in Settings, then open PR. |
+| Phase 6 | Browser identity authorization and profile UX | Phase 6A-6E merged; Phase 6F identity boundary actions in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6f-identity-boundary-actions` / `codex/browser-runtime-phase6f-identity-boundary-actions` | Add explicit isolated-profile, reauthorize, and end-task resume decisions for revoked identity checkpoints. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Not started | Unassigned | TBD | Wait for chromiumoxide, CLI, and MCP lanes. |
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Not started | Unassigned | TBD | Wait for observable provider behavior and harness scorecards. |
@@ -114,6 +114,7 @@
 | 2026-05-24 | Merge Phase 6C and start Phase 6D identity active-task drain tracker. | PR #463 merged as `367a9361`; Settings now shows identity status and user-triggered revoke, but active-task count is still `null`. ADR Phase 6 still requires active task display, bounded revoke drain, and paused checkpoint. | Phase 6D adds the live active-task/drain boundary so revoke is no longer a display-only action for running identity-backed tasks. It must keep new logic in focused modules and avoid any dry-run lane caused by large-file fear. |
 | 2026-05-24 | Open Phase 6D identity active-task drain tracker PR. | PR #464 contains the process-local identity task registry, active-task IPC summaries, bounded revoke drain deadline, safe-boundary checkpointing, thin `tauri_commands.rs` registry wiring, focused regressions, and GitNexus staged detect MEDIUM with no HIGH/CRITICAL. | Fresh reviewer should audit the behavioral runtime wiring before merge; if accepted and GitHub reports CLEAN, merge and continue the next Phase 6 slice. |
 | 2026-05-24 | Merge Phase 6D and start Phase 6E Settings active-task details. | PR #464 merged as `f4f8788f`; fresh reviewer Mendel accepted the reviewer-finding fixes for revoked checkpoint resume and startup auth injection guard. Phase 6D IPC now returns real active task summaries. | Phase 6E consumes those real summaries in Settings so users can see which identity-backed tasks are active/draining before revoke decisions. Authorization WebView, reauthorize, isolated fallback, end-task UI, and payment confirmation remain separate PRs. |
+| 2026-05-24 | Merge Phase 6E and start Phase 6F identity boundary actions. | PR #465 merged as `313b7e83`; Settings now renders real active identity task details, drain deadlines, and run/session identifiers. ADR Phase 6 still requires post-checkpoint recovery choices. | Phase 6F adds the typed backend resume decision contract for isolated-profile fallback, explicit reauthorize, and end-task, while keeping auth WebView, Settings recovery UI, TaskEvents, and payment confirmation separate. |
 
 ---
 
@@ -122,9 +123,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6e-settings-active-task-details` |
-| Current phase branch | `codex/browser-runtime-phase6e-settings-active-task-details` |
-| Current local base | `f4f8788f Merge pull request #464 from novolei/codex/browser-runtime-phase6d-identity-drain-tracker` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6f-identity-boundary-actions` |
+| Current phase branch | `codex/browser-runtime-phase6f-identity-boundary-actions` |
+| Current local base | `313b7e83 Merge pull request #465 from novolei/codex/browser-runtime-phase6e-settings-active-task-details` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -180,9 +181,10 @@
 | Phase 6B identity-IPC implementation commit | Merged through PR #462 as `d8089416 feat(browser): expose identity ipc contract`; merge commit `e824ef07`. |
 | Phase 6C Settings identity-status implementation commit | Merged through PR #463 as `374a2200 feat(browser): show identity status in settings`; merge commit `367a9361`. |
 | Phase 6D identity-drain-tracker implementation commit | Merged through PR #464 as `d62505bb feat(browser): track identity task drain`; merge commit `f4f8788f`. |
-| Phase 6E Settings active-task details implementation commit | In progress on `codex/browser-runtime-phase6e-settings-active-task-details`. |
-| Known pre-existing tracked changes | None in the Phase 6E Settings active-task details worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
+| Phase 6E Settings active-task details implementation commit | Merged through PR #465 as `01363646 feat(browser): show identity active tasks in settings`; merge commit `313b7e83`. |
+| Phase 6F identity-boundary-actions implementation commit | In progress on `codex/browser-runtime-phase6f-identity-boundary-actions`. |
+| Known pre-existing tracked changes | None in the Phase 6F identity-boundary-actions worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -4793,7 +4795,8 @@ Phase 6E can start because:
   in Browser Runtime Settings, including task, status, run/session id, and drain
   deadline when present.
 - Current PR:
-  not opened yet.
+  PR #465 `https://github.com/novolei/uclaw-new/pull/465`, merged as
+  `313b7e83`.
 - Non-goal:
   no authorization WebView, Settings connect/import flow, reauthorize flow,
   isolated-profile fallback, end-task UI, payment confirmation, backend IPC
@@ -4830,8 +4833,118 @@ Phase 6E can start because:
 
 ### Phase 6E Settings Active-Task Details Next Action
 
-- Run `git diff --check`, GitNexus staged detect, commit, push, and open the
-  Phase 6E PR.
+- Closed. PR #465 merged as `313b7e83`; continue with Phase 6F from
+  `origin/main`.
+
+## Phase 6F Identity Boundary Actions Entry Criteria
+
+Phase 6F can start because:
+
+- PR #465 merged Settings active-task details into `main` / `origin/main`;
+- Phase 6D already blocks implicit resume of revoked identity checkpoints, but
+  ADR Phase 6 also requires asking whether to switch to isolated profile,
+  reauthorize, or end the task;
+- `browser_task_resume` already supports explicit replacement auth through
+  `auth_profile_id` / `auth_origin`;
+- the remaining gap is a typed backend decision contract, not auth WebView,
+  Settings recovery UI, payment confirmation, or provider promotion;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6f-identity-boundary-actions`;
+- the branch starts from `313b7e83`, the current `origin/main`.
+
+## Phase 6F Identity Boundary Actions Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase6f-identity-boundary-actions.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6f-identity-boundary-actions`
+- Branch:
+  `codex/browser-runtime-phase6f-identity-boundary-actions`
+- Scope:
+  add an explicit `browser_task_resume` identity-boundary decision for
+  `isolated_profile`, `reauthorize`, and `end_task`, while preserving blocked
+  implicit resume of revoked checkpoints.
+- Current PR:
+  PR #466 `https://github.com/novolei/uclaw-new/pull/466`.
+- Current commit:
+  PR #466 branch tip (`feat(browser): add identity boundary resume decisions`),
+  amended after reviewer fixes.
+- Non-goal:
+  no authorization WebView, Settings connect/import flow, Settings recovery UI,
+  payment confirmation, TaskEvent projection, provider promotion, DB migration,
+  hosted provider, or raw auth material display.
+- Rollback:
+  revert this PR; revoked identity checkpoints return to the Phase 6D behavior
+  where implicit resume is blocked until explicit replacement auth is supplied.
+
+### Phase 6F Identity Boundary Actions Impact Notes
+
+- GitNexus impact before edits reported LOW risk for `BrowserTaskRequest`:
+  0 direct callers and 0 affected processes.
+- GitNexus impact before edits reported LOW risk for `BrowserAgentLoop::run`:
+  0 direct callers and 0 affected processes.
+- GitNexus impact before edits reported LOW risk for
+  `BrowserTaskResumeTool::parameters_schema`: 0 direct callers and 0 affected
+  processes.
+- GitNexus impact before edits reported LOW risk for
+  `BrowserTaskResumeTool::execute`: 0 direct callers and 0 affected processes.
+- GitNexus impact before edits reported LOW risk for
+  `BrowserTaskTool::parameters_schema`: 0 direct callers and 0 affected
+  processes.
+- GitNexus impact before edits reported LOW risk for `BrowserTaskTool::execute`:
+  0 direct callers and 0 affected processes.
+- GitNexus impact before edits reported LOW risk for
+  `BrowserParityCase::to_task_request`: 0 direct callers and 0 affected
+  processes.
+- GitNexus did not resolve local helper
+  `identity_revocation_resume_blocked_step`; it is only called from
+  `BrowserAgentLoop::run` and will remain a local step-shape helper.
+- Fresh reviewer Epicurus (`019e593e-a682-7550-8c8d-81b026be6be5`) reviewed
+  PR #466 and found three P1 issues: context switches reused checkpoint tabs,
+  syntactic auth fields could bypass revoked checkpoint blocking without a
+  resolved replacement profile, and `reauthorize` resolved but did not apply
+  replacement storage state on resume.
+- Follow-up fix keeps `require_auth` conservative, clears inherited checkpoint
+  auth for `isolated_profile`, requires a resolved replacement auth profile for
+  `reauthorize`, avoids checkpoint tab reuse when switching identity context,
+  and applies replacement storage state only after replacement auth resolves.
+- Follow-up fresh-review attempt was explicitly authorized, but local external
+  reviewer transports were unavailable: `codex exec` rejected the configured
+  and fallback models for this CLI/account pairing, and `claude -p` returned a
+  provider quota 403. A targeted controller review of the current PR diff found
+  no remaining blockers: `isolated_profile` and resolved `reauthorize` no longer
+  reuse checkpoint tabs, explicit auth fields only bypass revoked checkpoint
+  blocking after `resolve_auth_profile` returns a replacement profile, and
+  resolved reauthorize resumes apply replacement storage state before task
+  continuation.
+
+### Phase 6F Identity Boundary Actions Verification Notes
+
+- Initial focused Rust verification was blocked by missing ignored
+  `src-tauri/bunembed/bun`; linked `src-tauri/pyembed`, `src-tauri/bunembed`,
+  and `src-tauri/gbrain-source` from the primary worktree and reran.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::agent_loop`
+  passed after reviewer fixes: 14 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::tools`
+  passed: 14 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  passed: 41 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  passed: 53 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  passed: 6 tests, 0 failed.
+- `rustfmt --edition 2021 --check src-tauri/src/browser/agent_loop.rs src-tauri/src/browser/tools.rs src-tauri/src/harness/adapters/browser.rs`
+  passed.
+- `git diff --check -- docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-phase6f-identity-boundary-actions.md src-tauri/src/browser/agent_loop.rs src-tauri/src/browser/tools.rs src-tauri/src/harness/adapters/browser.rs`
+  passed.
+- GitNexus staged detect reported `risk_level: none`, `changed_count: 0`,
+  `affected_count: 0`; no HIGH or CRITICAL risk.
+- PR #466 remained `CLEAN` / `MERGEABLE`, with no GitHub checks, comments, or
+  reviews reported after the follow-up fix.
+
+### Phase 6F Identity Boundary Actions Next Action
+
+- Merge PR #466, sync `main`, and continue with the next Phase 6 slice.
 
 ---
 

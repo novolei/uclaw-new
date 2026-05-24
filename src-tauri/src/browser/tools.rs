@@ -1,6 +1,7 @@
 use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
 use crate::browser::agent_loop::{
-    BrowserAgentLoop, BrowserTaskRequest, BrowserTaskRuntimePreparationDecision,
+    BrowserAgentLoop, BrowserIdentityResumeDecision, BrowserTaskRequest,
+    BrowserTaskRuntimePreparationDecision,
 };
 use crate::browser::context::DevicePreset;
 use crate::browser::context_manager::BrowserContextManager;
@@ -144,6 +145,20 @@ fn parse_runtime_preparation_decision(
         "defer" => Ok(BrowserTaskRuntimePreparationDecision::Defer),
         other => Err(ToolError::Execution(format!(
             "runtime_preparation_decision must be 'ready' or 'defer', got '{other}'"
+        ))),
+    }
+}
+
+fn parse_identity_resume_decision(
+    value: Option<&str>,
+) -> Result<BrowserIdentityResumeDecision, ToolError> {
+    match value.unwrap_or("require_auth") {
+        "require_auth" => Ok(BrowserIdentityResumeDecision::RequireAuth),
+        "isolated_profile" => Ok(BrowserIdentityResumeDecision::IsolatedProfile),
+        "reauthorize" => Ok(BrowserIdentityResumeDecision::Reauthorize),
+        "end_task" => Ok(BrowserIdentityResumeDecision::EndTask),
+        other => Err(ToolError::Execution(format!(
+            "identity_resume_decision must be 'require_auth', 'isolated_profile', 'reauthorize', or 'end_task', got '{other}'"
         ))),
     }
 }
@@ -1840,6 +1855,11 @@ impl Tool for BrowserTaskTool {
                     "type": "string",
                     "enum": ["ready", "defer"],
                     "description": "Task-time Browser runtime preparation decision. Use defer only after the user chooses to pause until runtime preparation is ready."
+                },
+                "identity_resume_decision": {
+                    "type": "string",
+                    "enum": ["require_auth", "isolated_profile", "reauthorize", "end_task"],
+                    "description": "Decision for a resumed task whose previous authorized browser identity is revoked or unavailable. Defaults to require_auth, which blocks unsafe implicit resume."
                 }
             },
             "required": ["task"]
@@ -1868,6 +1888,8 @@ impl Tool for BrowserTaskTool {
         let auth_origin = params["auth_origin"].as_str().map(|s| s.to_string());
         let runtime_preparation_decision =
             parse_runtime_preparation_decision(params["runtime_preparation_decision"].as_str())?;
+        let identity_resume_decision =
+            parse_identity_resume_decision(params["identity_resume_decision"].as_str())?;
         let runner = BrowserAgentLoop::new(
             Arc::clone(&self.ctx_mgr),
             Arc::clone(&self.decision_adapter),
@@ -1887,6 +1909,7 @@ impl Tool for BrowserTaskTool {
                 auth_profile_id,
                 auth_origin,
                 runtime_preparation_decision,
+                identity_resume_decision,
             })
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
@@ -1943,6 +1966,11 @@ impl Tool for BrowserTaskResumeTool {
                 "auth_origin": {
                     "type": "string",
                     "description": "Optional origin/URL used to resolve an authorized auth profile while resuming."
+                },
+                "identity_resume_decision": {
+                    "type": "string",
+                    "enum": ["require_auth", "isolated_profile", "reauthorize", "end_task"],
+                    "description": "Decision for a revoked or unavailable identity boundary. Use isolated_profile to continue without the previous identity, reauthorize with auth_profile_id/auth_origin to replace it, or end_task to stop the run."
                 }
             },
             "required": ["run_id"]
@@ -1958,6 +1986,8 @@ impl Tool for BrowserTaskResumeTool {
         let max_steps = params["max_steps"].as_u64().map(|v| v as u32);
         let auth_profile_id = params["auth_profile_id"].as_str().map(|s| s.to_string());
         let auth_origin = params["auth_origin"].as_str().map(|s| s.to_string());
+        let identity_resume_decision =
+            parse_identity_resume_decision(params["identity_resume_decision"].as_str())?;
         let store = self.task_store.as_ref().ok_or_else(|| {
             ToolError::Execution("browser task store is not available".to_string())
         })?;
@@ -1986,6 +2016,7 @@ impl Tool for BrowserTaskResumeTool {
                 auth_profile_id,
                 auth_origin,
                 runtime_preparation_decision: BrowserTaskRuntimePreparationDecision::Ready,
+                identity_resume_decision,
             })
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
@@ -2061,7 +2092,8 @@ mod tests {
     use std::time::Instant;
 
     use super::{
-        browser_run_failure_output, browser_run_success_output, parse_runtime_preparation_decision,
+        browser_run_failure_output, browser_run_success_output, parse_identity_resume_decision,
+        parse_runtime_preparation_decision, BrowserIdentityResumeDecision,
         BrowserTaskRuntimePreparationDecision,
     };
 
@@ -2160,6 +2192,47 @@ mod tests {
 
         assert!(
             error.to_string().contains("must be 'ready' or 'defer'"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn identity_resume_decision_parser_defaults_to_require_auth() {
+        assert_eq!(
+            parse_identity_resume_decision(None).expect("default should parse"),
+            BrowserIdentityResumeDecision::RequireAuth
+        );
+        assert_eq!(
+            parse_identity_resume_decision(Some("require_auth"))
+                .expect("require_auth should parse"),
+            BrowserIdentityResumeDecision::RequireAuth
+        );
+    }
+
+    #[test]
+    fn identity_resume_decision_parser_accepts_boundary_choices() {
+        assert_eq!(
+            parse_identity_resume_decision(Some("isolated_profile"))
+                .expect("isolated_profile should parse"),
+            BrowserIdentityResumeDecision::IsolatedProfile
+        );
+        assert_eq!(
+            parse_identity_resume_decision(Some("reauthorize")).expect("reauthorize should parse"),
+            BrowserIdentityResumeDecision::Reauthorize
+        );
+        assert_eq!(
+            parse_identity_resume_decision(Some("end_task")).expect("end_task should parse"),
+            BrowserIdentityResumeDecision::EndTask
+        );
+    }
+
+    #[test]
+    fn identity_resume_decision_parser_rejects_unknown_value() {
+        let error = parse_identity_resume_decision(Some("reuse_revoked"))
+            .expect_err("unknown identity resume decision should fail");
+
+        assert!(
+            error.to_string().contains("identity_resume_decision"),
             "unexpected error: {error}"
         );
     }

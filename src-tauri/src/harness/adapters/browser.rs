@@ -4,7 +4,9 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::browser::agent_loop::BrowserAgentLoop;
-use crate::browser::agent_loop::{BrowserTaskRequest, BrowserTaskRuntimePreparationDecision};
+use crate::browser::agent_loop::{
+    BrowserIdentityResumeDecision, BrowserTaskRequest, BrowserTaskRuntimePreparationDecision,
+};
 use crate::browser::identity::{
     BrowserAuthProfileBroker, BrowserIdentityKind, BrowserIdentityProfileInput,
     BrowserIdentityProvider, BrowserIdentityScope,
@@ -131,6 +133,7 @@ impl BrowserParityCase {
             auth_profile_id: None,
             auth_origin: self.auth_origin.clone(),
             runtime_preparation_decision: BrowserTaskRuntimePreparationDecision::Ready,
+            identity_resume_decision: BrowserIdentityResumeDecision::RequireAuth,
         }
     }
 

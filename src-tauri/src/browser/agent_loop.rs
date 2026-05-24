@@ -45,6 +45,21 @@ impl Default for BrowserTaskRuntimePreparationDecision {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserIdentityResumeDecision {
+    RequireAuth,
+    IsolatedProfile,
+    Reauthorize,
+    EndTask,
+}
+
+impl Default for BrowserIdentityResumeDecision {
+    fn default() -> Self {
+        Self::RequireAuth
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserTaskRequest {
@@ -59,6 +74,8 @@ pub struct BrowserTaskRequest {
     pub auth_origin: Option<String>,
     #[serde(default)]
     pub runtime_preparation_decision: BrowserTaskRuntimePreparationDecision,
+    #[serde(default)]
+    pub identity_resume_decision: BrowserIdentityResumeDecision,
 }
 
 pub struct BrowserAgentLoop {
@@ -174,12 +191,91 @@ impl BrowserAgentLoop {
         let resume_checkpoint = self.latest_checkpoint(&request);
         let resume_identity_profile_id =
             checkpoint_identity_profile_id(resume_checkpoint.as_ref()).map(str::to_string);
-        let explicit_resume_auth = request.resume_run_id.is_some()
+        let requested_resume_auth = request.resume_run_id.is_some()
             && (request.auth_profile_id.is_some() || request.auth_origin.is_some());
-        if request.resume_run_id.is_some() && !explicit_resume_auth {
+        if request.resume_run_id.is_some()
+            && matches!(
+                request.identity_resume_decision,
+                BrowserIdentityResumeDecision::EndTask
+            )
+        {
+            run.status = BrowserTaskStatus::Stopped;
+            self.push_step(
+                &mut run,
+                identity_resume_end_task_step(step_index, resume_identity_profile_id.as_deref()),
+            );
+            self.emit_run(&run);
+            self.persist_checkpoint(
+                &run,
+                step_index,
+                resume_checkpoint
+                    .as_ref()
+                    .and_then(|checkpoint| checkpoint.active_tab_id.as_deref()),
+                resume_checkpoint
+                    .as_ref()
+                    .and_then(|checkpoint| checkpoint.memory.as_ref()),
+                "browser identity boundary ended task",
+                resume_identity_profile_id.as_deref(),
+            );
+            self.record_final_state(&run).await;
+            return Ok(run);
+        }
+
+        let mut auth_request = request.clone();
+        if matches!(
+            auth_request.identity_resume_decision,
+            BrowserIdentityResumeDecision::IsolatedProfile
+        ) {
+            auth_request.auth_profile_id = None;
+            auth_request.auth_origin = None;
+        } else if auth_request.auth_profile_id.is_none() && auth_request.auth_origin.is_none() {
+            if should_inherit_checkpoint_identity(&auth_request.identity_resume_decision) {
+                auth_request.auth_profile_id = resume_identity_profile_id.clone();
+            }
+        }
+        let auth_profile = self.resolve_auth_profile(&auth_request)?;
+        let auth_profile_requested =
+            auth_request.auth_profile_id.is_some() || auth_request.auth_origin.is_some();
+        let resolved_replacement_auth = requested_resume_auth && auth_profile.is_some();
+
+        if request.resume_run_id.is_some()
+            && matches!(
+                request.identity_resume_decision,
+                BrowserIdentityResumeDecision::Reauthorize
+            )
+            && !resolved_replacement_auth
+        {
+            run.status = BrowserTaskStatus::PausedCheckpointed;
+            self.push_step(
+                &mut run,
+                identity_reauthorize_missing_step(
+                    step_index,
+                    resume_identity_profile_id.as_deref(),
+                ),
+            );
+            self.emit_run(&run);
+            self.persist_checkpoint(
+                &run,
+                step_index,
+                resume_checkpoint
+                    .as_ref()
+                    .and_then(|checkpoint| checkpoint.active_tab_id.as_deref()),
+                resume_checkpoint
+                    .as_ref()
+                    .and_then(|checkpoint| checkpoint.memory.as_ref()),
+                "browser identity reauthorize missing auth",
+                resume_identity_profile_id.as_deref(),
+            );
+            self.record_final_state(&run).await;
+            return Ok(run);
+        }
+        if request.resume_run_id.is_some() && !resolved_replacement_auth {
             if let Some(profile_id) = resume_identity_profile_id.as_deref() {
-                if checkpoint_marks_identity_revoked(resume_checkpoint.as_ref())
-                    || self.identity_profile_is_revoked(profile_id)?
+                if should_block_revoked_identity_resume(
+                    &request.identity_resume_decision,
+                    resolved_replacement_auth,
+                ) && (checkpoint_marks_identity_revoked(resume_checkpoint.as_ref())
+                    || self.identity_profile_is_revoked(profile_id)?)
                 {
                     run.status = BrowserTaskStatus::PausedCheckpointed;
                     self.push_step(
@@ -205,13 +301,6 @@ impl BrowserAgentLoop {
             }
         }
 
-        let mut auth_request = request.clone();
-        if auth_request.auth_profile_id.is_none() && auth_request.auth_origin.is_none() {
-            auth_request.auth_profile_id = resume_identity_profile_id.clone();
-        }
-        let auth_profile = self.resolve_auth_profile(&auth_request)?;
-        let auth_profile_requested =
-            auth_request.auth_profile_id.is_some() || auth_request.auth_origin.is_some();
         let identity_profile_id = auth_profile
             .as_ref()
             .map(|(profile, _)| profile.id.as_str());
@@ -251,11 +340,24 @@ impl BrowserAgentLoop {
             .ctx_mgr
             .get_or_create_with_identity(&request.session_id, identity_profile_id)
             .await?;
-        let tab_id = if let Some(tab_id) = resume_checkpoint
-            .as_ref()
-            .and_then(|checkpoint| checkpoint.active_tab_id.clone())
-        {
-            tab_id
+        let reuse_checkpoint_tab = should_reuse_checkpoint_tab(
+            &request.identity_resume_decision,
+            resolved_replacement_auth,
+        );
+        let tab_id = if reuse_checkpoint_tab {
+            if let Some(tab_id) = resume_checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.active_tab_id.clone())
+            {
+                tab_id
+            } else if let Some(start_url) = request.start_url.as_deref() {
+                ctx.navigate("new", start_url, self.ctx_mgr.app_handle())
+                    .await?
+            } else {
+                ctx.active_or_first_tab_id()
+                    .await
+                    .ok_or_else(|| anyhow!("No browser tab is available for task"))?
+            }
         } else if let Some(start_url) = request.start_url.as_deref() {
             ctx.navigate("new", start_url, self.ctx_mgr.app_handle())
                 .await?
@@ -266,7 +368,7 @@ impl BrowserAgentLoop {
         };
 
         let mut active_tab_id = tab_id;
-        if request.resume_run_id.is_none() {
+        if should_apply_auth_profile(&request, resolved_replacement_auth) {
             if let Some((profile, state)) = auth_profile.as_ref() {
                 ctx.apply_storage_state(&active_tab_id, state, self.ctx_mgr.app_handle())
                     .await?;
@@ -283,6 +385,7 @@ impl BrowserAgentLoop {
                             "profileId": profile.id.clone(),
                             "label": profile.label.clone(),
                             "originPattern": profile.origin_pattern.clone(),
+                            "resumeDecision": request.identity_resume_decision.clone(),
                         }),
                         ok: true,
                         message: Some(format!(
@@ -302,6 +405,12 @@ impl BrowserAgentLoop {
                         .await?;
                 }
             }
+        }
+        if active_tab_id.is_empty() {
+            active_tab_id = ctx
+                .active_or_first_tab_id()
+                .await
+                .ok_or_else(|| anyhow!("No browser tab is available for task"))?;
         }
         let mut loop_detector = LoopDetector::default();
         let mut latest_memory = resume_checkpoint.and_then(|checkpoint| checkpoint.memory);
@@ -1188,6 +1297,33 @@ fn should_pause_for_runtime_preparation(request: &BrowserTaskRequest) -> bool {
     )
 }
 
+fn should_block_revoked_identity_resume(
+    decision: &BrowserIdentityResumeDecision,
+    resolved_replacement_auth: bool,
+) -> bool {
+    !resolved_replacement_auth
+        && !matches!(decision, BrowserIdentityResumeDecision::IsolatedProfile)
+}
+
+fn should_inherit_checkpoint_identity(decision: &BrowserIdentityResumeDecision) -> bool {
+    !matches!(decision, BrowserIdentityResumeDecision::IsolatedProfile)
+}
+
+fn should_reuse_checkpoint_tab(
+    decision: &BrowserIdentityResumeDecision,
+    resolved_replacement_auth: bool,
+) -> bool {
+    !resolved_replacement_auth
+        && !matches!(decision, BrowserIdentityResumeDecision::IsolatedProfile)
+}
+
+fn should_apply_auth_profile(
+    request: &BrowserTaskRequest,
+    resolved_replacement_auth: bool,
+) -> bool {
+    request.resume_run_id.is_none() || resolved_replacement_auth
+}
+
 fn runtime_preparation_pause_step(
     step_index: u32,
     request: &BrowserTaskRequest,
@@ -1252,15 +1388,61 @@ fn identity_revocation_resume_blocked_step(step_index: u32, profile_id: &str) ->
         action_name: "browser_identity_revoked_resume_blocked".to_string(),
         action_args: serde_json::json!({
             "profileId": profile_id,
+            "availableDecisions": ["isolated_profile", "reauthorize", "end_task"],
         }),
         ok: false,
         message: Some(
-            "Browser identity was revoked; resume requires explicit reauthorization.".to_string(),
+            "Browser identity was revoked; choose isolated profile, reauthorize, or end the task."
+                .to_string(),
         ),
         error: Some(
             "Browser task resume blocked because its authorized browser identity was revoked."
                 .to_string(),
         ),
+        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+    }
+}
+
+fn identity_reauthorize_missing_step(step_index: u32, profile_id: Option<&str>) -> BrowserTaskStep {
+    BrowserTaskStep {
+        step_index,
+        phase: BrowserTaskStepPhase::UserIntervention,
+        observation_summary: String::new(),
+        reasoning:
+            "Reauthorization was selected, but no replacement browser identity was provided."
+                .to_string(),
+        action_name: "browser_identity_reauthorize_missing_auth".to_string(),
+        action_args: serde_json::json!({
+            "profileId": profile_id,
+            "requiredInputs": ["auth_profile_id", "auth_origin"],
+            "availableDecisions": ["isolated_profile", "reauthorize", "end_task"],
+        }),
+        ok: false,
+        message: Some(
+            "Choose a replacement browser identity before reauthorizing this task.".to_string(),
+        ),
+        error: Some(
+            "Browser task reauthorize decision requires auth_profile_id or auth_origin."
+                .to_string(),
+        ),
+        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+    }
+}
+
+fn identity_resume_end_task_step(step_index: u32, profile_id: Option<&str>) -> BrowserTaskStep {
+    BrowserTaskStep {
+        step_index,
+        phase: BrowserTaskStepPhase::UserIntervention,
+        observation_summary: String::new(),
+        reasoning: "User chose to end a browser task stopped at an identity boundary.".to_string(),
+        action_name: "browser_identity_boundary_end_task".to_string(),
+        action_args: serde_json::json!({
+            "profileId": profile_id,
+            "decision": "end_task",
+        }),
+        ok: true,
+        message: Some("Browser task ended at the identity boundary.".to_string()),
+        error: None,
         timestamp_ms: chrono::Utc::now().timestamp_millis(),
     }
 }
@@ -1422,6 +1604,10 @@ mod tests {
             request.runtime_preparation_decision,
             BrowserTaskRuntimePreparationDecision::Ready
         );
+        assert_eq!(
+            request.identity_resume_decision,
+            BrowserIdentityResumeDecision::RequireAuth
+        );
         assert!(!should_pause_for_runtime_preparation(&request));
     }
 
@@ -1437,6 +1623,7 @@ mod tests {
             auth_profile_id: None,
             auth_origin: None,
             runtime_preparation_decision: BrowserTaskRuntimePreparationDecision::Defer,
+            identity_resume_decision: BrowserIdentityResumeDecision::RequireAuth,
         };
 
         assert!(should_pause_for_runtime_preparation(&request));
@@ -1460,6 +1647,80 @@ mod tests {
             .as_deref()
             .expect("pause step should have error copy")
             .contains("waiting for Browser runtime preparation"));
+    }
+
+    #[test]
+    fn revoked_identity_resume_blocks_unless_isolated_or_explicit_auth() {
+        assert!(should_block_revoked_identity_resume(
+            &BrowserIdentityResumeDecision::RequireAuth,
+            false
+        ));
+        assert!(should_block_revoked_identity_resume(
+            &BrowserIdentityResumeDecision::Reauthorize,
+            false
+        ));
+        assert!(!should_block_revoked_identity_resume(
+            &BrowserIdentityResumeDecision::IsolatedProfile,
+            false
+        ));
+        assert!(!should_block_revoked_identity_resume(
+            &BrowserIdentityResumeDecision::RequireAuth,
+            true
+        ));
+    }
+
+    #[test]
+    fn isolated_profile_resume_does_not_inherit_checkpoint_identity() {
+        assert!(should_inherit_checkpoint_identity(
+            &BrowserIdentityResumeDecision::RequireAuth
+        ));
+        assert!(should_inherit_checkpoint_identity(
+            &BrowserIdentityResumeDecision::Reauthorize
+        ));
+        assert!(!should_inherit_checkpoint_identity(
+            &BrowserIdentityResumeDecision::IsolatedProfile
+        ));
+    }
+
+    #[test]
+    fn identity_boundary_context_switch_does_not_reuse_checkpoint_tab() {
+        assert!(should_reuse_checkpoint_tab(
+            &BrowserIdentityResumeDecision::RequireAuth,
+            false
+        ));
+        assert!(!should_reuse_checkpoint_tab(
+            &BrowserIdentityResumeDecision::IsolatedProfile,
+            false
+        ));
+        assert!(!should_reuse_checkpoint_tab(
+            &BrowserIdentityResumeDecision::Reauthorize,
+            true
+        ));
+    }
+
+    #[test]
+    fn resume_only_applies_auth_after_replacement_auth_resolves() {
+        let base = BrowserTaskRequest {
+            session_id: "s1".to_string(),
+            task: "resume".to_string(),
+            max_steps: Some(1),
+            start_url: None,
+            available_file_paths: Vec::new(),
+            resume_run_id: Some("run-1".to_string()),
+            auth_profile_id: Some("auth-2".to_string()),
+            auth_origin: None,
+            runtime_preparation_decision: BrowserTaskRuntimePreparationDecision::Ready,
+            identity_resume_decision: BrowserIdentityResumeDecision::Reauthorize,
+        };
+
+        assert!(should_apply_auth_profile(&base, true));
+        assert!(!should_apply_auth_profile(&base, false));
+
+        let fresh = BrowserTaskRequest {
+            resume_run_id: None,
+            ..base
+        };
+        assert!(should_apply_auth_profile(&fresh, false));
     }
 
     #[test]
@@ -1493,12 +1754,54 @@ mod tests {
             step.action_args["profileId"],
             serde_json::json!("auth-revoked")
         );
+        assert_eq!(
+            step.action_args["availableDecisions"],
+            serde_json::json!(["isolated_profile", "reauthorize", "end_task"])
+        );
         assert!(!step.ok);
         assert!(step
             .error
             .as_deref()
             .expect("resume blocked error")
             .contains("resume blocked"));
+    }
+
+    #[test]
+    fn identity_reauthorize_missing_step_requires_replacement_auth() {
+        let step = identity_reauthorize_missing_step(8, Some("auth-revoked"));
+
+        assert_eq!(step.step_index, 8);
+        assert_eq!(step.phase, BrowserTaskStepPhase::UserIntervention);
+        assert_eq!(
+            step.action_name,
+            "browser_identity_reauthorize_missing_auth"
+        );
+        assert_eq!(
+            step.action_args["requiredInputs"],
+            serde_json::json!(["auth_profile_id", "auth_origin"])
+        );
+        assert!(!step.ok);
+        assert!(step
+            .error
+            .as_deref()
+            .expect("reauthorize missing error")
+            .contains("auth_profile_id"));
+    }
+
+    #[test]
+    fn identity_resume_end_task_step_records_boundary_decision() {
+        let step = identity_resume_end_task_step(9, Some("auth-revoked"));
+
+        assert_eq!(step.step_index, 9);
+        assert_eq!(step.phase, BrowserTaskStepPhase::UserIntervention);
+        assert_eq!(step.action_name, "browser_identity_boundary_end_task");
+        assert_eq!(step.action_args["decision"], serde_json::json!("end_task"));
+        assert_eq!(
+            step.action_args["profileId"],
+            serde_json::json!("auth-revoked")
+        );
+        assert!(step.ok);
+        assert!(step.error.is_none());
     }
 
     #[test]
