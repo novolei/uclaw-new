@@ -1561,7 +1561,7 @@ fn provider_route_blocked_step(
         step_index,
         phase: BrowserTaskStepPhase::Recover,
         observation_summary: summarize_observation(observation),
-        reasoning: "Provider route selected a provider that is not wired into the live browser action executor.".to_string(),
+        reasoning: "Provider route selected a provider/action boundary that could not execute this browser action.".to_string(),
         action_name: "browser_provider_route_blocked".to_string(),
         action_args: serde_json::json!({
             "action": serde_json::to_value(action)?,

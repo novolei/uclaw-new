@@ -1,11 +1,17 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 
 use crate::browser::action::{BrowserAction, BrowserActionResult};
 use crate::browser::action_registry::BrowserActionRegistry;
 use crate::browser::context_manager::BrowserContextManager;
-use crate::browser::playwright_cli::playwright_cli_provider_status;
+use crate::browser::playwright_cli::{
+    execute_playwright_cli_provider_action, playwright_cli_provider_status, PlaywrightCliAction,
+    PlaywrightCliAddress, PlaywrightCliProviderExecutionResult,
+    PlaywrightCliProviderExecutionStatus, PLAYWRIGHT_CLI_PROVIDER_ID,
+};
 use crate::browser::playwright_mcp::playwright_mcp_provider_status;
 use crate::browser::provider::{
     local_chromium_status, BrowserCapabilityProbe, BrowserProviderReadinessProbe,
@@ -16,6 +22,8 @@ use crate::browser::runtime_contracts::{
     BrowserProviderSelectionRequest, BrowserRuntimeFeatureFlags,
 };
 use crate::browser::runtime_pack::BrowserRuntimePackStatusReport;
+
+static NEXT_PROVIDER_ACTION_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct BrowserProviderActionExecutor {
     action_registry: BrowserActionRegistry,
@@ -106,6 +114,12 @@ impl BrowserProviderActionExecutor {
         action: BrowserAction,
         route_decision: BrowserProviderRouteDecision,
     ) -> Result<BrowserProviderActionExecution> {
+        if route_decision.selected_provider_id.as_deref() == Some(PLAYWRIGHT_CLI_PROVIDER_ID) {
+            return Ok(self
+                .execute_playwright_cli_route(session_id, action, route_decision)
+                .await);
+        }
+
         if provider_route_blocks_local_action(&route_decision) {
             return Ok(BrowserProviderActionExecution {
                 route_decision: route_decision.clone(),
@@ -128,6 +142,155 @@ impl BrowserProviderActionExecutor {
             outcome: BrowserProviderActionExecutionOutcome::Executed(result),
         })
     }
+
+    async fn execute_playwright_cli_route(
+        &self,
+        session_id: &str,
+        action: BrowserAction,
+        route_decision: BrowserProviderRouteDecision,
+    ) -> BrowserProviderActionExecution {
+        let runtime_report = match self.route_options.runtime_report.as_ref() {
+            Some(runtime_report) => runtime_report,
+            None => {
+                return BrowserProviderActionExecution {
+                    route_decision: route_decision.clone(),
+                    outcome: BrowserProviderActionExecutionOutcome::Blocked(
+                        BrowserProviderActionBlocked {
+                            selected_provider_id: route_decision.selected_provider_id.clone(),
+                            message: "Playwright CLI provider was selected, but no runtime-pack readiness report is available.".to_string(),
+                        },
+                    ),
+                };
+            }
+        };
+
+        let cli_action = match playwright_cli_action_for_browser_action(action) {
+            Ok(cli_action) => cli_action,
+            Err(blocked) => {
+                return BrowserProviderActionExecution {
+                    route_decision,
+                    outcome: BrowserProviderActionExecutionOutcome::Blocked(blocked),
+                };
+            }
+        };
+
+        let started = Instant::now();
+        let result = execute_playwright_cli_provider_action(
+            next_provider_action_request_id(session_id),
+            self.route_options.feature_flags,
+            cli_action,
+            runtime_report,
+        )
+        .await;
+        let duration_ms = started.elapsed().as_millis() as u64;
+
+        match result.status {
+            PlaywrightCliProviderExecutionStatus::Blocked => BrowserProviderActionExecution {
+                route_decision: route_decision.clone(),
+                outcome: BrowserProviderActionExecutionOutcome::Blocked(
+                    BrowserProviderActionBlocked {
+                        selected_provider_id: route_decision.selected_provider_id.clone(),
+                        message: playwright_cli_blocked_message(&result),
+                    },
+                ),
+            },
+            PlaywrightCliProviderExecutionStatus::Succeeded
+            | PlaywrightCliProviderExecutionStatus::Failed => BrowserProviderActionExecution {
+                route_decision,
+                outcome: BrowserProviderActionExecutionOutcome::Executed(
+                    browser_action_result_from_playwright_cli(result, duration_ms),
+                ),
+            },
+        }
+    }
+}
+
+fn playwright_cli_action_for_browser_action(
+    action: BrowserAction,
+) -> Result<PlaywrightCliAction, BrowserProviderActionBlocked> {
+    match action {
+        BrowserAction::Navigate { url, .. } => Ok(PlaywrightCliAction::Navigate { url }),
+        BrowserAction::Click { index, .. } => Ok(PlaywrightCliAction::Click {
+            target: PlaywrightCliAddress::UclawDomElementId {
+                element_id: index.to_string(),
+            },
+        }),
+        BrowserAction::Type { index, text, .. } => Ok(PlaywrightCliAction::Type {
+            target: PlaywrightCliAddress::UclawDomElementId {
+                element_id: index.to_string(),
+            },
+            text,
+        }),
+        BrowserAction::GetState {
+            include_screenshot, ..
+        } => {
+            if include_screenshot {
+                Ok(PlaywrightCliAction::Screenshot { full_page: false })
+            } else {
+                Ok(PlaywrightCliAction::Extract { target: None })
+            }
+        }
+        BrowserAction::Scroll { .. }
+        | BrowserAction::SendKeys { .. }
+        | BrowserAction::Evaluate { .. }
+        | BrowserAction::ListTabs
+        | BrowserAction::SwitchTab { .. }
+        | BrowserAction::CloseTab { .. }
+        | BrowserAction::UploadFile { .. } => Err(BrowserProviderActionBlocked {
+            selected_provider_id: Some(PLAYWRIGHT_CLI_PROVIDER_ID.to_string()),
+            message: "Selected Playwright CLI route does not support this browser action yet."
+                .to_string(),
+        }),
+    }
+}
+
+fn browser_action_result_from_playwright_cli(
+    result: PlaywrightCliProviderExecutionResult,
+    duration_ms: u64,
+) -> BrowserActionResult {
+    let ok = result.status == PlaywrightCliProviderExecutionStatus::Succeeded;
+    let error = result.error.as_ref().map(|error| {
+        if error.code.is_empty() {
+            error.message.clone()
+        } else {
+            format!("{}: {}", error.code, error.message)
+        }
+    });
+    let mut action_result = BrowserActionResult {
+        ok,
+        action_name: format!("browser_playwright_cli_{}", result.action_kind.as_str()),
+        message: Some(result.summary.clone()),
+        tab_id: None,
+        observation_json: Some(serde_json::json!({
+            "providerId": result.provider_id,
+            "requestId": result.request_id,
+            "status": result.status,
+            "actionKind": result.action_kind,
+            "summary": result.summary,
+            "artifactRefs": result.artifact_refs,
+            "output": result.output,
+            "error": result.error,
+        })),
+        error,
+        duration_ms,
+    };
+    if !ok && action_result.error.is_none() {
+        action_result.error = Some("Playwright CLI provider action failed".to_string());
+    }
+    action_result
+}
+
+fn playwright_cli_blocked_message(result: &PlaywrightCliProviderExecutionResult) -> String {
+    result
+        .error
+        .as_ref()
+        .map(|error| format!("{}: {}", error.code, error.message))
+        .unwrap_or_else(|| result.summary.clone())
+}
+
+fn next_provider_action_request_id(session_id: &str) -> String {
+    let sequence = NEXT_PROVIDER_ACTION_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    format!("{session_id}-provider-action-{sequence}")
 }
 
 pub fn provider_selection_request_for_action(
