@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Goal-mode docs hygiene after Phase 5A merge
+> Current phase: Dry-run drift audit before Phase 5B
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -24,7 +24,7 @@
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4X merged to `main` / `origin/main`; exit audit complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` / `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` | Closed for user-visible Settings, Doctor, prompt, checkpoint, deep-link, read-only IPC, and dry-run action evidence. Real runtime execution/provider work moves to Phase 5+. |
-| Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A provider contract merged to `main` / `origin/main`; goal-mode docs hygiene in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-goal-mode-docs-hygiene` / `codex/browser-runtime-goal-mode-docs-hygiene` | Land the docs hygiene PR so goal-mode phase-pack work is not slowed by obsolete branch templates or over-strict DMZ wording; next implementation slice should continue Phase 5B. |
+| Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A provider contract and goal-mode docs hygiene merged; dry-run drift audit in progress before Phase 5B | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-dry-run-drift-audit` / `codex/browser-runtime-dry-run-drift-audit` | Finish the Phase 1-5A drift audit. If confirmed, add a Phase 5B-preflight real runtime-pack step-runner slice before Playwright child-worker execution. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Not started | Unassigned | TBD | Wait for chromiumoxide, CLI, and MCP lanes. |
@@ -98,6 +98,7 @@
 | 2026-05-24 | Merge Phase 4W and start Phase 4X as Settings action dry-run IPC. | PR #449 merged as `f24a88b4`; Settings can now refresh read-only status on demand. Runtime-pack action buttons still need backend planner evidence before any real execution is safe. | Phase 4X may add a dedicated dry-run Tauri command and Settings rendering for execution reports, but must not perform real prepare/repair/reinstall/cleanup/rollback, emit TaskEvents, promote providers, or mutate runtime files. `main.rs` command registration is a narrow DMZ touch and must be reviewer-visible. |
 | 2026-05-24 | Close Phase 4 after PR #450 and start Phase 5A as a pure CLI provider contract. | PR #450 merged as `3dbd9500`; fresh reviewer Galileo returned `REVIEW ACCEPTED`; ADR Phase 4 user-visible Settings/Doctor/task-time prompt/defer/dry-run surfaces are now in place, while real Playwright provider execution belongs to Phase 5. | Phase 5A may define readiness and JSON action-envelope contracts for `browser.playwright_cli`, but must not spawn Node/Playwright, execute browser actions, promote the provider, add IPC, or mutate runtime packs. |
 | 2026-05-24 | Merge Phase 5A and start goal-mode docs hygiene before Phase 5B. | PR #451 merged as `947b3aee`; fresh reviewer Mencius returned `REVIEW ACCEPTED`. The user then asked to audit `AGENTS.md`, `BEHAVIOR.md`, and `CONTEXT.md` for goal-mode friction, especially over-strict DMZ language around `agentic_loop.rs` and `tauri_commands.rs`. | This docs-only sidecar may align behavior docs with phase-pack goal mode and remove file-name-only DMZ gates for runtime hot paths. It must not add runtime behavior or fold in Phase 5B implementation. |
+| 2026-05-24 | Merge goal-mode docs hygiene and start a dry-run drift audit before Phase 5B. | PR #452 merged as `8608b694`; the user explicitly asked to audit Phase 1-5A for dry-run/code-shape drift caused by old `agentic_loop.rs` / `tauri_commands.rs` constraints. | Audit first, then continue. If the audit confirms runtime-pack real adapters are the only remaining dry-run drift, schedule a Phase 5B-preflight runtime-pack step-runner slice before the Playwright child-worker slice. |
 
 ---
 
@@ -106,9 +107,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-goal-mode-docs-hygiene` |
-| Current phase branch | `codex/browser-runtime-goal-mode-docs-hygiene` |
-| Current local base | `947b3aee Merge pull request #451 from novolei/codex/browser-runtime-phase5a-cli-provider-contract` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-dry-run-drift-audit` |
+| Current phase branch | `codex/browser-runtime-dry-run-drift-audit` |
+| Current local base | `8608b694 Merge pull request #452 from novolei/codex/browser-runtime-goal-mode-docs-hygiene` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -151,9 +152,10 @@
 | Phase 4W implementation commit | Merged through PR #449 as `166504ad feat(browser): refresh runtime doctor from settings`; merge commit `f24a88b4`. |
 | Phase 4X implementation commit | Merged through PR #450 as `069dafd4 feat(browser): dry-run runtime actions from settings`; merge commit `3dbd9500`. |
 | Phase 5A implementation commit | Merged through PR #451 as `b420bff5 feat(browser): add playwright cli provider contract`; merge commit `947b3aee`. |
-| Goal-mode docs hygiene commit | In progress on `codex/browser-runtime-goal-mode-docs-hygiene`; PR pending. |
-| Known pre-existing tracked changes | None in the docs hygiene worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
-| Linked ignored runtime resources | Not needed for docs hygiene. |
+| Goal-mode docs hygiene commit | Merged through PR #452 as `c1ea0f34 docs(goal): align browser runtime goal-mode rules`; merge commit `8608b694`. |
+| Dry-run drift audit commit | In progress on `codex/browser-runtime-dry-run-drift-audit`; PR pending. |
+| Known pre-existing tracked changes | None in the dry-run drift audit worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Linked ignored runtime resources | Not needed for docs-only audit. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria
@@ -3667,7 +3669,7 @@ This sidecar can start because:
   and removal of special DMZ constraints for `agentic_loop.rs` /
   `tauri_commands.rs`.
 - Current PR:
-  pending.
+  PR #452: `https://github.com/novolei/uclaw-new/pull/452`
 - Non-goal:
   no Phase 5B implementation, code changes, IPC, provider promotion, runtime
   pack mutation, or DB migration.
@@ -3710,6 +3712,128 @@ This sidecar can start because:
   were restored.
 - GitNexus staged `detect_changes` reported LOW risk, 5 changed files, 31
   changed symbols, and 0 affected processes.
+
+---
+
+## Dry-Run Drift Audit Entry Criteria
+
+This audit can start because:
+
+- PR #452 merged the goal-mode docs hygiene sidecar into `main` and
+  `origin/main`;
+- the user explicitly asked to review Phase 1 through Phase 5A for target or
+  design drift caused by previous `agentic_loop.rs` / `tauri_commands.rs`
+  constraints;
+- the user also asked to catch any code stuck in dry-run lanes only because
+  those two large files felt too risky to modify;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-dry-run-drift-audit`;
+- the branch starts from `8608b694`, the current `origin/main`.
+
+## Dry-Run Drift Audit Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-dry-run-drift-audit.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-dry-run-drift-audit`
+- Branch:
+  `codex/browser-runtime-dry-run-drift-audit`
+- Scope:
+  docs-only Phase 1-5A audit of dry-run/contract-only lanes, especially Phase
+  2C-2F runtime-pack execution, Phase 4O-4Q prompt dispatch, Phase 4R-4X
+  Settings/IPC, and Phase 5A provider contracts.
+- Current PR:
+  pending.
+- Non-goal:
+  no code changes, provider execution, runtime-pack mutation, UI behavior
+  change, IPC mutation, DB migration, or provider promotion.
+- Rollback:
+  revert this audit PR; no runtime state, browser sessions, provider selection,
+  database rows, or user data are changed.
+
+### Dry-Run Drift Audit Impact Notes
+
+- Two fresh read-only reviewers were spawned for the audit:
+  - one reviewer owns Phase 2C-2F and Phase 4R-4X runtime-pack/IPC drift
+    questions;
+  - one reviewer owns Phase 4O-4Q and Phase 5A prompt/provider drift
+    questions.
+- Preliminary local audit finds no bad architecture caused by avoiding
+  `tauri_commands.rs`: Phase 4S/4X used a focused
+  `browser::runtime_pack_ipc` module with narrow command registration, which
+  matches the thin-file goal.
+- Preliminary local audit finds no bad architecture caused by avoiding
+  `agentic_loop.rs`: Phase 4P's dispatcher-level patching and
+  `browser_task` request parsing already let task-time defer decisions reach
+  the browser task pause gate without putting more logic into the global agent
+  loop.
+- Phase 5A is intentionally contract-only per ADR Phase 5. The next provider
+  implementation should leave the contract lane and add supervised short-lived
+  child-worker execution behind `playwright_cli`.
+- The real remaining dry-run lane is the runtime-pack executor. Phase 2C-2F
+  intentionally stopped at dry-run and abstract managed-runner boundaries. That
+  was a safe ADR-aligned sequence, but the Browser Runtime program still lacks
+  real app-managed download, verify, extract, promote, cleanup, and rollback
+  adapters. This is not a `tauri_commands.rs` workaround; it is unfinished ADR
+  Phase 2 work that should be closed before relying on the app-managed pack for
+  real Playwright CLI execution.
+- Fresh reviewer Heisenberg found an additional readiness drift: the read-only
+  status IPC uses default filesystem probe options where `worker_startup_ok` and
+  `real_page_probe_ok` are true by default, so a pack can report
+  `ready && can_run_browser_tasks` without proving worker startup or a real page
+  probe. Phase 5A consumes that readiness for `browser.playwright_cli`, so this
+  must be fixed before child-worker execution can rely on the status.
+- Fresh reviewer Heisenberg also found a UI/IPC mapping drift: Rust returns
+  `runtime_root` and `current_pack_dir`, but the frontend live status type and
+  Settings view model do not use those fields for the runtime-pack path row.
+  This should be fixed before goal completion, preferably beside the readiness
+  preflight.
+- Fresh reviewer Banach confirmed Phase 4O-4Q are not stuck because
+  `agentic_loop.rs` was avoided. The correct live boundary is the
+  dispatcher/tool path: prompt patch normalization before approval/execution,
+  browser task request parsing, and the browser task pause gate.
+- Historical Phase 4O/4R tracker and plan rows still contain pre-PR-#452 DMZ
+  vocabulary. Treat those rows as historical evidence explaining earlier
+  caution, not active stop rules. Current active behavior comes from PR #452:
+  `agentic_loop.rs` and `tauri_commands.rs` are normal hot-path files governed
+  by GitNexus impact, narrow module design, focused tests, and fresh review
+  when broad, risky, or HIGH-impact.
+
+### Dry-Run Drift Audit Verification Notes
+
+- Stale active-DMZ grep passed with no matches:
+  `rg -n 'special DMZ constraints for agentic_loop.rs|special DMZ constraints for tauri_commands.rs|agentic_loop\.rs.*active.*DMZ|tauri_commands\.rs.*active.*DMZ' docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md`
+  exited with no output.
+- Whitespace check passed:
+  `git diff --check -- docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-dry-run-drift-audit.md`
+  returned no output.
+- Browser runtime pack regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  returned `36 passed; 0 failed; 2599 filtered out`.
+- Browser runtime regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  returned `48 passed; 0 failed; 2587 filtered out`.
+- Browser provider regression passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  returned `6 passed; 0 failed; 2629 filtered out`.
+- `rustfmt --edition 2021 --check <changed-rust-files>` is N/A; this audit
+  changes no Rust files.
+- `npx gitnexus analyze` indexed the audit worktree successfully
+  (`36,879 nodes | 60,850 edges | 993 clusters | 300 flows`). It changed
+  auto-managed `AGENTS.md` / `CLAUDE.md` stats blocks; those noise changes were
+  restored before commit.
+- GitNexus staged detect reported LOW risk, 2 changed docs files, 23 changed
+  symbols, and 0 affected processes.
+
+### Dry-Run Drift Audit Next Action
+
+- Run docs/Rust/GitNexus verification, then open PR.
+- Record PR/commit after verification.
+- The next implementation phase should be **Phase 5B-preflight A: real
+  runtime-pack step-runner and readiness-probe adapters** before the Playwright
+  CLI child-worker PR.
+- Follow with **Phase 5B-preflight B: Settings live runtime path mapping** if it
+  is not folded into the readiness preflight by scope.
 
 ---
 
