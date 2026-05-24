@@ -19,6 +19,7 @@ import {
   type BrowserRuntimeSettingsInput,
   type BrowserRuntimeSettingsAction,
 } from '@/lib/browser-runtime/browser-runtime-settings'
+import { getBrowserRuntimeStatus } from '@/lib/tauri-bridge'
 import { SettingsCard, SettingsRow, SettingsSection } from './primitives'
 
 interface BrowserRuntimeSettingsProps {
@@ -42,7 +43,36 @@ const ACTION_ICONS: Record<BrowserRuntimeSettingsAction['id'], React.ReactNode> 
 export function BrowserRuntimeSettings({
   status,
 }: BrowserRuntimeSettingsProps): React.ReactElement {
-  const model = deriveBrowserRuntimeSettingsViewModel(status)
+  const [liveStatus, setLiveStatus] = React.useState<BrowserRuntimeSettingsInput | undefined>()
+
+  React.useEffect(() => {
+    if (status) {
+      setLiveStatus(undefined)
+      return
+    }
+
+    let cancelled = false
+    void getBrowserRuntimeStatus()
+      .then((report) => {
+        if (!cancelled) {
+          setLiveStatus({
+            report,
+            lastCheckedAtMs: Date.now(),
+          })
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLiveStatus(undefined)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [status])
+
+  const model = deriveBrowserRuntimeSettingsViewModel(status ?? liveStatus)
   const [selectedActionId, setSelectedActionId] =
     React.useState<BrowserRuntimeSettingsAction['id'] | null>(null)
   const selectedAction =
