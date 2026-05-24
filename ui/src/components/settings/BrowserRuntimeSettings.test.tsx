@@ -127,6 +127,35 @@ function revokedIdentityReport(): BrowserIdentityStatusReport {
   })
 }
 
+function activeIdentityTaskReport(): BrowserIdentityStatusReport {
+  return identityReport({
+    ...authorizedIdentityReport(),
+    activeTaskCount: 2,
+    activeTasks: [
+      {
+        profileId: 'auth-example',
+        runId: 'run-active-1',
+        sessionId: 'session-active-1',
+        task: 'Use an authorized dashboard',
+        status: 'running',
+        startedAtMs: 1_770_000_010_000,
+        updatedAtMs: 1_770_000_020_000,
+        drainDeadlineMs: null,
+      },
+      {
+        profileId: 'auth-example',
+        runId: 'run-draining-2',
+        sessionId: 'session-draining-2',
+        task: 'Finish a revoked identity action',
+        status: 'paused_checkpointed',
+        startedAtMs: 1_770_000_030_000,
+        updatedAtMs: 1_770_000_040_000,
+        drainDeadlineMs: 1_770_000_045_000,
+      },
+    ],
+  })
+}
+
 describe('BrowserRuntimeSettings', () => {
   beforeEach(() => {
     vi.mocked(dryRunBrowserRuntimeAction).mockReset()
@@ -196,6 +225,23 @@ describe('BrowserRuntimeSettings', () => {
     })
     expect(screen.getByRole('button', { name: '已撤销 Example' })).toBeDisabled()
     expect(screen.getByText('0 可用 / 1 已撤销')).toBeInTheDocument()
+  })
+
+  it('renders browser identity active task details', async () => {
+    vi.mocked(listBrowserIdentities).mockResolvedValueOnce(activeIdentityTaskReport())
+
+    renderWithProviders(<BrowserRuntimeSettings />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Use an authorized dashboard')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Finish a revoked identity action')).toBeInTheDocument()
+    expect(screen.getByText('2 个任务')).toBeInTheDocument()
+    expect(screen.getByText('运行中')).toBeInTheDocument()
+    expect(screen.getByText('已检查点暂停')).toBeInTheDocument()
+    expect(screen.getByText('session-active-1 · run-active-1')).toBeInTheDocument()
+    expect(screen.getByText('session-draining-2 · run-draining-2')).toBeInTheDocument()
+    expect(screen.getByText(/撤销 drain 至/)).toBeInTheDocument()
   })
 
   it('loads live runtime status through the dedicated read-only bridge', async () => {
