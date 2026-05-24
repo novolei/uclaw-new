@@ -1,9 +1,9 @@
 //! Playwright MCP provider contract shell.
 //!
-//! This module is intentionally pure. It defines the feature-flagged provider
-//! readiness shape, sidecar launch specification, and uClaw-level action
-//! envelope for Playwright MCP. It does not spawn MCP, expose raw MCP tools,
-//! mutate profiles, or route Browser tasks.
+//! This module defines the feature-flagged provider readiness shape, sidecar
+//! launch specification, and uClaw-level action envelope for Playwright MCP.
+//! The supervised process runner lives in `playwright_mcp_sidecar`. This module
+//! does not expose raw MCP tools, mutate profiles, or route Browser tasks.
 
 use std::path::PathBuf;
 
@@ -173,7 +173,6 @@ impl PlaywrightMcpSidecarSpec {
             .collect::<Vec<_>>()
             .join(",");
         let mut args = vec![
-            self.package_spec(),
             format!("--browser={}", self.browser.as_arg()),
             format!("--output-dir={}", self.output_dir.display()),
             format!("--user-data-dir={}", self.user_data_dir.display()),
@@ -480,7 +479,7 @@ mod tests {
 
         assert_eq!(spec.package_spec(), "@playwright/mcp@0.0.75");
         let args = spec.args();
-        assert!(args.contains(&"@playwright/mcp@0.0.75".to_string()));
+        assert!(!args.contains(&"@playwright/mcp@0.0.75".to_string()));
         assert!(args.contains(&"--browser=chrome".to_string()));
         assert!(args.contains(&"--isolated".to_string()));
         assert!(args.iter().any(|arg| arg.starts_with("--output-dir=")));

@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 7C MCP package pin correction
+> Current phase: Phase 7D MCP sidecar runner
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -26,7 +26,7 @@
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4X merged to `main` / `origin/main`; exit audit complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` / `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` | Closed for user-visible Settings, Doctor, prompt, checkpoint, deep-link, read-only IPC, and dry-run action evidence. Real runtime execution/provider work moves to Phase 5+. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A-5F merged to `main` / `origin/main`; exit gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff` / `codex/browser-runtime-phase5f-action-state-diff` | Closed for feature-flagged Playwright CLI thin lane. Provider promotion and parity routing remain Phase 8. |
 | Phase 6 | Browser identity authorization and profile UX | Phase 6A-6F merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6f-identity-boundary-actions` / `codex/browser-runtime-phase6f-identity-boundary-actions` | Closed for safe identity revoke/drain/active-task/resume boundary contracts; auth WebView and payment confirmation remain future work. |
-| Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7B merged; Phase 7C MCP package pin correction in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7c-mcp-package-pin` / `codex/browser-runtime-phase7c-mcp-package-pin` | Correct the app-managed `@playwright/mcp` pin to the real package version before adding the supervised sidecar runner. |
+| Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7C merged; Phase 7D MCP sidecar runner in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7d-mcp-sidecar-runner` / `codex/browser-runtime-phase7d-mcp-sidecar-runner` | Add the supervised app-managed MCP sidecar runner without raw tool exposure, provider promotion, IPC, or global npm. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Not started | Unassigned | TBD | Wait for chromiumoxide, CLI, and MCP lanes. |
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Not started | Unassigned | TBD | Wait for observable provider behavior and harness scorecards. |
 | Phase 10 | Optional hosted providers and hard-site escape hatches | Not started | Unassigned | TBD | Wait for local-first provider routing and policy prompts. |
@@ -118,6 +118,7 @@
 | 2026-05-24 | Merge Phase 6F and start Phase 7A MCP provider contract. | PR #466 merged as `ad088ed1`; fresh reviewer Copernicus returned `REVIEW ACCEPTED` after the P1 follow-up fixes, with only a residual real-browser resume integration-test gap. | Phase 7 starts with a pure `browser.playwright_mcp` contract slice: provider status, controlled sidecar spec, uClaw-level envelope, disabled fallback, and raw MCP exposure blocking. No MCP spawn, raw tool surface, IPC, TaskEvents, or provider promotion in this PR. |
 | 2026-05-24 | Merge Phase 7A and start Phase 7B MCP runtime-pack probe. | PR #467 merged as `2b1e7f77`; the MCP provider contract exists, but the app-managed runtime pack did not yet track the pinned `@playwright/mcp` package path. | Phase 7B adds manifest/path/probe evidence for `node_modules/@playwright/mcp` while preserving existing CLI readiness when that MCP package is absent. No sidecar spawn, package installation, IPC, TaskEvents, provider promotion, or global npm fallback in this PR. |
 | 2026-05-24 | Merge Phase 7B and start Phase 7C as a package pin correction before sidecar execution. | PR #468 merged as `90fe28d7`; `npm view @playwright/mcp@1.53.0` returned 404, while `npm view @playwright/mcp version` reported current stable `0.0.75` and `npm view @playwright/mcp@0.0.75 bin` reported `playwright-mcp: cli.js`. | Correct the app-managed MCP package pin before adding a supervised runner, so Phase 7D does not inherit an impossible sidecar package spec. |
+| 2026-05-24 | Merge Phase 7C and start Phase 7D as the supervised MCP sidecar runner. | PR #470 merged as `5adc67a0`; fresh reviewer Turing returned `REVIEW ACCEPTED`. The existing MCP sidecar spec still had npx-style package args even though production must use app-managed pack paths. | Phase 7D starts MCP from `current_pack_dir/node/bin/node` plus `current_pack_dir/node_modules/@playwright/mcp/cli.js`, preserving the package pin as metadata and keeping raw MCP tools hidden. |
 
 ---
 
@@ -126,9 +127,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7c-mcp-package-pin` |
-| Current phase branch | `codex/browser-runtime-phase7c-mcp-package-pin` |
-| Current local base | `90fe28d7 Merge pull request #468 from novolei/codex/browser-runtime-phase7b-mcp-runtime-pack-probe` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7d-mcp-sidecar-runner` |
+| Current phase branch | `codex/browser-runtime-phase7d-mcp-sidecar-runner` |
+| Current local base | `5adc67a0 Merge pull request #470 from novolei/codex/browser-runtime-phase7c-mcp-package-pin` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -188,8 +189,9 @@
 | Phase 6F identity-boundary-actions implementation commit | Merged through PR #466 as `3b729893 feat(browser): add identity boundary resume decisions`; merge commit `ad088ed1`. |
 | Phase 7A MCP provider contract implementation commit | Merged through PR #467 as `bec34855 feat(browser): add playwright mcp provider contract`; merge commit `2b1e7f77`. |
 | Phase 7B MCP runtime-pack probe implementation commit | Merged through PR #468 as `7ea2453f feat(browser): track playwright mcp runtime pack`; merge commit `90fe28d7`. |
-| Phase 7C MCP package pin correction implementation commit | In progress on `codex/browser-runtime-phase7c-mcp-package-pin`. |
-| Known pre-existing tracked changes | None in the Phase 7C MCP package pin correction worktree at start. Primary worktree remains separate; this phase starts from `origin/main` after PR #468 and PR #469 were merged. |
+| Phase 7C MCP package pin correction implementation commit | Merged through PR #470 as `eb5e33b0 fix(browser): correct playwright mcp package pin`; merge commit `5adc67a0`. |
+| Phase 7D MCP sidecar runner implementation commit | In progress on `codex/browser-runtime-phase7d-mcp-sidecar-runner`. |
+| Known pre-existing tracked changes | None in the Phase 7D MCP sidecar runner worktree at start. Primary worktree remains separate with unrelated untracked docs; this phase starts from `origin/main` after PR #470 was merged. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -5220,9 +5222,101 @@ Phase 7C can start because:
 
 ### Phase 7C MCP Package Pin Correction Next Action
 
-- Run focused tests and checks, commit, push, create PR, request fresh review,
-  and merge automatically if GitHub reports CLEAN, tests pass, reviewer accepts,
-  no HIGH/CRITICAL risk is reported, and no user worktree files are affected.
+- Closed. PR #470 merged as `5adc67a0`; continue with Phase 7D from
+  `origin/main`.
+
+## Phase 7D MCP Sidecar Runner Entry Criteria
+
+Phase 7D can start because:
+
+- PR #470 merged the valid `@playwright/mcp@0.0.75` package pin to `main` /
+  `origin/main`;
+- ADR Phase 7 requires Playwright MCP to run as a supervised sidecar with pinned
+  package/browser versions, controlled output/profile dirs, and provider-level
+  timeouts;
+- official Playwright MCP docs show the server is launched as `@playwright/mcp`
+  and supports isolated profile, storage state, browser, user data dir,
+  capabilities, output dir, and timeout configuration;
+- the earlier contract's npx-style package arg would be a production-boundary
+  problem if used directly, so this slice corrects the runner path before
+  protocol/client work;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7d-mcp-sidecar-runner`;
+- the branch starts from `5adc67a0`, the current `origin/main`.
+
+## Phase 7D MCP Sidecar Runner Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase7d-mcp-sidecar-runner.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7d-mcp-sidecar-runner`
+- Branch:
+  `codex/browser-runtime-phase7d-mcp-sidecar-runner`
+- Scope:
+  add a supervised sidecar process runner that validates pack-local Node and
+  MCP CLI paths, starts the sidecar with controlled args/env, reports a launch
+  summary, kills on drop/terminate, and rejects global Node paths.
+- Current PR:
+  PR #471 `https://github.com/novolei/uclaw-new/pull/471`.
+- Current commit:
+  Phase 7D branch tip (`feat(browser): start playwright mcp sidecar`).
+- Non-goal:
+  no MCP protocol client, raw MCP tool exposure, provider routing/promotion,
+  Settings UI/IPC, TaskEvents, DB migration, hosted provider, package
+  install/download, or task dispatch.
+- Rollback:
+  revert this PR; MCP returns to contract/probe-only state while the feature
+  flag remains off by default.
+
+### Phase 7D MCP Sidecar Runner Impact Notes
+
+- GitNexus index was refreshed for the Phase 7D worktree before impact checks;
+  generated AGENTS/CLAUDE statistics changes were restored as noise.
+- GitNexus impact before edits reported LOW risk for
+  `build_playwright_mcp_sidecar_spec`: 4 direct test callers, 0 affected
+  processes.
+- GitNexus impact before edits reported LOW risk for
+  `PlaywrightMcpSidecarSpec.args`: 1 direct test caller, 0 affected processes.
+- GitNexus impact before edits reported LOW risk for
+  `playwright_mcp_provider_status`: 3 direct test callers, 0 affected
+  processes.
+- This slice explicitly checks the Phase 1-5A dry-run concern in the MCP lane:
+  it does not avoid large hot-path files by staying contract-only; it adds the
+  real local process boundary in focused browser modules while leaving
+  `agentic_loop.rs` and `tauri_commands.rs` untouched because no task routing or
+  IPC belongs in this PR.
+
+### Phase 7D MCP Sidecar Runner Verification Notes
+
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::playwright_mcp`
+  passed: 12 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  passed: 42 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  passed: 54 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  passed: 6 tests, 0 failed.
+- `rustfmt --edition 2021 --check src-tauri/src/browser/playwright_mcp.rs src-tauri/src/browser/playwright_mcp_sidecar.rs`
+  passed. `src-tauri/src/browser/mod.rs` was excluded from this rustfmt check
+  because rustfmt follows the module tree from `mod.rs` and reports unrelated
+  historical formatting drift across `browser/`; `git diff --check` covers the
+  narrow `mod.rs` export diff.
+- `git diff --check -- docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-phase7d-mcp-sidecar-runner.md src-tauri/src/browser/mod.rs src-tauri/src/browser/playwright_mcp.rs src-tauri/src/browser/playwright_mcp_sidecar.rs`
+  passed.
+- GitNexus staged detect reported 5 files, 17 symbols, 0 affected processes,
+  `risk_level: low`; no HIGH or CRITICAL risk.
+- Fresh reviewer Euler blocked PR #471 on a flaky `mcp-args.txt` timing
+  fixture and stale plan rustfmt command. The follow-up removes the
+  time-window file assertion and validates launched args through deterministic
+  startup-exit stderr instead; the plan rustfmt command now matches the
+  tracker.
+
+### Phase 7D MCP Sidecar Runner Next Action
+
+- Finish focused runner tests and checks, run GitNexus detect, commit, push,
+  create PR, request fresh review, and merge automatically if GitHub reports
+  CLEAN, tests pass, reviewer accepts, no HIGH/CRITICAL risk is reported, and
+  no user worktree files are affected.
 
 ---
 
