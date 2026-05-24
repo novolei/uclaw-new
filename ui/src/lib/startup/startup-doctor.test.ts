@@ -66,6 +66,8 @@ function runtimeReport(
 ): StartupRuntimePackStatusReport {
   const base: StartupRuntimePackStatusReport = {
     manifestPackVersion: '1.48.2-uclaw.1',
+    runtimeRoot: '/uclaw/browser-runtime',
+    currentPackDir: '/uclaw/browser-runtime/current',
     ready: true,
     canRunBrowserTasks: true,
     primaryAction: 'keep_current',

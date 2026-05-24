@@ -16,6 +16,8 @@ vi.mock('@/lib/tauri-bridge', () => ({
 function runtimeReport(manifestPackVersion = '1.48.2-uclaw.1'): StartupRuntimePackStatusReport {
   return {
     manifestPackVersion,
+    runtimeRoot: '/uclaw/browser-runtime',
+    currentPackDir: '/uclaw/browser-runtime/current',
     ready: true,
     canRunBrowserTasks: true,
     primaryAction: 'keep_current',
@@ -177,7 +179,10 @@ describe('BrowserRuntimeSettings', () => {
     expect(screen.getByText('开发者回退')).toBeInTheDocument()
     expect(screen.getByText('未启用')).toBeInTheDocument()
     expect(screen.getByText('734 MiB')).toBeInTheDocument()
-    expect(screen.getByText('/uclaw/browser-runtime/v1')).toBeInTheDocument()
+    expect(screen.getByText('运行时根目录')).toBeInTheDocument()
+    expect(screen.getByText('/uclaw/browser-runtime')).toBeInTheDocument()
+    expect(screen.getByText('当前 pack')).toBeInTheDocument()
+    expect(screen.getByText('/uclaw/browser-runtime/current')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '保持当前' })).toBeEnabled()
     expect(screen.getByRole('button', { name: '关闭自动准备' })).toBeEnabled()
     expect(screen.getByText('操作预览')).toBeInTheDocument()
