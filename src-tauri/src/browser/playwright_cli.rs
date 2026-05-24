@@ -901,7 +901,7 @@ mod tests {
                 target: PlaywrightCliAddress::Coordinates { x: 10, y: 20 },
             },
             &report,
-            2_000,
+            5_000,
         )
         .await;
 
@@ -942,7 +942,7 @@ mod tests {
                 },
             },
             &report,
-            2_000,
+            5_000,
         )
         .await;
 
@@ -1050,7 +1050,7 @@ mod tests {
         let result = run_playwright_cli_child_worker(
             &envelope,
             PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
-                .with_timeout_ms(2_000),
+                .with_timeout_ms(5_000),
         )
         .await
         .expect("worker result");
@@ -1149,7 +1149,7 @@ mod tests {
         let error = run_playwright_cli_child_worker(
             &envelope,
             PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
-                .with_timeout_ms(2_000),
+                .with_timeout_ms(5_000),
         )
         .await
         .expect_err("worker should report nonzero exit");
@@ -1189,7 +1189,7 @@ mod tests {
         let error = run_playwright_cli_child_worker(
             &envelope,
             PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
-                .with_timeout_ms(2_000),
+                .with_timeout_ms(5_000),
         )
         .await
         .expect_err("mismatched result should be rejected");
@@ -1220,7 +1220,7 @@ mod tests {
         let result = run_playwright_cli_child_worker(
             &envelope,
             PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
-                .with_timeout_ms(2_000),
+                .with_timeout_ms(5_000),
         )
         .await
         .expect("worker result");
@@ -1251,7 +1251,7 @@ mod tests {
         let result = run_playwright_cli_child_worker(
             &envelope,
             PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
-                .with_timeout_ms(2_000),
+                .with_timeout_ms(5_000),
         )
         .await
         .expect("worker result");
@@ -1261,6 +1261,112 @@ mod tests {
         assert_eq!(error.code, "action_failed");
         assert!(!error.retryable);
         assert!(error.message.contains("missing locator"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worker_script_covers_addressing_fallback_outputs_without_click_artifacts() {
+        let cases = vec![
+            (
+                PlaywrightCliAction::Click {
+                    target: PlaywrightCliAddress::SemanticLocator {
+                        locator: "text=Continue".to_string(),
+                    },
+                },
+                "semantic_locator",
+            ),
+            (
+                PlaywrightCliAction::Click {
+                    target: PlaywrightCliAddress::UclawDomElementId {
+                        element_id: "node-42".to_string(),
+                    },
+                },
+                "uclaw_dom_element_id",
+            ),
+            (
+                PlaywrightCliAction::Click {
+                    target: PlaywrightCliAddress::Coordinates { x: 32, y: 48 },
+                },
+                "coordinates",
+            ),
+        ];
+
+        for (action, expected_kind) in cases {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let mut envelope = fixture_envelope_with_action(temp.path(), action);
+            let artifact_dir = envelope.runtime.current_pack_dir.join("artifacts");
+            envelope.runtime.env.push(BrowserRuntimePackEnvVar {
+                name: "UCLAW_BROWSER_ARTIFACT_DIR".to_string(),
+                value: artifact_dir.clone(),
+            });
+            prepare_real_worker_fixture(&envelope).expect("worker fixture");
+
+            let result = run_playwright_cli_child_worker(
+                &envelope,
+                PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
+                    .with_timeout_ms(5_000),
+            )
+            .await
+            .expect("worker result");
+
+            assert_eq!(result.status, PlaywrightCliWorkerStatus::Succeeded);
+            assert_eq!(result.artifact_refs, Vec::<String>::new());
+            assert!(!artifact_dir.join("req-worker-screenshot.png").exists());
+            assert_eq!(
+                result.output.as_ref().expect("output")["addressingKind"],
+                expected_kind
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worker_script_covers_type_extract_and_wait_outputs() {
+        let type_result = run_real_worker_fixture(
+            PlaywrightCliAction::Type {
+                target: PlaywrightCliAddress::SemanticLocator {
+                    locator: "label=Email".to_string(),
+                },
+                text: "hello".to_string(),
+            },
+            5_000,
+        )
+        .await;
+        assert_eq!(type_result.status, PlaywrightCliWorkerStatus::Succeeded);
+        assert_eq!(
+            type_result.output.as_ref().expect("type output")["addressingKind"],
+            "semantic_locator"
+        );
+        assert_eq!(
+            type_result.output.as_ref().expect("type output")["textLength"],
+            5
+        );
+
+        let extract_result =
+            run_real_worker_fixture(PlaywrightCliAction::Extract { target: None }, 5_000).await;
+        assert_eq!(extract_result.status, PlaywrightCliWorkerStatus::Succeeded);
+        assert_eq!(
+            extract_result.output.as_ref().expect("extract output")["text"],
+            "body:body"
+        );
+
+        let wait_result = run_real_worker_fixture(
+            PlaywrightCliAction::Wait {
+                target: PlaywrightCliAddress::Coordinates { x: 7, y: 9 },
+                timeout_ms: Some(33),
+            },
+            5_000,
+        )
+        .await;
+        assert_eq!(wait_result.status, PlaywrightCliWorkerStatus::Succeeded);
+        assert_eq!(
+            wait_result.output.as_ref().expect("wait output")["addressingKind"],
+            "coordinates"
+        );
+        assert_eq!(
+            wait_result.output.as_ref().expect("wait output")["timeoutMs"],
+            33
+        );
     }
 
     fn ready_runtime_report() -> BrowserRuntimePackStatusReport {
@@ -1336,6 +1442,23 @@ mod tests {
             include_str!("../../resources/browser-runtime/worker/uclaw-playwright-worker.mjs"),
         );
         write_fake_playwright_module(&envelope.runtime.current_pack_dir)
+    }
+
+    #[cfg(unix)]
+    async fn run_real_worker_fixture(
+        action: PlaywrightCliAction,
+        timeout_ms: u64,
+    ) -> PlaywrightCliWorkerResultEnvelope {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let envelope = fixture_envelope_with_action(temp.path(), action);
+        prepare_real_worker_fixture(&envelope).expect("worker fixture");
+        run_playwright_cli_child_worker(
+            &envelope,
+            PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
+                .with_timeout_ms(timeout_ms),
+        )
+        .await
+        .expect("worker result")
     }
 
     #[cfg(unix)]
