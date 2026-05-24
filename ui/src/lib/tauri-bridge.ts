@@ -219,17 +219,38 @@ export interface BrowserIdentityProfileSummary {
   revoked: boolean;
 }
 
+export interface BrowserIdentityActiveTaskSummary {
+  profileId: string;
+  runId: string;
+  sessionId: string;
+  task: string;
+  status:
+    | 'running'
+    | 'completed'
+    | 'failed'
+    | 'stopped'
+    | 'needs_user_intervention'
+    | 'paused_waiting_for_browser_runtime'
+    | 'paused_checkpointed';
+  startedAtMs: number;
+  updatedAtMs: number;
+  drainDeadlineMs: number | null;
+}
+
 export interface BrowserIdentityStatusReport {
   profiles: BrowserIdentityProfileSummary[];
   authorizedCount: number;
   revokedCount: number;
-  activeTaskCount: number | null;
+  activeTaskCount: number;
+  activeTasks: BrowserIdentityActiveTaskSummary[];
 }
 
 export interface BrowserIdentityRevocationReport {
   profile: BrowserIdentityProfileSummary | null;
   revoked: boolean;
-  activeTaskCount: number | null;
+  activeTaskCount: number;
+  activeTasks: BrowserIdentityActiveTaskSummary[];
+  drainDeadlineMs: number | null;
 }
 
 export const listBrowserIdentities = (): Promise<BrowserIdentityStatusReport> =>

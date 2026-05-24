@@ -44,7 +44,19 @@ describe('browser identity tauri bridge', () => {
       ],
       authorizedCount: 1,
       revokedCount: 0,
-      activeTaskCount: null,
+      activeTaskCount: 1,
+      activeTasks: [
+        {
+          profileId: 'auth-example',
+          runId: 'run-active',
+          sessionId: 'session-active',
+          task: 'Use an authorized dashboard',
+          status: 'running',
+          startedAtMs: 1,
+          updatedAtMs: 2,
+          drainDeadlineMs: null,
+        },
+      ],
     }
     vi.mocked(invoke).mockResolvedValueOnce(report)
 
@@ -70,7 +82,20 @@ describe('browser identity tauri bridge', () => {
         revoked: true,
       },
       revoked: true,
-      activeTaskCount: null,
+      activeTaskCount: 1,
+      activeTasks: [
+        {
+          profileId: 'auth-example',
+          runId: 'run-active',
+          sessionId: 'session-active',
+          task: 'Use an authorized dashboard',
+          status: 'running',
+          startedAtMs: 1,
+          updatedAtMs: 2,
+          drainDeadlineMs: 3,
+        },
+      ],
+      drainDeadlineMs: 3,
     }
     vi.mocked(invoke).mockResolvedValueOnce(report)
 

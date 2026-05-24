@@ -82,7 +82,8 @@ function identityReport(
     profiles: [],
     authorizedCount: 0,
     revokedCount: 0,
-    activeTaskCount: null,
+    activeTaskCount: 0,
+    activeTasks: [],
     ...overrides,
   }
 }
@@ -163,7 +164,7 @@ describe('BrowserRuntimeSettings', () => {
     expect(screen.getByText('Example')).toBeInTheDocument()
     expect(screen.getByText('https://*.example.com · Playwright · Global')).toBeInTheDocument()
     expect(screen.getByText('1 可用 / 0 已撤销')).toBeInTheDocument()
-    expect(screen.getByText('等待任务状态')).toBeInTheDocument()
+    expect(screen.getByText('0 个任务')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '撤销 Example' })).toBeEnabled()
   })
 
@@ -174,7 +175,9 @@ describe('BrowserRuntimeSettings', () => {
     vi.mocked(revokeBrowserIdentity).mockResolvedValueOnce({
       profile: revokedIdentityReport().profiles[0],
       revoked: true,
-      activeTaskCount: null,
+      activeTaskCount: 0,
+      activeTasks: [],
+      drainDeadlineMs: null,
     })
 
     const { user } = renderWithProviders(<BrowserRuntimeSettings />)
