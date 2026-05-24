@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 5E Playwright CLI fixture gates
+> Current phase: Phase 5F Playwright CLI action state diff
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -24,7 +24,7 @@
 | Phase 2 | App-managed Playwright runtime pack | Runtime-pack shell through Phase 2F executor boundary merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase2f-executor-boundary` / `codex/browser-runtime-phase2f-executor-boundary` | Closed for no-side-effect runtime-pack boundary; real filesystem/network adapters remain future scoped work. |
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4X merged to `main` / `origin/main`; exit audit complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` / `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` | Closed for user-visible Settings, Doctor, prompt, checkpoint, deep-link, read-only IPC, and dry-run action evidence. Real runtime execution/provider work moves to Phase 5+. |
-| Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A provider contract, goal-mode docs hygiene, dry-run drift audit, Phase 5B preflights, child-worker boundary, Phase 5C worker script, and Phase 5D provider adapter merged; Phase 5E fixture gates PR #459 open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5e-cli-fixture-gates` / `codex/browser-runtime-phase5e-cli-fixture-gates` | Merge PR #459 if GitHub reports CLEAN, then decide whether ADR Phase 5 is complete enough to enter Phase 6. |
+| Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A provider contract, goal-mode docs hygiene, dry-run drift audit, Phase 5B preflights, child-worker boundary, Phase 5C worker script, Phase 5D provider adapter, and Phase 5E fixture gates merged; Phase 5F action state diff PR #460 open | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff` / `codex/browser-runtime-phase5f-action-state-diff` | Merge PR #460 if GitHub reports CLEAN, then close ADR Phase 5 and enter Phase 6. |
 | Phase 6 | Browser identity authorization and profile UX | Not started | Unassigned | TBD | Wait for supervised isolated-profile baseline. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Not started | Unassigned | TBD | Wait for provider contract and runtime pack policy. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Not started | Unassigned | TBD | Wait for chromiumoxide, CLI, and MCP lanes. |
@@ -107,6 +107,7 @@
 | 2026-05-24 | Merge Phase 5C worker script and start Phase 5D provider execution adapter. | PR #457 merged as `96a8b5bd`; it shipped the managed worker script, declarative worker actions, artifact-visible screenshot output, and LOW staged GitNexus detect. | Phase 5D may add a callable provider adapter around flags, runtime readiness, envelope building, child-worker execution, and structured error mapping, but must not route agent tasks or promote the provider. |
 | 2026-05-24 | Open Phase 5D provider execution adapter PR. | PR #458 contains typed provider execution DTOs, the feature/runtime-gated adapter, structured worker/runner error mapping, focused adapter tests, default browser-runtime regressions, and GitNexus staged detect LOW. | Merge if GitHub reports CLEAN; next Phase 5 slice should finish CLI fixture/harness gates such as locator/coordinate fallback and risk screenshot policy evidence before Phase 6. |
 | 2026-05-24 | Merge Phase 5D provider adapter and start Phase 5E fixture gates. | PR #458 merged as `78561429`; it added the callable feature/runtime-gated adapter and structured provider execution results without task routing or provider promotion. | Phase 5E is a verification slice to close ADR Phase 5 gate evidence for locator fallback, coordinate fallback, risk screenshot policy, and remaining declarative action outputs. |
+| 2026-05-24 | Merge Phase 5E fixture gates and start Phase 5F action state diff. | PR #459 merged as `e3e57f72`; it covered success/failure envelopes, timeout/kill, locator and coordinate fallback, risk screenshot behavior, artifact refs, no raw script, and declarative action outputs. ADR Phase 5 still explicitly asks for action result plus DOM/state diff on stable locator clicks, type, and wait. | Phase 5F adds compact state-diff evidence to click/type/wait outputs before Phase 6. It must not route tasks, promote the provider, add IPC/UI, or leak raw page text. |
 
 ---
 
@@ -115,9 +116,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5e-cli-fixture-gates` |
-| Current phase branch | `codex/browser-runtime-phase5e-cli-fixture-gates` |
-| Current local base | `78561429 Merge pull request #458 from novolei/codex/browser-runtime-phase5d-provider-execution-adapter` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff` |
+| Current phase branch | `codex/browser-runtime-phase5f-action-state-diff` |
+| Current local base | `e3e57f72 Merge pull request #459 from novolei/codex/browser-runtime-phase5e-cli-fixture-gates` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -167,8 +168,9 @@
 | Phase 5B child-worker implementation commit | Merged through PR #456 as `cba085ec feat(browser): run playwright cli child worker`; merge commit `a5141cac`. |
 | Phase 5C worker-script implementation commit | Merged through PR #457 as `6cdc2ea1 feat(browser): add playwright cli worker script`; merge commit `96a8b5bd`. |
 | Phase 5D provider-adapter implementation commit | Merged through PR #458 as `48e4b7a3 feat(browser): add playwright cli provider adapter`; merge commit `78561429`. |
-| Phase 5E fixture-gates implementation commit | PR #459 open as `0bdaf8c7 test(browser): cover playwright cli fixture gates` on `codex/browser-runtime-phase5e-cli-fixture-gates`. |
-| Known pre-existing tracked changes | None in the Phase 5E fixture-gates worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
+| Phase 5E fixture-gates implementation commit | Merged through PR #459 as `a8345e97 test(browser): cover playwright cli fixture gates`; merge commit `e3e57f72`. |
+| Phase 5F action-state-diff implementation commit | PR #460 open as `bf72a9ec feat(browser): add playwright cli action state diffs` on `codex/browser-runtime-phase5f-action-state-diff`. |
+| Known pre-existing tracked changes | None in the Phase 5F action-state-diff worktree at start. Primary worktree has unrelated untracked Tauri IPC docs/reports that are preserved and not copied into this worktree. |
 | Linked ignored runtime resources | `ui/node_modules`, `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -4330,9 +4332,79 @@ Phase 5E fixture gates can start because:
 
 ### Phase 5E Fixture Gates Next Action
 
-- PR #459 is open.
+- PR #459 merged into `main` and `origin/main`.
+- Continue with Phase 5F action state diff from merge commit `e3e57f72`.
+
+## Phase 5F Action State Diff Entry Criteria
+
+Phase 5F action state diff can start because:
+
+- PR #459 merged the remaining CLI fixture gate evidence into `main` and
+  `origin/main`;
+- a Phase 5 exit audit found one explicit ADR Phase 5 bullet still missing:
+  action result plus DOM/state diff for stable locator clicks, `type`, and
+  `wait`;
+- this slice can close that gap in the managed worker output without provider
+  promotion, task routing, IPC, UI, or DB changes;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff`;
+- the branch starts from `e3e57f72`, the current `origin/main`.
+
+## Phase 5F Action State Diff Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase5f-action-state-diff.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff`
+- Branch:
+  `codex/browser-runtime-phase5f-action-state-diff`
+- Scope:
+  compact before/after state-diff evidence for Playwright CLI click, type, and
+  wait outputs.
+- Current PR:
+  PR #460: https://github.com/novolei/uclaw-new/pull/460
+- Non-goal:
+  no provider promotion, task routing, IPC, Settings/UI change, DB migration,
+  browser identity/profile UX, Playwright MCP sidecar, raw page text in action
+  diffs, global npm, or user-installed Playwright production path.
+- Rollback:
+  revert this PR; Phase 5A-5E implementation remains unchanged.
+
+### Phase 5F Action State Diff Impact Notes
+
+- `npx gitnexus impact runAction --direction upstream --repo /Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff`
+  reported LOW risk, 1 direct caller (`main`), 0 affected processes.
+- `npx gitnexus impact write_fake_playwright_module --direction upstream --repo /Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff`
+  reported LOW risk, 1 direct caller, 0 affected processes.
+- Focused test function impacts reported LOW risk with 0 affected processes.
+
+### Phase 5F Action State Diff Verification Notes
+
+- JavaScript syntax check passed:
+  `node --check src-tauri/resources/browser-runtime/worker/uclaw-playwright-worker.mjs`
+  returned exit 0.
+- Focused Playwright CLI verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::playwright_cli`
+  returned `22 passed; 0 failed; 2632 filtered out`.
+- Formatting check passed:
+  `rustfmt --edition 2021 --check src-tauri/src/browser/playwright_cli.rs`.
+- Default browser-runtime regression checks passed:
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+    returned `41 passed; 0 failed; 2613 filtered out`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+    returned `53 passed; 0 failed; 2601 filtered out`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+    returned `6 passed; 0 failed; 2648 filtered out`.
+- `git diff --check -- src-tauri/resources/browser-runtime/worker/uclaw-playwright-worker.mjs src-tauri/src/browser/playwright_cli.rs docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-phase5f-action-state-diff.md`
+  returned no whitespace errors.
+- `npx gitnexus detect-changes --scope staged --repo /Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff`
+  reported LOW risk, 4 files, 30 symbols, 0 affected processes.
+
+### Phase 5F Action State Diff Next Action
+
+- PR #460 is open.
 - If GitHub reports CLEAN and no HIGH/CRITICAL issue appears, merge and sync
-  `main`, then decide whether ADR Phase 5 is complete enough to enter Phase 6.
+  `main`, then close ADR Phase 5 and continue to Phase 6.
 
 ---
 
