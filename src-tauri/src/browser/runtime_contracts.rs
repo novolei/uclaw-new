@@ -114,7 +114,18 @@ pub struct BrowserProviderCapabilityCard {
     pub artifact_policy: &'static str,
     pub policy_tags: &'static [&'static str],
     pub harness_subjects: &'static [&'static str],
+    pub harness_score: BrowserProviderHarnessScore,
     pub disable_path: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserProviderHarnessScore {
+    pub fixture_cases_total: u16,
+    pub fixture_cases_passed: u16,
+    pub tracked_metrics: &'static [&'static str],
+    pub promotion_eligible: bool,
+    pub source: &'static str,
 }
 
 pub const BROWSER_PROVIDER_CAPABILITY_CARDS: &[BrowserProviderCapabilityCard] = &[
@@ -144,6 +155,19 @@ pub const BROWSER_PROVIDER_CAPABILITY_CARDS: &[BrowserProviderCapabilityCard] = 
         artifact_policy: "risk_based",
         policy_tags: &["local_first", "isolated_profile", "supervised_actions"],
         harness_subjects: &["browser.navigation", "browser.checkpoint", "browser.recovery"],
+        harness_score: BrowserProviderHarnessScore {
+            fixture_cases_total: 3,
+            fixture_cases_passed: 3,
+            tracked_metrics: &[
+                "success_rate",
+                "artifact_completeness",
+                "recovery_success_rate",
+                "policy_boundary",
+                "local_first",
+            ],
+            promotion_eligible: true,
+            source: "current_browser_agent_v2_regressions",
+        },
         disable_path: "Disable the local browser provider feature flag or fall back to no-browser lanes.",
     },
     BrowserProviderCapabilityCard {
@@ -162,6 +186,19 @@ pub const BROWSER_PROVIDER_CAPABILITY_CARDS: &[BrowserProviderCapabilityCard] = 
         artifact_policy: "risk_based",
         policy_tags: &["runtime_pack", "short_lived_worker", "declarative_actions"],
         harness_subjects: &["browser.playwright_cli", "browser.runtime_pack"],
+        harness_score: BrowserProviderHarnessScore {
+            fixture_cases_total: 6,
+            fixture_cases_passed: 6,
+            tracked_metrics: &[
+                "success_rate",
+                "provider_calls",
+                "artifact_completeness",
+                "policy_boundary",
+                "local_first",
+            ],
+            promotion_eligible: false,
+            source: "phase5_cli_fixture_gates",
+        },
         disable_path: "Turn off the playwright_cli feature flag or disable the provider card.",
     },
     BrowserProviderCapabilityCard {
@@ -180,6 +217,19 @@ pub const BROWSER_PROVIDER_CAPABILITY_CARDS: &[BrowserProviderCapabilityCard] = 
         artifact_policy: "provider_artifacts",
         policy_tags: &["runtime_pack", "mcp_sidecar", "no_raw_mcp_tools"],
         harness_subjects: &["browser.playwright_mcp", "browser.trace"],
+        harness_score: BrowserProviderHarnessScore {
+            fixture_cases_total: 5,
+            fixture_cases_passed: 5,
+            tracked_metrics: &[
+                "success_rate",
+                "provider_calls",
+                "artifact_completeness",
+                "policy_boundary",
+                "local_first",
+            ],
+            promotion_eligible: false,
+            source: "phase7_mcp_fixture_gates",
+        },
         disable_path: "Turn off the playwright_mcp feature flag or disable the provider card.",
     },
     BrowserProviderCapabilityCard {
@@ -198,6 +248,18 @@ pub const BROWSER_PROVIDER_CAPABILITY_CARDS: &[BrowserProviderCapabilityCard] = 
         artifact_policy: "failure_and_recovery",
         policy_tags: &["guarded_escape_hatch", "supervisor_only"],
         harness_subjects: &["browser.raw_cdp", "browser.recovery"],
+        harness_score: BrowserProviderHarnessScore {
+            fixture_cases_total: 2,
+            fixture_cases_passed: 2,
+            tracked_metrics: &[
+                "recovery_success_rate",
+                "artifact_completeness",
+                "policy_boundary",
+                "local_first",
+            ],
+            promotion_eligible: false,
+            source: "current_recovery_regressions",
+        },
         disable_path: "Disable the raw CDP fallback policy lane.",
     },
     BrowserProviderCapabilityCard {
@@ -216,6 +278,13 @@ pub const BROWSER_PROVIDER_CAPABILITY_CARDS: &[BrowserProviderCapabilityCard] = 
         artifact_policy: "explicit_data_boundary",
         policy_tags: &["opt_in", "data_boundary", "cost_visible"],
         harness_subjects: &["browser.hosted", "browser.data_boundary"],
+        harness_score: BrowserProviderHarnessScore {
+            fixture_cases_total: 0,
+            fixture_cases_passed: 0,
+            tracked_metrics: &["data_boundary", "cost_visible"],
+            promotion_eligible: false,
+            source: "not_harnessed_disabled_baseline",
+        },
         disable_path: "Turn off hosted_providers or remove the hosted provider credential.",
     },
 ];

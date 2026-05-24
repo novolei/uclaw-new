@@ -70,6 +70,12 @@ fn provider_cards_cover_all_phase0_lanes_with_safe_defaults() {
     assert!(local.enabled_by_default);
     assert!(local.supported_actions.contains(&"navigate"));
     assert!(local.supported_actions.contains(&"dom_snapshot"));
+    assert_eq!(
+        local.harness_score.source,
+        "current_browser_agent_v2_regressions"
+    );
+    assert!(local.harness_score.tracked_metrics.contains(&"local_first"));
+    assert!(local.harness_score.promotion_eligible);
     assert!(local.disable_path.contains("feature flag"));
 
     let cli = browser_provider_capability_card("browser.playwright_cli").unwrap();
@@ -79,16 +85,63 @@ fn provider_cards_cover_all_phase0_lanes_with_safe_defaults() {
     assert!(cli.requires_runtime_pack);
     assert!(!cli.allows_raw_script_by_default);
     assert!(cli.supported_actions.contains(&"extract"));
+    assert_eq!(cli.harness_score.source, "phase5_cli_fixture_gates");
+    assert_eq!(
+        cli.harness_score.fixture_cases_passed,
+        cli.harness_score.fixture_cases_total
+    );
+    assert!(!cli.harness_score.promotion_eligible);
 
     let mcp = browser_provider_capability_card("browser.playwright_mcp").unwrap();
     assert_eq!(mcp.lane, BrowserProviderLane::PlaywrightMcp);
     assert_eq!(mcp.feature_flag, Some("playwright_mcp"));
     assert!(!mcp.enabled_by_default);
+    assert_eq!(mcp.harness_score.source, "phase7_mcp_fixture_gates");
+    assert!(mcp
+        .harness_score
+        .tracked_metrics
+        .contains(&"artifact_completeness"));
+    assert!(!mcp.harness_score.promotion_eligible);
 
     let hosted = browser_provider_capability_card("browser.hosted").unwrap();
     assert_eq!(hosted.lane, BrowserProviderLane::Hosted);
     assert_eq!(hosted.feature_flag, Some("hosted_providers"));
     assert!(!hosted.enabled_by_default);
+    assert_eq!(hosted.harness_score.fixture_cases_total, 0);
+    assert_eq!(
+        hosted.harness_score.source,
+        "not_harnessed_disabled_baseline"
+    );
+}
+
+#[test]
+fn provider_cards_require_explicit_harness_scorecards() {
+    for card in browser_provider_capability_cards() {
+        assert!(
+            !card.harness_subjects.is_empty(),
+            "{} must declare harness subjects",
+            card.provider_id
+        );
+        assert!(
+            !card.harness_score.source.is_empty(),
+            "{} must declare scorecard source",
+            card.provider_id
+        );
+        assert!(
+            card.harness_score.fixture_cases_passed <= card.harness_score.fixture_cases_total,
+            "{} passed cases cannot exceed total cases",
+            card.provider_id
+        );
+        assert!(
+            !card.harness_score.tracked_metrics.is_empty(),
+            "{} must declare tracked metrics",
+            card.provider_id
+        );
+    }
+
+    let hosted = browser_provider_capability_card("browser.hosted").unwrap();
+    assert_eq!(hosted.harness_score.fixture_cases_total, 0);
+    assert!(!hosted.harness_score.promotion_eligible);
 }
 
 #[test]
