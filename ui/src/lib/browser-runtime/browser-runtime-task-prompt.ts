@@ -38,6 +38,20 @@ export interface BrowserRuntimeTaskTimePromptAction {
   browserTaskRequestPatch?: BrowserTaskRuntimeDecisionPayload
 }
 
+export type BrowserRuntimeTaskTimeDispatchEffectKind =
+  | 'runtime_prepare_requested'
+  | 'browser_task_patch'
+  | 'no_browser_fallback'
+  | 'record_only'
+
+export interface BrowserRuntimeTaskTimeDispatchEffect {
+  kind: BrowserRuntimeTaskTimeDispatchEffectKind
+  toolName: string
+  eventNames: string[]
+  checkpointStatus?: 'paused_waiting_for_browser_runtime'
+  browserTaskRequestPatch?: BrowserTaskRuntimeDecisionPayload
+}
+
 export interface BrowserRuntimeTaskTimePromptViewModel {
   shouldShowPrompt: boolean
   status: BrowserRuntimeTaskTimePromptStatus
@@ -136,6 +150,44 @@ export function applyBrowserRuntimeDecisionToBrowserTaskToolCall(
 ): BrowserTaskToolCallArguments {
   const patch = browserTaskRuntimeDecisionPayloadForToolCall(toolName, action)
   return patch ? { ...args, ...patch } : { ...args }
+}
+
+export function browserRuntimeTaskTimeDispatchEffectForAction(
+  toolName: string,
+  action: BrowserRuntimeTaskTimePromptAction,
+): BrowserRuntimeTaskTimeDispatchEffect {
+  if (action.id === 'prepare_now') {
+    return {
+      kind: 'runtime_prepare_requested',
+      toolName,
+      eventNames: action.eventNames,
+    }
+  }
+
+  if (action.id === 'continue_without_browser') {
+    return {
+      kind: 'no_browser_fallback',
+      toolName,
+      eventNames: action.eventNames,
+    }
+  }
+
+  const patch = browserTaskRuntimeDecisionPayloadForToolCall(toolName, action)
+  if (patch) {
+    return {
+      kind: 'browser_task_patch',
+      toolName,
+      eventNames: action.eventNames,
+      checkpointStatus: action.checkpointStatus,
+      browserTaskRequestPatch: patch,
+    }
+  }
+
+  return {
+    kind: 'record_only',
+    toolName,
+    eventNames: action.eventNames,
+  }
 }
 
 function promptStatus(

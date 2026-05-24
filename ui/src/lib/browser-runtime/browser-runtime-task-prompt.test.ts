@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { StartupRuntimePackStatusReport } from '@/lib/startup/startup-doctor'
 import {
   applyBrowserRuntimeDecisionToBrowserTaskToolCall,
+  browserRuntimeTaskTimeDispatchEffectForAction,
   browserTaskRuntimeDecisionPayloadForAction,
   browserTaskRuntimeDecisionPayloadForToolCall,
   deriveBrowserRuntimeTaskTimePrompt,
@@ -137,6 +138,15 @@ describe('browser runtime task-time prompt model', () => {
       runtime_preparation_decision: 'defer',
     })
     expect(originalArgs).toEqual({ task: 'Check the billing page', max_steps: 4 })
+    expect(browserRuntimeTaskTimeDispatchEffectForAction('browser_task', deferAction!)).toEqual({
+      kind: 'browser_task_patch',
+      toolName: 'browser_task',
+      eventNames: ['browser.runtime.task_time.defer.checkpointed'],
+      checkpointStatus: 'paused_waiting_for_browser_runtime',
+      browserTaskRequestPatch: {
+        runtime_preparation_decision: 'defer',
+      },
+    })
   })
 
   it('lets tasks continue without browser when a fallback can satisfy the request', () => {
@@ -200,6 +210,21 @@ describe('browser runtime task-time prompt model', () => {
         deferAction!,
       ),
     ).toEqual({ task: 'Summarize cached docs' })
+    expect(browserRuntimeTaskTimeDispatchEffectForAction('browser_task', deferAction!)).toEqual({
+      kind: 'record_only',
+      toolName: 'browser_task',
+      eventNames: ['browser.runtime.task_time.defer.recorded'],
+    })
+
+    const fallbackAction = model.actions.find((action) => action.id === 'continue_without_browser')
+    expect(fallbackAction).toBeDefined()
+    expect(
+      browserRuntimeTaskTimeDispatchEffectForAction('browser_task', fallbackAction!),
+    ).toEqual({
+      kind: 'no_browser_fallback',
+      toolName: 'browser_task',
+      eventNames: ['browser.runtime.task_time.no_browser.continued'],
+    })
   })
 
   it('does not patch non-browser-task tool calls', () => {
@@ -235,6 +260,11 @@ describe('browser runtime task-time prompt model', () => {
         deferAction!,
       ),
     ).toEqual({ question: 'Continue?' })
+    expect(browserRuntimeTaskTimeDispatchEffectForAction('ask_user', deferAction!)).toEqual({
+      kind: 'record_only',
+      toolName: 'ask_user',
+      eventNames: ['browser.runtime.task_time.defer.checkpointed'],
+    })
   })
 
   it('blocks prepare now when runtime preparation is blocked', () => {
@@ -277,5 +307,19 @@ describe('browser runtime task-time prompt model', () => {
         }),
       ]),
     )
+
+    const prepareAction = model.actions.find((action) => action.id === 'prepare_now')
+    expect(prepareAction).toBeDefined()
+    expect(
+      browserRuntimeTaskTimeDispatchEffectForAction('browser_task', prepareAction!),
+    ).toEqual({
+      kind: 'runtime_prepare_requested',
+      toolName: 'browser_task',
+      eventNames: [
+        'browser.runtime.task_time.prepare.requested',
+        'browser.runtime.rollback.blocked',
+        'browser.runtime.doctor.completed',
+      ],
+    })
   })
 })
