@@ -187,6 +187,59 @@ export const dryRunBrowserRuntimeAction = (
 ): Promise<BrowserRuntimePackExecutionReport> =>
   invoke('dry_run_browser_runtime_action', { action });
 
+export type BrowserIdentityKind =
+  | 'real_browser_profile'
+  | 'storage_state'
+  | 'cookie_jar'
+  | 'bearer_token';
+
+export type BrowserIdentityProvider =
+  | 'system_chrome'
+  | 'playwright'
+  | 'browser_use'
+  | 'manual_import';
+
+export type BrowserIdentityScope = 'workspace' | 'session' | 'global';
+
+export type BrowserIdentityStatus = 'live' | 'stale' | 'unknown' | 'revoked';
+
+export interface BrowserIdentityProfileSummary {
+  id: string;
+  label: string;
+  originPattern: string;
+  kind: BrowserIdentityKind;
+  provider: BrowserIdentityProvider;
+  scope: BrowserIdentityScope;
+  createdAtMs: number;
+  lastUsedAtMs: number | null;
+  lastVerifiedAtMs: number | null;
+  expiresAtMs: number | null;
+  revokedAtMs: number | null;
+  status: BrowserIdentityStatus;
+  revoked: boolean;
+}
+
+export interface BrowserIdentityStatusReport {
+  profiles: BrowserIdentityProfileSummary[];
+  authorizedCount: number;
+  revokedCount: number;
+  activeTaskCount: number | null;
+}
+
+export interface BrowserIdentityRevocationReport {
+  profile: BrowserIdentityProfileSummary | null;
+  revoked: boolean;
+  activeTaskCount: number | null;
+}
+
+export const listBrowserIdentities = (): Promise<BrowserIdentityStatusReport> =>
+  invoke('list_browser_identities');
+
+export const revokeBrowserIdentity = (
+  profileId: string,
+): Promise<BrowserIdentityRevocationReport> =>
+  invoke('revoke_browser_identity', { profileId });
+
 export const getPlatform = (): Promise<PlatformInfo> =>
   invoke('get_platform');
 

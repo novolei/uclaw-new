@@ -7,6 +7,7 @@ pub mod context_manager;
 pub mod decision;
 pub mod dom_state;
 pub mod identity;
+pub mod identity_ipc;
 pub mod intervention_bridge;
 pub mod loop_detector; // stub — full implementation in Plan 2 Task 15
 pub mod memory_adapter;
