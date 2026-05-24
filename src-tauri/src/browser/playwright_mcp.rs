@@ -8,12 +8,17 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
+use super::playwright_mcp_sidecar::{
+    PlaywrightMcpSidecarActionResult, PlaywrightMcpSidecarArtifactKind,
+    PlaywrightMcpSidecarRunnerError,
+};
 use super::provider::{
     BrowserCapabilityProbe, BrowserProbeStatus, BrowserProviderCapabilities,
     BrowserProviderReadinessProbe, BrowserProviderStatus, BrowserSetupCheck,
 };
-use super::runtime_contracts::BrowserRuntimeFeatureFlags;
+use super::runtime_contracts::{BrowserRuntimeFeatureFlags, BrowserTaskEventName};
 
 pub const PLAYWRIGHT_MCP_PROVIDER_ID: &str = "browser.playwright_mcp";
 pub const PLAYWRIGHT_MCP_PACKAGE_NAME: &str = "@playwright/mcp";
@@ -277,6 +282,52 @@ pub enum PlaywrightMcpEnvelopeError {
     RawToolExposureBlocked,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaywrightMcpProviderExecutionStatus {
+    Succeeded,
+    Failed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaywrightMcpProviderArtifactRef {
+    pub kind: PlaywrightMcpSidecarArtifactKind,
+    pub description: String,
+    pub path: Option<PathBuf>,
+    pub event_name: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaywrightMcpProviderExecutionError {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+    pub event_name: &'static str,
+    pub artifact_recommended: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaywrightMcpProviderExecutionResult {
+    pub provider_id: String,
+    pub request_id: String,
+    pub action_kind: PlaywrightMcpActionKind,
+    pub status: PlaywrightMcpProviderExecutionStatus,
+    pub summary: String,
+    pub mcp_tool_name: Option<String>,
+    pub read_only: bool,
+    pub raw_tools_exposed: bool,
+    pub artifact_refs: Vec<PlaywrightMcpProviderArtifactRef>,
+    pub event_name: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<PlaywrightMcpProviderExecutionError>,
+}
+
 pub fn build_playwright_mcp_request_envelope(
     request_id: impl Into<String>,
     flags: BrowserRuntimeFeatureFlags,
@@ -303,6 +354,239 @@ pub fn build_playwright_mcp_request_envelope(
         action,
         sidecar,
     })
+}
+
+pub fn playwright_mcp_provider_result_from_sidecar_result(
+    sidecar_result: PlaywrightMcpSidecarActionResult,
+) -> PlaywrightMcpProviderExecutionResult {
+    if sidecar_result.raw_tools_exposed {
+        return playwright_mcp_provider_error_result(
+            sidecar_result.request_id,
+            sidecar_result.action_kind,
+            None,
+            false,
+            true,
+            PlaywrightMcpProviderExecutionStatus::Failed,
+            PlaywrightMcpProviderExecutionError {
+                code: "raw_mcp_tools_exposed".to_string(),
+                message: "Playwright MCP returned a result with raw tool exposure enabled"
+                    .to_string(),
+                retryable: false,
+                event_name: BrowserTaskEventName::ProviderDegraded.as_str(),
+                artifact_recommended: true,
+            },
+        );
+    }
+
+    let artifact_refs = sidecar_result
+        .artifact_refs
+        .into_iter()
+        .map(|artifact| PlaywrightMcpProviderArtifactRef {
+            kind: artifact.kind,
+            description: artifact.description,
+            path: artifact.path,
+            event_name: BrowserTaskEventName::RuntimeArtifactPackCreated.as_str(),
+        })
+        .collect();
+    let action_name = sidecar_result.action_kind.as_str();
+    let tool_name = sidecar_result.mcp_tool_name;
+
+    PlaywrightMcpProviderExecutionResult {
+        provider_id: sidecar_result.provider_id,
+        request_id: sidecar_result.request_id,
+        action_kind: sidecar_result.action_kind,
+        status: PlaywrightMcpProviderExecutionStatus::Succeeded,
+        summary: format!("Playwright MCP {action_name} completed via {tool_name}"),
+        mcp_tool_name: Some(tool_name),
+        read_only: sidecar_result.read_only,
+        raw_tools_exposed: false,
+        artifact_refs,
+        event_name: BrowserTaskEventName::RuntimeArtifactPackCreated.as_str(),
+        output: Some(sidecar_result.result),
+        error: None,
+    }
+}
+
+pub fn playwright_mcp_provider_result_from_runner_error(
+    request_id: impl Into<String>,
+    action_kind: PlaywrightMcpActionKind,
+    error: PlaywrightMcpSidecarRunnerError,
+) -> PlaywrightMcpProviderExecutionResult {
+    let error = playwright_mcp_provider_error_from_runner_error(error);
+    playwright_mcp_provider_error_result(
+        request_id.into(),
+        action_kind,
+        None,
+        false,
+        false,
+        PlaywrightMcpProviderExecutionStatus::Failed,
+        error,
+    )
+}
+
+pub fn playwright_mcp_provider_result_from_envelope_error(
+    request_id: impl Into<String>,
+    action_kind: PlaywrightMcpActionKind,
+    error: PlaywrightMcpEnvelopeError,
+) -> PlaywrightMcpProviderExecutionResult {
+    let (code, message, retryable) = match error {
+        PlaywrightMcpEnvelopeError::FeatureFlagDisabled => (
+            "feature_flag_disabled",
+            "playwright_mcp feature flag is disabled",
+            false,
+        ),
+        PlaywrightMcpEnvelopeError::RuntimeNotReady => (
+            "runtime_not_ready",
+            "Browser runtime pack is not ready for Playwright MCP actions",
+            true,
+        ),
+        PlaywrightMcpEnvelopeError::RawToolExposureBlocked => (
+            "raw_tool_exposure_blocked",
+            "Raw Playwright MCP tool exposure is blocked by the uClaw provider contract",
+            false,
+        ),
+    };
+    playwright_mcp_provider_error_result(
+        request_id.into(),
+        action_kind,
+        None,
+        false,
+        false,
+        PlaywrightMcpProviderExecutionStatus::Blocked,
+        PlaywrightMcpProviderExecutionError {
+            code: code.to_string(),
+            message: message.to_string(),
+            retryable,
+            event_name: BrowserTaskEventName::ProviderDegraded.as_str(),
+            artifact_recommended: false,
+        },
+    )
+}
+
+fn playwright_mcp_provider_error_result(
+    request_id: String,
+    action_kind: PlaywrightMcpActionKind,
+    mcp_tool_name: Option<String>,
+    read_only: bool,
+    raw_tools_exposed: bool,
+    status: PlaywrightMcpProviderExecutionStatus,
+    error: PlaywrightMcpProviderExecutionError,
+) -> PlaywrightMcpProviderExecutionResult {
+    PlaywrightMcpProviderExecutionResult {
+        provider_id: PLAYWRIGHT_MCP_PROVIDER_ID.to_string(),
+        request_id,
+        action_kind,
+        status,
+        summary: error.message.clone(),
+        mcp_tool_name,
+        read_only,
+        raw_tools_exposed,
+        artifact_refs: vec![],
+        event_name: error.event_name,
+        output: None,
+        error: Some(error),
+    }
+}
+
+fn playwright_mcp_provider_error_from_runner_error(
+    error: PlaywrightMcpSidecarRunnerError,
+) -> PlaywrightMcpProviderExecutionError {
+    match error {
+        PlaywrightMcpSidecarRunnerError::RuntimePathEscapesPack { path, pack_dir } => {
+            PlaywrightMcpProviderExecutionError {
+                code: "runtime_path_escapes_pack".to_string(),
+                message: format!(
+                    "MCP sidecar runtime path {} escapes app-managed pack {}",
+                    path.display(),
+                    pack_dir.display()
+                ),
+                retryable: false,
+                event_name: BrowserTaskEventName::ProviderDegraded.as_str(),
+                artifact_recommended: true,
+            }
+        }
+        PlaywrightMcpSidecarRunnerError::SpawnFailed(message) => {
+            PlaywrightMcpProviderExecutionError {
+                code: "sidecar_spawn_failed".to_string(),
+                message,
+                retryable: true,
+                event_name: BrowserTaskEventName::ProviderDegraded.as_str(),
+                artifact_recommended: true,
+            }
+        }
+        PlaywrightMcpSidecarRunnerError::StdinUnavailable => PlaywrightMcpProviderExecutionError {
+            code: "sidecar_stdin_unavailable".to_string(),
+            message: "Playwright MCP sidecar stdin is unavailable".to_string(),
+            retryable: true,
+            event_name: BrowserTaskEventName::ProviderDegraded.as_str(),
+            artifact_recommended: true,
+        },
+        PlaywrightMcpSidecarRunnerError::StdoutUnavailable => PlaywrightMcpProviderExecutionError {
+            code: "sidecar_stdout_unavailable".to_string(),
+            message: "Playwright MCP sidecar stdout is unavailable".to_string(),
+            retryable: true,
+            event_name: BrowserTaskEventName::ProviderDegraded.as_str(),
+            artifact_recommended: true,
+        },
+        PlaywrightMcpSidecarRunnerError::StderrUnavailable => PlaywrightMcpProviderExecutionError {
+            code: "sidecar_stderr_unavailable".to_string(),
+            message: "Playwright MCP sidecar stderr is unavailable".to_string(),
+            retryable: true,
+            event_name: BrowserTaskEventName::ProviderDegraded.as_str(),
+            artifact_recommended: true,
+        },
+        PlaywrightMcpSidecarRunnerError::RawToolExposureBlocked => {
+            PlaywrightMcpProviderExecutionError {
+                code: "raw_tool_exposure_blocked".to_string(),
+                message: "Raw Playwright MCP tool exposure is blocked".to_string(),
+                retryable: false,
+                event_name: BrowserTaskEventName::ProviderDegraded.as_str(),
+                artifact_recommended: false,
+            }
+        }
+        PlaywrightMcpSidecarRunnerError::ExitedDuringStartup { code, stderr } => {
+            PlaywrightMcpProviderExecutionError {
+                code: "sidecar_exited_during_startup".to_string(),
+                message: format!(
+                    "Playwright MCP sidecar exited during startup with code {:?}: {}",
+                    code,
+                    stderr.trim()
+                ),
+                retryable: true,
+                event_name: BrowserTaskEventName::ProviderDegraded.as_str(),
+                artifact_recommended: true,
+            }
+        }
+        PlaywrightMcpSidecarRunnerError::JsonRpcTimeout { method, timeout_ms } => {
+            PlaywrightMcpProviderExecutionError {
+                code: "timeout".to_string(),
+                message: format!(
+                    "Playwright MCP JSON-RPC method {method} timed out after {timeout_ms} ms"
+                ),
+                retryable: true,
+                event_name: BrowserTaskEventName::RuntimeHeartbeatMissed.as_str(),
+                artifact_recommended: true,
+            }
+        }
+        PlaywrightMcpSidecarRunnerError::JsonRpcProtocol(message) => {
+            PlaywrightMcpProviderExecutionError {
+                code: "json_rpc_protocol".to_string(),
+                message,
+                retryable: true,
+                event_name: BrowserTaskEventName::ProviderDegraded.as_str(),
+                artifact_recommended: true,
+            }
+        }
+        PlaywrightMcpSidecarRunnerError::JsonRpcError { code, message } => {
+            PlaywrightMcpProviderExecutionError {
+                code: format!("json_rpc_error_{code}"),
+                message,
+                retryable: false,
+                event_name: BrowserTaskEventName::ProviderDegraded.as_str(),
+                artifact_recommended: true,
+            }
+        }
+    }
 }
 
 pub fn playwright_mcp_capabilities() -> BrowserProviderCapabilities {
@@ -401,6 +685,12 @@ pub fn playwright_mcp_provider_status(
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
+    use super::super::playwright_mcp_sidecar::{
+        PlaywrightMcpSidecarActionResult, PlaywrightMcpSidecarArtifactKind,
+        PlaywrightMcpSidecarArtifactRef, PlaywrightMcpSidecarRunnerError,
+    };
     use super::*;
 
     #[test]
@@ -563,5 +853,147 @@ mod tests {
         assert!(!json.contains("mcp__"));
         assert!(!json.contains("browser_snapshot"));
         assert!(!json.contains("browser_click"));
+    }
+
+    #[test]
+    fn sidecar_success_becomes_provider_artifact_result() {
+        let result =
+            playwright_mcp_provider_result_from_sidecar_result(PlaywrightMcpSidecarActionResult {
+                schema_version: PLAYWRIGHT_MCP_ENVELOPE_SCHEMA_VERSION,
+                provider_id: PLAYWRIGHT_MCP_PROVIDER_ID.to_string(),
+                request_id: "req-mcp-1".to_string(),
+                action_kind: PlaywrightMcpActionKind::DiscoverLocators,
+                mcp_tool_name: "browser_snapshot".to_string(),
+                read_only: true,
+                raw_tools_exposed: false,
+                artifact_refs: vec![PlaywrightMcpSidecarArtifactRef {
+                    kind: PlaywrightMcpSidecarArtifactKind::LocatorDiscovery,
+                    description: "MCP locator snapshot".to_string(),
+                    path: Some(PathBuf::from("/tmp/uclaw/mcp/snapshot.json")),
+                }],
+                result: json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "button Checkout [ref=e1]"
+                        }
+                    ]
+                }),
+            });
+
+        assert_eq!(
+            result.status,
+            PlaywrightMcpProviderExecutionStatus::Succeeded
+        );
+        assert_eq!(result.provider_id, PLAYWRIGHT_MCP_PROVIDER_ID);
+        assert_eq!(result.request_id, "req-mcp-1");
+        assert_eq!(result.mcp_tool_name.as_deref(), Some("browser_snapshot"));
+        assert!(result.read_only);
+        assert!(!result.raw_tools_exposed);
+        assert_eq!(
+            result.event_name,
+            BrowserTaskEventName::RuntimeArtifactPackCreated.as_str()
+        );
+        assert_eq!(result.artifact_refs.len(), 1);
+        assert_eq!(
+            result.artifact_refs[0].event_name,
+            BrowserTaskEventName::RuntimeArtifactPackCreated.as_str()
+        );
+        assert!(result
+            .output
+            .as_ref()
+            .expect("output")
+            .to_string()
+            .contains("Checkout"));
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn sidecar_raw_tool_exposure_result_is_provider_failure() {
+        let result =
+            playwright_mcp_provider_result_from_sidecar_result(PlaywrightMcpSidecarActionResult {
+                schema_version: PLAYWRIGHT_MCP_ENVELOPE_SCHEMA_VERSION,
+                provider_id: PLAYWRIGHT_MCP_PROVIDER_ID.to_string(),
+                request_id: "req-raw".to_string(),
+                action_kind: PlaywrightMcpActionKind::AccessibilitySnapshot,
+                mcp_tool_name: "tools/list".to_string(),
+                read_only: true,
+                raw_tools_exposed: true,
+                artifact_refs: vec![],
+                result: json!({ "unexpected": true }),
+            });
+
+        assert_eq!(result.status, PlaywrightMcpProviderExecutionStatus::Failed);
+        assert!(result.output.is_none());
+        let error = result.error.expect("raw exposure error");
+        assert_eq!(error.code, "raw_mcp_tools_exposed");
+        assert!(!error.retryable);
+        assert_eq!(
+            error.event_name,
+            BrowserTaskEventName::ProviderDegraded.as_str()
+        );
+    }
+
+    #[test]
+    fn sidecar_timeout_routes_to_retryable_heartbeat_error() {
+        let result = playwright_mcp_provider_result_from_runner_error(
+            "req-timeout",
+            PlaywrightMcpActionKind::AccessibilitySnapshot,
+            PlaywrightMcpSidecarRunnerError::JsonRpcTimeout {
+                method: "tools/call".to_string(),
+                timeout_ms: 500,
+            },
+        );
+
+        assert_eq!(result.status, PlaywrightMcpProviderExecutionStatus::Failed);
+        assert_eq!(
+            result.event_name,
+            BrowserTaskEventName::RuntimeHeartbeatMissed.as_str()
+        );
+        let error = result.error.expect("timeout error");
+        assert_eq!(error.code, "timeout");
+        assert!(error.retryable);
+        assert!(error.artifact_recommended);
+    }
+
+    #[test]
+    fn sidecar_json_rpc_error_routes_to_provider_degraded() {
+        let result = playwright_mcp_provider_result_from_runner_error(
+            "req-jsonrpc",
+            PlaywrightMcpActionKind::Click,
+            PlaywrightMcpSidecarRunnerError::JsonRpcError {
+                code: -32000,
+                message: "snapshot target stale".to_string(),
+            },
+        );
+
+        assert_eq!(result.status, PlaywrightMcpProviderExecutionStatus::Failed);
+        assert_eq!(
+            result.event_name,
+            BrowserTaskEventName::ProviderDegraded.as_str()
+        );
+        let error = result.error.expect("json-rpc error");
+        assert_eq!(error.code, "json_rpc_error_-32000");
+        assert_eq!(error.message, "snapshot target stale");
+        assert!(!error.retryable);
+        assert!(error.artifact_recommended);
+    }
+
+    #[test]
+    fn envelope_errors_route_to_blocked_provider_result() {
+        let result = playwright_mcp_provider_result_from_envelope_error(
+            "req-disabled",
+            PlaywrightMcpActionKind::Trace,
+            PlaywrightMcpEnvelopeError::FeatureFlagDisabled,
+        );
+
+        assert_eq!(result.status, PlaywrightMcpProviderExecutionStatus::Blocked);
+        assert_eq!(result.provider_id, PLAYWRIGHT_MCP_PROVIDER_ID);
+        assert_eq!(result.action_kind, PlaywrightMcpActionKind::Trace);
+        assert_eq!(result.artifact_refs.len(), 0);
+        let error = result.error.expect("blocked error");
+        assert_eq!(error.code, "feature_flag_disabled");
+        assert!(!error.retryable);
+        assert!(!error.artifact_recommended);
     }
 }

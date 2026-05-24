@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-24 by Codex
-> Current phase: Phase 7E MCP stdio action boundary
+> Current phase: Phase 7F MCP artifact/error routing
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -26,7 +26,7 @@
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4X merged to `main` / `origin/main`; exit audit complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` / `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` | Closed for user-visible Settings, Doctor, prompt, checkpoint, deep-link, read-only IPC, and dry-run action evidence. Real runtime execution/provider work moves to Phase 5+. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A-5F merged to `main` / `origin/main`; exit gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff` / `codex/browser-runtime-phase5f-action-state-diff` | Closed for feature-flagged Playwright CLI thin lane. Provider promotion and parity routing remain Phase 8. |
 | Phase 6 | Browser identity authorization and profile UX | Phase 6A-6F merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6f-identity-boundary-actions` / `codex/browser-runtime-phase6f-identity-boundary-actions` | Closed for safe identity revoke/drain/active-task/resume boundary contracts; auth WebView and payment confirmation remain future work. |
-| Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7D merged; Phase 7E MCP stdio action boundary in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7e-mcp-stdio-action-boundary` / `codex/browser-runtime-phase7e-mcp-stdio-action-boundary` | Add a real supervised MCP stdio action boundary for fixed uClaw actions without provider promotion, IPC, raw tool exposure, or global npm. |
+| Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7E merged; Phase 7F MCP artifact/error routing in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7f-mcp-artifact-error-routing` / `codex/browser-runtime-phase7f-mcp-artifact-error-routing` | Convert MCP sidecar results and runner errors into provider-level artifact/error evidence without provider promotion, IPC, TaskEvents, or raw tool exposure. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Not started | Unassigned | TBD | Wait for chromiumoxide, CLI, and MCP lanes. |
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Not started | Unassigned | TBD | Wait for observable provider behavior and harness scorecards. |
 | Phase 10 | Optional hosted providers and hard-site escape hatches | Not started | Unassigned | TBD | Wait for local-first provider routing and policy prompts. |
@@ -120,6 +120,7 @@
 | 2026-05-24 | Merge Phase 7B and start Phase 7C as a package pin correction before sidecar execution. | PR #468 merged as `90fe28d7`; `npm view @playwright/mcp@1.53.0` returned 404, while `npm view @playwright/mcp version` reported current stable `0.0.75` and `npm view @playwright/mcp@0.0.75 bin` reported `playwright-mcp: cli.js`. | Correct the app-managed MCP package pin before adding a supervised runner, so Phase 7D does not inherit an impossible sidecar package spec. |
 | 2026-05-24 | Merge Phase 7C and start Phase 7D as the supervised MCP sidecar runner. | PR #470 merged as `5adc67a0`; fresh reviewer Turing returned `REVIEW ACCEPTED`. The existing MCP sidecar spec still had npx-style package args even though production must use app-managed pack paths. | Phase 7D starts MCP from `current_pack_dir/node/bin/node` plus `current_pack_dir/node_modules/@playwright/mcp/cli.js`, preserving the package pin as metadata and keeping raw MCP tools hidden. |
 | 2026-05-24 | Merge Phase 7D and start Phase 7E as the MCP stdio action boundary. | PR #471 merged as `0d1ef4b1`; fresh reviewer Confucius returned `REVIEW ACCEPTED` after the flaky timing assertion was replaced with deterministic startup-exit stderr evidence. | Phase 7E moves beyond sidecar spawn by translating fixed uClaw actions into supervised MCP `initialize` and `tools/call` stdio JSON-RPC against an app-managed child process. |
+| 2026-05-24 | Merge Phase 7E and start Phase 7F as MCP artifact/error routing. | PR #472 merged as `d21b9fa2`; fresh reviewer Boole returned `REVIEW ACCEPTED` after timeout poisoning and stable snapshot arguments were added. | Phase 7F converts sidecar success/error outputs into provider-level result DTOs carrying artifact refs, event metadata, error codes, and retryability, while still avoiding Phase 8 provider promotion. |
 
 ---
 
@@ -128,9 +129,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7e-mcp-stdio-action-boundary` |
-| Current phase branch | `codex/browser-runtime-phase7e-mcp-stdio-action-boundary` |
-| Current local base | `0d1ef4b1 Merge pull request #471 from novolei/codex/browser-runtime-phase7d-mcp-sidecar-runner` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7f-mcp-artifact-error-routing` |
+| Current phase branch | `codex/browser-runtime-phase7f-mcp-artifact-error-routing` |
+| Current local base | `d21b9fa2 feat(browser): add MCP stdio action boundary` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -192,8 +193,9 @@
 | Phase 7B MCP runtime-pack probe implementation commit | Merged through PR #468 as `7ea2453f feat(browser): track playwright mcp runtime pack`; merge commit `90fe28d7`. |
 | Phase 7C MCP package pin correction implementation commit | Merged through PR #470 as `eb5e33b0 fix(browser): correct playwright mcp package pin`; merge commit `5adc67a0`. |
 | Phase 7D MCP sidecar runner implementation commit | Merged through PR #471 as `18b97544 feat(browser): start playwright mcp sidecar`; merge commit `0d1ef4b1`. |
-| Phase 7E MCP stdio action boundary implementation commit | In progress on `codex/browser-runtime-phase7e-mcp-stdio-action-boundary`. |
-| Known pre-existing tracked changes | None in the Phase 7E MCP stdio action boundary worktree at start. Primary worktree remains separate with unrelated untracked docs; this phase starts from `origin/main` after PR #471 was merged. |
+| Phase 7E MCP stdio action boundary implementation commit | Merged through PR #472 as `111eada1 feat(browser): add mcp stdio action boundary`; merge commit `d21b9fa2`. |
+| Phase 7F MCP artifact/error routing implementation commit | Current branch commit `feat(browser): route mcp artifact errors`; final SHA will be recorded after PR publication/merge to avoid self-referential amend churn. |
+| Known pre-existing tracked changes | None in the Phase 7F MCP artifact/error routing worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes; this phase starts from `origin/main` after PR #472 was merged. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -5350,9 +5352,10 @@ Phase 7E can start because:
   into MCP `tools/call` requests, maps MCP JSON-RPC errors into structured Rust
   errors, and returns artifact-visible result metadata.
 - Current PR:
-  not opened yet.
+  PR #472, merged.
 - Current commit:
-  not committed yet.
+  `111eada1 feat(browser): add mcp stdio action boundary`; merge commit
+  `d21b9fa2`.
 - Non-goal:
   no provider promotion, task routing, UI, Tauri IPC, DB migration, TaskEvent
   emission, real network/site execution, generic raw MCP client, or
@@ -5408,10 +5411,98 @@ Phase 7E can start because:
 
 ### Phase 7E MCP Stdio Action Boundary Next Action
 
-- Finish focused stdio tests and checks, run GitNexus detect, commit, push,
-  create PR, request fresh review, and merge automatically if GitHub reports
-  CLEAN, tests pass, reviewer accepts, no HIGH/CRITICAL risk is reported, and
-  no user worktree files are affected.
+- Closed. PR #472 merged as `d21b9fa2`; continue with Phase 7F from
+  `origin/main` to route MCP sidecar artifacts/errors through provider-level
+  evidence without provider promotion.
+
+## Phase 7F MCP Artifact/Error Routing Entry Criteria
+
+Phase 7F can start because:
+
+- PR #472 merged Phase 7E MCP stdio execution to `main` / `origin/main`;
+- ADR Phase 7 requires MCP artifacts and errors to flow through the same
+  supervisor, artifact, policy, TaskEvent, and projection model;
+- Phase 7E returns sidecar-level result/error data, but not a provider-level
+  result shape that later supervisor/task wiring can consume;
+- Phase 7F is narrow enough to stay provider-internal and does not require
+  `agentic_loop.rs`, `tauri_commands.rs`, UI, IPC, DB, or provider promotion;
+- the worktree is isolated at
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7f-mcp-artifact-error-routing`;
+- the branch starts from `d21b9fa2`, the current `origin/main`.
+
+## Phase 7F MCP Artifact/Error Routing Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-24-browser-runtime-phase7f-mcp-artifact-error-routing.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7f-mcp-artifact-error-routing`
+- Branch:
+  `codex/browser-runtime-phase7f-mcp-artifact-error-routing`
+- Scope:
+  add provider-level MCP execution result/error/artifact DTOs and pure
+  conversion helpers from `PlaywrightMcpSidecarActionResult` and
+  `PlaywrightMcpSidecarRunnerError`.
+- Current PR:
+  PR #473 (`https://github.com/novolei/uclaw-new/pull/473`), merge state
+  `CLEAN`.
+- Current commit:
+  `feat(browser): route mcp artifact errors`; final SHA will be recorded after
+  PR publication/merge to avoid self-referential amend churn.
+- Non-goal:
+  no provider promotion, task routing, UI, Tauri IPC, DB migration, TaskEvent
+  emission, artifact file writes, global npm, raw MCP tool exposure, or
+  `agentic_loop.rs` / `tauri_commands.rs` edits.
+- Rollback:
+  revert this PR; MCP returns to Phase 7E sidecar-level stdio execution.
+
+### Phase 7F MCP Artifact/Error Routing Impact Notes
+
+- GitNexus index was refreshed for the Phase 7F worktree before impact checks;
+  generated AGENTS/CLAUDE statistics changes were restored as noise.
+- GitNexus impact before edits reported LOW risk for
+  `PlaywrightMcpAction`: 0 direct callers, 0 affected processes.
+- GitNexus impact before edits reported LOW risk for
+  `PlaywrightMcpSidecarActionResult`: 1 direct caller, 0 affected processes.
+- GitNexus impact before edits reported LOW risk for
+  `PlaywrightMcpSidecarRunnerError`: 0 direct callers, 0 affected processes.
+- GitNexus impact before edits reported LOW risk for
+  `playwright_mcp_provider_status`: 3 direct test callers, 0 affected
+  processes.
+- Phase 7F keeps `agentic_loop.rs` and `tauri_commands.rs` untouched because
+  the provider-level adapter is still below live task routing and IPC. This is
+  not a dry-run lane: the MCP sidecar is already executable from Phase 7E, and
+  this phase converts its real outputs into future supervisor evidence.
+
+### Phase 7F MCP Artifact/Error Routing Verification Notes
+
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::playwright_mcp`
+  passed: 22 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  passed: 42 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  passed: 54 tests, 0 failed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  passed: 6 tests, 0 failed.
+- `rustfmt --edition 2021 --check src-tauri/src/browser/playwright_mcp.rs`
+  passed. `src-tauri/src/browser/mod.rs` is intentionally excluded from
+  rustfmt because rustfmt follows the module tree and rewrites unrelated
+  historical browser-module formatting; `git diff --check` covers the narrow
+  export diff.
+- `git diff --check -- docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-24-browser-runtime-phase7f-mcp-artifact-error-routing.md src-tauri/src/browser/mod.rs src-tauri/src/browser/playwright_mcp.rs`
+  passed.
+- GitNexus staged detect reported 4 changed files, 26 changed symbols, 0
+  affected processes, `risk_level: low`; no HIGH or CRITICAL risk.
+- Fresh reviewer Locke returned `REVIEW ACCEPTED` for PR #473. Residual
+  non-blocking notes: one transient sidecar stdio fixture timeout was not
+  reproducible on isolated/serial/full reruns, provider DTO JSON round-trip
+  coverage can be added later, and raw MCP output remains provider evidence
+  only until future routing explicitly decides projection/persistence.
+
+### Phase 7F MCP Artifact/Error Routing Next Action
+
+- Merge PR #473 automatically if GitHub still reports CLEAN and no user
+  worktree files are affected, then sync `main` and continue with the next
+  Phase 7 slice.
 
 ---
 
