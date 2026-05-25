@@ -86,6 +86,146 @@ const selfImprovementFixture = [
   },
 ]
 
+const browserRuntimeControlCenterFixture = {
+  featureFlags: {
+    playwrightCli: false,
+    playwrightMcp: false,
+    hostedBrowser: false,
+    forceLegacyLocalChromium: false,
+  },
+  desiredProviderPriority: [
+    'browser.playwright_cli',
+    'browser.playwright_mcp',
+    'browser.local_chromium',
+  ],
+  activeProviderRoute: {
+    providerId: 'browser.local_chromium',
+    displayName: 'Local Chromium',
+  },
+  providerLanes: [
+    {
+      providerId: 'browser.playwright_cli',
+      displayName: 'Playwright CLI',
+      enabled: false,
+      priorityRank: 1,
+      readiness: 'needs_setup',
+      routable: false,
+      routeRole: 'disabled',
+      probeState: 'not_run',
+      fallbackReason: 'provider_disabled',
+      nextAction: 'enable_provider',
+      probeHistory: [],
+    },
+    {
+      providerId: 'browser.playwright_mcp',
+      displayName: 'Playwright MCP',
+      enabled: false,
+      priorityRank: 2,
+      readiness: 'needs_setup',
+      routable: false,
+      routeRole: 'disabled',
+      probeState: 'not_run',
+      fallbackReason: 'provider_disabled',
+      nextAction: 'enable_mcp',
+      probeHistory: [],
+    },
+    {
+      providerId: 'browser.local_chromium',
+      displayName: 'Local Chromium',
+      enabled: true,
+      priorityRank: 3,
+      readiness: 'ready',
+      routable: true,
+      routeRole: 'active',
+      probeState: 'passed',
+      nextAction: 'none',
+      probeHistory: [],
+    },
+  ],
+  mcpIntegrationSummary: {
+    builtIn: true,
+    enabled: false,
+    rawToolsExposed: false,
+    configureRouteReady: true,
+  },
+  updatedAtMs: 0,
+}
+
+const browserRuntimeStatusFixture = {
+  manifestPackVersion: 'browser-runtime-pack-v1',
+  runtimeRoot: '/mock/uclaw/browser-runtime',
+  currentPackDir: '/mock/uclaw/browser-runtime/packs/browser-runtime-pack-v1',
+  ready: true,
+  canRunBrowserTasks: true,
+  primaryAction: 'keep_current',
+  eventNames: ['browser.runtime.doctor.completed'],
+  doctor: {
+    status: 'ready',
+    ready: true,
+    remediation: 'Browser runtime is ready.',
+    actions: ['keep_current', 'run_doctor'],
+    manifestPackVersion: 'browser-runtime-pack-v1',
+    rollbackAvailable: true,
+    activeTasks: 0,
+  },
+  operationPlan: {
+    status: 'ready',
+    summary: 'Runtime pack is ready.',
+    eventNames: ['browser.runtime.keep_current.ready'],
+  },
+  supervisor: {
+    providerId: 'browser.local_chromium',
+    selectedSessionId: 'mock-browser-runtime',
+    runtimeState: 'ready',
+    doctorStatus: 'ready',
+    activeContextCount: 0,
+    activeContextSessions: [],
+    detail: 'Local Chromium fallback can create a supervised context on demand.',
+  },
+  providerReadiness: {
+    localChromium: {
+      providerId: 'browser.local_chromium',
+      displayName: 'Local Chromium',
+      readiness: 'ready',
+      ready: true,
+      setupComplete: true,
+      activeContexts: 0,
+      remediation: [],
+      notes: [],
+    },
+    playwrightCli: {
+      providerId: 'browser.playwright_cli',
+      displayName: 'Playwright CLI',
+      readiness: 'needs_setup',
+      ready: false,
+      setupComplete: false,
+      activeContexts: 0,
+      remediation: ['Enable and probe the provider before routing.'],
+      notes: [],
+    },
+    playwrightMcp: {
+      providerId: 'browser.playwright_mcp',
+      displayName: 'Playwright MCP',
+      readiness: 'needs_setup',
+      ready: false,
+      setupComplete: false,
+      activeContexts: 0,
+      remediation: ['Configure in Kaleidoscope Integrations.'],
+      notes: [],
+    },
+  },
+  controlCenter: browserRuntimeControlCenterFixture,
+  supervisorEventNames: ['browser.startup_doctor.ready'],
+}
+
+const browserIdentityStatusFixture = {
+  profiles: [],
+  authorizedCount: 0,
+  revokedCount: 0,
+  activeTaskCount: 0,
+  activeTasks: [],
+}
+
 export function shouldInstallDevTauriMock(): boolean {
   return import.meta.env.VITE_UCLAW_MOCK_TAURI === '1'
     && typeof window !== 'undefined'
@@ -108,19 +248,70 @@ export function createUclawMockIpcHandler(): MockHandler {
         return { complete: true, steps: [] }
       case 'get_active_model':
         return null
+      case 'get_user_profile':
+        return { userName: 'Mock User', avatar: '' }
       case 'list_conversations':
+      case 'list_agent_sessions':
       case 'list_spaces':
       case 'list_notifications':
       case 'list_background_tasks':
       case 'list_mcp_servers':
+      case 'list_mcp_tools':
       case 'list_skills':
       case 'list_channels':
       case 'list_pending_escalations':
+      case 'get_daily_costs':
+      case 'get_model_costs':
+      case 'get_session_costs':
+      case 'list_workspace_cost_rollup':
+      case 'list_providers':
+      case 'list_configured_providers':
+      case 'get_all_configured_models':
+      case 'list_provider_models':
+      case 'get_configured_models':
+      case 'list_automations':
+      case 'get_automation_activity':
       case 'automation_list_specs':
       case 'automation_list_activities':
         return []
+      case 'get_provider_config':
+        return null
+      case 'get_month_cost_total':
+        return 0
       case 'get_system_diagnostics':
         return diagnosticsFixture
+      case 'get_browser_runtime_status':
+        return browserRuntimeStatusFixture
+      case 'get_browser_runtime_control_center':
+        return browserRuntimeControlCenterFixture
+      case 'list_browser_identities':
+        return browserIdentityStatusFixture
+      case 'run_browser_runtime_provider_probe':
+        return {
+          providerId: payload?.providerId ?? 'browser.playwright_cli',
+          state: 'passed',
+          checkedAtMs: Date.now(),
+          artifactId: 'browser-runtime-provider-probe-passed',
+          message: 'Provider probe passed.',
+          eventNames: ['browser.runtime.provider.probe.passed'],
+        }
+      case 'dry_run_browser_runtime_action':
+        return {
+          operation: payload?.action ?? 'keep_current',
+          mode: 'dry_run',
+          status: 'succeeded',
+          summary: 'Mock dry-run completed without side effects.',
+          artifactId: 'browser-runtime-mock-dry-run',
+          eventNames: ['browser.runtime.mock.dry_run_succeeded'],
+          stepReports: [],
+          manifestPackVersion: browserRuntimeStatusFixture.manifestPackVersion,
+          runtimeRoot: browserRuntimeStatusFixture.runtimeRoot,
+          currentPackDir: browserRuntimeStatusFixture.currentPackDir,
+          usesNetwork: false,
+          destructive: false,
+          requiresConfirmation: false,
+          keepsCurrentPack: true,
+        }
       case 'run_browser_parity_harness':
       case 'run_memory_gbrain_eval_harness':
       case 'run_agent_control_plane_harness':

@@ -440,7 +440,7 @@ describe('BrowserRuntimeSettings', () => {
       expect(screen.getByText('1.48.2-uclaw.1')).toBeInTheDocument()
     })
     expect(screen.getByText('Rust Browser Runtime Supervisor')).toBeInTheDocument()
-    expect(screen.getByText('Local Chromium: 可用, setup 完成, 0 个上下文')).toBeInTheDocument()
+    expect(screen.getByText('Local Chromium: Ready, 0 个上下文')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '预览保持当前' })).toBeEnabled()
   })
 

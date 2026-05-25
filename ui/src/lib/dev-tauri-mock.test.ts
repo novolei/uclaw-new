@@ -42,6 +42,9 @@ describe('dev tauri mock', () => {
       theme: 'system',
     })
     await expect(invoke('get_active_model')).resolves.toBeNull()
+    await expect(invoke('get_user_profile')).resolves.toMatchObject({
+      userName: 'Mock User',
+    })
     expect(window.__UCLAW_DEV_TAURI_MOCK__).toBe(true)
   })
 
@@ -70,5 +73,34 @@ describe('dev tauri mock', () => {
       memu: { running: true },
       gbrain: { connected: true, tool_count: 6 },
     })
+  })
+
+  it('returns Browser Runtime Control Center fixtures for browser-only validation', async () => {
+    const handler = createUclawMockIpcHandler()
+
+    await expect(await handler('list_agent_sessions')).toEqual([])
+    await expect(await handler('get_browser_runtime_status')).toMatchObject({
+      controlCenter: {
+        desiredProviderPriority: [
+          'browser.playwright_cli',
+          'browser.playwright_mcp',
+          'browser.local_chromium',
+        ],
+        activeProviderRoute: { providerId: 'browser.local_chromium' },
+      },
+    })
+    await expect(await handler('get_browser_runtime_control_center')).toMatchObject({
+      mcpIntegrationSummary: {
+        builtIn: true,
+        rawToolsExposed: false,
+      },
+    })
+    await expect(await handler('get_daily_costs')).toEqual([])
+    await expect(await handler('list_workspace_cost_rollup')).toEqual([])
+    await expect(await handler('get_month_cost_total')).toBe(0)
+    await expect(await handler('list_providers')).toEqual([])
+    await expect(await handler('get_all_configured_models')).toEqual([])
+    await expect(await handler('list_mcp_tools')).toEqual([])
+    await expect(await handler('list_automations')).toEqual([])
   })
 })
