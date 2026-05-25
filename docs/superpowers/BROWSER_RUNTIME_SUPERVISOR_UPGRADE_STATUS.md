@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-25 by Codex
-> Current phase: Post-completion real-state correction frontend review gates pending; PR5-PR7 merged
+> Current phase: Post-completion real-state correction complete on `origin/main`
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -31,9 +31,9 @@
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Phase 9A-9E merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9e-harness-matrix` / `codex/browser-runtime-phase9e-harness-matrix` | Closed for pure recipe/domain-skill harness coverage; no production replay, locator persistence, or domain-skill writes were introduced. |
 | Phase 10 | Optional hosted providers and hard-site escape hatches | Phase 10A-10B merged to `main` / `origin/main`; ADR Phase 10 gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase10b-hosted-provider-harness` / `codex/browser-runtime-phase10b-hosted-provider-harness` | Closed for hosted-provider capability contract plus disabled fallback, data-boundary prompt, artifact capture, cost visibility, local fallback, and opt-in mock-hosted harness evidence. |
 | Real State PR1 | Rust aggregated runtime status service | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr1` / `codex/browser-runtime-real-state-pr1` | Closed as PR #503; later real-state PRs consume the aggregate status source. |
-| Real State PR2 | Splash/App Rust-state handoff | Open as PR #504; review gate pending | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr2-splash-app-state` / `codex/browser-runtime-real-state-pr2-splash-app-state` | Fresh review must accept the GitNexus HIGH root-App handoff impact before merge. |
+| Real State PR2 | Splash/App Rust-state handoff | Merged to `main` / `origin/main` as PR #504 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr2-splash-app-state` / `codex/browser-runtime-real-state-pr2-splash-app-state` | Closed; App/Startup Splash handoff now consumes parent-owned Rust Browser Runtime status with bounded fallback. |
 | Real State PR3 | Task-time runtime status routing | Merged to `main` / `origin/main` as PR #506 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr3-task-runtime-status` / `codex/browser-runtime-real-state-pr3-task-runtime-status` | Closed; autonomous Browser task actions consume aggregate runtime status before provider routing. |
-| Real State PR4 | Browser Panel runtime projection | Open as PR #507; CRITICAL review gate pending | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr4-direct-tool-guard` / `codex/browser-runtime-real-state-pr4-direct-tool-guard` | Fresh review must accept the BrowserPanel/BrowserStatusBar CRITICAL impact before merge. |
+| Real State PR4 | Browser Panel runtime projection | Merged to `main` / `origin/main` as PR #507 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr4-direct-tool-guard` / `codex/browser-runtime-real-state-pr4-direct-tool-guard` | Closed; Browser Panel status bar now projects Rust Browser Runtime Supervisor state. |
 | Real State PR5 | UI command runtime touch | Merged to `main` / `origin/main` as PR #510 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr5-ui-command-runtime-touch` / `codex/browser-runtime-real-state-pr5-ui-command-runtime-touch` | Closed; Browser UI IPC commands now inspect Rust runtime status, with navigate/switch-tab routed through provider execution. |
 | Real State PR6 | Direct browser tools runtime status routing | Merged to `main` / `origin/main` as PR #511 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr6-direct-tool-runtime-status` / `codex/browser-runtime-real-state-pr6-direct-tool-runtime-status` | Closed; direct chat/Agent/automation browser tools now consume Rust runtime status and exact BrowserAction tools route through provider execution. |
 | Real State PR7 | Legacy BrowserService route removal | Merged to `main` / `origin/main` as PR #512 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr7-legacy-browser-service-route` / `codex/browser-runtime-real-state-pr7-legacy-browser-service-route` | Closed; private legacy chromiumoxide runtime removed and backward-compatible browser commands route through Browser Runtime status plus `BrowserContextManager`. |
@@ -82,9 +82,7 @@
   production root handoff still does not wait for that source. `StartupSplash`
   also owns an independent fire-and-forget status call instead of rendering
   parent-owned startup truth.
-- Status: open as PR #504, rebased clean onto `origin/main` merge commit
-  `c1027c9c`, with required fresh-review gate because GitNexus reports HIGH
-  root-`App` startup handoff impact.
+- Status: merged as PR #504 into `origin/main` at merge commit `72d7fcbd`.
 - Plan:
   `docs/superpowers/plans/2026-05-25-browser-runtime-real-state-pr2-splash-app-handoff.md`.
 - Scope: move startup Browser Runtime status ownership to `App`, pass the Rust
@@ -114,10 +112,14 @@
     rerun because the local GitNexus resolver did not expose the PR2 worktree
     after indexing. Original PR2 staged detect remains HIGH because root `App`
     is the handoff boundary.
+- Gate resolution: Ryan explicitly accepted proceeding without an additional
+  fresh reviewer after focused tests and build stayed green. The PR recorded
+  the DRI override before merge.
 - Explicit non-scope: no runtime-pack execution, no Settings action execution,
   no provider default promotion, no BrowserPanel/screencast routing changes, no
   browser action supervisor guard, and no TaskEvent persistence.
 - PR: https://github.com/novolei/uclaw-new/pull/504.
+- Closeout: merged as PR #504 into `origin/main` at merge commit `72d7fcbd`.
 
 ### PR3 - Task-Time Runtime Status Routing
 
@@ -171,9 +173,7 @@
 
 ### PR4 - Browser Panel Runtime Status Projection
 
-- Status: open as PR #507, rebased clean onto `origin/main` merge commit
-  `c1027c9c`, with required fresh-review gate because GitNexus reported
-  CRITICAL impact for the BrowserPanel/BrowserStatusBar path.
+- Status: merged as PR #507 into `origin/main` at merge commit `1cb1850d`.
 - Entry criteria: after PR1 and PR3, the Rust aggregate status source is shared
   and task-time browser routing consumes it, but the in-app Browser Panel still
   renders only local frontend ready/loading state in its status bar.
@@ -204,10 +204,14 @@
     `tauri_commands.rs`. Compare detect could not be rerun because the local
     GitNexus resolver did not expose the PR4 worktree after indexing. Original
     PR4 staged detect was LOW with no affected execution flows, while the
-    CRITICAL pre-edit impact remains the merge gate.
+    CRITICAL pre-edit impact was accepted by DRI override.
+- Gate resolution: Ryan explicitly accepted proceeding without an additional
+  fresh reviewer after focused tests and build stayed green. The PR recorded
+  the DRI override before merge.
 - Explicit non-scope: no Startup Splash/App handoff, no Settings execution, no
   direct browser command execution guard, no runtime-pack install/repair/delete,
   no provider default promotion, and no TaskEvent persistence.
+- Closeout: merged as PR #507 into `origin/main` at merge commit `1cb1850d`.
 
 ### PR5 - UI Command Runtime Touch
 
@@ -348,18 +352,35 @@
   provider, and no TaskEvent persistence.
 - Closeout: merged as PR #512 into `origin/main` at merge commit `fe55c374`.
 
-### Current Completion Blocker
+### Final Real-State Completion Audit
 
-- PR #504 and PR #507 are both open, non-draft, and clean against
-  `origin/main`, but neither has a fresh review.
-- PR #504 must not merge until a fresh reviewer accepts the HIGH root-`App`
-  handoff impact.
-- PR #507 must not merge until a fresh reviewer accepts the CRITICAL
-  BrowserPanel/BrowserStatusBar impact.
-- The Browser Runtime Supervisor real-state objective is therefore not yet
-  complete on `origin/main`: Startup Splash/App handoff and Browser Panel
-  projection are implemented in clean PRs, but not landed and not verified from
-  main.
+- PR #503, #504, #506, #507, #510, #511, #512, and #513 are merged into
+  `origin/main`.
+- Startup Splash/App handoff now consumes Rust Browser Runtime status from
+  root `App` before AppShell handoff, with bounded fallback instead of an
+  independent Splash-owned status call.
+- Browser task actions, direct browser tools, Browser UI commands, legacy
+  compatibility commands, and Browser Panel projection now inspect or render
+  the shared Rust Browser Runtime status path.
+- Remaining deliberate non-scope: provider default promotion, hosted provider
+  promotion, TaskEvent persistence for this correction, and runtime-pack
+  install/repair/delete side effects beyond the already merged managed runner
+  boundaries.
+- Final verification from `origin/main`:
+  - `cd ui && npm test -- --run src/App.test.tsx src/components/startup/StartupSplash.test.tsx src/lib/tauri-bridge.browser-runtime.test.ts src/components/browser/BrowserPanel.test.tsx src/components/browser/BrowserStatusBar.test.tsx`
+    passed: `5 files / 22 tests`.
+  - `cd ui && npm run build` passed with existing dynamic-import/chunk-size
+    warnings.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_status`
+    passed: `3 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution`
+    passed: `8 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::tools`
+    passed: `14 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib tauri_commands::browser_ui_runtime_command_tests`
+    passed: `2 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib tauri_commands::browser_legacy_runtime_tests`
+    passed: `3 passed`.
 
 ---
 
