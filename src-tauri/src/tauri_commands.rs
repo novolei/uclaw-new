@@ -11,6 +11,7 @@ use crate::browser::provider_execution::{
     BrowserProviderActionExecution, BrowserProviderActionExecutionOutcome,
     BrowserProviderActionExecutor, BrowserProviderActionRouteOptions,
 };
+use crate::browser::runtime_execution::route_options_from_runtime_status;
 use crate::llm;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1960,12 +1961,14 @@ pub async fn send_message(
             model.clone(),
         ));
         let runtime_status_service = Some(Arc::clone(&state.browser_runtime_status_service));
+        let runtime_provider_config = state.settings.read().await.browser_runtime_provider_config.clone();
         macro_rules! bt {
             ($T:ident) => {
                 $T {
                     ctx_mgr: Arc::clone(&ctx_mgr),
                     session_id: sid.clone(),
                     runtime_status_service: runtime_status_service.clone(),
+                    runtime_provider_config: runtime_provider_config.clone(),
                 }
             };
         }
@@ -2004,6 +2007,7 @@ pub async fn send_message(
             long_term_memory: Some(Arc::clone(&long_term_memory)),
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
+            runtime_provider_config: runtime_provider_config.clone(),
         });
         tools.register(BrowserTaskResumeTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -2014,6 +2018,7 @@ pub async fn send_message(
             long_term_memory: Some(Arc::clone(&long_term_memory)),
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
+            runtime_provider_config: runtime_provider_config.clone(),
         });
         tools.register(RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -2024,6 +2029,7 @@ pub async fn send_message(
             long_term_memory: Some(long_term_memory),
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
+            runtime_provider_config: runtime_provider_config.clone(),
         });
     }
     // MCP tool proxies — agents see tools from any currently-connected
@@ -10630,12 +10636,14 @@ pub async fn send_agent_message(
             model.clone(),
         ));
         let runtime_status_service = Some(Arc::clone(&state.browser_runtime_status_service));
+        let runtime_provider_config = state.settings.read().await.browser_runtime_provider_config.clone();
         macro_rules! bt {
             ($T:ident) => {
                 $T {
                     ctx_mgr: Arc::clone(&ctx_mgr),
                     session_id: sid.clone(),
                     runtime_status_service: runtime_status_service.clone(),
+                    runtime_provider_config: runtime_provider_config.clone(),
                 }
             };
         }
@@ -10652,6 +10660,7 @@ pub async fn send_agent_message(
             long_term_memory: Some(Arc::clone(&long_term_memory)),
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
+            runtime_provider_config: runtime_provider_config.clone(),
         });
         tools.register(BrowserTaskResumeTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -10662,6 +10671,7 @@ pub async fn send_agent_message(
             long_term_memory: Some(Arc::clone(&long_term_memory)),
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
+            runtime_provider_config: runtime_provider_config.clone(),
         });
         tools.register(RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -10672,6 +10682,7 @@ pub async fn send_agent_message(
             long_term_memory: Some(long_term_memory),
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
+            runtime_provider_config: runtime_provider_config.clone(),
         });
         if browser_active {
             tools.register(bt!(BrowserGoBackTool));
@@ -11759,7 +11770,12 @@ async fn browser_ui_runtime_route_options(
     state: &AppState,
     command_name: &'static str,
 ) -> BrowserProviderActionRouteOptions {
-    match state.browser_runtime_status_service.inspect_default().await {
+    let provider_config = state.settings.read().await.browser_runtime_provider_config.clone();
+    match state
+        .browser_runtime_status_service
+        .inspect_with_provider_config(provider_config)
+        .await
+    {
         Ok(status) => {
             tracing::debug!(
                 command_name,
@@ -11770,7 +11786,7 @@ async fn browser_ui_runtime_route_options(
                 can_run_browser_tasks = status.runtime_pack.can_run_browser_tasks,
                 "Browser UI command inspected Browser Runtime status before execution"
             );
-            BrowserProviderActionRouteOptions::default().with_runtime_report(status.runtime_pack)
+            route_options_from_runtime_status(status)
         }
         Err(error) => {
             tracing::warn!(
@@ -11875,9 +11891,10 @@ async fn touch_legacy_browser_runtime_status(
     state: &AppState,
     command: &'static str,
 ) -> Result<(), Error> {
+    let provider_config = state.settings.read().await.browser_runtime_provider_config.clone();
     state
         .browser_runtime_status_service
-        .inspect_default()
+        .inspect_with_provider_config(provider_config)
         .await
         .map(|_| ())
         .map_err(|error| {

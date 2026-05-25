@@ -12,6 +12,8 @@ pub struct AutomationToolRegistryDeps {
     pub browser_context_manager: Option<Arc<crate::browser::BrowserContextManager>>,
     pub browser_session_id: Option<String>,
     pub browser_builtin_root: Option<PathBuf>,
+    pub browser_runtime_provider_config:
+        crate::browser::runtime_control_center::BrowserRuntimeProviderConfig,
 }
 
 pub fn planned_tool_names(spec_permissions: &[Permission], gbrain_declared: bool) -> Vec<String> {
@@ -90,6 +92,7 @@ pub fn build_registry_with_capabilities(deps: AutomationToolRegistryDeps) -> Arc
                 workspace_root: deps.workspace_root.clone(),
                 builtin_root,
                 runtime_status_service: runtime_status_service.clone(),
+                runtime_provider_config: deps.browser_runtime_provider_config.clone(),
             };
             tools.register(crate::browser::tools::BrowserRunTool {
                 inner: browser_run_script.clone(),
@@ -99,21 +102,25 @@ pub fn build_registry_with_capabilities(deps: AutomationToolRegistryDeps) -> Arc
                 ctx_mgr: ctx_mgr.clone(),
                 session_id: session_id.clone(),
                 runtime_status_service: runtime_status_service.clone(),
+                runtime_provider_config: deps.browser_runtime_provider_config.clone(),
             });
             tools.register(crate::browser::tools::BrowserEvaluateTool {
                 ctx_mgr: ctx_mgr.clone(),
                 session_id: session_id.clone(),
                 runtime_status_service: runtime_status_service.clone(),
+                runtime_provider_config: deps.browser_runtime_provider_config.clone(),
             });
             tools.register(crate::browser::tools::BrowserWaitTool {
                 ctx_mgr: ctx_mgr.clone(),
                 session_id: session_id.clone(),
                 runtime_status_service: runtime_status_service.clone(),
+                runtime_provider_config: deps.browser_runtime_provider_config.clone(),
             });
             tools.register(crate::browser::tools::BrowserListTabsTool {
                 ctx_mgr,
                 session_id,
                 runtime_status_service,
+                runtime_provider_config: deps.browser_runtime_provider_config,
             });
         } else {
             tools.register(CapabilitySchemaTool::new(
@@ -367,6 +374,7 @@ mod tests {
             browser_context_manager: None,
             browser_session_id: None,
             browser_builtin_root: None,
+            browser_runtime_provider_config: Default::default(),
         });
         let names = registry
             .list_definitions()
@@ -390,6 +398,7 @@ mod tests {
             browser_context_manager: None,
             browser_session_id: None,
             browser_builtin_root: None,
+            browser_runtime_provider_config: Default::default(),
         });
         let defs = registry.list_definitions();
         assert!(defs.iter().any(|tool| tool.name == "browser_task"));
@@ -415,6 +424,7 @@ mod tests {
             browser_context_manager: Some(ctx_mgr),
             browser_session_id: Some("automation:spec:activity".to_string()),
             browser_builtin_root: Some(tmp.path().join("live-room")),
+            browser_runtime_provider_config: Default::default(),
         });
 
         let browser_run = registry

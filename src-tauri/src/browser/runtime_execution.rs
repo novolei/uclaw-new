@@ -18,6 +18,7 @@ use crate::browser::provider_execution::{
 };
 use crate::browser::rollout_bridge::emit_browser_provider_route_into_session_dir;
 use crate::browser::runtime_contracts::BrowserRuntimeFeatureFlags;
+use crate::browser::runtime_control_center::BrowserRuntimeProviderConfig;
 use crate::browser::runtime_status::{BrowserRuntimeStatusReport, BrowserRuntimeStatusService};
 
 pub type BrowserRuntimeActionBlocked = BrowserProviderActionBlocked;
@@ -33,7 +34,8 @@ pub struct BrowserRuntimeActionRequest {
 pub struct BrowserRuntimeActionExecutor {
     ctx_mgr: Arc<BrowserContextManager>,
     runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
-    feature_flags: BrowserRuntimeFeatureFlags,
+    provider_config: BrowserRuntimeProviderConfig,
+    feature_flags: Option<BrowserRuntimeFeatureFlags>,
     disabled_provider_ids: Vec<String>,
 }
 
@@ -45,13 +47,19 @@ impl BrowserRuntimeActionExecutor {
         Self {
             ctx_mgr,
             runtime_status_service,
-            feature_flags: BrowserRuntimeFeatureFlags::safe_defaults(),
+            provider_config: BrowserRuntimeProviderConfig::default(),
+            feature_flags: None,
             disabled_provider_ids: Vec::new(),
         }
     }
 
+    pub fn with_provider_config(mut self, provider_config: BrowserRuntimeProviderConfig) -> Self {
+        self.provider_config = provider_config;
+        self
+    }
+
     pub fn with_feature_flags(mut self, feature_flags: BrowserRuntimeFeatureFlags) -> Self {
-        self.feature_flags = feature_flags;
+        self.feature_flags = Some(feature_flags);
         self
     }
 
@@ -90,19 +98,27 @@ impl BrowserRuntimeActionExecutor {
 
     async fn current_route_options(&self) -> BrowserProviderActionRouteOptions {
         let mut route_options = match self.runtime_status_service.as_ref() {
-            Some(runtime_status_service) => match runtime_status_service.inspect_default().await {
-                Ok(status) => route_options_from_runtime_status(status),
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        "Browser Runtime status unavailable for task-time provider routing; using default provider route options"
-                    );
-                    BrowserProviderActionRouteOptions::default()
+            Some(runtime_status_service) => {
+                match runtime_status_service
+                    .inspect_with_provider_config(self.provider_config.clone())
+                    .await
+                {
+                    Ok(status) => route_options_from_runtime_status(status),
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "Browser Runtime status unavailable for task-time provider routing; using default provider route options"
+                        );
+                        BrowserProviderActionRouteOptions::default()
+                    }
                 }
-            },
+            }
             None => BrowserProviderActionRouteOptions::default(),
+        };
+
+        if let Some(feature_flags) = self.feature_flags {
+            route_options = route_options.with_feature_flags(feature_flags);
         }
-        .with_feature_flags(self.feature_flags);
 
         for provider_id in &self.disabled_provider_ids {
             route_options = route_options.with_disabled_provider(provider_id.clone());
@@ -112,7 +128,7 @@ impl BrowserRuntimeActionExecutor {
     }
 }
 
-fn route_options_from_runtime_status(
+pub(crate) fn route_options_from_runtime_status(
     status: BrowserRuntimeStatusReport,
 ) -> BrowserProviderActionRouteOptions {
     let skipped = status
@@ -135,6 +151,7 @@ fn route_options_from_runtime_status(
         .clone();
 
     BrowserProviderActionRouteOptions::default()
+        .with_feature_flags(status.control_center.feature_flags)
         .with_runtime_report(status.runtime_pack)
         .with_active_control_center_route(active_provider_id, skipped)
 }
@@ -241,6 +258,18 @@ mod tests {
         assert!(options.skipped_provider_reasons.iter().any(|item| {
             item.provider_id == PLAYWRIGHT_CLI_PROVIDER_ID && item.reason == "probe_failed"
         }));
+    }
+
+    #[test]
+    fn route_options_include_control_center_feature_flags() {
+        let mut config = BrowserRuntimeProviderConfig::default();
+        config.playwright_cli_enabled = true;
+        let status = status_with_provider_config(config);
+
+        let options = route_options_from_runtime_status(status);
+
+        assert!(options.feature_flags.playwright_cli);
+        assert!(!options.feature_flags.playwright_mcp);
     }
 
     #[tokio::test]
