@@ -589,6 +589,7 @@ impl EditTool {
 
         if let Some(fail_idx) = first_failure_idx {
             // Build result vector: failure + skips for ALL entries — no disk writes
+            let failed_path = files[fail_idx].path.clone();
             let mut results: Vec<FileBatchResult> = Vec::with_capacity(files.len());
             for (i, (file_arg, validation)) in
                 files.iter().zip(validations).enumerate()
@@ -598,9 +599,20 @@ impl EditTool {
                         path: file_arg.path.clone(),
                         error: validation.unwrap_err(),
                     });
+                } else if i < fail_idx {
+                    // Validated OK but never applied: a LATER file failed Phase-1
+                    // validation, so the whole batch aborts before any disk write.
+                    // This is NOT a "prior file" skip — report it accurately so the
+                    // LLM doesn't infer a false dependency on the failed file.
+                    results.push(FileBatchResult::Skipped {
+                        path: file_arg.path.clone(),
+                        reason: format!(
+                            "Not applied — batch aborted: validation failed on a later file ({failed_path})"
+                        ),
+                    });
                 } else {
-                    // Both pre-failure and post-failure entries are skipped —
-                    // two-phase means all-or-nothing at Phase 2.
+                    // Entries after the failure: genuinely skipped due to the
+                    // prior-file failure (first-failure-skips-rest, spec §8.4).
                     results.push(FileBatchResult::Skipped {
                         path: file_arg.path.clone(),
                         reason: "Skipped due to failure on prior file in batch".into(),
@@ -1025,6 +1037,20 @@ mod batch_tests {
         );
         let content_c = tokio::fs::read_to_string(&file_c).await.unwrap();
         assert_eq!(content_c, "fn gamma() {}\n");
+
+        // a.rs validated OK but was NOT applied (b's Phase-1 failure aborts the
+        // batch). Its output line must accurately say "batch aborted", NOT the
+        // "prior file" reason (a has no prior failure) and NOT "✓ applied".
+        assert!(
+            text.contains("- a.rs") && text.contains("batch aborted"),
+            "a.rs must report batch-abort (not applied, not a prior-file skip): {}",
+            text
+        );
+        assert!(
+            !text.contains("✓ a.rs"),
+            "a.rs must NOT be reported as applied under two-phase abort: {}",
+            text
+        );
     }
 
     // -----------------------------------------------------------------------
