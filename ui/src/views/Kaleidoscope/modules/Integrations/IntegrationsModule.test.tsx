@@ -56,6 +56,18 @@ describe('IntegrationsModule', () => {
     expect(screen.getByText('slack')).toBeInTheDocument()
   })
 
+  it('renders Playwright MCP as a built-in advanced integration with raw tools locked off', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<IntegrationsModule />)
+
+    expect(await screen.findByText('Playwright MCP')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Open Playwright MCP integration' }))
+
+    expect(screen.getByText('Built-in integration')).toBeInTheDocument()
+    expect(screen.getByText('Raw MCP tools locked off')).toBeInTheDocument()
+    expect(screen.getByText('Wrapped browser actions only')).toBeInTheDocument()
+  })
+
   it('opens the detail drawer when a card is clicked', async () => {
     const user = userEvent.setup()
     renderWithProviders(<IntegrationsModule />)
