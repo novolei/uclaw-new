@@ -27,6 +27,86 @@
 
 use std::sync::OnceLock;
 
+// ────────────────────────────────────────────────────────────────────────
+// A4: JIT injection channel — policy enum + context struct
+// ────────────────────────────────────────────────────────────────────────
+
+/// When a [`BaselineBlock`] should be included in the rendered system
+/// prompt. Evaluated per render call against an [`InjectionContext`].
+///
+/// Policy hierarchy is **disjunctive** — a block declaring
+/// `FirstActTurnOnly` is included iff the context says first ACT turn,
+/// regardless of error/pressure state. There is currently no
+/// composite/AND policy; add later if a real use case demands it.
+///
+/// Default for every block is [`InjectionPolicy::Always`], which matches
+/// the pre-A4 "always include everything" behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InjectionPolicy {
+    /// Default — block always appears. Matches pre-A4 behavior.
+    Always,
+    /// Appears only on the first user request after the task enters
+    /// ACT (or AcceptEdits) mode. Used for verbose tool/protocol specs
+    /// that the LLM learns from once and recalls for subsequent turns
+    /// via prompt cache.
+    FirstActTurnOnly,
+    /// Appears only when the previous turn ended with a tool execution
+    /// error. Used for recovery hints / structured retry guidance.
+    OnErrorRecovery,
+    /// Appears only when the token budget for this task is > 75% of
+    /// the model context window. Matches Dirac's auto-condense threshold
+    /// (research doc §2.1). Exclusive: exactly 0.75 does NOT fire.
+    OnContextPressure,
+}
+
+impl InjectionPolicy {
+    /// Returns `true` if a block with this policy should be included
+    /// in a render under the given context.
+    ///
+    /// `OnContextPressure` threshold is exclusive (`> 0.75`) per spec §8.2.
+    pub fn applies(self, ctx: &InjectionContext) -> bool {
+        match self {
+            Self::Always => true,
+            Self::FirstActTurnOnly => ctx.is_first_act_turn,
+            Self::OnErrorRecovery => ctx.last_error_kind.is_some(),
+            Self::OnContextPressure => ctx.context_pressure_ratio > 0.75,
+        }
+    }
+}
+
+/// Per-render context that [`render_with_context`] consults to decide
+/// which non-[`InjectionPolicy::Always`] blocks to include.
+///
+/// Populated by `compose_system_prompt`'s caller (likely
+/// `dispatcher::effective_system_prompt` or `agentic_loop`).
+/// During A4's PR, callers don't populate this — it stays as the
+/// channel interface for the M2-A finalization PR to plug into.
+///
+/// Derives `Clone + Debug + Default` — B2 consumes it via clone.
+#[derive(Debug, Clone, Default)]
+pub struct InjectionContext {
+    /// `true` iff this is the first user request after the task entered
+    /// ACT (or AcceptEdits) mode. Reset to `false` on subsequent turns
+    /// within the same mode. Reset to `true` if user toggles back to
+    /// Plan and re-enters ACT.
+    pub is_first_act_turn: bool,
+    /// `Some(kind)` iff the last tool execution returned a structured
+    /// error. `None` on success / first turn / non-tool turns. Used by
+    /// `OnErrorRecovery` blocks to surface recovery guidance.
+    pub last_error_kind: Option<String>,
+    /// Ratio of estimated tokens used / model context window. `0.0..=1.0`.
+    /// Used by `OnContextPressure` blocks to gate inclusion.
+    pub context_pressure_ratio: f32,
+}
+
+impl InjectionContext {
+    /// Equivalent to "Always blocks only." All fields at default/zero values.
+    /// Useful for callers that don't yet populate the context and for tests.
+    pub fn baseline() -> Self {
+        Self::default()
+    }
+}
+
 /// A single, individually-renderable section of the baseline prompt.
 ///
 /// Render outputs are joined with `"\n\n"` by the registry (mirrors the
@@ -60,6 +140,20 @@ pub trait BaselineBlock: Send + Sync {
         // by ~25% for CJK safety, undershoot fine for ASCII English.
         let rendered = self.render();
         rendered.chars().count() / 4
+    }
+
+    /// When this block should be included in the system prompt.
+    ///
+    /// Default: [`InjectionPolicy::Always`] — preserves the pre-A4
+    /// behavior where every block appears in every render.
+    ///
+    /// Override on a block-by-block basis to declare conditional
+    /// inclusion (`FirstActTurnOnly`, `OnErrorRecovery`,
+    /// `OnContextPressure`). Evaluated by [`render_with_context`] per
+    /// render. The 10 existing production blocks do NOT override this —
+    /// they all inherit `Always`.
+    fn injection_policy(&self) -> InjectionPolicy {
+        InjectionPolicy::Always
     }
 }
 
@@ -267,9 +361,54 @@ pub fn find(id: &str) -> Option<&'static dyn BaselineBlock> {
 
 /// Render every block in registry order, joined by `"\n\n"`. Mirrors
 /// the blank-line separation in the existing `baseline.md`.
+///
+/// Backward-compatible helper: equivalent to
+/// `render_with_context(&InjectionContext::baseline())` since all 10
+/// production blocks use the default `Always` policy.
 pub fn render_all() -> String {
     registry()
         .iter()
+        .map(|b| b.render())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Render only the blocks whose `injection_policy().applies(ctx)`
+/// returns `true`, joined by `"\n\n"`. Block order is registry
+/// insertion order (matches `baseline.md` section order).
+///
+/// Called by `compose_system_prompt` once the M2-A finalization PR
+/// wires the registry to the prompt builder. A4 ships the channel;
+/// the finalization PR plugs it in — no live caller exists yet.
+///
+/// With [`InjectionContext::baseline()`] (all fields default), this
+/// produces byte-identical output to [`render_all()`] because every
+/// production block uses the default `Always` policy.
+pub fn render_with_context(ctx: &InjectionContext) -> String {
+    registry()
+        .iter()
+        .filter(|b| b.injection_policy().applies(ctx))
+        .map(|b| b.render())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Test helpers (cfg(test) only) — do not expose in production
+// ────────────────────────────────────────────────────────────────────────
+
+/// Render an ad-hoc slice of blocks with context, for unit tests that
+/// need a fixture registry without touching the production singleton.
+/// Production code always calls [`render_with_context`] (which uses the
+/// process-wide [`registry()`]).
+#[cfg(test)]
+fn render_slice_with_context(
+    blocks: &[&dyn BaselineBlock],
+    ctx: &InjectionContext,
+) -> String {
+    blocks
+        .iter()
+        .filter(|b| b.injection_policy().applies(ctx))
         .map(|b| b.render())
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -355,6 +494,137 @@ mod tests {
     fn find_returns_none_for_unknown_id() {
         assert!(find("guardrail.does-not-exist").is_none());
     }
+
+    // ── A4: InjectionPolicy + InjectionContext tests (7 tests) ─────────
+
+    // Test #1 — Always fires on baseline context
+    #[test]
+    fn test_injection_policy_always_applies_to_baseline_context() {
+        let ctx = InjectionContext::baseline();
+        assert!(InjectionPolicy::Always.applies(&ctx));
+    }
+
+    // Test #2 — FirstActTurnOnly toggles on is_first_act_turn
+    #[test]
+    fn test_injection_policy_first_act_turn() {
+        let mut ctx = InjectionContext::baseline();
+        assert!(!InjectionPolicy::FirstActTurnOnly.applies(&ctx));
+        ctx.is_first_act_turn = true;
+        assert!(InjectionPolicy::FirstActTurnOnly.applies(&ctx));
+    }
+
+    // Test #3 — OnErrorRecovery toggles on last_error_kind.is_some()
+    #[test]
+    fn test_injection_policy_on_error_recovery() {
+        let mut ctx = InjectionContext::baseline();
+        assert!(!InjectionPolicy::OnErrorRecovery.applies(&ctx));
+        ctx.last_error_kind = Some("anchor_not_found".into());
+        assert!(InjectionPolicy::OnErrorRecovery.applies(&ctx));
+    }
+
+    // Test #4 — OnContextPressure exclusive > 0.75 threshold
+    #[test]
+    fn test_injection_policy_on_context_pressure_threshold() {
+        let mut ctx = InjectionContext::baseline();
+        ctx.context_pressure_ratio = 0.5;
+        assert!(!InjectionPolicy::OnContextPressure.applies(&ctx));
+        // 0.74 — below threshold
+        ctx.context_pressure_ratio = 0.74;
+        assert!(!InjectionPolicy::OnContextPressure.applies(&ctx));
+        // 0.75 — exactly at boundary; exclusive, so must NOT fire
+        ctx.context_pressure_ratio = 0.75;
+        assert!(!InjectionPolicy::OnContextPressure.applies(&ctx));
+        // 0.76 — first value above threshold; must fire
+        ctx.context_pressure_ratio = 0.76;
+        assert!(InjectionPolicy::OnContextPressure.applies(&ctx));
+        ctx.context_pressure_ratio = 0.99;
+        assert!(InjectionPolicy::OnContextPressure.applies(&ctx));
+    }
+
+    // Test #5 — Default trait impl returns Always (backward compat proof)
+    #[test]
+    fn test_baseline_block_default_policy_is_always() {
+        // ProbeBlock intentionally does NOT override injection_policy()
+        struct ProbeBlock;
+        impl BaselineBlock for ProbeBlock {
+            fn id(&self) -> &'static str { "test.probe" }
+            fn title(&self) -> &'static str { "Probe" }
+            fn topics(&self) -> &'static [&'static str] { &["test"] }
+            fn render(&self) -> String { "probe".into() }
+            // injection_policy intentionally NOT overridden — must default to Always
+        }
+        let probe = ProbeBlock;
+        assert_eq!(probe.injection_policy(), InjectionPolicy::Always);
+    }
+
+    // Test #6 — render_with_context filters by policy (3-block fixture)
+    #[test]
+    fn test_render_with_context_filters_policies() {
+        struct AlwaysBlock;
+        impl BaselineBlock for AlwaysBlock {
+            fn id(&self) -> &'static str { "test.always" }
+            fn title(&self) -> &'static str { "Always" }
+            fn topics(&self) -> &'static [&'static str] { &["test"] }
+            fn render(&self) -> String { "ALWAYS".into() }
+            fn injection_policy(&self) -> InjectionPolicy { InjectionPolicy::Always }
+        }
+
+        struct FirstActBlock;
+        impl BaselineBlock for FirstActBlock {
+            fn id(&self) -> &'static str { "test.first_act" }
+            fn title(&self) -> &'static str { "First Act" }
+            fn topics(&self) -> &'static [&'static str] { &["test"] }
+            fn render(&self) -> String { "FIRST_ACT".into() }
+            fn injection_policy(&self) -> InjectionPolicy { InjectionPolicy::FirstActTurnOnly }
+        }
+
+        struct OnErrorBlock;
+        impl BaselineBlock for OnErrorBlock {
+            fn id(&self) -> &'static str { "test.on_error" }
+            fn title(&self) -> &'static str { "On Error" }
+            fn topics(&self) -> &'static [&'static str] { &["test"] }
+            fn render(&self) -> String { "ON_ERROR".into() }
+            fn injection_policy(&self) -> InjectionPolicy { InjectionPolicy::OnErrorRecovery }
+        }
+
+        let a = AlwaysBlock;
+        let f = FirstActBlock;
+        let e = OnErrorBlock;
+        let blocks: &[&dyn BaselineBlock] = &[&a, &f, &e];
+
+        // Baseline context: only Always fires
+        let baseline = InjectionContext::baseline();
+        let out = render_slice_with_context(blocks, &baseline);
+        assert_eq!(out, "ALWAYS");
+
+        // First-act + no error: Always + FirstAct fire
+        let mut ctx = InjectionContext::baseline();
+        ctx.is_first_act_turn = true;
+        let out = render_slice_with_context(blocks, &ctx);
+        assert_eq!(out, "ALWAYS\n\nFIRST_ACT");
+
+        // First-act + error: all three fire
+        ctx.last_error_kind = Some("any".into());
+        let out = render_slice_with_context(blocks, &ctx);
+        assert_eq!(out, "ALWAYS\n\nFIRST_ACT\n\nON_ERROR");
+    }
+
+    // Test #7 — regression: render_with_context(baseline) byte-matches render_all()
+    // Operates on the production registry() / render_all() — confirms
+    // no accidental policy drift on any of the 10 production blocks.
+    #[test]
+    fn test_render_with_context_baseline_matches_pre_a4() {
+        let with_ctx = render_with_context(&InjectionContext::baseline());
+        let all = render_all();
+        assert_eq!(
+            with_ctx,
+            all,
+            "render_with_context(baseline) must equal render_all() — \
+             all 10 production blocks must have Always policy (no drift)"
+        );
+    }
+
+    // ── Pre-A4 invariant (kept from original) ──────────────────────────
 
     /// **Strongest M2-A invariant.** The registry's `render_all()` output
     /// must equal `baseline.md` (trimmed) byte-for-byte. This is the
