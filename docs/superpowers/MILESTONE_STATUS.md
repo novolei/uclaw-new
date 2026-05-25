@@ -5,7 +5,7 @@
 > [`plans/2026-05-22-pr-integration-strategy.md`](plans/2026-05-22-pr-integration-strategy.md)).
 >
 > **Last updated**: 2026-05-25 by Ryan + Cowork (claude-sonnet-4-6)
-> **After PR**: C2-Dirac-B1 (word-anchor upgrade — read_file emits `Apple§<literal>`, EditTool byte-equal-validates anchored edits + hard-rejects stale files; #TBD). C1-Closeout (Dirac Phase A C1-slice track closed — see `specs/2026-05-25-phase-a-closeout.md`; A1 #496 / A2 #498 / A3 #505 / A4 #508 merged)
+> **After PR**: C2-Dirac-B2 (ContextManager wire-up — `effective_system_prompt` routes the baseline through `compose_system_prompt_with_injection` (A4 InjectionContext) while preserving user base + workspace + manifest; `for_prompt_with_injection` selects fragments → injected into `build_dynamic_context` as `<context_fragment>` (NOT system prompt → cache discipline preserved); registers `context.search` + `context.read`; adds `get_compose_stats`; closes M2-B, M2-F partial; #TBD). C2-Dirac-B1 (word-anchor upgrade; merged #517). C1-Closeout (Dirac Phase A C1-slice track closed — see `specs/2026-05-25-phase-a-closeout.md`; A1 #496 / A2 #498 / A3 #505 / A4 #508 merged)
 
 ---
 
@@ -16,7 +16,7 @@
 | **Phase 0.5** | Infrastructure (LICENSE / hooks / skills / crate 复制) | **100%** | ✅ closed | — |
 | **M0** | ADR Lock + License + Workspace | **100%** | ✅ closed | — |
 | **M1** | Runtime Contracts (2-3 weeks) | **100%** | ✅ closed | task #57 closes; retrospective #321 |
-| **M2** | Context Fabric (5-7 weeks) | **~63%** | 🟡 in-progress | Dirac C1-slice track closed (#496/#498/#505/#508); broad M2 closeout = C1.1-C1.5 + 50-turn bench |
+| **M2** | Context Fabric (5-7 weeks) | **~75%** | 🟡 in-progress | Dirac C1-slice track closed (#496/#498/#505/#508); B1 merged #517; B2 wires M2-B (ContextManager) + M2-F partial (2/7 tools); broad M2 closeout = C1.1-C1.5 + 50-turn bench |
 | **M3** | Capability Mesh (6-8 weeks) | **~22%** | 🟡 early | **C2.1 — M3-T2 ToolRegistry registration** |
 | **M4** | World Projection (3-4 weeks) | **~24% (pilots)** | 🟡 pilots only | **C3.1 — M4-T1 wire-up after C2** |
 | **M5** | Policy Hooks + Isolation (4-5 weeks) | **~10%** | 🟠 pilot-only | Wait for M3 close (T1 contract patch in #338) |
@@ -77,7 +77,7 @@ rollout writes to JSONL; HarnessSubject bridges to harness eval.
 
 ---
 
-### M2 — Context Fabric 🟡 ~63%
+### M2 — Context Fabric 🟡 ~75%
 
 > Plan §4.3 DoD: 10 sub-tasks + bench(50-turn token -60-75%)+ cache hit ≥
 > 50% + cost ↓ 60% + format consistency +1.5/5.
@@ -85,11 +85,11 @@ rollout writes to JSONL; HarnessSubject bridges to harness eval.
 | Sub-task | Pilot | Wire-up | Status |
 |---|---|---|---|
 | M2-A baseline 10 block | #326 + #327 | #328 (compose_system_prompt 用 registry) | ✅ done |
-| M2-B ContextManager skeleton | #339 | — | 🔴 wire-up missing |
+| M2-B ContextManager skeleton | #339 | C2-Dirac-B2 (effective_system_prompt → for_prompt_with_injection; fragments → build_dynamic_context) | ✅ wired |
 | M2-C 30+ Context Fragments | #329 (3 samples) | — | 🔴 only 3/20+, wire-up missing |
 | M2-D Diff-based re-injection | #340 (pilot) | Bundle 16 + 17 (#384-385); **Bundle 17-B C1.1 PR-1 prep branch ready (V52 + delta path)**; 17-C pending | 🟡 ~85% |
 | M2-E Template engine | #324 + #325 | — | 🟡 引入了但还没全勺 |
-| M2-F 7 Context Tools | #330 (search + read + pin/release) | — | 🔴 wire-up + 缺 3 个 tool |
+| M2-F 7 Context Tools | #330 (search + read + pin/release) | C2-Dirac-B2 (context.search + context.read registered) | 🟡 partial — 2/7 wired (search+read); fold/cite/compare/pin/release deferred |
 | M2-G 8-field Structured Fold | #331 | #367 Slice 3-A (real /compact) | ✅ done |
 | M2-H L1-L7 Token defense | #332-#337 | #365 Slice 2 (L2/L5/L6) + #379 Slice 3-C (L4/I) | 🟡 ~85% (L3 wire-up missing) |
 | M2-I Cache placement | #341 | #379 Slice 3-C | ✅ done |
@@ -104,6 +104,7 @@ rollout writes to JSONL; HarnessSubject bridges to harness eval.
 | C1-Dirac-A3 | ReadFile [File Hash] header + assume_hash short-circuit (M-Wireup, ~+3% M2) | ✅ merged #505 |
 | C1-Dirac-A4 | JIT injection channel for BaselineBlock (InjectionPolicy/Context, M-Wireup, ~+2% M2) | ✅ merged #508 |
 | C2-Dirac-B1 | word-anchor upgrade (record_read align + Apple§literal format + anchored EditTool + stale reject) | ✅ merged #517 |
+| C2-Dirac-B2 | ContextManager wire-up + 2 context tools + get_compose_stats (closes M2-B, M2-F partial) | ⏳ in review #TBD |
 
 **Dirac Phase A / C1-slice track: ✅ CLOSED** 2026-05-25 via closeout report `specs/2026-05-25-phase-a-closeout.md` (4/4 merged, 1 reviewer low-fix, 0 escalations post-Phase-0). NOTE: this closes the *Dirac slice track* of C1; the broader integration-strategy §7 C1 (C1.1-C1.5 below + formal 50-turn bench) remains open. Token savings are MODELED, not yet measured — pending C1.5 bench.
 
