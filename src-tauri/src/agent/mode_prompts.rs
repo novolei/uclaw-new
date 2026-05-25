@@ -142,6 +142,45 @@ pub fn compose_system_prompt(
     workspace_root: Option<&Path>,
     mode: &SafetyMode,
 ) -> String {
+    compose_with_baseline(user_global_base, workspace_root, mode, karpathy_baseline())
+}
+
+/// B2 — injection-aware variant of [`compose_system_prompt`].
+///
+/// Identical to [`compose_system_prompt`] in every respect (preserves
+/// `user_global_base`, workspace `uclaw.md`, the `[WORKSPACE]` cwd
+/// block, and the mode addition) EXCEPT the Karpathy baseline section is
+/// rendered via A4's [`baseline_blocks::render_with_context`] so per-turn
+/// [`InjectionContext`](crate::agent::baseline_blocks::InjectionContext)
+/// state can gate conditional baseline blocks.
+///
+/// **Cache discipline**: all 10 current production blocks use the
+/// default `Always` policy, so for today's registry this is
+/// byte-identical to [`compose_system_prompt`] for every
+/// `InjectionContext`. The injection channel is wired but inert until a
+/// future PR adds a non-`Always` block — at which point turn 1 (with
+/// `FirstActTurnOnly`) may differ from turns 2+ by design (spec §8.6),
+/// while turns 2+ remain byte-stable against each other.
+pub fn compose_system_prompt_with_injection(
+    user_global_base: &str,
+    workspace_root: Option<&Path>,
+    mode: &SafetyMode,
+    injection_ctx: &crate::agent::baseline_blocks::InjectionContext,
+) -> String {
+    let baseline = crate::agent::baseline_blocks::render_with_context(injection_ctx);
+    compose_with_baseline(user_global_base, workspace_root, mode, &baseline)
+}
+
+/// Shared composition body. `baseline` is the already-rendered Karpathy
+/// baseline section (from `karpathy_baseline()` or
+/// `render_with_context(...)`); everything else is identical between the
+/// two public entry points.
+fn compose_with_baseline(
+    user_global_base: &str,
+    workspace_root: Option<&Path>,
+    mode: &SafetyMode,
+    baseline: &str,
+) -> String {
     let workspace_md = read_uclaw_md(workspace_root);
     let mode_part = mode_addition(mode);
     // Tell the agent its real cwd so it doesn't hallucinate paths when the
@@ -178,7 +217,10 @@ pub fn compose_system_prompt(
         workspace_path_block.as_str(),
         // M2-A wire-up — registry-rendered baseline (output identical to
         // KARPATHY_BASELINE.trim() by invariant test, see baseline_blocks).
-        karpathy_baseline(),
+        // B2: passed in by the caller so compose_system_prompt_with_injection
+        // can substitute the injection-aware render without duplicating the
+        // rest of the composition.
+        baseline,
         mode_part,
     ]
     .iter()
@@ -198,6 +240,70 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("uclaw.md"), content).unwrap();
         dir
+    }
+
+    use crate::agent::baseline_blocks::InjectionContext;
+
+    #[test]
+    fn compose_with_injection_baseline_matches_plain_compose() {
+        // B2 cache-discipline invariant: with InjectionContext::baseline()
+        // the injection-aware compose must be byte-identical to the
+        // pre-B2 compose_system_prompt path. This proves we did NOT drop
+        // user_global_base / workspace_md / workspace_path_block and did
+        // NOT alter the baseline rendering for the current registry.
+        for mode in [
+            SafetyMode::Plan,
+            SafetyMode::Supervised,
+            SafetyMode::Ask,
+            SafetyMode::AcceptEdits,
+            SafetyMode::Yolo,
+        ] {
+            let plain = compose_system_prompt("base prompt", None, &mode);
+            let injected = compose_system_prompt_with_injection(
+                "base prompt",
+                None,
+                &mode,
+                &InjectionContext::baseline(),
+            );
+            assert_eq!(plain, injected, "mode {mode:?} must be byte-identical");
+        }
+    }
+
+    #[test]
+    fn compose_with_injection_is_byte_stable_across_inj_variants() {
+        // All 10 production blocks are Always-policy → flipping injection
+        // state must NOT change the composed prompt bytes. Guards the
+        // "turns 2+ byte-stable" requirement on the live hot path.
+        let first = InjectionContext {
+            is_first_act_turn: true,
+            last_error_kind: Some("Timeout".into()),
+            context_pressure_ratio: 0.95,
+        };
+        let later = InjectionContext::baseline();
+        let a = compose_system_prompt_with_injection(
+            "base", None, &SafetyMode::Supervised, &first,
+        );
+        let b = compose_system_prompt_with_injection(
+            "base", None, &SafetyMode::Supervised, &later,
+        );
+        assert_eq!(a, b, "production registry must not vary by injection");
+    }
+
+    #[test]
+    fn compose_with_injection_preserves_user_base_and_workspace() {
+        let dir = tmp_workspace_with_uclaw("# project rules\nuse rust 2021");
+        let out = compose_system_prompt_with_injection(
+            "MY_USER_BASE",
+            Some(dir.path()),
+            &SafetyMode::Plan,
+            &InjectionContext::baseline(),
+        );
+        assert!(out.contains("MY_USER_BASE"), "user base dropped");
+        assert!(out.contains("# project rules"), "uclaw.md dropped");
+        assert!(out.contains("[WORKSPACE]"), "workspace path block dropped");
+        assert!(out.contains(&dir.path().display().to_string()), "cwd dropped");
+        assert!(out.contains("THINK BEFORE CODING"), "baseline dropped");
+        assert!(out.contains("PLAN MODE"), "mode addition dropped");
     }
 
     #[test]
