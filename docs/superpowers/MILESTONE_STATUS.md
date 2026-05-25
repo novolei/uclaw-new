@@ -4,8 +4,8 @@
 > Updated manually after each PR merge per closed-loop process §5.1 (see
 > [`plans/2026-05-22-pr-integration-strategy.md`](plans/2026-05-22-pr-integration-strategy.md)).
 >
-> **Last updated**: 2026-05-22 by Ryan + Cowork (claude-opus-4-7)
-> **After PR**: #396 + C1.1 PR-1 (Bundle 17-B `/compact` delta path) prep branch ready for push
+> **Last updated**: 2026-05-25 by Ryan + Cowork (claude-opus-4-7)
+> **After PR**: C1-Dirac-A1 (tool_use/tool_result pair repair on compaction) — Dirac Phase A borrow sequence in progress
 
 ---
 
@@ -94,6 +94,12 @@ rollout writes to JSONL; HarnessSubject bridges to harness eval.
 | M2-H L1-L7 Token defense | #332-#337 | #365 Slice 2 (L2/L5/L6) + #379 Slice 3-C (L4/I) | 🟡 ~85% (L3 wire-up missing) |
 | M2-I Cache placement | #341 | #379 Slice 3-C | ✅ done |
 | M2-J Token Budget UI | #342 | — | 🔴 wire-up missing |
+
+**Dirac borrow slices** (C1 = Phase A small repairs feeding M2 closeout; C2 = Phase B wire-ups) — see `docs/research/2026-05-25-dirac-reverse-engineering.md` §7.2:
+
+| Dirac PR | Scope | Status |
+|---|---|---|
+| C1-Dirac-A1 | tool_use/tool_result pair repair on compaction (agentic_loop, M-Wireup, ~+3% M2) | ✅ merged #496 |
 
 **Outstanding for M2 closure**:
 

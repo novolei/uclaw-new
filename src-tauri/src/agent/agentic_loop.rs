@@ -2,6 +2,12 @@ use crate::agent::types::*;
 use crate::agent::context::{LayeredContextBuilder, LayeredContextConfig};
 use tracing;
 
+/// Placeholder string inserted into a fabricated `ToolResult` when a
+/// `ToolUse`'s matching result was lost to compaction. Kept `pub(crate)` so
+/// rollout-replay tools and the trace UI can match on it.
+pub(crate) const COMPACTED_TOOL_RESULT_PLACEHOLDER: &str =
+    "[result missing — compacted before next turn]";
+
 /// Tools that pause the agent for synchronous user interaction. After
 /// these resolve, the agent's natural next step is conversational
 /// wrap-up — phrases like "让我推荐" / "let me also tell you" are CORRECT
@@ -487,11 +493,31 @@ pub async fn run_agentic_loop(
     LoopOutcome::MaxIterations
 }
 
+/// Find the index of the next message at or after `from_idx` whose
+/// `compacted` flag is `false`. Returns `None` if no such message exists.
+///
+/// Used by the pair-repair logic in `purge_orphaned_tool_results` to skip
+/// over compacted messages (which remain in the array but are not sent to
+/// the model) when locating the user turn that should contain `ToolResult`
+/// blocks for an assistant's `ToolUse` blocks.
+fn find_next_active_message_idx(messages: &[ChatMessage], from_idx: usize) -> Option<usize> {
+    messages
+        .iter()
+        .enumerate()
+        .skip(from_idx)
+        .find(|(_, msg)| !msg.compacted)
+        .map(|(idx, _)| idx)
+}
+
 /// Purges any orphaned ToolResult blocks from active messages where the
 /// corresponding ToolUse has been compacted. If a message becomes empty
 /// after purging, it is marked as compacted.
-pub fn purge_orphaned_tool_results(messages: &mut [ChatMessage]) {
-    // 1. Collect all active tool call IDs (from messages where compacted == false)
+///
+/// Also inserts placeholder ToolResult blocks for any ToolUse blocks that
+/// have no matching ToolResult in the following active User message
+/// (Step C — symmetric repair for both pairing directions).
+pub fn purge_orphaned_tool_results(messages: &mut Vec<ChatMessage>) {
+    // ─── Step A: collect active tool_use IDs ────────────────────────
     let mut active_tool_call_ids = std::collections::HashSet::new();
     for msg in messages.iter() {
         if !msg.compacted {
@@ -503,10 +529,9 @@ pub fn purge_orphaned_tool_results(messages: &mut [ChatMessage]) {
         }
     }
 
-    // 2. Scan all messages where compacted == false, and filter out orphaned ToolResult blocks.
+    // ─── Step B: drop orphan ToolResult blocks ───────────────────────
     for msg in messages.iter_mut() {
         if !msg.compacted {
-            // Filter content blocks in place
             msg.content.retain(|block| {
                 if let ContentBlock::ToolResult { tool_use_id, .. } = block {
                     active_tool_call_ids.contains(tool_use_id)
@@ -515,11 +540,142 @@ pub fn purge_orphaned_tool_results(messages: &mut [ChatMessage]) {
                 }
             });
 
-            // 3. If the message becomes empty after purging, mark it as compacted
             if msg.content.is_empty() {
                 msg.compacted = true;
             }
         }
+    }
+
+    // ─── Step C: insert placeholders for orphan ToolUse blocks ───────
+    repair_orphan_tool_use_placeholders(messages);
+}
+
+/// For each non-compacted Assistant message that has ToolUse blocks,
+/// ensure the next non-compacted User message contains a matching
+/// ToolResult for each such id. Insert placeholder ToolResult blocks
+/// where they are missing.
+///
+/// If no active User message follows the Assistant, a synthetic User
+/// message is inserted at `i + 1` with the placeholder(s) as its only
+/// content.
+///
+/// This is idempotent: on a second call the placeholder is already
+/// present, so the loop skips it.
+fn repair_orphan_tool_use_placeholders(messages: &mut Vec<ChatMessage>) {
+    // Collect (assistant_idx, [orphan_ids]) first to avoid holding a
+    // shared borrow while mutating the Vec.
+    let mut to_repair: Vec<(usize, Vec<String>)> = Vec::new();
+
+    for (i, msg) in messages.iter().enumerate() {
+        if msg.compacted || msg.role != MessageRole::Assistant {
+            continue;
+        }
+        let tool_use_ids: Vec<String> = msg
+            .content
+            .iter()
+            .filter_map(|b| {
+                if let ContentBlock::ToolUse { id, .. } = b {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if tool_use_ids.is_empty() {
+            continue;
+        }
+
+        // Check which ids already have a matching ToolResult in the next
+        // active User message.
+        let already_matched: std::collections::HashSet<String> =
+            match find_next_active_message_idx(messages, i + 1) {
+                Some(idx) if messages[idx].role == MessageRole::User => messages[idx]
+                    .content
+                    .iter()
+                    .filter_map(|b| {
+                        if let ContentBlock::ToolResult { tool_use_id, .. } = b {
+                            Some(tool_use_id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+                _ => std::collections::HashSet::new(),
+            };
+
+        let orphans: Vec<String> = tool_use_ids
+            .into_iter()
+            .filter(|id| !already_matched.contains(id))
+            .collect();
+        if !orphans.is_empty() {
+            to_repair.push((i, orphans));
+        }
+    }
+
+    // Apply repairs in reverse index order so insertions don't shift
+    // unprocessed assistant indices.
+    for (i, orphan_ids) in to_repair.into_iter().rev() {
+        let placeholders: Vec<ContentBlock> = orphan_ids
+            .into_iter()
+            .map(|id| ContentBlock::ToolResult {
+                tool_use_id: id,
+                content: COMPACTED_TOOL_RESULT_PLACEHOLDER.to_string(),
+                is_error: Some(false),
+            })
+            .collect();
+
+        let next_active = find_next_active_message_idx(messages, i + 1);
+        match next_active {
+            Some(idx) if messages[idx].role == MessageRole::User => {
+                // Append placeholders to the existing active User message.
+                messages[idx].content.extend(placeholders);
+            }
+            _ => {
+                // No active User message follows — synthesize one at i+1.
+                let new_msg = ChatMessage {
+                    role: MessageRole::User,
+                    content: placeholders,
+                    compacted: false,
+                };
+                messages.insert(i + 1, new_msg);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod find_next_active_tests {
+    use super::*;
+    use crate::agent::types::{ChatMessage, MessageRole};
+
+    #[test]
+    fn test_find_next_active_skips_compacted() {
+        let mut msgs = vec![
+            ChatMessage::user("u1"),
+            ChatMessage::assistant("a1"),
+            ChatMessage::user("u2"),
+        ];
+        msgs[0].compacted = true;
+        msgs[1].compacted = true;
+        assert_eq!(find_next_active_message_idx(&msgs, 0), Some(2));
+    }
+
+    #[test]
+    fn test_find_next_active_none_at_end() {
+        let mut msgs = vec![ChatMessage::user("u1")];
+        msgs[0].compacted = true;
+        assert_eq!(find_next_active_message_idx(&msgs, 0), None);
+    }
+
+    #[test]
+    fn test_find_next_active_returns_first_when_none_compacted() {
+        let msgs = vec![
+            ChatMessage::user("u1"),
+            ChatMessage::assistant("a1"),
+        ];
+        assert_eq!(find_next_active_message_idx(&msgs, 0), Some(0));
+        assert_eq!(find_next_active_message_idx(&msgs, 1), Some(1));
+        assert_eq!(find_next_active_message_idx(&msgs, 2), None);
     }
 }
 
@@ -1469,5 +1625,187 @@ mod compaction_safety_tests {
                 }
             }
         }
+    }
+
+    // ── Test-only constructors for Step C tests ──────────────────────────
+    // These helpers exist only in the test module; NOT added to production code.
+
+    /// Build an Assistant message with a single ToolUse block.
+    fn assistant_with_tool_use_test(
+        _text: &str,
+        id: &str,
+        name: &str,
+    ) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: id.to_string(),
+                name: name.to_string(),
+                input: json!({}),
+            }],
+            compacted: false,
+        }
+    }
+
+    /// Build a User message with a single ToolResult block.
+    fn user_with_tool_result_test(tool_use_id: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: tool_use_id.to_string(),
+                content: content.to_string(),
+                is_error: Some(false),
+            }],
+            compacted: false,
+        }
+    }
+
+    /// Count placeholder ToolResult blocks across all active messages.
+    fn count_placeholders(messages: &[ChatMessage]) -> usize {
+        messages
+            .iter()
+            .filter(|m| !m.compacted)
+            .flat_map(|m| m.content.iter())
+            .filter(|b| {
+                matches!(b, ContentBlock::ToolResult { content, .. }
+                    if content.contains("result missing"))
+            })
+            .count()
+    }
+
+    // ── 5 new Step C tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_purge_orphaned_tool_results_inserts_placeholder_for_orphan_tool_use() {
+        // Assistant has tool_use["call_A"], next user msg has no matching ToolResult.
+        // Repair must append placeholder to the user message.
+        let mut messages = vec![
+            assistant_with_tool_use_test("calling tool", "call_A", "ls"),
+            ChatMessage::user("ack but no tool_result yet"),
+        ];
+        purge_orphaned_tool_results(&mut messages);
+
+        let user_results: Vec<_> = messages[1]
+            .content
+            .iter()
+            .filter_map(|b| {
+                if let ContentBlock::ToolResult { tool_use_id, content, .. } = b {
+                    Some((tool_use_id.clone(), content.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(user_results.len(), 1, "exactly one placeholder expected");
+        assert_eq!(user_results[0].0, "call_A");
+        assert!(
+            user_results[0].1.contains("result missing"),
+            "placeholder content should mention 'result missing'"
+        );
+    }
+
+    #[test]
+    fn test_purge_orphaned_tool_results_inserts_synthesized_user_msg_when_missing() {
+        // Assistant has tool_use, no following user message at all.
+        // Repair must synthesize a User message at i+1.
+        let mut messages = vec![
+            ChatMessage::user("initial"),
+            assistant_with_tool_use_test("done", "call_X", "ls"),
+        ];
+        purge_orphaned_tool_results(&mut messages);
+        assert_eq!(messages.len(), 3, "a synthetic User message should have been inserted");
+        assert_eq!(messages[2].role, MessageRole::User);
+        let placeholder_id = messages[2].content.iter().find_map(|b| {
+            if let ContentBlock::ToolResult { tool_use_id, .. } = b {
+                Some(tool_use_id.clone())
+            } else {
+                None
+            }
+        });
+        assert_eq!(placeholder_id, Some("call_X".into()));
+    }
+
+    #[test]
+    fn test_purge_orphaned_tool_results_idempotent() {
+        // Running the repair twice on the same broken history should produce
+        // exactly the same number of placeholders (second call is a no-op).
+        let mut messages = vec![
+            assistant_with_tool_use_test("done", "call_Y", "ls"),
+            ChatMessage::user("user ack"),
+        ];
+        purge_orphaned_tool_results(&mut messages);
+        let count_after_first = count_placeholders(&messages);
+        let len_after_first = messages.len();
+
+        purge_orphaned_tool_results(&mut messages);
+        let count_after_second = count_placeholders(&messages);
+        let len_after_second = messages.len();
+
+        assert_eq!(count_after_first, count_after_second, "placeholder count must be stable");
+        assert_eq!(len_after_first, len_after_second, "message count must be stable");
+    }
+
+    #[test]
+    fn test_purge_orphaned_tool_results_mixed_orphan_directions() {
+        // Direction 1: tool_use survived, tool_result lost → placeholder inserted.
+        // Direction 2: tool_result survived, tool_use compacted → orphan ToolResult dropped.
+        let mut messages = vec![
+            assistant_with_tool_use_test("a1", "call_lost", "ls"),
+            ChatMessage::user("u1"), // no ToolResult for call_lost
+            user_with_tool_result_test("call_phantom", "stale output"),
+        ];
+        // All three are active (compacted = false by construction).
+
+        purge_orphaned_tool_results(&mut messages);
+
+        // Direction 1: placeholder inserted in messages[1]
+        assert!(
+            messages[1].content.iter().any(|b| matches!(
+                b,
+                ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "call_lost"
+            )),
+            "placeholder for call_lost should be in messages[1]"
+        );
+
+        // Direction 2: stale ToolResult for call_phantom must be removed
+        // (call_phantom has no active ToolUse — Step B drops it).
+        assert!(
+            !messages[2].content.iter().any(|b| matches!(
+                b,
+                ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "call_phantom"
+            )),
+            "orphan ToolResult for call_phantom should have been dropped"
+        );
+    }
+
+    #[test]
+    fn test_purge_orphaned_tool_results_respects_compacted_boundary() {
+        // The tool_use is in a COMPACTED message → its id is NOT in the active set.
+        // Step B should drop the orphan ToolResult.
+        // Step C must NOT insert a new placeholder (the ToolUse is not active).
+        let mut messages = vec![
+            assistant_with_tool_use_test("compacted assistant", "call_C", "ls"),
+            user_with_tool_result_test("call_C", "result"),
+            ChatMessage::user("active follow-up"),
+        ];
+        messages[0].compacted = true; // tool_use is in a compacted message
+
+        purge_orphaned_tool_results(&mut messages);
+
+        // Step B: orphan ToolResult for call_C must be removed.
+        assert!(
+            !messages[1].content.iter().any(|b| matches!(
+                b,
+                ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "call_C"
+            )),
+            "orphan ToolResult for compacted call_C should have been dropped by Step B"
+        );
+
+        // Step C: no placeholder should have been inserted (call_C is not active).
+        assert_eq!(
+            count_placeholders(&messages),
+            0,
+            "Step C must not insert a placeholder for a compacted ToolUse"
+        );
     }
 }
