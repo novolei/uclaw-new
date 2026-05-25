@@ -5,7 +5,7 @@
 > [`plans/2026-05-22-pr-integration-strategy.md`](plans/2026-05-22-pr-integration-strategy.md)).
 >
 > **Last updated**: 2026-05-25 by Ryan + Cowork (claude-opus-4-7)
-> **After PR**: C1-Dirac-A1 (tool_use/tool_result pair repair on compaction) — Dirac Phase A borrow sequence in progress
+> **After PR**: C1-Dirac-A2 (EditTool batch form — Dirac Phase A borrow sequence in progress)
 
 ---
 
@@ -100,6 +100,7 @@ rollout writes to JSONL; HarnessSubject bridges to harness eval.
 | Dirac PR | Scope | Status |
 |---|---|---|
 | C1-Dirac-A1 | tool_use/tool_result pair repair on compaction (agentic_loop, M-Wireup, ~+3% M2) | ✅ merged #496 |
+| C1-Dirac-A2 | EditTool batch form ({files: [...]}) (M-Wireup, ~+5% M2) | ✅ merged #498 |
 
 **Outstanding for M2 closure**:
 
