@@ -30,7 +30,7 @@
 - Modify: `src-tauri/src/harness/adapters/mod.rs`
 - Create: `src-tauri/src/harness/adapters/memory_policy_tests.rs`
 
-- [ ] **Step 1: Inspect harness adapter exports**
+- [x] **Step 1: Inspect harness adapter exports**
 
 Run:
 
@@ -40,7 +40,7 @@ sed -n '1,120p' src-tauri/src/harness/adapters/mod.rs
 
 Expected: module export list with a safe insertion point.
 
-- [ ] **Step 2: Add module exports**
+- [x] **Step 2: Add module exports**
 
 In `src-tauri/src/harness/adapters/mod.rs`, add:
 
@@ -50,7 +50,7 @@ pub mod memory_policy;
 mod memory_policy_tests;
 ```
 
-- [ ] **Step 3: Write artifact helper test**
+- [x] **Step 3: Write artifact helper test**
 
 Create `src-tauri/src/harness/adapters/memory_policy_tests.rs`:
 
@@ -112,7 +112,7 @@ fn attaches_memory_policy_receipt_artifact() {
 }
 ```
 
-- [ ] **Step 4: Implement helper**
+- [x] **Step 4: Implement helper**
 
 Create `src-tauri/src/harness/adapters/memory_policy.rs`:
 
@@ -133,7 +133,7 @@ pub fn attach_memory_policy_receipt(
 }
 ```
 
-- [ ] **Step 5: Run harness adapter test**
+- [x] **Step 5: Run harness adapter test**
 
 Run:
 
@@ -149,7 +149,7 @@ Expected: PASS.
 - Modify: `src-tauri/src/memory_policy/receipts.rs`
 - Modify: `src-tauri/src/harness/adapters/memory_policy_tests.rs`
 
-- [ ] **Step 1: Add conversion test**
+- [x] **Step 1: Add conversion test**
 
 Append:
 
@@ -171,7 +171,7 @@ fn memory_graph_frozen_receipt_maps_to_harness_memory_write() {
 }
 ```
 
-- [ ] **Step 2: Implement conversion**
+- [x] **Step 2: Implement conversion**
 
 In `src-tauri/src/memory_policy/receipts.rs`, add:
 
@@ -193,7 +193,7 @@ pub fn receipt_to_harness_event(
 }
 ```
 
-- [ ] **Step 3: Run conversion test**
+- [x] **Step 3: Run conversion test**
 
 Run:
 
@@ -210,7 +210,7 @@ Expected: PASS.
 - Create: `src-tauri/src/harness/cases/memory/memory-policy-degraded.json`
 - Modify: `src-tauri/src/harness/adapters/memory.rs`
 
-- [ ] **Step 1: Add freeze case JSON**
+- [x] **Step 1: Add freeze case JSON**
 
 Create `src-tauri/src/harness/cases/memory/memory-policy-freeze.json`:
 
@@ -220,12 +220,12 @@ Create `src-tauri/src/harness/cases/memory/memory-policy-freeze.json`:
   "title": "Memory Policy rejects memory_graph writes",
   "target": "gbrain",
   "prompt": "Attempt a memory_graph write through Memory Policy and verify it is rejected.",
-  "require_write_receipt": true,
-  "expected_terms": ["memory_graph_frozen"]
+  "requireWriteReceipt": true,
+  "expectedFacts": ["memory_graph_frozen"]
 }
 ```
 
-- [ ] **Step 2: Add degraded case JSON**
+- [x] **Step 2: Add degraded case JSON**
 
 Create `src-tauri/src/harness/cases/memory/memory-policy-degraded.json`:
 
@@ -235,12 +235,12 @@ Create `src-tauri/src/harness/cases/memory/memory-policy-degraded.json`:
   "title": "Memory Policy records degraded auxiliary memory",
   "target": "memu",
   "prompt": "Run a memU auxiliary write with memU unavailable and verify the degraded receipt.",
-  "require_write_receipt": true,
-  "expected_terms": ["degraded"]
+  "requireWriteReceipt": true,
+  "expectedFacts": ["degraded"]
 }
 ```
 
-- [ ] **Step 3: Ensure case loader includes files**
+- [x] **Step 3: Ensure case loader includes files**
 
 Run:
 
@@ -250,7 +250,7 @@ rg -n "cases/memory|load_builtin_cases|include_str!" src-tauri/src/harness/adapt
 
 Expected: see the existing builtin case list. Add the two new `include_str!` entries beside other memory cases.
 
-- [ ] **Step 4: Run builtin cases test**
+- [x] **Step 4: Run builtin cases test**
 
 Run:
 
@@ -265,42 +265,42 @@ Expected: PASS and builtins include the new case ids.
 **Files:**
 - All PR5 files listed above.
 
-- [ ] **Step 1: Run focused tests**
+- [x] **Step 1: Run focused tests**
 
 Run:
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml memory_policy --lib
-cargo test --manifest-path src-tauri/Cargo.toml harness::adapters::memory_policy --lib
+cargo test --manifest-path src-tauri/Cargo.toml harness::adapters::memory_policy_tests --lib
 cargo test --manifest-path src-tauri/Cargo.toml harness::adapters::memory::tests::loads_builtin_memory_gbrain_eval_cases --lib
 ```
 
 Expected: PASS.
 
-- [ ] **Step 2: Format and diff check**
+- [x] **Step 2: Format and diff check**
 
 Run:
 
 ```bash
-cargo fmt --manifest-path src-tauri/Cargo.toml
+rustfmt --edition 2021 src-tauri/src/harness/adapters/mod.rs src-tauri/src/harness/adapters/memory_policy.rs src-tauri/src/harness/adapters/memory_policy_tests.rs src-tauri/src/harness/adapters/memory.rs src-tauri/src/memory_policy/receipts.rs src-tauri/src/memory_policy/mod.rs
 git diff --check -- src-tauri/src/harness src-tauri/src/memory_policy docs/superpowers/plans/2026-05-25-agent-os-memory-policy-pr5-diagnostics-harness-bridge.md
 ```
 
 Expected: no diff-check output.
 
-- [ ] **Step 3: GitNexus impact and detect**
+- [x] **Step 3: GitNexus impact and detect**
 
 Run GitNexus impact before editing existing `receipt_to_task_event` or harness adapter symbols. Run GitNexus `detect_changes(scope=staged)` before commit.
 
 Expected: no HIGH/CRITICAL impact without explicit approval.
 
-- [ ] **Step 4: Commit PR5**
+- [x] **Step 4: Commit PR5**
 
 Run:
 
 ```bash
 git add src-tauri/src/harness src-tauri/src/memory_policy docs/superpowers/plans/2026-05-25-agent-os-memory-policy-pr5-diagnostics-harness-bridge.md
-git commit -m "feat(harness): surface memory policy receipts" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml memory_policy --lib; cargo test --manifest-path src-tauri/Cargo.toml harness::adapters::memory_policy --lib; cargo test --manifest-path src-tauri/Cargo.toml harness::adapters::memory::tests::loads_builtin_memory_gbrain_eval_cases --lib; cargo fmt --manifest-path src-tauri/Cargo.toml; git diff --check; GitNexus detect_changes scope=staged."
+git commit -m "feat(harness): surface memory policy receipts" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml memory_policy --lib; cargo test --manifest-path src-tauri/Cargo.toml harness::adapters::memory_policy_tests --lib; cargo test --manifest-path src-tauri/Cargo.toml harness::adapters::memory::tests::loads_builtin_memory_gbrain_eval_cases --lib; rustfmt on PR5 touched files; git diff --check; GitNexus detect_changes scope=staged."
 ```
 
 Expected: commit succeeds.

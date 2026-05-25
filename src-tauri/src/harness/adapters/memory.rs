@@ -14,6 +14,8 @@ pub const BUILTIN_MEMORY_GBRAIN_CASES: &[&str] = &[
     include_str!("../cases/memory/gbrain-inventory.json"),
     include_str!("../cases/memory/gbrain-tooling.json"),
     include_str!("../cases/memory/dual-inventory-health.json"),
+    include_str!("../cases/memory/memory-policy-freeze.json"),
+    include_str!("../cases/memory/memory-policy-degraded.json"),
 ];
 
 pub const BUILTIN_MEMORY_GBRAIN_RECALL_CASES: &[&str] = &[
@@ -514,10 +516,12 @@ mod tests {
     #[test]
     fn loads_builtin_memory_gbrain_eval_cases() {
         let cases = MemoryGbrainHarnessAdapter::load_builtin_cases().unwrap();
-        assert_eq!(cases.len(), 4);
+        assert_eq!(cases.len(), 6);
         assert!(cases
             .iter()
             .any(|case| matches!(case.target, MemoryGbrainEvalTarget::Both)));
+        assert!(cases.iter().any(|case| case.id == "memory.policy.freeze"));
+        assert!(cases.iter().any(|case| case.id == "memory.policy.degraded"));
     }
 
     #[test]

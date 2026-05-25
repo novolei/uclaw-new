@@ -5,7 +5,7 @@ use crate::runtime::contracts::{TaskEvent, TaskEventSource};
 
 use super::types::{
     MemoryPolicyAction, MemoryPolicyActionKind, MemoryPolicyDecision, MemoryPolicyExecutionReceipt,
-    MemoryPolicyReasonCode, MemoryPolicyReceiptStatus,
+    MemoryPolicyReasonCode, MemoryPolicyReceiptStatus, MemoryPolicyTarget,
 };
 
 pub fn build_receipt(
@@ -99,5 +99,23 @@ pub fn receipt_to_task_event(receipt: &MemoryPolicyExecutionReceipt) -> TaskEven
             code: "memory_policy_non_terminal".into(),
             message: format!("memory policy status {:?}", receipt.status),
         },
+    }
+}
+
+pub fn receipt_to_harness_event(
+    receipt: &MemoryPolicyExecutionReceipt,
+) -> crate::harness::trace::HarnessEvent {
+    let target = match receipt.target {
+        MemoryPolicyTarget::Gbrain => crate::harness::trace::MemoryHarnessTarget::Gbrain,
+        MemoryPolicyTarget::Memu
+        | MemoryPolicyTarget::BrowserArtifact
+        | MemoryPolicyTarget::MemoryGraph => {
+            crate::harness::trace::MemoryHarnessTarget::MemorySystem
+        }
+    };
+    crate::harness::trace::HarnessEvent::MemoryWrite {
+        ts: receipt.created_at.clone(),
+        target,
+        artifact_ref: receipt_artifact_ref(receipt),
     }
 }
