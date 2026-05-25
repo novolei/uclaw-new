@@ -52,6 +52,8 @@ try {
 
 // 导入 tauri-bridge 以注册 IPC 适配层
 import './lib/tauri-bridge'
+import { installUclawDebugBridge } from './lib/uclaw-debug-bridge'
+installUclawDebugBridge()
 
 /**
  * 主题初始化组件

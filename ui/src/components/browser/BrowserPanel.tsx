@@ -22,6 +22,7 @@ import {
 } from '@/atoms/browser-atoms'
 import { sessionBrowserPreviewMapAtom, type BrowserPreviewState } from '@/atoms/agent-atoms'
 import { useBrowserScreencast } from '@/hooks/useBrowserScreencast'
+import { isRealBrowserTabId } from '@/lib/browser-tabs'
 import { BrowserAddressBar } from './BrowserAddressBar'
 import { BrowserTabBar } from './BrowserTabBar'
 import { BrowserScreencastView } from './BrowserScreencastView'
@@ -44,7 +45,8 @@ export function BrowserPanel({ agentSessionId, initialUrl }: BrowserPanelProps):
   const [runtimeStatusError, setRuntimeStatusError] = React.useState<string | null>(null)
 
   const preview = previewMap.get(agentSessionId)
-  const activeTabId = preview?.tabId ?? null
+  const previewTabId = preview?.tabId
+  const activeTabId = isRealBrowserTabId(previewTabId) ? previewTabId : null
   const currentUrl = preview?.url ?? ''
 
   const domMap = useAtomValue(browserDOMStateAtom)
@@ -116,8 +118,12 @@ export function BrowserPanel({ agentSessionId, initialUrl }: BrowserPanelProps):
       if (payload.sessionId !== agentSessionId) return
       setNavState((prev) => {
         const next = new Map(prev)
+        const existing = prev.get(agentSessionId)
+        const tabId = isRealBrowserTabId(payload.tabId)
+          ? payload.tabId
+          : existing?.tabId ?? ''
         next.set(agentSessionId, {
-          tabId: payload.tabId,
+          tabId,
           url: payload.url,
           title: payload.title,
           isLoading: payload.isLoading,
@@ -128,12 +134,13 @@ export function BrowserPanel({ agentSessionId, initialUrl }: BrowserPanelProps):
       })
       setPreviewMap((prev) => {
         const existing = prev.get(payload.sessionId)
-        if (existing?.tabId === payload.tabId && existing?.url === payload.url) return prev
+        const tabId = isRealBrowserTabId(payload.tabId) ? payload.tabId : existing?.tabId ?? null
+        if (existing?.tabId === tabId && existing?.url === payload.url) return prev
         const base: BrowserPreviewState = existing ?? {
           url: null, tabId: null, screenshotData: null, visible: true, minimized: false,
         }
         const next = new Map(prev)
-        next.set(payload.sessionId, { ...base, tabId: payload.tabId, url: payload.url })
+        next.set(payload.sessionId, { ...base, tabId, url: payload.url })
         return next
       })
     }).then((fn) => { unlisten = fn })

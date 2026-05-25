@@ -11,6 +11,7 @@ import {
   browserScreencastFrameAtom,
   type ScreencastFrameEntry,
 } from '@/atoms/browser-atoms'
+import { isRealBrowserTabId } from '@/lib/browser-tabs'
 
 const activeConsumers = new Map<string, number>()
 const liveFrameSeen = new Map<string, number>()
@@ -24,7 +25,7 @@ export function useBrowserScreencast(sessionId: string, tabId: string | null): v
   const setActiveSet = useSetAtom(browserScreencastActiveAtom)
 
   React.useEffect(() => {
-    if (!tabId) return
+    if (!isRealBrowserTabId(tabId)) return
 
     const key = screencastKey(sessionId, tabId)
     let unlisten: (() => void) | null = null
