@@ -1,0 +1,115 @@
+name: Core CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ci-core.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "scripts/**"
+      - "src-tauri/**"
+      - "ui/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/ci-core.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "scripts/**"
+      - "src-tauri/**"
+      - "ui/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    name: Policy and shell checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check whitespace in diff
+        shell: bash
+        run: scripts/ci/diff-check.sh
+
+      - name: Check shell syntax
+        shell: bash
+        run: scripts/ci/shell-syntax-check.sh
+
+      - name: Check GitNexus agent-doc blocks are pinned
+        run: scripts/verify/gitnexus-agent-docs-pinned.sh
+
+  ui:
+    name: UI smoke build and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Run focused UI smoke tests
+        working-directory: ui
+        run: |
+          npm test -- \
+            src/lib/browser-runtime/browser-runtime-task-prompt.test.ts \
+            src/components/dock/useConnectionStatus.test.ts \
+            --reporter=default
+
+      - name: Build UI
+        working-directory: ui
+        run: npm run build
+
+  rust:
+    name: Rust crate smoke
+    runs-on: macos-latest
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_TARGET_DIR: /tmp/uclaw-ci-target
+      RUSTC_WRAPPER: ""
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            /tmp/uclaw-ci-target
+          key: ${{ runner.os }}-cargo-stable-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-stable-
+
+      - name: Check Rust core crates
+        run: |
+          cargo check --locked \
+            -p uclaw-message-types \
+            -p uclaw-tool-types \
+            -p uclaw-runtime-contracts \
+            -p uclaw-protocol-types \
+            -p uclaw-provider-core

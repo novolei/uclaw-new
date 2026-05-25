@@ -67,3 +67,6 @@ ulooi/
 
 # GitNexus local knowledge-graph index/cache (gstack tooling). Per-machine, not source.
 .gitnexus/
+
+# Local output from scripts/ci/pr-review-digest.sh.
+review-artifacts/

@@ -1,0 +1,33 @@
+name: Review Digest
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Generate review digest
+        shell: bash
+        run: scripts/ci/pr-review-digest.sh
+
+      - name: Upload review evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: review-digest-${{ github.run_id }}
+          path: review-artifacts/
+          if-no-files-found: error
