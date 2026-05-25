@@ -15,8 +15,9 @@ pub fn compute_file_hash(content: &str) -> u32 {
 
 /// Parse an `assume_hash` parameter string. Accepts `0xABCD1234` or
 /// `0XABCD1234` (case-insensitive prefix + 8 hex digits). Returns `None`
-/// for any other input — caller decides whether to return an error or
-/// silently skip the short-circuit.
+/// for any other input. Per spec §8.4 the caller converts `None` to
+/// `ToolError::InvalidParams` (malformed input is rejected, not silently
+/// ignored) so a corrupt hash surfaces a clear error instead of a silent re-read.
 fn parse_assume_hash(s: &str) -> Option<u32> {
     let stripped = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
     if stripped.len() != 8 || !stripped.chars().all(|c| c.is_ascii_hexdigit()) {
