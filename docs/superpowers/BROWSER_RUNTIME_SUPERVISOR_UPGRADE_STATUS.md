@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-25 by Codex
-> Current phase: Complete / ADR 2026-05-23 implemented and verified; post-completion manual UX validation follow-up in progress
+> Current phase: Complete / ADR 2026-05-23 implemented and verified; post-completion Startup Splash If2Ai visual port in progress
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -33,33 +33,59 @@
 
 ---
 
-## Post-Completion Manual UX Follow-up: Startup Splash Minimum Visibility
+## Post-Completion Manual UX Follow-up: Startup Splash
 
-- Current PR branch: `codex/startup-splash-min-duration`.
-- Worktree:
-  `/Users/ryanliu/Documents/uclaw-worktrees/startup-splash-min-duration`.
+### Minimum Visibility
+
+- PR #501 merged as `7c14c2d1` from `codex/startup-splash-min-duration`.
 - Entry criteria: manual frontend verification found the production Startup
-  Splash flashes by too quickly to communicate brand, readiness, progress, or
+  Splash flashed by too quickly to communicate brand, readiness, progress, or
   Browser Runtime diagnostic affordances.
-- Progress: `App` now keeps Startup Splash mounted for a minimum visible
-  interval and uses a short opacity handoff before rendering `AppShell`.
+- Progress: `App` keeps Startup Splash mounted for a minimum visible interval
+  and uses a short opacity handoff before rendering `AppShell`.
 - Impact notes: GitNexus pre-edit impact for `App` was LOW. Post-edit
-  `detect-changes` is HIGH because root `App` participates in 10 top-level
-  startup/listener/settings/model flows; the diff is limited to startup timing
-  and preserves the existing initialization calls.
+  `detect-changes` was HIGH because root `App` participates in top-level
+  startup/listener/settings/model flows; the diff stayed limited to startup
+  timing and preserved the existing initialization calls.
 - Verification notes:
   - `cd ui && npm test -- --run src/App.test.tsx src/components/startup/StartupSplash.test.tsx`
     passed: `2 files / 13 tests`.
   - `cd ui && npm run build` passed with existing chunk-size / dynamic-import
     warnings.
-  - `git diff --check -- ui/src/App.tsx ui/src/App.test.tsx docs/superpowers/plans/2026-05-25-startup-splash-min-duration.md docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md`
-    passed.
-  - Browser smoke under `npm run dev:mock-tauri` showed Splash present at the
-    200 ms sample, still mounted during the minimum-visible window, then
-    exiting before handoff. Screenshot artifact:
-    `/private/tmp/uclaw-startup-splash-200ms.png`.
-- Next action: fresh reviewer sub-agent should review the HIGH root-`App`
-  detect note, then this branch can be committed and opened as a narrow PR.
+  - Browser smoke under `npm run dev:mock-tauri` showed Splash present during
+    the minimum-visible window, then exiting before handoff.
+
+### If2Ai Visual Port
+
+- Current PR branch: `codex/startup-splash-if2ai-port`.
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/startup-splash-if2ai-port`.
+- Entry criteria: after PR #501 made the Splash perceptible, manual validation
+  requested that uClaw reuse the more polished If2Ai splash visual system from
+  `/Users/ryanliu/Documents/IfAI/if2Ai/src/components/loading/If2AiLoadingScreen.tsx`.
+- Progress: `StartupSplash` now ports the If2Ai warm sand background, drifting
+  grid, centered icon tile, orange glow wordmark, wave-dot loader, and build
+  telemetry while preserving uClaw's existing Startup Doctor status, progress,
+  recovery panel, details expansion, and Browser Runtime Settings affordance.
+- Impact notes: GitNexus pre-edit impact for `StartupSplash` was LOW: 2 direct
+  callers (`startup-splash-preview.tsx`, `StartupSplash.test.tsx`), 0 affected
+  execution flows. No `App.tsx`, IPC, backend, runtime-pack, provider, or
+  policy boundary changed in this visual port.
+- Verification notes:
+  - `cd ui && npm test -- --run src/App.test.tsx src/components/startup/StartupSplash.test.tsx src/components/startup/startup-splash-scenarios.test.ts`
+    passed: `3 files / 17 tests`.
+  - `cd ui && npm run build` passed with existing dynamic-import and chunk-size
+    warnings.
+  - Browser preview smoke under `npm run dev:mock-tauri` captured desktop
+    first-frame, desktop failed, and mobile failed screenshots:
+    `/tmp/uclaw-if2ai-splash-first-frame.png`,
+    `/tmp/uclaw-if2ai-splash-failed-desktop.png`, and
+    `/tmp/uclaw-if2ai-splash-failed-mobile.png`; mobile check reported no
+    horizontal overflow and accessible heading `uClaw`.
+  - `git diff --check -- <changed files>` passed.
+  - GitNexus staged detect after indexing this worktree reported LOW:
+    `changed_count: 21`, `affected_count: 0`, no affected execution flows.
+- Next action: commit, push, and open the narrow visual-port PR.
 
 ---
 
@@ -69,6 +95,7 @@
 |---|---|---|---|
 | 2026-05-23 | Implement Browser Runtime Supervisor as phased PR slices, not one broad rewrite. | Browser Runtime Supervisor ADR section 12 and user request for phase-pack execution. | Each phase gets a plan, status row, verification notes, and reversible commit boundary. |
 | 2026-05-25 | Add a post-completion Startup Splash minimum-visibility fix from manual validation. | Manual frontend verification found the production Startup Splash flashes by too quickly to communicate brand, readiness, or Browser Runtime diagnostics. | Keep ADR phases complete, but track this as a narrow UX quality follow-up: `codex/startup-splash-min-duration` / `/Users/ryanliu/Documents/uclaw-worktrees/startup-splash-min-duration`. |
+| 2026-05-25 | Port the If2Ai splash visual design into uClaw after minimum visibility landed. | User requested copying `/Users/ryanliu/Documents/IfAI/if2Ai` splash design into uClaw while adapting uClaw's current Startup Doctor UX logic. | Keep Browser Runtime phases closed; track this as a second narrow post-completion UX follow-up on `codex/startup-splash-if2ai-port` with no App routing, IPC, provider, or runtime side effects. |
 | 2026-05-23 | Phase 0 is metadata/contracts only. | ADR Phase 0 expected outcome says later phases add behavior behind stable contracts. | No Playwright process, MCP sidecar, browser launch, Tauri command, DB migration, or UI wiring in Phase 0. |
 | 2026-05-23 | Use this file as the Browser Runtime close-loop tracker. | User asked to follow the `AGENT_OS_JCODE_UPGRADE_STATUS.md` tracker pattern. | Every Browser Runtime phase must update Quick View, branch hygiene, progress, and verification notes. |
 | 2026-05-23 | Rebase Phase 0 worktree onto latest `main` before commit. | Worktree initially had ADR commit on older merge-base `3d710297`; latest `main` was `d7a9527`. | Phase branch now has latest `main` plus rebased Browser ADR commit `4cb7538`, then Phase 0 WIP reapplied. |
@@ -190,9 +217,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-verified-complete` |
-| Current phase branch | `codex/browser-runtime-verified-complete` |
-| Current local base | `52ba4833 Merge pull request #498 from novolei/claude/dirac-a2-multifile-edit-schema` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/startup-splash-if2ai-port` |
+| Current phase branch | `codex/startup-splash-if2ai-port` |
+| Current local base | `7c14c2d1 Merge pull request #501 from novolei/codex/startup-splash-min-duration` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -280,9 +307,11 @@
 | Unrelated post-audit main advance | PR #496 merged as `17ffe1c6`; it is outside Browser Runtime scope but is included in the current `origin/main` base. |
 | Final tracker sync commit | Merged through PR #497 as `8728adbc docs(browser): sync final runtime tracker state`; merge commit `1db7d988`. |
 | Unrelated post-final-sync main advance | PR #498 merged as `52ba4833`; it is outside Browser Runtime scope but is included in the current `origin/main` base for final verification. |
-| Verified complete closeout commit | In progress on `codex/browser-runtime-verified-complete`; plan `docs/superpowers/plans/2026-05-25-browser-runtime-verified-complete.md`. |
-| Known pre-existing tracked changes | None in the verified-complete worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes. |
-| Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
+| Verified complete closeout commit | Merged through PR #499 as `docs(browser): mark runtime supervisor verified complete`; later post-completion UX work is outside ADR phase implementation. |
+| Startup minimum-visibility commit | Merged through PR #501 as `fix(ui): keep startup splash perceptible`; merge commit `7c14c2d1`. |
+| Startup If2Ai visual-port commit | In progress on `codex/startup-splash-if2ai-port`; plan `docs/superpowers/plans/2026-05-25-startup-splash-if2ai-port.md`. |
+| Known pre-existing tracked changes | None in the startup visual-port worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes. |
+| Linked ignored runtime resources | `ui/node_modules` linked from the primary worktree for focused frontend verification only. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
 ## Phase 1 Entry Criteria

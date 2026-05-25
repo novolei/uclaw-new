@@ -10,6 +10,315 @@
   src: url("/themes/the-finals/fonts/poppins-500.ttf") format("truetype");
   font-display: swap;
 }
+
+@layer components {
+  .startup-splash-if2ai {
+    --startup-jade-dim: #456a80;
+    --startup-brand-orange: #ff7f32;
+    --startup-brand-orange-light: #ff8d47;
+    --startup-brand-orange-dark: #f25717;
+    --startup-brand-orange-glow: #ffb26e;
+    --startup-brand-orange-blend: #ff6a1f;
+    --startup-sand: #e6dcc2;
+    --startup-sand-warm: #f1ebdd;
+    --startup-ink: #293237;
+    background: var(--startup-sand);
+  }
+
+  .startup-splash-if2ai__backdrop {
+    background:
+      radial-gradient(circle at 50% 36%, rgb(255 255 255 / 0.66), transparent 26%),
+      radial-gradient(circle at 50% 50%, rgb(255 141 71 / 0.10), transparent 48%),
+      linear-gradient(180deg, var(--startup-sand-warm) 0%, var(--startup-sand) 100%);
+  }
+
+  .startup-splash-if2ai__grid::before {
+    content: "";
+    position: absolute;
+    inset: -56px;
+    background-image:
+      linear-gradient(rgb(255 127 50 / 0.08) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(255 127 50 / 0.08) 1px, transparent 1px);
+    background-position: 0 0, 0 0;
+    background-size: 56px 56px;
+    animation: startupSplashGridDrift 8s linear infinite;
+  }
+
+  .startup-splash-if2ai__title {
+    font-family:
+      "SF Pro Rounded",
+      "Avenir Next Rounded",
+      "Arial Rounded MT Bold",
+      "Nunito",
+      var(--font-sans);
+    font-feature-settings: "ss01" 1, "cv11" 1;
+    letter-spacing: 0;
+    animation: startupSplashTitleGlow 3.2s ease-in-out infinite;
+  }
+
+  .startup-splash-if2ai__title-glow {
+    font-family:
+      "SF Pro Rounded",
+      "Avenir Next Rounded",
+      "Arial Rounded MT Bold",
+      "Nunito",
+      var(--font-sans);
+    font-feature-settings: "ss01" 1, "cv11" 1;
+    letter-spacing: 0;
+    animation: startupSplashTitleFloat 3.8s ease-in-out infinite;
+  }
+
+  .startup-splash-if2ai__caret {
+    animation: startupSplashCaretBlink 1.02s steps(1, end) infinite;
+  }
+
+  .startup-splash-if2ai__glitch-base {
+    animation:
+      startupSplashTitleGlow 3.2s ease-in-out infinite,
+      startupSplashGlitchBase 4.6s linear infinite;
+  }
+
+  .startup-splash-if2ai__glitch-layer {
+    pointer-events: none;
+    mix-blend-mode: screen;
+    letter-spacing: 0;
+  }
+
+  .startup-splash-if2ai__glitch-layer-a {
+    animation: startupSplashGlitchShiftA 4.6s linear infinite;
+  }
+
+  .startup-splash-if2ai__glitch-layer-b {
+    animation: startupSplashGlitchShiftB 4.6s linear infinite;
+  }
+
+  .startup-splash-if2ai__wave {
+    position: relative;
+    width: 150px;
+    height: 40px;
+    transform: scale(1.08);
+  }
+
+  .startup-splash-if2ai__wave-dot {
+    position: absolute;
+    left: calc(var(--startup-wave-index) * 15px);
+    top: 16px;
+    width: 8px;
+    height: 8px;
+    border-radius: 9999px;
+    will-change: transform, background-color;
+  }
+
+  .startup-splash-if2ai__wave-dot-top {
+    --startup-wave-from: var(--startup-jade-dim);
+    --startup-wave-to: var(--startup-brand-orange-dark);
+    background: var(--startup-wave-from);
+    animation: startupSplashWaveTop 2s ease-in-out infinite;
+    animation-delay: calc(var(--startup-wave-index) * -0.18s);
+  }
+
+  .startup-splash-if2ai__wave-dot-bottom {
+    --startup-wave-from: var(--startup-brand-orange-dark);
+    --startup-wave-to: var(--startup-jade-dim);
+    background: var(--startup-wave-from);
+    animation: startupSplashWaveBottom 2s ease-in-out infinite;
+    animation-delay: calc(var(--startup-wave-index) * -0.18s);
+  }
+
+  .startup-splash-if2ai__wave-dot:nth-child(1),
+  .startup-splash-if2ai__wave-dot:nth-child(11) {
+    --startup-wave-index: 0;
+  }
+
+  .startup-splash-if2ai__wave-dot:nth-child(2),
+  .startup-splash-if2ai__wave-dot:nth-child(12) {
+    --startup-wave-index: 1;
+  }
+
+  .startup-splash-if2ai__wave-dot:nth-child(3),
+  .startup-splash-if2ai__wave-dot:nth-child(13) {
+    --startup-wave-index: 2;
+  }
+
+  .startup-splash-if2ai__wave-dot:nth-child(4),
+  .startup-splash-if2ai__wave-dot:nth-child(14) {
+    --startup-wave-index: 3;
+  }
+
+  .startup-splash-if2ai__wave-dot:nth-child(5),
+  .startup-splash-if2ai__wave-dot:nth-child(15) {
+    --startup-wave-index: 4;
+  }
+
+  .startup-splash-if2ai__wave-dot:nth-child(6),
+  .startup-splash-if2ai__wave-dot:nth-child(16) {
+    --startup-wave-index: 5;
+  }
+
+  .startup-splash-if2ai__wave-dot:nth-child(7),
+  .startup-splash-if2ai__wave-dot:nth-child(17) {
+    --startup-wave-index: 6;
+  }
+
+  .startup-splash-if2ai__wave-dot:nth-child(8),
+  .startup-splash-if2ai__wave-dot:nth-child(18) {
+    --startup-wave-index: 7;
+  }
+
+  .startup-splash-if2ai__wave-dot:nth-child(9),
+  .startup-splash-if2ai__wave-dot:nth-child(19) {
+    --startup-wave-index: 8;
+  }
+
+  .startup-splash-if2ai__wave-dot:nth-child(10),
+  .startup-splash-if2ai__wave-dot:nth-child(20) {
+    --startup-wave-index: 9;
+  }
+}
+
+@keyframes startupSplashGridDrift {
+  to {
+    background-position: 56px 0, 56px 0;
+  }
+}
+
+@keyframes startupSplashCaretBlink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  46%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes startupSplashGlitchBase {
+  0%,
+  91%,
+  100% {
+    transform: translate3d(0, 0, 0);
+    filter: none;
+  }
+  92% {
+    transform: translate3d(-0.008em, 0, 0);
+    filter: saturate(1.03);
+  }
+  94% {
+    transform: translate3d(0.012em, 0, 0);
+    filter: brightness(1.02);
+  }
+  96% {
+    transform: translate3d(-0.006em, 0.006em, 0);
+  }
+}
+
+@keyframes startupSplashGlitchShiftA {
+  0%,
+  91%,
+  100% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0);
+    clip-path: inset(0 0 0 0);
+  }
+  92% {
+    opacity: 0.18;
+    transform: translate3d(0.012em, -0.006em, 0);
+    clip-path: inset(18% 0 54% 0);
+  }
+  95% {
+    opacity: 0.1;
+    transform: translate3d(-0.01em, 0.006em, 0);
+    clip-path: inset(60% 0 10% 0);
+  }
+}
+
+@keyframes startupSplashGlitchShiftB {
+  0%,
+  90%,
+  100% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0);
+    clip-path: inset(0 0 0 0);
+  }
+  93% {
+    opacity: 0.14;
+    transform: translate3d(-0.014em, 0.008em, 0);
+    clip-path: inset(28% 0 42% 0);
+  }
+  96% {
+    opacity: 0.08;
+    transform: translate3d(0.01em, -0.006em, 0);
+    clip-path: inset(70% 0 5% 0);
+  }
+}
+
+@keyframes startupSplashTitleGlow {
+  0%,
+  100% {
+    filter: brightness(1) saturate(1);
+    text-shadow:
+      0 0 0 rgb(255 127 50 / 0),
+      0 10px 18px rgb(255 110 36 / 0.14);
+  }
+  50% {
+    filter: brightness(1.03) saturate(1.02);
+    text-shadow:
+      0 0 18px rgb(255 127 50 / 0.18),
+      0 12px 22px rgb(255 110 36 / 0.18);
+  }
+}
+
+@keyframes startupSplashTitleFloat {
+  0%,
+  100% {
+    transform: translateY(-1px) scale(1.02);
+  }
+  50% {
+    transform: translateY(1px) scale(1.02);
+  }
+}
+
+@keyframes startupSplashWaveTop {
+  0%,
+  100% {
+    background: var(--startup-wave-from);
+    box-shadow: 0 0 8px rgb(69 106 128 / 0.2);
+    transform: translateY(14px) scale(0.6);
+  }
+  50% {
+    background: var(--startup-wave-to);
+    box-shadow: 0 0 18px rgb(242 87 23 / 0.28);
+    transform: translateY(-14px) scale(1);
+  }
+}
+
+@keyframes startupSplashWaveBottom {
+  0%,
+  100% {
+    background: var(--startup-wave-from);
+    box-shadow: 0 0 8px rgb(242 87 23 / 0.22);
+    transform: translateY(-14px) scale(1);
+  }
+  50% {
+    background: var(--startup-wave-to);
+    box-shadow: 0 0 18px rgb(69 106 128 / 0.24);
+    transform: translateY(14px) scale(0.6);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .startup-splash-if2ai__grid::before,
+  .startup-splash-if2ai__title,
+  .startup-splash-if2ai__title-glow,
+  .startup-splash-if2ai__caret,
+  .startup-splash-if2ai__glitch-base,
+  .startup-splash-if2ai__glitch-layer-a,
+  .startup-splash-if2ai__glitch-layer-b,
+  .startup-splash-if2ai__wave-dot {
+    animation: none !important;
+  }
+}
 @font-face {
   font-family: "Saira Condensed";
   font-style: normal;
