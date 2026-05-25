@@ -18,17 +18,31 @@ import { activeProviderModelAtom } from './atoms/active-model'
 import { useGlobalChatListeners } from './hooks/useGlobalChatListeners'
 import { useGlobalAgentListeners } from './hooks/useGlobalAgentListeners'
 import { usePetStateSync } from './hooks/usePetStateSync'
+import {
+  DEFAULT_STARTUP_DOCTOR_CHECKS,
+  deriveStartupDoctorViewModel,
+  deriveStartupDoctorViewModelFromRuntimePackStatus,
+  type StartupDoctorViewModel,
+  type StartupRuntimePackStatusReport,
+} from './lib/startup/startup-doctor'
 
 /** localStorage 键：语言偏好 */
 const LANGUAGE_CACHE_KEY = 'uclaw:language'
 export const STARTUP_SPLASH_MIN_VISIBLE_MS = 1800
 export const STARTUP_SPLASH_EXIT_TRANSITION_MS = 220
+export const STARTUP_BROWSER_RUNTIME_STATUS_TIMEOUT_MS = 5000
+type StartupBrowserRuntimeStatusState = 'loading' | 'ready' | 'failed'
 
 export default function App(): React.ReactElement {
   const [initializationComplete, setInitializationComplete] = React.useState(false)
   const [minimumSplashElapsed, setMinimumSplashElapsed] = React.useState(false)
   const [showStartupSplash, setShowStartupSplash] = React.useState(true)
   const [isSplashExiting, setIsSplashExiting] = React.useState(false)
+  const [browserRuntimeStatusState, setBrowserRuntimeStatusState] =
+    React.useState<StartupBrowserRuntimeStatusState>('loading')
+  const [browserRuntimeStatus, setBrowserRuntimeStatus] =
+    React.useState<StartupRuntimePackStatusReport | undefined>()
+  const [browserRuntimeStatusError, setBrowserRuntimeStatusError] = React.useState<string | undefined>()
   const setStickyUserMessageEnabled = useSetAtom(stickyUserMessageEnabledAtom)
   const setActiveProviderModel = useSetAtom(activeProviderModelAtom)
 
@@ -43,6 +57,47 @@ export default function App(): React.ReactElement {
 
     return () => {
       window.clearTimeout(timer)
+    }
+  }, [])
+
+  React.useEffect(() => {
+    let cancelled = false
+    let timeoutId: number | undefined
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = window.setTimeout(() => {
+        reject(
+          new Error(
+            `Rust Browser Runtime status did not respond within ${STARTUP_BROWSER_RUNTIME_STATUS_TIMEOUT_MS}ms`,
+          ),
+        )
+      }, STARTUP_BROWSER_RUNTIME_STATUS_TIMEOUT_MS)
+    })
+
+    void Promise.race([bridge.getBrowserRuntimeStatus(), timeout])
+      .then((report) => {
+        if (cancelled) return
+        setBrowserRuntimeStatus(report)
+        setBrowserRuntimeStatusError(undefined)
+        setBrowserRuntimeStatusState('ready')
+      })
+      .catch((error) => {
+        if (cancelled) return
+        console.error('[App] Browser Runtime 状态读取失败:', error)
+        setBrowserRuntimeStatus(undefined)
+        setBrowserRuntimeStatusError(error instanceof Error ? error.message : String(error))
+        setBrowserRuntimeStatusState('failed')
+      })
+      .finally(() => {
+        if (timeoutId !== undefined) {
+          window.clearTimeout(timeoutId)
+        }
+      })
+
+    return () => {
+      cancelled = true
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId)
+      }
     }
   }, [])
 
@@ -91,7 +146,17 @@ export default function App(): React.ReactElement {
     }
   }, [setStickyUserMessageEnabled, setActiveProviderModel])
 
-  const startupReadyToHandoff = initializationComplete && minimumSplashElapsed
+  const browserRuntimeStatusComplete = browserRuntimeStatusState !== 'loading'
+  const startupViewModel = React.useMemo(
+    () =>
+      startupDoctorViewModelFromBrowserRuntimeStatus(
+        browserRuntimeStatusState,
+        browserRuntimeStatus,
+        browserRuntimeStatusError,
+      ),
+    [browserRuntimeStatusState, browserRuntimeStatus, browserRuntimeStatusError],
+  )
+  const startupReadyToHandoff = initializationComplete && minimumSplashElapsed && browserRuntimeStatusComplete
 
   React.useEffect(() => {
     if (!startupReadyToHandoff) return
@@ -117,7 +182,7 @@ export default function App(): React.ReactElement {
             : 'opacity-100 transition-opacity duration-200 ease-out motion-reduce:transition-none'
         }
       >
-        <StartupSplash />
+        <StartupSplash viewModel={startupViewModel} />
       </div>
     )
   }
@@ -131,4 +196,35 @@ export default function App(): React.ReactElement {
       <AppShell contextValue={contextValue} />
     </TooltipProvider>
   )
+}
+
+function startupDoctorViewModelFromBrowserRuntimeStatus(
+  state: StartupBrowserRuntimeStatusState,
+  report: StartupRuntimePackStatusReport | undefined,
+  errorMessage: string | undefined,
+): StartupDoctorViewModel {
+  if (state === 'ready') {
+    return deriveStartupDoctorViewModelFromRuntimePackStatus(report)
+  }
+
+  if (state === 'failed') {
+    const detail = errorMessage
+      ? `Rust Browser Runtime status is unavailable: ${errorMessage}`
+      : 'Rust Browser Runtime status is unavailable.'
+    return deriveStartupDoctorViewModel(
+      DEFAULT_STARTUP_DOCTOR_CHECKS.map((check) => {
+        if (
+          check.id === 'browser-runtime-manifest' ||
+          check.id === 'browser-runtime-pack' ||
+          check.id === 'last-runtime-status'
+        ) {
+          return { ...check, status: 'warning', detail }
+        }
+
+        return { ...check }
+      }),
+    )
+  }
+
+  return deriveStartupDoctorViewModel()
 }

@@ -1,16 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { renderWithProviders, screen, waitFor, within } from '@/test-utils/render'
+import { renderWithProviders, screen, within } from '@/test-utils/render'
 import { StartupSplash } from './StartupSplash'
 import {
   deriveStartupDoctorViewModel,
+  deriveStartupDoctorViewModelFromRuntimePackStatus,
   type StartupDoctorCheck,
   type StartupRuntimePackStatusReport,
 } from '@/lib/startup/startup-doctor'
-import { getBrowserRuntimeStatus } from '@/lib/tauri-bridge'
-
-vi.mock('@/lib/tauri-bridge', () => ({
-  getBrowserRuntimeStatus: vi.fn(),
-}))
 
 function blockedRuntimeReport(): StartupRuntimePackStatusReport {
   return {
@@ -39,8 +35,7 @@ function blockedRuntimeReport(): StartupRuntimePackStatusReport {
 
 describe('StartupSplash', () => {
   beforeEach(() => {
-    vi.mocked(getBrowserRuntimeStatus).mockReset()
-    vi.mocked(getBrowserRuntimeStatus).mockRejectedValue(new Error('runtime bridge unavailable'))
+    vi.restoreAllMocks()
   })
 
   it('renders a concise startup first frame by default', () => {
@@ -51,35 +46,28 @@ describe('StartupSplash', () => {
     expect(screen.queryByRole('list', { name: 'Startup doctor checks' })).not.toBeInTheDocument()
   })
 
-  it('keeps the default startup model when the live status read fails', async () => {
+  it('keeps the default startup model without a parent runtime status projection', () => {
     renderWithProviders(<StartupSplash />)
-
-    await waitFor(() => {
-      expect(getBrowserRuntimeStatus).toHaveBeenCalledTimes(1)
-    })
 
     expect(screen.getByText('Preparing uClaw')).toBeInTheDocument()
     expect(screen.queryByRole('list', { name: 'Startup doctor checks' })).not.toBeInTheDocument()
   })
 
-  it('loads live browser runtime status into Startup Doctor checks', async () => {
-    vi.mocked(getBrowserRuntimeStatus).mockResolvedValueOnce(blockedRuntimeReport())
+  it('renders parent-provided Rust browser runtime status into Startup Doctor checks', () => {
+    renderWithProviders(
+      <StartupSplash
+        viewModel={deriveStartupDoctorViewModelFromRuntimePackStatus(blockedRuntimeReport())}
+        onOpenBrowserRuntimeSettings={vi.fn()}
+      />,
+    )
 
-    renderWithProviders(<StartupSplash onOpenBrowserRuntimeSettings={vi.fn()} />)
-
-    await waitFor(() => {
-      expect(getBrowserRuntimeStatus).toHaveBeenCalledTimes(1)
-    })
-    await waitFor(() => {
-      expect(screen.getByText('Startup doctor needs attention')).toBeInTheDocument()
-    })
-
+    expect(screen.getByText('Startup doctor needs attention')).toBeInTheDocument()
     expect(screen.getByRole('list', { name: 'Startup doctor checks' })).toBeInTheDocument()
     expect(screen.getByText('Browser runtime pack is incomplete.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Browser Runtime Settings' })).toBeInTheDocument()
   })
 
-  it('does not read live status when a preview view model is supplied', () => {
+  it('renders a preview view model without owning live status reads', () => {
     const checks: StartupDoctorCheck[] = [
       { id: 'config', label: 'Local configuration', status: 'passed' },
       { id: 'browser-runtime-pack', label: 'Runtime pack path', status: 'failed', detail: 'Missing pack' },
@@ -87,7 +75,6 @@ describe('StartupSplash', () => {
 
     renderWithProviders(<StartupSplash viewModel={deriveStartupDoctorViewModel(checks)} />)
 
-    expect(getBrowserRuntimeStatus).not.toHaveBeenCalled()
     expect(screen.getByText('Missing pack')).toBeInTheDocument()
   })
 

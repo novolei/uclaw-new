@@ -15,12 +15,10 @@ import { cn } from '@/lib/utils'
 import {
   clampStartupProgress,
   deriveStartupDoctorViewModel,
-  deriveStartupDoctorViewModelFromRuntimePackStatus,
   type StartupDoctorCheck,
   type StartupDoctorCheckStatus,
   type StartupDoctorViewModel,
 } from '@/lib/startup/startup-doctor'
-import { getBrowserRuntimeStatus } from '@/lib/tauri-bridge'
 
 export interface StartupSplashProps {
   viewModel?: StartupDoctorViewModel
@@ -114,8 +112,7 @@ export function StartupSplash({
   onDetailsExpandedChange,
   onOpenBrowserRuntimeSettings,
 }: StartupSplashProps): React.ReactElement {
-  const [liveViewModel, setLiveViewModel] = React.useState<StartupDoctorViewModel | undefined>()
-  const viewModel = providedViewModel ?? liveViewModel ?? deriveStartupDoctorViewModel()
+  const viewModel = providedViewModel ?? deriveStartupDoctorViewModel()
   const [internalExpanded, setInternalExpanded] = React.useState(viewModel.detailsRecommended)
   const [buildCode] = React.useState(makeSplashBuildCode)
   const isControlled = detailsExpanded !== undefined
@@ -126,30 +123,6 @@ export function StartupSplash({
   const showBrowserRuntimeSettings =
     Boolean(onOpenBrowserRuntimeSettings) && hasBrowserRuntimeAttention(viewModel.checks)
   const visualTitle = PROJECT_NAME
-
-  React.useEffect(() => {
-    if (providedViewModel) {
-      setLiveViewModel(undefined)
-      return
-    }
-
-    let cancelled = false
-    void getBrowserRuntimeStatus()
-      .then((report) => {
-        if (!cancelled) {
-          setLiveViewModel(deriveStartupDoctorViewModelFromRuntimePackStatus(report))
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setLiveViewModel(undefined)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [providedViewModel])
 
   React.useEffect(() => {
     if (!isControlled && viewModel.detailsRecommended) {
