@@ -11852,6 +11852,7 @@ mod browser_ui_runtime_command_tests {
             selected_provider_id: Some("local_chromium".to_string()),
             candidates: Vec::new(),
             event_intents: Vec::new(),
+            skipped_providers: Vec::new(),
         }
     }
 

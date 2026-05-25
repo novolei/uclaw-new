@@ -80,6 +80,7 @@ fn non_local_provider_route_blocks_local_action_registry() {
         selected_provider_id: Some(crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID.to_string()),
         candidates: Vec::new(),
         event_intents: Vec::new(),
+        skipped_providers: Vec::new(),
     };
 
     assert!(provider_route_blocks_local_action(&decision));
@@ -191,6 +192,7 @@ async fn selected_cli_route_blocks_unsupported_browser_action() {
         selected_provider_id: Some(crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID.to_string()),
         candidates: Vec::new(),
         event_intents: Vec::new(),
+        skipped_providers: Vec::new(),
     };
 
     let execution = executor

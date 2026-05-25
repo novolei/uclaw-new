@@ -212,6 +212,7 @@ fn provider_route_signal_message(
         "reason": intent.reason,
         "routeStatus": decision.status,
         "selectedProviderId": decision.selected_provider_id.as_deref(),
+        "skippedProviders": decision.skipped_providers,
     })
     .to_string()
 }

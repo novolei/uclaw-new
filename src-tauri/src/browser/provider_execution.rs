@@ -15,8 +15,9 @@ use crate::browser::playwright_cli::{
 use crate::browser::playwright_mcp::playwright_mcp_provider_status;
 use crate::browser::provider::{
     local_chromium_status, BrowserCapabilityProbe, BrowserProviderReadinessProbe,
-    BrowserProviderRouteDecision, BrowserProviderRouteDecisionStatus, BrowserProviderRouter,
-    BrowserSetupCheck, LOCAL_CHROMIUM_PROVIDER_ID,
+    BrowserProviderRouteDecision, BrowserProviderRouteDecisionStatus,
+    BrowserProviderRouteSkippedProvider, BrowserProviderRouter, BrowserSetupCheck,
+    LOCAL_CHROMIUM_PROVIDER_ID,
 };
 use crate::browser::runtime_contracts::{
     BrowserProviderSelectionRequest, BrowserRuntimeFeatureFlags,
@@ -396,6 +397,7 @@ pub fn route_live_browser_action_provider_with_options(
                 provider_id: Some(PLAYWRIGHT_CLI_PROVIDER_ID.to_string()),
                 reason: "control_center_active_provider_selected".to_string(),
             }],
+            skipped_providers: skipped_providers_from_options(options),
         };
     }
 
@@ -447,7 +449,22 @@ pub fn route_live_browser_action_provider_with_options(
             }
         }
     }
-    router.route(selection)
+    let mut decision = router.route(selection);
+    decision.skipped_providers = skipped_providers_from_options(options);
+    decision
+}
+
+fn skipped_providers_from_options(
+    options: &BrowserProviderActionRouteOptions,
+) -> Vec<BrowserProviderRouteSkippedProvider> {
+    options
+        .skipped_provider_reasons
+        .iter()
+        .map(|item| BrowserProviderRouteSkippedProvider {
+            provider_id: item.provider_id.clone(),
+            reason: item.reason.clone(),
+        })
+        .collect()
 }
 
 pub fn provider_route_blocks_local_action(decision: &BrowserProviderRouteDecision) -> bool {

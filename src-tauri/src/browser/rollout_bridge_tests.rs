@@ -2,10 +2,12 @@ use super::*;
 use crate::browser::playwright_cli_capabilities;
 use crate::browser::provider::{
     decide_browser_provider_route, local_chromium_capabilities, BrowserCapabilityProbe,
-    BrowserProviderCapabilities, BrowserProviderReadinessProbe, BrowserProviderRouteRequest,
-    BrowserProviderStatus, BrowserSetupCheck, LOCAL_CHROMIUM_PROVIDER_ID,
+    BrowserProviderCapabilities, BrowserProviderReadinessProbe, BrowserProviderRouteDecision,
+    BrowserProviderRouteDecisionStatus, BrowserProviderRouteEventIntent,
+    BrowserProviderRouteRequest, BrowserProviderRouteSkippedProvider, BrowserProviderStatus,
+    BrowserSetupCheck, LOCAL_CHROMIUM_PROVIDER_ID,
 };
-use crate::browser::runtime_contracts::BrowserProviderSelectionRequest;
+use crate::browser::runtime_contracts::{BrowserProviderSelectionRequest, BrowserTaskEventName};
 use crate::browser::session_state::BrowserTaskStep;
 
 fn step(
@@ -298,6 +300,39 @@ fn provider_route_selected_intent_emits_browser_signal() {
             assert_eq!(payload["selectedProviderId"], LOCAL_CHROMIUM_PROVIDER_ID);
             assert_eq!(payload["routeStatus"], "selected");
             assert_eq!(payload["reason"], "provider_selected");
+        }
+        other => panic!("expected provider route Signal, got {other:?}"),
+    }
+}
+
+#[test]
+fn provider_route_signal_includes_skipped_provider_reasons() {
+    let decision = BrowserProviderRouteDecision {
+        status: BrowserProviderRouteDecisionStatus::Selected,
+        selected_provider_id: Some(LOCAL_CHROMIUM_PROVIDER_ID.to_string()),
+        candidates: Vec::new(),
+        event_intents: vec![BrowserProviderRouteEventIntent {
+            event_name: BrowserTaskEventName::ProviderSelected,
+            provider_id: Some(LOCAL_CHROMIUM_PROVIDER_ID.to_string()),
+            reason: "provider_selected".to_string(),
+        }],
+        skipped_providers: vec![BrowserProviderRouteSkippedProvider {
+            provider_id: crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID.to_string(),
+            reason: "probe_failed".to_string(),
+        }],
+    };
+
+    let events = provider_route_decision_to_events(&decision, "browser-run-1");
+
+    match &events[0] {
+        TaskEvent::Signal { message, .. } => {
+            let payload: serde_json::Value = serde_json::from_str(message).unwrap();
+            assert_eq!(payload["selectedProviderId"], LOCAL_CHROMIUM_PROVIDER_ID);
+            assert_eq!(
+                payload["skippedProviders"][0]["providerId"],
+                crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID
+            );
+            assert_eq!(payload["skippedProviders"][0]["reason"], "probe_failed");
         }
         other => panic!("expected provider route Signal, got {other:?}"),
     }
