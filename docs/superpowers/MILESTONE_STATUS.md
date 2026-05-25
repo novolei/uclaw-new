@@ -5,7 +5,7 @@
 > [`plans/2026-05-22-pr-integration-strategy.md`](plans/2026-05-22-pr-integration-strategy.md)).
 >
 > **Last updated**: 2026-05-25 by Ryan + Cowork (claude-sonnet-4-6)
-> **After PR**: C1-Dirac-A4 (JIT injection channel for BaselineBlock — InjectionPolicy/Context, Dirac Phase A borrow sequence complete)
+> **After PR**: C1-Closeout (Dirac Phase A C1-slice track closed — see `specs/2026-05-25-phase-a-closeout.md`; A1 #496 / A2 #498 / A3 #505 / A4 #508 merged)
 
 ---
 
@@ -16,7 +16,7 @@
 | **Phase 0.5** | Infrastructure (LICENSE / hooks / skills / crate 复制) | **100%** | ✅ closed | — |
 | **M0** | ADR Lock + License + Workspace | **100%** | ✅ closed | — |
 | **M1** | Runtime Contracts (2-3 weeks) | **100%** | ✅ closed | task #57 closes; retrospective #321 |
-| **M2** | Context Fabric (5-7 weeks) | **~58%** | 🟡 in-progress | **C1.1 PR-2 — Bundle 17-C telemetry** (PR-1 prep branch ready) |
+| **M2** | Context Fabric (5-7 weeks) | **~63%** | 🟡 in-progress | Dirac C1-slice track closed (#496/#498/#505/#508); broad M2 closeout = C1.1-C1.5 + 50-turn bench |
 | **M3** | Capability Mesh (6-8 weeks) | **~22%** | 🟡 early | **C2.1 — M3-T2 ToolRegistry registration** |
 | **M4** | World Projection (3-4 weeks) | **~24% (pilots)** | 🟡 pilots only | **C3.1 — M4-T1 wire-up after C2** |
 | **M5** | Policy Hooks + Isolation (4-5 weeks) | **~10%** | 🟠 pilot-only | Wait for M3 close (T1 contract patch in #338) |
@@ -77,7 +77,7 @@ rollout writes to JSONL; HarnessSubject bridges to harness eval.
 
 ---
 
-### M2 — Context Fabric 🟡 ~55%
+### M2 — Context Fabric 🟡 ~63%
 
 > Plan §4.3 DoD: 10 sub-tasks + bench(50-turn token -60-75%)+ cache hit ≥
 > 50% + cost ↓ 60% + format consistency +1.5/5.
@@ -103,6 +103,8 @@ rollout writes to JSONL; HarnessSubject bridges to harness eval.
 | C1-Dirac-A2 | EditTool batch form ({files: [...]}) (M-Wireup, ~+5% M2) | ✅ merged #498 |
 | C1-Dirac-A3 | ReadFile [File Hash] header + assume_hash short-circuit (M-Wireup, ~+3% M2) | ✅ merged #505 |
 | C1-Dirac-A4 | JIT injection channel for BaselineBlock (InjectionPolicy/Context, M-Wireup, ~+2% M2) | ✅ merged #508 |
+
+**Dirac Phase A / C1-slice track: ✅ CLOSED** 2026-05-25 via closeout report `specs/2026-05-25-phase-a-closeout.md` (4/4 merged, 1 reviewer low-fix, 0 escalations post-Phase-0). NOTE: this closes the *Dirac slice track* of C1; the broader integration-strategy §7 C1 (C1.1-C1.5 below + formal 50-turn bench) remains open. Token savings are MODELED, not yet measured — pending C1.5 bench.
 
 **Outstanding for M2 closure**:
 
