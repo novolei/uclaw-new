@@ -8,8 +8,8 @@
 > this status file so later sessions can resume from the current row instead of
 > reconstructing thread history.
 >
-> Last updated: 2026-05-24 by Codex
-> Current phase: Phase 6H identity authorization contract
+> Last updated: 2026-05-25 by Codex
+> Current phase: Phase 6I payment confirmation harness
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -25,7 +25,7 @@
 | Phase 3 | Startup Splash, Startup Doctor, and shell UX | Phase 3A-3C and 3E-3H merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase3h-app-startup-route` / `codex/browser-runtime-phase3h-app-startup-route` | Closed for branded root startup route; later recovery/deep-link work must build on the merged Startup Splash route. |
 | Phase 4 | Browser Runtime settings and task-time preparation UX | Phase 4A-4X merged to `main` / `origin/main`; exit audit complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase4x-settings-action-dry-run-ipc` / `codex/browser-runtime-phase4x-settings-action-dry-run-ipc` | Closed for user-visible Settings, Doctor, prompt, checkpoint, deep-link, read-only IPC, and dry-run action evidence. Real runtime execution/provider work moves to Phase 5+. |
 | Phase 5 | Playwright CLI thin lane behind a feature flag | Phase 5A-5F merged to `main` / `origin/main`; exit gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase5f-action-state-diff` / `codex/browser-runtime-phase5f-action-state-diff` | Closed for feature-flagged Playwright CLI thin lane. Provider promotion and parity routing remain Phase 8. |
-| Phase 6 | Browser identity authorization and profile UX | Phase 6A-6F merged to `main` / `origin/main`; Phase 6H in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6h-identity-authorization-contract` / `codex/browser-runtime-phase6h-identity-authorization-contract` | Backfill the generic browser identity authorization completion contract so existing automation login capture is no longer trapped in a spec-only lane. Payment confirmation remains a separate follow-up if harness evidence is insufficient. |
+| Phase 6 | Browser identity authorization and profile UX | Phase 6A-6H merged to `main` / `origin/main`; Phase 6I in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6i-payment-confirmation-harness` / `codex/browser-runtime-phase6i-payment-confirmation-harness` | Close the ADR Phase 6 payment-confirmation gate with explicit Browser parity harness evidence. |
 | Phase 7 | Playwright MCP sidecar behind a feature flag | Phase 7A-7G merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase7g-mcp-selection-policy` / `codex/browser-runtime-phase7g-mcp-selection-policy` | Closed for MCP sidecar, stdio action boundary, artifact/error routing, and MCP-vs-CLI selection guardrail. |
 | Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8J merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8j-provider-default-policy` / `codex/browser-runtime-phase8j-provider-default-policy` | Closed for provider route evidence and reversible default policy; Phase 9 recipe work starts from merge commit `cab8f161`. |
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Phase 9A-9E merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9e-harness-matrix` / `codex/browser-runtime-phase9e-harness-matrix` | Closed for pure recipe/domain-skill harness coverage; no production replay, locator persistence, or domain-skill writes were introduced. |
@@ -147,6 +147,7 @@
 | 2026-05-25 | Merge Phase 9E and start Phase 10A as a hosted-provider capability contract. | PR #490 merged as `c16a6720` after reviewer Arendt blocked an artifact-preservation bug, the branch was fixed, and fresh reviewer Cicero returned `REVIEW ACCEPTED`; Phase 9E final commit was `d00fd124 feat(browser): add recipe harness matrix`. | Phase 10A starts with a pure hosted-provider contract behind `BrowserProvider`/capability-card policy. It must not add a real hosted SDK, network path, credentials, UI, IPC, DB migration, provider promotion, or live execution. |
 | 2026-05-24 | Merge Phase 10A and start Phase 10B as a hosted-provider harness matrix. | PR #491 merged as `568a0af0` after reviewer Ramanujan blocked a fail-closed status bug, the branch was fixed, and fresh reviewer Avicenna returned `REVIEW ACCEPTED`; Phase 10A final commit was `55b361d6 feat(browser): add hosted provider policy contract`. | Phase 10B owns only pure harness evidence for the ADR Phase 10 gate. It must not add hosted SDKs, credentials, real network execution, provider promotion, UI, IPC, DB migration, `agentic_loop.rs`, or `tauri_commands.rs` changes. |
 | 2026-05-24 | Merge Phase 10B and start Phase 6H as identity authorization backfill. | PR #492 merged as `58e2d58b`; Phase 10B final commit was `01d96e7d feat(browser): add hosted provider harness matrix`. Tracker review found Phase 6 still had an auth WebView / payment-confirmation residual note, while code already has automation-specific browser/WebView login capture in `tauri_commands.rs`. | Phase 6H adds a generic browser identity authorization completion contract and keeps existing automation commands as thin compatibility shims. This is an explicit dry-run/special-DMZ audit fix: do not leave real identity capture trapped in a spec-only lane because `tauri_commands.rs` is large. |
+| 2026-05-25 | Merge Phase 6H and start Phase 6I payment confirmation harness. | PR #493 merged as `d248e4f5`; fresh reviewer Hume returned `REVIEW ACCEPTED` with no blocking notes. The branch added generic identity authorization IPC/bridge and thin automation login shims. | Phase 6I owns only harness evidence for the ADR Phase 6 payment-confirmation gate: payment boundary plus `ask_user_response`. No payment UI, checkout execution, provider promotion, DB migration, hosted provider, or task-loop rewrite. |
 
 ---
 
@@ -155,9 +156,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6h-identity-authorization-contract` |
-| Current phase branch | `codex/browser-runtime-phase6h-identity-authorization-contract` |
-| Current local base | `58e2d58b Merge pull request #492 from novolei/codex/browser-runtime-phase10b-hosted-provider-harness` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6i-payment-confirmation-harness` |
+| Current phase branch | `codex/browser-runtime-phase6i-payment-confirmation-harness` |
+| Current local base | `d248e4f5 Merge pull request #493 from novolei/codex/browser-runtime-phase6h-identity-authorization-contract` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -239,8 +240,9 @@
 | Phase 9E recipe/domain-skill harness matrix implementation commit | Merged through PR #490 as `d00fd124 feat(browser): add recipe harness matrix`; merge commit `c16a6720`. |
 | Phase 10A hosted-provider capability contract implementation commit | Merged through PR #491 as `55b361d6 feat(browser): add hosted provider policy contract`; merge commit `568a0af0`. |
 | Phase 10B hosted-provider harness matrix implementation commit | Merged through PR #492 as `01d96e7d feat(browser): add hosted provider harness matrix`; merge commit `58e2d58b`. |
-| Phase 6H identity-authorization implementation commit | In progress on `codex/browser-runtime-phase6h-identity-authorization-contract`; plan `docs/superpowers/plans/2026-05-24-browser-runtime-phase6h-identity-authorization-contract.md`. |
-| Known pre-existing tracked changes | None in the Phase 6H identity-authorization worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes. |
+| Phase 6H identity-authorization implementation commit | Merged through PR #493 as `7a0f9254 feat(browser): add identity authorization contract`; merge commit `d248e4f5`. |
+| Phase 6I payment-confirmation harness implementation commit | In progress on `codex/browser-runtime-phase6i-payment-confirmation-harness`; plan `docs/superpowers/plans/2026-05-25-browser-runtime-phase6i-payment-confirmation-harness.md`. |
+| Known pre-existing tracked changes | None in the Phase 6I payment-confirmation harness worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -7305,6 +7307,81 @@ Phase 6H can start because:
   list flow, and documentation sections.
 
 ### Phase 6H Identity Authorization Contract Next Action
+
+- Closed. PR #493 merged as `d248e4f5`; Phase 6H final commit was
+  `7a0f9254 feat(browser): add identity authorization contract`.
+
+## Phase 6I Payment Confirmation Harness Entry Criteria
+
+Phase 6I can start because:
+
+- PR #493 merged Phase 6H and closed the generic identity authorization
+  completion contract gap;
+- ADR Phase 6 still has a gate item for payment confirmation harness coverage;
+- current code already detects `BrowserBoundaryKind::Payment` and routes human
+  boundaries through the browser ask-user bridge;
+- the missing piece is explicit harness/scorecard evidence that a payment
+  boundary must include `ask_user_response` confirmation.
+
+## Phase 6I Payment Confirmation Harness Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-25-browser-runtime-phase6i-payment-confirmation-harness.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase6i-payment-confirmation-harness`
+- Branch:
+  `codex/browser-runtime-phase6i-payment-confirmation-harness`
+- Scope:
+  add a Browser parity payment-confirmation case and scorecard check requiring
+  both `needs_user_intervention` with kind `payment` and successful
+  `ask_user_response` evidence.
+- Current PR:
+  PR #494
+  (`https://github.com/novolei/uclaw-new/pull/494`).
+- Current commit:
+  current PR head commit: `test(browser): cover payment confirmation harness`.
+- Non-goal:
+  no payment UI, checkout execution, billing-data handling, provider promotion,
+  DB migration, hosted provider, Settings change, or task-loop rewrite.
+- Rollback:
+  revert this PR; runtime payment boundary detection and existing ask-user
+  bridge behavior remain unchanged.
+
+### Phase 6I Payment Confirmation Harness Impact Notes
+
+- GitNexus index refreshed for the Phase 6I worktree; generated
+  `AGENTS.md` / `CLAUDE.md` statistics noise was restored.
+- GitNexus impact for `BUILTIN_BROWSER_PARITY_CASES` returned LOW: no direct
+  callers/processes reported.
+- GitNexus impact for `score_browser_run` returned MEDIUM: 6 direct callers in
+  harness adapter tests, no affected execution processes, one affected module
+  (`Adapters`).
+- Fresh reviewer Lovelace blocked PR #494 because the new case pointed at
+  `/checkout` before the fixture server served that route. The branch now adds a
+  deterministic checkout fixture containing payment text and a `cc-number`
+  input, plus a focused server test proving the route exists.
+
+### Phase 6I Payment Confirmation Harness Verification Notes
+
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib harness::adapters::browser`
+  passed before reviewer fix: `18 passed; 0 failed; 2787 filtered out`.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib harness::adapters::browser`
+  passed after reviewer fix: `19 passed; 0 failed; 2787 filtered out`.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::boundary`
+  passed: `7 passed; 0 failed; 2798 filtered out`.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  passed: `42 passed; 0 failed; 2763 filtered out`.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  passed: `59 passed; 0 failed; 2746 filtered out`.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  passed: `16 passed; 0 failed; 2789 filtered out`.
+- `rustfmt --edition 2021 --check src-tauri/src/harness/adapters/browser.rs`
+  passed.
+- `git diff --check -- <changed files>` passed.
+- GitNexus staged detect reported LOW risk: 21 changed symbols across 4 files,
+  0 affected processes, and no HIGH/CRITICAL warning.
+
+### Phase 6I Payment Confirmation Harness Next Action
 
 - Commit, push PR, request a fresh reviewer, and merge only if reviewer accepts,
   GitHub reports CLEAN, tests stay green, and no HIGH/CRITICAL risk appears.

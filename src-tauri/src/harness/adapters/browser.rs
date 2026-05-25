@@ -24,6 +24,7 @@ pub const BUILTIN_BROWSER_PARITY_CASES: &[&str] = &[
     include_str!("../cases/browser/file-upload.json"),
     include_str!("../cases/browser/auth-profile-restore.json"),
     include_str!("../cases/browser/boundary-detection.json"),
+    include_str!("../cases/browser/payment-confirmation.json"),
     include_str!("../cases/browser/checkpoint-resume.json"),
     include_str!("../cases/browser/long-task-recovery.json"),
 ];
@@ -552,6 +553,37 @@ fn fixture_run_for_case(case: &BrowserParityCase, request: BrowserTaskRequest) -
             }),
             "Detected deterministic human boundary.",
         );
+        if case
+            .required_actions
+            .iter()
+            .any(|action| action == "ask_user_response")
+        {
+            push_fixture_step(
+                &mut steps,
+                &mut step_index,
+                crate::browser::session_state::BrowserTaskStepPhase::UserIntervention,
+                "ask_user_response",
+                true,
+                serde_json::json!({
+                    "decision": "continue",
+                    "kind": boundary_kind,
+                    "activeTabId": "tab-main",
+                }),
+                "User confirmed deterministic browser boundary.",
+            );
+            push_fixture_step(
+                &mut steps,
+                &mut step_index,
+                crate::browser::session_state::BrowserTaskStepPhase::Done,
+                "done",
+                true,
+                serde_json::json!({
+                    "currentUrl": current_url,
+                    "activeTabId": "tab-main",
+                }),
+                "Completed deterministic browser parity fixture after user confirmation.",
+            );
+        }
     } else {
         push_fixture_step(
             &mut steps,
@@ -655,6 +687,12 @@ impl BrowserParityFixtureServer {
                 "/login",
                 get(|| async {
                     r#"<html><head><title>Login Fixture</title></head><body><h1>Login</h1><label>Password <input type="password" name="password"></label></body></html>"#
+                }),
+            )
+            .route(
+                "/checkout",
+                get(|| async {
+                    r#"<html><head><title>Checkout Fixture</title></head><body><h1>Checkout</h1><p>Enter payment information to complete purchase.</p><label>Card number <input autocomplete="cc-number" placeholder="Card number"></label><button>Confirm purchase</button></body></html>"#
                 }),
             )
             .route(
@@ -909,6 +947,18 @@ pub fn score_browser_run(input: BrowserParityRunInput) -> BrowserParityScorecard
                 actual.unwrap_or_else(|| "<none>".to_string())
             ),
         ));
+        if expected_kind == "payment" {
+            let confirmed = run.steps.iter().any(|step| {
+                step.action_name == "ask_user_response"
+                    && step.ok
+                    && string_field(&step.action_args, "decision").as_deref() == Some("continue")
+            });
+            checks.push(check(
+                "payment_confirmation",
+                confirmed,
+                format!("payment confirmation ask_user_response={confirmed}"),
+            ));
+        }
     }
 
     if case.require_checkpoint {
@@ -1180,11 +1230,19 @@ mod tests {
     #[test]
     fn loads_all_builtin_browser_parity_cases() {
         let cases = BrowserHarnessAdapter::load_builtin_cases().unwrap();
-        assert_eq!(cases.len(), 7);
+        assert_eq!(cases.len(), 8);
         assert!(cases
             .iter()
             .any(|case| matches!(case.capability, BrowserParityCapability::FileUpload)));
         assert!(cases.iter().any(|case| case.require_checkpoint));
+        assert!(cases.iter().any(|case| {
+            case.id == "browser.payment.confirmation"
+                && case.expected_boundary_kind.as_deref() == Some("payment")
+                && case
+                    .required_actions
+                    .iter()
+                    .any(|action| action == "ask_user_response")
+        }));
     }
 
     #[test]
@@ -1246,6 +1304,74 @@ mod tests {
             .checks
             .iter()
             .any(|check| check.id == "boundary_precision" && !check.passed));
+    }
+
+    #[test]
+    fn requires_ask_user_confirmation_for_payment_boundary() {
+        let mut case = parity_case(
+            "payment",
+            BrowserParityCapability::BoundaryDetection,
+            BrowserTaskStatus::Completed,
+        );
+        case.expected_boundary_kind = Some("payment".into());
+        case.required_actions = vec!["ask_user_response".into()];
+        let score = score_browser_run(BrowserParityRunInput {
+            case,
+            run: run(
+                BrowserTaskStatus::Completed,
+                vec![
+                    step(
+                        0,
+                        "needs_user_intervention",
+                        false,
+                        serde_json::json!({ "kind": "payment" }),
+                    ),
+                    step(
+                        1,
+                        "ask_user_response",
+                        true,
+                        serde_json::json!({ "decision": "continue" }),
+                    ),
+                ],
+            ),
+            active_tab_id: None,
+            checkpoint_present: false,
+        });
+        assert!(score.passed, "{score:#?}");
+        assert!(score
+            .checks
+            .iter()
+            .any(|check| check.id == "payment_confirmation" && check.passed));
+    }
+
+    #[test]
+    fn rejects_payment_boundary_without_ask_user_confirmation() {
+        let mut case = parity_case(
+            "payment",
+            BrowserParityCapability::BoundaryDetection,
+            BrowserTaskStatus::Completed,
+        );
+        case.expected_boundary_kind = Some("payment".into());
+        case.required_actions = vec!["ask_user_response".into()];
+        let score = score_browser_run(BrowserParityRunInput {
+            case,
+            run: run(
+                BrowserTaskStatus::Completed,
+                vec![step(
+                    0,
+                    "needs_user_intervention",
+                    false,
+                    serde_json::json!({ "kind": "payment" }),
+                )],
+            ),
+            active_tab_id: None,
+            checkpoint_present: false,
+        });
+        assert!(!score.passed);
+        assert!(score
+            .checks
+            .iter()
+            .any(|check| check.id == "payment_confirmation" && !check.passed));
     }
 
     #[test]
@@ -1440,6 +1566,15 @@ mod tests {
             .unwrap()
             .to_string()
             .contains("http://127.0.0.1:4173"));
+    }
+
+    #[tokio::test]
+    async fn fixture_server_serves_checkout_payment_boundary_page() {
+        let server = BrowserParityFixtureServer::spawn().await.unwrap();
+        let url = format!("{}/checkout", server.base_url);
+        let body = reqwest::get(url).await.unwrap().text().await.unwrap();
+        assert!(body.contains("Enter payment information to complete purchase"));
+        assert!(body.contains("autocomplete=\"cc-number\""));
     }
 
     #[test]
