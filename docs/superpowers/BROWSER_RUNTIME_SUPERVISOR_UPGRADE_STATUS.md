@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-25 by Codex
-> Current phase: Completion audit / ADR closeout
+> Current phase: Final closeout after completion-audit merge
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -149,6 +149,7 @@
 | 2026-05-24 | Merge Phase 10B and start Phase 6H as identity authorization backfill. | PR #492 merged as `58e2d58b`; Phase 10B final commit was `01d96e7d feat(browser): add hosted provider harness matrix`. Tracker review found Phase 6 still had an auth WebView / payment-confirmation residual note, while code already has automation-specific browser/WebView login capture in `tauri_commands.rs`. | Phase 6H adds a generic browser identity authorization completion contract and keeps existing automation commands as thin compatibility shims. This is an explicit dry-run/special-DMZ audit fix: do not leave real identity capture trapped in a spec-only lane because `tauri_commands.rs` is large. |
 | 2026-05-25 | Merge Phase 6H and start Phase 6I payment confirmation harness. | PR #493 merged as `d248e4f5`; fresh reviewer Hume returned `REVIEW ACCEPTED` with no blocking notes. The branch added generic identity authorization IPC/bridge and thin automation login shims. | Phase 6I owns only harness evidence for the ADR Phase 6 payment-confirmation gate: payment boundary plus `ask_user_response`. No payment UI, checkout execution, provider promotion, DB migration, hosted provider, or task-loop rewrite. |
 | 2026-05-25 | Merge Phase 6I and start final completion audit. | PR #494 merged as `f6447a71`; final commit was `aadd581b test(browser): cover payment confirmation harness`. Reviewer Lovelace blocked the first revision on a missing `/checkout` fixture route; the branch added the route and server test, then fresh reviewer Mencius accepted. | All ADR phases now have merged implementation or harness evidence through `origin/main`; the remaining work is docs-only tracker closeout and requirement-by-requirement completion verification. |
+| 2026-05-25 | Merge completion audit and run final tracker closeout. | PR #495 merged as `7e94b5ed`; final commit was `020a8ffd docs(browser): close runtime supervisor completion audit`. Final audit found `Current Branch Hygiene` still described PR #495 as in progress from the PR #494 base. | One last docs-only closeout updates Branch Hygiene to the PR #495 merge state without hardcoding mutable PR head hashes. If this closeout row is present on `origin/main`, run final audit and mark the Browser Runtime goal complete if no new contradiction appears. |
 
 ---
 
@@ -157,9 +158,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-completion-audit` |
-| Current phase branch | `codex/browser-runtime-completion-audit` |
-| Current local base | `f6447a71 Merge pull request #494 from novolei/codex/browser-runtime-phase6i-payment-confirmation-harness` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-final-closeout` |
+| Current phase branch | `codex/browser-runtime-final-closeout` |
+| Current local base | `7e94b5ed Merge pull request #495 from novolei/codex/browser-runtime-completion-audit` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -243,8 +244,9 @@
 | Phase 10B hosted-provider harness matrix implementation commit | Merged through PR #492 as `01d96e7d feat(browser): add hosted provider harness matrix`; merge commit `58e2d58b`. |
 | Phase 6H identity-authorization implementation commit | Merged through PR #493 as `7a0f9254 feat(browser): add identity authorization contract`; merge commit `d248e4f5`. |
 | Phase 6I payment-confirmation harness implementation commit | Merged through PR #494 as `aadd581b test(browser): cover payment confirmation harness`; merge commit `f6447a71`. |
-| Completion audit commit | In progress on `codex/browser-runtime-completion-audit`; plan `docs/superpowers/plans/2026-05-25-browser-runtime-completion-audit.md`. |
-| Known pre-existing tracked changes | None in the completion-audit worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes. |
+| Completion audit commit | Merged through PR #495 as `020a8ffd docs(browser): close runtime supervisor completion audit`; merge commit `7e94b5ed`. |
+| Final closeout commit | Docs-only closeout row on `codex/browser-runtime-final-closeout`; plan `docs/superpowers/plans/2026-05-25-browser-runtime-final-closeout.md`. This row deliberately does not hardcode the mutable PR head hash; GitHub's PR commit list is canonical while the branch is under review. If this row is present on `origin/main`, the closeout PR has merged and the next action is final goal completion audit. |
+| Known pre-existing tracked changes | None in the final-closeout worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -7446,9 +7448,68 @@ The final completion audit can start because:
 
 ### Completion Audit Next Action
 
-- Request a fresh reviewer on the updated PR #495 head, then merge only if the
-  reviewer accepts and GitHub reports CLEAN. After merge, sync `main` and run
-  the final ADR/tracker completion audit; no further runtime phase is planned.
+- Closed. PR #495 merged as `7e94b5ed`; final audit after merge found only
+  tracker hygiene drift in the Current Branch Hygiene table. Continue with the
+  docs-only final closeout below; no further runtime phase is planned.
+
+## Final Closeout Entry Criteria
+
+The final tracker closeout can start because:
+
+- PR #495 merged the completion-audit tracker updates into `origin/main`;
+- `origin/main` now includes Browser Runtime implementation and harness evidence
+  through PR #494 plus completion-audit evidence through PR #495;
+- the only remaining contradiction found by the final audit is tracker hygiene:
+  the Branch Hygiene table still named PR #495's worktree/base as active.
+
+## Final Closeout Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-25-browser-runtime-final-closeout.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-final-closeout`
+- Branch:
+  `codex/browser-runtime-final-closeout`
+- Scope:
+  update tracker current-state rows to reflect PR #495 merge state and avoid
+  hardcoding mutable review head hashes.
+- Current PR:
+  GitHub PR for `codex/browser-runtime-final-closeout` is canonical while this
+  branch is under review; if this section is present on `origin/main`, the PR
+  has already merged and the next action is final goal completion audit.
+- Current commit:
+  latest pushed head of `codex/browser-runtime-final-closeout`; GitHub's PR
+  commit list is canonical until merge.
+- Non-goal:
+  no Rust, TypeScript, UI, IPC, DB migration, provider promotion, hosted SDK,
+  browser worker, identity runtime, payment UI, or task-loop behavior change.
+- Rollback:
+  revert this docs-only PR; all Browser Runtime implementation PRs remain
+  untouched.
+
+### Final Closeout Impact Notes
+
+- Documentation only.
+- No existing function/class/method/symbol is edited, so pre-edit GitNexus
+  symbol impact is not required.
+- GitNexus `detect_changes` is still required before commit.
+
+### Final Closeout Verification Notes
+
+- Passed:
+  `git diff --check -- docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-25-browser-runtime-final-closeout.md`.
+- Passed:
+  `rg -n "Current phase|Current Branch Hygiene|Completion audit commit|Final closeout|PR #495|7e94b5ed" docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md`.
+- Passed:
+  GitNexus `detect_changes` reported LOW risk for documentation-only tracker
+  sections with 0 affected processes and no HIGH/CRITICAL warning.
+
+### Final Closeout Next Action
+
+- Run docs verification and GitNexus `detect_changes`, open the final-closeout
+  PR, request fresh review, and merge only if review accepts and GitHub reports
+  CLEAN. Once this section is present on `origin/main`, run the final ADR/tracker
+  audit and mark the Browser Runtime goal complete if it still proves out.
 
 ---
 
