@@ -35,7 +35,7 @@ impl ComposeQuery {
 
 /// Per-fragment selection observation — what passed budget, what was
 /// rejected. Returned for the M2-J UI.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ComposeStats {
     /// Number of fragments in the manager's available set when
     /// `for_prompt` was called.
@@ -126,12 +126,47 @@ impl ContextManager {
     /// concurrent fetch via `futures::join_all` is a M2-B optimization
     /// follow-up (correctness wins out over speed in the pilot).
     pub async fn for_prompt(&self, query: &ComposeQuery) -> ComposedContext {
+        let system_prompt = self.baseline_system_prompt();
+        self.for_prompt_inner(query, system_prompt).await
+    }
+
+    /// B2 wire-up: same selection logic as [`for_prompt`], but the
+    /// baseline is rendered via A4's [`baseline_blocks::render_with_context`]
+    /// so per-turn [`InjectionContext`](baseline_blocks::InjectionContext)
+    /// state (`is_first_act_turn`, `last_error_kind`,
+    /// `context_pressure_ratio`) gates `FirstActTurnOnly` / `OnErrorRecovery`
+    /// / `OnContextPressure` blocks.
+    ///
+    /// Cache-discipline note: all 10 current production blocks use the
+    /// default `Always` policy, so for today's registry this is
+    /// byte-identical to [`for_prompt`] regardless of `injection_ctx`.
+    /// The injection channel is wired but inert until a future PR adds a
+    /// non-`Always` block. The dispatcher does NOT use this method's
+    /// `system_prompt` field for the live prompt — it composes the full
+    /// prompt (user base + workspace + baseline + mode + manifest)
+    /// itself via `mode_prompts`; this method's role at the call site is
+    /// fragment selection + `ComposeStats`.
+    pub async fn for_prompt_with_injection(
+        &self,
+        query: &ComposeQuery,
+        injection_ctx: &baseline_blocks::InjectionContext,
+    ) -> ComposedContext {
+        let system_prompt = baseline_blocks::render_with_context(injection_ctx);
+        self.for_prompt_inner(query, system_prompt).await
+    }
+
+    /// Shared body for [`for_prompt`] / [`for_prompt_with_injection`].
+    /// Takes the already-rendered `system_prompt` so the two public
+    /// entry points only differ in how the baseline is rendered.
+    async fn for_prompt_inner(
+        &self,
+        query: &ComposeQuery,
+        system_prompt: String,
+    ) -> ComposedContext {
         let mut stats = ComposeStats {
             fragments_available: self.fragments.len(),
             ..Default::default()
         };
-
-        let system_prompt = self.baseline_system_prompt();
 
         // Early-out: budget or count is zero → baseline only.
         if query.max_fragments == 0 || query.fragment_token_budget == 0 {
@@ -375,6 +410,86 @@ mod tests {
         assert_eq!(q.fragment_token_budget, 8192);
         assert_eq!(q.max_fragments, 4);
         assert_eq!(q.topics, vec!["x"]);
+    }
+
+    // ── for_prompt_with_injection (B2) ──────────────────────────────
+
+    #[tokio::test]
+    async fn for_prompt_with_injection_baseline_matches_for_prompt() {
+        // With InjectionContext::baseline(), the new method must produce
+        // a byte-identical system_prompt to the back-compat for_prompt
+        // (all 10 production blocks are Always-policy → render_with_context
+        // == render_all). This is the cache-discipline invariant.
+        let mut m = ContextManager::new();
+        m.add_fragment(convo("t1"));
+        let q = ComposeQuery::defaults_with_topics(vec!["conversation".into()]);
+        let baseline = crate::agent::baseline_blocks::InjectionContext::baseline();
+
+        let via_shim = m.for_prompt(&q).await;
+        let via_inj = m.for_prompt_with_injection(&q, &baseline).await;
+
+        assert_eq!(
+            via_shim.system_prompt, via_inj.system_prompt,
+            "baseline injection must be byte-identical to for_prompt"
+        );
+        assert_eq!(
+            via_shim.injected_fragments.len(),
+            via_inj.injected_fragments.len()
+        );
+        assert_eq!(via_shim.stats, via_inj.stats);
+    }
+
+    #[tokio::test]
+    async fn for_prompt_with_injection_is_byte_stable_across_inj_variants() {
+        // No production block overrides the Always policy today, so the
+        // rendered baseline is identical regardless of injection state.
+        // This guards the "turns 2+ are byte-stable" requirement: flipping
+        // is_first_act_turn / last_error_kind / pressure does NOT change the
+        // baseline bytes until a future PR adds a non-Always block.
+        let m = ContextManager::new();
+        let q = ComposeQuery::defaults_with_topics(vec![]);
+
+        let first_turn = crate::agent::baseline_blocks::InjectionContext {
+            is_first_act_turn: true,
+            last_error_kind: Some("Timeout".into()),
+            context_pressure_ratio: 0.9,
+        };
+        let later_turn = crate::agent::baseline_blocks::InjectionContext::baseline();
+
+        let a = m.for_prompt_with_injection(&q, &first_turn).await;
+        let b = m.for_prompt_with_injection(&q, &later_turn).await;
+        assert_eq!(
+            a.system_prompt, b.system_prompt,
+            "all production blocks are Always — baseline must not vary by injection"
+        );
+    }
+
+    #[tokio::test]
+    async fn for_prompt_with_injection_selects_fragments() {
+        let mut m = ContextManager::new();
+        m.add_fragment(convo("t1"));
+        m.add_fragment(convo("t2"));
+        let q = ComposeQuery::defaults_with_topics(vec!["conversation".into()]);
+        let baseline = crate::agent::baseline_blocks::InjectionContext::baseline();
+        let out = m.for_prompt_with_injection(&q, &baseline).await;
+        assert_eq!(out.stats.fragments_available, 2);
+        assert_eq!(out.stats.fragments_selected, 2);
+    }
+
+    #[test]
+    fn compose_stats_serializes_to_json() {
+        // get_compose_stats Tauri command crosses the IPC boundary →
+        // ComposeStats must serialize.
+        let stats = ComposeStats {
+            fragments_available: 3,
+            fragments_selected: 2,
+            fragments_dropped_for_count: 1,
+            fragments_dropped_for_budget: 0,
+            fragment_tokens_used: 42,
+        };
+        let json = serde_json::to_string(&stats).unwrap();
+        assert!(json.contains("\"fragments_available\":3"));
+        assert!(json.contains("\"fragments_selected\":2"));
     }
 
     // ── ComposeStats ────────────────────────────────────────────────
