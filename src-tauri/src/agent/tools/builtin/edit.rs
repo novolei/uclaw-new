@@ -851,3 +851,255 @@ mod path_args_tests {
         assert_eq!(tool.path_args(&args), vec!["lib.rs"]);
     }
 }
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+    use crate::agent::tools::tool::Tool;
+    use tempfile::tempdir;
+
+    // -----------------------------------------------------------------------
+    // Test 5.1 — legacy single-file form works unchanged
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn legacy_single_file_unchanged() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("foo.rs");
+        tokio::fs::write(&file_path, "fn foo() {}\n").await.unwrap();
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let params = serde_json::json!({
+            "path": "foo.rs",
+            "edits": [{"old_text": "fn foo()", "new_text": "fn bar()"}]
+        });
+        let result = tool.execute(params).await.unwrap();
+        let text = result.result["content"].as_str().unwrap();
+        assert!(text.contains("foo.rs"), "output should mention path: {}", text);
+        assert!(text.contains("edit"), "output should mention edits: {}", text);
+
+        let new_content = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert!(new_content.contains("fn bar()"), "file content: {}", new_content);
+        assert!(!new_content.contains("fn foo()"), "file content: {}", new_content);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5.2 — batch form: two files both succeed
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn batch_two_files_both_succeed() {
+        let dir = tempdir().unwrap();
+        let file_a = dir.path().join("a.rs");
+        let file_b = dir.path().join("b.rs");
+        tokio::fs::write(&file_a, "fn alpha() {}\n").await.unwrap();
+        tokio::fs::write(&file_b, "fn beta() {}\n").await.unwrap();
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let params = serde_json::json!({
+            "files": [
+                {"path": "a.rs", "edits": [{"old_text": "fn alpha()", "new_text": "fn ALPHA()"}]},
+                {"path": "b.rs", "edits": [{"old_text": "fn beta()", "new_text": "fn BETA()"}]}
+            ]
+        });
+        let result = tool.execute(params).await.unwrap();
+        let text = result.result["content"].as_str().unwrap();
+
+        assert!(text.contains("✓ a.rs"), "output: {}", text);
+        assert!(text.contains("✓ b.rs"), "output: {}", text);
+        assert!(text.contains("2 succeeded"), "output: {}", text);
+
+        let content_a = tokio::fs::read_to_string(&file_a).await.unwrap();
+        let content_b = tokio::fs::read_to_string(&file_b).await.unwrap();
+        assert!(content_a.contains("fn ALPHA()"), "a.rs: {}", content_a);
+        assert!(content_b.contains("fn BETA()"), "b.rs: {}", content_b);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5.3 — first file validation fails → second file skipped with EXACT text
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn batch_first_file_validation_fails() {
+        let dir = tempdir().unwrap();
+        let file_a = dir.path().join("a.rs");
+        let file_b = dir.path().join("b.rs");
+        tokio::fs::write(&file_a, "fn alpha() {}\n").await.unwrap();
+        tokio::fs::write(&file_b, "fn beta() {}\n").await.unwrap();
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let params = serde_json::json!({
+            "files": [
+                // old_text not present in a.rs → validation failure
+                {"path": "a.rs", "edits": [{"old_text": "NONEXISTENT_TEXT", "new_text": "replaced"}]},
+                {"path": "b.rs", "edits": [{"old_text": "fn beta()", "new_text": "fn BETA()"}]}
+            ]
+        });
+        let result = tool.execute(params).await.unwrap();
+        let text = result.result["content"].as_str().unwrap();
+
+        assert!(text.contains("✗ a.rs"), "a.rs should show failure: {}", text);
+        // EXACT required string per spec §3.2 and plan Task 5.3
+        assert!(
+            text.contains("Skipped due to failure on prior file in batch"),
+            "must contain exact skip reason, got: {}",
+            text
+        );
+        assert!(text.contains("- b.rs"), "b.rs should be skipped: {}", text);
+
+        // Neither file changed
+        let content_a = tokio::fs::read_to_string(&file_a).await.unwrap();
+        let content_b = tokio::fs::read_to_string(&file_b).await.unwrap();
+        assert_eq!(content_a, "fn alpha() {}\n");
+        assert_eq!(content_b, "fn beta() {}\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5.4 — first file apply fails (nonexistent file) → second skipped
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn batch_first_file_apply_fails() {
+        let dir = tempdir().unwrap();
+        let file_b = dir.path().join("b.rs");
+        tokio::fs::write(&file_b, "fn beta() {}\n").await.unwrap();
+        // nonexistent.rs is deliberately not created
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let params = serde_json::json!({
+            "files": [
+                // file doesn't exist → read fails in validate_single_file
+                {"path": "nonexistent.rs", "edits": [{"old_text": "anything", "new_text": "replaced"}]},
+                {"path": "b.rs", "edits": [{"old_text": "fn beta()", "new_text": "fn BETA()"}]}
+            ]
+        });
+        let result = tool.execute(params).await.unwrap();
+        let text = result.result["content"].as_str().unwrap();
+
+        assert!(text.contains("✗ nonexistent.rs"), "output: {}", text);
+        assert!(
+            text.contains("Skipped due to failure on prior file in batch"),
+            "output: {}",
+            text
+        );
+
+        // b.rs unchanged
+        let content_b = tokio::fs::read_to_string(&file_b).await.unwrap();
+        assert_eq!(content_b, "fn beta() {}\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5.5 — middle file fails: a passes validation, b fails, c skipped;
+    //            two-phase means a is also NOT applied (all-or-nothing)
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn batch_middle_file_fails() {
+        let dir = tempdir().unwrap();
+        let file_a = dir.path().join("a.rs");
+        let file_b = dir.path().join("b.rs");
+        let file_c = dir.path().join("c.rs");
+        tokio::fs::write(&file_a, "fn alpha() {}\n").await.unwrap();
+        tokio::fs::write(&file_b, "fn beta() {}\n").await.unwrap();
+        tokio::fs::write(&file_c, "fn gamma() {}\n").await.unwrap();
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let params = serde_json::json!({
+            "files": [
+                {"path": "a.rs", "edits": [{"old_text": "fn alpha()", "new_text": "fn ALPHA()"}]},
+                // b.rs: old_text missing → Phase 1 validation failure
+                {"path": "b.rs", "edits": [{"old_text": "MISSING_TEXT", "new_text": "replaced"}]},
+                {"path": "c.rs", "edits": [{"old_text": "fn gamma()", "new_text": "fn GAMMA()"}]}
+            ]
+        });
+        let result = tool.execute(params).await.unwrap();
+        let text = result.result["content"].as_str().unwrap();
+
+        assert!(text.contains("✗ b.rs"), "b.rs should fail: {}", text);
+        assert!(
+            text.contains("Skipped due to failure on prior file in batch"),
+            "output: {}",
+            text
+        );
+        assert!(text.contains("- c.rs"), "c.rs should be skipped: {}", text);
+
+        // Two-phase: b fails in Phase 1, so Phase 2 never runs — a.rs NOT written
+        let content_a = tokio::fs::read_to_string(&file_a).await.unwrap();
+        assert_eq!(
+            content_a, "fn alpha() {}\n",
+            "a.rs must be unchanged — b's Phase-1 failure aborts Phase 2 entirely"
+        );
+        let content_c = tokio::fs::read_to_string(&file_c).await.unwrap();
+        assert_eq!(content_c, "fn gamma() {}\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5.6 — path_args collects ALL batch paths in order
+    // -----------------------------------------------------------------------
+    #[test]
+    fn path_args_collects_all_batch_paths() {
+        let tool = EditTool::new(std::path::PathBuf::from("/tmp"));
+        let args = serde_json::json!({
+            "files": [
+                {"path": "src/a.rs", "edits": []},
+                {"path": "src/b.rs", "edits": []},
+                {"path": "src/c.rs", "edits": []}
+            ]
+        });
+        let paths = tool.path_args(&args);
+        assert_eq!(paths, vec!["src/a.rs", "src/b.rs", "src/c.rs"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5.7 — neither files nor path → InvalidParams with helpful message
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn batch_neither_files_nor_path() {
+        let tool = EditTool::new(std::path::PathBuf::from("/tmp"));
+        let err = tool.execute(serde_json::json!({})).await.unwrap_err();
+        match err {
+            ToolError::InvalidParams(msg) => {
+                assert!(
+                    msg.contains("files") || msg.contains("path"),
+                    "error should mention 'files' or 'path', got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected InvalidParams, got {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5.8 — two-phase atomicity: b fails validation → a NOT written to disk
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn batch_atomic_validate_then_apply() {
+        let dir = tempdir().unwrap();
+        let file_a = dir.path().join("a.rs");
+        let file_b = dir.path().join("b.rs");
+
+        let original_a = "fn alpha() { /* original */ }\n";
+        tokio::fs::write(&file_a, original_a).await.unwrap();
+        tokio::fs::write(&file_b, "fn beta() {}\n").await.unwrap();
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let params = serde_json::json!({
+            "files": [
+                // a.rs: valid edit (would succeed alone)
+                {"path": "a.rs", "edits": [{"old_text": "fn alpha()", "new_text": "fn ALPHA()"}]},
+                // b.rs: old_text absent → Phase-1 validation failure
+                {"path": "b.rs", "edits": [{"old_text": "DEFINITELY_NOT_IN_FILE", "new_text": "boom"}]}
+            ]
+        });
+
+        let result = tool.execute(params).await.unwrap();
+        let text = result.result["content"].as_str().unwrap();
+
+        // b.rs should be marked failed
+        assert!(text.contains("✗ b.rs"), "output: {}", text);
+
+        // CRITICAL: a.rs must NOT have been written to disk.
+        // Phase 1 catches b's validation failure before Phase 2 writes anything.
+        let on_disk_a = tokio::fs::read_to_string(&file_a).await.unwrap();
+        assert_eq!(
+            on_disk_a,
+            original_a,
+            "a.rs MUST be unchanged — b.rs validation failure must prevent all disk writes (two-phase atomicity)"
+        );
+    }
+}
