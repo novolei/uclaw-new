@@ -173,7 +173,7 @@ Run:
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_execution
-cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution_tests
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution::tests
 ```
 
 Expected: FAIL because route options do not contain active provider evidence.
@@ -242,7 +242,7 @@ Run:
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_execution
-cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution_tests
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution::tests
 ```
 
 Expected: PASS.
@@ -251,7 +251,7 @@ Expected: PASS.
 
 ```bash
 git add src-tauri/src/browser/runtime_execution.rs src-tauri/src/browser/provider_execution.rs src-tauri/src/browser/provider_execution_tests.rs
-git commit -m "feat(browser-runtime): route execution from control center" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_execution; cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution_tests (expected PASS)"
+git commit -m "feat(browser-runtime): route execution from control center" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_execution; cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution::tests (expected PASS)"
 ```
 
 ### Task 3: Pass Config-Aware Runtime Status into Task-Time Tools
@@ -317,7 +317,7 @@ Run:
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml --lib browser::tools
 cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_execution
-cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution_tests
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution::tests
 ```
 
 Expected: PASS.
@@ -326,7 +326,7 @@ Expected: PASS.
 
 ```bash
 git add src-tauri/src/browser/tools.rs src-tauri/src/browser/agent_loop.rs src-tauri/src/tauri_commands.rs
-git commit -m "feat(browser-runtime): use config-aware routing in browser tools" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml --lib browser::tools; cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_execution; cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution_tests (expected PASS)"
+git commit -m "feat(browser-runtime): use config-aware routing in browser tools" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml --lib browser::tools; cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_execution; cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution::tests (expected PASS)"
 ```
 
 ### Task 4: Route Evidence and Tracker Update
@@ -356,7 +356,7 @@ fn route_artifact_includes_skipped_provider_reasons() {
 
 - [ ] **Step 2: Run failing test**
 
-Run: `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::rollout_bridge_tests`
+Run: `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::rollout_bridge::tests`
 
 Expected: FAIL until skipped-provider evidence is serialized.
 
@@ -382,9 +382,9 @@ In `BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md`, add one row stating PR4 promo
 Run:
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml --lib browser::rollout_bridge_tests
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::rollout_bridge::tests
 cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_execution
-cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution_tests
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution::tests
 git diff --check -- src-tauri/src/browser/rollout_bridge.rs src-tauri/src/browser/rollout_bridge_tests.rs docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md
 ```
 
@@ -394,7 +394,7 @@ Expected: PASS and no whitespace errors.
 
 ```bash
 git add src-tauri/src/browser/rollout_bridge.rs src-tauri/src/browser/rollout_bridge_tests.rs docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md
-git commit -m "feat(browser-runtime): record control center route evidence" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml --lib browser::rollout_bridge_tests; cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_execution; cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution_tests; git diff --check -- src-tauri/src/browser/rollout_bridge.rs src-tauri/src/browser/rollout_bridge_tests.rs docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md (expected PASS)"
+git commit -m "feat(browser-runtime): record control center route evidence" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml --lib browser::rollout_bridge::tests; cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_execution; cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution::tests; git diff --check -- src-tauri/src/browser/rollout_bridge.rs src-tauri/src/browser/rollout_bridge_tests.rs docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md (expected PASS)"
 ```
 
 ## Final Verification
@@ -405,8 +405,8 @@ Run:
 cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_status
 cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center
 cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_execution
-cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution_tests
-cargo test --manifest-path src-tauri/Cargo.toml --lib browser::rollout_bridge_tests
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution::tests
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::rollout_bridge::tests
 cargo test --manifest-path src-tauri/Cargo.toml --lib browser::tools
 rustfmt --edition 2021 --check src-tauri/src/browser/runtime_status.rs src-tauri/src/browser/runtime_control_center.rs src-tauri/src/browser/runtime_execution.rs src-tauri/src/browser/provider_execution.rs src-tauri/src/browser/tools.rs src-tauri/src/browser/agent_loop.rs src-tauri/src/tauri_commands.rs
 npx gitnexus detect-changes
