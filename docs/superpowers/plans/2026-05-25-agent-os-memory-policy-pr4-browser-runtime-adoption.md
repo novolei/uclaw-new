@@ -28,7 +28,7 @@
 - Modify: `src-tauri/src/browser/mod.rs`
 - Create: `src-tauri/src/browser/runtime_memory_policy_tests.rs`
 
-- [ ] **Step 1: Add module exports**
+- [x] **Step 1: Add module exports**
 
 In `src-tauri/src/browser/mod.rs`, add:
 
@@ -38,7 +38,7 @@ pub mod runtime_memory_policy;
 mod runtime_memory_policy_tests;
 ```
 
-- [ ] **Step 2: Write evidence classification tests**
+- [x] **Step 2: Write evidence classification tests**
 
 Create `src-tauri/src/browser/runtime_memory_policy_tests.rs`:
 
@@ -79,7 +79,7 @@ fn promoted_browser_knowledge_adds_gbrain_write() {
 }
 ```
 
-- [ ] **Step 3: Implement adapter classification**
+- [x] **Step 3: Implement adapter classification**
 
 Create `src-tauri/src/browser/runtime_memory_policy.rs`:
 
@@ -142,7 +142,7 @@ pub fn classify_browser_evidence(
 }
 ```
 
-- [ ] **Step 4: Run adapter tests**
+- [x] **Step 4: Run adapter tests**
 
 Run:
 
@@ -157,13 +157,13 @@ Expected: PASS.
 **Files:**
 - Modify: `src-tauri/src/browser/memory_adapter.rs`
 
-- [ ] **Step 1: Run GitNexus impact**
+- [x] **Step 1: Run GitNexus impact**
 
 Before editing `BrowserLongTermMemoryAdapter`, run GitNexus impact for `BrowserLongTermMemoryAdapter` upstream.
 
 Expected: if risk is HIGH/CRITICAL, stop and ask for review before editing.
 
-- [ ] **Step 2: Add policy classification helper without removing legacy writes**
+- [x] **Step 2: Add policy classification helper without removing legacy writes**
 
 In `BrowserLongTermMemoryAdapter::record_checkpoint`, before `self.record(...)`, add a local classification call and trace:
 
@@ -183,7 +183,7 @@ tracing::debug!(
 
 This PR does not execute the policy path from production code yet. It proves classification on the narrow checkpoint path while preserving legacy behavior.
 
-- [ ] **Step 3: Add regression test for no gbrain auto-promotion**
+- [x] **Step 3: Add regression test for no gbrain auto-promotion**
 
 In `runtime_memory_policy_tests.rs`, add:
 
@@ -203,7 +203,7 @@ fn unpromoted_browser_payload_never_adds_gbrain_action() {
 }
 ```
 
-- [ ] **Step 4: Run browser tests**
+- [x] **Step 4: Run browser tests**
 
 Run:
 
@@ -219,7 +219,7 @@ Expected: PASS. If the second filter matches no tests, run `cargo test --manifes
 **Files:**
 - All PR4 files listed above.
 
-- [ ] **Step 1: Run focused test set**
+- [x] **Step 1: Run focused test set**
 
 Run:
 
@@ -230,7 +230,7 @@ cargo test --manifest-path src-tauri/Cargo.toml memory_policy --lib
 
 Expected: PASS.
 
-- [ ] **Step 2: Format and diff check**
+- [x] **Step 2: Format and diff check**
 
 Run:
 
@@ -241,13 +241,13 @@ git diff --check -- src-tauri/src/browser src-tauri/src/memory_policy docs/super
 
 Expected: no diff-check output.
 
-- [ ] **Step 3: GitNexus detect**
+- [x] **Step 3: GitNexus detect**
 
 Run GitNexus `detect_changes(scope=staged)`.
 
 Expected: changed flow should be limited to browser memory classification and new browser adapter tests. HIGH/CRITICAL requires review.
 
-- [ ] **Step 4: Commit PR4**
+- [x] **Step 4: Commit PR4**
 
 Run:
 

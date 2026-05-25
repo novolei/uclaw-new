@@ -156,6 +156,17 @@ impl BrowserLongTermMemoryAdapter {
             "reason": reason,
             "memory": memory,
         });
+        let policy_decision = crate::browser::runtime_memory_policy::classify_browser_evidence(
+            format!("{}:checkpoint:{}", run.run_id, step_index),
+            run.run_id.clone(),
+            serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into()),
+            None,
+        );
+        tracing::debug!(
+            run_id = %run.run_id,
+            action_count = policy_decision.actions.len(),
+            "browser checkpoint classified by memory policy"
+        );
         self.record(
             run,
             BrowserLongTermMemoryEventKind::Checkpoint,
