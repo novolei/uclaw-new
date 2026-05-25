@@ -251,6 +251,7 @@ mod tests {
     };
     use super::*;
     use crate::browser::playwright_cli::PLAYWRIGHT_CLI_PROVIDER_ID;
+    use crate::browser::provider::BrowserProbeStatus;
     use crate::browser::runtime_control_center::BrowserRuntimeProviderConfig;
 
     #[test]
@@ -296,6 +297,34 @@ mod tests {
         assert_eq!(
             report.provider_readiness.playwright_cli.setup_checks[0].id,
             "playwright_cli_feature_flag"
+        );
+    }
+
+    #[test]
+    fn config_aware_status_enables_cli_feature_flag_in_provider_readiness() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let runtime_pack = fixture_runtime_pack_status(temp_dir.path(), true);
+        let mut config = BrowserRuntimeProviderConfig::default();
+        config.playwright_cli_enabled = true;
+
+        let report = compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config);
+
+        assert!(report.control_center.feature_flags.playwright_cli);
+        assert_eq!(
+            report.provider_readiness.playwright_cli.setup_checks[0].id,
+            "playwright_cli_feature_flag"
+        );
+        assert_eq!(
+            report.provider_readiness.playwright_cli.setup_checks[0].status,
+            BrowserProbeStatus::Passed
+        );
+        assert_eq!(
+            report.provider_readiness.playwright_cli.setup_checks[1].id,
+            "runtime_pack_ready"
+        );
+        assert_eq!(
+            report.provider_readiness.playwright_cli.setup_checks[1].status,
+            BrowserProbeStatus::Passed
         );
     }
 
