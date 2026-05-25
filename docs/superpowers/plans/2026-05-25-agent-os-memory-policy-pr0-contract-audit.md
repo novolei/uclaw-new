@@ -24,7 +24,7 @@
 **Files:**
 - Create: `docs/superpowers/reports/2026-05-25-agent-os-memory-policy-contract-audit.md`
 
-- [ ] **Step 1: Create the audit report skeleton**
+- [x] **Step 1: Create the audit report skeleton**
 
 Add this file:
 
@@ -96,7 +96,7 @@ through `src-tauri/src/memory_policy/`. It does not change runtime behavior.
 - GitNexus `detect_changes` with docs-only LOW risk.
 ```
 
-- [ ] **Step 2: Verify the skeleton has no markdown whitespace errors**
+- [x] **Step 2: Verify the skeleton has no markdown whitespace errors**
 
 Run:
 
@@ -106,7 +106,7 @@ git diff --check -- docs/superpowers/reports/2026-05-25-agent-os-memory-policy-c
 
 Expected: no output.
 
-- [ ] **Step 3: Fill audit rows with command evidence**
+- [x] **Step 3: Fill audit rows with command evidence**
 
 Run these commands and append the high-signal matches under an "Evidence Commands" section:
 
@@ -124,7 +124,7 @@ Expected: each command prints file/line references or, for the freeze-regex comm
 **Files:**
 - Modify: `docs/superpowers/specs/2026-05-25-agent-os-spine-phase-1-memory-policy-design.md`
 
-- [ ] **Step 1: Add PR0 audit reference**
+- [x] **Step 1: Add PR0 audit reference**
 
 Add this paragraph after "The implementation should deepen existing modules rather than introduce a new parallel memory, browser, or runtime stack.":
 
@@ -135,7 +135,7 @@ It is the review baseline for PR1 and records the exact call sites that are
 allowed to remain legacy until each adoption PR switches a narrow path.
 ```
 
-- [ ] **Step 2: Verify the spec points to the report**
+- [x] **Step 2: Verify the spec points to the report**
 
 Run:
 
@@ -151,7 +151,7 @@ Expected: one match.
 - Test: `docs/superpowers/reports/2026-05-25-agent-os-memory-policy-contract-audit.md`
 - Test: `docs/superpowers/specs/2026-05-25-agent-os-spine-phase-1-memory-policy-design.md`
 
-- [ ] **Step 1: Run docs checks**
+- [x] **Step 1: Run docs checks**
 
 Run:
 
@@ -162,13 +162,13 @@ rg -n 'TB[D]|TO[DO]|FIX[ME]|place' docs/superpowers/reports/2026-05-25-agent-os-
 
 Expected: first command has no output; second command has no matches and exits 1.
 
-- [ ] **Step 2: Run GitNexus detect-changes**
+- [x] **Step 2: Run GitNexus detect-changes**
 
 Use GitNexus `detect_changes` with `scope=staged` after staging only these docs files.
 
 Expected: LOW risk, no changed symbols, no affected processes.
 
-- [ ] **Step 3: Commit PR0**
+- [x] **Step 3: Commit PR0**
 
 Run:
 

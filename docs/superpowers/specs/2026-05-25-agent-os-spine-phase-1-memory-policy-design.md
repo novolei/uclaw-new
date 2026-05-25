@@ -76,6 +76,11 @@ The repo already has several useful skeletons:
 The implementation should deepen existing modules rather than introduce a new
 parallel memory, browser, or runtime stack.
 
+The PR0 implementation audit lives at
+`docs/superpowers/reports/2026-05-25-agent-os-memory-policy-contract-audit.md`.
+It is the review baseline for PR1 and records the exact call sites that are
+allowed to remain legacy until each adoption PR switches a narrow path.
+
 ## Roadmap Across All Six Findings
 
 ### 1. Concentrate Memory Policy
