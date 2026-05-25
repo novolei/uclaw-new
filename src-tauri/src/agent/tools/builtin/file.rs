@@ -3,6 +3,16 @@ use std::path::PathBuf;
 use tokio::fs;
 use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 
+/// FNV-1a 32-bit hash of file content. Delegates to anchor_state::fnv1a_32
+/// (same algorithm Dirac uses for contentHash in src/utils/line-hashing.ts)
+/// so hash values are algorithm-compatible across the codebase.
+///
+/// Reuses `anchor_state::fnv1a_32` — no duplication of the algorithm.
+/// [C1-Dirac-A3]
+pub fn compute_file_hash(content: &str) -> u32 {
+    crate::agent::anchor_state::fnv1a_32(content.as_bytes())
+}
+
 pub struct ReadFileTool { workspace_root: PathBuf }
 
 impl ReadFileTool {
@@ -54,7 +64,11 @@ impl Tool for ReadFileTool {
             Err(e) => return Err(e.into()),
         };
 
-        Ok(ToolOutput::success(&content, start.elapsed().as_millis() as u64))
+        let current_hash = compute_file_hash(&content);
+        let header = format!("[File Hash: 0x{:08x}]", current_hash);
+        let output = format!("{}\n{}", header, content);
+
+        Ok(ToolOutput::success(&output, start.elapsed().as_millis() as u64))
     }
 }
 
