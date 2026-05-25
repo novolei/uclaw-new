@@ -29,7 +29,7 @@
 - Modify: `src-tauri/src/memory_policy/tests.rs`
 - Create: `src-tauri/src/memory_policy/targets/gbrain.rs`
 
-- [ ] **Step 1: Write failing formatting test**
+- [x] **Step 1: Write failing formatting test**
 
 Append:
 
@@ -45,7 +45,7 @@ fn gbrain_target_formats_slug_and_markdown() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify failure**
+- [x] **Step 2: Run test to verify failure**
 
 Run:
 
@@ -55,7 +55,7 @@ cargo test --manifest-path src-tauri/Cargo.toml memory_policy::tests::gbrain_tar
 
 Expected: FAIL because `targets::gbrain` is missing.
 
-- [ ] **Step 3: Implement request formatting**
+- [x] **Step 3: Implement request formatting**
 
 Create `src-tauri/src/memory_policy/targets/gbrain.rs`:
 
@@ -109,7 +109,7 @@ fn yaml_escape(value: &str) -> String {
 }
 ```
 
-- [ ] **Step 4: Export module**
+- [x] **Step 4: Export module**
 
 In `src-tauri/src/memory_policy/targets/mod.rs`, add:
 
@@ -117,7 +117,7 @@ In `src-tauri/src/memory_policy/targets/mod.rs`, add:
 pub mod gbrain;
 ```
 
-- [ ] **Step 5: Run formatting test**
+- [x] **Step 5: Run formatting test**
 
 Run:
 
@@ -134,7 +134,7 @@ Expected: PASS.
 - Modify: `src-tauri/src/memory_policy/targets/mod.rs`
 - Modify: `src-tauri/src/memory_policy/tests.rs`
 
-- [ ] **Step 1: Write failing artifact test**
+- [x] **Step 1: Write failing artifact test**
 
 Append:
 
@@ -154,7 +154,7 @@ async fn browser_artifact_target_writes_receipt_json() {
 }
 ```
 
-- [ ] **Step 2: Implement target**
+- [x] **Step 2: Implement target**
 
 Create `src-tauri/src/memory_policy/targets/browser_artifact.rs`:
 
@@ -222,7 +222,7 @@ impl MemoryPolicyTargetAdapter for BrowserArtifactPolicyTarget {
 }
 ```
 
-- [ ] **Step 3: Export artifact module**
+- [x] **Step 3: Export artifact module**
 
 In `targets/mod.rs`, add:
 
@@ -230,7 +230,7 @@ In `targets/mod.rs`, add:
 pub mod browser_artifact;
 ```
 
-- [ ] **Step 4: Run artifact test**
+- [x] **Step 4: Run artifact test**
 
 Run:
 
@@ -246,7 +246,7 @@ Expected: PASS.
 - Modify: `src-tauri/src/memory_policy/targets/gbrain.rs`
 - Modify: `src-tauri/src/memory_policy/tests.rs`
 
-- [ ] **Step 1: Add unavailable test**
+- [x] **Step 1: Add unavailable test**
 
 Append:
 
@@ -261,7 +261,7 @@ async fn gbrain_unavailable_returns_deferred_receipt() {
 }
 ```
 
-- [ ] **Step 2: Implement target wrapper**
+- [x] **Step 2: Implement target wrapper**
 
 Extend `gbrain.rs`:
 
@@ -348,7 +348,7 @@ impl MemoryPolicyTargetAdapter for GbrainPolicyTarget {
 }
 ```
 
-- [ ] **Step 3: Run gbrain tests**
+- [x] **Step 3: Run gbrain tests**
 
 Run:
 
@@ -364,7 +364,7 @@ Expected: PASS.
 **Files:**
 - Modify: `src-tauri/src/memory_policy/executor.rs`
 
-- [ ] **Step 1: Add constructor**
+- [x] **Step 1: Add constructor**
 
 Add:
 
@@ -384,7 +384,7 @@ pub fn with_real_gbrain_and_artifacts(
 }
 ```
 
-- [ ] **Step 2: Run full memory_policy tests**
+- [x] **Step 2: Run full memory_policy tests**
 
 Run:
 
@@ -399,7 +399,7 @@ Expected: PASS.
 **Files:**
 - All PR2 files listed above.
 
-- [ ] **Step 1: Format and check**
+- [x] **Step 1: Format and check**
 
 Run:
 
@@ -411,13 +411,13 @@ git diff --check -- src-tauri/src/memory_policy docs/superpowers/plans/2026-05-2
 
 Expected: PASS and no diff-check output.
 
-- [ ] **Step 2: Run GitNexus impact and detect changes**
+- [x] **Step 2: Run GitNexus impact and detect changes**
 
 Before modifying existing `MemoryPolicyExecutor` symbols, run GitNexus impact on `MemoryPolicyExecutor`. Before commit, run GitNexus `detect_changes(scope=staged)`.
 
 Expected: no HIGH/CRITICAL impact without user approval; staged changes limited to memory_policy and the plan.
 
-- [ ] **Step 3: Commit PR2**
+- [x] **Step 3: Commit PR2**
 
 Run:
 

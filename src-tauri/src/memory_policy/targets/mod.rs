@@ -1,3 +1,5 @@
+pub mod browser_artifact;
+pub mod gbrain;
 pub mod memory_graph;
 
 use async_trait::async_trait;

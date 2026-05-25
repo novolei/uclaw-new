@@ -43,6 +43,24 @@ impl MemoryPolicyExecutor {
         }
     }
 
+    pub fn with_real_gbrain_and_artifacts(
+        hook_bus: HookBus,
+        gbrain_mcp: crate::mcp::SharedMcpManager,
+        artifact_root: impl AsRef<std::path::Path>,
+        memu: Arc<dyn MemoryPolicyTargetAdapter>,
+    ) -> Self {
+        Self::new(
+            hook_bus,
+            Arc::new(crate::memory_policy::targets::gbrain::GbrainPolicyTarget::new(gbrain_mcp)),
+            memu,
+            Arc::new(
+                crate::memory_policy::targets::browser_artifact::BrowserArtifactPolicyTarget::new(
+                    artifact_root,
+                ),
+            ),
+        )
+    }
+
     pub fn for_tests_allow_all() -> Self {
         Self::new(
             HookBus::new(),
