@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
-import { dryRunBrowserRuntimeAction, getBrowserRuntimeStatus } from './tauri-bridge'
+import {
+  dryRunBrowserRuntimeAction,
+  getBrowserRuntimeControlCenter,
+  getBrowserRuntimeStatus,
+  runBrowserRuntimeProviderProbe,
+  setBrowserRuntimeProviderEnabled,
+  setBrowserRuntimeProviderPriority,
+} from './tauri-bridge'
 import type {
+  BrowserRuntimeControlCenterReport,
   BrowserRuntimePackExecutionReport,
   StartupRuntimePackStatusReport,
 } from './startup/startup-doctor'
@@ -85,6 +93,78 @@ describe('browser runtime tauri bridge', () => {
     await expect(dryRunBrowserRuntimeAction('repair')).resolves.toEqual(report)
     expect(invoke).toHaveBeenCalledWith('dry_run_browser_runtime_action', {
       action: 'repair',
+    })
+  })
+
+  it('invokes get_browser_runtime_control_center', async () => {
+    const report: BrowserRuntimeControlCenterReport = {
+      featureFlags: {
+        playwrightCli: false,
+        playwrightMcp: false,
+        hostedBrowser: false,
+        forceLegacyLocalChromium: false,
+      },
+      desiredProviderPriority: [
+        'browser.playwright_cli',
+        'browser.playwright_mcp',
+        'browser.local_chromium',
+      ],
+      activeProviderRoute: {
+        providerId: 'browser.local_chromium',
+        displayName: 'Local Chromium',
+      },
+      providerLanes: [],
+      mcpIntegrationSummary: {
+        builtIn: true,
+        enabled: false,
+        rawToolsExposed: false,
+        configureRouteReady: false,
+      },
+      updatedAtMs: 0,
+    }
+    vi.mocked(invoke).mockResolvedValueOnce(report)
+
+    await expect(getBrowserRuntimeControlCenter()).resolves.toEqual(report)
+    expect(invoke).toHaveBeenCalledWith('get_browser_runtime_control_center')
+  })
+
+  it('invokes provider enable and priority commands', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ ok: true })
+    await setBrowserRuntimeProviderEnabled('browser.playwright_cli', true)
+    expect(invoke).toHaveBeenCalledWith('set_browser_runtime_provider_enabled', {
+      providerId: 'browser.playwright_cli',
+      enabled: true,
+    })
+
+    vi.mocked(invoke).mockResolvedValueOnce({ ok: true })
+    await setBrowserRuntimeProviderPriority([
+      'browser.playwright_cli',
+      'browser.playwright_mcp',
+      'browser.local_chromium',
+    ])
+    expect(invoke).toHaveBeenCalledWith('set_browser_runtime_provider_priority', {
+      providerIds: [
+        'browser.playwright_cli',
+        'browser.playwright_mcp',
+        'browser.local_chromium',
+      ],
+    })
+  })
+
+  it('invokes run_browser_runtime_provider_probe', async () => {
+    const summary = {
+      providerId: 'browser.playwright_cli',
+      state: 'passed',
+      checkedAtMs: 1,
+      artifactId: 'browser-runtime-provider-probe-passed',
+      message: 'Provider probe passed.',
+      eventNames: ['browser.runtime.provider.probe.passed'],
+    }
+    vi.mocked(invoke).mockResolvedValueOnce(summary)
+
+    await expect(runBrowserRuntimeProviderProbe('browser.playwright_cli')).resolves.toEqual(summary)
+    expect(invoke).toHaveBeenCalledWith('run_browser_runtime_provider_probe', {
+      providerId: 'browser.playwright_cli',
     })
   })
 })

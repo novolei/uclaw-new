@@ -320,12 +320,21 @@ pub struct BrowserProviderRouteEventIntent {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BrowserProviderRouteSkippedProvider {
+    pub provider_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BrowserProviderRouteDecision {
     pub status: BrowserProviderRouteDecisionStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected_provider_id: Option<String>,
     pub candidates: Vec<BrowserProviderRouteCandidate>,
     pub event_intents: Vec<BrowserProviderRouteEventIntent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_providers: Vec<BrowserProviderRouteSkippedProvider>,
 }
 
 pub fn decide_browser_provider_route(
@@ -441,6 +450,7 @@ pub fn decide_browser_provider_route(
         selected_provider_id,
         candidates,
         event_intents,
+        skipped_providers: Vec::new(),
     }
 }
 

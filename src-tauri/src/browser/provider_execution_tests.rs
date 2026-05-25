@@ -80,6 +80,7 @@ fn non_local_provider_route_blocks_local_action_registry() {
         selected_provider_id: Some(crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID.to_string()),
         candidates: Vec::new(),
         event_intents: Vec::new(),
+        skipped_providers: Vec::new(),
     };
 
     assert!(provider_route_blocks_local_action(&decision));
@@ -113,6 +114,61 @@ fn cli_candidate_can_be_selected_when_enabled_ready_and_local_disabled() {
     }));
 }
 
+#[test]
+fn active_control_center_cli_route_preempts_local_chromium() {
+    let mut flags = BrowserRuntimeFeatureFlags::safe_defaults();
+    flags.playwright_cli = true;
+    let options = BrowserProviderActionRouteOptions::default()
+        .with_feature_flags(flags)
+        .with_runtime_report(ready_runtime_report())
+        .with_active_control_center_route(crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID, Vec::new());
+    let action = BrowserAction::Navigate {
+        tab_id: Some("tab-1".to_string()),
+        url: "https://example.test".to_string(),
+    };
+
+    let decision = route_live_browser_action_provider_with_options(&action, &options);
+
+    assert_eq!(
+        decision.status,
+        BrowserProviderRouteDecisionStatus::Selected
+    );
+    assert_eq!(
+        decision.selected_provider_id.as_deref(),
+        Some(crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID)
+    );
+    assert!(decision.candidates.iter().any(|candidate| {
+        candidate.provider_id == crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID && candidate.eligible
+    }));
+}
+
+#[test]
+fn active_control_center_cli_route_does_not_fall_back_for_unsupported_action() {
+    let mut flags = BrowserRuntimeFeatureFlags::safe_defaults();
+    flags.playwright_cli = true;
+    let options = BrowserProviderActionRouteOptions::default()
+        .with_feature_flags(flags)
+        .with_runtime_report(ready_runtime_report())
+        .with_active_control_center_route(crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID, Vec::new());
+    let action = BrowserAction::Scroll {
+        tab_id: "tab-1".to_string(),
+        direction: "down".to_string(),
+        pixels: Some(300),
+        index: None,
+    };
+
+    let decision = route_live_browser_action_provider_with_options(&action, &options);
+
+    assert_eq!(
+        decision.status,
+        BrowserProviderRouteDecisionStatus::Selected
+    );
+    assert_eq!(
+        decision.selected_provider_id.as_deref(),
+        Some(crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID)
+    );
+}
+
 #[tokio::test]
 async fn selected_cli_route_blocks_unsupported_browser_action() {
     let ctx_mgr = Arc::new(BrowserContextManager::new_for_test(
@@ -136,6 +192,7 @@ async fn selected_cli_route_blocks_unsupported_browser_action() {
         selected_provider_id: Some(crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID.to_string()),
         candidates: Vec::new(),
         event_intents: Vec::new(),
+        skipped_providers: Vec::new(),
     };
 
     let execution = executor

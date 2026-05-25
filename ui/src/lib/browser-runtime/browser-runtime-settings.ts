@@ -393,22 +393,21 @@ function providerStatusLabel(status: BrowserRuntimeProviderStatus | undefined): 
   if (!status) return '未检查'
   const label = status.displayName ?? providerDisplayName(status.providerId)
   const readiness = providerReadinessLabel(status.readiness)
-  const setup = status.setupComplete ? 'setup 完成' : 'setup 未完成'
   const contexts = `${status.activeContexts} 个上下文`
   const remediation = status.remediation.length > 0 ? ` · ${status.remediation[0]}` : ''
-  return `${label}: ${readiness}, ${setup}, ${contexts}${remediation}`
+  return `${label}: ${readiness}, ${contexts}${remediation}`
 }
 
 function providerReadinessLabel(readiness: BrowserProviderReadiness): string {
   switch (readiness) {
     case 'ready':
-      return '可用'
+      return 'Ready'
     case 'needs_setup':
-      return '需要 setup'
+      return 'Needs runtime pack'
     case 'degraded':
-      return '降级'
+      return 'Degraded'
     case 'unavailable':
-      return '不可用'
+      return 'Off'
     default:
       return readiness
   }

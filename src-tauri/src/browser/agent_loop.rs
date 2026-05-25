@@ -24,6 +24,7 @@ use crate::browser::observation::BrowserObservation;
 use crate::browser::provider::BrowserProviderRouteDecision;
 use crate::browser::provider_execution::BrowserProviderActionBlocked;
 use crate::browser::recovery::{classify_browser_error, BrowserRecoveryKind};
+use crate::browser::runtime_control_center::BrowserRuntimeProviderConfig;
 use crate::browser::runtime_execution::{
     BrowserRuntimeActionExecutionOutcome, BrowserRuntimeActionExecutor, BrowserRuntimeActionRequest,
 };
@@ -87,6 +88,7 @@ pub struct BrowserAgentLoop {
     ctx_mgr: Arc<BrowserContextManager>,
     decision_adapter: Arc<dyn BrowserDecisionAdapter>,
     runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
+    runtime_provider_config: BrowserRuntimeProviderConfig,
     task_store: Option<Arc<BrowserTaskStore>>,
     ask_user_bridge: Option<Arc<BrowserAskUserBridge>>,
     auth_profile_broker: Option<Arc<BrowserAuthProfileBroker>>,
@@ -103,6 +105,7 @@ impl BrowserAgentLoop {
             ctx_mgr,
             decision_adapter,
             runtime_status_service: None,
+            runtime_provider_config: BrowserRuntimeProviderConfig::default(),
             task_store: None,
             ask_user_bridge: None,
             auth_profile_broker: BrowserAuthProfileBroker::system_default()
@@ -131,6 +134,14 @@ impl BrowserAgentLoop {
         runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
     ) -> Self {
         self.runtime_status_service = runtime_status_service;
+        self
+    }
+
+    pub fn with_runtime_provider_config(
+        mut self,
+        runtime_provider_config: BrowserRuntimeProviderConfig,
+    ) -> Self {
+        self.runtime_provider_config = runtime_provider_config;
         self
     }
 
@@ -769,7 +780,8 @@ impl BrowserAgentLoop {
                 let runtime_executor = BrowserRuntimeActionExecutor::new(
                     Arc::clone(&self.ctx_mgr),
                     self.runtime_status_service.clone(),
-                );
+                )
+                .with_provider_config(self.runtime_provider_config.clone());
                 match runtime_executor
                     .execute_action(BrowserRuntimeActionRequest {
                         session_id: request.session_id.clone(),

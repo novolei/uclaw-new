@@ -1,24 +1,35 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { screen, waitFor } from '@/test-utils/render'
 import { renderWithProviders } from '@/test-utils/render'
+import { kaleidoscopeModuleAtom, selectedBuiltinIntegrationAtom } from '@/atoms/kaleidoscope'
+import { topLevelViewAtom } from '@/atoms/top-level-view'
 import { BrowserRuntimeSettings } from './BrowserRuntimeSettings'
 import type {
+  BrowserRuntimeControlCenterReport,
   BrowserRuntimePackExecutionReport,
   StartupRuntimePackStatusReport,
 } from '@/lib/startup/startup-doctor'
 import {
   dryRunBrowserRuntimeAction,
+  getBrowserRuntimeControlCenter,
   getBrowserRuntimeStatus,
   listBrowserIdentities,
   revokeBrowserIdentity,
+  runBrowserRuntimeProviderProbe,
+  setBrowserRuntimeProviderEnabled,
+  setBrowserRuntimeProviderPriority,
   type BrowserIdentityStatusReport,
 } from '@/lib/tauri-bridge'
 
 vi.mock('@/lib/tauri-bridge', () => ({
   dryRunBrowserRuntimeAction: vi.fn(),
+  getBrowserRuntimeControlCenter: vi.fn(),
   getBrowserRuntimeStatus: vi.fn(),
   listBrowserIdentities: vi.fn(),
   revokeBrowserIdentity: vi.fn(),
+  runBrowserRuntimeProviderProbe: vi.fn(),
+  setBrowserRuntimeProviderEnabled: vi.fn(),
+  setBrowserRuntimeProviderPriority: vi.fn(),
 }))
 
 function runtimeReport(manifestPackVersion = '1.48.2-uclaw.1'): StartupRuntimePackStatusReport {
@@ -85,6 +96,67 @@ function runtimeReport(manifestPackVersion = '1.48.2-uclaw.1'): StartupRuntimePa
         notes: [],
       },
     },
+    controlCenter: {
+      featureFlags: {
+        playwrightCli: false,
+        playwrightMcp: false,
+        hostedBrowser: false,
+        forceLegacyLocalChromium: false,
+      },
+      desiredProviderPriority: [
+        'browser.playwright_cli',
+        'browser.playwright_mcp',
+        'browser.local_chromium',
+      ],
+      activeProviderRoute: {
+        providerId: 'browser.local_chromium',
+        displayName: 'Local Chromium',
+      },
+      providerLanes: [
+        {
+          providerId: 'browser.playwright_cli',
+          displayName: 'Playwright CLI',
+          enabled: false,
+          priorityRank: 1,
+          readiness: 'needs_setup',
+          routable: false,
+          routeRole: 'disabled',
+          probeState: 'not_run',
+          fallbackReason: 'provider_disabled',
+          nextAction: 'enable_provider',
+        },
+        {
+          providerId: 'browser.playwright_mcp',
+          displayName: 'Playwright MCP',
+          enabled: false,
+          priorityRank: 2,
+          readiness: 'needs_setup',
+          routable: false,
+          routeRole: 'disabled',
+          probeState: 'not_run',
+          fallbackReason: 'provider_disabled',
+          nextAction: 'enable_mcp',
+        },
+        {
+          providerId: 'browser.local_chromium',
+          displayName: 'Local Chromium',
+          enabled: true,
+          priorityRank: 3,
+          readiness: 'ready',
+          routable: true,
+          routeRole: 'active',
+          probeState: 'passed',
+          nextAction: 'none',
+        },
+      ],
+      mcpIntegrationSummary: {
+        builtIn: true,
+        enabled: false,
+        rawToolsExposed: false,
+        configureRouteReady: false,
+      },
+      updatedAtMs: 0,
+    },
     supervisorEventNames: ['browser.startup_doctor.ready'],
   }
 }
@@ -114,6 +186,68 @@ function dryRunReport(): BrowserRuntimePackExecutionReport {
     destructive: false,
     requiresConfirmation: false,
     keepsCurrentPack: true,
+  }
+}
+
+function controlCenterWithCliEnabled(): BrowserRuntimeControlCenterReport {
+  const controlCenter = runtimeReport().controlCenter as BrowserRuntimeControlCenterReport
+  return {
+    ...controlCenter,
+    featureFlags: {
+      ...controlCenter.featureFlags,
+      playwrightCli: true,
+    },
+    providerLanes: controlCenter.providerLanes.map((lane) =>
+      lane.providerId === 'browser.playwright_cli'
+        ? {
+            ...lane,
+            enabled: true,
+            routeRole: 'desired_first',
+            fallbackReason: 'probe_not_passed',
+            nextAction: 'run_probe',
+          }
+        : lane,
+    ),
+  }
+}
+
+function controlCenterWithCliProbePassed(): BrowserRuntimeControlCenterReport {
+  const controlCenter = controlCenterWithCliEnabled()
+  return {
+    ...controlCenter,
+    activeProviderRoute: {
+      providerId: 'browser.playwright_cli',
+      displayName: 'Playwright CLI',
+    },
+    providerLanes: controlCenter.providerLanes.map((lane) =>
+      lane.providerId === 'browser.playwright_cli'
+        ? {
+            ...lane,
+            routable: true,
+            routeRole: 'active',
+            probeState: 'passed',
+            fallbackReason: undefined,
+            nextAction: 'none',
+            lastProbeArtifact: 'browser-runtime-provider-probe-passed',
+          }
+        : lane.providerId === 'browser.local_chromium'
+          ? {
+              ...lane,
+              routeRole: 'desired',
+            }
+          : lane,
+    ),
+  }
+}
+
+function controlCenterWithMcpRouteReady(): BrowserRuntimeControlCenterReport {
+  const controlCenter = runtimeReport().controlCenter as BrowserRuntimeControlCenterReport
+  return {
+    ...controlCenter,
+    mcpIntegrationSummary: {
+      ...controlCenter.mcpIntegrationSummary,
+      configureRouteReady: true,
+    },
   }
 }
 
@@ -201,9 +335,16 @@ function activeIdentityTaskReport(): BrowserIdentityStatusReport {
 describe('BrowserRuntimeSettings', () => {
   beforeEach(() => {
     vi.mocked(dryRunBrowserRuntimeAction).mockReset()
+    vi.mocked(getBrowserRuntimeControlCenter).mockReset()
     vi.mocked(getBrowserRuntimeStatus).mockReset()
     vi.mocked(listBrowserIdentities).mockReset()
     vi.mocked(revokeBrowserIdentity).mockReset()
+    vi.mocked(runBrowserRuntimeProviderProbe).mockReset()
+    vi.mocked(setBrowserRuntimeProviderEnabled).mockReset()
+    vi.mocked(setBrowserRuntimeProviderPriority).mockReset()
+    vi.mocked(getBrowserRuntimeControlCenter).mockReturnValue(
+      new Promise(() => {}),
+    )
     vi.mocked(listBrowserIdentities).mockReturnValue(
       new Promise<BrowserIdentityStatusReport>(() => {}),
     )
@@ -299,8 +440,93 @@ describe('BrowserRuntimeSettings', () => {
       expect(screen.getByText('1.48.2-uclaw.1')).toBeInTheDocument()
     })
     expect(screen.getByText('Rust Browser Runtime Supervisor')).toBeInTheDocument()
-    expect(screen.getByText('Local Chromium: 可用, setup 完成, 0 个上下文')).toBeInTheDocument()
+    expect(screen.getByText('Local Chromium: Ready, 0 个上下文')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '预览保持当前' })).toBeEnabled()
+  })
+
+  it('renders control center provider lanes and enables CLI through IPC', async () => {
+    vi.mocked(getBrowserRuntimeStatus).mockResolvedValueOnce(runtimeReport())
+    vi.mocked(setBrowserRuntimeProviderEnabled).mockResolvedValueOnce(controlCenterWithCliEnabled())
+
+    const { user } = renderWithProviders(<BrowserRuntimeSettings />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Browser Runtime Control Center')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Playwright CLI > Playwright MCP > Local Chromium')).toBeInTheDocument()
+    expect(screen.getByText('MCP 配置将在 Kaleidoscope 集成分页接入，PR3 前不可点击。')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Enable provider' }))
+
+    expect(setBrowserRuntimeProviderEnabled).toHaveBeenCalledWith('browser.playwright_cli', true)
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Run Playwright CLI probe' })).toBeEnabled()
+    })
+    expect(screen.getByText('Probe gates require a passing Rust provider probe before routing.')).toBeInTheDocument()
+  })
+
+  it('runs a CLI probe and refreshes the control center lane', async () => {
+    vi.mocked(getBrowserRuntimeStatus).mockResolvedValueOnce({
+      ...runtimeReport(),
+      controlCenter: controlCenterWithCliEnabled(),
+    })
+    vi.mocked(runBrowserRuntimeProviderProbe).mockResolvedValueOnce({
+      providerId: 'browser.playwright_cli',
+      state: 'passed',
+      checkedAtMs: 1,
+      artifactId: 'browser-runtime-provider-probe-passed',
+      message: 'Provider probe passed.',
+      eventNames: ['browser.runtime.provider.probe.passed'],
+    })
+    vi.mocked(getBrowserRuntimeControlCenter).mockResolvedValueOnce(controlCenterWithCliProbePassed())
+
+    const { user } = renderWithProviders(<BrowserRuntimeSettings />)
+
+    await user.click(await screen.findByRole('button', { name: 'Run Playwright CLI probe' }))
+
+    expect(runBrowserRuntimeProviderProbe).toHaveBeenCalledWith('browser.playwright_cli')
+    await waitFor(() => {
+      expect(screen.getAllByText('Playwright CLI').length).toBeGreaterThan(1)
+      expect(screen.getByText('Active')).toBeInTheDocument()
+    })
+  })
+
+  it('routes Configure MCP to Kaleidoscope Integrations built-in detail', async () => {
+    const { store, user } = renderWithProviders(
+      <BrowserRuntimeSettings
+        status={{
+          report: {
+            ...runtimeReport(),
+            controlCenter: controlCenterWithMcpRouteReady(),
+          },
+        }}
+      />,
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Configure Playwright MCP' }))
+
+    expect(store.get(topLevelViewAtom)).toBe('kaleidoscope')
+    expect(store.get(kaleidoscopeModuleAtom)).toBe('integrations')
+    expect(store.get(selectedBuiltinIntegrationAtom)).toBe('playwright_mcp')
+  })
+
+  it('renders raw JSON diagnostics collapsed by default', async () => {
+    const { user } = renderWithProviders(
+      <BrowserRuntimeSettings
+        status={{
+          report: runtimeReport(),
+        }}
+      />,
+    )
+
+    expect(screen.getByText('Diagnostics')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Show raw Browser Runtime report' })).toBeInTheDocument()
+    expect(screen.queryByText('"desiredProviderPriority"')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Show raw Browser Runtime report' }))
+
+    expect(screen.getByText(/"desiredProviderPriority"/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Hide raw Browser Runtime report' })).toBeInTheDocument()
   })
 
   it('refreshes live runtime status from the run-doctor action', async () => {

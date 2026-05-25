@@ -13,8 +13,11 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { open as openShell } from '@tauri-apps/plugin-shell';
 import type {
+  BrowserRuntimeControlCenterReport,
   BrowserRuntimePackAction,
   BrowserRuntimePackExecutionReport,
+  BrowserRuntimeProviderId,
+  BrowserRuntimeProviderProbeSummary,
   StartupRuntimePackStatusReport,
 } from '@/lib/startup/startup-doctor';
 import type {
@@ -181,6 +184,25 @@ export const patchSettings = (input: PatchSettingsInput): Promise<Settings> =>
 
 export const getBrowserRuntimeStatus = (): Promise<StartupRuntimePackStatusReport> =>
   invoke('get_browser_runtime_status');
+
+export const getBrowserRuntimeControlCenter = (): Promise<BrowserRuntimeControlCenterReport> =>
+  invoke('get_browser_runtime_control_center');
+
+export const setBrowserRuntimeProviderEnabled = (
+  providerId: BrowserRuntimeProviderId,
+  enabled: boolean,
+): Promise<BrowserRuntimeControlCenterReport> =>
+  invoke('set_browser_runtime_provider_enabled', { providerId, enabled });
+
+export const setBrowserRuntimeProviderPriority = (
+  providerIds: BrowserRuntimeProviderId[],
+): Promise<BrowserRuntimeControlCenterReport> =>
+  invoke('set_browser_runtime_provider_priority', { providerIds });
+
+export const runBrowserRuntimeProviderProbe = (
+  providerId: BrowserRuntimeProviderId,
+): Promise<BrowserRuntimeProviderProbeSummary> =>
+  invoke('run_browser_runtime_provider_probe', { providerId });
 
 export const dryRunBrowserRuntimeAction = (
   action: BrowserRuntimePackAction,

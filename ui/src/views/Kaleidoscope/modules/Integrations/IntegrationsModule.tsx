@@ -5,8 +5,10 @@
  * 数据:listMcpServers + listMcpTools(后者按 serverId 分组)。
  */
 import * as React from 'react'
+import { useAtom } from 'jotai'
 import { toast } from 'sonner'
 import { listen } from '@tauri-apps/api/event'
+import { selectedBuiltinIntegrationAtom } from '@/atoms/kaleidoscope'
 import {
   listMcpServers,
   listMcpTools,
@@ -21,6 +23,8 @@ import { McpServerCard } from './McpServerCard'
 import { McpDetailDrawer } from './McpDetailDrawer'
 import { McpTemplateLibrary } from './McpTemplateLibrary'
 import { McpEditorModal, type McpEditorTarget } from './McpEditorModal'
+import { PlaywrightMcpBuiltinCard } from './PlaywrightMcpBuiltinCard'
+import { PlaywrightMcpBuiltinDetail } from './PlaywrightMcpBuiltinDetail'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,6 +42,7 @@ interface McpToolRow {
 }
 
 export function IntegrationsModule(): React.ReactElement {
+  const [selectedBuiltinIntegration, setSelectedBuiltinIntegration] = useAtom(selectedBuiltinIntegrationAtom)
   const [servers, setServers] = React.useState<McpServerInfo[]>([])
   const [tools, setTools] = React.useState<McpToolRow[]>([])
   const [loading, setLoading] = React.useState(true)
@@ -113,8 +118,15 @@ export function IntegrationsModule(): React.ReactElement {
   const connectedCount = servers.filter((s) => s.status === 'connected').length
 
   const openCard = (server: McpServerInfo) => {
+    setSelectedBuiltinIntegration(null)
     setSelectedId(server.id)
     setDrawerOpen(true)
+  }
+
+  const openPlaywrightMcpBuiltin = () => {
+    setDrawerOpen(false)
+    setSelectedId(null)
+    setSelectedBuiltinIntegration('playwright_mcp')
   }
 
   const onToggleEnabled = async (server: McpServerInfo, next: boolean) => {
@@ -184,17 +196,12 @@ export function IntegrationsModule(): React.ReactElement {
           scrolling + clicks work. ModuleHeader's title area stays draggable;
           its actions slot is already titlebar-no-drag. See KaleidoscopeShell. */}
       <div className="titlebar-no-drag flex-1 min-h-0 overflow-y-auto px-8 pb-8">
-        {!loading && servers.length === 0 ? (
-          <div className="flex h-full items-center justify-center">
-            <div className="rounded-lg border border-dashed border-border bg-muted/10 px-8 py-10 text-center">
-              <div className="text-[13px] text-foreground/80">还没有集成</div>
-              <div className="mt-1 text-[11.5px] text-muted-foreground">
-                点「+ 添加集成」，让 Agent 接入 Slack / GitHub / Notion。
-              </div>
-            </div>
-          </div>
-        ) : (
+        <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
+            <PlaywrightMcpBuiltinCard
+              selected={selectedBuiltinIntegration === 'playwright_mcp'}
+              onClick={openPlaywrightMcpBuiltin}
+            />
             {servers.map((server) => (
               <McpServerCard
                 key={server.id}
@@ -212,7 +219,16 @@ export function IntegrationsModule(): React.ReactElement {
               + 从模板添加
             </button>
           </div>
-        )}
+          {!loading && servers.length === 0 && (
+            <div className="rounded-lg border border-dashed border-border bg-muted/10 px-8 py-10 text-center">
+              <div className="text-[13px] text-foreground/80">还没有集成</div>
+              <div className="mt-1 text-[11.5px] text-muted-foreground">
+                点「+ 添加集成」，让 Agent 接入 Slack / GitHub / Notion。
+              </div>
+            </div>
+          )}
+          {selectedBuiltinIntegration === 'playwright_mcp' && <PlaywrightMcpBuiltinDetail />}
+        </div>
       </div>
 
       <McpDetailDrawer

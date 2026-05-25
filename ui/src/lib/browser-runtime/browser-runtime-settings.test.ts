@@ -145,6 +145,30 @@ describe('browser runtime settings view model', () => {
     expect(model.runtimePackPathLabel).toBe('/preview/browser-runtime/current')
   })
 
+  it('uses product provider readiness copy instead of raw setup state', () => {
+    const model = deriveBrowserRuntimeSettingsViewModel({
+      report: runtimeReport({
+        providerReadiness: {
+          playwrightCli: {
+            providerId: 'browser.playwright_cli',
+            displayName: 'Playwright CLI',
+            readiness: 'needs_setup',
+            ready: false,
+            setupComplete: false,
+            activeContexts: 0,
+            remediation: ['Enable and probe the provider before routing.'],
+            notes: [],
+          },
+        },
+      }),
+    })
+
+    expect(model.playwrightCliProviderLabel).toBe(
+      'Playwright CLI: Needs runtime pack, 0 个上下文 · Enable and probe the provider before routing.',
+    )
+    expect(model.playwrightCliProviderLabel).not.toContain('setup 未完成')
+  })
+
   it('keeps auto-prepare disabled semantics separate from browser capability', () => {
     const model = deriveBrowserRuntimeSettingsViewModel({
       report: runtimeReport(),

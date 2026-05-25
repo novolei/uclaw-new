@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::browser::runtime_control_center::BrowserRuntimeProviderConfig;
 use crate::memory_graph::recall::MemoryRecallConfigDto;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,6 +17,9 @@ pub struct UserSettings {
     /// Persisted in config.json; hot-reloaded every agent turn.
     #[serde(default)]
     pub memory_recall_config: Option<MemoryRecallConfigDto>,
+    /// Browser Runtime Control Center provider enablement and desired priority.
+    #[serde(default)]
+    pub browser_runtime_provider_config: BrowserRuntimeProviderConfig,
 }
 
 impl Default for UserSettings {
@@ -25,6 +29,7 @@ impl Default for UserSettings {
             theme: "light".to_string(),
             monthly_budget_usd: None,
             memory_recall_config: None,
+            browser_runtime_provider_config: BrowserRuntimeProviderConfig::default(),
         }
     }
 }

@@ -5,6 +5,7 @@ use tauri::State;
 use crate::app::AppState;
 use crate::error::Error;
 
+use super::runtime_control_center::BrowserRuntimeControlCenterReport;
 use super::runtime_pack::{
     diagnose_runtime_pack, execute_runtime_pack_plan_dry_run, inspect_runtime_pack_status,
     plan_runtime_pack_operation, probe_runtime_pack_filesystem, BrowserRuntimePackAction,
@@ -13,13 +14,98 @@ use super::runtime_pack::{
     BrowserRuntimePackOperationRequest, BrowserRuntimePackPaths, BrowserRuntimePackPlanTrigger,
     BrowserRuntimePackStatusReport, BrowserRuntimePackStatusRequest,
 };
+use super::runtime_provider_probe::{
+    append_probe_history, probe_provider_from_status, BrowserRuntimeProviderProbeClock,
+    BrowserRuntimeProviderProbeSummary,
+};
 use super::runtime_status::BrowserRuntimeStatusReport;
 
 #[tauri::command]
 pub async fn get_browser_runtime_status(
     state: State<'_, AppState>,
 ) -> Result<BrowserRuntimeStatusReport, Error> {
-    state.browser_runtime_status_service.inspect_default().await
+    let provider_config = {
+        let settings = state.settings.read().await;
+        settings.browser_runtime_provider_config.clone()
+    };
+    state
+        .browser_runtime_status_service
+        .inspect_with_provider_config(provider_config)
+        .await
+}
+
+#[tauri::command]
+pub async fn get_browser_runtime_control_center(
+    state: State<'_, AppState>,
+) -> Result<BrowserRuntimeControlCenterReport, Error> {
+    let status = get_browser_runtime_status(state).await?;
+    Ok(status.control_center)
+}
+
+#[tauri::command]
+pub async fn set_browser_runtime_provider_enabled(
+    state: State<'_, AppState>,
+    provider_id: String,
+    enabled: bool,
+) -> Result<BrowserRuntimeControlCenterReport, Error> {
+    {
+        let mut settings = state.settings.write().await;
+        settings
+            .browser_runtime_provider_config
+            .set_enabled(&provider_id, enabled)?;
+        settings.save(&state.config_path)?;
+    }
+
+    get_browser_runtime_control_center(state).await
+}
+
+#[tauri::command]
+pub async fn set_browser_runtime_provider_priority(
+    state: State<'_, AppState>,
+    provider_ids: Vec<String>,
+) -> Result<BrowserRuntimeControlCenterReport, Error> {
+    {
+        let mut settings = state.settings.write().await;
+        settings
+            .browser_runtime_provider_config
+            .set_priority(provider_ids)?;
+        settings.save(&state.config_path)?;
+    }
+
+    get_browser_runtime_control_center(state).await
+}
+
+#[tauri::command]
+pub async fn run_browser_runtime_provider_probe(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<BrowserRuntimeProviderProbeSummary, Error> {
+    let runtime_status = get_browser_runtime_status(state.clone()).await?;
+    let summary = probe_provider_from_status(
+        &provider_id,
+        runtime_status.runtime_pack.ready && runtime_status.runtime_pack.can_run_browser_tasks,
+        BrowserRuntimeProviderProbeClock::utc_now(),
+    );
+
+    {
+        let mut settings = state.settings.write().await;
+        settings
+            .browser_runtime_provider_config
+            .provider_probe_cache
+            .insert(provider_id.clone(), summary.clone());
+        let history = settings
+            .browser_runtime_provider_config
+            .provider_probe_history
+            .remove(&provider_id)
+            .unwrap_or_default();
+        settings
+            .browser_runtime_provider_config
+            .provider_probe_history
+            .insert(provider_id, append_probe_history(history, summary.clone()));
+        settings.save(&state.config_path)?;
+    }
+
+    Ok(summary)
 }
 
 #[tauri::command]

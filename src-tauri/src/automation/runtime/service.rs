@@ -1754,6 +1754,7 @@ impl AppRuntimeService {
                 browser_context_manager: self.browser_context_manager.clone(),
                 browser_session_id,
                 browser_builtin_root: Some(self.browser_builtin_root.clone()),
+                browser_runtime_provider_config: Default::default(),
             },
         )
     }

@@ -25,6 +25,7 @@ pub mod provider_execution;
 pub mod recipes;
 pub mod recovery;
 pub mod runtime_contracts;
+pub mod runtime_control_center;
 pub mod runtime_execution;
 pub mod runtime_pack;
 pub mod runtime_pack_ipc;
@@ -32,6 +33,7 @@ pub mod runtime_pack_runner;
 pub mod runtime_memory_policy;
 #[cfg(test)]
 mod runtime_memory_policy_tests;
+pub mod runtime_provider_probe;
 pub mod runtime_status;
 pub mod runtime_supervisor;
 pub mod script_runner;
@@ -90,6 +92,11 @@ pub use runtime_contracts::{
     BrowserStartupDoctorProjection, BrowserTaskBoundaryProjection, BrowserTaskBoundaryStatus,
     BrowserTaskEventName, BrowserWorldProjectionSummary, StartupDoctorStatus,
 };
+pub use runtime_control_center::{
+    BrowserRuntimeActiveProviderRoute, BrowserRuntimeControlCenterReport,
+    BrowserRuntimeMcpIntegrationSummary, BrowserRuntimeProviderConfig, BrowserRuntimeProviderLane,
+    BrowserRuntimeRouteRole,
+};
 pub use runtime_execution::{
     BrowserRuntimeActionBlocked, BrowserRuntimeActionExecutionOutcome,
     BrowserRuntimeActionExecutor, BrowserRuntimeActionRequest,
@@ -114,6 +121,9 @@ pub use runtime_pack::{
     BrowserRuntimePackUpdatePolicy,
 };
 pub use runtime_pack_runner::BrowserRuntimePackLocalStepRunner;
+pub use runtime_provider_probe::{
+    append_probe_history, BrowserRuntimeProviderProbeState, BrowserRuntimeProviderProbeSummary,
+};
 pub use runtime_status::{
     compose_browser_runtime_status, BrowserRuntimeProviderReadinessSummary,
     BrowserRuntimeStatusReport, BrowserRuntimeStatusService, BrowserRuntimeSupervisorStatus,

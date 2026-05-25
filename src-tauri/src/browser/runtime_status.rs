@@ -20,6 +20,10 @@ use super::runtime_contracts::{
     BrowserRuntimeFeatureFlags, BrowserRuntimeState, BrowserWorldProjectionSummary,
     StartupDoctorStatus,
 };
+use super::runtime_control_center::{
+    build_control_center_report, feature_flags_from_provider_config,
+    BrowserRuntimeControlCenterReport, BrowserRuntimeProviderConfig,
+};
 use super::runtime_pack::{
     inspect_runtime_pack_status, BrowserRuntimePackFilesystemProbeOptions,
     BrowserRuntimePackManifest, BrowserRuntimePackNetworkState, BrowserRuntimePackPaths,
@@ -65,6 +69,7 @@ pub struct BrowserRuntimeStatusReport {
     pub runtime_pack: BrowserRuntimePackStatusReport,
     pub supervisor: BrowserRuntimeSupervisorStatus,
     pub provider_readiness: BrowserRuntimeProviderReadinessSummary,
+    pub control_center: BrowserRuntimeControlCenterReport,
     pub projection: BrowserWorldProjectionSummary,
     pub supervisor_event_names: Vec<String>,
 }
@@ -79,6 +84,14 @@ impl BrowserRuntimeStatusService {
     }
 
     pub async fn inspect_default(&self) -> Result<BrowserRuntimeStatusReport, Error> {
+        self.inspect_with_provider_config(BrowserRuntimeProviderConfig::default())
+            .await
+    }
+
+    pub async fn inspect_with_provider_config(
+        &self,
+        provider_config: BrowserRuntimeProviderConfig,
+    ) -> Result<BrowserRuntimeStatusReport, Error> {
         let manifest = BrowserRuntimePackManifest::v1_default();
         let paths = BrowserRuntimePackPaths::from_uclaw_home(&manifest)?;
         let runtime_pack = inspect_runtime_pack_status(
@@ -93,16 +106,29 @@ impl BrowserRuntimeStatusService {
             },
         );
         let active_context_sessions = self.context_manager.list_active_sessions().await;
-        Ok(compose_browser_runtime_status(
+        Ok(compose_browser_runtime_status_with_config(
             runtime_pack,
             active_context_sessions,
+            provider_config,
         ))
     }
 }
 
 pub fn compose_browser_runtime_status(
     runtime_pack: BrowserRuntimePackStatusReport,
+    active_context_sessions: Vec<String>,
+) -> BrowserRuntimeStatusReport {
+    compose_browser_runtime_status_with_config(
+        runtime_pack,
+        active_context_sessions,
+        BrowserRuntimeProviderConfig::default(),
+    )
+}
+
+pub fn compose_browser_runtime_status_with_config(
+    runtime_pack: BrowserRuntimePackStatusReport,
     mut active_context_sessions: Vec<String>,
+    provider_config: BrowserRuntimeProviderConfig,
 ) -> BrowserRuntimeStatusReport {
     active_context_sessions.sort();
     let selected_session_id = active_context_sessions
@@ -123,8 +149,20 @@ pub fn compose_browser_runtime_status(
     }
     let projection = supervisor_model.projection_for_session(&selected_session_id, &doctor);
 
-    let provider_readiness =
-        provider_readiness_summary(&runtime_pack, active_context_sessions.len());
+    let provider_readiness = provider_readiness_summary(
+        &runtime_pack,
+        active_context_sessions.len(),
+        feature_flags_from_provider_config(&provider_config),
+    );
+    let control_center = build_control_center_report(
+        provider_config,
+        runtime_pack.ready && runtime_pack.can_run_browser_tasks,
+        &[
+            provider_readiness.local_chromium.clone(),
+            provider_readiness.playwright_cli.clone(),
+            provider_readiness.playwright_mcp.clone(),
+        ],
+    );
     let supervisor = supervisor_status_from_doctor(
         &doctor,
         &selected_session_id,
@@ -136,6 +174,7 @@ pub fn compose_browser_runtime_status(
         runtime_pack,
         supervisor,
         provider_readiness,
+        control_center,
         projection,
         supervisor_event_names: doctor.event_name.into_iter().map(str::to_string).collect(),
     }
@@ -164,8 +203,8 @@ fn supervisor_status_from_doctor(
 fn provider_readiness_summary(
     runtime_pack: &BrowserRuntimePackStatusReport,
     active_context_count: usize,
+    flags: BrowserRuntimeFeatureFlags,
 ) -> BrowserRuntimeProviderReadinessSummary {
-    let flags = BrowserRuntimeFeatureFlags::safe_defaults();
     let runtime_ready = runtime_pack.ready && runtime_pack.can_run_browser_tasks;
 
     BrowserRuntimeProviderReadinessSummary {
@@ -211,6 +250,9 @@ mod tests {
         inspect_runtime_pack_status, BrowserRuntimePackNetworkState, BrowserRuntimePackStatusReport,
     };
     use super::*;
+    use crate::browser::playwright_cli::PLAYWRIGHT_CLI_PROVIDER_ID;
+    use crate::browser::provider::BrowserProbeStatus;
+    use crate::browser::runtime_control_center::BrowserRuntimeProviderConfig;
 
     #[test]
     fn aggregated_status_preserves_pack_fields_for_missing_pack() {
@@ -259,6 +301,34 @@ mod tests {
     }
 
     #[test]
+    fn config_aware_status_enables_cli_feature_flag_in_provider_readiness() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let runtime_pack = fixture_runtime_pack_status(temp_dir.path(), true);
+        let mut config = BrowserRuntimeProviderConfig::default();
+        config.playwright_cli_enabled = true;
+
+        let report = compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config);
+
+        assert!(report.control_center.feature_flags.playwright_cli);
+        assert_eq!(
+            report.provider_readiness.playwright_cli.setup_checks[0].id,
+            "playwright_cli_feature_flag"
+        );
+        assert_eq!(
+            report.provider_readiness.playwright_cli.setup_checks[0].status,
+            BrowserProbeStatus::Passed
+        );
+        assert_eq!(
+            report.provider_readiness.playwright_cli.setup_checks[1].id,
+            "runtime_pack_ready"
+        );
+        assert_eq!(
+            report.provider_readiness.playwright_cli.setup_checks[1].status,
+            BrowserProbeStatus::Passed
+        );
+    }
+
+    #[test]
     fn aggregated_status_uses_active_context_as_supervisor_state() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let runtime_pack = fixture_runtime_pack_status(temp_dir.path(), true);
@@ -282,6 +352,57 @@ mod tests {
         );
         assert_eq!(report.projection.runtime.state, BrowserRuntimeState::Ready);
         assert_eq!(report.provider_readiness.local_chromium.active_contexts, 2);
+    }
+
+    #[test]
+    fn control_center_keeps_desired_priority_but_falls_back_when_cli_mcp_disabled() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let runtime_pack = fixture_runtime_pack_status(temp_dir.path(), true);
+
+        let report = compose_browser_runtime_status_with_config(
+            runtime_pack,
+            Vec::new(),
+            BrowserRuntimeProviderConfig::default(),
+        );
+
+        assert_eq!(
+            report.control_center.active_provider_route.provider_id,
+            LOCAL_CHROMIUM_PROVIDER_ID
+        );
+        assert_eq!(
+            report.control_center.desired_provider_priority[0],
+            PLAYWRIGHT_CLI_PROVIDER_ID
+        );
+        assert_eq!(
+            report.control_center.provider_lanes[0]
+                .fallback_reason
+                .as_deref(),
+            Some("provider_disabled")
+        );
+    }
+
+    #[test]
+    fn control_center_marks_enabled_cli_not_routable_until_probe_pr() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut config = BrowserRuntimeProviderConfig::default();
+        config.playwright_cli_enabled = true;
+        let runtime_pack = fixture_runtime_pack_status(temp_dir.path(), true);
+
+        let report = compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config);
+
+        let cli = report
+            .control_center
+            .provider_lanes
+            .iter()
+            .find(|lane| lane.provider_id == PLAYWRIGHT_CLI_PROVIDER_ID)
+            .expect("cli lane");
+        assert!(cli.enabled);
+        assert!(!cli.routable);
+        assert_eq!(cli.next_action, "run_probe");
+        assert_eq!(
+            report.control_center.active_provider_route.provider_id,
+            LOCAL_CHROMIUM_PROVIDER_ID
+        );
     }
 
     fn fixture_runtime_pack_status(root: &Path, ready: bool) -> BrowserRuntimePackStatusReport {
