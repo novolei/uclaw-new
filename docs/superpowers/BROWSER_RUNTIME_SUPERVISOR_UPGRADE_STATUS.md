@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-25 by Codex
-> Current phase: Complete / ADR 2026-05-23 implemented and verified; post-completion Startup Splash If2Ai visual port in progress
+> Current phase: Post-completion real-state correction PR1 in progress
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -30,6 +30,44 @@
 | Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8J merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8j-provider-default-policy` / `codex/browser-runtime-phase8j-provider-default-policy` | Closed for provider route evidence and reversible default policy; Phase 9 recipe work starts from merge commit `cab8f161`. |
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Phase 9A-9E merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9e-harness-matrix` / `codex/browser-runtime-phase9e-harness-matrix` | Closed for pure recipe/domain-skill harness coverage; no production replay, locator persistence, or domain-skill writes were introduced. |
 | Phase 10 | Optional hosted providers and hard-site escape hatches | Phase 10A-10B merged to `main` / `origin/main`; ADR Phase 10 gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase10b-hosted-provider-harness` / `codex/browser-runtime-phase10b-hosted-provider-harness` | Closed for hosted-provider capability contract plus disabled fallback, data-boundary prompt, artifact capture, cost visibility, local fallback, and opt-in mock-hosted harness evidence. |
+| Real State PR1 | Rust aggregated runtime status service | Implemented, pre-PR verification in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr1` / `codex/browser-runtime-real-state-pr1` | Run GitNexus detect-changes, commit, push, and open the PR. |
+
+---
+
+## Post-Completion Real-State Correction
+
+### PR1 - Rust Aggregated Runtime Status
+
+- Entry criteria: a main-branch audit found that ADR implementation was
+  over-claimed in tracker text. The code has contracts, status DTOs, dry-run
+  surfaces, and harness evidence, but the live app still does not use one Rust
+  `BrowserRuntimeSupervisor` truth source from Splash through browser action
+  surfaces.
+- Plan:
+  `docs/superpowers/plans/2026-05-25-browser-runtime-real-state-pr1.md`.
+- Scope: add a shared Rust status service and wire
+  `get_browser_runtime_status` to the aggregated service while preserving the
+  existing runtime-pack response fields.
+- Progress: `AppState` now owns a shared `BrowserRuntimeStatusService`.
+  `get_browser_runtime_status` returns a flattened superset of the existing
+  runtime-pack report with Rust supervisor status, provider readiness summary,
+  world projection, and supervisor event names.
+- Verification:
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_status`
+    passed: `3 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+    passed: `42 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_supervisor`
+    passed: `7 passed`.
+  - `rustfmt --edition 2021 --check src-tauri/src/browser/runtime_pack_ipc.rs src-tauri/src/browser/runtime_status.rs`
+    passed.
+  - `git diff --check -- src-tauri/src/browser/runtime_pack_ipc.rs src-tauri/src/browser/runtime_status.rs src-tauri/src/browser/mod.rs src-tauri/src/app.rs docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-25-browser-runtime-real-state-pr1.md`
+    passed.
+  - GitNexus `detect_changes(scope=all)` passed after indexing this worktree:
+    LOW risk, `affected_count: 0`, no affected execution flows.
+- Explicit non-scope: no `App.tsx` handoff change, no Settings real execution,
+  no runtime-pack download/delete, no provider default promotion, no
+  BrowserPanel/screencast routing changes, and no TaskEvent persistence.
 
 ---
 
@@ -93,6 +131,7 @@
 
 | Date | Decision | Evidence | Effect |
 |---|---|---|---|
+| 2026-05-25 | Reopen Browser Runtime work as a post-completion real-state correction instead of treating the verified-complete tracker as sufficient. | Main-branch audit after PR #502 found live-path gaps: Splash reads status but App handoff does not depend on Rust runtime state; browser actions and UI commands still bypass a shared supervisor service. | Start with PR1 as a narrow Rust status-source slice, then use later PRs for App handoff, real prepare execution, browser call-site guards, and provider/World Projection routing. |
 | 2026-05-23 | Implement Browser Runtime Supervisor as phased PR slices, not one broad rewrite. | Browser Runtime Supervisor ADR section 12 and user request for phase-pack execution. | Each phase gets a plan, status row, verification notes, and reversible commit boundary. |
 | 2026-05-25 | Add a post-completion Startup Splash minimum-visibility fix from manual validation. | Manual frontend verification found the production Startup Splash flashes by too quickly to communicate brand, readiness, or Browser Runtime diagnostics. | Keep ADR phases complete, but track this as a narrow UX quality follow-up: `codex/startup-splash-min-duration` / `/Users/ryanliu/Documents/uclaw-worktrees/startup-splash-min-duration`. |
 | 2026-05-25 | Port the If2Ai splash visual design into uClaw after minimum visibility landed. | User requested copying `/Users/ryanliu/Documents/IfAI/if2Ai` splash design into uClaw while adapting uClaw's current Startup Doctor UX logic. | Keep Browser Runtime phases closed; track this as a second narrow post-completion UX follow-up on `codex/startup-splash-if2ai-port` with no App routing, IPC, provider, or runtime side effects. |
