@@ -91,6 +91,11 @@ pub use runtime_contracts::{
     BrowserStartupDoctorProjection, BrowserTaskBoundaryProjection, BrowserTaskBoundaryStatus,
     BrowserTaskEventName, BrowserWorldProjectionSummary, StartupDoctorStatus,
 };
+pub use runtime_control_center::{
+    BrowserRuntimeActiveProviderRoute, BrowserRuntimeControlCenterReport,
+    BrowserRuntimeMcpIntegrationSummary, BrowserRuntimeProviderConfig, BrowserRuntimeProviderLane,
+    BrowserRuntimeRouteRole,
+};
 pub use runtime_execution::{
     BrowserRuntimeActionBlocked, BrowserRuntimeActionExecutionOutcome,
     BrowserRuntimeActionExecutor, BrowserRuntimeActionRequest,
@@ -115,7 +120,6 @@ pub use runtime_pack::{
     BrowserRuntimePackUpdatePolicy,
 };
 pub use runtime_pack_runner::BrowserRuntimePackLocalStepRunner;
-pub use runtime_control_center::BrowserRuntimeProviderConfig;
 pub use runtime_status::{
     compose_browser_runtime_status, BrowserRuntimeProviderReadinessSummary,
     BrowserRuntimeStatusReport, BrowserRuntimeStatusService, BrowserRuntimeSupervisorStatus,
