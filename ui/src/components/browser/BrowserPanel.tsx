@@ -8,10 +8,12 @@
 import * as React from 'react'
 import { useSetAtom, useAtomValue } from 'jotai'
 import {
+  getBrowserRuntimeStatus,
   listenNavState,
   browserGetDOMState,
   browserUINavigate,
 } from '@/lib/tauri-bridge'
+import type { StartupRuntimePackStatusReport } from '@/lib/startup/startup-doctor'
 import {
   browserDOMStateAtom,
   browserDOMOverlayVisibleAtom,
@@ -37,6 +39,9 @@ export function BrowserPanel({ agentSessionId, initialUrl }: BrowserPanelProps):
   const setPreviewMap = useSetAtom(sessionBrowserPreviewMapAtom)
   const overlayVisible = useAtomValue(browserDOMOverlayVisibleAtom)
   const previewMap = useAtomValue(sessionBrowserPreviewMapAtom)
+  const [runtimeStatus, setRuntimeStatus] = React.useState<StartupRuntimePackStatusReport | undefined>()
+  const [runtimeStatusLoading, setRuntimeStatusLoading] = React.useState(false)
+  const [runtimeStatusError, setRuntimeStatusError] = React.useState<string | null>(null)
 
   const preview = previewMap.get(agentSessionId)
   const activeTabId = preview?.tabId ?? null
@@ -48,6 +53,25 @@ export function BrowserPanel({ agentSessionId, initialUrl }: BrowserPanelProps):
   const displayUrl = domEntry?.url ?? currentUrl
 
   useBrowserScreencast(agentSessionId, activeTabId)
+
+  const refreshRuntimeStatus = React.useCallback(() => {
+    setRuntimeStatusLoading(true)
+    setRuntimeStatusError(null)
+    void getBrowserRuntimeStatus()
+      .then((status) => {
+        setRuntimeStatus(status)
+      })
+      .catch((error: unknown) => {
+        setRuntimeStatusError(error instanceof Error ? error.message : String(error))
+      })
+      .finally(() => {
+        setRuntimeStatusLoading(false)
+      })
+  }, [])
+
+  React.useEffect(() => {
+    refreshRuntimeStatus()
+  }, [activeTabId, refreshRuntimeStatus])
 
   React.useEffect(() => {
     const target = initialUrl?.trim()
@@ -64,9 +88,10 @@ export function BrowserPanel({ agentSessionId, initialUrl }: BrowserPanelProps):
           next.set(agentSessionId, { ...base, tabId, url: target })
           return next
         })
+        refreshRuntimeStatus()
       })
       .catch(console.error)
-  }, [activeTabId, agentSessionId, currentUrl, initialUrl, setPreviewMap])
+  }, [activeTabId, agentSessionId, currentUrl, initialUrl, refreshRuntimeStatus, setPreviewMap])
 
   // Subscribe to navigation state events for this session.
   //
@@ -157,7 +182,12 @@ export function BrowserPanel({ agentSessionId, initialUrl }: BrowserPanelProps):
       />
       <BrowserScreencastView sessionId={agentSessionId} tabId={activeTabId} />
       <BrowserTaskMonitor sessionId={agentSessionId} />
-      <BrowserStatusBar sessionId={agentSessionId} />
+      <BrowserStatusBar
+        sessionId={agentSessionId}
+        runtimeStatus={runtimeStatus}
+        runtimeStatusLoading={runtimeStatusLoading}
+        runtimeStatusError={runtimeStatusError}
+      />
     </div>
   )
 }

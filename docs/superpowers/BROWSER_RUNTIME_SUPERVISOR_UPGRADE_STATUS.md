@@ -169,16 +169,30 @@
   promotion, no Startup Splash handoff, and no TaskEvent persistence.
 - Closeout: merged as PR #506 into `origin/main` at merge commit `685d15ad`.
 
-### PR4 - Browser Panel Runtime Projection
+### PR4 - Browser Panel Runtime Status Projection
 
 - Status: open as PR #507, rebased clean onto `origin/main` merge commit
-  `fe55c374`, with required fresh-review gate because GitNexus reported
+  `c1027c9c`, with required fresh-review gate because GitNexus reported
   CRITICAL impact for the BrowserPanel/BrowserStatusBar path.
+- Entry criteria: after PR1 and PR3, the Rust aggregate status source is shared
+  and task-time browser routing consumes it, but the in-app Browser Panel still
+  renders only local frontend ready/loading state in its status bar.
 - Plan:
   `docs/superpowers/plans/2026-05-25-browser-runtime-real-state-pr4-browser-panel-status.md`.
-- Scope: let Browser Panel fetch `getBrowserRuntimeStatus` and render a compact
-  Rust supervisor/provider status chip in the status bar while keeping browser
-  view, navigation, DOM overlay, and direct command behavior unchanged.
+- PR: https://github.com/novolei/uclaw-new/pull/507.
+- Scope: have `BrowserPanel` fetch `get_browser_runtime_status` and pass the
+  report/loading/error state into `BrowserStatusBar` so the embedded browser UI
+  projects the Rust supervisor state.
+- Progress: `BrowserPanel` now fetches `get_browser_runtime_status` on mount
+  and after initial navigation creates a live tab, and `BrowserStatusBar`
+  renders a compact Rust supervisor runtime state chip with graceful loading and
+  error fallbacks.
+- Impact notes: GitNexus pre-edit impact for `BrowserPanel` and
+  `BrowserStatusBar` reported CRITICAL due AppShell/Kaleidoscope/Preview/
+  Automation browser-surface callers. This PR must remain additive and requires
+  fresh-review acceptance before merge. GitNexus staged detect after indexing
+  this worktree reported LOW, `changed_count: 18`, `affected_count: 0`, and no
+  affected execution flows.
 - Verification:
   - `cd ui && npm test -- --run src/components/browser/BrowserPanel.test.tsx src/components/browser/BrowserStatusBar.test.tsx`
     passed: `2 files / 4 tests`.
@@ -191,10 +205,9 @@
     GitNexus resolver did not expose the PR4 worktree after indexing. Original
     PR4 staged detect was LOW with no affected execution flows, while the
     CRITICAL pre-edit impact remains the merge gate.
-- PR: https://github.com/novolei/uclaw-new/pull/507.
-- Explicit non-scope: no backend execution routing, no direct IPC command guard,
-  no Splash/App handoff, no runtime-pack side effects, and no provider default
-  promotion.
+- Explicit non-scope: no Startup Splash/App handoff, no Settings execution, no
+  direct browser command execution guard, no runtime-pack install/repair/delete,
+  no provider default promotion, and no TaskEvent persistence.
 
 ### PR5 - UI Command Runtime Touch
 
