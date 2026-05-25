@@ -1398,6 +1398,12 @@ fn text_signals_plan_work(text: &str) -> bool {
         "plan", "step", "task", "todo",
         "计划", "步骤", "任务", "待办",
         "实现", "添加", "编写", "完成",
+        "升级", "优化", "修改", "调整",
+        "设计", "美化", "修复", "解决",
+        "创建", "写入",
+        "upgrade", "optimize", "modify", "adjust",
+        "design", "beautify", "fix", "resolve",
+        "create", "write", "implement",
     ];
     if plan_keywords.iter().any(|kw| lower.contains(kw) || text.contains(kw)) {
         return true;
@@ -3362,6 +3368,7 @@ mod plan_guard_relevance_tests {
         assert!(text_signals_plan_work("马上编写事件处理"));
         assert!(text_signals_plan_work("即将开始下一步"));
         assert!(text_signals_plan_work("下面来实现金币系统"));
+        assert!(text_signals_plan_work("升级按钮样式："));
     }
 
     #[test]
@@ -3372,6 +3379,7 @@ mod plan_guard_relevance_tests {
         assert!(text_signals_plan_work("编写游戏循环"));
         assert!(text_signals_plan_work("实现胜负判定"));
         assert!(text_signals_plan_work("完成棋盘渲染"));
+        assert!(text_signals_plan_work("优化棋盘渲染"));
     }
 }
 
