@@ -510,6 +510,25 @@ describe('BrowserRuntimeSettings', () => {
     expect(store.get(selectedBuiltinIntegrationAtom)).toBe('playwright_mcp')
   })
 
+  it('renders raw JSON diagnostics collapsed by default', async () => {
+    const { user } = renderWithProviders(
+      <BrowserRuntimeSettings
+        status={{
+          report: runtimeReport(),
+        }}
+      />,
+    )
+
+    expect(screen.getByText('Diagnostics')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Show raw Browser Runtime report' })).toBeInTheDocument()
+    expect(screen.queryByText('"desiredProviderPriority"')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Show raw Browser Runtime report' }))
+
+    expect(screen.getByText(/"desiredProviderPriority"/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Hide raw Browser Runtime report' })).toBeInTheDocument()
+  })
+
   it('refreshes live runtime status from the run-doctor action', async () => {
     vi.mocked(getBrowserRuntimeStatus)
       .mockResolvedValueOnce(runtimeReport('1.48.2-uclaw.1'))

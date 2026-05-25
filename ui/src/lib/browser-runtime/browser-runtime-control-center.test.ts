@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  artifactLabel,
   deriveBrowserRuntimeControlCenterViewModel,
   priorityWithProviderFirst,
+  rawControlCenterJson,
 } from './browser-runtime-control-center'
 import type { BrowserRuntimeControlCenterReport } from '@/lib/startup/startup-doctor'
 
@@ -90,5 +92,23 @@ describe('browser runtime control center view model', () => {
       'browser.playwright_cli',
       'browser.local_chromium',
     ])
+  })
+
+  it('uses product status vocabulary instead of raw unavailable/setup copy', () => {
+    const model = deriveBrowserRuntimeControlCenterViewModel(report())
+
+    expect(model.providerRows.map((row) => row.statusLabel)).toContain('Off')
+    expect(JSON.stringify(model)).not.toContain('feature flag disabled')
+    expect(JSON.stringify(model)).not.toContain('setup 未完成')
+  })
+
+  it('serializes raw diagnostics and labels missing artifacts explicitly', () => {
+    const json = rawControlCenterJson(report())
+
+    expect(json).toContain('"desiredProviderPriority"')
+    expect(artifactLabel(undefined)).toBe('No artifact yet')
+    expect(artifactLabel('browser-runtime-provider-probe-passed')).toBe(
+      'browser-runtime-provider-probe-passed',
+    )
   })
 })

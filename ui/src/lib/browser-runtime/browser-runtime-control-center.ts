@@ -4,6 +4,21 @@ import type {
   BrowserRuntimeProviderLane,
 } from '@/lib/startup/startup-doctor'
 
+const ALLOWED_STATUS_LABELS = [
+  'Off',
+  'Enabled',
+  'Needs runtime pack',
+  'Needs probe',
+  'Probe failed',
+  'Ready',
+  'Active',
+  'Fallback active',
+  'Advanced',
+  'Not routable',
+] as const
+
+type BrowserRuntimeProductStatusLabel = (typeof ALLOWED_STATUS_LABELS)[number]
+
 export interface BrowserRuntimeControlCenterViewModel {
   routeSummary: {
     desiredLabel: string
@@ -12,6 +27,15 @@ export interface BrowserRuntimeControlCenterViewModel {
     primaryActionLabel: string
   }
   providerRows: BrowserRuntimeProviderRowViewModel[]
+}
+
+export function rawControlCenterJson(report?: BrowserRuntimeControlCenterReport): string {
+  if (!report) return '{}'
+  return JSON.stringify(report, null, 2)
+}
+
+export function artifactLabel(artifactId?: string): string {
+  return artifactId ? artifactId : 'No artifact yet'
 }
 
 export interface BrowserRuntimeProviderRowViewModel {
@@ -97,26 +121,23 @@ function routeReason(lanes: BrowserRuntimeProviderLane[]): string {
     .join(' · ')
 }
 
-function laneStatusLabel(lane: BrowserRuntimeProviderLane): string {
+function laneStatusLabel(lane: BrowserRuntimeProviderLane): BrowserRuntimeProductStatusLabel {
   if (!lane.enabled) return 'Off'
   if (lane.routeRole === 'active') return 'Active'
   if (lane.fallbackReason === 'runtime_pack_not_ready') return 'Needs runtime pack'
   if (lane.fallbackReason === 'probe_not_passed') return 'Needs probe'
   if (lane.fallbackReason === 'probe_failed') return 'Probe failed'
-  if (lane.fallbackReason === 'probe_blocked') return 'Probe blocked'
-  if (lane.fallbackReason === 'probe_stale') return 'Probe stale'
   if (!lane.routable) return 'Not routable'
   return 'Ready'
 }
 
-function fallbackLabel(reason?: string): string {
+function fallbackLabel(reason?: string): BrowserRuntimeProductStatusLabel {
   if (reason === 'provider_disabled') return 'Off'
   if (reason === 'runtime_pack_not_ready') return 'Needs runtime pack'
   if (reason === 'probe_not_passed') return 'Needs probe'
   if (reason === 'probe_failed') return 'Probe failed'
-  if (reason === 'probe_blocked') return 'Probe blocked'
-  if (reason === 'probe_stale') return 'Probe stale'
-  return reason ? reason : 'Ready'
+  if (reason) return 'Not routable'
+  return 'Ready'
 }
 
 function nextActionLabel(nextAction: string): string {

@@ -21,8 +21,10 @@ import { topLevelViewAtom } from '@/atoms/top-level-view'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
+  artifactLabel,
   deriveBrowserRuntimeControlCenterViewModel,
   priorityWithProviderFirst,
+  rawControlCenterJson,
   type BrowserRuntimeProviderRowViewModel,
 } from '@/lib/browser-runtime/browser-runtime-control-center'
 import {
@@ -102,6 +104,7 @@ export function BrowserRuntimeSettings({
   const [controlCenterPendingAction, setControlCenterPendingAction] = React.useState<string | null>(null)
   const [probePendingProviderId, setProbePendingProviderId] =
     React.useState<BrowserRuntimeProviderId | null>(null)
+  const [rawReportOpen, setRawReportOpen] = React.useState(false)
   const refreshGenerationRef = React.useRef(0)
   const dryRunGenerationRef = React.useRef(0)
   const identityGenerationRef = React.useRef(0)
@@ -413,6 +416,49 @@ export function BrowserRuntimeSettings({
                 等待 Rust Browser Runtime Control Center 报告。
               </div>
             )}
+          </div>
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="Diagnostics">
+        <SettingsCard>
+          <SettingsRow
+            label="Route evidence"
+            icon={<Bug size={16} />}
+            description={controlModel.routeSummary.reasonLabel}
+          />
+          <SettingsRow
+            label="Probe artifacts"
+            description={
+              controlModel.providerRows.length > 0
+                ? controlModel.providerRows
+                    .map((row) => artifactLabel(row.lane.lastProbeArtifact))
+                    .join(' · ')
+                : 'No artifact yet'
+            }
+          />
+          <SettingsRow
+            label="Probe history"
+            description={
+              controlModel.providerRows
+                .map((row) => `${row.lane.displayName}: ${row.lane.probeHistory?.length ?? 0}`)
+                .join(' · ') || 'No probe history yet'
+            }
+          />
+          <div className="p-4">
+            <button
+              type="button"
+              className="min-h-11 rounded-md border border-input px-4 text-left text-sm font-medium hover:bg-accent"
+              aria-label={rawReportOpen ? 'Hide raw Browser Runtime report' : 'Show raw Browser Runtime report'}
+              onClick={() => setRawReportOpen((open) => !open)}
+            >
+              {rawReportOpen ? 'Hide raw report' : 'Show raw report'}
+            </button>
+            {rawReportOpen ? (
+              <pre className="mt-3 max-h-80 overflow-auto rounded-md bg-muted p-4 text-xs">
+                {rawControlCenterJson(activeControlCenter)}
+              </pre>
+            ) : null}
           </div>
         </SettingsCard>
       </SettingsSection>
