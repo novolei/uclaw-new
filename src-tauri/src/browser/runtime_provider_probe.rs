@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use crate::browser::playwright_cli::PLAYWRIGHT_CLI_PROVIDER_ID;
+use crate::browser::playwright_mcp::PLAYWRIGHT_MCP_PROVIDER_ID;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserRuntimeProviderProbeState {
@@ -55,5 +58,83 @@ impl BrowserRuntimeProviderProbeSummary {
             failure_code: Some(failure_code.into()),
             message: message.into(),
         }
+    }
+}
+
+pub struct BrowserRuntimeProviderProbeClock {
+    now_ms: i64,
+}
+
+impl BrowserRuntimeProviderProbeClock {
+    pub fn fixed(now_ms: i64) -> Self {
+        Self { now_ms }
+    }
+
+    pub fn utc_now() -> Self {
+        Self {
+            now_ms: chrono::Utc::now().timestamp_millis(),
+        }
+    }
+}
+
+pub fn probe_provider_from_status(
+    provider_id: &str,
+    runtime_pack_ready: bool,
+    clock: BrowserRuntimeProviderProbeClock,
+) -> BrowserRuntimeProviderProbeSummary {
+    if !runtime_pack_ready
+        && (provider_id == PLAYWRIGHT_CLI_PROVIDER_ID || provider_id == PLAYWRIGHT_MCP_PROVIDER_ID)
+    {
+        return BrowserRuntimeProviderProbeSummary {
+            provider_id: provider_id.to_string(),
+            state: BrowserRuntimeProviderProbeState::Blocked,
+            checked_at_ms: clock.now_ms,
+            artifact_id: Some(format!("{}-probe-blocked", provider_id.replace('.', "-"))),
+            failure_code: Some("runtime_pack_not_ready".to_string()),
+            message: "Runtime pack must be ready before provider probe can run.".to_string(),
+            event_names: vec!["browser.runtime.provider.probe.blocked".to_string()],
+        };
+    }
+
+    let mut summary = BrowserRuntimeProviderProbeSummary::passed(provider_id, clock.now_ms);
+    if provider_id == PLAYWRIGHT_MCP_PROVIDER_ID {
+        summary
+            .event_names
+            .push("browser.runtime.playwright_mcp.raw_tools_hidden.checked".to_string());
+    }
+    summary
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_probe_blocks_when_runtime_pack_is_not_ready() {
+        let summary = probe_provider_from_status(
+            PLAYWRIGHT_CLI_PROVIDER_ID,
+            false,
+            BrowserRuntimeProviderProbeClock::fixed(1_770_000_000_000),
+        );
+
+        assert_eq!(summary.state, BrowserRuntimeProviderProbeState::Blocked);
+        assert_eq!(
+            summary.failure_code.as_deref(),
+            Some("runtime_pack_not_ready")
+        );
+    }
+
+    #[test]
+    fn mcp_probe_checks_raw_tool_guardrail() {
+        let summary = probe_provider_from_status(
+            PLAYWRIGHT_MCP_PROVIDER_ID,
+            true,
+            BrowserRuntimeProviderProbeClock::fixed(1_770_000_000_000),
+        );
+
+        assert!(summary
+            .event_names
+            .iter()
+            .any(|event| event.contains("raw_tools_hidden")));
     }
 }

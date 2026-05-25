@@ -14,6 +14,10 @@ use super::runtime_pack::{
     BrowserRuntimePackOperationRequest, BrowserRuntimePackPaths, BrowserRuntimePackPlanTrigger,
     BrowserRuntimePackStatusReport, BrowserRuntimePackStatusRequest,
 };
+use super::runtime_provider_probe::{
+    probe_provider_from_status, BrowserRuntimeProviderProbeClock,
+    BrowserRuntimeProviderProbeSummary,
+};
 use super::runtime_status::BrowserRuntimeStatusReport;
 
 #[tauri::command]
@@ -69,6 +73,30 @@ pub async fn set_browser_runtime_provider_priority(
     }
 
     get_browser_runtime_control_center(state).await
+}
+
+#[tauri::command]
+pub async fn run_browser_runtime_provider_probe(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<BrowserRuntimeProviderProbeSummary, Error> {
+    let runtime_status = get_browser_runtime_status(state.clone()).await?;
+    let summary = probe_provider_from_status(
+        &provider_id,
+        runtime_status.runtime_pack.ready && runtime_status.runtime_pack.can_run_browser_tasks,
+        BrowserRuntimeProviderProbeClock::utc_now(),
+    );
+
+    {
+        let mut settings = state.settings.write().await;
+        settings
+            .browser_runtime_provider_config
+            .provider_probe_cache
+            .insert(provider_id, summary.clone());
+        settings.save(&state.config_path)?;
+    }
+
+    Ok(summary)
 }
 
 #[tauri::command]
