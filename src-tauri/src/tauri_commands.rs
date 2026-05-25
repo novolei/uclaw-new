@@ -1911,6 +1911,26 @@ pub async fn send_message(
             app_handle.clone(),
         ).with_infra(Arc::clone(&state.infra_service))
     );
+    // C2-Dirac-B2 — M2-F context tools. ONLY the two working ops are
+    // registered: context.search + context.read (spec §8.5). The other
+    // five ContextToolSet ops (fold/cite/compare/pin/release) are
+    // unimplemented stubs / lifecycle ops out of B2 scope and MUST NOT be
+    // wrapped — registering them would let the LLM call tools that just
+    // fail. The ContextToolSet starts empty; fragment lifecycle (when
+    // fragments enter/leave the set) is a M2-D follow-up. It is a separate
+    // fragment set from the ChatDelegate's ContextManager (selection for
+    // the prompt) — unifying the two is also M2-D's job.
+    {
+        let context_toolset = Arc::new(tokio::sync::RwLock::new(
+            crate::runtime::context_tools::ContextToolSet::new(),
+        ));
+        tools.register(builtin::context_tools_adapter::ContextSearchTool::new(
+            context_toolset.clone(),
+        ));
+        tools.register(builtin::context_tools_adapter::ContextReadTool::new(
+            context_toolset,
+        ));
+    }
     crate::agent::tools::memu_tools::register_memu_tools(
         &mut tools,
         state.memu_client.clone(),
