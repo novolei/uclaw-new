@@ -1,9 +1,14 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::browser::playwright_cli::PLAYWRIGHT_CLI_PROVIDER_ID;
 use crate::browser::playwright_mcp::PLAYWRIGHT_MCP_PROVIDER_ID;
 use crate::browser::provider::{BrowserProviderStatus, LOCAL_CHROMIUM_PROVIDER_ID};
 use crate::browser::runtime_contracts::BrowserRuntimeFeatureFlags;
+use crate::browser::runtime_provider_probe::{
+    BrowserRuntimeProviderProbeState, BrowserRuntimeProviderProbeSummary,
+};
 use crate::error::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,6 +23,8 @@ pub struct BrowserRuntimeProviderConfig {
     #[serde(default = "default_fallback_provider")]
     pub default_fallback_provider: String,
     #[serde(default)]
+    pub provider_probe_cache: BTreeMap<String, BrowserRuntimeProviderProbeSummary>,
+    #[serde(default)]
     pub updated_at_ms: i64,
 }
 
@@ -28,6 +35,7 @@ impl Default for BrowserRuntimeProviderConfig {
             playwright_mcp_enabled: false,
             desired_priority: default_provider_priority(),
             default_fallback_provider: default_fallback_provider(),
+            provider_probe_cache: BTreeMap::new(),
             updated_at_ms: 0,
         }
     }
@@ -113,7 +121,7 @@ pub struct BrowserRuntimeProviderLane {
     pub readiness: String,
     pub routable: bool,
     pub route_role: BrowserRuntimeRouteRole,
-    pub probe_state: String,
+    pub probe_state: BrowserRuntimeProviderProbeState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
     pub next_action: String,
@@ -159,6 +167,15 @@ pub fn build_control_center_report(
             provider_id == PLAYWRIGHT_CLI_PROVIDER_ID || provider_id == PLAYWRIGHT_MCP_PROVIDER_ID;
         let requires_probe =
             provider_id == PLAYWRIGHT_CLI_PROVIDER_ID || provider_id == PLAYWRIGHT_MCP_PROVIDER_ID;
+        let probe = config.provider_probe_cache.get(provider_id);
+        let probe_state = if provider_id == LOCAL_CHROMIUM_PROVIDER_ID {
+            BrowserRuntimeProviderProbeState::Passed
+        } else {
+            probe
+                .map(|probe| probe.state)
+                .unwrap_or(BrowserRuntimeProviderProbeState::NotRun)
+        };
+        let probe_passed = probe_state == BrowserRuntimeProviderProbeState::Passed;
         let readiness = status
             .map(|status| format!("{:?}", status.readiness).to_lowercase())
             .unwrap_or_else(|| "unavailable".to_string());
@@ -166,8 +183,8 @@ pub fn build_control_center_report(
             Some("provider_disabled".to_string())
         } else if requires_pack && !runtime_pack_ready {
             Some("runtime_pack_not_ready".to_string())
-        } else if requires_probe {
-            Some("probe_not_passed".to_string())
+        } else if requires_probe && !probe_passed {
+            Some(probe_fallback_reason(probe_state).to_string())
         } else {
             None
         };
@@ -193,14 +210,10 @@ pub fn build_control_center_report(
             } else {
                 BrowserRuntimeRouteRole::Desired
             },
-            probe_state: if provider_id == LOCAL_CHROMIUM_PROVIDER_ID {
-                "passed".to_string()
-            } else {
-                "not_run".to_string()
-            },
+            probe_state,
             fallback_reason: fallback_reason.clone(),
             next_action: next_action_for_lane(provider_id, enabled, fallback_reason.as_deref()),
-            last_probe_artifact: None,
+            last_probe_artifact: probe.and_then(|probe| probe.artifact_id.clone()),
         });
     }
 
@@ -231,6 +244,15 @@ pub fn build_control_center_report(
             configure_route_ready: false,
         },
         updated_at_ms: config.updated_at_ms,
+    }
+}
+
+fn probe_fallback_reason(probe_state: BrowserRuntimeProviderProbeState) -> &'static str {
+    match probe_state {
+        BrowserRuntimeProviderProbeState::Failed => "probe_failed",
+        BrowserRuntimeProviderProbeState::Blocked => "probe_blocked",
+        BrowserRuntimeProviderProbeState::Stale => "probe_stale",
+        _ => "probe_not_passed",
     }
 }
 
@@ -273,7 +295,7 @@ fn next_action_for_lane(provider_id: &str, enabled: bool, fallback_reason: Optio
 
     match fallback_reason {
         Some("runtime_pack_not_ready") => "prepare_runtime_pack",
-        Some("probe_not_passed") => "run_probe",
+        Some("probe_not_passed" | "probe_failed" | "probe_stale" | "probe_blocked") => "run_probe",
         Some(_) => "view_details",
         None => "none",
     }
@@ -296,7 +318,9 @@ mod tests {
     use super::*;
     use crate::browser::playwright_cli::PLAYWRIGHT_CLI_PROVIDER_ID;
     use crate::browser::playwright_mcp::PLAYWRIGHT_MCP_PROVIDER_ID;
-    use crate::browser::provider::LOCAL_CHROMIUM_PROVIDER_ID;
+    use crate::browser::provider::{
+        BrowserProviderCapabilities, BrowserProviderReadiness, LOCAL_CHROMIUM_PROVIDER_ID,
+    };
 
     #[test]
     fn provider_config_defaults_to_cli_mcp_local_priority_with_cli_mcp_off() {
@@ -313,5 +337,102 @@ mod tests {
             ]
         );
         assert_eq!(config.default_fallback_provider, LOCAL_CHROMIUM_PROVIDER_ID);
+    }
+
+    #[test]
+    fn enabled_cli_is_routable_after_passed_probe_and_ready_runtime_pack() {
+        let mut config = BrowserRuntimeProviderConfig::default();
+        config.playwright_cli_enabled = true;
+        config.provider_probe_cache.insert(
+            PLAYWRIGHT_CLI_PROVIDER_ID.to_string(),
+            BrowserRuntimeProviderProbeSummary::passed(
+                PLAYWRIGHT_CLI_PROVIDER_ID,
+                1_770_000_000_000,
+            ),
+        );
+
+        let report = build_control_center_report(config, true, &fixture_provider_statuses());
+        let cli = report
+            .provider_lanes
+            .iter()
+            .find(|lane| lane.provider_id == PLAYWRIGHT_CLI_PROVIDER_ID)
+            .expect("cli lane");
+
+        assert!(cli.routable);
+        assert_eq!(cli.probe_state, BrowserRuntimeProviderProbeState::Passed);
+        assert_eq!(
+            report.active_provider_route.provider_id,
+            PLAYWRIGHT_CLI_PROVIDER_ID
+        );
+    }
+
+    #[test]
+    fn failed_probe_preserves_desired_priority_and_blocks_routing() {
+        let mut config = BrowserRuntimeProviderConfig::default();
+        config.playwright_cli_enabled = true;
+        config.provider_probe_cache.insert(
+            PLAYWRIGHT_CLI_PROVIDER_ID.to_string(),
+            BrowserRuntimeProviderProbeSummary::failed(
+                PLAYWRIGHT_CLI_PROVIDER_ID,
+                1_770_000_000_000,
+                "worker_startup_timeout",
+                "Worker startup timed out after 15s.",
+            ),
+        );
+
+        let report = build_control_center_report(config, true, &fixture_provider_statuses());
+        let cli = report
+            .provider_lanes
+            .iter()
+            .find(|lane| lane.provider_id == PLAYWRIGHT_CLI_PROVIDER_ID)
+            .expect("cli lane");
+
+        assert!(!cli.routable);
+        assert_eq!(cli.probe_state, BrowserRuntimeProviderProbeState::Failed);
+        assert_eq!(cli.fallback_reason.as_deref(), Some("probe_failed"));
+        assert_eq!(
+            report.active_provider_route.provider_id,
+            LOCAL_CHROMIUM_PROVIDER_ID
+        );
+    }
+
+    fn fixture_provider_statuses() -> Vec<BrowserProviderStatus> {
+        vec![
+            fixture_provider_status(LOCAL_CHROMIUM_PROVIDER_ID, "Local Chromium", true),
+            fixture_provider_status(PLAYWRIGHT_CLI_PROVIDER_ID, "Playwright CLI", true),
+            fixture_provider_status(PLAYWRIGHT_MCP_PROVIDER_ID, "Playwright MCP", true),
+        ]
+    }
+
+    fn fixture_provider_status(
+        provider_id: &str,
+        display_name: &str,
+        ready: bool,
+    ) -> BrowserProviderStatus {
+        BrowserProviderStatus {
+            provider_id: provider_id.to_string(),
+            family: "browser".to_string(),
+            display_name: display_name.to_string(),
+            readiness: if ready {
+                BrowserProviderReadiness::Ready
+            } else {
+                BrowserProviderReadiness::NeedsSetup
+            },
+            ready,
+            setup_complete: ready,
+            active_contexts: 0,
+            capabilities: BrowserProviderCapabilities {
+                provider_id: provider_id.to_string(),
+                family: "browser".to_string(),
+                display_name: display_name.to_string(),
+                actions: Vec::new(),
+                features: Vec::new(),
+                harness_subjects: Vec::new(),
+            },
+            setup_checks: Vec::new(),
+            capability_probes: Vec::new(),
+            remediation: Vec::new(),
+            notes: Vec::new(),
+        }
     }
 }

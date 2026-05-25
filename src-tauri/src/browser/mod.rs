@@ -33,6 +33,7 @@ pub mod runtime_pack_runner;
 pub mod runtime_memory_policy;
 #[cfg(test)]
 mod runtime_memory_policy_tests;
+pub mod runtime_provider_probe;
 pub mod runtime_status;
 pub mod runtime_supervisor;
 pub mod script_runner;
@@ -120,6 +121,9 @@ pub use runtime_pack::{
     BrowserRuntimePackUpdatePolicy,
 };
 pub use runtime_pack_runner::BrowserRuntimePackLocalStepRunner;
+pub use runtime_provider_probe::{
+    BrowserRuntimeProviderProbeState, BrowserRuntimeProviderProbeSummary,
+};
 pub use runtime_status::{
     compose_browser_runtime_status, BrowserRuntimeProviderReadinessSummary,
     BrowserRuntimeStatusReport, BrowserRuntimeStatusService, BrowserRuntimeSupervisorStatus,
