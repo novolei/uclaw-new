@@ -100,7 +100,7 @@ rollout writes to JSONL; HarnessSubject bridges to harness eval.
 | Dirac PR | Scope | Status |
 |---|---|---|
 | C1-Dirac-A1 | tool_use/tool_result pair repair on compaction (agentic_loop, M-Wireup, ~+3% M2) | ✅ merged #496 |
-| C1-Dirac-A2 | EditTool batch form ({files: [...]}) (M-Wireup, ~+5% M2) | ✅ merged #TBD |
+| C1-Dirac-A2 | EditTool batch form ({files: [...]}) (M-Wireup, ~+5% M2) | ✅ merged #498 |
 
 **Outstanding for M2 closure**:
 
