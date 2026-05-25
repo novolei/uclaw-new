@@ -725,21 +725,66 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Edit a file via search-replace or line insertion. Pass an array of edits; for insertion set old_text='' and supply insert_line (1-based)."
+        "Edit one or more files via search-replace, line insertion, or anchor-targeted edits. \
+         Use `files: [{path, edits}]` to batch edits across files in a single call — \
+         reduces LLM round-trips. Legacy `{path, edits}` form for single-file edits also works."
     }
 
     fn preview_target_path(&self, args: &serde_json::Value) -> Option<String> {
-        args.get("path").and_then(|v| v.as_str()).map(String::from)
+        // For batch form, return the first file's path for preview purposes
+        if let Some(files) = args.get("files").and_then(|f| f.as_array()) {
+            files
+                .first()
+                .and_then(|f| f.get("path"))
+                .and_then(|p| p.as_str())
+                .map(String::from)
+        } else {
+            args.get("path").and_then(|v| v.as_str()).map(String::from)
+        }
     }
 
+    /// Loose schema — both `files` and `path` are optional properties.
+    /// Use `files: [{path, edits}]` for multi-file edits OR `{path, edits}` for a single file.
+    ///
+    /// Note: `oneOf` was considered (spec §8.3) but deferred — autonomous mode cannot run
+    /// live provider-compat tests (Anthropic/OpenAI/Gemini). The loose schema is accepted
+    /// by all providers by construction. `oneOf` can be adopted once provider testing is
+    /// available (see spec §4.1 fallback note).
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
+            "description": "Use `files: [{path, edits}]` for multi-file edits OR `{path, edits}` for a single file.",
             "properties": {
-                "path": { "type": "string", "description": "File path." },
+                "files": {
+                    "type": "array",
+                    "description": "Files to edit (batch form). Applied in order; first failure skips remaining.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": { "type": "string", "description": "File path." },
+                            "edits": {
+                                "type": "array",
+                                "description": "Edits applied in order.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "old_text": { "type": "string", "description": "Exact text to find; empty = insert mode." },
+                                        "new_text": { "type": "string", "description": "Replacement or text to insert." },
+                                        "insert_line": { "type": "integer", "description": "1-based line for insertion (only when old_text is empty)." },
+                                        "anchor": { "type": "string", "description": "Optional starting anchor for stateful Myers Diff alignment." },
+                                        "end_anchor": { "type": "string", "description": "Optional ending anchor for stateful Myers Diff alignment." }
+                                    },
+                                    "required": ["old_text", "new_text"]
+                                }
+                            }
+                        },
+                        "required": ["path", "edits"]
+                    }
+                },
+                "path": { "type": "string", "description": "File path (single-file form)." },
                 "edits": {
                     "type": "array",
-                    "description": "Edits applied in order.",
+                    "description": "Edits applied in order (single-file form).",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -752,8 +797,7 @@ impl Tool for EditTool {
                         "required": ["old_text", "new_text"]
                     }
                 }
-            },
-            "required": ["path", "edits"]
+            }
         })
     }
 
@@ -762,7 +806,16 @@ impl Tool for EditTool {
     }
 
     fn path_args<'a>(&self, args: &'a serde_json::Value) -> Vec<&'a str> {
-        args["path"].as_str().map(|s| vec![s]).unwrap_or_default()
+        if let Some(files) = args.get("files").and_then(|f| f.as_array()) {
+            // Batch form: collect all paths for SafetyManager
+            files
+                .iter()
+                .filter_map(|f| f.get("path").and_then(|p| p.as_str()))
+                .collect()
+        } else {
+            // Legacy single-file form
+            args["path"].as_str().map(|s| vec![s]).unwrap_or_default()
+        }
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
