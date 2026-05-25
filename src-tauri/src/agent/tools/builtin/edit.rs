@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 use similar::TextDiff;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::info;
 
-use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput};
+use crate::agent::anchor_state::{ANCHOR_DELIMITER, GLOBAL_ANCHOR_STATE_MANAGER, GLOBAL_FILE_CONTEXT_TRACKER};
+use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 
 /// Edit tool — supports search-and-replace edits on files.
 ///
@@ -19,14 +20,47 @@ pub struct EditTool {
 // Deserialization types
 // ---------------------------------------------------------------------------
 
+/// How an anchored edit places its `new_text` relative to the resolved
+/// anchor line(s). Only meaningful when `anchor` is set. (spec §3.4)
+#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum AnchoredEditType {
+    /// Replace the anchored line (or the `anchor..=end_anchor` range).
+    Replace,
+    /// Insert `new_text` immediately after the anchored line.
+    InsertAfter,
+    /// Insert `new_text` immediately before the anchored line.
+    InsertBefore,
+}
+
+impl Default for AnchoredEditType {
+    fn default() -> Self {
+        Self::Replace
+    }
+}
+
+/// A single edit operation.
+///
+/// Three shapes, distinguished at apply time (kept as one struct rather than
+/// an `#[serde(untagged)]` enum so A2's legacy `{old_text,new_text}` and batch
+/// `{files}` shapes — and their tests — keep working unchanged):
+/// - **anchored** (B1, preferred): `anchor` (+ optional `end_anchor`,
+///   `edit_type`) targets a line by its stable token; `new_text` is the body.
+/// - **literal search-replace**: `old_text` (non-empty) + `new_text`.
+/// - **line insertion**: `old_text` empty + `new_text` (+ optional `insert_line`).
 #[derive(serde::Deserialize, Debug, Clone)]
 struct EditArg {
     #[serde(default)]
     old_text: String,
+    #[serde(default)]
     new_text: String,
     insert_line: Option<u32>,
     anchor: Option<String>,
     end_anchor: Option<String>,
+    /// Placement for anchored edits; defaults to `Replace`. Ignored unless
+    /// `anchor` is set.
+    #[serde(default)]
+    edit_type: AnchoredEditType,
 }
 
 /// Batch-form per-file entry.
@@ -124,11 +158,9 @@ impl EditTool {
 
         let full_path = self.resolve_path(&path);
 
-        // Active File External Change Watcher check
-        if crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER.is_stale(&full_path) {
-            return Err(ToolError::Execution(
-                "File has been modified externally by the user. Run read_file tool to synchronize.".into(),
-            ));
+        // Active File External Change Watcher check — hard reject (spec §8.4).
+        if GLOBAL_FILE_CONTEXT_TRACKER.is_stale(&full_path) {
+            return Err(stale_file_error(&full_path));
         }
 
         info!(path = %full_path.display(), edits = edits.len(), "Applying edits");
@@ -138,11 +170,16 @@ impl EditTool {
             ToolError::Execution(format!("Cannot read {}: {}", full_path.display(), e))
         })?;
 
+        // Refresh anchor state against current disk content so the 4-step
+        // validator resolves tokens against what's actually on disk.
+        let initial_lines: Vec<String> = original.lines().map(|s| s.to_string()).collect();
+        let _ = GLOBAL_ANCHOR_STATE_MANAGER.record_read(&full_path, &initial_lines);
+
         let mut content = original.clone();
         let mut resolved_edits: Vec<ResolvedEdit> = Vec::new();
         let mut current_search_pos = 0;
 
-        for (i, edit) in edits.iter().enumerate() {
+        for edit in edits.iter() {
             let old_text = &edit.old_text;
             let new_text = &edit.new_text;
             let insert_line = edit.insert_line;
@@ -151,51 +188,25 @@ impl EditTool {
 
             if let Some(anchor_str) = anchor {
                 let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-                let anchors = crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
-                    .get_anchors(&full_path)
-                    .unwrap_or_else(|| {
-                        let a = crate::agent::anchor_state::initialize_anchors(&lines);
-                        crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
-                            .register_file_lines(&full_path, &lines);
-                        a
-                    });
-
-                let start_idx = anchors.iter().position(|r| r == anchor_str).ok_or_else(|| {
-                    ToolError::Execution(format!(
-                        "Start anchor '{}' not found in file. Make sure you have the correct anchor.",
-                        anchor_str
-                    ))
-                })?;
-
-                let end_idx = if let Some(end_anchor_str) = end_anchor {
-                    anchors
-                        .iter()
-                        .skip(start_idx)
-                        .position(|r| r == end_anchor_str)
-                        .map(|p| start_idx + p)
-                        .ok_or_else(|| {
-                            ToolError::Execution(format!(
-                                "End anchor '{}' not found after start anchor in file.",
-                                end_anchor_str
-                            ))
-                        })?
-                } else {
-                    start_idx
+                // B1 4-step validator (replaces A2's Apple§hash position match).
+                let start_idx = resolve_anchored_edit(&full_path, &lines, anchor_str)?;
+                let end_idx = match end_anchor {
+                    Some(ea) => {
+                        let e = resolve_anchored_edit(&full_path, &lines, ea)?;
+                        if e < start_idx {
+                            return Err(ToolError::InvalidParams(format!(
+                                "end_anchor resolves to line {} which is before anchor line {}",
+                                e, start_idx
+                            )));
+                        }
+                        e
+                    }
+                    None => start_idx,
                 };
 
-                let (start_pos, end_pos) = find_line_char_range(&content, start_idx, end_idx);
-                let mut formatted_new_text = new_text.to_string();
-                if !formatted_new_text.ends_with('\n')
-                    && content[start_pos..end_pos].ends_with('\n')
-                {
-                    formatted_new_text.push('\n');
-                }
-
-                resolved_edits.push(ResolvedEdit {
-                    start_pos,
-                    end_pos,
-                    new_text: formatted_new_text,
-                });
+                resolved_edits.push(anchored_resolved_edit(
+                    &content, start_idx, end_idx, edit.edit_type, new_text,
+                ));
             } else if old_text.is_empty() {
                 let (start_pos, end_pos) = match insert_line {
                     Some(line_num) => {
@@ -269,17 +280,16 @@ impl EditTool {
             applied += 1;
         }
 
-        crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER
-            .register_expected_write(&full_path);
+        GLOBAL_FILE_CONTEXT_TRACKER.register_expected_write(&full_path);
 
         fs::write(&full_path, &content).await.map_err(|e| {
             ToolError::Execution(format!("Cannot write {}: {}", full_path.display(), e))
         })?;
 
-        let old_lines: Vec<String> = original.lines().map(|s| s.to_string()).collect();
+        // Re-align anchors to the post-write content (record_read tracks the
+        // old content internally, so no need to pass old_lines).
         let new_lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-        crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
-            .align_file_anchors(&full_path, &old_lines, &new_lines);
+        let _ = GLOBAL_ANCHOR_STATE_MANAGER.record_read(&full_path, &new_lines);
 
         let diff = Self::generate_diff(&original, &content, &path);
         let summary = format!(
@@ -310,16 +320,20 @@ impl EditTool {
 
         let full_path = self.resolve_path(path);
 
-        if crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER.is_stale(&full_path) {
-            return Err(ToolError::Execution(
-                "File has been modified externally by the user. Run read_file tool to synchronize.".into(),
-            ));
+        // Stale-file gate — hard reject (spec §8.4).
+        if GLOBAL_FILE_CONTEXT_TRACKER.is_stale(&full_path) {
+            return Err(stale_file_error(&full_path));
         }
 
         // Read file — validates existence and readability; NO disk write
         let content = fs::read_to_string(&full_path).await.map_err(|e| {
             ToolError::Execution(format!("Cannot read {}: {}", full_path.display(), e))
         })?;
+
+        // Refresh anchor state so the 4-step validator resolves against the
+        // current on-disk content (no disk write here).
+        let validate_lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+        let _ = GLOBAL_ANCHOR_STATE_MANAGER.record_read(&full_path, &validate_lines);
 
         let mut current_search_pos = 0usize;
         for edit in edits.iter() {
@@ -329,33 +343,16 @@ impl EditTool {
 
             if let Some(anchor_str) = anchor {
                 let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-                let anchors = crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
-                    .get_anchors(&full_path)
-                    .unwrap_or_else(|| {
-                        let a = crate::agent::anchor_state::initialize_anchors(&lines);
-                        crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
-                            .register_file_lines(&full_path, &lines);
-                        a
-                    });
-
-                let start_idx = anchors.iter().position(|r| r == anchor_str).ok_or_else(|| {
-                    ToolError::Execution(format!(
-                        "Start anchor '{}' not found in file. Make sure you have the correct anchor.",
-                        anchor_str
-                    ))
-                })?;
-
+                // B1 4-step validator (replaces A2's Apple§hash position match).
+                let start_idx = resolve_anchored_edit(&full_path, &lines, anchor_str)?;
                 if let Some(end_anchor_str) = end_anchor {
-                    anchors
-                        .iter()
-                        .skip(start_idx)
-                        .position(|r| r == end_anchor_str)
-                        .ok_or_else(|| {
-                            ToolError::Execution(format!(
-                                "End anchor '{}' not found after start anchor in file.",
-                                end_anchor_str
-                            ))
-                        })?;
+                    let e = resolve_anchored_edit(&full_path, &lines, end_anchor_str)?;
+                    if e < start_idx {
+                        return Err(ToolError::InvalidParams(format!(
+                            "end_anchor resolves to line {} which is before anchor line {}",
+                            e, start_idx
+                        )));
+                    }
                 }
             } else if old_text.is_empty() {
                 // Insert mode — any insert_line value is accepted (apply clamps)
@@ -392,9 +389,19 @@ impl EditTool {
     ) -> Result<(String, usize), ToolError> {
         let full_path = self.resolve_path(&path);
 
+        // Stale-file gate — hard reject (spec §8.4). Defensive: the batch path
+        // validates first, but a direct apply must not write stale content.
+        if GLOBAL_FILE_CONTEXT_TRACKER.is_stale(&full_path) {
+            return Err(stale_file_error(&full_path));
+        }
+
         let original = fs::read_to_string(&full_path).await.map_err(|e| {
             ToolError::Execution(format!("Cannot read {}: {}", full_path.display(), e))
         })?;
+
+        // Refresh anchor state against current disk content for the validator.
+        let initial_lines: Vec<String> = original.lines().map(|s| s.to_string()).collect();
+        let _ = GLOBAL_ANCHOR_STATE_MANAGER.record_read(&full_path, &initial_lines);
 
         let mut content = original.clone();
         let mut resolved_edits: Vec<ResolvedEdit> = Vec::new();
@@ -409,47 +416,25 @@ impl EditTool {
 
             if let Some(anchor_str) = anchor {
                 let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-                let anchors = crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
-                    .get_anchors(&full_path)
-                    .unwrap_or_else(|| {
-                        let a = crate::agent::anchor_state::initialize_anchors(&lines);
-                        crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
-                            .register_file_lines(&full_path, &lines);
-                        a
-                    });
-
-                let start_idx = anchors.iter().position(|r| r == anchor_str).ok_or_else(|| {
-                    ToolError::Execution(format!(
-                        "Start anchor '{}' not found in file. Make sure you have the correct anchor.",
-                        anchor_str
-                    ))
-                })?;
-
-                let end_idx = if let Some(end_anchor_str) = end_anchor {
-                    anchors
-                        .iter()
-                        .skip(start_idx)
-                        .position(|r| r == end_anchor_str)
-                        .map(|p| start_idx + p)
-                        .ok_or_else(|| {
-                            ToolError::Execution(format!(
-                                "End anchor '{}' not found after start anchor in file.",
-                                end_anchor_str
-                            ))
-                        })?
-                } else {
-                    start_idx
+                // B1 4-step validator (replaces A2's Apple§hash position match).
+                let start_idx = resolve_anchored_edit(&full_path, &lines, anchor_str)?;
+                let end_idx = match end_anchor {
+                    Some(ea) => {
+                        let e = resolve_anchored_edit(&full_path, &lines, ea)?;
+                        if e < start_idx {
+                            return Err(ToolError::InvalidParams(format!(
+                                "end_anchor resolves to line {} which is before anchor line {}",
+                                e, start_idx
+                            )));
+                        }
+                        e
+                    }
+                    None => start_idx,
                 };
 
-                let (start_pos, end_pos) = find_line_char_range(&content, start_idx, end_idx);
-                let mut formatted_new_text = new_text.clone();
-                if !formatted_new_text.ends_with('\n')
-                    && content[start_pos..end_pos].ends_with('\n')
-                {
-                    formatted_new_text.push('\n');
-                }
-
-                resolved_edits.push(ResolvedEdit { start_pos, end_pos, new_text: formatted_new_text });
+                resolved_edits.push(anchored_resolved_edit(
+                    &content, start_idx, end_idx, edit.edit_type, new_text,
+                ));
             } else if old_text.is_empty() {
                 let (start_pos, end_pos) = match insert_line {
                     Some(line_num) => {
@@ -515,17 +500,16 @@ impl EditTool {
             applied += 1;
         }
 
-        crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER
-            .register_expected_write(&full_path);
+        GLOBAL_FILE_CONTEXT_TRACKER.register_expected_write(&full_path);
 
         fs::write(&full_path, &content).await.map_err(|e| {
             ToolError::Execution(format!("Cannot write {}: {}", full_path.display(), e))
         })?;
 
-        let old_lines: Vec<String> = original.lines().map(|s| s.to_string()).collect();
+        // Re-align anchors to the post-write content (record_read tracks the
+        // old content internally).
         let new_lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-        crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
-            .align_file_anchors(&full_path, &old_lines, &new_lines);
+        let _ = GLOBAL_ANCHOR_STATE_MANAGER.record_read(&full_path, &new_lines);
 
         let diff = Self::generate_diff(&original, &content, &path);
         Ok((diff, applied))
@@ -684,6 +668,147 @@ impl EditTool {
     }
 }
 
+/// Build the hard-reject error for a file that was modified externally since
+/// last read. Uses `ToolErrorKind::PreconditionFailed` (NOT a soft warning) —
+/// the LLM must re-read before editing (spec §8.4, "environment as forcing
+/// function").
+fn stale_file_error(full_path: &Path) -> ToolError {
+    ToolError::kinded(
+        ToolErrorKind::PreconditionFailed,
+        format!(
+            "{} was modified externally since last read. Re-read with read_file before editing.",
+            full_path.display()
+        ),
+    )
+}
+
+/// Validate an anchor token's syntax: `^[A-Z][a-zA-Z]+(-\d+)?$`-ish.
+/// First char uppercase ASCII letter; remaining chars ASCII letters, digits,
+/// or `-` (to allow the legacy `Apple-1` collision suffix). (spec §3.5 step 1)
+fn is_valid_anchor_token(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_uppercase() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphabetic() || c.is_ascii_digit() || c == '-')
+}
+
+/// 4-step validator for an anchored edit (Dirac `EditExecutor.resolveAnchor`).
+/// Returns the resolved 0-based line index on success. All failure paths
+/// return `ToolError::InvalidParams` with LLM-actionable wording. (spec §3.5)
+///
+/// 1. format: anchor splits into `token§content`, token syntax is valid
+/// 2. token exists in the file's CURRENT anchor list (AnchorStateManager)
+/// 3. provided content portion is single-line (no `\n`)
+/// 4. byte-equal: provided content == the current `lines[idx]`
+fn resolve_anchored_edit(
+    path: &Path,
+    current_lines: &[String],
+    anchor: &str,
+) -> Result<usize, ToolError> {
+    // Step 1a: split on the delimiter.
+    let (token, provided_content) = anchor.split_once(ANCHOR_DELIMITER).ok_or_else(|| {
+        ToolError::InvalidParams(format!(
+            "anchor must contain the '{}' delimiter (format `Token{}<line content>`): {:?}",
+            ANCHOR_DELIMITER, ANCHOR_DELIMITER, anchor
+        ))
+    })?;
+
+    // Step 1b: token syntax.
+    if !is_valid_anchor_token(token) {
+        return Err(ToolError::InvalidParams(format!(
+            "anchor token {:?} must match ^[A-Z][a-zA-Z]+(-\\d+)?$",
+            token
+        )));
+    }
+
+    // Step 3: no newline in the provided content portion.
+    if provided_content.contains('\n') {
+        return Err(ToolError::InvalidParams(
+            "anchor content must be single-line (no '\\n')".into(),
+        ));
+    }
+
+    // Step 2: token exists in the current file's anchor list.
+    let idx = GLOBAL_ANCHOR_STATE_MANAGER
+        .resolve_anchor_index(path, token)
+        .ok_or_else(|| {
+            ToolError::InvalidParams(format!(
+                "anchor token '{}' not found in {}. Re-read the file with read_file to refresh anchors.",
+                token,
+                path.display()
+            ))
+        })?;
+
+    // Step 4: byte-equal content.
+    let actual = current_lines.get(idx).ok_or_else(|| {
+        ToolError::InvalidParams(format!(
+            "anchor '{}' resolved to out-of-range index {} (file has {} lines). Re-read with read_file.",
+            token,
+            idx,
+            current_lines.len()
+        ))
+    })?;
+    if actual != provided_content {
+        return Err(ToolError::InvalidParams(format!(
+            "anchor content mismatch.\n  Expected: {:?}\n  Provided: {:?}\n  Re-read with read_file if you think the file changed.",
+            actual, provided_content
+        )));
+    }
+
+    Ok(idx)
+}
+
+/// Compute the `(start_pos, end_pos, new_text)` char-range edit for a
+/// validated anchored edit. `start_idx`/`end_idx` are the resolved 0-based
+/// line indices (`end_idx >= start_idx`). Replace overwrites the line range;
+/// InsertBefore/After splice a zero-width range with a trailing newline so the
+/// inserted body becomes whole line(s). (spec §3.4 / §3.5)
+fn anchored_resolved_edit(
+    content: &str,
+    start_idx: usize,
+    end_idx: usize,
+    edit_type: AnchoredEditType,
+    new_text: &str,
+) -> ResolvedEdit {
+    match edit_type {
+        AnchoredEditType::Replace => {
+            let (start_pos, end_pos) = find_line_char_range(content, start_idx, end_idx);
+            let mut formatted = new_text.to_string();
+            // Preserve the trailing newline of the replaced range when the
+            // replacement text doesn't already carry one.
+            if !formatted.ends_with('\n') && content[start_pos..end_pos].ends_with('\n') {
+                formatted.push('\n');
+            }
+            ResolvedEdit { start_pos, end_pos, new_text: formatted }
+        }
+        AnchoredEditType::InsertBefore => {
+            let (start_pos, _) = find_line_char_range(content, start_idx, start_idx);
+            let mut formatted = new_text.to_string();
+            if !formatted.ends_with('\n') {
+                formatted.push('\n');
+            }
+            ResolvedEdit { start_pos, end_pos: start_pos, new_text: formatted }
+        }
+        AnchoredEditType::InsertAfter => {
+            // Insert at the start of the line after `end_idx`.
+            let (_, after_pos) = find_line_char_range(content, end_idx, end_idx);
+            let mut formatted = new_text.to_string();
+            if !formatted.ends_with('\n') {
+                formatted.push('\n');
+            }
+            // If the anchored line had no trailing newline (last line of a file
+            // without a final newline), inject one before the new body so the
+            // insert lands on its own line.
+            if !content[..after_pos].ends_with('\n') && !content.is_empty() {
+                formatted = format!("\n{}", formatted);
+            }
+            ResolvedEdit { start_pos: after_pos, end_pos: after_pos, new_text: formatted }
+        }
+    }
+}
+
 /// Find the character index range for a range of 0-based lines (inclusive)
 fn find_line_char_range(content: &str, start_line_idx: usize, end_line_idx: usize) -> (usize, usize) {
     let mut start_pos = None;
@@ -716,9 +841,13 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Edit one or more files via search-replace, line insertion, or anchor-targeted edits. \
-         Use `files: [{path, edits}]` to batch edits across files in a single call — \
-         reduces LLM round-trips. Legacy `{path, edits}` form for single-file edits also works."
+        "Edit one or more files. Each edit is one of three shapes: \
+         (1) anchor-targeted (preferred): {anchor: \"Apple§<exact line content>\", end_anchor?, \
+         edit_type?: replace|insert_after|insert_before, new_text} — the anchor token comes from \
+         read_file output and must byte-match the current line; (2) literal search-replace: \
+         {old_text, new_text}; (3) line insertion: {old_text: \"\", new_text, insert_line?}. \
+         Use `files: [{path, edits}]` to batch across files in one call. Editing a file that was \
+         modified externally since your last read is rejected — re-read it first."
     }
 
     fn preview_target_path(&self, args: &serde_json::Value) -> Option<String> {
@@ -762,8 +891,9 @@ impl Tool for EditTool {
                                         "old_text": { "type": "string", "description": "Exact text to find; empty = insert mode." },
                                         "new_text": { "type": "string", "description": "Replacement or text to insert." },
                                         "insert_line": { "type": "integer", "description": "1-based line for insertion (only when old_text is empty)." },
-                                        "anchor": { "type": "string", "description": "Optional starting anchor for stateful Myers Diff alignment." },
-                                        "end_anchor": { "type": "string", "description": "Optional ending anchor for stateful Myers Diff alignment." }
+                                        "anchor": { "type": "string", "description": "Anchor-targeted edit. Full anchor `Token§<exact line content>` copied from read_file output; must byte-match the current line." },
+                                        "end_anchor": { "type": "string", "description": "Optional end anchor (same format) for a multi-line range; must resolve at or after `anchor`." },
+                                        "edit_type": { "type": "string", "enum": ["replace", "insert_after", "insert_before"], "description": "For anchored edits: replace the line(s), or insert new_text before/after. Defaults to replace." }
                                     },
                                     "required": ["new_text"]
                                 }
@@ -782,8 +912,9 @@ impl Tool for EditTool {
                             "old_text": { "type": "string", "description": "Exact text to find; empty = insert mode." },
                             "new_text": { "type": "string", "description": "Replacement or text to insert." },
                             "insert_line": { "type": "integer", "description": "1-based line for insertion (only when old_text is empty)." },
-                            "anchor": { "type": "string", "description": "Optional starting anchor for stateful Myers Diff alignment." },
-                            "end_anchor": { "type": "string", "description": "Optional ending anchor for stateful Myers Diff alignment." }
+                            "anchor": { "type": "string", "description": "Anchor-targeted edit. Full anchor `Token§<exact line content>` copied from read_file output; must byte-match the current line." },
+                            "end_anchor": { "type": "string", "description": "Optional end anchor (same format) for a multi-line range; must resolve at or after `anchor`." },
+                            "edit_type": { "type": "string", "enum": ["replace", "insert_after", "insert_before"], "description": "For anchored edits: replace the line(s), or insert new_text before/after. Defaults to replace." }
                         },
                         "required": ["new_text"]
                     }
@@ -1135,5 +1266,171 @@ mod batch_tests {
             original_a,
             "a.rs MUST be unchanged — b.rs validation failure must prevent all disk writes (two-phase atomicity)"
         );
+    }
+}
+
+#[cfg(test)]
+mod anchored_tests {
+    use super::*;
+    use crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER;
+    use crate::agent::tools::builtin::file::ReadFileTool;
+    use crate::agent::tools::tool::{Tool, ToolError, ToolErrorKind};
+    use tempfile::tempdir;
+
+    /// Read the file via ReadFileTool (populates the anchor state manager) and
+    /// return the full anchor strings (`<token>§<line>`) for each line.
+    async fn read_and_collect_anchors(dir: &std::path::Path, rel: &str) -> Vec<String> {
+        let reader = ReadFileTool::new(dir.to_path_buf());
+        let out = reader
+            .execute(serde_json::json!({ "path": rel }))
+            .await
+            .unwrap();
+        let content = out.result["content"].as_str().unwrap().to_string();
+        // Skip the [File Hash:] header; each remaining line is `<token>§<line>`.
+        content
+            .split('\n')
+            .skip(1)
+            .filter(|l| l.contains('§'))
+            .map(|l| l.to_string())
+            .collect()
+    }
+
+    // ── Test 5.8 — anchored edit happy path (byte-equal match) ──
+    #[tokio::test]
+    async fn anchored_edit_byte_equal_pass() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("anch.rs");
+        tokio::fs::write(&file_path, "fn foo() {\n    old_body();\n}\n").await.unwrap();
+
+        let anchors = read_and_collect_anchors(dir.path(), "anch.rs").await;
+        // anchors[1] corresponds to "    old_body();"
+        let anchor = anchors[1].clone();
+        assert!(anchor.ends_with("§    old_body();"), "anchor: {:?}", anchor);
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let params = serde_json::json!({
+            "path": "anch.rs",
+            "edits": [{ "anchor": anchor, "new_text": "    new_body();" }]
+        });
+        let result = tool.execute(params).await.unwrap();
+        assert!(result.result["ok"].as_bool().unwrap_or(false), "edit should succeed: {:?}", result.result);
+
+        let after = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert!(after.contains("new_body();"), "file: {}", after);
+        assert!(!after.contains("old_body();"), "file: {}", after);
+        assert!(after.contains("fn foo() {"), "surrounding lines intact: {}", after);
+    }
+
+    // ── Test (extra) — anchored insert_after places a new line below ──
+    #[tokio::test]
+    async fn anchored_edit_insert_after() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("ins.rs");
+        tokio::fs::write(&file_path, "line_a\nline_b\nline_c\n").await.unwrap();
+
+        let anchors = read_and_collect_anchors(dir.path(), "ins.rs").await;
+        let anchor = anchors[1].clone(); // "line_b"
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let params = serde_json::json!({
+            "path": "ins.rs",
+            "edits": [{ "anchor": anchor, "edit_type": "insert_after", "new_text": "INSERTED" }]
+        });
+        tool.execute(params).await.unwrap();
+
+        let after = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(after, "line_a\nline_b\nINSERTED\nline_c\n", "insert_after result: {:?}", after);
+    }
+
+    // ── Test 5.9 — anchored edit byte mismatch → InvalidParams Expected/Provided ──
+    #[tokio::test]
+    async fn anchored_edit_byte_mismatch_fails() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("mismatch.rs");
+        tokio::fs::write(&file_path, "alpha\nbeta\ngamma\n").await.unwrap();
+
+        let anchors = read_and_collect_anchors(dir.path(), "mismatch.rs").await;
+        // Take the token from anchors[1] (line "beta") but provide WRONG content.
+        let token = anchors[1].split('§').next().unwrap();
+        let wrong_anchor = format!("{}§wrong content", token);
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let params = serde_json::json!({
+            "path": "mismatch.rs",
+            "edits": [{ "anchor": wrong_anchor, "new_text": "X" }]
+        });
+        let err = tool.execute(params).await.unwrap_err();
+        match err {
+            ToolError::InvalidParams(msg) => {
+                assert!(msg.contains("Expected:"), "must show Expected: got {}", msg);
+                assert!(msg.contains("Provided:"), "must show Provided: got {}", msg);
+            }
+            other => panic!("expected InvalidParams, got {:?}", other),
+        }
+        // File unchanged.
+        let after = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(after, "alpha\nbeta\ngamma\n");
+    }
+
+    // ── Test (extra) — token not found → InvalidParams with re-read hint ──
+    #[tokio::test]
+    async fn anchored_edit_token_not_found_fails() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("notfound.rs");
+        tokio::fs::write(&file_path, "one\ntwo\n").await.unwrap();
+        let _ = read_and_collect_anchors(dir.path(), "notfound.rs").await;
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let params = serde_json::json!({
+            "path": "notfound.rs",
+            // "Zzqq" is a syntactically valid token that won't be in the file.
+            "edits": [{ "anchor": "Zzqq§one", "new_text": "X" }]
+        });
+        let err = tool.execute(params).await.unwrap_err();
+        match err {
+            ToolError::InvalidParams(msg) => {
+                assert!(msg.contains("not found"), "msg: {}", msg);
+                assert!(msg.contains("read_file"), "must hint re-read: {}", msg);
+            }
+            other => panic!("expected InvalidParams, got {:?}", other),
+        }
+    }
+
+    // ── Test 5.10 — edit rejects stale file with PreconditionFailed KIND ──
+    #[tokio::test]
+    async fn edit_tool_rejects_stale_file() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("stale.rs");
+        tokio::fs::write(&file_path, "keep\n").await.unwrap();
+
+        // Read to register + track the file.
+        let _ = read_and_collect_anchors(dir.path(), "stale.rs").await;
+        // Mark stale deterministically (simulates external modification).
+        GLOBAL_FILE_CONTEXT_TRACKER.mark_stale(&file_path);
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let params = serde_json::json!({
+            "path": "stale.rs",
+            "edits": [{ "old_text": "keep", "new_text": "changed" }]
+        });
+        let err = tool.execute(params).await.unwrap_err();
+        match err {
+            ToolError::Kinded { kind, message, .. } => {
+                assert_eq!(
+                    kind,
+                    ToolErrorKind::PreconditionFailed,
+                    "stale-file reject MUST be PreconditionFailed kind, got {:?}",
+                    kind
+                );
+                assert!(message.contains("modified externally"), "message: {}", message);
+            }
+            other => panic!("expected Kinded(PreconditionFailed), got {:?}", other),
+        }
+
+        // Clean up tracker state so other tests aren't affected.
+        GLOBAL_FILE_CONTEXT_TRACKER.clear_stale(&file_path);
+        // File must be unchanged.
+        let after = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(after, "keep\n");
     }
 }

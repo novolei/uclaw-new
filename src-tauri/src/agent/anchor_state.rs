@@ -398,6 +398,19 @@ impl FileContextTracker {
         stale.contains(&path_abs)
     }
 
+    /// Marks a file stale (modified externally). Normally the background
+    /// watcher sets this; exposed publicly so callers that detect an
+    /// out-of-band change (and deterministic tests) can flag a file without
+    /// depending on filesystem-event timing.
+    pub fn mark_stale(&self, path: &Path) {
+        let path_abs = match path.canonicalize() {
+            Ok(p) => p,
+            Err(_) => path.to_path_buf(),
+        };
+        let mut stale = self.stale_files.lock().unwrap();
+        stale.insert(path_abs);
+    }
+
     /// Clears the stale status of a file (typically after it is re-read)
     pub fn clear_stale(&self, path: &Path) {
         let path_abs = match path.canonicalize() {

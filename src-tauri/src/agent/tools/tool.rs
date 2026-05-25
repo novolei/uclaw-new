@@ -54,6 +54,11 @@ pub enum ToolErrorKind {
     ParseError,
     /// Service / resource temporarily unavailable (DB locked, service starting).
     Unavailable,
+    /// A required precondition for the operation does not hold (e.g. the file
+    /// was modified externally since last read). The LLM should re-establish
+    /// the precondition — typically by re-reading — before retrying. Used by
+    /// EditTool's stale-file gate (spec §8.4 — hard reject, not a warning).
+    PreconditionFailed,
     /// Catch-all when no other variant fits.
     Other,
 }
@@ -71,6 +76,7 @@ impl ToolErrorKind {
             Self::PayloadTooLarge => "PayloadTooLarge",
             Self::ParseError => "ParseError",
             Self::Unavailable => "Unavailable",
+            Self::PreconditionFailed => "PreconditionFailed",
             Self::Other => "Other",
         }
     }
